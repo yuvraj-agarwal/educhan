@@ -1,64 +1,84 @@
-// Package server wires the educhan HTTP API: routing, middleware and the
-// server lifecycle.
+// Package server wires the educhan HTTP routes and owns the server lifecycle.
 package server
 
 import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
+	"log"
 	"net"
 	"net/http"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"github.com/yuvraj-agarwal/educhan/internal/config"
+	"github.com/yuvraj-agarwal/educhan/internal/handler"
 )
 
-// Server owns the HTTP listener and the lifecycle around it.
+// shutdownTimeout bounds how long in-flight requests may take to finish once a
+// termination signal has been received. Keep it below the deployment
+// platform's termination grace period.
+const shutdownTimeout = 15 * time.Second
+
+// Server holds the routed handler and the configuration it serves under.
 type Server struct {
-	cfg     config.Config
-	log     *slog.Logger
-	http    *http.Server
-	stopped chan struct{}
+	cfg    config.Config
+	router *http.ServeMux
 }
 
-// New builds a Server with all routes and middleware registered. It does not
-// bind a port; call Run for that.
-func New(cfg config.Config, log *slog.Logger) *Server {
+// New builds a Server with all routes registered. It does not bind a port;
+// call Start for that.
+func New(cfg config.Config) *Server {
 	s := &Server{
-		cfg:     cfg,
-		log:     log,
-		stopped: make(chan struct{}),
+		cfg:    cfg,
+		router: http.NewServeMux(),
 	}
-	s.http = &http.Server{
-		Addr:              cfg.Addr(),
-		Handler:           s.handler(),
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
-		ReadTimeout:       cfg.ReadTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-		ErrorLog:          slog.NewLogLogger(log.Handler(), slog.LevelWarn),
-	}
+
+	s.routes()
 	return s
 }
 
-// Handler exposes the fully decorated handler so it can be exercised in tests
-// without binding a port.
-func (s *Server) Handler() http.Handler { return s.http.Handler }
+// routes registers every route the service serves. The method prefix is a Go
+// 1.22 ServeMux pattern, so a wrong method yields 405 without a third-party
+// router.
+func (s *Server) routes() {
+	s.router.HandleFunc("GET /health", handler.Health)
+	s.router.HandleFunc("GET /", handler.Home)
+}
 
-// Run binds the configured address and serves until ctx is cancelled, at which
-// point in-flight requests are drained within the configured shutdown timeout.
-// Binding happens before Run blocks, so a port conflict is reported immediately.
-func (s *Server) Run(ctx context.Context) error {
-	listener, err := net.Listen("tcp", s.http.Addr)
+// Start serves until the process is interrupted or receives SIGTERM, then
+// drains in-flight requests before returning.
+func (s *Server) Start() error {
+	// SIGTERM is what container runtimes send before killing a container.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	return s.start(ctx)
+}
+
+// start is Start without the signal handling, so shutdown can be exercised in
+// tests by cancelling ctx.
+func (s *Server) start(ctx context.Context) error {
+	srv := &http.Server{
+		Addr:         s.cfg.Addr,
+		Handler:      s.router,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  60 * time.Second,
+	}
+
+	// Bind before serving so that an address already in use is reported to the
+	// caller instead of surfacing later as a process that never accepts traffic.
+	listener, err := net.Listen("tcp", srv.Addr)
 	if err != nil {
-		return fmt.Errorf("listen on %s: %w", s.http.Addr, err)
+		return fmt.Errorf("listen on %s: %w", srv.Addr, err)
 	}
 
 	serveErr := make(chan error, 1)
 	go func() {
-		defer close(s.stopped)
-		s.log.Info("server listening", "addr", listener.Addr().String())
-		if err := s.http.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := srv.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			serveErr <- err
 		}
 		close(serveErr)
@@ -73,22 +93,18 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
-	// Durations are logged as strings; slog would otherwise render them as
-	// raw nanosecond counts.
-	s.log.Info("shutting down", "timeout", s.cfg.ShutdownTimeout.String())
+	log.Printf("educhan shutting down, draining for up to %s", shutdownTimeout)
 
-	// Context is deliberately detached from ctx, which is already cancelled.
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), s.cfg.ShutdownTimeout)
+	// Deliberately detached from ctx, which is already cancelled.
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 	defer cancel()
 
-	if err := s.http.Shutdown(shutdownCtx); err != nil {
+	if err := srv.Shutdown(shutdownCtx); err != nil {
 		// Requests still running past the deadline are cut off rather than
-		// leaking; Close makes that explicit.
-		_ = s.http.Close()
+		// leaked; Close makes that explicit.
+		_ = srv.Close()
 		return fmt.Errorf("graceful shutdown: %w", err)
 	}
 
-	<-s.stopped
-	s.log.Info("shutdown complete")
 	return nil
 }
