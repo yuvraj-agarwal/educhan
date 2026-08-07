@@ -19,10 +19,39 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 - Architecture and product design completed
 - Prototype under development
 
-The prototype in this repository implements the text side of the imageboard
-end to end: boards, anonymous posting with tripcodes and per-thread poster IDs,
+The prototype in this repository implements the imageboard end to end: boards,
+anonymous posting with tripcodes and per-thread poster IDs, one image per post,
 a paginated board index, a catalog view, and threads with quote links.
-Attachments, verification badges, and moderation tooling are not built yet.
+Verification badges and moderation tooling are not built yet.
+
+## Image attachments
+
+One image per post, on both thread creation and replies.
+
+- **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
+  or the content type the client claims.
+- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
+- **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
+  preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
+  carry transparency get PNG thumbnails.
+- **Storage**: originals and thumbnails are written to
+  `$EDUCHAN_UPLOAD_DIR/originals/{board}/{YYYY}/{MM}/` and `…/thumbs/{board}/{YYYY}/{MM}/`
+  under a generated random filename (default root `./data/uploads`). All writes and reads
+  go through the `internal/media.Store` interface, so moving to Google Cloud Storage is a
+  new implementation of that interface rather than a rewrite of the handlers.
+- **Serving**: `/media/original/{path}` and `/media/thumb/{path}`, with the correct
+  `Content-Type`, range support, and long-lived immutable caching.
+- **UI**: thumbnails appear in the board index, the catalog, and inside threads; clicking
+  one opens the full image.
+
+Posting an image over HTTP is a plain multipart form:
+
+```bash
+curl -X POST localhost:8080/api/boards/general/threads \
+  -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
+```
+
+The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 ### Implemented
 
@@ -32,7 +61,8 @@ Attachments, verification badges, and moderation tooling are not built yet.
 | Posting | Anonymous by default; `name#secret` and `name##secret` produce tripcodes; a per-thread poster ID keeps a conversation followable |
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
-| Catalog | Every live thread on one page as excerpt tiles |
+| Catalog | Every live thread on one page as excerpt tiles with thumbnails |
+| Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Housekeeping | Threads past a board's thread limit are pruned; flood control limits how often one client can post |
 
 ## Tech Stack
@@ -65,6 +95,8 @@ guarded by a Postgres advisory lock so concurrent instances are safe.
 | `EDUCHAN_THREAD_COOLDOWN` | `15` (seconds) | Minimum interval between new threads from one client |
 | `EDUCHAN_POST_COOLDOWN` | `3` (seconds) | Minimum interval between replies from one client |
 | `EDUCHAN_LOG_FORMAT` | `text` | `text` or `json` structured logs |
+| `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the media store writes originals and thumbnails to |
+| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
 
 ### HTTP API
 
@@ -80,10 +112,13 @@ guarded by a Postgres advisory lock so concurrent instances are safe.
 | `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
+| `GET` | `/media/original/{path}` | Full-size attachment |
+| `GET` | `/media/thumb/{path}` | Thumbnail |
 
-Request bodies must be `application/json`; unknown fields are rejected. Errors
-are `{"error": "..."}`, and `429` responses add `retry_after` plus a
-`Retry-After` header.
+JSON request bodies must be `application/json`; unknown fields are rejected. The
+two posting endpoints also accept `multipart/form-data` with the same fields
+plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
+`retry_after` plus a `Retry-After` header.
 
 ```bash
 curl -s localhost:8080/api/boards
