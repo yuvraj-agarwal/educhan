@@ -20,8 +20,8 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 - Prototype under development
 
 This repository currently contains the service skeleton: a configurable HTTP
-server with structured logging, health endpoints, and graceful shutdown. Board,
-thread, and media features are not implemented yet.
+server with a health endpoint and graceful shutdown. Board, thread, and media
+features are not implemented yet.
 
 ## Requirements
 
@@ -39,8 +39,8 @@ make run
 The server listens on `http://localhost:8080` by default.
 
 ```bash
-curl http://localhost:8080/healthz
-# {"status":"ok","version":"dev"}
+curl http://localhost:8080/health
+# {"status":"ok","service":"educhan"}
 ```
 
 ## Make Targets
@@ -60,39 +60,34 @@ Run `make help` for the full list.
 
 | Method | Path | Description |
 | --- | --- | --- |
+| `GET` | `/health` | Health check; dependency-free by design |
 | `GET` | `/` | Placeholder landing page |
-| `GET` | `/healthz` | Liveness probe; dependency-free by design |
-| `GET` | `/readyz` | Readiness probe; gains dependency checks as backing services are added |
 
-Every response carries an `X-Request-Id` header. An inbound `X-Request-Id` is
-reused when it is well-formed, so requests stay traceable across services.
+`GET /` is a prefix pattern, so any path that is not otherwise routed is served
+by the landing page rather than returning 404.
 
 ## Configuration
 
-All configuration comes from the environment. Unset variables fall back to the
-defaults below; a variable that is set but unparseable fails startup rather than
-degrading silently.
+All configuration comes from the environment, so a single binary can be promoted
+between environments without a rebuild. Unset variables fall back to the
+defaults below.
 
 | Variable | Default | Description |
 | --- | --- | --- |
-| `HOST` | *(all interfaces)* | Interface to bind |
-| `PORT` | `8080` | Port to listen on |
-| `LOG_LEVEL` | `info` | `debug`, `info`, `warn`, or `error` |
-| `READ_HEADER_TIMEOUT` | `5s` | Deadline for reading request headers |
-| `READ_TIMEOUT` | `15s` | Deadline for reading the full request |
-| `WRITE_TIMEOUT` | `30s` | Deadline for writing the response |
-| `IDLE_TIMEOUT` | `60s` | Keep-alive idle timeout |
-| `SHUTDOWN_TIMEOUT` | `15s` | Grace period for in-flight requests on shutdown |
+| `ADDR` | `:8080` | TCP address to listen on |
+| `ENV` | `development` | Deployment environment name |
 
-Logs are JSON on stdout. Health probes are logged at `debug` level so they do
-not drown out real traffic.
+Request timeouts and the shutdown grace period are compile-time constants in
+`internal/server`; promote them to `Config` if they need to vary per
+environment.
 
 ## Project Layout
 
 ```
-cmd/educhan/       Service entrypoint: config, logger, signal handling
+cmd/educhan/       Service entrypoint
 internal/config/   Environment-based configuration
-internal/server/   Routing, middleware, handlers, server lifecycle
+internal/server/   Routing and server lifecycle
+internal/handler/  HTTP handlers
 Dockerfile         Multi-stage build onto a distroless base
 Makefile           Build, test, and lint entrypoints
 ```
@@ -113,12 +108,11 @@ manager and runs as a non-root user.
 
 ## Deployment Notes
 
-- The server binds `PORT`, which Cloud Run and most PaaS providers inject.
-- `SIGTERM` starts a graceful drain bounded by `SHUTDOWN_TIMEOUT`. Keep that
-  value below the platform's termination grace period.
-- Point liveness checks at `/healthz` and readiness checks at `/readyz`.
-- Stamp builds with `make build VERSION=$(git rev-parse --short HEAD)`; the
-  value is reported by `/healthz` and attached to every log line.
+- Set `ADDR` to match the port the platform expects. On Cloud Run, which injects
+  `PORT`, that means `ADDR=:$PORT`.
+- `SIGTERM` starts a graceful drain bounded by `shutdownTimeout` (15s). Keep it
+  below the platform's termination grace period.
+- Point liveness and readiness checks at `/health`.
 
 ## Tech Stack (Planned)
 
