@@ -3,35 +3,26 @@ package app
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"net/http"
-	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Config holds runtime configuration sourced from the environment.
-type Config struct {
-	Addr        string
-	DatabaseURL string
-}
-
-// ConfigFromEnv builds a Config, applying sensible local-development defaults so
-// the server runs out of the box against the Postgres instance provisioned by
-// the Cloud Agent environment.
-func ConfigFromEnv() Config {
-	return Config{
-		Addr:        firstNonEmpty(os.Getenv("EDUCHAN_ADDR"), ":8080"),
-		DatabaseURL: firstNonEmpty(os.Getenv("DATABASE_URL"), "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
-	}
-}
-
-// App wires together the database pool and HTTP handlers.
+// App wires together configuration, the store, and the HTTP handlers.
 type App struct {
-	pool *pgxpool.Pool
+	cfg   Config
+	log   *slog.Logger
+	pool  *pgxpool.Pool
+	store *Store
+
+	threadLimiter *cooldownLimiter
+	postLimiter   *cooldownLimiter
 }
 
-// New connects to Postgres, verifies connectivity, and applies the schema.
-func New(ctx context.Context, cfg Config) (*App, error) {
+// New connects to Postgres, verifies connectivity, and applies pending
+// migrations.
+func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
@@ -40,11 +31,22 @@ func New(ctx context.Context, cfg Config) (*App, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	if err := migrate(ctx, pool); err != nil {
+	if err := migrate(ctx, pool, log); err != nil {
 		pool.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
+		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	return &App{pool: pool}, nil
+	if cfg.PosterIDSaltEphemeral {
+		log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
+	}
+
+	return &App{
+		cfg:           cfg,
+		log:           log,
+		pool:          pool,
+		store:         NewStore(pool),
+		threadLimiter: newCooldownLimiter(cfg.ThreadCooldown),
+		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
+	}, nil
 }
 
 // Close releases database resources.
@@ -59,22 +61,31 @@ func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
+
 	mux.HandleFunc("GET /api/boards", a.handleListBoards)
-	mux.HandleFunc("GET /api/boards/{slug}/threads", a.handleListThreads)
+	mux.HandleFunc("GET /api/boards/{slug}", a.handleGetBoard)
+	mux.HandleFunc("GET /api/boards/{slug}/threads", a.handleIndex)
 	mux.HandleFunc("POST /api/boards/{slug}/threads", a.handleCreateThread)
-	mux.HandleFunc("GET /api/threads/{id}", a.handleGetThread)
-	mux.HandleFunc("POST /api/threads/{id}/posts", a.handleCreatePost)
+	mux.HandleFunc("GET /api/boards/{slug}/catalog", a.handleCatalog)
+	mux.HandleFunc("GET /api/boards/{slug}/threads/{no}", a.handleGetThread)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts", a.handleCreatePost)
 
-	mux.Handle("GET /", http.FileServerFS(webFS()))
+	// Thread routes keyed by primary key, kept for callers that hold an ID from
+	// an earlier revision of the API.
+	mux.HandleFunc("GET /api/threads/{id}", a.handleGetThreadByID)
+	mux.HandleFunc("POST /api/threads/{id}/posts", a.handleCreatePostByThreadID)
 
-	return withCommonHeaders(mux)
-}
+	// Unknown API paths must answer in JSON rather than falling through to the
+	// single-page app.
+	mux.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
+		writeError(w, http.StatusNotFound, "unknown endpoint")
+	})
 
-func firstNonEmpty(vals ...string) string {
-	for _, v := range vals {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
+	mux.Handle("/", a.webHandler())
+
+	return chain(mux,
+		recoverPanics(a.log),
+		requestLogger(a.log, a.cfg.TrustProxyHeaders),
+		securityHeaders,
+	)
 }

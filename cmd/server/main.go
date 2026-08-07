@@ -1,12 +1,11 @@
-// Command server runs the educhan backend: an HTTP API plus a minimal web UI
-// backed by PostgreSQL. It is intentionally small — a starting skeleton for the
-// planned imageboard described in the project README.
+// Command server runs educhan: a JSON API for an anonymous imageboard plus the
+// embedded web UI that consumes it, backed by PostgreSQL.
 package main
 
 import (
 	"context"
 	"errors"
-	"log"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,18 +15,32 @@ import (
 	"github.com/yuvraj-agarwal/educhan/internal/app"
 )
 
+const (
+	startupTimeout  = 30 * time.Second
+	shutdownTimeout = 10 * time.Second
+)
+
 func main() {
-	log.SetFlags(log.LstdFlags | log.Lmsgprefix)
-	log.SetPrefix("educhan: ")
+	if err := run(); err != nil {
+		slog.Error("fatal", "error", err)
+		os.Exit(1)
+	}
+}
 
-	cfg := app.ConfigFromEnv()
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	application, err := app.New(ctx, cfg)
+func run() error {
+	cfg, err := app.ConfigFromEnv()
 	if err != nil {
-		log.Fatalf("startup failed: %v", err)
+		return err
+	}
+	log := newLogger(cfg.LogFormat)
+	slog.SetDefault(log)
+
+	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	defer cancelStartup()
+
+	application, err := app.New(startupCtx, cfg, log)
+	if err != nil {
+		return err
 	}
 	defer application.Close()
 
@@ -35,23 +48,38 @@ func main() {
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),
 		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       30 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       2 * time.Minute,
 	}
 
+	serverErr := make(chan error, 1)
 	go func() {
-		log.Printf("listening on http://%s", cfg.Addr)
+		log.Info("listening", "addr", cfg.Addr)
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Fatalf("http server error: %v", err)
+			serverErr <- err
 		}
 	}()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
-	<-stop
 
-	log.Print("shutting down")
-	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("graceful shutdown failed: %v", err)
+	select {
+	case err := <-serverErr:
+		return err
+	case sig := <-stop:
+		log.Info("shutting down", "signal", sig.String())
 	}
+
+	shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancelShutdown()
+	return srv.Shutdown(shutdownCtx)
+}
+
+func newLogger(format string) *slog.Logger {
+	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
+	if format == "json" {
+		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+	}
+	return slog.New(slog.NewTextHandler(os.Stderr, opts))
 }

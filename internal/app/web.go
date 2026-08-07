@@ -4,12 +4,14 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 )
 
-//go:embed web/index.html
+//go:embed web
 var embeddedWeb embed.FS
 
-// webFS returns the embedded static web assets rooted at the web/ directory.
+// webFS returns the embedded static assets rooted at the web/ directory.
 func webFS() fs.FS {
 	sub, err := fs.Sub(embeddedWeb, "web")
 	if err != nil {
@@ -20,10 +22,38 @@ func webFS() fs.FS {
 	return sub
 }
 
-// withCommonHeaders adds headers useful for a small JSON+HTML service.
-func withCommonHeaders(next http.Handler) http.Handler {
+// webHandler serves the embedded assets and falls back to the single-page app
+// for client-side routes such as /general/ or /general/thread/12.
+func (a *App) webHandler() http.Handler {
+	assets := webFS()
+	files := http.FileServerFS(assets)
+
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("X-Content-Type-Options", "nosniff")
-		next.ServeHTTP(w, r)
+		if r.Method != http.MethodGet && r.Method != http.MethodHead {
+			w.Header().Set("Allow", "GET, HEAD")
+			writeError(w, http.StatusMethodNotAllowed, "method not allowed")
+			return
+		}
+
+		name := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
+		if name != "" && name != "." {
+			if info, err := fs.Stat(assets, name); err == nil && !info.IsDir() {
+				files.ServeHTTP(w, r)
+				return
+			}
+		}
+		serveIndex(w, r, assets)
 	})
+}
+
+func serveIndex(w http.ResponseWriter, r *http.Request, assets fs.FS) {
+	page, err := fs.ReadFile(assets, "index.html")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "ui unavailable")
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	// The shell is tiny and every deploy may change it, so revalidate always.
+	w.Header().Set("Cache-Control", "no-cache")
+	_, _ = w.Write(page)
 }
