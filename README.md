@@ -1,7 +1,7 @@
 # educhan
 # educhan
 
-**Anonymous imageboard for higher education**
+**Anonymous imageboard for tertiary education**
 
 educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about placements, research, courses, and campus life.
 
@@ -9,7 +9,7 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 - **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a trusted badge while remaining fully anonymous
 - **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **Technical media support** — Accepts raw camera files and high-bitrate video with automatic web-optimized proxies
+- **Technical media support** — Accepts raw camera files and high-bitrate video with automatic web-optimised proxies
 - **Selective permanence** — High-value threads can be automatically archived
 - **Google Cloud native** — Built for scalability and low operational overhead
 
