@@ -101,6 +101,10 @@ func testServer(t *testing.T, tune func(*Config)) *harness {
 type client struct {
 	t    *testing.T
 	base string
+	// lastHeader holds the response headers of the most recent request. Flood
+	// control asserts on Retry-After, and every other caller wants the decoded
+	// body rather than the response.
+	lastHeader http.Header
 }
 
 // get performs a GET and decodes a successful JSON response into out.
@@ -149,6 +153,7 @@ func (c *client) send(req *http.Request, out any) int {
 		c.t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
 	}
 	defer res.Body.Close()
+	c.lastHeader = res.Header
 
 	payload, err := io.ReadAll(res.Body)
 	if err != nil {
@@ -520,6 +525,9 @@ func TestFloodControl(t *testing.T) {
 	if _, ok := out["retry_after"]; !ok {
 		t.Errorf("429 body should include retry_after, got %v", out)
 	}
+	if got := c.lastHeader.Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After = %q, want 60", got)
+	}
 
 	// Replies have their own cooldown, so the first one still goes through.
 	c.reply("general", thread.ThreadNo, "", "first reply", false)
@@ -527,6 +535,82 @@ func TestFloodControl(t *testing.T) {
 		map[string]any{"body": "too soon"}, &out)
 	if status != http.StatusTooManyRequests {
 		t.Errorf("second reply status = %d, want 429", status)
+	}
+	if got := c.lastHeader.Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After = %q, want 60", got)
+	}
+}
+
+// Posting cooldowns are per board, so a client can follow a conversation on two
+// boards without being told to slow down.
+func TestFloodControlIsPerBoard(t *testing.T) {
+	c := testServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Minute })
+
+	c.createThread("general", "first", "", "allowed")
+	c.createThread("research", "first", "", "a different board has its own cooldown")
+
+	var out map[string]any
+	if status := c.post("/api/boards/general/threads",
+		map[string]any{"body": "too soon"}, &out); status != http.StatusTooManyRequests {
+		t.Errorf("second thread on the same board = %d, want 429", status)
+	}
+}
+
+// Uploads are limited across the whole server: thumbnailing costs the same
+// wherever the post lands, so a second board is no way around it.
+func TestUploadFloodControl(t *testing.T) {
+	c := testServer(t, func(cfg *Config) { cfg.UploadCooldown = time.Minute })
+	image := pngBytes(t, 32, 32)
+
+	var out map[string]any
+	if status := c.upload("/api/boards/general/threads",
+		map[string]string{"body": "with an image"}, "first.png", image, &out); status != http.StatusCreated {
+		t.Fatalf("first upload: status %d (%v)", status, out["error"])
+	}
+
+	status := c.upload("/api/boards/research/threads",
+		map[string]string{"body": "too soon"}, "second.png", image, &out)
+	if status != http.StatusTooManyRequests {
+		t.Fatalf("second upload status = %d, want 429", status)
+	}
+	if got := c.lastHeader.Get("Retry-After"); got != "60" {
+		t.Errorf("Retry-After = %q, want 60", got)
+	}
+
+	// Text-only posting is unaffected: the upload cooldown limits attachments,
+	// not conversation.
+	if status := c.post("/api/boards/general/threads",
+		map[string]any{"body": "no image"}, &out); status != http.StatusCreated {
+		t.Errorf("text-only thread status = %d, want 201 (%v)", status, out["error"])
+	}
+}
+
+// A post refused by the upload cooldown must not consume the reply cooldown as
+// well, or the two limits compound.
+func TestUploadRejectionDoesNotConsumeThePostCooldown(t *testing.T) {
+	c := testServer(t, func(cfg *Config) {
+		cfg.PostCooldown = time.Millisecond
+		cfg.UploadCooldown = time.Minute
+	})
+	image := pngBytes(t, 32, 32)
+
+	thread := c.createThread("general", "uploads", "", "opening post")
+
+	var out map[string]any
+	path := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+	if status := c.upload(path, map[string]string{"body": "first image"},
+		"first.png", image, &out); status != http.StatusCreated {
+		t.Fatalf("first image reply: status %d (%v)", status, out["error"])
+	}
+	if status := c.upload(path, map[string]string{"body": "second image"},
+		"second.png", image, &out); status != http.StatusTooManyRequests {
+		t.Fatalf("second image reply status = %d, want 429", status)
+	}
+
+	time.Sleep(5 * time.Millisecond)
+	if status := c.post(path, map[string]any{"body": "text only"}, &out); status != http.StatusCreated {
+		t.Errorf("text reply status = %d, want 201 (%v): the refused upload consumed the reply cooldown",
+			status, out["error"])
 	}
 }
 

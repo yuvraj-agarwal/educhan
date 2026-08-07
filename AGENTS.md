@@ -3,8 +3,9 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, threads with quote links, and key-authenticated moderation endpoints are
-implemented. Verification badges, janitor accounts, bans, and reports are not.
+a catalog view, threads with quote links, per-client flood control, and key-authenticated
+moderation and board management are implemented. Verification badges, janitor accounts,
+bans, and reports are not.
 
 ## Stack & layout
 
@@ -16,6 +17,7 @@ implemented. Verification badges, janitor accounts, bans, and reports are not.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
   - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
+  - `boards.go` — board creation and settings updates, behind the same key.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
@@ -118,9 +120,27 @@ curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO \
   -H 'Authorization: Bearer dev-mod-key'   # the thread, its posts, its attachments
 ```
 
-Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=15`,
-`EDUCHAN_POST_COOLDOWN=3` seconds), so scripted loops will see `429` with a
-`Retry-After` header. Set both to `0` when a test needs to post rapidly.
+Boards are created and reconfigured with the same key. Everything but the slug is
+optional; the slug is lowercase letters and digits in dash-separated groups, at most 24
+characters, and may not be `api`, `media`, or `healthz`:
+
+```bash
+curl -s -X POST localhost:8080/api/boards \
+  -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
+  -d '{"slug":"comp-sci","name":"Computer Science"}'          # 409 if the slug is taken
+curl -s -X PATCH localhost:8080/api/boards/comp-sci \
+  -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
+  -d '{"description":"Systems and theory","thread_limit":50}' # omitted fields are unchanged
+curl -s localhost:8080/api/boards/comp-sci/catalog            # a new board works everywhere
+```
+
+Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOLDOWN=5`,
+`EDUCHAN_UPLOAD_COOLDOWN=15` seconds), so scripted loops will see `429` with a
+`Retry-After` header. Set them to `0` when a test needs to post rapidly:
+
+```bash
+EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
+```
 
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
 board index at `/general/`, catalog at `/general/catalog`, thread at
@@ -151,13 +171,29 @@ board index at `/general/`, catalog at `/general/catalog`, thread at
   `/api/threads/{id}` compatibility routes.
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_MAX_UPLOAD_BYTES`,
-  `EDUCHAN_MOD_KEY`. See `.env.example` and the README table.
+  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`,
+  `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`. See `.env.example` and the README table.
+- Flood control lives in `ratelimit.go` and is applied by `postCooldowns`/`allow` in
+  `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
+  cooldown per client across the whole server. A submission clears every cooldown that
+  applies to it or none is started, so a post refused by one limit is not charged for the
+  other; `allowAll` is what enforces that. State is per process and in memory — a shared
+  backend means replacing `cooldownLimiter`, which nothing else depends on.
+- `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
+  in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
+  proxy appends and everything to the left is client-supplied; a chain shorter than the
+  configured depth or a non-IP entry falls back to the peer address. Setting it higher than
+  the real chain hands clients control of their own rate-limit bucket and poster ID.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
+- Board management (`boards.go`) reuses that gate and needs no migration: `0002` already
+  gives `boards` its limits and `next_post_no`. Slugs are validated and normalised before
+  they reach SQL, a duplicate comes back as `errConflict` from the unique index (`409`),
+  and the slug itself is not updatable because it is the board's address.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
-  `internal/app/moderation_test.go`) run the whole app against an isolated schema in
-  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
-  the development database.
+  `internal/app/moderation_test.go`, `internal/app/boards_test.go`) run the whole app
+  against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
+  they are safe to run against the development database. `testServer` builds its `Config`
+  directly, which leaves every cooldown at zero unless a test asks for one.
