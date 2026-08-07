@@ -7,6 +7,7 @@
 //   /{slug}/thread/{no}   thread
 
 const NAME_STORAGE_KEY = "educhan:name";
+const ACCEPTED_IMAGES = "image/jpeg,image/png,image/webp,image/gif";
 
 const state = {
   boards: [],
@@ -23,7 +24,8 @@ const el = {
 
 async function api(path, options = {}) {
   const init = { headers: {}, ...options };
-  if (init.body !== undefined) {
+  // FormData sets its own multipart content type, boundary included.
+  if (init.body !== undefined && !(init.body instanceof FormData)) {
     init.headers["Content-Type"] = "application/json";
   }
 
@@ -107,6 +109,37 @@ function backlinksHTML(post, slug) {
   return `<div class="backlinks">Replies: ${links}</div>`;
 }
 
+/* Attachments -------------------------------------------------------------- */
+
+function thumbHTML(att, extraClass = "") {
+  return `<img class="thumb${extraClass ? ` ${extraClass}` : ""}" src="${esc(att.thumb_url)}"
+    width="${att.thumb_width}" height="${att.thumb_height}" loading="lazy"
+    alt="${esc(att.name) || "attached image"}" />`;
+}
+
+function fileSize(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${bytes} B`;
+}
+
+// attachmentHTML renders a post's image. Inside a thread the thumbnail expands
+// in place, which is the classic imageboard behaviour; elsewhere the full image
+// opens in a new tab so the surrounding link still navigates.
+function attachmentHTML(att, { expandable = false } = {}) {
+  if (!att) {
+    return "";
+  }
+  const caption = att.name
+    ? `<div class="filename">${esc(att.name)} (${att.width}&times;${att.height}, ${fileSize(att.size)})</div>`
+    : "";
+  const link = expandable
+    ? `<a class="thumb-link expandable" href="${esc(att.url)}" data-full="${esc(att.url)}"
+         data-thumb="${esc(att.thumb_url)}">${thumbHTML(att)}</a>`
+    : `<a class="thumb-link" href="${esc(att.url)}" target="_blank" rel="noopener">${thumbHTML(att)}</a>`;
+  return `<div class="attachment">${caption}${link}</div>`;
+}
+
 function badgesHTML(thread) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
@@ -142,6 +175,7 @@ function postHTML(post, context) {
   return `
     <article class="post ${post.op ? "op" : "reply"}" id="p${post.no}">
       <div class="post-head">${head.join("\n")}</div>
+      ${attachmentHTML(post.attachment, { expandable: quotable })}
       <div class="post-body">${bodyHTML(post, slug)}</div>
       ${backlinksHTML(post, slug)}
     </article>`;
@@ -171,7 +205,8 @@ function formHTML({ kind, threadNo = null, open = false, locked = false }) {
           ${subject}
           <input type="text" name="name" value="${esc(name)}" placeholder="Anonymous (add #secret for a tripcode)" maxlength="80" />
         </div>
-        <textarea name="body" required placeholder="${isThread ? "What's on your mind?" : "Write a reply. Use >>123 to quote a post."}" maxlength="8000"></textarea>
+        <textarea name="body" placeholder="${isThread ? "What's on your mind?" : "Write a reply. Use >>123 to quote a post."}" maxlength="8000"></textarea>
+        <input type="file" name="image" accept="${ACCEPTED_IMAGES}" />
         <div class="actions">
           <button class="primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
           ${sage}
@@ -286,6 +321,7 @@ async function renderCatalog(route) {
           <span class="mono">R: ${t.replies}</span>
           ${badgesHTML(t)}
         </div>
+        ${t.attachment ? thumbHTML(t.attachment, "tile-thumb") : '<div class="no-image">no image</div>'}
         ${t.subject ? `<div class="subject">${esc(t.subject)}</div>` : ""}
         <div class="excerpt">${esc(t.excerpt)}</div>
       </a>`
@@ -423,6 +459,13 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const expandable = event.target.closest("a.thumb-link.expandable");
+  if (expandable) {
+    event.preventDefault();
+    toggleImage(expandable);
+    return;
+  }
+
   if (event.target.closest('[data-action="refresh"]')) {
     event.preventDefault();
     render();
@@ -447,6 +490,21 @@ document.addEventListener("click", (event) => {
 });
 
 window.addEventListener("popstate", render);
+
+// toggleImage swaps a thumbnail for the full image and back, leaving the layout
+// to the stylesheet.
+function toggleImage(link) {
+  const img = link.querySelector("img");
+  if (!img) {
+    return;
+  }
+  const expanded = img.classList.toggle("expanded");
+  if (expanded) {
+    img.removeAttribute("width");
+    img.removeAttribute("height");
+  }
+  img.src = expanded ? link.dataset.full : link.dataset.thumb;
+}
 
 function quoteTarget() {
   return el.main.querySelector('form[data-kind="reply"] textarea[name="body"]');
@@ -474,9 +532,16 @@ el.main.addEventListener("submit", async (event) => {
   const button = form.querySelector('button[type="submit"]');
   const data = new FormData(form);
   const name = String(data.get("name") || "");
-  const payload = { name, body: String(data.get("body") || "") };
+  const body = String(data.get("body") || "");
+  const file = form.image && form.image.files[0];
+
+  if (!body.trim() && !file) {
+    showNotice("Write something or attach an image.");
+    return;
+  }
 
   const isThread = form.dataset.kind === "thread";
+  const payload = { name, body };
   let path;
   if (isThread) {
     payload.subject = String(data.get("subject") || "");
@@ -486,10 +551,13 @@ el.main.addEventListener("submit", async (event) => {
     path = `/api/boards/${encodeURIComponent(state.route.slug)}/threads/${form.dataset.thread}/posts`;
   }
 
+  // A post with an image goes as multipart; text-only posts stay on JSON.
+  const requestBody = file ? data : JSON.stringify(payload);
+
   button.disabled = true;
   clearNotice();
   try {
-    const created = await api(path, { method: "POST", body: JSON.stringify(payload) });
+    const created = await api(path, { method: "POST", body: requestBody });
     localStorage.setItem(NAME_STORAGE_KEY, name);
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {

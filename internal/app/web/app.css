@@ -129,6 +129,26 @@ main { max-width: 1180px; margin: 0 auto; padding: 20px 22px 60px; }
 }
 
 .post-form textarea { min-height: 96px; resize: vertical; }
+
+.post-form input[type="file"] {
+  display: block;
+  margin-bottom: 10px;
+  color: var(--muted);
+  font: inherit;
+  font-size: 13px;
+}
+
+.post-form input[type="file"]::file-selector-button {
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 12px;
+  margin-right: 10px;
+  font: inherit;
+  cursor: pointer;
+}
+
 .post-form input:focus, .post-form textarea:focus { outline: 1px solid var(--accent); border-color: var(--accent); }
 .post-form .actions { display: flex; align-items: center; gap: 14px; }
 .post-form .hint { color: var(--muted); font-size: 12px; }
@@ -198,6 +218,26 @@ button.link {
 .badge.locked { color: var(--danger); border-color: var(--danger); }
 .badge.bumplimit { color: var(--muted); }
 
+/* Attachments ------------------------------------------------------------- */
+
+.attachment { margin: 8px 0 2px; }
+.attachment .filename { color: var(--muted); font-size: 12px; margin-bottom: 4px; overflow-wrap: anywhere; }
+
+a.thumb-link { display: inline-block; }
+a.thumb-link:hover { text-decoration: none; }
+a.thumb-link:hover .thumb { border-color: var(--accent); }
+
+.thumb {
+  display: block;
+  max-width: 250px;
+  height: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel-2);
+}
+
+.thumb.expanded { max-width: 100%; }
+
 .post-body { margin: 6px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .post-body .greentext { color: var(--green); }
 .post-body a.quotelink { color: var(--accent); }
@@ -230,6 +270,17 @@ button.link {
 .tile:hover { border-color: var(--accent); text-decoration: none; }
 .tile .stats { font-size: 12px; color: var(--muted); display: flex; gap: 8px; flex-wrap: wrap; }
 .tile .subject { color: var(--warn); font-weight: 700; margin: 6px 0 4px; }
+.tile .tile-thumb { margin: 8px auto; max-height: 150px; width: auto; }
+
+.tile .no-image {
+  margin: 8px 0;
+  padding: 12px 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--muted);
+  border: 1px dashed var(--border);
+  border-radius: 8px;
+}
 .tile .excerpt { font-size: 13px; color: var(--text); opacity: 0.85; overflow-wrap: anywhere; }
 
 /* Pagination -------------------------------------------------------------- */
