@@ -27,6 +27,12 @@ fi
 if pg_ctl -D "$PGDATA" status >/dev/null 2>&1; then
   echo "==> PostgreSQL already running"
 else
+  # A snapshot taken while Postgres was running can leave a stale postmaster.pid
+  # behind. If no server is actually running, remove it so startup is clean.
+  if [ -f "$PGDATA/postmaster.pid" ]; then
+    echo "==> Removing stale postmaster.pid"
+    rm -f "$PGDATA/postmaster.pid"
+  fi
   echo "==> Starting PostgreSQL on localhost:$PGPORT"
   pg_ctl -D "$PGDATA" -l "$PGLOG" -w \
     -o "-p $PGPORT -c listen_addresses='localhost' -c unix_socket_directories='/tmp'" \
