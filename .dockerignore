@@ -1,0 +1,10 @@
+.git
+.gitignore
+.github
+bin
+coverage.out
+Dockerfile
+.dockerignore
+Makefile
+README.md
+LICENSE
