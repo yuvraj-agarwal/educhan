@@ -175,9 +175,10 @@ func pointersTo(posts []Post) []*Post {
 // an excerpt, ordered like the index.
 func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+threadColumns+`, p.body
+		SELECT `+threadColumns+`, p.body, `+attachmentColumns+`
 		FROM threads t
 		JOIN posts p ON p.thread_id = t.id AND p.is_op
+		LEFT JOIN attachments a ON a.post_id = p.id
 		WHERE t.board_id = $1
 		ORDER BY t.sticky DESC, t.bumped_at DESC
 		LIMIT $2`, board.ID, catalogLimit)
@@ -191,12 +192,17 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 		var (
 			t    Thread
 			body string
+			att  attachmentRow
 		)
-		if err := rows.Scan(threadDest(&t, &body)...); err != nil {
+		if err := rows.Scan(threadDest(&t, append([]any{&body}, att.dest()...)...)...); err != nil {
 			return Catalog{}, err
 		}
 		t.AtBumpLimit = t.Replies >= board.BumpLimit
-		catalog.Threads = append(catalog.Threads, CatalogThread{Thread: t, Excerpt: excerpt(body, excerptLen)})
+		catalog.Threads = append(catalog.Threads, CatalogThread{
+			Thread:     t,
+			Excerpt:    excerpt(body, excerptLen),
+			Attachment: att.toAttachment(),
+		})
 	}
 	return catalog, rows.Err()
 }
@@ -215,8 +221,9 @@ func (s *Store) Thread(ctx context.Context, board Board, no int64) (ThreadDetail
 	detail.Thread = t
 
 	rows, err := s.pool.Query(ctx, `
-		SELECT `+postColumns+`
+		SELECT `+postColumns+`, `+attachmentColumns+`
 		FROM posts p
+		LEFT JOIN attachments a ON a.post_id = p.id
 		WHERE p.thread_id = $1
 		ORDER BY p.no`, t.ID)
 	if err != nil {
@@ -276,6 +283,8 @@ type NewThread struct {
 	Body     string
 	// PosterID derives the poster ID once the thread ID is known.
 	PosterID func(threadID int64) string
+	// Attachment is the image already written to the media store, if any.
+	Attachment *newAttachment
 }
 
 // CreateThread inserts a thread and its opening post, then prunes the board back
@@ -297,13 +306,14 @@ func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 		}
 
 		created, err = insertPost(ctx, tx, newPost{
-			BoardID:  in.Board.ID,
-			ThreadID: threadID,
-			No:       no,
-			Identity: in.Identity,
-			PosterID: in.PosterID(threadID),
-			Body:     in.Body,
-			OP:       true,
+			BoardID:    in.Board.ID,
+			ThreadID:   threadID,
+			No:         no,
+			Identity:   in.Identity,
+			PosterID:   in.PosterID(threadID),
+			Body:       in.Body,
+			OP:         true,
+			Attachment: in.Attachment,
 		})
 		if err != nil {
 			return err
@@ -325,6 +335,8 @@ type NewReply struct {
 	// Sage suppresses the bump, letting a poster reply without moving the thread
 	// back to the top of the board.
 	Sage bool
+	// Attachment is the image already written to the media store, if any.
+	Attachment *newAttachment
 }
 
 // CreateReply appends a post to a thread. The thread is bumped unless the reply
@@ -359,12 +371,13 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			return err
 		}
 		created, err = insertPost(ctx, tx, newPost{
-			BoardID:  in.Board.ID,
-			ThreadID: threadID,
-			No:       no,
-			Identity: in.Identity,
-			PosterID: in.PosterID(threadID),
-			Body:     in.Body,
+			BoardID:    in.Board.ID,
+			ThreadID:   threadID,
+			No:         no,
+			Identity:   in.Identity,
+			PosterID:   in.PosterID(threadID),
+			Body:       in.Body,
+			Attachment: in.Attachment,
 		})
 		if err != nil {
 			return err
@@ -384,13 +397,14 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 }
 
 type newPost struct {
-	BoardID  int
-	ThreadID int64
-	No       int64
-	Identity identity
-	PosterID string
-	Body     string
-	OP       bool
+	BoardID    int
+	ThreadID   int64
+	No         int64
+	Identity   identity
+	PosterID   string
+	Body       string
+	OP         bool
+	Attachment *newAttachment
 }
 
 func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
@@ -410,6 +424,11 @@ func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
 	).Scan(&p.ID, &p.CreatedAt); err != nil {
 		return Post{}, fmt.Errorf("insert post: %w", err)
 	}
+	attachment, err := insertAttachment(ctx, tx, p.ID, in.Attachment)
+	if err != nil {
+		return Post{}, err
+	}
+	p.Attachment = attachment
 
 	quoted := extractQuotes(in.Body)
 	if len(quoted) == 0 {
@@ -477,17 +496,29 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 
 const postColumns = `p.id, p.no, p.name, p.tripcode, p.poster_id, p.body, p.is_op, p.created_at`
 
+// postDest returns the scan targets for postColumns followed by
+// attachmentColumns, which every post query selects together.
+func postDest(p *Post, att *attachmentRow) []any {
+	dest := []any{&p.ID, &p.No, &p.Name, &p.Tripcode, &p.PosterID, &p.Body, &p.OP, &p.CreatedAt}
+	return append(dest, att.dest()...)
+}
+
 func scanPost(row pgx.Row) (Post, error) {
+	var att attachmentRow
 	p := Post{Quotes: []PostRef{}, Backlinks: []PostRef{}}
-	err := row.Scan(&p.ID, &p.No, &p.Name, &p.Tripcode, &p.PosterID, &p.Body, &p.OP, &p.CreatedAt)
-	return p, err
+	if err := row.Scan(postDest(&p, &att)...); err != nil {
+		return Post{}, err
+	}
+	p.Attachment = att.toAttachment()
+	return p, nil
 }
 
 func (s *Store) opPosts(ctx context.Context, threadIDs []int64) (map[int64]Post, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT p.thread_id, t.no, `+postColumns+`
+		SELECT p.thread_id, t.no, `+postColumns+`, `+attachmentColumns+`
 		FROM posts p
 		JOIN threads t ON t.id = p.thread_id
+		LEFT JOIN attachments a ON a.post_id = p.id
 		WHERE p.thread_id = ANY($1) AND p.is_op`, threadIDs)
 	if err != nil {
 		return nil, err
@@ -499,13 +530,14 @@ func (s *Store) opPosts(ctx context.Context, threadIDs []int64) (map[int64]Post,
 		var (
 			threadID int64
 			threadNo int64
+			att      attachmentRow
 			p        = Post{Quotes: []PostRef{}, Backlinks: []PostRef{}}
 		)
-		if err := rows.Scan(&threadID, &threadNo,
-			&p.ID, &p.No, &p.Name, &p.Tripcode, &p.PosterID, &p.Body, &p.OP, &p.CreatedAt); err != nil {
+		if err := rows.Scan(append([]any{&threadID, &threadNo}, postDest(&p, &att)...)...); err != nil {
 			return nil, err
 		}
 		p.ThreadNo = threadNo
+		p.Attachment = att.toAttachment()
 		ops[threadID] = p
 	}
 	return ops, rows.Err()
@@ -513,7 +545,8 @@ func (s *Store) opPosts(ctx context.Context, threadIDs []int64) (map[int64]Post,
 
 func (s *Store) lastReplies(ctx context.Context, threadIDs []int64, perThread int) (map[int64][]Post, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT thread_id, thread_no, id, no, name, tripcode, poster_id, body, is_op, created_at
+		SELECT p.thread_id, p.thread_no, p.id, p.no, p.name, p.tripcode, p.poster_id,
+		       p.body, p.is_op, p.created_at, `+attachmentColumns+`
 		FROM (
 		    SELECT p.thread_id, t.no AS thread_no, p.id, p.no, p.name, p.tripcode, p.poster_id,
 		           p.body, p.is_op, p.created_at,
@@ -521,9 +554,10 @@ func (s *Store) lastReplies(ctx context.Context, threadIDs []int64, perThread in
 		    FROM posts p
 		    JOIN threads t ON t.id = p.thread_id
 		    WHERE p.thread_id = ANY($1) AND NOT p.is_op
-		) ranked
-		WHERE rank <= $2
-		ORDER BY thread_id, no`, threadIDs, perThread)
+		) p
+		LEFT JOIN attachments a ON a.post_id = p.id
+		WHERE p.rank <= $2
+		ORDER BY p.thread_id, p.no`, threadIDs, perThread)
 	if err != nil {
 		return nil, err
 	}
@@ -533,12 +567,13 @@ func (s *Store) lastReplies(ctx context.Context, threadIDs []int64, perThread in
 	for rows.Next() {
 		var (
 			threadID int64
+			att      attachmentRow
 			p        = Post{Quotes: []PostRef{}, Backlinks: []PostRef{}}
 		)
-		if err := rows.Scan(&threadID, &p.ThreadNo,
-			&p.ID, &p.No, &p.Name, &p.Tripcode, &p.PosterID, &p.Body, &p.OP, &p.CreatedAt); err != nil {
+		if err := rows.Scan(append([]any{&threadID, &p.ThreadNo}, postDest(&p, &att)...)...); err != nil {
 			return nil, err
 		}
+		p.Attachment = att.toAttachment()
 		replies[threadID] = append(replies[threadID], p)
 	}
 	return replies, rows.Err()
@@ -612,4 +647,79 @@ func scanThread(row pgx.Row, board Board) (Thread, error) {
 	}
 	t.AtBumpLimit = t.Replies >= board.BumpLimit
 	return t, nil
+}
+
+// attachmentColumns is the projection shared by every query that joins
+// attachments; the order matches attachmentRow.dest.
+const attachmentColumns = `a.original_name, a.original_path, a.thumb_path, a.content_type,
+	       a.byte_size, a.width, a.height, a.thumb_width, a.thumb_height`
+
+// attachmentRow scans the nullable columns produced by a LEFT JOIN on
+// attachments.
+type attachmentRow struct {
+	name        *string
+	path        *string
+	thumbPath   *string
+	contentType *string
+	size        *int64
+	width       *int
+	height      *int
+	thumbWidth  *int
+	thumbHeight *int
+}
+
+func (r *attachmentRow) dest() []any {
+	return []any{&r.name, &r.path, &r.thumbPath, &r.contentType,
+		&r.size, &r.width, &r.height, &r.thumbWidth, &r.thumbHeight}
+}
+
+func (r *attachmentRow) toAttachment() *Attachment {
+	if r.path == nil || r.thumbPath == nil {
+		return nil
+	}
+	att := &Attachment{
+		URL:      originalURL(*r.path),
+		ThumbURL: thumbURL(*r.thumbPath),
+	}
+	deref(&att.Name, r.name)
+	deref(&att.ContentType, r.contentType)
+	deref(&att.Size, r.size)
+	deref(&att.Width, r.width)
+	deref(&att.Height, r.height)
+	deref(&att.ThumbWidth, r.thumbWidth)
+	deref(&att.ThumbHeight, r.thumbHeight)
+	return att
+}
+
+func deref[T any](dst *T, src *T) {
+	if src != nil {
+		*dst = *src
+	}
+}
+
+func insertAttachment(ctx context.Context, tx pgx.Tx, postID int64, in *newAttachment) (*Attachment, error) {
+	if in == nil {
+		return nil, nil
+	}
+	img := in.Image
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO attachments (
+		    post_id, original_name, original_path, thumb_path, content_type, thumb_content_type,
+		    byte_size, width, height, thumb_width, thumb_height, checksum
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		postID, in.OriginalName, img.Path, img.ThumbPath, img.ContentType, img.ThumbContentType,
+		img.Size, img.Width, img.Height, img.ThumbWidth, img.ThumbHeight, img.Checksum); err != nil {
+		return nil, fmt.Errorf("insert attachment: %w", err)
+	}
+	return &Attachment{
+		Name:        in.OriginalName,
+		URL:         originalURL(img.Path),
+		ThumbURL:    thumbURL(img.ThumbPath),
+		ContentType: img.ContentType,
+		Size:        img.Size,
+		Width:       img.Width,
+		Height:      img.Height,
+		ThumbWidth:  img.ThumbWidth,
+		ThumbHeight: img.ThumbHeight,
+	}, nil
 }

@@ -30,7 +30,15 @@ type Config struct {
 	PostCooldown   time.Duration
 	// LogFormat selects the slog handler: "text" or "json".
 	LogFormat string
+	// UploadDir is the root the media store writes originals and thumbnails to.
+	UploadDir string
+	// MaxUploadBytes is the largest attachment accepted with a post.
+	MaxUploadBytes int64
 }
+
+// defaultMaxUploadBytes caps a single attachment. Imageboard posts are small;
+// 8 MiB comfortably covers a phone photo without inviting abuse.
+const defaultMaxUploadBytes int64 = 8 << 20
 
 // ConfigFromEnv builds a Config, applying local-development defaults so the
 // server runs out of the box against the Postgres instance provisioned by the
@@ -42,6 +50,7 @@ func ConfigFromEnv() (Config, error) {
 		PosterIDSalt:      os.Getenv("EDUCHAN_POSTER_ID_SALT"),
 		TrustProxyHeaders: os.Getenv("EDUCHAN_TRUST_PROXY") == "true",
 		LogFormat:         envOr("EDUCHAN_LOG_FORMAT", "text"),
+		UploadDir:         envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
 	}
 
 	var err error
@@ -49,6 +58,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.PostCooldown, err = envDuration("EDUCHAN_POST_COOLDOWN", 3*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.MaxUploadBytes, err = envBytes("EDUCHAN_MAX_UPLOAD_BYTES", defaultMaxUploadBytes); err != nil {
 		return Config{}, err
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
@@ -79,6 +91,21 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func envBytes(key string, fallback int64) (int64, error) {
+	raw := os.Getenv(key)
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n <= 0 {
+		return 0, fmt.Errorf("%s: must be positive", key)
+	}
+	return n, nil
 }
 
 func envDuration(key string, fallback time.Duration) (time.Duration, error) {

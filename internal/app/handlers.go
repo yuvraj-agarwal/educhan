@@ -110,21 +110,25 @@ type createThreadRequest struct {
 	Body    string `json:"body"`
 }
 
+func (r *createThreadRequest) submission() submission {
+	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body}
+}
+
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	board, ok := a.board(w, r)
 	if !ok {
 		return
 	}
 
-	var req createThreadRequest
-	if !decodeJSON(w, r, &req) {
-		return
-	}
-	body, ok := postBody(w, req.Body)
+	sub, ok := a.parseSubmission(w, r, &createThreadRequest{})
 	if !ok {
 		return
 	}
-	subject, ok := postSubject(w, req.Subject)
+	body, ok := postBody(w, sub.Body, sub.Upload != nil)
+	if !ok {
+		return
+	}
+	subject, ok := postSubject(w, sub.Subject)
 	if !ok {
 		return
 	}
@@ -133,14 +137,22 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
+	if err != nil {
+		a.rejectUpload(w, r, err)
+		return
+	}
+
 	post, err := a.store.CreateThread(r.Context(), NewThread{
-		Board:    board,
-		Subject:  subject,
-		Identity: parseIdentity(req.Name, a.cfg.PosterIDSalt),
-		Body:     body,
-		PosterID: a.posterIDFunc(clientKey),
+		Board:      board,
+		Subject:    subject,
+		Identity:   parseIdentity(sub.Name, a.cfg.PosterIDSalt),
+		Body:       body,
+		PosterID:   a.posterIDFunc(clientKey),
+		Attachment: attachmentInput(sub.Upload, img),
 	})
 	if err != nil {
+		a.discardUpload(img)
 		a.fail(w, r, err, "could not create thread")
 		return
 	}
@@ -152,6 +164,10 @@ type createPostRequest struct {
 	Body string `json:"body"`
 	// Sage replies without bumping the thread.
 	Sage bool `json:"sage"`
+}
+
+func (r *createPostRequest) submission() submission {
+	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage}
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -177,11 +193,11 @@ func (a *App) handleCreatePostByThreadID(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no int64) {
-	var req createPostRequest
-	if !decodeJSON(w, r, &req) {
+	sub, ok := a.parseSubmission(w, r, &createPostRequest{})
+	if !ok {
 		return
 	}
-	body, ok := postBody(w, req.Body)
+	body, ok := postBody(w, sub.Body, sub.Upload != nil)
 	if !ok {
 		return
 	}
@@ -190,15 +206,23 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		return
 	}
 
+	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
+	if err != nil {
+		a.rejectUpload(w, r, err)
+		return
+	}
+
 	post, err := a.store.CreateReply(r.Context(), NewReply{
-		Board:    board,
-		ThreadNo: no,
-		Identity: parseIdentity(req.Name, a.cfg.PosterIDSalt),
-		Body:     body,
-		Sage:     req.Sage,
-		PosterID: a.posterIDFunc(clientKey),
+		Board:      board,
+		ThreadNo:   no,
+		Identity:   parseIdentity(sub.Name, a.cfg.PosterIDSalt),
+		Body:       body,
+		Sage:       sub.Sage,
+		PosterID:   a.posterIDFunc(clientKey),
+		Attachment: attachmentInput(sub.Upload, img),
 	})
 	if err != nil {
+		a.discardUpload(img)
 		a.fail(w, r, err, "could not add post")
 		return
 	}
@@ -279,10 +303,12 @@ func (a *App) fail(w http.ResponseWriter, r *http.Request, err error, msg string
 	}
 }
 
-func postBody(w http.ResponseWriter, raw string) (string, bool) {
+// postBody applies the shared body rules. A post may omit text only when it
+// carries an image.
+func postBody(w http.ResponseWriter, raw string, hasAttachment bool) (string, bool) {
 	body := normalizeBody(raw)
 	switch {
-	case body == "":
+	case body == "" && !hasAttachment:
 		writeError(w, http.StatusBadRequest, "body is required")
 		return "", false
 	case utf8.RuneCountInString(body) > maxBodyLen:
