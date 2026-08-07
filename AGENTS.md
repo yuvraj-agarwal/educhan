@@ -1,22 +1,31 @@
 # Agent guide — educhan
 
-educhan is an anonymous imageboard for tertiary education. This repository currently
-contains a small backend **skeleton** for the planned product: a Go HTTP API plus a
-minimal embedded web UI, backed by PostgreSQL.
+educhan is an anonymous imageboard for tertiary education. This repository contains the
+working text-only prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL.
+Boards, anonymous posting (tripcodes, per-thread poster IDs), a paginated index, a catalog
+view, and threads with quote links are implemented. Attachments, verification badges, and
+moderation endpoints are not.
 
 ## Stack & layout
 
-- **Go 1.22**, **PostgreSQL 16**, `pgx`/`pgxpool`.
-- `cmd/server` — entrypoint (config, graceful shutdown).
-- `internal/app` — HTTP handlers, `pgx` store, idempotent schema (`schema.sql`), and the
-  embedded single-page UI (`web/index.html`).
+- **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`.
+- `cmd/server` — entrypoint (config, logger, graceful shutdown).
+- `internal/app`
+  - `app.go` — wiring and routes; `config.go` — environment configuration.
+  - `handlers.go` — HTTP handlers, validation, JSON responses.
+  - `store.go` — all SQL; `models.go` — the JSON-facing types.
+  - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
+  - `middleware.go` — logging, panic recovery, security headers, client IP.
+  - `ratelimit.go` — per-client flood control.
+  - `migrate.go` + `migrations/*.sql` — versioned migrations.
+  - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`).
 - `.cursor/` — Cloud Agent environment (`environment.json` + `scripts/`).
 
 ## Canonical commands
 
 - Build: `go build ./...`
-- Test: `go test ./...`
-- Vet / format: `go vet ./...` and `gofmt -l .` (must be empty)
+- Test: `go test ./...` (the integration tests need PostgreSQL; they skip without it)
+- Vet / format: `go vet ./...` and `gofmt -l .` (must be empty), or `make check`
 - Bring up Postgres: `bash .cursor/scripts/start.sh` (or `make db-up`)
 - Run the server: `make run` (expects Postgres up), or the `server` terminal
 
@@ -38,8 +47,8 @@ If services are not already running (for example in a plain shell session), star
 yourself — do not assume they are up:
 
 ```bash
-bash .cursor/scripts/start.sh                                   # Postgres on :5432
-nohup bash .cursor/scripts/run-server.sh > /tmp/educhan-server.log 2>&1 &   # server on :8080
+bash .cursor/scripts/start.sh # Postgres on :5432
+nohup bash .cursor/scripts/run-server.sh > /tmp/educhan-server.log 2>&1 & # server on :8080
 ```
 
 Add the Postgres client binaries to `PATH` when using `psql`/`pg_isready` directly:
@@ -50,31 +59,51 @@ export PATH="$(ls -d /usr/lib/postgresql/*/bin):$PATH"
 
 ### Testing the app end to end
 
+Request bodies must carry `Content-Type: application/json`, and unknown JSON fields are
+rejected, so pass the header explicitly.
+
 ```bash
 # Health + seeded boards
-curl -s localhost:8080/healthz            # -> {"status":"ok"}
-curl -s localhost:8080/api/boards         # -> placements / research / general
+curl -s localhost:8080/healthz    # -> {"status":"ok"}
+curl -s localhost:8080/api/boards # -> placements / research / general
 
-# Create a thread, reply, and read it back
-TID=$(curl -s -X POST localhost:8080/api/boards/general/threads \
-  -d '{"subject":"smoke test","author":"me","body":"hello"}' \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
-curl -s -X POST localhost:8080/api/threads/$TID/posts -d '{"author":"me2","body":"reply"}'
-curl -s localhost:8080/api/threads/$TID   # contains both posts
+# Create a thread, reply to it with a quote link, and read it back
+TNO=$(curl -s -X POST localhost:8080/api/boards/general/threads \
+  -H 'Content-Type: application/json' \
+  -d '{"subject":"smoke test","name":"ana#trip","body":"hello"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["no"])')
+curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d "{\"body\":\">>$TNO\nreply\"}"
+curl -s localhost:8080/api/boards/general/threads/$TNO   # both posts, with backlinks
+curl -s "localhost:8080/api/boards/general/threads?page=1" # index page
+curl -s localhost:8080/api/boards/general/catalog          # catalog tiles
 
 # Confirm persistence in PostgreSQL
-psql -h localhost -p 5432 -U "$USER" -d educhan -c "SELECT count(*) FROM posts;"
+psql -h localhost -p 5432 -U educhan -d educhan \
+  -c "SELECT b.slug, p.no, p.name, p.poster_id FROM posts p JOIN boards b ON b.id = p.board_id ORDER BY p.id;"
 ```
 
+Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=15`,
+`EDUCHAN_POST_COOLDOWN=3` seconds), so scripted loops will see `429` with a
+`Retry-After` header. Set both to `0` when a test needs to post rapidly.
+
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
-pick a board, create a thread, open it, reply). Prefer a browser walkthrough for anything
-that affects `internal/app/web/index.html`.
+board index at `/general/`, catalog at `/general/catalog`, thread at
+`/general/thread/{no}`). Prefer a browser walkthrough for anything that affects
+`internal/app/web/`.
 
 ### Notes
 
-- The schema (`internal/app/schema.sql`) is applied on every startup with
-  `CREATE TABLE IF NOT EXISTS` / `INSERT ... ON CONFLICT DO NOTHING`, so it is safe to
-  re-run and to run against an existing database.
-- Config via env vars: `DATABASE_URL`
-  (default `postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable`) and
-  `EDUCHAN_ADDR` (default `:8080`).
+- Migrations live in `internal/app/migrations/` and are applied on startup inside a
+  Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
+  than editing an applied one; `0001_init.sql` is deliberately written with
+  `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
+- Post numbers are allocated per board from `boards.next_post_no`; a thread's number is
+  the number of its opening post. Thread primary keys stay internal apart from the
+  `/api/threads/{id}` compatibility routes.
+- Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
+  `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
+  `EDUCHAN_LOG_FORMAT`. See `.env.example` and the README table.
+- Integration tests (`internal/app/api_test.go`) run the whole app against an isolated
+  schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run
+  against the development database.

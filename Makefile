@@ -1,4 +1,4 @@
-.PHONY: run build test tidy fmt vet db-up
+.PHONY: run build test check tidy fmt vet db-up
 
 # Start (or reuse) the local PostgreSQL cluster used for development.
 db-up:
@@ -11,7 +11,14 @@ run:
 build:
 	go build ./...
 
+# Integration tests need PostgreSQL; they skip themselves when it is unreachable.
 test:
+	go test ./...
+
+# Everything CI should agree on before a change lands.
+check:
+	@test -z "$$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }
+	go vet ./...
 	go test ./...
 
 tidy:
