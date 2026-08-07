@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -212,10 +213,12 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 }
 
 // sanitizeFilename keeps a display-only version of the uploaded filename: the
-// base name, trimmed, with control characters removed.
+// base name, trimmed, stripped of control characters, and valid UTF-8 so it can
+// be stored in a text column. Truncation happens on rune boundaries.
 func sanitizeFilename(name string) string {
 	name = strings.TrimSpace(name)
 	name = name[strings.LastIndexAny(name, `/\`)+1:]
+	name = strings.ToValidUTF8(name, "")
 	name = strings.Map(func(r rune) rune {
 		if r < 0x20 || r == 0x7f {
 			return -1
@@ -225,12 +228,12 @@ func sanitizeFilename(name string) string {
 	if name == "" || name == "." || name == ".." {
 		return ""
 	}
-	if len(name) > maxOriginalNameLen {
+	if utf8.RuneCountInString(name) > maxOriginalNameLen {
 		ext := filepath.Ext(name)
-		if len(ext) > 16 {
+		if utf8.RuneCountInString(ext) > 16 {
 			ext = ""
 		}
-		name = name[:maxOriginalNameLen-len(ext)] + ext
+		name = truncateRunes(name, maxOriginalNameLen-utf8.RuneCountInString(ext)) + ext
 	}
 	return name
 }
