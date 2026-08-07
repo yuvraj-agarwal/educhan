@@ -132,8 +132,8 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	clientKey := clientIP(r, a.cfg.TrustProxyHeaders)
-	if !a.allow(w, a.threadLimiter, board.Slug+"|"+clientKey) {
+	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
 
@@ -201,8 +201,8 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !ok {
 		return
 	}
-	clientKey := clientIP(r, a.cfg.TrustProxyHeaders)
-	if !a.allow(w, a.postLimiter, board.Slug+"|"+clientKey) {
+	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
 
@@ -271,10 +271,26 @@ func (a *App) resolveThreadID(w http.ResponseWriter, r *http.Request) (Board, in
 	return board, no, true
 }
 
+// postCooldowns is the flood control a submission has to clear: the cooldown
+// for the kind of post being made, plus the upload cooldown when it carries an
+// image.
+//
+// Posting is limited per board, so one client can keep a conversation going on
+// two boards at once, which is how an imageboard is meant to be read. Uploads
+// are limited across the whole server instead, because decoding, thumbnailing,
+// and storing an image costs the same wherever the post lands.
+func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey string, hasUpload bool) []cooldown {
+	cooldowns := []cooldown{{limiter: limiter, key: board.Slug + "|" + clientKey}}
+	if hasUpload {
+		cooldowns = append(cooldowns, cooldown{limiter: a.uploadLimiter, key: clientKey})
+	}
+	return cooldowns
+}
+
 // allow applies flood control, answering 429 with a Retry-After when the caller
 // must wait.
-func (a *App) allow(w http.ResponseWriter, limiter *cooldownLimiter, key string) bool {
-	wait, ok := limiter.Allow(key)
+func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
+	wait, ok := allowAll(cooldowns...)
 	if ok {
 		return true
 	}

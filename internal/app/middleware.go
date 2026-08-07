@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/netip"
 	"strings"
 	"time"
 )
@@ -45,7 +46,7 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // requestLogger emits one structured line per request.
-func requestLogger(log *slog.Logger, trustProxy bool) middleware {
+func requestLogger(log *slog.Logger, trustedHops int) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -61,7 +62,7 @@ func requestLogger(log *slog.Logger, trustProxy bool) middleware {
 				"path", r.URL.Path,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"client", clientIP(r, trustProxy),
+				"client", clientIP(r, trustedHops),
 			)
 		})
 	}
@@ -95,18 +96,66 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the address used for flood control and poster IDs. The
-// forwarded header is only consulted when the deployment declares that it sits
-// behind a proxy that overwrites it, otherwise it is trivially spoofable.
-func clientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		if fwd := r.Header.Get("X-Forwarded-For"); fwd != "" {
-			if first, _, found := strings.Cut(fwd, ","); found {
-				return strings.TrimSpace(first)
+// clientIP returns the address flood control and poster IDs are keyed on.
+//
+// X-Forwarded-For is read only when the deployment declares how many reverse
+// proxies stand in front of the server (EDUCHAN_TRUST_PROXY). Each of those
+// proxies appends the address it saw, so with N trusted hops the real peer is
+// the Nth entry counted from the right; every entry to its left was supplied by
+// the client and is ignored. Taking the leftmost entry instead — the usual
+// mistake — would let any client pick its own rate-limit bucket and poster ID
+// by sending a header of its own.
+//
+// Anything that does not match the declared shape falls back to the peer
+// address: a chain shorter than the configured depth, or an entry that is not
+// an IP address. Both mean the request did not arrive the way the operator
+// described, and the peer is the only thing left that a client cannot forge.
+func clientIP(r *http.Request, trustedHops int) string {
+	peer := peerIP(r)
+	if trustedHops <= 0 {
+		return peer
+	}
+	forwarded := forwardedFor(r)
+	if len(forwarded) < trustedHops {
+		return peer
+	}
+	if ip, ok := parseClientIP(forwarded[len(forwarded)-trustedHops]); ok {
+		return ip
+	}
+	return peer
+}
+
+// forwardedFor flattens every X-Forwarded-For header into one list of entries,
+// in the order the proxies appended them. The header may legally be repeated,
+// and a chain that splits across lines must read the same as a single line.
+func forwardedFor(r *http.Request) []string {
+	var entries []string
+	for _, header := range r.Header.Values("X-Forwarded-For") {
+		for _, entry := range strings.Split(header, ",") {
+			if entry = strings.TrimSpace(entry); entry != "" {
+				entries = append(entries, entry)
 			}
-			return strings.TrimSpace(fwd)
 		}
 	}
+	return entries
+}
+
+// parseClientIP normalises one forwarded entry. Entries may carry a port or
+// brackets, and IPv4-mapped IPv6 is folded down so one client cannot occupy two
+// rate-limit buckets by switching notation.
+func parseClientIP(entry string) (string, bool) {
+	if host, _, err := net.SplitHostPort(entry); err == nil {
+		entry = host
+	}
+	addr, err := netip.ParseAddr(strings.Trim(entry, "[]"))
+	if err != nil {
+		return "", false
+	}
+	return addr.Unmap().String(), true
+}
+
+// peerIP is the address of whoever opened the connection.
+func peerIP(r *http.Request) string {
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		return r.RemoteAddr

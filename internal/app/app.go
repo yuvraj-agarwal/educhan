@@ -21,6 +21,7 @@ type App struct {
 
 	threadLimiter *cooldownLimiter
 	postLimiter   *cooldownLimiter
+	uploadLimiter *cooldownLimiter
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
@@ -57,6 +58,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		media:         blobs,
 		threadLimiter: newCooldownLimiter(cfg.ThreadCooldown),
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
+		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 	}, nil
 }
 
@@ -87,6 +89,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/threads/{id}/posts", a.handleCreatePostByThreadID)
 
 	// Moderation, guarded by the shared moderation key.
+	mux.HandleFunc("POST /api/boards", a.handleCreateBoard)
+	mux.HandleFunc("PATCH /api/boards/{slug}", a.handleUpdateBoard)
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/sticky", a.handleSticky)
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/unsticky", a.handleUnsticky)
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/lock", a.handleLock)
@@ -107,7 +111,7 @@ func (a *App) Routes() http.Handler {
 
 	return chain(mux,
 		recoverPanics(a.log),
-		requestLogger(a.log, a.cfg.TrustProxyHeaders),
+		requestLogger(a.log, a.cfg.TrustedProxyHops),
 		securityHeaders,
 	)
 }

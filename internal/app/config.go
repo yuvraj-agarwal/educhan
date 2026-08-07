@@ -22,13 +22,17 @@ type Config struct {
 	// PosterIDSaltEphemeral reports that no salt was configured and a random one
 	// was generated for this process.
 	PosterIDSaltEphemeral bool
-	// TrustProxyHeaders makes the server read the client address from
-	// X-Forwarded-For. Only enable it behind a proxy that overwrites the header.
-	TrustProxyHeaders bool
-	// ThreadCooldown and PostCooldown are the minimum intervals between two new
-	// threads and two replies from the same client. Zero disables the check.
+	// TrustedProxyHops is how many reverse proxies stand in front of the server,
+	// each appending the address it saw to X-Forwarded-For. Zero — the default —
+	// ignores the header entirely and keys on the peer address, which is the only
+	// safe reading for a server exposed directly. See clientIP.
+	TrustedProxyHops int
+	// ThreadCooldown, PostCooldown, and UploadCooldown are the minimum intervals
+	// between two new threads, two replies, and two attachments from the same
+	// client. Zero disables the check.
 	ThreadCooldown time.Duration
 	PostCooldown   time.Duration
+	UploadCooldown time.Duration
 	// LogFormat selects the slog handler: "text" or "json".
 	LogFormat string
 	// ModKey is the shared secret moderators present to the moderation
@@ -49,20 +53,25 @@ const defaultMaxUploadBytes int64 = 8 << 20
 // Cloud Agent environment.
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		Addr:              envOr("EDUCHAN_ADDR", ":8080"),
-		DatabaseURL:       envOr("DATABASE_URL", "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
-		PosterIDSalt:      os.Getenv("EDUCHAN_POSTER_ID_SALT"),
-		TrustProxyHeaders: os.Getenv("EDUCHAN_TRUST_PROXY") == "true",
-		LogFormat:         envOr("EDUCHAN_LOG_FORMAT", "text"),
-		UploadDir:         envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
-		ModKey:            strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
+		Addr:         envOr("EDUCHAN_ADDR", ":8080"),
+		DatabaseURL:  envOr("DATABASE_URL", "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
+		PosterIDSalt: os.Getenv("EDUCHAN_POSTER_ID_SALT"),
+		LogFormat:    envOr("EDUCHAN_LOG_FORMAT", "text"),
+		UploadDir:    envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
+		ModKey:       strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
 	}
 
 	var err error
-	if cfg.ThreadCooldown, err = envDuration("EDUCHAN_THREAD_COOLDOWN", 15*time.Second); err != nil {
+	if cfg.TrustedProxyHops, err = envProxyHops("EDUCHAN_TRUST_PROXY"); err != nil {
 		return Config{}, err
 	}
-	if cfg.PostCooldown, err = envDuration("EDUCHAN_POST_COOLDOWN", 3*time.Second); err != nil {
+	if cfg.ThreadCooldown, err = envDuration("EDUCHAN_THREAD_COOLDOWN", 30*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.PostCooldown, err = envDuration("EDUCHAN_POST_COOLDOWN", 5*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.UploadCooldown, err = envDuration("EDUCHAN_UPLOAD_COOLDOWN", 15*time.Second); err != nil {
 		return Config{}, err
 	}
 	if cfg.MaxUploadBytes, err = envBytes("EDUCHAN_MAX_UPLOAD_BYTES", defaultMaxUploadBytes); err != nil {
@@ -111,6 +120,27 @@ func envBytes(key string, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("%s: must be positive", key)
 	}
 	return n, nil
+}
+
+// envProxyHops reads the trusted proxy depth. It accepts a hop count, and the
+// booleans the setting used to take: "true" means the single proxy the original
+// flag implied, anything false-ish means none.
+func envProxyHops(key string) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	switch strings.ToLower(raw) {
+	case "", "false", "no", "off":
+		return 0, nil
+	case "true", "yes", "on":
+		return 1, nil
+	}
+	hops, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: want a proxy hop count or a boolean, got %q", key, raw)
+	}
+	if hops < 0 {
+		return 0, fmt.Errorf("%s: must not be negative", key)
+	}
+	return hops, nil
 }
 
 func envDuration(key string, fallback time.Duration) (time.Duration, error) {

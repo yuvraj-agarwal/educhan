@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -15,7 +16,12 @@ import (
 var (
 	errNotFound     = errors.New("not found")
 	errThreadLocked = errors.New("thread is locked")
+	errConflict     = errors.New("already exists")
 )
+
+// uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint failure,
+// which is how a board slug that is already taken comes back.
+const uniqueViolation = "23505"
 
 // indexPageSize and indexRepliesPerThread mirror the classic imageboard index:
 // a handful of threads per page, each showing its opening post and the tail of
@@ -71,6 +77,56 @@ func (s *Store) Board(ctx context.Context, slug string) (Board, error) {
 		return Board{}, errNotFound
 	}
 	return b, err
+}
+
+// BoardSettings is a partial board update. A nil field keeps its stored value,
+// so a caller can change one setting without reading the others first.
+type BoardSettings struct {
+	Name        *string
+	Description *string
+	BumpLimit   *int
+	ThreadLimit *int
+}
+
+// CreateBoard inserts a board, returning errConflict when the slug is taken.
+// next_post_no is left to its column default, so the new board starts numbering
+// at No. 1 like every seeded one.
+func (s *Store) CreateBoard(ctx context.Context, in Board) (Board, error) {
+	b, err := scanBoard(s.pool.QueryRow(ctx, `
+		INSERT INTO boards AS b (slug, name, description, bump_limit, thread_limit)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING `+boardColumns,
+		in.Slug, in.Name, in.Description, in.BumpLimit, in.ThreadLimit))
+	if isUniqueViolation(err) {
+		return Board{}, errConflict
+	}
+	return b, err
+}
+
+// UpdateBoard applies a partial update, returning errNotFound when no board has
+// the slug. The slug itself is not updatable: it is the board's address, in
+// every stored quote link and every bookmark pointing at it.
+func (s *Store) UpdateBoard(ctx context.Context, slug string, in BoardSettings) (Board, error) {
+	b, err := scanBoard(s.pool.QueryRow(ctx, `
+		UPDATE boards AS b SET
+		    name         = COALESCE($2::text, b.name),
+		    description  = COALESCE($3::text, b.description),
+		    bump_limit   = COALESCE($4::integer, b.bump_limit),
+		    thread_limit = COALESCE($5::integer, b.thread_limit)
+		WHERE b.slug = $1
+		RETURNING `+boardColumns,
+		slug, in.Name, in.Description, in.BumpLimit, in.ThreadLimit))
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Board{}, errNotFound
+	}
+	return b, err
+}
+
+// isUniqueViolation reports whether err is a PostgreSQL unique constraint
+// failure.
+func isUniqueViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == uniqueViolation
 }
 
 // Index returns one page of a board's threads. Pages are 1-based; a page past

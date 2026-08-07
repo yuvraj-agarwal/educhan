@@ -31,28 +31,72 @@ func newCooldownLimiter(interval time.Duration) *cooldownLimiter {
 	}
 }
 
-// Allow reports whether an action is permitted for key. When it is not, the
-// caller is told how long to wait; the recorded timestamp only advances on an
-// allowed action, so a rejected caller cannot extend its own cooldown.
-func (l *cooldownLimiter) Allow(key string) (retryAfter time.Duration, ok bool) {
+// cooldown pairs a limiter with the key an action is counted against.
+type cooldown struct {
+	limiter *cooldownLimiter
+	key     string
+}
+
+// allowAll reports whether an action is permitted, applying several cooldowns
+// as one decision. When it is not, the caller is told how long to wait: the
+// longest of the outstanding waits.
+//
+// A cooldown starts on every limiter only once all of them allow the action. A
+// request one cooldown refuses must not consume another, or a reply carrying an
+// image would be charged for both and the two limits would compound into a wait
+// neither of them describes. Nothing is recorded for a refused action either, so
+// a rejected caller cannot extend its own cooldown by retrying.
+//
+// The check and the record are not atomic across limiters. Two simultaneous
+// requests for the same key can therefore both be admitted, which for flood
+// control is a much better trade than the lock ordering an atomic version
+// would need between limiters that are not always applied together.
+func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {
+	var longest time.Duration
+	for _, c := range cooldowns {
+		if wait := c.limiter.peek(c.key); wait > longest {
+			longest = wait
+		}
+	}
+	if longest > 0 {
+		return longest, false
+	}
+	for _, c := range cooldowns {
+		c.limiter.record(c.key)
+	}
+	return 0, true
+}
+
+// peek reports how long key must wait, recording nothing.
+func (l *cooldownLimiter) peek(key string) time.Duration {
 	if l == nil || l.interval <= 0 {
-		return 0, true
+		return 0
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	last, tracked := l.seen[key]
+	if !tracked {
+		return 0
+	}
+	return max(l.interval-l.now().Sub(last), 0)
+}
+
+// record starts key's cooldown.
+func (l *cooldownLimiter) record(key string) {
+	if l == nil || l.interval <= 0 {
+		return
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
 	now := l.now()
-	if last, tracked := l.seen[key]; tracked {
-		if wait := l.interval - now.Sub(last); wait > 0 {
-			return wait, false
-		}
-	}
 	if len(l.seen) >= cooldownSweepThreshold {
 		l.sweep(now)
 	}
 	l.seen[key] = now
-	return 0, true
 }
 
 // sweep drops entries whose cooldown has elapsed. Callers must hold the mutex.
