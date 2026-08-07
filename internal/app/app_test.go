@@ -4,10 +4,10 @@ import "testing"
 
 func TestAuthorOrAnon(t *testing.T) {
 	cases := map[string]string{
-		"":            "Anonymous",
-		"   ":         "Anonymous",
-		"  qwerty  ":  "qwerty",
-		"studentX":    "studentX",
+		"":           "Anonymous",
+		"   ":        "Anonymous",
+		"  qwerty  ": "qwerty",
+		"studentX":   "studentX",
 	}
 	for in, want := range cases {
 		if got := authorOrAnon(in); got != want {
