@@ -9,5 +9,10 @@
       "command": "bash .cursor/scripts/run-server.sh"
     }
   ],
-  "ports": [8080]
+  "ports": [
+    {
+      "name": "educhan web server",
+      "port": 8080
+    }
+  ]
 }
