@@ -417,15 +417,16 @@ func TestValidation(t *testing.T) {
 	c := testServer(t, nil)
 
 	cases := []struct {
-		name string
-		body map[string]any
-		want int
+		name      string
+		body      map[string]any
+		want      int
+		wantError string
 	}{
 		{name: "empty body", body: map[string]any{"body": "   "}, want: http.StatusBadRequest},
 		{name: "body too long", body: map[string]any{"body": strings.Repeat("a", maxBodyLen+1)}, want: http.StatusBadRequest},
 		{name: "too many lines", body: map[string]any{"body": strings.Repeat("a\n", maxBodyLines+1)}, want: http.StatusBadRequest},
 		{name: "subject too long", body: map[string]any{"body": "ok", "subject": strings.Repeat("s", maxSubjectLen+1)}, want: http.StatusBadRequest},
-		{name: "unknown field", body: map[string]any{"body": "ok", "author": "legacy"}, want: http.StatusBadRequest},
+		{name: "unknown field", body: map[string]any{"body": "ok", "author": "legacy"}, want: http.StatusBadRequest, wantError: `unknown field "author"`},
 		{name: "valid", body: map[string]any{"body": "ok"}, want: http.StatusCreated},
 	}
 
@@ -434,6 +435,9 @@ func TestValidation(t *testing.T) {
 			var out createdPost
 			if status := c.post("/api/boards/general/threads", tc.body, &out); status != tc.want {
 				t.Errorf("status = %d, want %d (%s)", status, tc.want, out.Error)
+			}
+			if tc.wantError != "" && out.Error != tc.wantError {
+				t.Errorf("error = %q, want %q", out.Error, tc.wantError)
 			}
 		})
 	}
