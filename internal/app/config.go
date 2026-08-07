@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -30,6 +31,9 @@ type Config struct {
 	PostCooldown   time.Duration
 	// LogFormat selects the slog handler: "text" or "json".
 	LogFormat string
+	// ModKey is the shared secret moderators present to the moderation
+	// endpoints. An empty key disables them.
+	ModKey string
 	// UploadDir is the root the media store writes originals and thumbnails to.
 	UploadDir string
 	// MaxUploadBytes is the largest attachment accepted with a post.
@@ -51,6 +55,7 @@ func ConfigFromEnv() (Config, error) {
 		TrustProxyHeaders: os.Getenv("EDUCHAN_TRUST_PROXY") == "true",
 		LogFormat:         envOr("EDUCHAN_LOG_FORMAT", "text"),
 		UploadDir:         envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
+		ModKey:            strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
 	}
 
 	var err error

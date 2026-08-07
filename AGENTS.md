@@ -3,8 +3,8 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, and threads with quote links are implemented. Verification badges and
-moderation endpoints are not.
+a catalog view, threads with quote links, and key-authenticated moderation endpoints are
+implemented. Verification badges, janitor accounts, bans, and reports are not.
 
 ## Stack & layout
 
@@ -15,6 +15,7 @@ moderation endpoints are not.
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
+  - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
@@ -101,6 +102,22 @@ curl -s localhost:8080/api/boards/general/threads/$TNO # posts[].attachment.{url
 curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts -F image=@/path/to/photo.jpg
 ```
 
+Moderation needs `EDUCHAN_MOD_KEY` set on the server; without it every moderation
+endpoint answers `403`. Restart the server with the key exported before testing it:
+
+```bash
+EDUCHAN_MOD_KEY=dev-mod-key make run
+```
+
+```bash
+curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/sticky \
+  -H 'Authorization: Bearer dev-mod-key'   # also /unsticky, /lock, /unlock
+curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO/posts/$PNO \
+  -H 'Authorization: Bearer dev-mod-key'   # one post plus its attachment files
+curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO \
+  -H 'Authorization: Bearer dev-mod-key'   # the thread, its posts, its attachments
+```
+
 Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=15`,
 `EDUCHAN_POST_COOLDOWN=3` seconds), so scripted loops will see `429` with a
 `Retry-After` header. Set both to `0` when a test needs to post rapidly.
@@ -134,8 +151,13 @@ board index at `/general/`, catalog at `/general/catalog`, thread at
   `/api/threads/{id}` compatibility routes.
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_MAX_UPLOAD_BYTES`. See
-  `.env.example` and the README table.
-- Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`)
-  run the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
-  `DATABASE_URL`), so they are safe to run against the development database.
+  `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_MAX_UPLOAD_BYTES`,
+  `EDUCHAN_MOD_KEY`. See `.env.example` and the README table.
+- Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
+  the single gate, so replacing it with real janitor roles later touches only that file.
+  Deleting a post or thread removes the attachment blobs after the transaction commits; a
+  failure there is logged and leaves an orphaned file rather than a broken post.
+- Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
+  `internal/app/moderation_test.go`) run the whole app against an isolated schema in
+  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
+  the development database.

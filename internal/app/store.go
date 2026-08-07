@@ -7,6 +7,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
 // Sentinel errors returned by the store and mapped to HTTP statuses by the
@@ -479,6 +480,173 @@ func pruneThreads(ctx context.Context, tx pgx.Tx, board Board) error {
 		return fmt.Errorf("prune threads: %w", err)
 	}
 	return nil
+}
+
+/* Moderation --------------------------------------------------------------- */
+
+// threadFlag is a moderator-settable boolean on a thread.
+type threadFlag string
+
+const (
+	flagSticky threadFlag = "sticky"
+	flagLocked threadFlag = "locked"
+)
+
+// SetThreadFlag pins or locks a thread. It returns errNotFound when the board
+// has no thread with that number.
+func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag threadFlag, value bool) error {
+	// The column is chosen from literal SQL rather than interpolated, so the
+	// flag name never reaches the database as data.
+	var query string
+	switch flag {
+	case flagSticky:
+		query = `UPDATE threads SET sticky = $3 WHERE board_id = $1 AND no = $2`
+	case flagLocked:
+		query = `UPDATE threads SET locked = $3 WHERE board_id = $1 AND no = $2`
+	default:
+		return fmt.Errorf("unknown thread flag %q", flag)
+	}
+
+	tag, err := s.pool.Exec(ctx, query, board.ID, no, value)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errNotFound
+	}
+	return nil
+}
+
+// DeletedThread reports what a thread deletion removed. Images are returned so
+// the caller can drop the blobs the rows referenced.
+type DeletedThread struct {
+	Posts  int
+	Images []media.StoredImage
+}
+
+// DeleteThread removes a thread with all of its posts and attachments. Rows go
+// with the thread through ON DELETE CASCADE; the blobs are the caller's to
+// remove once the transaction has committed.
+func (s *Store) DeleteThread(ctx context.Context, board Board, no int64) (DeletedThread, error) {
+	var deleted DeletedThread
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var threadID int64
+		err := tx.QueryRow(ctx,
+			`SELECT id FROM threads WHERE board_id = $1 AND no = $2 FOR UPDATE`, board.ID, no).Scan(&threadID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		deleted.Images, err = attachedImages(ctx, tx,
+			`SELECT a.original_path, a.thumb_path
+			 FROM attachments a JOIN posts p ON p.id = a.post_id
+			 WHERE p.thread_id = $1`, threadID)
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM posts WHERE thread_id = $1`, threadID).Scan(&deleted.Posts); err != nil {
+			return err
+		}
+		_, err = tx.Exec(ctx, `DELETE FROM threads WHERE id = $1`, threadID)
+		return err
+	})
+	if err != nil {
+		return DeletedThread{}, err
+	}
+	return deleted, nil
+}
+
+// DeletedPost reports what a post deletion removed.
+type DeletedPost struct {
+	// ThreadDeleted records that the post was a thread's opening post, so the
+	// whole thread went with it.
+	ThreadDeleted bool
+	Images        []media.StoredImage
+}
+
+// DeletePost removes a single post from a thread. Deleting an opening post
+// deletes its thread, which is what an imageboard means by removing an OP.
+func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo int64) (DeletedPost, error) {
+	var deleted DeletedPost
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var (
+			threadID int64
+			postID   int64
+			isOP     bool
+		)
+		// Lock the thread so a concurrent reply cannot race the reply count.
+		err := tx.QueryRow(ctx, `
+			SELECT t.id, p.id, p.is_op
+			FROM threads t
+			JOIN posts p ON p.thread_id = t.id AND p.no = $3
+			WHERE t.board_id = $1 AND t.no = $2
+			FOR UPDATE OF t, p`, board.ID, threadNo, postNo).Scan(&threadID, &postID, &isOP)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errNotFound
+		}
+		if err != nil {
+			return err
+		}
+
+		if isOP {
+			deleted.ThreadDeleted = true
+			deleted.Images, err = attachedImages(ctx, tx,
+				`SELECT a.original_path, a.thumb_path
+				 FROM attachments a JOIN posts p ON p.id = a.post_id
+				 WHERE p.thread_id = $1`, threadID)
+			if err != nil {
+				return err
+			}
+			_, err = tx.Exec(ctx, `DELETE FROM threads WHERE id = $1`, threadID)
+			return err
+		}
+
+		deleted.Images, err = attachedImages(ctx, tx,
+			`SELECT original_path, thumb_path FROM attachments WHERE post_id = $1`, postID)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM posts WHERE id = $1`, postID); err != nil {
+			return err
+		}
+		// The counters are maintained on write, so they have to be corrected
+		// here as well: an index that still counts a deleted reply would report
+		// the wrong bump-limit state.
+		_, err = tx.Exec(ctx, `
+			UPDATE threads
+			SET reply_count  = GREATEST(reply_count - 1, 0),
+			    last_post_at = COALESCE((SELECT max(created_at) FROM posts WHERE thread_id = $1), created_at)
+			WHERE id = $1`, threadID)
+		return err
+	})
+	if err != nil {
+		return DeletedPost{}, err
+	}
+	return deleted, nil
+}
+
+// attachedImages collects the blob paths a query selects, as the pairs
+// media.Remove deletes.
+func attachedImages(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]media.StoredImage, error) {
+	rows, err := tx.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var images []media.StoredImage
+	for rows.Next() {
+		var img media.StoredImage
+		if err := rows.Scan(&img.Path, &img.ThumbPath); err != nil {
+			return nil, err
+		}
+		images = append(images, img)
+	}
+	return images, rows.Err()
 }
 
 func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {

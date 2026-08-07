@@ -63,6 +63,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails |
 | Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Moderation | Sticky, lock, and delete a post or a whole thread, behind a shared moderation key |
 | Housekeeping | Threads past a board's thread limit are pruned; flood control limits how often one client can post |
 
 ## Tech Stack
@@ -97,6 +98,7 @@ guarded by a Postgres advisory lock so concurrent instances are safe.
 | `EDUCHAN_LOG_FORMAT` | `text` | `text` or `json` structured logs |
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the media store writes originals and thumbnails to |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
+| `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation endpoints; unset means they refuse every request |
 
 ### HTTP API
 
@@ -125,6 +127,35 @@ curl -s localhost:8080/api/boards
 curl -s -X POST localhost:8080/api/boards/general/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
+```
+
+### Moderation API
+
+Moderation is authenticated with one shared secret, `EDUCHAN_MOD_KEY`, presented
+as `Authorization: Bearer <key>` or `X-Mod-Key: <key>`. Every endpoint answers
+`403` when the key is missing, wrong, or not configured on the server. Real
+janitor accounts, bans, and reports are still to come.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| `POST` | `/api/boards/{slug}/threads/{no}/sticky` | Pin a thread to the top of its board |
+| `POST` | `/api/boards/{slug}/threads/{no}/unsticky` | Unpin it |
+| `POST` | `/api/boards/{slug}/threads/{no}/lock` | Refuse further replies |
+| `POST` | `/api/boards/{slug}/threads/{no}/unlock` | Allow replies again |
+| `DELETE` | `/api/boards/{slug}/threads/{no}` | Delete a thread with every post and attachment |
+| `DELETE` | `/api/boards/{slug}/threads/{no}/posts/{post}` | Delete one post and its attachment |
+
+Deleting a post removes its stored image and thumbnail from the media store as
+well as its rows. Deleting a thread's opening post deletes the thread, which the
+response reports as `"thread_deleted": true`. A deleted reply is subtracted from
+the thread's reply count, so bump-limit state stays accurate.
+
+```bash
+export MOD_KEY=…
+curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
+  -H "Authorization: Bearer $MOD_KEY"
+curl -s -X DELETE localhost:8080/api/boards/general/threads/1/posts/4 \
+  -H "X-Mod-Key: $MOD_KEY"
 ```
 
 ## Development
