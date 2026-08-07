@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>educhan</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #171a21;
+      --panel-2: #1e222b;
+      --border: #2a2f3a;
+      --text: #e6e8ee;
+      --muted: #98a2b3;
+      --accent: #7c9cff;
+      --accent-2: #5cd0a3;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      padding: 18px 24px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+    header h1 { margin: 0; font-size: 22px; letter-spacing: 0.5px; }
+    header .tag { color: var(--muted); font-size: 13px; }
+    main { display: grid; grid-template-columns: 220px 1fr; gap: 0; min-height: calc(100vh - 61px); }
+    nav { border-right: 1px solid var(--border); padding: 16px; }
+    nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: 1px; color: var(--muted); margin: 0 0 10px; }
+    .board {
+      display: block; width: 100%; text-align: left; background: transparent; color: var(--text);
+      border: 1px solid transparent; border-radius: 8px; padding: 8px 10px; cursor: pointer; margin-bottom: 4px;
+    }
+    .board:hover { background: var(--panel-2); }
+    .board.active { background: var(--panel-2); border-color: var(--border); }
+    .board small { display: block; color: var(--muted); font-size: 12px; }
+    section { padding: 20px 24px; }
+    .card { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 16px; margin-bottom: 14px; }
+    .thread-item { cursor: pointer; }
+    .thread-item:hover { border-color: var(--accent); }
+    .subject { font-weight: 600; }
+    .meta { color: var(--muted); font-size: 12px; margin-top: 4px; }
+    .preview { color: var(--muted); margin-top: 6px; white-space: pre-wrap; }
+    .post { border-top: 1px solid var(--border); padding: 12px 0; }
+    .post:first-child { border-top: none; }
+    .post .who { color: var(--accent-2); font-size: 13px; }
+    .post .body { white-space: pre-wrap; margin-top: 4px; }
+    form.card input, form.card textarea {
+      width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+      border-radius: 8px; padding: 9px 10px; margin-bottom: 10px; font: inherit;
+    }
+    textarea { min-height: 80px; resize: vertical; }
+    button.primary {
+      background: var(--accent); color: #0b0e14; border: none; border-radius: 8px;
+      padding: 9px 16px; font-weight: 600; cursor: pointer;
+    }
+    button.primary:hover { filter: brightness(1.08); }
+    .link { background: none; border: none; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+    h3 { margin: 4px 0 12px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>educhan</h1>
+    <span class="tag">anonymous imageboard for tertiary education &middot; dev skeleton</span>
+  </header>
+  <main>
+    <nav>
+      <h2>Boards</h2>
+      <div id="boards"></div>
+    </nav>
+    <section id="content"><p class="meta">Loading&hellip;</p></section>
+  </main>
+
+  <script>
+    const state = { board: null, boards: [] };
+    const $ = (sel) => document.querySelector(sel);
+
+    async function api(path, opts) {
+      const res = await fetch(path, Object.assign({ headers: { "Content-Type": "application/json" } }, opts));
+      if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.statusText);
+      return res.status === 204 ? null : res.json();
+    }
+
+    function esc(s) { return (s || "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c])); }
+
+    async function loadBoards() {
+      const { boards } = await api("/api/boards");
+      state.boards = boards;
+      $("#boards").innerHTML = boards.map((b) =>
+        `<button class="board" data-slug="${b.slug}"><span>/${b.slug}/ ${esc(b.name)}</span><small>${esc(b.description)}</small></button>`
+      ).join("");
+      document.querySelectorAll(".board").forEach((el) =>
+        el.addEventListener("click", () => selectBoard(el.dataset.slug)));
+      if (boards.length) selectBoard(state.board || boards[0].slug);
+    }
+
+    async function selectBoard(slug) {
+      state.board = slug;
+      document.querySelectorAll(".board").forEach((el) =>
+        el.classList.toggle("active", el.dataset.slug === slug));
+      const { threads } = await api(`/api/boards/${slug}/threads`);
+      const list = threads.map((t) => `
+        <div class="card thread-item" data-id="${t.id}">
+          <div class="subject">${esc(t.subject) || "(no subject)"} <span class="meta">#${t.id}</span></div>
+          <div class="preview">${esc(t.preview)}</div>
+          <div class="meta">${t.replies} repl${t.replies === 1 ? "y" : "ies"}</div>
+        </div>`).join("") || `<p class="meta">No threads yet. Start one!</p>`;
+
+      $("#content").innerHTML = `
+        <h3>/${slug}/ &mdash; New thread</h3>
+        <form class="card" id="new-thread">
+          <input name="subject" placeholder="Subject (optional)" maxlength="200" />
+          <input name="author" placeholder="Name (optional, defaults to Anonymous)" maxlength="64" />
+          <textarea name="body" placeholder="What's on your mind?" required></textarea>
+          <button class="primary" type="submit">Create thread</button>
+        </form>
+        <h3>Threads</h3>
+        ${list}`;
+
+      $("#new-thread").addEventListener("submit", onCreateThread);
+      document.querySelectorAll(".thread-item").forEach((el) =>
+        el.addEventListener("click", () => openThread(el.dataset.id)));
+    }
+
+    async function onCreateThread(e) {
+      e.preventDefault();
+      const f = e.target;
+      await api(`/api/boards/${state.board}/threads`, {
+        method: "POST",
+        body: JSON.stringify({ subject: f.subject.value, author: f.author.value, body: f.body.value }),
+      });
+      selectBoard(state.board);
+    }
+
+    async function openThread(id) {
+      const t = await api(`/api/threads/${id}`);
+      const posts = t.posts.map((p) => `
+        <div class="post">
+          <div class="who">${esc(p.author)} <span class="meta">#${p.id} &middot; ${new Date(p.created_at).toLocaleString()}</span></div>
+          <div class="body">${esc(p.body)}</div>
+        </div>`).join("");
+
+      $("#content").innerHTML = `
+        <button class="link" id="back">&larr; back to /${t.board}/</button>
+        <h3>${esc(t.subject) || "(no subject)"} <span class="meta">#${t.id}</span></h3>
+        <div class="card">${posts}</div>
+        <form class="card" id="reply">
+          <input name="author" placeholder="Name (optional)" maxlength="64" />
+          <textarea name="body" placeholder="Write a reply" required></textarea>
+          <button class="primary" type="submit">Reply</button>
+        </form>`;
+
+      $("#back").addEventListener("click", () => selectBoard(t.board));
+      $("#reply").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        const f = e.target;
+        await api(`/api/threads/${id}/posts`, {
+          method: "POST",
+          body: JSON.stringify({ author: f.author.value, body: f.body.value }),
+        });
+        openThread(id);
+      });
+    }
+
+    loadBoards().catch((err) => {
+      $("#content").innerHTML = `<p class="meta">Failed to load: ${esc(err.message)}</p>`;
+    });
+  </script>
+</body>
+</html>
