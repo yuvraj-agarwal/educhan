@@ -41,8 +41,11 @@ One image per post, on both thread creation and replies.
   new implementation of that interface rather than a rewrite of the handlers.
 - **Serving**: `/media/original/{path}` and `/media/thumb/{path}`, with the correct
   `Content-Type`, range support, and long-lived immutable caching.
-- **UI**: thumbnails appear in the board index, the catalog, and inside threads; clicking
-  one opens the full image.
+- **UI**: thumbnails appear in the board index, the catalog, and inside threads. In a
+  thread a thumbnail expands to the full image in place — the full file is decoded before
+  the swap, so the picture never blinks — and collapses again on a second click or
+  <kbd>Esc</kbd>. Elsewhere it opens in a new tab. Attaching an image is a button, a drop
+  target on the posting form, or both, with a preview of what will be sent.
 
 Posting an image over HTTP is a plain multipart form:
 
@@ -65,6 +68,32 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Housekeeping | Threads past a board's thread limit are pruned; per-client cooldowns limit new threads, replies, and uploads |
+
+## Front end
+
+The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
+`internal/app/web/` — with no build step and no framework. `app.js` renders the JSON API
+into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
+`/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
+
+- **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
+  time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
+  tinted chips. On a fine pointer, hovering `>>123` floats a preview of the quoted post
+  when it is already on the page — a preview never costs a request.
+- **Posting**: labelled fields, an image picker that previews the chosen file with its name
+  and size, and drag-and-drop anywhere on the form. A half-written reply survives
+  **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
+  post number quotes it into the reply box.
+- **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
+  never overflow the viewport, and 16px form text so iOS does not zoom on focus.
+- **Accessibility**: a skip link, one visible focus ring on every control, headings and
+  landmarks that match the layout, live-region announcements for client-side navigation,
+  colours that clear WCAG AA on their own background, and `prefers-reduced-motion` support.
+
+The page runs under the same-origin CSP in `middleware.go`, which has no `unsafe-inline`
+exception: no inline `<script>`, no inline `<style>`, and no `style` attributes. A unit
+test (`internal/app/web_test.go`) fails the build if any appear, and the image preview is
+a `data:` URL because that is what `img-src` allows.
 
 ## Tech Stack
 

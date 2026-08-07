@@ -2,29 +2,37 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>educhan</title>
   <meta name="description" content="Anonymous imageboard for tertiary education." />
+  <meta name="color-scheme" content="dark" />
   <link rel="stylesheet" href="/app.css" />
 </head>
 <body>
+  <a class="skip-link" href="#main">Skip to content</a>
+
   <header class="site-header">
-    <a class="brand" href="/">educhan</a>
-    <span class="tagline">anonymous imageboard for tertiary education</span>
-    <nav class="board-nav" id="board-nav" aria-label="Boards"></nav>
+    <div class="bar">
+      <a class="brand" href="/">educhan</a>
+      <span class="tagline">anonymous imageboard for tertiary education</span>
+      <nav class="board-nav" id="board-nav" aria-label="Boards"></nav>
+    </div>
   </header>
 
   <div class="notice" id="notice" role="alert" hidden></div>
 
-  <main id="main" aria-live="polite">
+  <main id="main" tabindex="-1">
     <p class="muted">Loading&hellip;</p>
   </main>
 
+  <!-- Route changes are announced here so the page swap is not silent. -->
+  <p class="sr-only" id="route-status" role="status" aria-live="polite"></p>
+
   <footer class="site-footer">
-    <span class="muted">
+    <p class="muted">
       Posts are anonymous. A per-thread ID keeps a conversation followable;
       add <code>#secret</code> to your name for a tripcode.
-    </span>
+    </p>
   </footer>
 
   <script src="/app.js" type="module"></script>

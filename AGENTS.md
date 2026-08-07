@@ -145,7 +145,26 @@ EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
 board index at `/general/`, catalog at `/general/catalog`, thread at
 `/general/thread/{no}`). Prefer a browser walkthrough for anything that affects
-`internal/app/web/`.
+`internal/app/web/`, and check a phone viewport as well as a desktop one — the catalog,
+the index, and the thread view each have their own narrow-screen layout.
+
+### Front end conventions
+
+- **No inline styles or scripts.** The CSP in `middleware.go` has no `unsafe-inline`
+  exception, so `<style>`, `style="…"`, and inline `<script>` are all refused by the
+  browser. `TestWebAssetsHaveNoInlineStylesOrScripts` in `web_test.go` catches them first.
+  Setting `element.style.left` from JavaScript is fine — CSP governs markup, not the CSSOM
+  — which is how the quote preview positions itself.
+- `img-src` is `'self' data:`, so the file picker previews an attachment as a `data:` URL.
+  A `blob:` URL would need a CSP change.
+- `app.css` is tokens first (`:root`), then base, layout, and components; colours live in
+  custom properties and are chosen to clear WCAG AA on the panel they sit on. `--faint` is
+  the one exception and is for decoration only.
+- `app.js` renders HTML strings through `esc()`. Anything interpolated from the API must
+  go through it.
+- A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
+  half-written post — the attached file included, via `DataTransfer` — across it. New
+  fields need adding there too.
 
 ### Attachments
 
