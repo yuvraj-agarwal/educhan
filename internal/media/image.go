@@ -1,0 +1,189 @@
+package media
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"image"
+	_ "image/gif" // GIF decoding
+	"image/jpeg"
+	"image/png"
+
+	xdraw "golang.org/x/image/draw"
+	_ "golang.org/x/image/webp" // WebP decoding (the standard library has none)
+)
+
+// ThumbMaxDim is the longest-side bound, in pixels, of a generated thumbnail.
+const ThumbMaxDim = 250
+
+// MaxPixels caps the decoded resolution of an upload. Compressed formats can
+// describe enormous canvases in a handful of bytes, so the dimensions are
+// checked before the image is materialised in memory.
+const MaxPixels = 50 << 20 // 50 megapixels
+
+// thumbJPEGQuality is used when a thumbnail is encoded as JPEG.
+const thumbJPEGQuality = 82
+
+// Errors reported for rejected uploads. Handlers translate these into 4xx
+// responses, so their text is user-facing.
+var (
+	ErrUnsupportedFormat = errors.New("unsupported image format: use JPEG, PNG, WebP, or GIF")
+	ErrImageTooLarge     = errors.New("image resolution is too large")
+	ErrCorruptImage      = errors.New("image could not be decoded")
+)
+
+// Format is one of the image types educhan accepts.
+type Format struct {
+	Name        string // canonical short name, e.g. "jpeg"
+	ContentType string
+	Ext         string
+}
+
+// Supported formats, in the order magic bytes are tested.
+var (
+	FormatJPEG = Format{Name: "jpeg", ContentType: "image/jpeg", Ext: ".jpg"}
+	FormatPNG  = Format{Name: "png", ContentType: "image/png", Ext: ".png"}
+	FormatGIF  = Format{Name: "gif", ContentType: "image/gif", Ext: ".gif"}
+	FormatWebP = Format{Name: "webp", ContentType: "image/webp", Ext: ".webp"}
+)
+
+// DetectFormat identifies an upload from its leading bytes. Extensions and
+// client-supplied content types are never trusted.
+func DetectFormat(data []byte) (Format, bool) {
+	switch {
+	case bytes.HasPrefix(data, []byte{0xFF, 0xD8, 0xFF}):
+		return FormatJPEG, true
+	case bytes.HasPrefix(data, []byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}):
+		return FormatPNG, true
+	case bytes.HasPrefix(data, []byte("GIF87a")), bytes.HasPrefix(data, []byte("GIF89a")):
+		return FormatGIF, true
+	case len(data) >= 12 && bytes.HasPrefix(data, []byte("RIFF")) && bytes.Equal(data[8:12], []byte("WEBP")):
+		return FormatWebP, true
+	}
+	return Format{}, false
+}
+
+// ContentTypeForExt maps a stored file extension back to its media type. Only
+// extensions produced by this package are recognised.
+func ContentTypeForExt(ext string) string {
+	switch ext {
+	case FormatJPEG.Ext:
+		return FormatJPEG.ContentType
+	case FormatPNG.Ext:
+		return FormatPNG.ContentType
+	case FormatGIF.Ext:
+		return FormatGIF.ContentType
+	case FormatWebP.Ext:
+		return FormatWebP.ContentType
+	}
+	return "application/octet-stream"
+}
+
+// Thumbnail is a downscaled rendition of an upload.
+type Thumbnail struct {
+	Data   []byte
+	Format Format
+	Width  int
+	Height int
+}
+
+// Processed is the result of validating and thumbnailing an upload.
+type Processed struct {
+	Format Format
+	Width  int
+	Height int
+	Thumb  Thumbnail
+}
+
+// Process validates the raw upload and derives its thumbnail. Animated GIFs are
+// thumbnailed from their first frame.
+func Process(data []byte) (Processed, error) {
+	format, ok := DetectFormat(data)
+	if !ok {
+		return Processed{}, ErrUnsupportedFormat
+	}
+
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		return Processed{}, ErrCorruptImage
+	}
+	if cfg.Width <= 0 || cfg.Height <= 0 {
+		return Processed{}, ErrCorruptImage
+	}
+	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
+		return Processed{}, ErrImageTooLarge
+	}
+
+	src, _, err := image.Decode(bytes.NewReader(data))
+	if err != nil {
+		return Processed{}, ErrCorruptImage
+	}
+
+	thumb, err := makeThumbnail(src, format)
+	if err != nil {
+		return Processed{}, err
+	}
+	bounds := src.Bounds()
+	return Processed{
+		Format: format,
+		Width:  bounds.Dx(),
+		Height: bounds.Dy(),
+		Thumb:  thumb,
+	}, nil
+}
+
+// ThumbSize scales w×h to fit within max on the longest side, preserving the
+// aspect ratio. Images already within the bound are left alone rather than
+// upscaled.
+func ThumbSize(w, h, max int) (int, int) {
+	if w <= 0 || h <= 0 {
+		return 0, 0
+	}
+	if w <= max && h <= max {
+		return w, h
+	}
+	if w >= h {
+		return max, atLeastOne(int(float64(h) * float64(max) / float64(w)))
+	}
+	return atLeastOne(int(float64(w) * float64(max) / float64(h))), max
+}
+
+func atLeastOne(v int) int {
+	if v < 1 {
+		return 1
+	}
+	return v
+}
+
+// thumbFormat picks the encoding of a thumbnail. JPEG sources stay JPEG; the
+// formats that may carry transparency become PNG so it is not lost.
+func thumbFormat(src Format) Format {
+	if src.Name == FormatJPEG.Name {
+		return FormatJPEG
+	}
+	return FormatPNG
+}
+
+func makeThumbnail(src image.Image, format Format) (Thumbnail, error) {
+	bounds := src.Bounds()
+	tw, th := ThumbSize(bounds.Dx(), bounds.Dy(), ThumbMaxDim)
+
+	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
+	// CatmullRom is slower than the nearest-neighbour kernels but keeps small
+	// thumbnails of dense screenshots readable, which is what they are for.
+	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, xdraw.Src, nil)
+
+	out := thumbFormat(format)
+	var buf bytes.Buffer
+	var err error
+	switch out.Name {
+	case FormatJPEG.Name:
+		err = jpeg.Encode(&buf, dst, &jpeg.Options{Quality: thumbJPEGQuality})
+	default:
+		err = png.Encode(&buf, dst)
+	}
+	if err != nil {
+		return Thumbnail{}, fmt.Errorf("media: encode thumbnail: %w", err)
+	}
+	return Thumbnail{Data: buf.Bytes(), Format: out, Width: tw, Height: th}, nil
+}
