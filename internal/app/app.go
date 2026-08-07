@@ -46,6 +46,9 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if cfg.PosterIDSaltEphemeral {
 		log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
 	}
+	if cfg.ModKey == "" {
+		log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request")
+	}
 	return &App{
 		cfg:           cfg,
 		log:           log,
@@ -82,6 +85,14 @@ func (a *App) Routes() http.Handler {
 	// an earlier revision of the API.
 	mux.HandleFunc("GET /api/threads/{id}", a.handleGetThreadByID)
 	mux.HandleFunc("POST /api/threads/{id}/posts", a.handleCreatePostByThreadID)
+
+	// Moderation, guarded by the shared moderation key.
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/sticky", a.handleSticky)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/unsticky", a.handleUnsticky)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/lock", a.handleLock)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/unlock", a.handleUnlock)
+	mux.HandleFunc("DELETE /api/boards/{slug}/threads/{no}", a.handleDeleteThread)
+	mux.HandleFunc("DELETE /api/boards/{slug}/threads/{no}/posts/{post}", a.handleDeletePost)
 
 	mux.HandleFunc("GET /media/original/{path...}", a.handleMediaOriginal)
 	mux.HandleFunc("GET /media/thumb/{path...}", a.handleMediaThumb)
