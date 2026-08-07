@@ -26,6 +26,9 @@ bans, and reports are not.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its local-filesystem implementation.
+- `Dockerfile`, `docker-compose.yml`, `deploy/` — container image, the local stack, and
+  the Cloud Run service definition (`deploy/cloudrun/service.yaml`), documented in
+  `deploy/README.md`.
 - `.cursor/` — Cloud Agent environment (`environment.json` + `scripts/`).
 
 ## Canonical commands
@@ -35,6 +38,8 @@ bans, and reports are not.
 - Vet / format: `go vet ./...` and `gofmt -l .` (must be empty), or `make check`
 - Bring up Postgres: `bash .cursor/scripts/start.sh` (or `make db-up`)
 - Run the server: `make run` (expects Postgres up), or the `server` terminal
+- Whole stack in containers: `docker compose up --build` (or `make compose-up`) — needs
+  no Go and no host Postgres, and is the way to check a change to the `Dockerfile`
 
 ## Cursor Cloud specific instructions
 
@@ -192,6 +197,9 @@ the index, and the thread view each have their own narrow-screen layout.
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
   `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`,
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`. See `.env.example` and the README table.
+  `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
+  when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
+  explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
 - Flood control lives in `ratelimit.go` and is applied by `postCooldowns`/`allow` in
   `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
   cooldown per client across the whole server. A submission clears every cooldown that
@@ -211,6 +219,21 @@ the index, and the thread view each have their own narrow-screen layout.
   gives `boards` its limits and `next_post_no`. Slugs are validated and normalised before
   they reach SQL, a duplicate comes back as `errConflict` from the unique index (`409`),
   and the slug itself is not updatable because it is the board's address.
+- Deployment (`Dockerfile`, `docker-compose.yml`, `deploy/`): the runtime image is
+  distroless, so there is **no shell, no package manager, and no `curl`** in it — a
+  container healthcheck or a debugging `docker exec … sh` will not work; read the logs or
+  hit `/healthz` from outside. The binary is built with `CGO_ENABLED=0` because distroless
+  static cannot run a dynamically linked one. `/data/uploads` is created in the build stage
+  and copied in owned by uid 65532: the runtime image cannot `mkdir` it, and a named volume
+  mounted there inherits that ownership, which is what lets the non-root user write
+  uploads. Compose publishes Postgres on `127.0.0.1:5433` to avoid colliding with
+  `make db-up` on 5432.
+- On Cloud Run: `EDUCHAN_UPLOAD_DIR` must be under `/tmp` (the only writable path, and
+  in-memory and per-instance — uploads do not survive), `EDUCHAN_TRUST_PROXY` is `1`, and
+  `EDUCHAN_POSTER_ID_SALT` has to come from Secret Manager or poster IDs differ per
+  instance. Cloud SQL is reached over the socket Cloud Run mounts at
+  `/cloudsql/{connection name}`; `pgx` takes that as `?host=/cloudsql/…` in `DATABASE_URL`,
+  so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`) run the whole app
   against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so

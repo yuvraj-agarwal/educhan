@@ -1,0 +1,20 @@
+# Keep the build context to what `go build ./cmd/server` actually reads.
+.git
+.gitignore
+.cursor
+.env
+data/
+docker-compose.yml
+Dockerfile
+.dockerignore
+deploy/
+*.md
+LICENSE
+Makefile
+
+# Build and test artifacts
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov

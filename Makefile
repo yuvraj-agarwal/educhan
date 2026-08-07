@@ -1,4 +1,4 @@
-.PHONY: run build test check tidy fmt vet db-up
+.PHONY: run build test check tidy fmt vet db-up docker-build compose-up compose-down
 
 # Start (or reuse) the local PostgreSQL cluster used for development.
 db-up:
@@ -29,3 +29,15 @@ fmt:
 
 vet:
 	go vet ./...
+
+# Container image, the same one Cloud Run runs. See deploy/README.md.
+docker-build:
+	docker build -t educhan:local .
+
+# The whole stack locally: educhan on :8080 plus PostgreSQL.
+compose-up:
+	docker compose up --build
+
+# Stop it, keeping the database and uploads (add -v to discard them).
+compose-down:
+	docker compose down
