@@ -100,7 +100,8 @@ a `data:` URL because that is what `img-src` allows.
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
 - **Front end**: dependency-free HTML/CSS/JS served from the Go binary
-- **Planned**: Cloud Run, Cloud SQL, Google Cloud Storage, Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
+- **Deployment**: multi-stage Docker build onto a distroless base; Cloud Run with Cloud SQL (see [Deployment](#deployment))
+- **Planned**: Google Cloud Storage, Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
 
 ## Running locally
 
@@ -114,12 +115,27 @@ make run                        # serve on http://localhost:8080
 Migrations in `internal/app/migrations/` are applied automatically at startup,
 guarded by a Postgres advisory lock so concurrent instances are safe.
 
+### With Docker
+
+Docker with the Compose plugin is the only prerequisite — no Go, no PostgreSQL:
+
+```bash
+docker compose up --build       # http://localhost:8080
+```
+
+That builds the image, starts PostgreSQL 16, waits for it to become healthy, and
+runs educhan against it. Named volumes hold the database and the uploads, so both
+survive `docker compose down` and a rebuild; `down -v` discards them. See
+[`deploy/README.md`](deploy/README.md#1-locally-with-docker-compose) for the
+settings the compose file exposes.
+
 ### Configuration
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
-| `DATABASE_URL` | `postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable` | PostgreSQL connection string |
-| `EDUCHAN_ADDR` | `:8080` | Listen address |
+| `DATABASE_URL` | `postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable` | PostgreSQL connection string; a `host=/path` makes it a Unix socket |
+| `EDUCHAN_ADDR` | `:8080` | Listen address; overrides `PORT` |
+| `PORT` | unset | Bare port number, honoured when `EDUCHAN_ADDR` is unset — the contract Cloud Run and similar runtimes inject |
 | `EDUCHAN_POSTER_ID_SALT` | random per process | Keys poster IDs and secure tripcodes; set it so they survive a restart |
 | `EDUCHAN_TRUST_PROXY` | `0` | Number of reverse proxies in front of the server; see [Running behind a proxy](#running-behind-a-proxy) |
 | `EDUCHAN_THREAD_COOLDOWN` | `30` (seconds) | Minimum interval between new threads from one client, per board |
@@ -280,12 +296,72 @@ index, and the catalog, and its post numbering starts at No. 1. A lowered
 `thread_limit` is applied by the next post to that board, through the same
 pruning the limit has always driven.
 
+## Deployment
+
+The full walkthrough is in [`deploy/README.md`](deploy/README.md); this is the
+shape of it.
+
+educhan builds to one static binary with the web UI and the migrations embedded,
+so a deployment is that container plus a PostgreSQL. The `Dockerfile` is a
+multi-stage build onto a distroless base — no shell, no package manager, running
+as a non-root user, about 21 MB — and `deploy/cloudrun/service.yaml` is the
+Cloud Run service that runs it.
+
+```bash
+# Build and push
+gcloud builds submit --tag "$REGION-docker.pkg.dev/$PROJECT_ID/educhan/educhan:$(git rev-parse --short HEAD)"
+
+# Deploy, with Cloud SQL attached and secrets from Secret Manager
+gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
+  --service-account "$RUN_SA" \
+  --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
+  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_UPLOAD_DIR=/tmp/uploads,EDUCHAN_LOG_FORMAT=json" \
+  --allow-unauthenticated
+```
+
+Cloud Run mounts the Cloud SQL instance's Unix socket at
+`/cloudsql/{connection name}`, and `pgx` connects to a socket whenever the
+connection string's `host` is a path, so no proxy process and no code change is
+needed:
+
+```
+postgres://educhan:PASSWORD@/educhan?host=/cloudsql/PROJECT:REGION:INSTANCE&sslmode=disable
+```
+
+Anywhere without that mount — a VM, a laptop — the [Cloud SQL Auth
+Proxy](https://cloud.google.com/sql/docs/postgres/sql-proxy) opens a local port
+and `DATABASE_URL` becomes an ordinary TCP connection string.
+
+Three things need setting for a real deployment, and the deploy guide covers
+each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
+between instances, `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end, and
+`EDUCHAN_UPLOAD_DIR` must point at `/tmp` because that is the writable path
+there.
+
+### What is not stateless yet
+
+Everything the API serves lives in PostgreSQL, so instances start in any order
+and any number. Two things do not:
+
+- **Uploads.** Cloud Run's `/tmp` is per-instance and in-memory, so an image
+  uploaded to one instance answers `404` from another and is lost when the
+  container stops. `internal/media.Store` exists precisely so a Cloud Storage
+  backend replaces this without touching handlers or SQL; until then, pin
+  `--max-instances 1` or mount a bucket.
+- **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
+  instances enforce the cooldowns N times over.
+
 ## Development
 
 ```bash
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
+
+make docker-build  # build the container image as educhan:local
+make compose-up    # the whole stack on :8080
+make compose-down  # stop it, keeping the volumes
 ```
 
 ## Contributing

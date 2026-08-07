@@ -1,0 +1,90 @@
+# Declarative Cloud Run service for educhan. Substitute the placeholders and
+# apply it; see deploy/README.md for the full walkthrough.
+#
+#   export PROJECT_ID=… REGION=… CLOUDSQL_INSTANCE=… IMAGE_TAG=…
+#   envsubst < deploy/cloudrun/service.yaml > /tmp/educhan-service.yaml
+#   gcloud run services replace /tmp/educhan-service.yaml --region "$REGION"
+apiVersion: serving.knative.dev/v1
+kind: Service
+metadata:
+  name: educhan
+  labels:
+    cloud.googleapis.com/location: ${REGION}
+spec:
+  template:
+    metadata:
+      annotations:
+        # Mounts the instance's socket at /cloudsql/<connection name>. The
+        # connection name is PROJECT:REGION:INSTANCE, not the instance name.
+        run.googleapis.com/cloudsql-instances: ${CLOUDSQL_INSTANCE}
+        # An imageboard is bursty and the container is cheap to start; cap the
+        # fan-out so Cloud SQL is not overwhelmed by connection pools.
+        autoscaling.knative.dev/minScale: "0"
+        autoscaling.knative.dev/maxScale: "4"
+        run.googleapis.com/startup-cpu-boost: "true"
+    spec:
+      # Migrations run at startup behind an advisory lock, so a slow first
+      # request is possible while a new revision applies them.
+      timeoutSeconds: 60
+      containerConcurrency: 80
+      serviceAccountName: educhan-run@${PROJECT_ID}.iam.gserviceaccount.com
+      containers:
+        - image: ${REGION}-docker.pkg.dev/${PROJECT_ID}/educhan/educhan:${IMAGE_TAG}
+          ports:
+            # Cloud Run injects PORT to match; ConfigFromEnv honours it.
+            - name: http1
+              containerPort: 8080
+          resources:
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          env:
+            # Secrets. Create them first (deploy/README.md step 4) and grant the
+            # service account roles/secretmanager.secretAccessor.
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: educhan-database-url
+                  key: latest
+            - name: EDUCHAN_POSTER_ID_SALT
+              valueFrom:
+                secretKeyRef:
+                  name: educhan-poster-id-salt
+                  key: latest
+            - name: EDUCHAN_MOD_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: educhan-mod-key
+                  key: latest
+
+            # Cloud Run's front end appends the caller's address to
+            # X-Forwarded-For: exactly one hop. Raising this hands clients
+            # control of their own rate-limit bucket and poster ID.
+            - name: EDUCHAN_TRUST_PROXY
+              value: "1"
+            # /tmp is the writable path on every Cloud Run execution
+            # environment. It is per-instance and in-memory: uploads do not
+            # outlive the container and count against the memory limit. See the
+            # limitations in deploy/README.md.
+            - name: EDUCHAN_UPLOAD_DIR
+              value: /tmp/uploads
+            - name: EDUCHAN_LOG_FORMAT
+              value: json
+            - name: EDUCHAN_THREAD_COOLDOWN
+              value: "30"
+            - name: EDUCHAN_POST_COOLDOWN
+              value: "5"
+            - name: EDUCHAN_UPLOAD_COOLDOWN
+              value: "15"
+            - name: EDUCHAN_MAX_UPLOAD_BYTES
+              value: "8388608"
+          startupProbe:
+            httpGet:
+              path: /healthz
+            initialDelaySeconds: 2
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 10
+  traffic:
+    - percent: 100
+      latestRevision: true

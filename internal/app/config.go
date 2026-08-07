@@ -53,7 +53,7 @@ const defaultMaxUploadBytes int64 = 8 << 20
 // Cloud Agent environment.
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		Addr:         envOr("EDUCHAN_ADDR", ":8080"),
+		Addr:         listenAddr(),
 		DatabaseURL:  envOr("DATABASE_URL", "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
 		PosterIDSalt: os.Getenv("EDUCHAN_POSTER_ID_SALT"),
 		LogFormat:    envOr("EDUCHAN_LOG_FORMAT", "text"),
@@ -90,6 +90,20 @@ func ConfigFromEnv() (Config, error) {
 		cfg.PosterIDSaltEphemeral = true
 	}
 	return cfg, nil
+}
+
+// listenAddr resolves the address the server binds to. EDUCHAN_ADDR is the
+// project's own setting and wins. PORT is the contract container runtimes such
+// as Cloud Run inject — it carries a bare port number and the server must listen
+// on it — so it is honoured next, ahead of the local default.
+func listenAddr() string {
+	if addr := strings.TrimSpace(os.Getenv("EDUCHAN_ADDR")); addr != "" {
+		return addr
+	}
+	if port := strings.TrimSpace(os.Getenv("PORT")); port != "" {
+		return ":" + port
+	}
+	return ":8080"
 }
 
 func randomSalt() (string, error) {

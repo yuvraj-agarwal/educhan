@@ -6,6 +6,7 @@ import (
 )
 
 func TestConfigFromEnvDefaults(t *testing.T) {
+	t.Setenv("PORT", "")
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv: %v", err)
@@ -64,6 +65,34 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	if cfg.LogFormat != "json" {
 		t.Errorf("LogFormat = %q, want json", cfg.LogFormat)
 	}
+}
+
+// Cloud Run and comparable runtimes hand the container a port in PORT and
+// expect the server to listen on it, so it has to beat the built-in default —
+// but never an explicit EDUCHAN_ADDR.
+func TestConfigListenAddr(t *testing.T) {
+	t.Run("PORT is honoured", func(t *testing.T) {
+		t.Setenv("EDUCHAN_ADDR", "")
+		t.Setenv("PORT", "9090")
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if cfg.Addr != ":9090" {
+			t.Errorf("Addr = %q, want :9090", cfg.Addr)
+		}
+	})
+	t.Run("EDUCHAN_ADDR wins", func(t *testing.T) {
+		t.Setenv("EDUCHAN_ADDR", "127.0.0.1:9000")
+		t.Setenv("PORT", "9090")
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if cfg.Addr != "127.0.0.1:9000" {
+			t.Errorf("Addr = %q, want 127.0.0.1:9000", cfg.Addr)
+		}
+	})
 }
 
 func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
