@@ -2,7 +2,7 @@ BINARY   := educhan
 PKG      := ./cmd/educhan
 BIN_DIR  := bin
 VERSION  ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
-LDFLAGS  := -s -w -X github.com/yuvraj-agarwal/educhan/internal/server.Version=$(VERSION)
+LDFLAGS  := -s -w
 
 .PHONY: help build run test cover lint fmt vet tidy clean docker
 
@@ -34,7 +34,7 @@ tidy: ## Reconcile go.mod and go.sum
 	go mod tidy
 
 docker: ## Build the container image
-	docker build --build-arg VERSION=$(VERSION) -t $(BINARY):$(VERSION) .
+	docker build -t $(BINARY):$(VERSION) .
 
 clean: ## Remove build artifacts
 	rm -rf $(BIN_DIR) coverage.out
