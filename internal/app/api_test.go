@@ -77,9 +77,11 @@ func testServer(t *testing.T, tune func(*Config)) *harness {
 		separator = "&"
 	}
 	cfg := Config{
-		DatabaseURL:  baseURL + separator + "search_path=" + schema,
-		PosterIDSalt: "test-salt",
-		LogFormat:    "text",
+		DatabaseURL:    baseURL + separator + "search_path=" + schema,
+		PosterIDSalt:   "test-salt",
+		LogFormat:      "text",
+		UploadDir:      t.TempDir(),
+		MaxUploadBytes: defaultMaxUploadBytes,
 	}
 	if tune != nil {
 		tune(&cfg)
@@ -134,10 +136,17 @@ func (c *client) do(method, path string, body []byte, out any) int {
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
 	}
+	return c.send(req, out)
+}
+
+// send performs a prepared request, decoding a JSON response into out and
+// returning the status.
+func (c *client) send(req *http.Request, out any) int {
+	c.t.Helper()
 
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
-		c.t.Fatalf("%s %s: %v", method, path, err)
+		c.t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
 	}
 	defer res.Body.Close()
 
@@ -147,7 +156,7 @@ func (c *client) do(method, path string, body []byte, out any) int {
 	}
 	if out != nil && len(payload) > 0 {
 		if err := json.Unmarshal(payload, out); err != nil {
-			c.t.Fatalf("%s %s: decode %q: %v", method, path, payload, err)
+			c.t.Fatalf("%s %s: decode %q: %v", req.Method, req.URL.Path, payload, err)
 		}
 	}
 	return res.StatusCode

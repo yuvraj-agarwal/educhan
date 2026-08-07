@@ -1,6 +1,31 @@
 package app
 
-import "time"
+import (
+	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media"
+)
+
+// Attachment is the image belonging to a post, as exposed by the API. Paths are
+// rendered as URLs so clients never need to know how blobs are addressed.
+type Attachment struct {
+	Name        string `json:"name"`
+	URL         string `json:"url"`
+	ThumbURL    string `json:"thumb_url"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+	Width       int    `json:"width"`
+	Height      int    `json:"height"`
+	ThumbWidth  int    `json:"thumb_width"`
+	ThumbHeight int    `json:"thumb_height"`
+}
+
+// newAttachment is an image that has been written to the media store and is
+// waiting for its database row.
+type newAttachment struct {
+	OriginalName string
+	Image        media.StoredImage
+}
 
 // Board is a top-level category threads are posted under.
 type Board struct {
@@ -28,6 +53,8 @@ type Post struct {
 	Body      string    `json:"body"`
 	OP        bool      `json:"op"`
 	CreatedAt time.Time `json:"created_at"`
+	// Attachment is the post's image, if it has one.
+	Attachment *Attachment `json:"attachment,omitempty"`
 	// Quotes are the posts this post links to; Backlinks are the posts linking
 	// back to it. Both are limited to the current board.
 	Quotes    []PostRef `json:"quotes"`
@@ -71,6 +98,8 @@ type ThreadSummary struct {
 type CatalogThread struct {
 	Thread
 	Excerpt string `json:"excerpt"`
+	// Attachment is the opening post's image, shown as the tile's thumbnail.
+	Attachment *Attachment `json:"attachment,omitempty"`
 }
 
 // ThreadDetail is a thread with all of its posts, used by the thread view.
