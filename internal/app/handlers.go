@@ -334,6 +334,12 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxRequestBytes))
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		// The unknown-field error names the offending field, which is worth
+		// passing on; other decoder errors can leak input internals.
+		if msg := err.Error(); strings.HasPrefix(msg, "json: unknown field ") {
+			writeError(w, http.StatusBadRequest, "unknown field "+strings.TrimPrefix(msg, "json: unknown field "))
+			return false
+		}
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return false
 	}
