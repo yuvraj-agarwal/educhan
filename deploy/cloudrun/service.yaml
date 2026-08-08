@@ -56,6 +56,15 @@ spec:
                 secretKeyRef:
                   name: educhan-mod-key
                   key: latest
+            # Institutional verification is deliberately left off here: with no
+            # mail Sender linked in, the development sender would print every
+            # address and code into Cloud Logging. Add the secret below once a
+            # real Sender exists — and not before.
+            # - name: EDUCHAN_VERIFY_SECRET
+            #   valueFrom:
+            #     secretKeyRef:
+            #       name: educhan-verify-secret
+            #       key: latest
 
             # Cloud Run's front end appends the caller's address to
             # X-Forwarded-For: exactly one hop. Raising this hands clients

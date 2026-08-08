@@ -252,6 +252,7 @@ ones whose value differs in a container or on Cloud Run:
 | `EDUCHAN_UPLOAD_DIR` | `/data/uploads` (volume) | `/tmp/uploads` | `/tmp` is the writable path on Cloud Run, and it is in-memory |
 | `EDUCHAN_POSTER_ID_SALT` | fixed dev value | from Secret Manager | Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | `dev-mod-key` | from Secret Manager | Unset means every moderation endpoint answers `403` |
+| `EDUCHAN_VERIFY_SECRET` | `dev-verify-secret` | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
 | `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
 | `EDUCHAN_LOG_FORMAT` | `json` | `json` | JSON is what Cloud Logging parses into structured fields |
 | `EDUCHAN_THREAD_COOLDOWN` / `_POST_` / `_UPLOAD_` | `30` / `5` / `15` | same | Seconds; `0` disables one |
@@ -283,7 +284,16 @@ instance answers `404` from another. Options, in order of effort:
 `internal/app/ratelimit.go` holds its state in process memory, so with N
 instances a client gets up to N times the intended allowance. Moving it to shared
 storage — Memorystore, or a table — means replacing that one type, which nothing
-else depends on.
+else depends on. The verification code cooldown rides on the same limiter, so it
+is per instance too.
+
+**Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
+left unset in `service.yaml`, which switches the feature off, and it should stay
+that way here until `internal/mailer` grows an SMTP or Google Workspace `Sender`.
+The development sender prints the code *and the address it was sent to* to
+stdout, and on Cloud Run stdout is Cloud Logging — which would write into a log
+sink exactly the thing the feature promises never to store. Enabling it is one
+new `Sender` plus the commented-out secret block in `service.yaml`.
 
 **Everything else is already stateless.** Boards, threads, posts, and attachment
 metadata live in PostgreSQL, and the migrations are embedded in the binary and

@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/mailer"
 )
 
 // Config holds runtime configuration sourced from the environment.
@@ -42,23 +44,54 @@ type Config struct {
 	UploadDir string
 	// MaxUploadBytes is the largest attachment accepted with a post.
 	MaxUploadBytes int64
+	// VerifySecret keys institutional verification: the HMAC that stands in for
+	// an address, the hash of a pending code, and the signature on an issued
+	// credential. An empty secret switches the feature off, because there is
+	// nothing to sign a credential with. Rotating it revokes every credential
+	// and orphans every uniqueness key.
+	VerifySecret string
+	// VerifyCodeTTL is how long an emailed code stays usable.
+	VerifyCodeTTL time.Duration
+	// VerifyCredentialTTL is how long an issued badge lasts before the holder
+	// has to verify again.
+	VerifyCredentialTTL time.Duration
+	// VerifyCooldown is the minimum interval between two code requests, applied
+	// per client address and per address hash.
+	VerifyCooldown time.Duration
+	// VerifyDomainsFile is an allowlist file replacing the embedded default.
+	VerifyDomainsFile string
+	// Sender delivers verification codes. Nil selects the development sender,
+	// which prints them to stdout; it is a field rather than an environment
+	// setting because choosing a provider means linking one in.
+	Sender mailer.Sender
 }
 
 // defaultMaxUploadBytes caps a single attachment. Imageboard posts are small;
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
 
+// Verification defaults: long enough to fetch an email from another device,
+// long enough that a badge is not a chore to keep, and slow enough that a code
+// request is not a way to mail somebody repeatedly.
+const (
+	defaultVerifyCodeTTL       = 15 * time.Minute
+	defaultVerifyCredentialTTL = 180 * 24 * time.Hour
+	defaultVerifyCooldown      = time.Minute
+)
+
 // ConfigFromEnv builds a Config, applying local-development defaults so the
 // server runs out of the box against the Postgres instance provisioned by the
 // Cloud Agent environment.
 func ConfigFromEnv() (Config, error) {
 	cfg := Config{
-		Addr:         listenAddr(),
-		DatabaseURL:  envOr("DATABASE_URL", "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
-		PosterIDSalt: os.Getenv("EDUCHAN_POSTER_ID_SALT"),
-		LogFormat:    envOr("EDUCHAN_LOG_FORMAT", "text"),
-		UploadDir:    envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
-		ModKey:       strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
+		Addr:              listenAddr(),
+		DatabaseURL:       envOr("DATABASE_URL", "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
+		PosterIDSalt:      os.Getenv("EDUCHAN_POSTER_ID_SALT"),
+		LogFormat:         envOr("EDUCHAN_LOG_FORMAT", "text"),
+		UploadDir:         envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
+		ModKey:            strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
+		VerifySecret:      strings.TrimSpace(os.Getenv("EDUCHAN_VERIFY_SECRET")),
+		VerifyDomainsFile: strings.TrimSpace(os.Getenv("EDUCHAN_VERIFY_DOMAINS")),
 	}
 
 	var err error
@@ -76,6 +109,20 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if cfg.MaxUploadBytes, err = envBytes("EDUCHAN_MAX_UPLOAD_BYTES", defaultMaxUploadBytes); err != nil {
 		return Config{}, err
+	}
+	if cfg.VerifyCodeTTL, err = envDuration("EDUCHAN_VERIFY_CODE_TTL", defaultVerifyCodeTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.VerifyCredentialTTL, err = envDuration("EDUCHAN_VERIFY_CREDENTIAL_TTL", defaultVerifyCredentialTTL); err != nil {
+		return Config{}, err
+	}
+	if cfg.VerifyCooldown, err = envDuration("EDUCHAN_VERIFY_COOLDOWN", defaultVerifyCooldown); err != nil {
+		return Config{}, err
+	}
+	// A zero TTL would mint credentials that have already expired, which reads
+	// as the feature silently not working.
+	if cfg.VerifyCodeTTL <= 0 || cfg.VerifyCredentialTTL <= 0 {
+		return Config{}, fmt.Errorf("EDUCHAN_VERIFY_CODE_TTL and EDUCHAN_VERIFY_CREDENTIAL_TTL must be positive")
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return Config{}, fmt.Errorf("EDUCHAN_LOG_FORMAT: want \"text\" or \"json\", got %q", cfg.LogFormat)

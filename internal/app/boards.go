@@ -43,6 +43,7 @@ var reservedBoardSlugs = map[string]bool{
 	"api":     true,
 	"media":   true,
 	"healthz": true,
+	"verify":  true,
 }
 
 type createBoardRequest struct {

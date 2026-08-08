@@ -108,10 +108,12 @@ type createThreadRequest struct {
 	Subject string `json:"subject"`
 	Name    string `json:"name"`
 	Body    string `json:"body"`
+	// Badge asks for the poster's verified institution to be shown on the post.
+	Badge bool `json:"badge"`
 }
 
 func (r *createThreadRequest) submission() submission {
-	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body}
+	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge}
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
@@ -132,6 +134,12 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Resolved before flood control, so a post refused for wanting a badge it
+	// cannot have does not also cost the poster a cooldown.
+	badge, ok := a.postBadge(w, r, sub.Badge)
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
@@ -149,6 +157,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		Identity:   parseIdentity(sub.Name, a.cfg.PosterIDSalt),
 		Body:       body,
 		PosterID:   a.posterIDFunc(clientKey),
+		Badge:      badge,
 		Attachment: attachmentInput(sub.Upload, img),
 	})
 	if err != nil {
@@ -164,10 +173,12 @@ type createPostRequest struct {
 	Body string `json:"body"`
 	// Sage replies without bumping the thread.
 	Sage bool `json:"sage"`
+	// Badge asks for the poster's verified institution to be shown on the post.
+	Badge bool `json:"badge"`
 }
 
 func (r *createPostRequest) submission() submission {
-	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage}
+	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge}
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -201,6 +212,10 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !ok {
 		return
 	}
+	badge, ok := a.postBadge(w, r, sub.Badge)
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
@@ -219,6 +234,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		Body:       body,
 		Sage:       sub.Sage,
 		PosterID:   a.posterIDFunc(clientKey),
+		Badge:      badge,
 		Attachment: attachmentInput(sub.Upload, img),
 	})
 	if err != nil {
@@ -287,9 +303,15 @@ func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey str
 	return cooldowns
 }
 
-// allow applies flood control, answering 429 with a Retry-After when the caller
-// must wait.
+// allow applies posting flood control, answering 429 with a Retry-After when
+// the caller must wait.
 func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
+	return a.allowAction(w, "posting", cooldowns)
+}
+
+// allowAction is allow for anything else that is rate limited; action names
+// what was refused, so a 429 from verification does not talk about posting.
+func (a *App) allowAction(w http.ResponseWriter, action string, cooldowns []cooldown) bool {
 	wait, ok := allowAll(cooldowns...)
 	if ok {
 		return true
@@ -297,7 +319,7 @@ func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
 	seconds := int(math.Ceil(wait.Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
-		"error":       "posting too quickly, wait " + strconv.Itoa(seconds) + "s",
+		"error":       action + " too quickly, wait " + strconv.Itoa(seconds) + "s",
 		"retry_after": seconds,
 	})
 	return false

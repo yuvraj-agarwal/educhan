@@ -146,6 +146,28 @@ img { max-width: 100%; }
   background: var(--accent-soft);
 }
 
+/* The board nav takes the free space, so the verify link sits after it rather
+   than competing with it for room. */
+.verify-link {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0 11px;
+  border: 1px solid var(--border);
+  border-radius: var(--pill);
+  color: var(--muted);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.verify-link:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
+
+.verify-link[aria-current="page"] {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+
 /* Layout ------------------------------------------------------------------ */
 
 main {
@@ -353,8 +375,11 @@ button.link:hover { text-decoration: underline; }
   letter-spacing: 0.2px;
 }
 
-.post-form input[type="text"],
-.post-form textarea {
+/* Scoped to .fields rather than to the posting form, so every form on the site
+   — posting, verification — gets the same controls. */
+.fields input[type="text"],
+.fields input[type="email"],
+.fields textarea {
   width: 100%;
   background: var(--panel-2);
   color: var(--text);
@@ -365,10 +390,11 @@ button.link:hover { text-decoration: underline; }
 }
 
 .post-form textarea { min-height: 112px; resize: vertical; }
-.post-form ::placeholder { color: var(--faint); opacity: 1; }
+.fields ::placeholder { color: var(--faint); opacity: 1; }
 
-.post-form input[type="text"]:focus-visible,
-.post-form textarea:focus-visible {
+.fields input[type="text"]:focus-visible,
+.fields input[type="email"]:focus-visible,
+.fields textarea:focus-visible {
   border-color: var(--accent);
   outline-offset: -1px;
 }
@@ -445,6 +471,40 @@ button.link:hover { text-decoration: underline; }
 }
 
 .sage input { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* Verification page ------------------------------------------------------- */
+
+.verify-note {
+  max-width: 68ch;
+  margin: 0 0 12px;
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.verify-note.muted { color: var(--muted); }
+
+.verify-panel {
+  max-width: 68ch;
+  margin: 18px 0 0;
+  padding: 16px 18px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  display: grid;
+  gap: 14px;
+  font-size: 14px;
+}
+
+.verify-panel p { margin: 0; line-height: 1.6; }
+.verify-panel .hint { color: var(--muted); font-size: 12px; }
+
+.verify-panel .actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 12px;
+}
 
 .locked-note {
   display: flex;
@@ -563,6 +623,18 @@ button.link:hover { text-decoration: underline; }
 
 .badge.sticky { color: var(--warn); border-color: rgba(244, 189, 110, 0.5); background: rgba(244, 189, 110, 0.12); }
 .badge.locked { color: var(--danger); border-color: rgba(255, 156, 156, 0.5); background: rgba(255, 156, 156, 0.12); }
+
+/* The verification badge carries a name — "IIT Bombay", not a state — so it
+   keeps its own capitals and spacing rather than the shouted look of the rest. */
+.badge.verified {
+  color: var(--green);
+  border-color: rgba(109, 218, 176, 0.5);
+  background: rgba(109, 218, 176, 0.12);
+  text-transform: none;
+  letter-spacing: 0.2px;
+  font-size: 11px;
+  font-weight: 600;
+}
 
 .post-body { margin: 8px 0 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .post-body .greentext { color: var(--green); }
@@ -839,8 +911,9 @@ a.thumb-link.loading::before {
   main { padding-bottom: 44px; }
 
   /* 16px keeps iOS from zooming the viewport when a field takes focus. */
-  .post-form input[type="text"],
-  .post-form textarea { font-size: 16px; }
+  .fields input[type="text"],
+  .fields input[type="email"],
+  .fields textarea { font-size: 16px; }
 
   .thread { padding: 2px 10px; }
   .post.reply { margin-left: 0; padding-left: 10px; }

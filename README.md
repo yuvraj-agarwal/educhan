@@ -21,8 +21,138 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
-a paginated board index, a catalog view, and threads with quote links.
-Verification badges and moderation tooling are not built yet.
+a paginated board index, a catalog view, threads with quote links, optional
+institutional verification, and key-authenticated moderation. Janitor accounts,
+bans, and reports are not built yet.
+
+## Verified Anonymity
+
+A poster can prove they hold an address at a real institution and carry a badge
+for it — `[Verified: IIT Bombay]` — while posting as anonymously as everybody
+else. It is entirely optional, off by default on every individual post, and
+switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
+
+```
+  you@iitb.ac.in
+       │   checked against the domain allowlist
+       ▼
+  six-digit code, emailed — stored hashed, expires in 15 minutes
+       │   confirmed
+       ▼
+  signed credential in an HttpOnly cookie: { label, expiry, random id }
+       │   ticked per post, off by default
+       ▼
+  [Verified: IIT Bombay]
+
+  All the database ever holds: HMAC(secret, address), the label, and an
+  expiry rounded up to the day — in a table with no path to any post.
+```
+
+1. Submit an institutional address on `/verify`.
+2. The domain is checked against the allowlist, which decides both whether it
+   counts as academic and what the badge will say.
+3. A six-digit code is emailed. It is stored hashed and expires in 15 minutes.
+4. Submitting the code exchanges it for a signed, opaque credential, held in an
+   `HttpOnly` cookie for 180 days.
+5. The posting form grows a **post with [Verified: …]** checkbox. Tick it per
+   post; leave it alone and the post is indistinguishable from any other.
+
+### The privacy property, exactly
+
+The design goal is that **no one — the operator included — can link a badge to
+an email address or to a poster's other posts.** Concretely, this is what an
+operator with full database access, root on the machine, and the server secret
+can and cannot work out.
+
+**What they can see**
+
+- That an address at some institution is verified, as
+  `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
+- Roughly when a credential was issued — to the *day*, because the stored
+  expiry is rounded up to a UTC day boundary and nothing else is timestamped.
+- Which posts carry which badge, because a badge is displayed on the post.
+- **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
+  the secret, an operator who suspects a particular address can recompute the
+  HMAC and check whether that person is verified. This is inherent to a
+  uniqueness key and is the sharpest edge of the design. It answers "is
+  ana@iitb.ac.in verified?" — it does not answer "who is verified?" or "which
+  posts are theirs?".
+
+**What they cannot do**
+
+- Recover an address from the database. It is never written, in any table, at
+  any point in the flow — not even transiently, and not in the logs. A test
+  (`TestNoEmailAddressReachesTheDatabase`) verifies the whole flow and then
+  searches every column of every table for it, with positive controls so it
+  cannot pass by failing to look.
+- Link a credential to a post. The credential carries a label, an expiry, and a
+  random identifier — nothing derived from the address. Posts store the badge
+  as text and hold no reference to the record it came from.
+- Link a post to a verification record by timing. Verification tables carry no
+  `created_at`, and using a credential updates nothing, so there is no "last
+  used" to line up against a post.
+- Join the two. There is no foreign key and no shared column between the
+  verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
+  asserts the exact column list of both tables so a future migration cannot
+  quietly add one.
+- Link two badged posts to each other. Two posts showing the same institution
+  say only that: an institution with one verified user and one badged post is
+  as anonymous as its user base is large. **A badge narrows you to your
+  institution — that is the whole of what it discloses, and it is not nothing
+  at a small one.**
+
+Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
+uniqueness key, so everyone re-verifies and their old rows match nothing.
+
+### Domain allowlist
+
+The allowlist is a **file**, not a table: the mapping from a domain to a badge
+is configuration rather than data about anybody, so it stays out of the
+database and gets reviewed in a diff. The default is embedded in the binary at
+[`internal/app/verify_domains.txt`](internal/app/verify_domains.txt).
+
+```
+ac.in                     # a suffix: ana@cse.nitk.ac.in earns [nitk.ac.in]
+iitb.ac.in = IIT Bombay   # an institution: ana@cse.iitb.ac.in earns [IIT Bombay]
+```
+
+A suffix entry accepts anything under it and badges the domain one level below
+the suffix, so two departments of one university read the same. An institution
+entry names the place instead, and wins over any suffix. An address sitting
+directly on a suffix (`someone@ac.in`) is refused: a namespace is not an
+institution. `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
+built-in list rather than extending it, so a deployment sees exactly what it
+configured.
+
+### Email delivery
+
+Delivery goes through `internal/mailer.Sender`, the same way blob storage goes
+through `internal/media.Store`. With no provider configured the development
+sender prints the code to stdout, so the feature is usable and testable out of
+the box:
+
+```
+[educhan] verification code for ana@iitb.ac.in: 481920 (valid for 15m0s)
+```
+
+That sender prints the address, which makes it a development tool only — it is
+the one place in educhan an address is rendered at all. Adding SMTP or Google
+Workspace means writing another `Sender` and assigning it to `Config.Sender`;
+no handler and no SQL changes.
+
+### Anti-abuse
+
+| Limit | Effect |
+| --- | --- |
+| One credential per address | Re-verifying issues a new credential and revokes the previous one, so a mailbox is one identity however many browsers it uses |
+| Plus-addressing stripped | `ana+one@` and `ana+two@` are the same mailbox. Dots are *not* stripped: that is a Gmail convention, and applying it everywhere would fold two real people at one institution together |
+| Code request cooldown | `EDUCHAN_VERIFY_COOLDOWN`, applied per client address **and** per address hash, so neither a client can walk a list of addresses nor a mailbox be flooded from a pool of hosts |
+| Five wrong codes | The pending verification is destroyed and a fresh code is the only way on, which is what makes a six-digit code safe |
+| Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default, then verify again |
+
+Cookies are `HttpOnly` and `SameSite=Lax` — the latter is what stops another
+site spending a credential on the holder's behalf — and `Secure` whenever the
+request arrived over TLS.
 
 ## Image attachments
 
@@ -66,6 +196,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails |
 | Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Housekeeping | Threads past a board's thread limit are pruned; per-client cooldowns limit new threads, replies, and uploads |
 
@@ -145,6 +276,11 @@ settings the compose file exposes.
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the media store writes originals and thumbnails to |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
+| `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
+| `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
+| `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
+| `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
+| `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 
 ### Flood control
 
@@ -209,14 +345,24 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage"}` |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
+| `GET` | `/api/verify` | What this browser holds — `{"enabled","verified","label","expires_at"}` |
+| `POST` | `/api/verify/request` | Email a code — `{"email"}` |
+| `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}` |
+| `DELETE` | `/api/verify` | Forget the credential on this device |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
+
+`"badge": true` posts with the verified institution the caller's credential
+carries. Asking for a badge without a usable credential is refused with `403`
+rather than quietly posted bare, and refusing it costs no posting cooldown.
+Verification cookies are set by `/api/verify/confirm`, so an HTTP client needs
+a cookie jar (`curl -c/-b`).
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -228,6 +374,16 @@ curl -s localhost:8080/api/boards
 curl -s -X POST localhost:8080/api/boards/general/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
+
+# Verification, end to end. With no mail provider configured the code is
+# printed to the server's stdout.
+curl -s -c jar -X POST localhost:8080/api/verify/request \
+  -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in"}'
+curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
+  -H 'Content-Type: application/json' -d '{"code":"481920"}'
+curl -s -b jar -X POST localhost:8080/api/boards/general/threads \
+  -H 'Content-Type: application/json' \
+  -d '{"subject":"from the inside","body":"we saw the same numbers","badge":true}'
 ```
 
 ### Moderation API

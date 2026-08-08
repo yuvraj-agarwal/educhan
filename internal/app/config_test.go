@@ -27,6 +27,18 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	if cfg.ThreadCooldown <= 0 || cfg.PostCooldown <= 0 || cfg.UploadCooldown <= 0 {
 		t.Errorf("flood control must be on by default, got %+v", cfg)
 	}
+	// Verification is opt-in: without a secret there is nothing to sign a
+	// credential with, so the feature stays off.
+	if cfg.VerifySecret != "" {
+		t.Errorf("VerifySecret = %q, want empty by default", cfg.VerifySecret)
+	}
+	if cfg.VerifyCodeTTL != defaultVerifyCodeTTL || cfg.VerifyCredentialTTL != defaultVerifyCredentialTTL {
+		t.Errorf("verification TTLs = %s/%s, want %s/%s",
+			cfg.VerifyCodeTTL, cfg.VerifyCredentialTTL, defaultVerifyCodeTTL, defaultVerifyCredentialTTL)
+	}
+	if cfg.VerifyCooldown <= 0 {
+		t.Error("code requests must be rate limited by default")
+	}
 }
 
 func TestConfigFromEnvOverrides(t *testing.T) {
@@ -38,10 +50,23 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	t.Setenv("EDUCHAN_POST_COOLDOWN", "1500ms")
 	t.Setenv("EDUCHAN_UPLOAD_COOLDOWN", "20")
 	t.Setenv("EDUCHAN_LOG_FORMAT", "json")
+	t.Setenv("EDUCHAN_VERIFY_SECRET", " verify-me ")
+	t.Setenv("EDUCHAN_VERIFY_CODE_TTL", "300")
+	t.Setenv("EDUCHAN_VERIFY_CREDENTIAL_TTL", "24h")
+	t.Setenv("EDUCHAN_VERIFY_COOLDOWN", "90")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if cfg.VerifySecret != "verify-me" {
+		t.Errorf("VerifySecret = %q, want it trimmed to verify-me", cfg.VerifySecret)
+	}
+	if cfg.VerifyCodeTTL != 5*time.Minute || cfg.VerifyCredentialTTL != 24*time.Hour {
+		t.Errorf("verification TTLs = %s/%s, want 5m0s/24h0m0s", cfg.VerifyCodeTTL, cfg.VerifyCredentialTTL)
+	}
+	if cfg.VerifyCooldown != 90*time.Second {
+		t.Errorf("VerifyCooldown = %s, want 1m30s", cfg.VerifyCooldown)
 	}
 	if cfg.Addr != "127.0.0.1:9000" || cfg.DatabaseURL != "postgres://example/db" {
 		t.Errorf("unexpected address or database URL: %+v", cfg)
@@ -124,6 +149,14 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 		t.Setenv("EDUCHAN_TRUST_PROXY", "-1")
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Error("expected an error for a negative proxy hop count")
+		}
+	})
+	// A zero TTL would mint codes and credentials that have already expired,
+	// which reads as the feature quietly not working.
+	t.Run("zero verification TTL", func(t *testing.T) {
+		t.Setenv("EDUCHAN_VERIFY_CREDENTIAL_TTL", "0")
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Error("expected an error for a zero credential TTL")
 		}
 	})
 }

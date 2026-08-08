@@ -41,6 +41,11 @@ services:
       # development value; generate a real secret for anything reachable.
       EDUCHAN_POSTER_ID_SALT: ${EDUCHAN_POSTER_ID_SALT:-local-development-salt}
       EDUCHAN_MOD_KEY: ${EDUCHAN_MOD_KEY:-dev-mod-key}
+      # Institutional verification. No mail provider is configured, so codes go
+      # to this container's stdout — `docker compose logs -f app` is the inbox.
+      # That prints the address alongside the code, which is fine locally and
+      # is why a real deployment needs a Sender first. See the README.
+      EDUCHAN_VERIFY_SECRET: ${EDUCHAN_VERIFY_SECRET:-dev-verify-secret}
       # The app is published directly on the host, so no proxy hop to trust.
       EDUCHAN_TRUST_PROXY: ${EDUCHAN_TRUST_PROXY:-0}
       EDUCHAN_THREAD_COOLDOWN: ${EDUCHAN_THREAD_COOLDOWN:-30}

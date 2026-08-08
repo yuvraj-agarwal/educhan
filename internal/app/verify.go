@@ -1,0 +1,509 @@
+package app
+
+import (
+	"context"
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/big"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/mailer"
+)
+
+// Verified Anonymity: a poster proves they hold an address at a real
+// institution and may carry a badge for it, while the server stays unable to
+// say which address wrote which post — or, without guessing the address, which
+// address any record belongs to at all.
+//
+// Three rules hold that up, and every function in this file is written to keep
+// them true:
+//
+//  1. The address is never stored. It exists in memory for the length of one
+//     request, long enough to check its domain and send a code to it. What is
+//     kept is HMAC(EDUCHAN_VERIFY_SECRET, normalised address), which exists
+//     only to stop one mailbox minting unlimited identities.
+//  2. The credential carries no trace of the address. It is a signed blob
+//     holding a badge label, an expiry, and a random identifier — nothing that
+//     can be reversed or correlated back to the mailbox that earned it.
+//  3. Nothing links a credential to a post. The badge is copied onto the post
+//     as text, the verification tables reference no post, and using a
+//     credential updates no row, so there is no timestamp to line up against.
+//
+// README.md states the property in full, including what an operator holding the
+// whole database can still work out.
+
+const (
+	// verifyCookieName holds the issued credential. It is the badge: whoever
+	// holds it can post with it, which is the same trade a tripcode makes.
+	verifyCookieName = "educhan_verify"
+	// pendingCookieName holds the in-progress verification, so confirming a
+	// code does not mean sending the address a second time.
+	pendingCookieName = "educhan_verify_pending"
+	pendingCookiePath = "/api/verify"
+
+	// verifyCodeDigits is short enough to read out of an email and retype.
+	// maxVerifyAttempts is what keeps it safe: five wrong guesses against a
+	// one-in-a-million code, and the pending verification is destroyed.
+	verifyCodeDigits  = 6
+	maxVerifyAttempts = 5
+
+	// credentialVersion prefixes an issued credential so the format can change
+	// without a stale cookie being read as the new shape.
+	credentialVersion = "v1"
+)
+
+// Why a request carries no usable badge. The posting path turns these into
+// messages a poster can act on, so they distinguish "never verified" from
+// "verified, but it has run out".
+var (
+	errNoCredential      = errors.New("not verified")
+	errCredentialExpired = errors.New("verification expired")
+	errCredentialRevoked = errors.New("verification superseded")
+)
+
+// credential is what a verified poster holds. It is signed by the server and
+// opaque to everyone else, though not secret from its holder: the label and the
+// expiry are both things they already know. The address is not among them, and
+// neither is anything derived from it — id is random, not a hash of a mailbox.
+type credential struct {
+	Label   string `json:"label"`
+	ID      string `json:"id"`
+	Expires int64  `json:"exp"`
+}
+
+/* Handlers ----------------------------------------------------------------- */
+
+func (a *App) verifyEnabled() bool { return a.cfg.VerifySecret != "" }
+
+// requireVerify gates the endpoints that mint state. Without a secret there is
+// nothing to sign a credential with, so the feature stays off, the way
+// moderation does without a key.
+func (a *App) requireVerify(w http.ResponseWriter) bool {
+	if !a.verifyEnabled() {
+		writeError(w, http.StatusForbidden, "verification is not configured")
+		return false
+	}
+	return true
+}
+
+// handleVerifyStatus reports what the caller's browser currently holds. The
+// credential cookie is HttpOnly, so this endpoint is how the UI learns whether
+// to offer the badge checkbox at all.
+func (a *App) handleVerifyStatus(w http.ResponseWriter, r *http.Request) {
+	out := map[string]any{"enabled": a.verifyEnabled(), "verified": false}
+	if !a.verifyEnabled() {
+		writeJSON(w, http.StatusOK, out)
+		return
+	}
+
+	cred, err := a.credential(r.Context(), r)
+	switch {
+	case err == nil:
+		out["verified"] = true
+		out["label"] = cred.Label
+		out["expires_at"] = time.Unix(cred.Expires, 0).UTC()
+	case errors.Is(err, errNoCredential):
+	case errors.Is(err, errCredentialExpired), errors.Is(err, errCredentialRevoked):
+		// The cookie is real but spent. Saying so lets the page explain the
+		// missing badge instead of pretending verification never happened.
+		out["reason"] = err.Error()
+	default:
+		a.fail(w, r, err, "could not read verification")
+		return
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
+// handleVerifyForget drops the credential from this browser. The server keeps
+// its record — the point of that record is that one address gets one badge —
+// but it has nothing in it that says whose browser this was.
+func (a *App) handleVerifyForget(w http.ResponseWriter, r *http.Request) {
+	clearCookie(w, verifyCookieName, "/")
+	clearCookie(w, pendingCookieName, pendingCookiePath)
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": a.verifyEnabled(), "verified": false})
+}
+
+type verifyRequestBody struct {
+	Email string `json:"email"`
+}
+
+// handleVerifyRequest checks a submitted address against the allowlist and
+// emails it a code. The address reaches a database column at no point in this
+// handler: what is written is its HMAC, and what is sent is discarded with the
+// request.
+func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
+	if !a.requireVerify(w) {
+		return
+	}
+	var req verifyRequestBody
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+
+	addr, err := parseEmail(req.Email)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	label, ok := a.domains.lookup(addr.Domain)
+	if !ok {
+		writeError(w, http.StatusBadRequest,
+			addr.Domain+" is not a recognised institutional domain")
+		return
+	}
+
+	// Both cooldowns before anything is minted: one address cannot be mailed on
+	// a loop, and one client cannot walk a list of addresses.
+	emailHash := a.emailHash(addr.Key)
+	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	if !a.allowAction(w, "requesting codes", []cooldown{
+		{limiter: a.verifyLimiter, key: "ip|" + clientKey},
+		{limiter: a.verifyLimiter, key: "email|" + hex.EncodeToString(emailHash)},
+	}) {
+		return
+	}
+
+	code, err := verificationCode()
+	if err != nil {
+		a.fail(w, r, err, "could not start verification")
+		return
+	}
+	token, err := randomToken()
+	if err != nil {
+		a.fail(w, r, err, "could not start verification")
+		return
+	}
+
+	// Stored before it is sent: a code nobody receives expires quietly, while a
+	// code that arrives and does not work reads as the feature being broken.
+	if err := a.store.StartVerification(r.Context(), pendingVerification{
+		EmailHash: emailHash,
+		TokenHash: hashToken(token),
+		CodeHash:  a.codeHash(token, code),
+		Label:     label,
+		ExpiresAt: time.Now().Add(a.cfg.VerifyCodeTTL),
+	}); err != nil {
+		a.fail(w, r, err, "could not start verification")
+		return
+	}
+
+	if err := a.sender.SendCode(r.Context(), mailer.Code{
+		Address: addr.Delivery,
+		Code:    code,
+		TTL:     a.cfg.VerifyCodeTTL,
+	}); err != nil {
+		// Deliberately logged without the address: an undeliverable mailbox is
+		// not worth writing down anywhere this feature can see.
+		a.log.Error("could not send verification code", "error", err, "institution", label)
+		writeError(w, http.StatusBadGateway, "could not send the code, try again in a moment")
+		return
+	}
+
+	a.setCookie(w, r, pendingCookieName, token, pendingCookiePath, a.cfg.VerifyCodeTTL)
+	writeJSON(w, http.StatusAccepted, map[string]any{
+		"status":     "sent",
+		"label":      label,
+		"expires_in": int(a.cfg.VerifyCodeTTL.Seconds()),
+	})
+}
+
+type verifyConfirmBody struct {
+	Code string `json:"code"`
+}
+
+// handleVerifyConfirm exchanges a correct code for a credential. Success also
+// revokes whatever credential that address held before, which is the store's
+// doing: one row per address, and the previous identifier goes with it.
+func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
+	if !a.requireVerify(w) {
+		return
+	}
+	var req verifyConfirmBody
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	pending, err := r.Cookie(pendingCookieName)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "no verification in progress, request a code first")
+		return
+	}
+
+	// Codes get read off a screen and retyped, so the spacing people add is
+	// not a wrong answer.
+	code := strings.Map(func(ru rune) rune {
+		if ru == ' ' || ru == '-' {
+			return -1
+		}
+		return ru
+	}, strings.TrimSpace(req.Code))
+	if code == "" {
+		writeError(w, http.StatusBadRequest, "code is required")
+		return
+	}
+
+	id, err := randomToken()
+	if err != nil {
+		a.fail(w, r, err, "could not complete verification")
+		return
+	}
+	expires := time.Now().Add(a.cfg.VerifyCredentialTTL)
+
+	label, err := a.store.ConfirmVerification(r.Context(), confirmVerification{
+		TokenHash:        hashToken(pending.Value),
+		CodeHash:         a.codeHash(pending.Value, code),
+		CredentialIDHash: hashToken(id),
+		// Rounded up so the stored row dates the issuance to the day rather
+		// than the second, and still outlives the credential it revokes.
+		ExpiresAt: nextDayBoundary(expires),
+	})
+	switch {
+	case errors.Is(err, errNotFound):
+		clearCookie(w, pendingCookieName, pendingCookiePath)
+		writeError(w, http.StatusBadRequest, "no verification in progress, request a code first")
+		return
+	case errors.Is(err, errVerifyExpired):
+		clearCookie(w, pendingCookieName, pendingCookiePath)
+		writeError(w, http.StatusBadRequest, "that code has expired, request a new one")
+		return
+	case errors.Is(err, errVerifyAttempts):
+		clearCookie(w, pendingCookieName, pendingCookiePath)
+		writeError(w, http.StatusTooManyRequests, "too many wrong codes, request a new one")
+		return
+	case errors.Is(err, errVerifyCode):
+		writeError(w, http.StatusBadRequest, "that code is not right")
+		return
+	case err != nil:
+		a.fail(w, r, err, "could not complete verification")
+		return
+	}
+
+	token, err := a.signCredential(credential{Label: label, ID: id, Expires: expires.Unix()})
+	if err != nil {
+		a.fail(w, r, err, "could not complete verification")
+		return
+	}
+	a.setCookie(w, r, verifyCookieName, token, "/", a.cfg.VerifyCredentialTTL)
+	clearCookie(w, pendingCookieName, pendingCookiePath)
+	a.log.Info("verification issued", "institution", label)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"enabled":    true,
+		"verified":   true,
+		"label":      label,
+		"expires_at": expires.UTC(),
+	})
+}
+
+/* Using a credential -------------------------------------------------------- */
+
+// credential reads and checks the credential a request carries: signature,
+// then expiry, then the server's own record of it. The label comes back from
+// that record rather than from the cookie, so the server's word is what a badge
+// says.
+//
+// The lookup writes nothing. A "last used" column here would be a timestamp
+// that lines up with a post, which is exactly the correlation this feature
+// promises not to keep.
+func (a *App) credential(ctx context.Context, r *http.Request) (credential, error) {
+	cookie, err := r.Cookie(verifyCookieName)
+	if err != nil || cookie.Value == "" {
+		return credential{}, errNoCredential
+	}
+	cred, ok := a.parseCredential(cookie.Value)
+	if !ok {
+		return credential{}, errNoCredential
+	}
+	if time.Now().After(time.Unix(cred.Expires, 0)) {
+		return credential{}, errCredentialExpired
+	}
+
+	label, err := a.store.CredentialLabel(ctx, hashToken(cred.ID))
+	if errors.Is(err, errNotFound) {
+		// The signature is good but the record is gone: either the address was
+		// verified again — which issues a new credential and drops this one —
+		// or the row was pruned after expiry.
+		return credential{}, errCredentialRevoked
+	}
+	if err != nil {
+		return credential{}, err
+	}
+	cred.Label = label
+	return cred, nil
+}
+
+// postBadge resolves the badge a submission asked for. It answers "" for a post
+// made without one, which is every post by default.
+//
+// A request for a badge that cannot be honoured is refused rather than quietly
+// posted bare: the poster asked to be seen as verified, and finding out
+// afterwards that they were not is worse than being told now.
+func (a *App) postBadge(w http.ResponseWriter, r *http.Request, want bool) (string, bool) {
+	if !want {
+		return "", true
+	}
+	if !a.verifyEnabled() {
+		writeError(w, http.StatusForbidden, "verification is not configured")
+		return "", false
+	}
+
+	cred, err := a.credential(r.Context(), r)
+	switch {
+	case err == nil:
+		return cred.Label, true
+	case errors.Is(err, errNoCredential):
+		writeError(w, http.StatusForbidden, "verify an institutional address before posting with a badge")
+	case errors.Is(err, errCredentialExpired):
+		writeError(w, http.StatusForbidden, "your verification has expired, verify again to post with a badge")
+	case errors.Is(err, errCredentialRevoked):
+		writeError(w, http.StatusForbidden, "this verification is no longer valid, verify again to post with a badge")
+	default:
+		a.fail(w, r, err, "could not read verification")
+	}
+	return "", false
+}
+
+/* Credential format --------------------------------------------------------- */
+
+// signCredential renders a credential as "v1.<claims>.<mac>", the claims being
+// base64url JSON. The encoding is not encryption and is not meant to be: the
+// holder may read their own badge and expiry, and the MAC is what stops them
+// writing a new one.
+func (a *App) signCredential(c credential) (string, error) {
+	claims, err := json.Marshal(c)
+	if err != nil {
+		return "", fmt.Errorf("encode credential: %w", err)
+	}
+	signed := credentialVersion + "." + base64.RawURLEncoding.EncodeToString(claims)
+	return signed + "." + base64.RawURLEncoding.EncodeToString(a.credentialMAC(signed)), nil
+}
+
+// parseCredential checks a credential's signature and decodes its claims. It
+// deliberately stops there: expiry and revocation belong to the caller, which
+// has the context to look one up and the vocabulary to explain the other.
+func (a *App) parseCredential(token string) (credential, bool) {
+	cut := strings.LastIndexByte(token, '.')
+	if cut < 0 {
+		return credential{}, false
+	}
+	signed, sig := token[:cut], token[cut+1:]
+	claims, ok := strings.CutPrefix(signed, credentialVersion+".")
+	if !ok {
+		return credential{}, false
+	}
+
+	mac, err := base64.RawURLEncoding.DecodeString(sig)
+	if err != nil || !hmac.Equal(mac, a.credentialMAC(signed)) {
+		return credential{}, false
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(claims)
+	if err != nil {
+		return credential{}, false
+	}
+	var c credential
+	if err := json.Unmarshal(payload, &c); err != nil || c.ID == "" || c.Label == "" {
+		return credential{}, false
+	}
+	return c, true
+}
+
+func (a *App) credentialMAC(value string) []byte {
+	return hmacSum([]byte(a.cfg.VerifySecret), "credential:"+value)
+}
+
+// emailHash is the uniqueness key: the only thing derived from an address that
+// educhan keeps. It is keyed by the server secret, so a stolen database cannot
+// be tested against a list of addresses without it, and it is stored in a table
+// that references nothing.
+func (a *App) emailHash(key string) []byte {
+	return hmacSum([]byte(a.cfg.VerifySecret), "email:"+key)
+}
+
+// codeHash binds a pending code to the pending verification it belongs to, so
+// the stored hash of "123456" differs between two verifications in flight.
+func (a *App) codeHash(token, code string) []byte {
+	return hmacSum([]byte(a.cfg.VerifySecret), "code:"+token+":"+code)
+}
+
+// hashToken reduces a random identifier to what the database holds. The
+// identifiers are 128-bit and random, so a plain digest is enough: there is no
+// dictionary of them to iterate.
+func hashToken(token string) []byte {
+	sum := sha256.Sum256([]byte(token))
+	return sum[:]
+}
+
+func randomToken() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate token: %w", err)
+	}
+	return base64.RawURLEncoding.EncodeToString(buf), nil
+}
+
+// verificationCode returns the digits emailed to an address, drawn uniformly
+// so every code is as likely as any other.
+func verificationCode() (string, error) {
+	space := new(big.Int).Exp(big.NewInt(10), big.NewInt(verifyCodeDigits), nil)
+	n, err := rand.Int(rand.Reader, space)
+	if err != nil {
+		return "", fmt.Errorf("generate verification code: %w", err)
+	}
+	return fmt.Sprintf("%0*d", verifyCodeDigits, n), nil
+}
+
+// nextDayBoundary rounds a time up to the next UTC midnight. Credential rows
+// are stored with this rather than the exact expiry, which leaves an operator
+// able to tell what day an address was verified and not what minute — the
+// resolution that would let issuance be lined up against a post.
+func nextDayBoundary(t time.Time) time.Time {
+	utc := t.UTC()
+	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+}
+
+/* Cookies ------------------------------------------------------------------- */
+
+func (a *App) setCookie(w http.ResponseWriter, r *http.Request, name, value, path string, ttl time.Duration) {
+	http.SetCookie(w, &http.Cookie{
+		Name:  name,
+		Value: value,
+		Path:  path,
+		// Lax is what keeps a credential from being spent by another site
+		// posting on the holder's behalf; the API has no other CSRF defence.
+		SameSite: http.SameSiteLaxMode,
+		HttpOnly: true,
+		Secure:   a.requestIsHTTPS(r),
+		MaxAge:   int(ttl.Seconds()),
+	})
+}
+
+func clearCookie(w http.ResponseWriter, name, path string) {
+	http.SetCookie(w, &http.Cookie{
+		Name:     name,
+		Path:     path,
+		SameSite: http.SameSiteLaxMode,
+		HttpOnly: true,
+		MaxAge:   -1,
+	})
+}
+
+// requestIsHTTPS reports whether the browser reached the server over TLS, so a
+// deployment that terminates TLS at a proxy still marks its cookies Secure.
+// X-Forwarded-Proto is read on the same terms as X-Forwarded-For: only when the
+// operator has said a proxy is there.
+func (a *App) requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+	if a.cfg.TrustedProxyHops <= 0 {
+		return false
+	}
+	proto, _, _ := strings.Cut(r.Header.Get("X-Forwarded-Proto"), ",")
+	return strings.EqualFold(strings.TrimSpace(proto), "https")
+}

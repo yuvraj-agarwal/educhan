@@ -109,7 +109,7 @@ func (c *client) fetch(path string, header http.Header) (*http.Response, []byte)
 	for k, values := range header {
 		req.Header[k] = values
 	}
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.http.Do(req)
 	if err != nil {
 		c.t.Fatalf("GET %s: %v", path, err)
 	}
