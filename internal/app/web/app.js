@@ -8,6 +8,15 @@
 //   /{slug}/thread/{no}   thread
 
 const NAME_STORAGE_KEY = "educhan:name";
+// The verification credential lives in sessionStorage and is sent only on the
+// posts that ask for a badge, in this header. It is deliberately not a cookie:
+// a cookie would ride along on every request to the origin — anonymous posts,
+// page loads, images — and a token attached to everything is a session
+// identifier however it is described. sessionStorage also means the badge
+// lasts as long as the tab, which is a shorter life than the credential's own
+// expiry and the safer default of the two.
+const CREDENTIAL_STORAGE_KEY = "educhan:credential";
+const CREDENTIAL_HEADER = "X-Educhan-Credential";
 const ACCEPTED_IMAGES = "image/jpeg,image/png,image/webp,image/gif";
 const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|gif)$/i;
 // Fine pointers get quote previews on hover; touch screens have no hover to
@@ -17,9 +26,9 @@ const HAS_HOVER = window.matchMedia("(hover: hover) and (pointer: fine)").matche
 const state = {
   boards: [],
   route: { view: "home" },
-  // What this browser currently holds. The credential cookie is HttpOnly, so
-  // the server is the only thing that can answer this.
-  verification: { enabled: false, verified: false, label: "", reason: "" },
+  // enabled comes from the server; badge is read out of the credential this
+  // tab holds, which the server is never asked about outside of using it.
+  verification: { enabled: false, badge: null },
 };
 
 const el = {
@@ -33,7 +42,10 @@ const el = {
 /* API ---------------------------------------------------------------------- */
 
 async function api(path, options = {}) {
-  const init = { headers: {}, ...options };
+  // The caller's headers are copied rather than used in place: this function
+  // adds to them, and a caller passing the same object twice should not
+  // accumulate whatever the first call decided.
+  const init = { ...options, headers: { ...(options.headers || {}) } };
   // FormData sets its own multipart content type, boundary included.
   if (init.body !== undefined && !(init.body instanceof FormData)) {
     init.headers["Content-Type"] = "application/json";
@@ -284,9 +296,11 @@ function formHTML({ kind, threadNo = null, open = false, locked = false }) {
     ? ""
     : `<label class="sage"><input type="checkbox" name="sage" /> sage (reply without bumping)</label>`;
   // Off by default and per post: a verified poster is anonymous unless they
-  // say otherwise on this particular post.
-  const badge = state.verification.verified
-    ? `<label class="sage"><input type="checkbox" name="badge" /> post with ${verifiedBadgeHTML(state.verification.label)}</label>`
+  // say otherwise on this particular post, and the credential is sent only
+  // when they do.
+  const held = state.verification.badge;
+  const badge = held
+    ? `<label class="sage"><input type="checkbox" name="badge" /> post with ${verifiedBadgeHTML(held.label)}</label>`
     : "";
 
   return `
@@ -563,20 +577,89 @@ async function renderThread(route) {
 // would earn, so a reload starts over rather than resuming.
 let verifyStep = { step: "email", label: "" };
 
-async function loadVerification() {
+// Why the badge that was here has gone, when it is worth saying: it ran out, or
+// the server refused it. Shown once on the verification page, which is the only
+// page that can do anything about it.
+let badgeLost = "";
+
+// sessionStorage throws rather than degrading in some privacy modes, so every
+// access is guarded. Losing the credential costs a re-verification, which is
+// the same thing closing the tab costs.
+function storedCredential() {
   try {
-    const status = await api("/api/verify");
-    state.verification = {
-      enabled: !!status.enabled,
-      verified: !!status.verified,
-      label: status.label || "",
-      reason: status.reason || "",
-      expires_at: status.expires_at || null,
-    };
+    return sessionStorage.getItem(CREDENTIAL_STORAGE_KEY) || "";
+  } catch {
+    return "";
+  }
+}
+
+function storeCredential(token) {
+  try {
+    sessionStorage.setItem(CREDENTIAL_STORAGE_KEY, token);
+  } catch {
+    showNotice("This browser will not let the page store your badge, so it cannot be used here.");
+  }
+}
+
+function forgetCredential() {
+  try {
+    sessionStorage.removeItem(CREDENTIAL_STORAGE_KEY);
+  } catch {
+    // Nothing was stored, so nothing needs removing.
+  }
+  state.verification.badge = null;
+}
+
+// readBadge decodes the claims out of the credential this tab holds. The
+// signature is not checked here and could not be — the key is the server's.
+// This only decides what to display and whether to offer the checkbox; the
+// server re-derives the label from its own record on every badged post, so a
+// forged local claim buys nothing but a 403.
+function readBadge() {
+  const token = storedCredential();
+  if (!token) {
+    return null;
+  }
+  const parts = token.split(".");
+  if (parts.length !== 3 || parts[0] !== "v1") {
+    forgetCredential();
+    return null;
+  }
+  try {
+    const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");
+    const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);
+    // Decoded as UTF-8 rather than through atob's byte string, so an
+    // institution with an accent in its name reads correctly.
+    const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));
+    const claims = JSON.parse(new TextDecoder().decode(bytes));
+    if (!claims.label || !claims.exp) {
+      forgetCredential();
+      return null;
+    }
+    const expires = new Date(claims.exp * 1000);
+    if (expires <= new Date()) {
+      forgetCredential();
+      badgeLost = "Your badge has expired.";
+      return null;
+    }
+    return { token, label: claims.label, expires };
+  } catch {
+    forgetCredential();
+    return null;
+  }
+}
+
+async function loadVerification() {
+  let enabled = false;
+  try {
+    // The only thing worth asking the server: whether the feature exists here.
+    // What this tab holds is a local question with a local answer.
+    enabled = !!(await api("/api/verify")).enabled;
   } catch {
     // Verification is an extra; the board works without knowing about it.
-    state.verification = { enabled: false, verified: false, label: "", reason: "" };
+    enabled = false;
   }
+  state.verification = { enabled, badge: enabled ? readBadge() : null };
   return state.verification;
 }
 
@@ -591,7 +674,8 @@ const VERIFY_INTRO = `
     server included — can work back from a post to your address.
   </p>
   <p class="verify-note muted">
-    The badge is off by default on every post. Tick it when you want it.
+    The badge is off by default on every post, and is sent to the server only
+    on the posts you tick it for &mdash; never on the ones you don't.
   </p>`;
 
 function verifyViewHTML() {
@@ -604,27 +688,25 @@ function verifyViewHTML() {
       <p class="empty">Verification is not configured on this server.</p>`;
   }
 
-  if (v.verified) {
-    const until = v.expires_at ? `, good until ${timeHTML(v.expires_at)}` : "";
+  if (v.badge && !verifyStep.replacing) {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
       <div class="verify-panel">
-        <p>Your badge on this device is ${verifiedBadgeHTML(v.label)}${until}.</p>
+        <p>Your badge in this tab is ${verifiedBadgeHTML(v.badge.label)}, good until
+          ${timeHTML(v.badge.expires.toISOString())}.</p>
         <p class="muted">
-          Tick &ldquo;post with&rdquo; on the posting form to use it. Verifying
-          another address replaces this badge and retires this one.
+          Tick &ldquo;post with&rdquo; on the posting form to use it. It is kept
+          in this tab only, so closing the tab means verifying again &mdash; the
+          server hands a badge out once and cannot show you this one a second
+          time. Verifying another address replaces it and retires this one.
         </p>
         <div class="actions">
-          <button class="btn secondary" type="button" data-action="forget-verification">Forget on this device</button>
+          <button class="btn secondary" type="button" data-action="forget-verification">Forget in this tab</button>
           <button class="btn subtle" type="button" data-action="verify-again">Verify another address</button>
         </div>
       </div>`;
   }
-
-  const expired = v.reason
-    ? `<p class="verify-note">Your previous badge is no longer usable (${esc(v.reason)}). Verify again to get a new one.</p>`
-    : "";
 
   if (verifyStep.step === "code") {
     return `
@@ -644,10 +726,14 @@ function verifyViewHTML() {
       </form>`;
   }
 
+  const lost = badgeLost
+    ? `<p class="verify-note">${esc(badgeLost)} Verify again to get a new one.</p>`
+    : "";
+
   return `
     <div class="board-head"><h1>Institutional verification</h1></div>
     ${VERIFY_INTRO}
-    ${expired}
+    ${lost}
     <form class="verify-panel fields" data-verify="request">
       <div class="field">
         <label class="label" for="f-email">Institutional email</label>
@@ -664,6 +750,8 @@ function verifyViewHTML() {
 async function renderVerify() {
   await loadVerification();
   el.main.innerHTML = verifyViewHTML();
+  // Explained once, on the page that can do something about it.
+  badgeLost = "";
   announce("Institutional verification");
 }
 
@@ -1038,9 +1126,13 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  // Forgetting a badge is entirely local: the server was never told which
+  // browser held it, so there is nothing there to tell.
   if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
-    forgetVerification();
+    forgetCredential();
+    verifyStep = { step: "email", label: "" };
+    renderVerify();
     return;
   }
 
@@ -1049,8 +1141,9 @@ document.addEventListener("click", (event) => {
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
   if (restart) {
     event.preventDefault();
-    verifyStep = { step: "email", label: "" };
-    state.verification = { ...state.verification, verified: false, reason: "" };
+    // replacing shows the address form over a badge that is still held and
+    // still usable — it is retired by the new one, not by asking for one.
+    verifyStep = { step: "email", label: "", replacing: true };
     el.main.innerHTML = verifyViewHTML();
     const input = document.getElementById("f-email");
     if (input) input.focus();
@@ -1178,8 +1271,19 @@ el.main.addEventListener("submit", async (event) => {
     return;
   }
 
+  // The one request in the application that carries the credential. It goes
+  // out only because this box is ticked, so an anonymous post is anonymous at
+  // the request layer too, not merely in what it displays.
+  const wantsBadge = data.get("badge") === "on";
+  const held = wantsBadge ? state.verification.badge : null;
+  if (wantsBadge && !held) {
+    showNotice("Your badge is no longer available in this tab — verify again to post with it.");
+    return;
+  }
+  const headers = held ? { [CREDENTIAL_HEADER]: held.token } : undefined;
+
   const isThread = form.dataset.kind === "thread";
-  const payload = { name, body, badge: data.get("badge") === "on" };
+  const payload = { name, body, badge: wantsBadge };
   let path;
   if (isThread) {
     payload.subject = String(data.get("subject") || "");
@@ -1197,7 +1301,7 @@ el.main.addEventListener("submit", async (event) => {
   button.textContent = file ? "Uploading…" : "Posting…";
   clearNotice();
   try {
-    const created = await api(path, { method: "POST", body: requestBody });
+    const created = await api(path, { method: "POST", body: requestBody, headers });
     localStorage.setItem(NAME_STORAGE_KEY, name);
     // Clear before navigating so the draft carried across the re-render is the
     // empty form rather than the post that just went through.
@@ -1208,26 +1312,31 @@ el.main.addEventListener("submit", async (event) => {
     }
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {
+    // A credential the server will not honour again is dropped rather than
+    // offered for the next post; the response says which case this is. The
+    // option goes with it — taking the checkbox out of this form rather than
+    // re-rendering leaves the half-written post exactly where it is — so the
+    // retry that follows is an ordinary post instead of the same refusal.
+    const reason = err.payload && err.payload.credential;
+    if (reason === "expired" || reason === "revoked") {
+      forgetCredential();
+      badgeLost =
+        reason === "expired"
+          ? "Your badge has expired."
+          : "That badge was replaced by a newer verification.";
+      const box = field(form, "badge");
+      const option = box && box.closest("label");
+      if (option) {
+        option.remove();
+      } else if (box) {
+        box.checked = false;
+      }
+    }
     showNotice(errorMessage(err));
     button.disabled = false;
     button.textContent = label;
   }
 });
-
-// forgetVerification drops the credential from this browser. The server's own
-// record stays — one address earns one badge — but it holds nothing that says
-// this browser ever had it.
-async function forgetVerification() {
-  clearNotice();
-  try {
-    await api("/api/verify", { method: "DELETE" });
-  } catch (err) {
-    showNotice(errorMessage(err));
-    return;
-  }
-  verifyStep = { step: "email", label: "" };
-  await renderVerify();
-}
 
 // submitVerification drives both halves of the verification form. Nothing is
 // remembered between them but the badge on offer: the code is confirmed against
@@ -1254,10 +1363,13 @@ async function submitVerification(form) {
       if (input) input.focus();
       return;
     }
-    await api("/api/verify/confirm", {
+    // The one time the credential is ever handed out. It is kept here rather
+    // than set as a cookie, so nothing sends it until a post asks for a badge.
+    const issued = await api("/api/verify/confirm", {
       method: "POST",
       body: JSON.stringify({ code: String(data.get("code") || "") }),
     });
+    storeCredential(issued.credential);
     verifyStep = { step: "email", label: "" };
     await renderVerify();
   } catch (err) {

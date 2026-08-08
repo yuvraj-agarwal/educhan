@@ -36,16 +36,26 @@ import (
 //  3. Nothing links a credential to a post. The badge is copied onto the post
 //     as text, the verification tables reference no post, and using a
 //     credential updates no row, so there is no timestamp to line up against.
+//  4. The credential travels only when it is being used. It is handed to the
+//     client once and presented in a header on the posts that ask for a badge,
+//     so it is absent from every anonymous post, every page load, and every
+//     asset fetch. A cookie would have been attached to all of them, which
+//     would have made the badge a stable identifier across a poster's whole
+//     session whether or not they ever used it.
 //
 // README.md states the property in full, including what an operator holding the
 // whole database can still work out.
 
 const (
-	// verifyCookieName holds the issued credential. It is the badge: whoever
-	// holds it can post with it, which is the same trade a tripcode makes.
-	verifyCookieName = "educhan_verify"
+	// credentialHeader carries the credential on the one kind of request that
+	// needs it: a post asking for its badge. Nothing else reads it, and nothing
+	// attaches it — that is the whole point of it being a header rather than a
+	// cookie, and TestCredentialIsReadOnlyOnTheBadgePath holds the server to it.
+	credentialHeader = "X-Educhan-Credential"
 	// pendingCookieName holds the in-progress verification, so confirming a
-	// code does not mean sending the address a second time.
+	// code does not mean sending the address a second time. It is a cookie
+	// because it is scoped to /api/verify and lives for one code's lifetime: it
+	// goes to the verification endpoints and nowhere else.
 	pendingCookieName = "educhan_verify_pending"
 	pendingCookiePath = "/api/verify"
 
@@ -56,8 +66,17 @@ const (
 	maxVerifyAttempts = 5
 
 	// credentialVersion prefixes an issued credential so the format can change
-	// without a stale cookie being read as the new shape.
+	// without a stored one being read as the new shape.
 	credentialVersion = "v1"
+)
+
+// Machine-readable reasons a badge was refused, returned beside the message so
+// a client can drop a credential the server will not honour again instead of
+// offering it for another post.
+const (
+	credentialMissing = "missing"
+	credentialExpired = "expired"
+	credentialRevoked = "revoked"
 )
 
 // Why a request carries no usable badge. The posting path turns these into
@@ -94,41 +113,16 @@ func (a *App) requireVerify(w http.ResponseWriter) bool {
 	return true
 }
 
-// handleVerifyStatus reports what the caller's browser currently holds. The
-// credential cookie is HttpOnly, so this endpoint is how the UI learns whether
-// to offer the badge checkbox at all.
-func (a *App) handleVerifyStatus(w http.ResponseWriter, r *http.Request) {
-	out := map[string]any{"enabled": a.verifyEnabled(), "verified": false}
-	if !a.verifyEnabled() {
-		writeJSON(w, http.StatusOK, out)
-		return
-	}
-
-	cred, err := a.credential(r.Context(), r)
-	switch {
-	case err == nil:
-		out["verified"] = true
-		out["label"] = cred.Label
-		out["expires_at"] = time.Unix(cred.Expires, 0).UTC()
-	case errors.Is(err, errNoCredential):
-	case errors.Is(err, errCredentialExpired), errors.Is(err, errCredentialRevoked):
-		// The cookie is real but spent. Saying so lets the page explain the
-		// missing badge instead of pretending verification never happened.
-		out["reason"] = err.Error()
-	default:
-		a.fail(w, r, err, "could not read verification")
-		return
-	}
-	writeJSON(w, http.StatusOK, out)
-}
-
-// handleVerifyForget drops the credential from this browser. The server keeps
-// its record — the point of that record is that one address gets one badge —
-// but it has nothing in it that says whose browser this was.
-func (a *App) handleVerifyForget(w http.ResponseWriter, r *http.Request) {
-	clearCookie(w, verifyCookieName, "/")
-	clearCookie(w, pendingCookieName, pendingCookiePath)
-	writeJSON(w, http.StatusOK, map[string]any{"enabled": a.verifyEnabled(), "verified": false})
+// handleVerifyStatus reports whether the feature is configured, and nothing
+// else. It deliberately does not look at the caller's credential: answering
+// "are you verified?" would mean the credential travelling on a request that is
+// not posting a badge, which is exactly the habit this design gives up.
+//
+// The client holds its own credential and can read the label and expiry out of
+// it without asking, so there is nothing here for it to learn. A credential the
+// server has since revoked is discovered on the next post that uses it.
+func (a *App) handleVerifyStatus(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, map[string]any{"enabled": a.verifyEnabled()})
 }
 
 type verifyRequestBody struct {
@@ -290,12 +284,18 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not complete verification")
 		return
 	}
-	a.setCookie(w, r, verifyCookieName, token, "/", a.cfg.VerifyCredentialTTL)
 	clearCookie(w, pendingCookieName, pendingCookiePath)
 	a.log.Info("verification issued", "institution", label)
+
+	// The credential is handed back in the body rather than set as a cookie, so
+	// the client decides when it travels. This is the only time the server ever
+	// shows it: it is not stored in a form that could be handed out again, so a
+	// client that loses it verifies afresh. writeJSON sends no-store, which
+	// keeps it out of any cache on the way.
 	writeJSON(w, http.StatusOK, map[string]any{
 		"enabled":    true,
 		"verified":   true,
+		"credential": token,
 		"label":      label,
 		"expires_at": expires.UTC(),
 	})
@@ -303,20 +303,27 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 
 /* Using a credential -------------------------------------------------------- */
 
-// credential reads and checks the credential a request carries: signature,
+// credential reads and checks the credential a request presents: signature,
 // then expiry, then the server's own record of it. The label comes back from
-// that record rather than from the cookie, so the server's word is what a badge
+// that record rather than from the header, so the server's word is what a badge
 // says.
+//
+// This is the only place in the server that reads credentialHeader, and
+// postBadge is the only caller — a credential is examined when it is being
+// used, on the request that uses it, and at no other time. There is
+// deliberately no cookie fallback: a cookie would arrive on every request to
+// the origin, and a credential that arrives everywhere is a session identifier
+// whatever it is called.
 //
 // The lookup writes nothing. A "last used" column here would be a timestamp
 // that lines up with a post, which is exactly the correlation this feature
 // promises not to keep.
 func (a *App) credential(ctx context.Context, r *http.Request) (credential, error) {
-	cookie, err := r.Cookie(verifyCookieName)
-	if err != nil || cookie.Value == "" {
+	presented := strings.TrimSpace(r.Header.Get(credentialHeader))
+	if presented == "" {
 		return credential{}, errNoCredential
 	}
-	cred, ok := a.parseCredential(cookie.Value)
+	cred, ok := a.parseCredential(presented)
 	if !ok {
 		return credential{}, errNoCredential
 	}
@@ -358,15 +365,25 @@ func (a *App) postBadge(w http.ResponseWriter, r *http.Request, want bool) (stri
 	case err == nil:
 		return cred.Label, true
 	case errors.Is(err, errNoCredential):
-		writeError(w, http.StatusForbidden, "verify an institutional address before posting with a badge")
+		refuseBadge(w, credentialMissing,
+			"verify an institutional address before posting with a badge")
 	case errors.Is(err, errCredentialExpired):
-		writeError(w, http.StatusForbidden, "your verification has expired, verify again to post with a badge")
+		refuseBadge(w, credentialExpired,
+			"your verification has expired, verify again to post with a badge")
 	case errors.Is(err, errCredentialRevoked):
-		writeError(w, http.StatusForbidden, "this verification is no longer valid, verify again to post with a badge")
+		refuseBadge(w, credentialRevoked,
+			"this verification is no longer valid, verify again to post with a badge")
 	default:
 		a.fail(w, r, err, "could not read verification")
 	}
 	return "", false
+}
+
+// refuseBadge answers a post that asked for a badge it cannot have. The reason
+// is machine-readable beside the message, so a client can discard a credential
+// the server will not honour again rather than offering it for the next post.
+func refuseBadge(w http.ResponseWriter, state, msg string) {
+	writeJSON(w, http.StatusForbidden, map[string]any{"error": msg, "credential": state})
 }
 
 /* Credential format --------------------------------------------------------- */
@@ -469,13 +486,18 @@ func nextDayBoundary(t time.Time) time.Time {
 
 /* Cookies ------------------------------------------------------------------- */
 
+// The pending token is the only cookie this feature sets. The credential is
+// not one: see credentialHeader.
+
 func (a *App) setCookie(w http.ResponseWriter, r *http.Request, name, value, path string, ttl time.Duration) {
 	http.SetCookie(w, &http.Cookie{
 		Name:  name,
 		Value: value,
 		Path:  path,
-		// Lax is what keeps a credential from being spent by another site
-		// posting on the holder's behalf; the API has no other CSRF defence.
+		// Lax keeps another site from driving a verification in progress on the
+		// holder's behalf; the API has no other CSRF defence. Posting needs no
+		// such protection now that the credential is a header — a cross-site
+		// form submission carries no header a browser would add for it.
 		SameSite: http.SameSiteLaxMode,
 		HttpOnly: true,
 		Secure:   a.requestIsHTTPS(r),
