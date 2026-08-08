@@ -156,13 +156,19 @@ EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_VERIFY_COOLDOWN=0 make run
 curl -s -c jar -X POST localhost:8080/api/verify/request \
   -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in"}'
 # -> {"status":"sent","label":"IIT Bombay","expires_in":900}; the code is on stdout
-curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
-  -H 'Content-Type: application/json' -d '{"code":"481920"}'
-curl -s -b jar localhost:8080/api/verify            # what this browser holds
-curl -s -b jar -X POST localhost:8080/api/boards/general/threads \
-  -H 'Content-Type: application/json' -d '{"body":"badged","badge":true}'
-curl -s -b jar -X DELETE localhost:8080/api/verify  # forget it on this device
+CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
+  -H 'Content-Type: application/json' -d '{"code":"481920"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
+curl -s localhost:8080/api/verify                   # -> {"enabled":true}, and nothing about you
+curl -s -X POST localhost:8080/api/boards/general/threads \
+  -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
+  -d '{"body":"badged","badge":true}'
+curl -s -X POST localhost:8080/api/boards/general/threads \
+  -H 'Content-Type: application/json' -d '{"body":"anonymous"}'  # no header, no badge
 ```
+
+The credential is returned once and never again: it lives in the client's
+`sessionStorage`, not in a cookie, so `$CRED` is the only copy a shell session has.
 
 Confirm that nothing about the address landed in PostgreSQL — this is the property the
 feature exists to hold up, so check it rather than assuming it:
@@ -205,6 +211,11 @@ the index, and the thread view each have their own narrow-screen layout.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.
+- The verification credential lives in `sessionStorage` under `educhan:credential` and
+  is attached to exactly one request in the whole application: the badged post, in
+  `submit`. `readBadge()` decodes its claims locally to decide what to show — the
+  signature is the server's to check, and it re-derives the label from its own record on
+  every badged post, so a forged local claim buys a 403 and nothing else.
 
 ### Attachments
 
@@ -268,8 +279,27 @@ the index, and the thread view each have their own narrow-screen layout.
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
     stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
     reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
+  - **The credential is a header, not a cookie, and this is load-bearing.** It is
+    returned by `/api/verify/confirm`, kept by the client in `sessionStorage`, and sent
+    in `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
+    attached to every request to the origin, which would turn the badge into a stable
+    identifier for a poster's whole session whether or not they ever used it. Never add
+    a cookie fallback, and never read the credential from a handler that is not creating
+    a post — `TestCredentialIsReadOnlyOnTheBadgePath` parses this package and pins the
+    call graph (header read in `credential`, called only by `postBadge`, called only by
+    the two posting handlers), and `TestCredentialHasNoEffectOffTheBadgePath` presents a
+    valid credential to every other endpoint and diffs the responses. In particular
+    `GET /api/verify` reports whether the feature is configured and nothing about the
+    caller: answering "am I verified?" would mean the credential travelling off the
+    badge path. The client reads its own label and expiry out of the credential locally.
+  - The trade-off `sessionStorage` buys that with is documented in the README: it is
+    JS-readable where an HttpOnly cookie was not, which is acceptable because the CSP
+    forbids inline scripts (`TestWebAssetsHaveNoInlineStylesOrScripts` keeps it that
+    way) and a stolen credential grants only posting under that label — no account, no
+    history, no PII, and no route back to the address.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
+    The credential is not logged either: it is shown once, in one response body.
   - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
     column of every table for the address. It has positive controls, so it fails rather
     than passing vacuously if the scan stops working.
@@ -304,9 +334,12 @@ the index, and the thread view each have their own narrow-screen layout.
   so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
-  `internal/app/verify_api_test.go`) run the whole app against an isolated schema in
+  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
+  whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
   development database. `testServer` builds its `Config` directly, which leaves every
-  cooldown at zero unless a test asks for one, and gives the client a cookie jar so
-  verification behaves as it does in a browser. `verifyServer` adds a secret and a
-  capturing `mailer.Sender`, which is how a test reads the code back.
+  cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
+  two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
+  secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
+  credential it returns is then presented explicitly with `postWithCredential`, because
+  nothing attaches it on a caller's behalf.

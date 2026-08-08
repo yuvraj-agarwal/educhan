@@ -179,12 +179,15 @@ func (c *client) send(req *http.Request, out any) int {
 	return res.StatusCode
 }
 
-// createdPost is the API acknowledgement for a new thread or reply.
+// createdPost is the API acknowledgement for a new thread or reply, plus the
+// fields a refusal carries: Error, and for a refused badge the machine-readable
+// state of the credential that was presented.
 type createdPost struct {
-	Board    string `json:"board"`
-	No       int64  `json:"no"`
-	ThreadNo int64  `json:"thread_no"`
-	Error    string `json:"error"`
+	Board      string `json:"board"`
+	No         int64  `json:"no"`
+	ThreadNo   int64  `json:"thread_no"`
+	Error      string `json:"error"`
+	Credential string `json:"credential"`
 }
 
 func (c *client) createThread(board, subject, name, body string) createdPost {

@@ -114,8 +114,9 @@ func (a *App) Routes() http.Handler {
 
 	// Institutional verification. Nothing here is addressed by anything a post
 	// carries, which is the point.
+	// Forgetting a badge needs no endpoint: the client holds the credential, so
+	// dropping it is a client-side act the server has nothing to say about.
 	mux.HandleFunc("GET /api/verify", a.handleVerifyStatus)
-	mux.HandleFunc("DELETE /api/verify", a.handleVerifyForget)
 	mux.HandleFunc("POST /api/verify/request", a.handleVerifyRequest)
 	mux.HandleFunc("POST /api/verify/confirm", a.handleVerifyConfirm)
 

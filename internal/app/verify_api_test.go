@@ -72,13 +72,13 @@ func verifyServer(t *testing.T, tune func(*Config)) *verifyHarness {
 }
 
 type verifyResponse struct {
-	Enabled   bool   `json:"enabled"`
-	Verified  bool   `json:"verified"`
-	Status    string `json:"status"`
-	Label     string `json:"label"`
-	Reason    string `json:"reason"`
-	ExpiresIn int    `json:"expires_in"`
-	Error     string `json:"error"`
+	Enabled    bool   `json:"enabled"`
+	Verified   bool   `json:"verified"`
+	Status     string `json:"status"`
+	Label      string `json:"label"`
+	Credential string `json:"credential"`
+	ExpiresIn  int    `json:"expires_in"`
+	Error      string `json:"error"`
 }
 
 func (h *verifyHarness) requestCode(email string) (int, verifyResponse) {
@@ -100,9 +100,11 @@ func (h *verifyHarness) status() verifyResponse {
 	return out
 }
 
-// verify runs the whole flow and returns the badge earned, failing the test at
-// the first step that does not go through.
-func (h *verifyHarness) verify(email string) string {
+// verify runs the whole flow and returns the credential it earned, failing the
+// test at the first step that does not go through. Unlike a browser, nothing
+// here keeps it: a caller that wants a badge on a post presents it explicitly,
+// which is the point of the transport.
+func (h *verifyHarness) verify(email string) verifyResponse {
 	h.t.Helper()
 	if status, out := h.requestCode(email); status != http.StatusAccepted {
 		h.t.Fatalf("request code for %s: status %d (%s)", email, status, out.Error)
@@ -111,25 +113,10 @@ func (h *verifyHarness) verify(email string) string {
 	if status != http.StatusOK {
 		h.t.Fatalf("confirm code for %s: status %d (%s)", email, status, out.Error)
 	}
-	return out.Label
-}
-
-// credentialCookie is the credential the most recent response handed out, read
-// off the wire so a test can keep one after the browser has moved on.
-func (h *verifyHarness) credentialCookie() string {
-	h.t.Helper()
-	for _, raw := range h.lastHeader.Values("Set-Cookie") {
-		value, ok := strings.CutPrefix(raw, verifyCookieName+"=")
-		if !ok {
-			continue
-		}
-		value, _, _ = strings.Cut(value, ";")
-		if value != "" {
-			return value
-		}
+	if out.Credential == "" {
+		h.t.Fatalf("confirming %s returned no credential", email)
 	}
-	h.t.Fatal("no credential cookie was set")
-	return ""
+	return out
 }
 
 // postFrom sends a JSON POST that appears to arrive through one proxy from ip,
@@ -149,10 +136,17 @@ func (c *client) postFrom(ip, path string, body any, out any) int {
 	return c.send(req, out)
 }
 
-// postWithCredential sends a POST carrying exactly one credential and none of
-// the harness's other cookies: a second browser, holding a credential it was
-// given earlier.
+// postWithCredential sends a POST presenting a credential in the header the
+// server reads it from, which is what a client does when — and only when — the
+// poster ticked the badge box.
 func (c *client) postWithCredential(credential, path string, body any, out any) int {
+	c.t.Helper()
+	return c.postWithHeader(credentialHeader, credential, path, body, out)
+}
+
+// postWithHeader is postWithCredential's general form, used to present the
+// credential to endpoints that have no business reading it.
+func (c *client) postWithHeader(header, value, path string, body any, out any) int {
 	c.t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
@@ -163,17 +157,24 @@ func (c *client) postWithCredential(credential, path string, body any, out any) 
 		c.t.Fatalf("build request: %v", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.AddCookie(&http.Cookie{Name: verifyCookieName, Value: credential})
+	if value != "" {
+		req.Header.Set(header, value)
+	}
+	return c.send(req, out)
+}
 
-	res, err := (&http.Client{}).Do(req)
+// getWithCredential is the same for a read, so a test can check that a handler
+// handed the credential simply ignores it.
+func (c *client) getWithCredential(credential, path string, out any) int {
+	c.t.Helper()
+	req, err := http.NewRequest(http.MethodGet, c.base+path, nil)
 	if err != nil {
-		c.t.Fatalf("POST %s: %v", path, err)
+		c.t.Fatalf("build request: %v", err)
 	}
-	defer res.Body.Close()
-	if out != nil {
-		_ = json.NewDecoder(res.Body).Decode(out)
+	if credential != "" {
+		req.Header.Set(credentialHeader, credential)
 	}
-	return res.StatusCode
+	return c.send(req, out)
 }
 
 /* Tests -------------------------------------------------------------------- */
@@ -181,8 +182,8 @@ func (c *client) postWithCredential(credential, path string, body any, out any) 
 func TestVerificationHappyPath(t *testing.T) {
 	h := verifyServer(t, nil)
 
-	if before := h.status(); !before.Enabled || before.Verified {
-		t.Fatalf("before verifying: %+v, want enabled and unverified", before)
+	if before := h.status(); !before.Enabled {
+		t.Fatalf("before verifying: %+v, want the feature reported as enabled", before)
 	}
 
 	status, out := h.requestCode("Ana@iitb.ac.in")
@@ -212,24 +213,34 @@ func TestVerificationHappyPath(t *testing.T) {
 		t.Errorf("confirm returned %+v, want verified as IIT Bombay", out)
 	}
 
-	// The credential is the badge, so it is kept out of reach of scripts on the
-	// page the same way a session cookie would be.
-	var credential string
+	// The credential comes back in the body, and the client decides when it
+	// travels. It must not also be a cookie: a cookie would be attached to
+	// every later request, badge or not.
+	if out.Credential == "" {
+		t.Fatal("confirming should return the credential in the response")
+	}
+	if _, ok := h.app.parseCredential(out.Credential); !ok {
+		t.Errorf("the returned credential %q does not verify", out.Credential)
+	}
 	for _, raw := range h.lastHeader.Values("Set-Cookie") {
-		if strings.HasPrefix(raw, verifyCookieName+"=") {
-			credential = raw
+		name, _, _ := strings.Cut(raw, "=")
+		if name != pendingCookieName {
+			t.Errorf("confirming set an unexpected cookie %q; the credential is not a cookie", raw)
 		}
 	}
-	if credential == "" {
-		t.Fatal("confirming should set the credential cookie")
-	}
-	if !strings.Contains(credential, "HttpOnly") || !strings.Contains(credential, "SameSite=Lax") {
-		t.Errorf("credential cookie = %q, want HttpOnly and SameSite=Lax", credential)
+	// A response carrying a credential must not be cached on the way.
+	if got := h.lastHeader.Get("Cache-Control"); !strings.Contains(got, "no-store") {
+		t.Errorf("Cache-Control = %q, want no-store", got)
 	}
 
-	after := h.status()
-	if !after.Verified || after.Label != "IIT Bombay" {
-		t.Errorf("after verifying: %+v, want verified as IIT Bombay", after)
+	// The status endpoint answers whether the feature exists and nothing about
+	// the caller, so presenting the credential to it changes nothing.
+	var after verifyResponse
+	if code := h.getWithCredential(out.Credential, "/api/verify", &after); code != http.StatusOK {
+		t.Fatalf("status: %d", code)
+	}
+	if !after.Enabled || after.Verified || after.Label != "" {
+		t.Errorf("status = %+v, want only the enabled flag", after)
 	}
 
 	// The pending verification is spent, not lying around.
@@ -260,8 +271,11 @@ func TestVerificationRejectsAWrongCode(t *testing.T) {
 	if !strings.Contains(out.Error, "not right") {
 		t.Errorf("error = %q, want it to say the code is wrong", out.Error)
 	}
-	if h.status().Verified {
-		t.Error("a wrong code must not verify anybody")
+	if out.Credential != "" {
+		t.Error("a wrong code must not hand out a credential")
+	}
+	if n := h.countRows("verification_credentials"); n != 0 {
+		t.Errorf("a wrong code issued %d credentials, want 0", n)
 	}
 
 	// The verification survives a typo: the right code still works.
@@ -319,8 +333,11 @@ func TestVerificationRejectsAnExpiredCode(t *testing.T) {
 	if !strings.Contains(out.Error, "expired") {
 		t.Errorf("error = %q, want it to say the code expired", out.Error)
 	}
-	if h.status().Verified {
-		t.Error("an expired code must not verify anybody")
+	if out.Credential != "" {
+		t.Error("an expired code must not hand out a credential")
+	}
+	if n := h.countRows("verification_credentials"); n != 0 {
+		t.Errorf("an expired code issued %d credentials, want 0", n)
 	}
 	if n := h.countRows("verification_pending"); n != 0 {
 		t.Errorf("%d expired pending rows survived, want 0", n)
@@ -361,12 +378,10 @@ func TestVerificationRejectsNonAcademicDomains(t *testing.T) {
 func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 	h := verifyServer(t, nil)
 
-	h.verify("ana@iitb.ac.in")
-	first := h.credentialCookie()
+	first := h.verify("ana@iitb.ac.in").Credential
 
 	// Same mailbox, written the way somebody would on a second device.
-	h.verify("Ana+phone@iitb.ac.in")
-	second := h.credentialCookie()
+	second := h.verify("Ana+phone@iitb.ac.in").Credential
 
 	if first == second {
 		t.Fatal("re-verifying should issue a different credential")
@@ -386,6 +401,10 @@ func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 	if !strings.Contains(out.Error, "no longer valid") {
 		t.Errorf("error = %q, want it to say the credential is superseded", out.Error)
 	}
+	if out.Credential != credentialRevoked {
+		t.Errorf("refusal reason = %q, want %q so a client can drop what it holds",
+			out.Credential, credentialRevoked)
+	}
 
 	if status := h.postWithCredential(second, path,
 		map[string]any{"body": "with the new credential", "badge": true}, &out); status != http.StatusCreated {
@@ -393,30 +412,25 @@ func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 	}
 }
 
-// An expired credential is refused locally, before the database is consulted,
-// and says so in a way that tells the holder what to do about it.
+// An expired credential is refused on its own claims, before the database is
+// consulted, and says so in a way that tells the holder what to do about it.
 func TestExpiredCredentialStopsBadging(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.VerifyCredentialTTL = 40 * time.Millisecond })
 
-	h.verify("ana@iitb.ac.in")
+	credential := h.verify("ana@iitb.ac.in").Credential
 	time.Sleep(60 * time.Millisecond)
 
-	after := h.status()
-	if after.Verified {
-		t.Error("an expired credential should not report as verified")
-	}
-	if !strings.Contains(after.Reason, "expired") {
-		t.Errorf("reason = %q, want it to say the verification expired", after.Reason)
-	}
-
 	var out createdPost
-	status := h.post("/api/boards/general/threads",
+	status := h.postWithCredential(credential, "/api/boards/general/threads",
 		map[string]any{"body": "too late", "badge": true}, &out)
 	if status != http.StatusForbidden {
 		t.Fatalf("status = %d, want 403", status)
 	}
 	if !strings.Contains(out.Error, "expired") {
 		t.Errorf("error = %q, want it to say the verification expired", out.Error)
+	}
+	if out.Credential != credentialExpired {
+		t.Errorf("refusal reason = %q, want %q", out.Credential, credentialExpired)
 	}
 }
 
@@ -476,23 +490,29 @@ func TestPostingWithAndWithoutABadge(t *testing.T) {
 	if !strings.Contains(refused.Error, "verify") {
 		t.Errorf("error = %q, want it to point at verification", refused.Error)
 	}
+	if refused.Credential != credentialMissing {
+		t.Errorf("refusal reason = %q, want %q", refused.Credential, credentialMissing)
+	}
 
-	if label := h.verify("ana@iitb.ac.in"); label != "IIT Bombay" {
-		t.Fatalf("verified as %q, want IIT Bombay", label)
+	issued := h.verify("ana@iitb.ac.in")
+	if issued.Label != "IIT Bombay" {
+		t.Fatalf("verified as %q, want IIT Bombay", issued.Label)
 	}
 
 	var created createdPost
-	if status := h.post("/api/boards/general/threads",
+	if status := h.postWithCredential(issued.Credential, "/api/boards/general/threads",
 		map[string]any{"subject": "badges", "body": "posting with a badge", "badge": true},
 		&created); status != http.StatusCreated {
 		t.Fatalf("badged thread: status %d (%s)", status, created.Error)
 	}
-	// The same client, verified, posting without asking for the badge.
+	// The same poster, holding the same credential, posting without it: no
+	// badge asked for means no badge sent, which is the whole design.
 	if status := h.post(fmt.Sprintf("/api/boards/general/threads/%d/posts", created.ThreadNo),
 		map[string]any{"body": "posting anonymously"}, &createdPost{}); status != http.StatusCreated {
 		t.Fatalf("unbadged reply: status %d", status)
 	}
-	if status := h.post(fmt.Sprintf("/api/boards/general/threads/%d/posts", created.ThreadNo),
+	if status := h.postWithCredential(issued.Credential,
+		fmt.Sprintf("/api/boards/general/threads/%d/posts", created.ThreadNo),
 		map[string]any{"body": "and with it again", "badge": true}, &createdPost{}); status != http.StatusCreated {
 		t.Fatalf("badged reply: status %d", status)
 	}
@@ -541,8 +561,8 @@ func TestVerificationIsOffWithoutASecret(t *testing.T) {
 
 	var status verifyResponse
 	c.get("/api/verify", &status)
-	if status.Enabled || status.Verified {
-		t.Errorf("status = %+v, want disabled and unverified", status)
+	if status.Enabled {
+		t.Errorf("status = %+v, want the feature reported as disabled", status)
 	}
 
 	var out verifyResponse
@@ -577,7 +597,7 @@ func TestNoEmailAddressReachesTheDatabase(t *testing.T) {
 		email  = local + "@" + domain
 	)
 
-	h.verify(email)
+	issued := h.verify(email)
 
 	// A second verification left in flight, so the pending table is populated
 	// too rather than only the credential table.
@@ -586,7 +606,7 @@ func TestNoEmailAddressReachesTheDatabase(t *testing.T) {
 	}
 
 	var created createdPost
-	if status := h.post("/api/boards/general/threads",
+	if status := h.postWithCredential(issued.Credential, "/api/boards/general/threads",
 		map[string]any{"subject": "badged", "body": "posting with a badge", "badge": true},
 		&created); status != http.StatusCreated {
 		t.Fatalf("badged thread: status %d (%s)", status, created.Error)

@@ -39,8 +39,9 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   six-digit code, emailed — stored hashed, expires in 15 minutes
        │   confirmed
        ▼
-  signed credential in an HttpOnly cookie: { label, expiry, random id }
-       │   ticked per post, off by default
+  signed credential, returned to the client: { label, expiry, random id }
+       │   kept in sessionStorage; sent in X-Educhan-Credential
+       │   on the posts that tick the box, and on nothing else
        ▼
   [Verified: IIT Bombay]
 
@@ -52,10 +53,66 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
 2. The domain is checked against the allowlist, which decides both whether it
    counts as academic and what the badge will say.
 3. A six-digit code is emailed. It is stored hashed and expires in 15 minutes.
-4. Submitting the code exchanges it for a signed, opaque credential, held in an
-   `HttpOnly` cookie for 180 days.
+4. Submitting the code exchanges it for a signed, opaque credential, returned in
+   the response body and kept by the client in `sessionStorage`.
 5. The posting form grows a **post with [Verified: …]** checkbox. Tick it per
-   post; leave it alone and the post is indistinguishable from any other.
+   post; leave it alone and the post is indistinguishable from any other — the
+   credential is not sent at all.
+
+### The credential travels only when it is used
+
+The credential is **not a cookie**, and that is deliberate. A cookie is attached
+by the browser to every request to the origin: anonymous posts, page loads,
+catalog fetches, images. A token that arrives on all of them is a stable
+identifier for the whole of a poster's session whether or not they ever badge
+anything — it would let the server (or anything reading its logs) group a
+poster's entire activity, which is the opposite of what this feature is for.
+
+So the credential is handed to the client once, at the end of the exchange, kept
+in `sessionStorage`, and sent in an `X-Educhan-Credential` header **only on the
+posts that asked for a badge**. The server reads it from that header and from
+nowhere else — there is no cookie fallback. Two tests hold the line from both
+directions:
+
+- `TestCredentialIsReadOnlyOnTheBadgePath` parses the package and asserts the
+  call graph: the header is read in exactly one function, that function has
+  exactly one caller (`postBadge`), and that caller has exactly two (the thread
+  and reply handlers). A new handler that reaches for the credential fails here.
+- `TestCredentialHasNoEffectOffTheBadgePath` presents a valid credential to
+  every other endpoint and asserts the responses are byte-identical to the same
+  requests without it — including that an unbadged post carrying a credential
+  still gets no badge.
+
+`GET /api/verify` therefore reports only whether the feature is configured. It
+cannot answer "am I verified?", because answering would mean the credential
+travelling on a request that is not posting a badge. The client already holds
+the credential and reads the label and expiry out of it locally; a credential
+the server has since revoked is discovered on the next post that uses it.
+
+**The trade-off.** `sessionStorage` is readable by JavaScript running on the
+page, where an `HttpOnly` cookie would not have been. That is the cost of the
+property above, and it is worth paying here:
+
+- **The page runs no inline script.** The CSP in `middleware.go` is
+  same-origin with no `unsafe-inline` exception, so an injected `<script>`, a
+  `style` attribute, or an inline handler is refused by the browser before it
+  runs. `TestWebAssetsHaveNoInlineStylesOrScripts` fails the build if any
+  appear in the shipped assets, so the exception is never quietly added.
+- **A stolen credential is worth very little.** It grants exactly one thing:
+  the ability to post under that institution's label until it expires. There is
+  no account behind it, no posting history reachable through it, no settings, no
+  contact details, and no way to get from it to the address that earned it —
+  it contains a label, a timestamp, and a random number. Compare it to a session
+  cookie, which is what the alternative would effectively have been.
+- **It is bounded by the tab.** `sessionStorage` is per-tab and cleared when the
+  tab closes, so a badge on a shared or borrowed computer does not outlive the
+  sitting. That also means the credential TTL below is an upper bound rather
+  than the lifetime in practice: close the tab and you verify again. The server
+  shows a credential once and cannot reissue it, so there is nothing to recover.
+
+Sending the badge in a header rather than a cookie also removes the CSRF
+question from posting entirely: a cross-site form submission carries no header a
+browser would attach for it.
 
 ### The privacy property, exactly
 
@@ -91,6 +148,9 @@ can and cannot work out.
 - Link a post to a verification record by timing. Verification tables carry no
   `created_at`, and using a credential updates nothing, so there is no "last
   used" to line up against a post.
+- Group a poster's requests by their badge. The credential is sent only on the
+  posts that carry one, so an operator watching the request layer sees it on
+  exactly the posts that already display it, and on nothing else.
 - Join the two. There is no foreign key and no shared column between the
   verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
   asserts the exact column list of both tables so a future migration cannot
@@ -148,11 +208,13 @@ no handler and no SQL changes.
 | Plus-addressing stripped | `ana+one@` and `ana+two@` are the same mailbox. Dots are *not* stripped: that is a Gmail convention, and applying it everywhere would fold two real people at one institution together |
 | Code request cooldown | `EDUCHAN_VERIFY_COOLDOWN`, applied per client address **and** per address hash, so neither a client can walk a list of addresses nor a mailbox be flooded from a pool of hosts |
 | Five wrong codes | The pending verification is destroyed and a fresh code is the only way on, which is what makes a six-digit code safe |
-| Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default, then verify again |
+| Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default, and in practice the tab, whichever ends first |
 
-Cookies are `HttpOnly` and `SameSite=Lax` — the latter is what stops another
-site spending a credential on the holder's behalf — and `Secure` whenever the
-request arrived over TLS.
+The one cookie this feature sets is the in-flight verification token, which is
+scoped to `/api/verify` and lives for one code's lifetime: it goes to the
+verification endpoints and nowhere else. It is `HttpOnly`, `SameSite=Lax`, and
+`Secure` whenever the request arrived over TLS. The credential is not a cookie
+at all — see above.
 
 ## Image attachments
 
@@ -351,18 +413,24 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
-| `GET` | `/api/verify` | What this browser holds — `{"enabled","verified","label","expires_at"}` |
+| `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email"}` |
-| `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}` |
-| `DELETE` | `/api/verify` | Forget the credential on this device |
+| `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 
-`"badge": true` posts with the verified institution the caller's credential
-carries. Asking for a badge without a usable credential is refused with `403`
-rather than quietly posted bare, and refusing it costs no posting cooldown.
-Verification cookies are set by `/api/verify/confirm`, so an HTTP client needs
-a cookie jar (`curl -c/-b`).
+`"badge": true` posts with the institution named by the credential in the
+request's `X-Educhan-Credential` header, which is the only header the server
+reads it from. Asking for a badge without a usable credential is refused with
+`403` rather than quietly posted bare, and refusing it costs no posting
+cooldown; the body carries `"credential": "missing" | "expired" | "revoked"`
+so a client can discard one the server will not honour again. There is no
+endpoint to forget a badge, because the client holds it — dropping it is a
+local act.
+
+`/api/verify/confirm` sets no credential cookie, but the two-step exchange does
+use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a
+cookie jar (`curl -c/-b`) to get through it.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -376,13 +444,18 @@ curl -s -X POST localhost:8080/api/boards/general/threads \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
 # Verification, end to end. With no mail provider configured the code is
-# printed to the server's stdout.
+# printed to the server's stdout. Confirming returns the credential; hold on
+# to it, because the server will not show it again.
 curl -s -c jar -X POST localhost:8080/api/verify/request \
   -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in"}'
-curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
-  -H 'Content-Type: application/json' -d '{"code":"481920"}'
-curl -s -b jar -X POST localhost:8080/api/boards/general/threads \
-  -H 'Content-Type: application/json' \
+CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
+  -H 'Content-Type: application/json' -d '{"code":"481920"}' \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
+
+# The badge is the header plus the flag. Leave both off and the post is
+# anonymous — the credential is not sent at all.
+curl -s -X POST localhost:8080/api/boards/general/threads \
+  -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
   -d '{"subject":"from the inside","body":"we saw the same numbers","badge":true}'
 ```
 
