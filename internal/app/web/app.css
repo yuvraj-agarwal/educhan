@@ -310,6 +310,15 @@ main[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s ease 0.15s; }
 
 .btn.subtle:hover { color: var(--text); border-color: var(--border-strong); }
 
+.btn.danger {
+  background: var(--panel-3);
+  color: var(--danger);
+  border-color: var(--danger);
+  font-weight: 650;
+}
+
+.btn.danger:hover { background: rgba(255, 156, 156, 0.12); text-decoration: none; }
+
 button.link {
   background: none;
   border: none;
@@ -505,6 +514,22 @@ button.link:hover { text-decoration: underline; }
   align-items: center;
   gap: 12px;
 }
+
+/* The credential outlives the tab now, so the way to get rid of it is called
+   out on its own rather than sitting in the row of other actions. */
+.verify-forget {
+  display: grid;
+  justify-items: start;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--danger);
+  border-radius: var(--radius-sm);
+}
+
+.verify-forget p { margin: 0; line-height: 1.6; }
+.verify-forget .muted { font-size: 13px; }
 
 .locked-note {
   display: flex;

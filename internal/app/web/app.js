@@ -8,13 +8,16 @@
 //   /{slug}/thread/{no}   thread
 
 const NAME_STORAGE_KEY = "educhan:name";
-// The verification credential lives in sessionStorage and is sent only on the
+// The verification credential lives in localStorage and is sent only on the
 // posts that ask for a badge, in this header. It is deliberately not a cookie:
 // a cookie would ride along on every request to the origin — anonymous posts,
 // page loads, images — and a token attached to everything is a session
-// identifier however it is described. sessionStorage also means the badge
-// lasts as long as the tab, which is a shorter life than the credential's own
-// expiry and the safer default of the two.
+// identifier however it is described. localStorage rather than sessionStorage
+// because the server issues a credential once and cannot reissue it: per-tab
+// storage discards the badge on every tab close and charges a full email round
+// trip to get another, which also spends the poster's own verification
+// cooldown — per address hash, and per client address behind a campus NAT.
+// Persisting is what makes the credential TTL mean anything.
 const CREDENTIAL_STORAGE_KEY = "educhan:credential";
 const CREDENTIAL_HEADER = "X-Educhan-Credential";
 const ACCEPTED_IMAGES = "image/jpeg,image/png,image/webp,image/gif";
@@ -27,7 +30,7 @@ const state = {
   boards: [],
   route: { view: "home" },
   // enabled comes from the server; badge is read out of the credential this
-  // tab holds, which the server is never asked about outside of using it.
+  // browser holds, which the server is never asked about outside of using it.
   verification: { enabled: false, badge: null },
 };
 
@@ -582,12 +585,12 @@ let verifyStep = { step: "email", label: "" };
 // page that can do anything about it.
 let badgeLost = "";
 
-// sessionStorage throws rather than degrading in some privacy modes, so every
-// access is guarded. Losing the credential costs a re-verification, which is
-// the same thing closing the tab costs.
+// localStorage throws rather than degrading in some privacy modes, so every
+// access is guarded. Losing the credential costs a full re-verification: the
+// server hands a badge out once and cannot show the same one again.
 function storedCredential() {
   try {
-    return sessionStorage.getItem(CREDENTIAL_STORAGE_KEY) || "";
+    return localStorage.getItem(CREDENTIAL_STORAGE_KEY) || "";
   } catch {
     return "";
   }
@@ -595,7 +598,7 @@ function storedCredential() {
 
 function storeCredential(token) {
   try {
-    sessionStorage.setItem(CREDENTIAL_STORAGE_KEY, token);
+    localStorage.setItem(CREDENTIAL_STORAGE_KEY, token);
   } catch {
     showNotice("This browser will not let the page store your badge, so it cannot be used here.");
   }
@@ -603,14 +606,14 @@ function storeCredential(token) {
 
 function forgetCredential() {
   try {
-    sessionStorage.removeItem(CREDENTIAL_STORAGE_KEY);
+    localStorage.removeItem(CREDENTIAL_STORAGE_KEY);
   } catch {
     // Nothing was stored, so nothing needs removing.
   }
   state.verification.badge = null;
 }
 
-// readBadge decodes the claims out of the credential this tab holds. The
+// readBadge decodes the claims out of the credential this browser holds. The
 // signature is not checked here and could not be — the key is the server's.
 // This only decides what to display and whether to offer the checkbox; the
 // server re-derives the label from its own record on every badged post, so a
@@ -653,7 +656,7 @@ async function loadVerification() {
   let enabled = false;
   try {
     // The only thing worth asking the server: whether the feature exists here.
-    // What this tab holds is a local question with a local answer.
+    // What this browser holds is a local question with a local answer.
     enabled = !!(await api("/api/verify")).enabled;
   } catch {
     // Verification is an extra; the board works without knowing about it.
@@ -693,16 +696,26 @@ function verifyViewHTML() {
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
       <div class="verify-panel">
-        <p>Your badge in this tab is ${verifiedBadgeHTML(v.badge.label)}, good until
+        <p>Your badge in this browser is ${verifiedBadgeHTML(v.badge.label)}, good until
           ${timeHTML(v.badge.expires.toISOString())}.</p>
         <p class="muted">
           Tick &ldquo;post with&rdquo; on the posting form to use it. It is kept
-          in this tab only, so closing the tab means verifying again &mdash; the
-          server hands a badge out once and cannot show you this one a second
-          time. Verifying another address replaces it and retires this one.
+          in this browser and stays until it expires or you forget it &mdash;
+          closing the tab no longer discards it. Verifying another address
+          replaces it and retires this one.
         </p>
+        <div class="verify-forget">
+          <p><strong>On a shared or borrowed computer, forget it before you walk away.</strong>
+            The badge stays in this browser for whoever sits down next, and it is
+            usable by anyone who has the browser &mdash; it is the whole of what
+            proves your institution.</p>
+          <p class="muted">Forgetting is final: the server issues a badge once
+            and cannot show you this one again, so you would verify from the
+            start. It removes the badge from this browser only &mdash; the server
+            was never told which browser held it.</p>
+          <button class="btn danger" type="button" data-action="forget-verification">Forget this credential</button>
+        </div>
         <div class="actions">
-          <button class="btn secondary" type="button" data-action="forget-verification">Forget in this tab</button>
           <button class="btn subtle" type="button" data-action="verify-again">Verify another address</button>
         </div>
       </div>`;
@@ -1277,7 +1290,7 @@ el.main.addEventListener("submit", async (event) => {
   const wantsBadge = data.get("badge") === "on";
   const held = wantsBadge ? state.verification.badge : null;
   if (wantsBadge && !held) {
-    showNotice("Your badge is no longer available in this tab — verify again to post with it.");
+    showNotice("Your badge is no longer available in this browser — verify again to post with it.");
     return;
   }
   const headers = held ? { [CREDENTIAL_HEADER]: held.token } : undefined;

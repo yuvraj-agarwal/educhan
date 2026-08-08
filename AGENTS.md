@@ -168,7 +168,7 @@ curl -s -X POST localhost:8080/api/boards/general/threads \
 ```
 
 The credential is returned once and never again: it lives in the client's
-`sessionStorage`, not in a cookie, so `$CRED` is the only copy a shell session has.
+`localStorage`, not in a cookie, so `$CRED` is the only copy a shell session has.
 
 Confirm that nothing about the address landed in PostgreSQL — this is the property the
 feature exists to hold up, so check it rather than assuming it:
@@ -211,7 +211,7 @@ the index, and the thread view each have their own narrow-screen layout.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.
-- The verification credential lives in `sessionStorage` under `educhan:credential` and
+- The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
@@ -280,7 +280,7 @@ the index, and the thread view each have their own narrow-screen layout.
     stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
     reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
-    returned by `/api/verify/confirm`, kept by the client in `sessionStorage`, and sent
+    returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent
     in `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
     attached to every request to the origin, which would turn the badge into a stable
     identifier for a poster's whole session whether or not they ever used it. Never add
@@ -292,11 +292,20 @@ the index, and the thread view each have their own narrow-screen layout.
     `GET /api/verify` reports whether the feature is configured and nothing about the
     caller: answering "am I verified?" would mean the credential travelling off the
     badge path. The client reads its own label and expiry out of the credential locally.
-  - The trade-off `sessionStorage` buys that with is documented in the README: it is
+  - The trade-off `localStorage` buys that with is documented in the README: it is
     JS-readable where an HttpOnly cookie was not, which is acceptable because the CSP
     forbids inline scripts (`TestWebAssetsHaveNoInlineStylesOrScripts` keeps it that
     way) and a stolen credential grants only posting under that label — no account, no
     history, no PII, and no route back to the address.
+  - **Storage is `localStorage`, not `sessionStorage`, and that was a deliberate
+    reversal.** Per-tab storage looks like the safer default, but the server issues a
+    credential once and cannot reissue it, so a closed tab costs a full email round
+    trip: it makes `EDUCHAN_VERIFY_CREDENTIAL_TTL` meaningless and spends the poster's
+    own code-request cooldown, which is applied per address hash and per client address
+    — the latter shared by everyone behind a campus NAT. The cost accepted in exchange
+    is that a badge outlives the sitting on a shared browser, which is why `/verify`
+    gives "Forget this credential" its own block and states that forgetting is final.
+    Do not "fix" this back to `sessionStorage` without resolving the reissue problem.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
     The credential is not logged either: it is shown once, in one response body.
