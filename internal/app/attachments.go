@@ -49,7 +49,9 @@ type submission struct {
 	Name    string
 	Body    string
 	Sage    bool
-	Upload  *upload
+	// Badge asks for the poster's verified institution to be shown on the post.
+	Badge  bool
+	Upload *upload
 }
 
 // submissionForm is a JSON request body that can be reduced to a submission.
@@ -87,6 +89,7 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 		Name:    r.FormValue("name"),
 		Body:    r.FormValue("body"),
 		Sage:    isTruthy(r.FormValue("sage")),
+		Badge:   isTruthy(r.FormValue("badge")),
 	}
 
 	file, header, err := r.FormFile(uploadFieldName)

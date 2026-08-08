@@ -5,8 +5,10 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/yuvraj-agarwal/educhan/internal/mailer"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
@@ -18,10 +20,15 @@ type App struct {
 	pool  *pgxpool.Pool
 	store *Store
 	media media.Store
+	// domains and sender back institutional verification: which addresses count
+	// as academic, and how a code reaches one.
+	domains *domainAllowlist
+	sender  mailer.Sender
 
 	threadLimiter *cooldownLimiter
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
+	verifyLimiter *cooldownLimiter
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
@@ -44,11 +51,30 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		pool.Close()
 		return nil, fmt.Errorf("prepare media store: %w", err)
 	}
+	// Parsed whether or not verification is switched on: a domain file that
+	// does not load is a configuration mistake worth hearing about at startup
+	// rather than the first time somebody tries to verify.
+	domains, err := loadDomainAllowlist(cfg.VerifyDomainsFile)
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("load verification domains: %w", err)
+	}
+
+	sender := cfg.Sender
+	if sender == nil {
+		sender = mailer.NewDev(os.Stdout)
+	}
 	if cfg.PosterIDSaltEphemeral {
 		log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
 	}
 	if cfg.ModKey == "" {
 		log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request")
+	}
+	switch {
+	case cfg.VerifySecret == "":
+		log.Warn("EDUCHAN_VERIFY_SECRET is unset; institutional verification is disabled")
+	case cfg.Sender == nil:
+		log.Warn("no mail sender is configured; verification codes are printed to stdout with their address")
 	}
 	return &App{
 		cfg:           cfg,
@@ -56,9 +82,12 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		pool:          pool,
 		store:         NewStore(pool),
 		media:         blobs,
+		domains:       domains,
+		sender:        sender,
 		threadLimiter: newCooldownLimiter(cfg.ThreadCooldown),
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
+		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
 	}, nil
 }
 
@@ -82,6 +111,13 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/boards/{slug}/catalog", a.handleCatalog)
 	mux.HandleFunc("GET /api/boards/{slug}/threads/{no}", a.handleGetThread)
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts", a.handleCreatePost)
+
+	// Institutional verification. Nothing here is addressed by anything a post
+	// carries, which is the point.
+	mux.HandleFunc("GET /api/verify", a.handleVerifyStatus)
+	mux.HandleFunc("DELETE /api/verify", a.handleVerifyForget)
+	mux.HandleFunc("POST /api/verify/request", a.handleVerifyRequest)
+	mux.HandleFunc("POST /api/verify/confirm", a.handleVerifyConfirm)
 
 	// Thread routes keyed by primary key, kept for callers that hold an ID from
 	// an earlier revision of the API.

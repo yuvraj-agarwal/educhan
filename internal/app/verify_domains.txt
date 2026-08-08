@@ -1,0 +1,117 @@
+# Academic domains educhan accepts for institutional verification.
+#
+# This file is embedded in the binary and is the default allowlist. Point
+# EDUCHAN_VERIFY_DOMAINS at a file of your own to replace it entirely — the
+# built-in list is not merged with it, so a deployment sees exactly the domains
+# it configured.
+#
+# Blank lines and everything after a "#" are ignored. Two kinds of entry:
+#
+#   ac.in                     A domain suffix. Any address under it is accepted
+#                             and the badge names the domain one level below the
+#                             suffix, so ana@cse.nitk.ac.in earns [nitk.ac.in].
+#
+#   iitb.ac.in = IIT Bombay   An institution. The domain and every subdomain of
+#                             it earn that badge instead, so ana@cse.iitb.ac.in
+#                             earns [IIT Bombay]. Institution entries win over
+#                             suffix entries however long each one is.
+#
+# An address sitting directly on a suffix (someone@ac.in) is refused: a suffix
+# is a namespace, not an institution.
+
+# --- Academic suffixes ------------------------------------------------------
+
+# North America
+edu
+
+# United Kingdom and Ireland
+ac.uk
+sch.uk
+
+# South Asia
+ac.in
+edu.in
+ac.bd
+edu.bd
+ac.lk
+edu.pk
+edu.np
+
+# East and South-East Asia
+ac.jp
+ac.kr
+edu.cn
+edu.hk
+edu.tw
+edu.sg
+edu.my
+ac.th
+ac.id
+edu.ph
+edu.vn
+
+# Oceania
+edu.au
+ac.nz
+
+# Europe
+ac.at
+ac.be
+ac.cy
+ac.rs
+edu.pl
+edu.es
+edu.gr
+edu.it
+edu.ee
+edu.lv
+
+# Middle East and Africa
+ac.il
+ac.ae
+edu.sa
+edu.eg
+edu.tr
+ac.za
+ac.ke
+ac.tz
+ac.ug
+ac.ma
+
+# Latin America
+edu.ar
+edu.br
+edu.co
+edu.mx
+edu.pe
+edu.uy
+
+# --- Institutions -----------------------------------------------------------
+#
+# A handful to start with, and the shape for the rest. Every entry here is
+# cosmetic: without it the address still verifies through its suffix, and the
+# badge names the domain rather than the institution.
+
+iitb.ac.in     = IIT Bombay
+iitd.ac.in     = IIT Delhi
+iitm.ac.in     = IIT Madras
+iitk.ac.in     = IIT Kanpur
+iitkgp.ac.in   = IIT Kharagpur
+iisc.ac.in     = IISc Bangalore
+iiit.ac.in     = IIIT Hyderabad
+bits-pilani.ac.in = BITS Pilani
+
+mit.edu        = MIT
+stanford.edu   = Stanford University
+berkeley.edu   = UC Berkeley
+cmu.edu        = Carnegie Mellon University
+
+cam.ac.uk      = University of Cambridge
+ox.ac.uk       = University of Oxford
+imperial.ac.uk = Imperial College London
+ed.ac.uk       = University of Edinburgh
+
+ethz.ch        = ETH Zurich
+nus.edu.sg     = National University of Singapore
+unimelb.edu.au = University of Melbourne
+utoronto.ca    = University of Toronto

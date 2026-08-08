@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
 	"strings"
@@ -95,12 +96,23 @@ func testServer(t *testing.T, tune func(*Config)) *harness {
 
 	srv := httptest.NewServer(app.Routes())
 	t.Cleanup(srv.Close)
-	return &harness{client: &client{t: t, base: srv.URL}, app: app}
+
+	// A jar so the harness behaves like a browser: verification hands out
+	// cookies, and posting with a badge depends on one coming back.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookie jar: %v", err)
+	}
+	return &harness{
+		client: &client{t: t, base: srv.URL, http: &http.Client{Jar: jar}},
+		app:    app,
+	}
 }
 
 type client struct {
 	t    *testing.T
 	base string
+	http *http.Client
 	// lastHeader holds the response headers of the most recent request. Flood
 	// control asserts on Retry-After, and every other caller wants the decoded
 	// body rather than the response.
@@ -148,7 +160,7 @@ func (c *client) do(method, path string, body []byte, out any) int {
 func (c *client) send(req *http.Request, out any) int {
 	c.t.Helper()
 
-	res, err := http.DefaultClient.Do(req)
+	res, err := c.http.Do(req)
 	if err != nil {
 		c.t.Fatalf("%s %s: %v", req.Method, req.URL.Path, err)
 	}

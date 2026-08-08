@@ -2,8 +2,10 @@ package app
 
 import (
 	"context"
+	"crypto/subtle"
 	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -340,6 +342,8 @@ type NewThread struct {
 	Body     string
 	// PosterID derives the poster ID once the thread ID is known.
 	PosterID func(threadID int64) string
+	// Badge is the verified institution to display, empty for an unbadged post.
+	Badge string
 	// Attachment is the image already written to the media store, if any.
 	Attachment *newAttachment
 }
@@ -370,6 +374,7 @@ func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 			PosterID:   in.PosterID(threadID),
 			Body:       in.Body,
 			OP:         true,
+			Badge:      in.Badge,
 			Attachment: in.Attachment,
 		})
 		if err != nil {
@@ -389,6 +394,8 @@ type NewReply struct {
 	Body     string
 	// PosterID derives the poster ID once the thread ID is known.
 	PosterID func(threadID int64) string
+	// Badge is the verified institution to display, empty for an unbadged post.
+	Badge string
 	// Sage suppresses the bump, letting a poster reply without moving the thread
 	// back to the top of the board.
 	Sage bool
@@ -434,6 +441,7 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			Identity:   in.Identity,
 			PosterID:   in.PosterID(threadID),
 			Body:       in.Body,
+			Badge:      in.Badge,
 			Attachment: in.Attachment,
 		})
 		if err != nil {
@@ -454,13 +462,17 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 }
 
 type newPost struct {
-	BoardID    int
-	ThreadID   int64
-	No         int64
-	Identity   identity
-	PosterID   string
-	Body       string
-	OP         bool
+	BoardID  int
+	ThreadID int64
+	No       int64
+	Identity identity
+	PosterID string
+	Body     string
+	OP       bool
+	// Badge is the institution this post is signed with, empty for the
+	// unbadged posts that are the default. It is text copied from a credential,
+	// not a reference to one.
+	Badge      string
 	Attachment *newAttachment
 }
 
@@ -472,12 +484,13 @@ func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
 		PosterID: in.PosterID,
 		Body:     in.Body,
 		OP:       in.OP,
+		Badge:    in.Badge,
 	}
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO posts (board_id, thread_id, no, name, tripcode, poster_id, body, is_op)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		INSERT INTO posts (board_id, thread_id, no, name, tripcode, poster_id, body, is_op, badge)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, created_at`,
-		in.BoardID, in.ThreadID, in.No, p.Name, p.Tripcode, p.PosterID, p.Body, p.OP,
+		in.BoardID, in.ThreadID, in.No, p.Name, p.Tripcode, p.PosterID, p.Body, p.OP, p.Badge,
 	).Scan(&p.ID, &p.CreatedAt); err != nil {
 		return Post{}, fmt.Errorf("insert post: %w", err)
 	}
@@ -685,6 +698,162 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 	return deleted, nil
 }
 
+/* Verification ------------------------------------------------------------- */
+
+// Outcomes of confirming a code, mapped to responses by handleVerifyConfirm.
+var (
+	errVerifyCode     = errors.New("wrong code")
+	errVerifyExpired  = errors.New("code expired")
+	errVerifyAttempts = errors.New("too many attempts")
+)
+
+// pendingVerification is a code that has been emailed and not yet confirmed.
+// Every field is a hash or a label; see 0004_verification.sql for why there is
+// no address among them.
+type pendingVerification struct {
+	EmailHash []byte
+	TokenHash []byte
+	CodeHash  []byte
+	Label     string
+	ExpiresAt time.Time
+}
+
+// StartVerification records a code awaiting confirmation, replacing whatever
+// that address had in flight — a second request means the first code was not
+// the one that arrived, or not the one being used.
+func (s *Store) StartVerification(ctx context.Context, in pendingVerification) error {
+	return s.inTx(ctx, func(tx pgx.Tx) error {
+		// Pending rows are swept here rather than on a timer: they are the one
+		// part of this feature that carries a fresh timestamp, so the sooner
+		// spent ones go the better.
+		if _, err := tx.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
+			return fmt.Errorf("prune pending verifications: %w", err)
+		}
+		_, err := tx.Exec(ctx, `
+			INSERT INTO verification_pending (email_hash, token_hash, code_hash, label, expires_at)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (email_hash) DO UPDATE SET
+			    token_hash = EXCLUDED.token_hash,
+			    code_hash  = EXCLUDED.code_hash,
+			    label      = EXCLUDED.label,
+			    attempts   = 0,
+			    expires_at = EXCLUDED.expires_at`,
+			in.EmailHash, in.TokenHash, in.CodeHash, in.Label, in.ExpiresAt)
+		if err != nil {
+			return fmt.Errorf("start verification: %w", err)
+		}
+		return nil
+	})
+}
+
+// confirmVerification is one attempt at a pending code, along with the
+// credential to issue if it is the right one. The credential's identifier
+// arrives already hashed: the value itself goes to the browser and nowhere
+// else.
+type confirmVerification struct {
+	TokenHash        []byte
+	CodeHash         []byte
+	CredentialIDHash []byte
+	ExpiresAt        time.Time
+}
+
+// ConfirmVerification checks a code and, when it matches, issues the address a
+// credential and revokes the one it held before. It returns the badge label.
+//
+// A wrong code is a committed outcome rather than an error from the
+// transaction, because the attempt it counts has to survive: rolling back would
+// hand an attacker unlimited guesses.
+func (s *Store) ConfirmVerification(ctx context.Context, in confirmVerification) (string, error) {
+	var (
+		label   string
+		outcome error
+	)
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		var (
+			emailHash []byte
+			codeHash  []byte
+			attempts  int
+			expiresAt time.Time
+		)
+		err := tx.QueryRow(ctx, `
+			SELECT email_hash, code_hash, label, attempts, expires_at
+			FROM verification_pending
+			WHERE token_hash = $1
+			FOR UPDATE`, in.TokenHash).Scan(&emailHash, &codeHash, &label, &attempts, &expiresAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			outcome = errNotFound
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+
+		switch {
+		case !expiresAt.After(time.Now()):
+			outcome = errVerifyExpired
+		case attempts >= maxVerifyAttempts:
+			outcome = errVerifyAttempts
+		case subtle.ConstantTimeCompare(codeHash, in.CodeHash) != 1:
+			_, err := tx.Exec(ctx,
+				`UPDATE verification_pending SET attempts = attempts + 1 WHERE token_hash = $1`, in.TokenHash)
+			outcome = errVerifyCode
+			return err
+		}
+		if outcome != nil {
+			// Spent one way or the other; a fresh code is the only way on.
+			_, err := tx.Exec(ctx, `DELETE FROM verification_pending WHERE token_hash = $1`, in.TokenHash)
+			return err
+		}
+
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM verification_pending WHERE token_hash = $1`, in.TokenHash); err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx,
+			`DELETE FROM verification_credentials WHERE expires_at <= now()`); err != nil {
+			return fmt.Errorf("prune credentials: %w", err)
+		}
+		// One row per address: the update drops the previous credential's
+		// identifier, and a credential whose identifier is not here no longer
+		// resolves to a badge.
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+			VALUES ($1, $2, $3, $4)
+			ON CONFLICT (email_hash) DO UPDATE SET
+			    credential_id_hash = EXCLUDED.credential_id_hash,
+			    label              = EXCLUDED.label,
+			    expires_at         = EXCLUDED.expires_at`,
+			emailHash, in.CredentialIDHash, label, in.ExpiresAt); err != nil {
+			return fmt.Errorf("issue credential: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return "", err
+	}
+	if outcome != nil {
+		return "", outcome
+	}
+	return label, nil
+}
+
+// CredentialLabel resolves an issued credential to the badge it carries,
+// returning errNotFound when it has been revoked or has expired.
+//
+// This is a read and stays a read. Recording that a credential was used would
+// put a timestamp next to it for every post made with it, which is the one
+// thing the schema is arranged to avoid.
+func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (string, error) {
+	var label string
+	err := s.pool.QueryRow(ctx, `
+		SELECT label FROM verification_credentials
+		WHERE credential_id_hash = $1 AND expires_at > now()`, credentialIDHash).Scan(&label)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", errNotFound
+	}
+	return label, err
+}
+
 // attachedImages collects the blob paths a query selects, as the pairs
 // media.Remove deletes.
 func attachedImages(ctx context.Context, tx pgx.Tx, query string, args ...any) ([]media.StoredImage, error) {
@@ -718,12 +887,12 @@ func (s *Store) inTx(ctx context.Context, fn func(pgx.Tx) error) error {
 	return tx.Commit(ctx)
 }
 
-const postColumns = `p.id, p.no, p.name, p.tripcode, p.poster_id, p.body, p.is_op, p.created_at`
+const postColumns = `p.id, p.no, p.name, p.tripcode, p.poster_id, p.body, p.is_op, p.created_at, p.badge`
 
 // postDest returns the scan targets for postColumns followed by
 // attachmentColumns, which every post query selects together.
 func postDest(p *Post, att *attachmentRow) []any {
-	dest := []any{&p.ID, &p.No, &p.Name, &p.Tripcode, &p.PosterID, &p.Body, &p.OP, &p.CreatedAt}
+	dest := []any{&p.ID, &p.No, &p.Name, &p.Tripcode, &p.PosterID, &p.Body, &p.OP, &p.CreatedAt, &p.Badge}
 	return append(dest, att.dest()...)
 }
 
@@ -770,10 +939,10 @@ func (s *Store) opPosts(ctx context.Context, threadIDs []int64) (map[int64]Post,
 func (s *Store) lastReplies(ctx context.Context, threadIDs []int64, perThread int) (map[int64][]Post, error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT p.thread_id, p.thread_no, p.id, p.no, p.name, p.tripcode, p.poster_id,
-		       p.body, p.is_op, p.created_at, `+attachmentColumns+`
+		       p.body, p.is_op, p.created_at, p.badge, `+attachmentColumns+`
 		FROM (
 		    SELECT p.thread_id, t.no AS thread_no, p.id, p.no, p.name, p.tripcode, p.poster_id,
-		           p.body, p.is_op, p.created_at,
+		           p.body, p.is_op, p.created_at, p.badge,
 		           row_number() OVER (PARTITION BY p.thread_id ORDER BY p.no DESC) AS rank
 		    FROM posts p
 		    JOIN threads t ON t.id = p.thread_id

@@ -184,6 +184,9 @@ func TestCreateBoardValidation(t *testing.T) {
 		{"slug too long", map[string]any{"slug": "abcdefghijklmnopqrstuvwxyz"}},
 		{"reserved slug", map[string]any{"slug": "api"}},
 		{"reserved media slug", map[string]any{"slug": "media"}},
+		// /verify is the verification page's route, so a board cannot take it
+		// out from under the UI.
+		{"reserved verify slug", map[string]any{"slug": "verify"}},
 		{"zero bump limit", map[string]any{"slug": "zero", "bump_limit": 0}},
 		{"negative thread limit", map[string]any{"slug": "negative", "thread_limit": -1}},
 		{"absurd thread limit", map[string]any{"slug": "absurd", "thread_limit": maxBoardThreadLimit + 1}},

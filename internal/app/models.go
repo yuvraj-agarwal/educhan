@@ -53,6 +53,10 @@ type Post struct {
 	Body      string    `json:"body"`
 	OP        bool      `json:"op"`
 	CreatedAt time.Time `json:"created_at"`
+	// Badge is the institution the poster verified an address at, when they
+	// chose to post with it. It says nothing about who they are beyond that,
+	// and nothing links it back to the credential it was copied from.
+	Badge string `json:"badge,omitempty"`
 	// Attachment is the post's image, if it has one.
 	Attachment *Attachment `json:"attachment,omitempty"`
 	// Quotes are the posts this post links to; Backlinks are the posts linking

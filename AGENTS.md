@@ -3,9 +3,9 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, threads with quote links, per-client flood control, and key-authenticated
-moderation and board management are implemented. Verification badges, janitor accounts,
-bans, and reports are not.
+a catalog view, threads with quote links, per-client flood control, key-authenticated
+moderation and board management, and optional institutional verification badges are
+implemented. Janitor accounts, bans, and reports are not.
 
 ## Stack & layout
 
@@ -18,6 +18,8 @@ bans, and reports are not.
   - `attachments.go` — upload parsing, media serving.
   - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
   - `boards.go` — board creation and settings updates, behind the same key.
+  - `verify.go` — institutional verification: handlers, credential format, cookies;
+    `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
@@ -26,6 +28,8 @@ bans, and reports are not.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its local-filesystem implementation.
+- `internal/mailer` — the `Sender` interface verification codes go out through, with a
+  development implementation that prints them to stdout.
 - `Dockerfile`, `docker-compose.yml`, `deploy/` — container image, the local stack, and
   the Cloud Run service definition (`deploy/cloudrun/service.yaml`), documented in
   `deploy/README.md`.
@@ -139,6 +143,37 @@ curl -s -X PATCH localhost:8080/api/boards/comp-sci \
 curl -s localhost:8080/api/boards/comp-sci/catalog            # a new board works everywhere
 ```
 
+Institutional verification needs `EDUCHAN_VERIFY_SECRET`; without it `/api/verify` reports
+`{"enabled":false}` and everything that writes answers `403`. With no mail provider
+configured the code is printed to the server's **stdout**, so read it from the log. The
+flow sets cookies, so use a jar:
+
+```bash
+EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_VERIFY_COOLDOWN=0 make run
+```
+
+```bash
+curl -s -c jar -X POST localhost:8080/api/verify/request \
+  -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in"}'
+# -> {"status":"sent","label":"IIT Bombay","expires_in":900}; the code is on stdout
+curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
+  -H 'Content-Type: application/json' -d '{"code":"481920"}'
+curl -s -b jar localhost:8080/api/verify            # what this browser holds
+curl -s -b jar -X POST localhost:8080/api/boards/general/threads \
+  -H 'Content-Type: application/json' -d '{"body":"badged","badge":true}'
+curl -s -b jar -X DELETE localhost:8080/api/verify  # forget it on this device
+```
+
+Confirm that nothing about the address landed in PostgreSQL — this is the property the
+feature exists to hold up, so check it rather than assuming it:
+
+```bash
+psql -h localhost -p 5432 -U educhan -d educhan \
+  -c "SELECT email_hash, credential_id_hash, label, expires_at FROM verification_credentials;"
+psql -h localhost -p 5432 -U educhan -d educhan \
+  -c "SELECT no, name, badge FROM posts ORDER BY id;"   # a badge is text, not a reference
+```
+
 Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOLDOWN=5`,
 `EDUCHAN_UPLOAD_COOLDOWN=15` seconds), so scripted loops will see `429` with a
 `Retry-After` header. Set them to `0` when a test needs to post rapidly:
@@ -196,7 +231,9 @@ the index, and the thread view each have their own narrow-screen layout.
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
   `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`,
-  `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`. See `.env.example` and the README table.
+  `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
+  `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
+  `EDUCHAN_VERIFY_DOMAINS`. See `.env.example` and the README table.
   `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
   when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
@@ -219,6 +256,37 @@ the index, and the thread view each have their own narrow-screen layout.
   gives `boards` its limits and `next_post_no`. Slugs are validated and normalised before
   they reach SQL, a duplicate comes back as `errConflict` from the unique index (`409`),
   and the slug itself is not updatable because it is the board's address.
+- **Verified Anonymity is a privacy guarantee before it is a feature, and the README
+  states it in full.** Three rules make it true, and a change that breaks any of them
+  breaks the promise rather than just the code: the address is never written anywhere
+  (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
+  credential carries only a label, an expiry, and a random id; and nothing links a
+  credential to a post. Practical consequences when editing `verify.go`, `store.go`, or
+  `0004_verification.sql`:
+  - Never add a column to `verification_pending` or `verification_credentials` that could
+    be joined to a post, and never add `created_at` or a "last used" — an issuance or use
+    timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
+    stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
+    reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
+  - Never log an address, and never pass one to anything that persists. The development
+    `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
+  - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
+    column of every table for the address. It has positive controls, so it fails rather
+    than passing vacuously if the scan stops working.
+- Verification lives in `verify.go` (handlers, credential signing, cookies) and
+  `verify_domains.go` (allowlist, address normalisation); its SQL is in `store.go` with
+  everything else. The allowlist is a **file** — embedded `verify_domains.txt`, replaced
+  wholesale by `EDUCHAN_VERIFY_DOMAINS` — because a domain-to-badge mapping is
+  configuration, not data about anybody. Suffix entries (`ac.in`) badge the domain one
+  level below; institution entries (`iitb.ac.in = IIT Bombay`) name the place and win over
+  any suffix. Plus-addressing is stripped from the uniqueness key and dots deliberately
+  are not: that is a Gmail convention, and applying it everywhere would fold two real
+  people at one institution into one identity.
+- Code requests reuse `cooldownLimiter` through `allowAction`, keyed per client **and** per
+  address hash in one `allowAll` call, so a refused request starts neither cooldown. The
+  attempt cap on a pending row is what keeps a six-digit code safe; a wrong guess is
+  committed rather than rolled back, which is why `ConfirmVerification` returns its outcome
+  beside the transaction error instead of through it.
 - Deployment (`Dockerfile`, `docker-compose.yml`, `deploy/`): the runtime image is
   distroless, so there is **no shell, no package manager, and no `curl`** in it — a
   container healthcheck or a debugging `docker exec … sh` will not work; read the logs or
@@ -235,7 +303,10 @@ the index, and the thread view each have their own narrow-screen layout.
   `/cloudsql/{connection name}`; `pgx` takes that as `?host=/cloudsql/…` in `DATABASE_URL`,
   so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
-  `internal/app/moderation_test.go`, `internal/app/boards_test.go`) run the whole app
-  against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
-  they are safe to run against the development database. `testServer` builds its `Config`
-  directly, which leaves every cooldown at zero unless a test asks for one.
+  `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
+  `internal/app/verify_api_test.go`) run the whole app against an isolated schema in
+  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
+  development database. `testServer` builds its `Config` directly, which leaves every
+  cooldown at zero unless a test asks for one, and gives the client a cookie jar so
+  verification behaves as it does in a browser. `verifyServer` adds a secret and a
+  capturing `mailer.Sender`, which is how a test reads the code back.

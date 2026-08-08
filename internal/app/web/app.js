@@ -2,6 +2,7 @@
 //
 // Routes mirror the API so links are shareable:
 //   /                     board list
+//   /verify               institutional verification
 //   /{slug}/?page=N       board index
 //   /{slug}/catalog       catalog
 //   /{slug}/thread/{no}   thread
@@ -16,11 +17,15 @@ const HAS_HOVER = window.matchMedia("(hover: hover) and (pointer: fine)").matche
 const state = {
   boards: [],
   route: { view: "home" },
+  // What this browser currently holds. The credential cookie is HttpOnly, so
+  // the server is the only thing that can answer this.
+  verification: { enabled: false, verified: false, label: "", reason: "" },
 };
 
 const el = {
   main: document.getElementById("main"),
   nav: document.getElementById("board-nav"),
+  verifyLink: document.querySelector(".verify-link"),
   notice: document.getElementById("notice"),
   status: document.getElementById("route-status"),
 };
@@ -189,6 +194,13 @@ function attachmentHTML(att, { expandable = false } = {}) {
   return `<div class="post-file">${caption}${link}</div>`;
 }
 
+// verifiedBadgeHTML renders the institution a post was signed with. It says
+// where the poster is, and deliberately nothing else: two posts carrying the
+// same badge are no more linked to each other than any two posts.
+function verifiedBadgeHTML(label) {
+  return `<span class="badge verified" title="Institutional email verified; not linked to this poster">Verified: ${esc(label)}</span>`;
+}
+
 function badgesHTML(thread) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
@@ -211,6 +223,9 @@ function postHTML(post, context) {
   head.push(`<span class="name">${esc(post.name)}</span>`);
   if (post.tripcode) {
     head.push(`<span class="trip">${esc(post.tripcode)}</span>`);
+  }
+  if (post.badge) {
+    head.push(verifiedBadgeHTML(post.badge));
   }
   head.push(`<span class="pid" title="Poster ID for this thread">ID: ${esc(post.poster_id)}</span>`);
   head.push(timeHTML(post.created_at));
@@ -268,6 +283,11 @@ function formHTML({ kind, threadNo = null, open = false, locked = false }) {
   const sage = isThread
     ? ""
     : `<label class="sage"><input type="checkbox" name="sage" /> sage (reply without bumping)</label>`;
+  // Off by default and per post: a verified poster is anonymous unless they
+  // say otherwise on this particular post.
+  const badge = state.verification.verified
+    ? `<label class="sage"><input type="checkbox" name="badge" /> post with ${verifiedBadgeHTML(state.verification.label)}</label>`
+    : "";
 
   return `
     <details class="post-form" ${open ? "open" : ""}>
@@ -293,6 +313,7 @@ function formHTML({ kind, threadNo = null, open = false, locked = false }) {
         <div class="actions">
           <button class="btn primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
           ${sage}
+          ${badge}
           <span class="hint">Posting is anonymous.</span>
         </div>
       </form>
@@ -375,13 +396,22 @@ function updateFileField(field) {
 
 /* Views -------------------------------------------------------------------- */
 
-function renderNav(activeSlug) {
+function renderNav(route) {
   el.nav.innerHTML = state.boards
     .map((b) => {
-      const current = b.slug === activeSlug ? ' aria-current="page"' : "";
+      const current = b.slug === route.slug ? ' aria-current="page"' : "";
       return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>/${esc(b.slug)}/</a>`;
     })
     .join("");
+
+  if (!el.verifyLink) {
+    return;
+  }
+  if (route.view === "verify") {
+    el.verifyLink.setAttribute("aria-current", "page");
+  } else {
+    el.verifyLink.removeAttribute("aria-current");
+  }
 }
 
 function boardHeadHTML(board, view) {
@@ -526,6 +556,117 @@ async function renderThread(route) {
   announce(`${detail.subject || `Thread No. ${detail.no}`} — /${board.slug}/`);
 }
 
+/* Verification ------------------------------------------------------------- */
+
+// Which half of the verification page is on screen. A code has been sent when
+// this is "code"; nothing about the address is kept here, only the badge it
+// would earn, so a reload starts over rather than resuming.
+let verifyStep = { step: "email", label: "" };
+
+async function loadVerification() {
+  try {
+    const status = await api("/api/verify");
+    state.verification = {
+      enabled: !!status.enabled,
+      verified: !!status.verified,
+      label: status.label || "",
+      reason: status.reason || "",
+      expires_at: status.expires_at || null,
+    };
+  } catch {
+    // Verification is an extra; the board works without knowing about it.
+    state.verification = { enabled: false, verified: false, label: "", reason: "" };
+  }
+  return state.verification;
+}
+
+// The claim the page is making, in the words the README uses. It belongs on
+// screen next to the form, not only in the repository.
+const VERIFY_INTRO = `
+  <p class="verify-note">
+    Verifying proves you hold an address at a recognised institution and earns
+    you an optional badge. The address itself is never stored: what is kept is
+    a keyed hash of it, in a table that has no link to any post or thread. The
+    badge you get carries only the institution and an expiry, so no one — this
+    server included — can work back from a post to your address.
+  </p>
+  <p class="verify-note muted">
+    The badge is off by default on every post. Tick it when you want it.
+  </p>`;
+
+function verifyViewHTML() {
+  const v = state.verification;
+
+  if (!v.enabled) {
+    return `
+      <div class="board-head"><h1>Institutional verification</h1></div>
+      ${VERIFY_INTRO}
+      <p class="empty">Verification is not configured on this server.</p>`;
+  }
+
+  if (v.verified) {
+    const until = v.expires_at ? `, good until ${timeHTML(v.expires_at)}` : "";
+    return `
+      <div class="board-head"><h1>Institutional verification</h1></div>
+      ${VERIFY_INTRO}
+      <div class="verify-panel">
+        <p>Your badge on this device is ${verifiedBadgeHTML(v.label)}${until}.</p>
+        <p class="muted">
+          Tick &ldquo;post with&rdquo; on the posting form to use it. Verifying
+          another address replaces this badge and retires this one.
+        </p>
+        <div class="actions">
+          <button class="btn secondary" type="button" data-action="forget-verification">Forget on this device</button>
+          <button class="btn subtle" type="button" data-action="verify-again">Verify another address</button>
+        </div>
+      </div>`;
+  }
+
+  const expired = v.reason
+    ? `<p class="verify-note">Your previous badge is no longer usable (${esc(v.reason)}). Verify again to get a new one.</p>`
+    : "";
+
+  if (verifyStep.step === "code") {
+    return `
+      <div class="board-head"><h1>Institutional verification</h1></div>
+      ${VERIFY_INTRO}
+      <form class="verify-panel fields" data-verify="confirm">
+        <p>A code is on its way. It earns you ${verifiedBadgeHTML(verifyStep.label)} and expires shortly.</p>
+        <div class="field">
+          <label class="label" for="f-code">Code from the email</label>
+          <input type="text" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="12" placeholder="6 digits" required />
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit">Verify</button>
+          <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
+        </div>
+      </form>`;
+  }
+
+  return `
+    <div class="board-head"><h1>Institutional verification</h1></div>
+    ${VERIFY_INTRO}
+    ${expired}
+    <form class="verify-panel fields" data-verify="request">
+      <div class="field">
+        <label class="label" for="f-email">Institutional email</label>
+        <input type="email" id="f-email" name="email" maxlength="254" autocomplete="email"
+               placeholder="you@institution.edu" required />
+        <span class="hint">Academic domains only &mdash; .edu, .ac.in, .ac.uk, .edu.au and others.</span>
+      </div>
+      <div class="actions">
+        <button class="btn primary" type="submit">Send code</button>
+      </div>
+    </form>`;
+}
+
+async function renderVerify() {
+  await loadVerification();
+  el.main.innerHTML = verifyViewHTML();
+  announce("Institutional verification");
+}
+
 /* Routing ------------------------------------------------------------------ */
 
 function parseRoute(location = window.location) {
@@ -534,6 +675,11 @@ function parseRoute(location = window.location) {
 
   if (parts.length === 0) {
     return { view: "home" };
+  }
+  // Checked before the board route, and reserved server-side too, so no board
+  // can take this path out from under it.
+  if (parts.length === 1 && parts[0] === "verify") {
+    return { view: "verify" };
   }
   const [slug, section, no] = parts;
   if (parts.length === 1) {
@@ -573,7 +719,7 @@ async function render() {
   const draft = captureDraft();
   const route = parseRoute();
   state.route = route;
-  renderNav(route.slug);
+  renderNav(route);
   clearNotice();
   hideQuotePreview();
   // Whatever was expanded belongs to the view being replaced.
@@ -593,6 +739,9 @@ async function render() {
         break;
       case "thread":
         await renderThread(route);
+        break;
+      case "verify":
+        await renderVerify();
         break;
       default:
         el.main.innerHTML = emptyStateHTML("That is not a page on this site.");
@@ -662,6 +811,7 @@ function captureDraft() {
     return node ? node.value : "";
   };
   const sage = field(form, "sage");
+  const badge = field(form, "badge");
   return {
     key: routeKey(state.route),
     open: details ? details.open : true,
@@ -669,6 +819,7 @@ function captureDraft() {
     name: value("name"),
     body: value("body"),
     sage: sage ? sage.checked : false,
+    badge: badge ? badge.checked : false,
     file: image && image.files ? image.files[0] : null,
   };
 }
@@ -689,6 +840,8 @@ function restoreDraft(draft) {
   }
   const sage = field(form, "sage");
   if (sage) sage.checked = draft.sage;
+  const badge = field(form, "badge");
+  if (badge) badge.checked = draft.badge;
 
   const fileField = form.querySelector("[data-file-field]");
   if (fileField && draft.file) {
@@ -885,6 +1038,25 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  if (event.target.closest('[data-action="forget-verification"]')) {
+    event.preventDefault();
+    forgetVerification();
+    return;
+  }
+
+  // Verifying again from here means starting at the address field, with the
+  // badge already held staying valid until the new one replaces it.
+  const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
+  if (restart) {
+    event.preventDefault();
+    verifyStep = { step: "email", label: "" };
+    state.verification = { ...state.verification, verified: false, reason: "" };
+    el.main.innerHTML = verifyViewHTML();
+    const input = document.getElementById("f-email");
+    if (input) input.focus();
+    return;
+  }
+
   const anchor = event.target.closest("a");
   if (!isInternalLink(anchor)) {
     return;
@@ -989,6 +1161,10 @@ document.addEventListener("drop", (event) => {
 el.main.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
+  if (form.dataset.verify) {
+    await submitVerification(form);
+    return;
+  }
   const button = form.querySelector('button[type="submit"]');
   const data = new FormData(form);
   const name = String(data.get("name") || "");
@@ -1003,7 +1179,7 @@ el.main.addEventListener("submit", async (event) => {
   }
 
   const isThread = form.dataset.kind === "thread";
-  const payload = { name, body };
+  const payload = { name, body, badge: data.get("badge") === "on" };
   let path;
   if (isThread) {
     payload.subject = String(data.get("subject") || "");
@@ -1038,6 +1214,59 @@ el.main.addEventListener("submit", async (event) => {
   }
 });
 
+// forgetVerification drops the credential from this browser. The server's own
+// record stays — one address earns one badge — but it holds nothing that says
+// this browser ever had it.
+async function forgetVerification() {
+  clearNotice();
+  try {
+    await api("/api/verify", { method: "DELETE" });
+  } catch (err) {
+    showNotice(errorMessage(err));
+    return;
+  }
+  verifyStep = { step: "email", label: "" };
+  await renderVerify();
+}
+
+// submitVerification drives both halves of the verification form. Nothing is
+// remembered between them but the badge on offer: the code is confirmed against
+// a short-lived cookie the server set, so the address is typed once and never
+// travels again.
+async function submitVerification(form) {
+  const button = form.querySelector('button[type="submit"]');
+  const label = button.textContent;
+  const data = new FormData(form);
+  const requesting = form.dataset.verify === "request";
+
+  button.disabled = true;
+  button.textContent = requesting ? "Sending…" : "Verifying…";
+  clearNotice();
+  try {
+    if (requesting) {
+      const sent = await api("/api/verify/request", {
+        method: "POST",
+        body: JSON.stringify({ email: String(data.get("email") || "") }),
+      });
+      verifyStep = { step: "code", label: sent.label || "" };
+      el.main.innerHTML = verifyViewHTML();
+      const input = document.getElementById("f-code");
+      if (input) input.focus();
+      return;
+    }
+    await api("/api/verify/confirm", {
+      method: "POST",
+      body: JSON.stringify({ code: String(data.get("code") || "") }),
+    });
+    verifyStep = { step: "email", label: "" };
+    await renderVerify();
+  } catch (err) {
+    showNotice(errorMessage(err));
+    button.disabled = false;
+    button.textContent = label;
+  }
+}
+
 /* Bootstrap ---------------------------------------------------------------- */
 
 async function start() {
@@ -1048,6 +1277,9 @@ async function start() {
     el.main.innerHTML = `<p class="empty">Could not reach the server: ${esc(err.message)}</p>`;
     return;
   }
+  // The posting form needs to know whether to offer the badge checkbox, and a
+  // failure here must not stop the board from loading.
+  await loadVerification();
   await render();
 }
 
