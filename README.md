@@ -40,7 +40,7 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
        │   confirmed
        ▼
   signed credential, returned to the client: { label, expiry, random id }
-       │   kept in sessionStorage; sent in X-Educhan-Credential
+       │   kept in localStorage; sent in X-Educhan-Credential
        │   on the posts that tick the box, and on nothing else
        ▼
   [Verified: IIT Bombay]
@@ -54,7 +54,7 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
    counts as academic and what the badge will say.
 3. A six-digit code is emailed. It is stored hashed and expires in 15 minutes.
 4. Submitting the code exchanges it for a signed, opaque credential, returned in
-   the response body and kept by the client in `sessionStorage`.
+   the response body and kept by the client in `localStorage`.
 5. The posting form grows a **post with [Verified: …]** checkbox. Tick it per
    post; leave it alone and the post is indistinguishable from any other — the
    credential is not sent at all.
@@ -69,7 +69,7 @@ anything — it would let the server (or anything reading its logs) group a
 poster's entire activity, which is the opposite of what this feature is for.
 
 So the credential is handed to the client once, at the end of the exchange, kept
-in `sessionStorage`, and sent in an `X-Educhan-Credential` header **only on the
+in `localStorage`, and sent in an `X-Educhan-Credential` header **only on the
 posts that asked for a badge**. The server reads it from that header and from
 nowhere else — there is no cookie fallback. Two tests hold the line from both
 directions:
@@ -89,7 +89,7 @@ travelling on a request that is not posting a badge. The client already holds
 the credential and reads the label and expiry out of it locally; a credential
 the server has since revoked is discovered on the next post that uses it.
 
-**The trade-off.** `sessionStorage` is readable by JavaScript running on the
+**The trade-off.** `localStorage` is readable by JavaScript running on the
 page, where an `HttpOnly` cookie would not have been. That is the cost of the
 property above, and it is worth paying here:
 
@@ -104,15 +104,40 @@ property above, and it is worth paying here:
   contact details, and no way to get from it to the address that earned it —
   it contains a label, a timestamp, and a random number. Compare it to a session
   cookie, which is what the alternative would effectively have been.
-- **It is bounded by the tab.** `sessionStorage` is per-tab and cleared when the
-  tab closes, so a badge on a shared or borrowed computer does not outlive the
-  sitting. That also means the credential TTL below is an upper bound rather
-  than the lifetime in practice: close the tab and you verify again. The server
-  shows a credential once and cannot reissue it, so there is nothing to recover.
 
 Sending the badge in a header rather than a cookie also removes the CSRF
 question from posting entirely: a cross-site form submission carries no header a
 browser would attach for it.
+
+**Why `localStorage` and not `sessionStorage`.** `sessionStorage` is per-tab and
+cleared when the tab closes, which sounds like the safer default and reads well
+until you follow what it costs. The server issues a credential exactly once and
+cannot reissue it, so a closed tab is not a re-login — it is a fresh email round
+trip through `/verify`. That has three consequences:
+
+- `EDUCHAN_VERIFY_CREDENTIAL_TTL` stops meaning anything. A 180-day expiry that
+  is in practice bounded by a browsing session is not a 180-day expiry.
+- A poster re-verifying after a tab close spends their own cooldown. The code
+  request cooldown is applied per address hash, so an ordinary user closing tabs
+  can lock themselves out of the feature with no abuse involved.
+- Behind a shared campus NAT, where the per-client-address cooldown is shared by
+  everyone on the network, those forced re-verifications are charged to the
+  whole institution.
+
+So the credential persists in `localStorage`. The cost is real and is the one
+worth stating plainly: **on a shared or borrowed browser the badge stays behind
+after the sitting**, available to whoever uses the browser next, until it
+expires or someone clears it. That is why `/verify` gives **Forget this
+credential** its own block on the page rather than a quiet button in a row of
+actions, and says what forgetting costs — the server cannot show the credential
+again, so it means verifying from the start.
+
+A badge is a weak thing to inherit: it grants posting under an institution's
+label and nothing else, with no account, no history, and no route back to the
+address that earned it — and the remembered posting name already sat in
+`localStorage` beside it. But it is not nothing, and the honest framing is a
+trade: a persistent credential that makes the TTL real, against a browser that
+now holds something worth forgetting on the way out.
 
 ### The privacy property, exactly
 
@@ -208,7 +233,7 @@ no handler and no SQL changes.
 | Plus-addressing stripped | `ana+one@` and `ana+two@` are the same mailbox. Dots are *not* stripped: that is a Gmail convention, and applying it everywhere would fold two real people at one institution together |
 | Code request cooldown | `EDUCHAN_VERIFY_COOLDOWN`, applied per client address **and** per address hash, so neither a client can walk a list of addresses nor a mailbox be flooded from a pool of hosts |
 | Five wrong codes | The pending verification is destroyed and a fresh code is the only way on, which is what makes a six-digit code safe |
-| Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default, and in practice the tab, whichever ends first |
+| Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default. The credential is kept in `localStorage`, so this is the lifetime in practice rather than an upper bound the browser cuts short |
 
 The one cookie this feature sets is the in-flight verification token, which is
 scoped to `/api/verify` and lives for one code's lifetime: it goes to the
