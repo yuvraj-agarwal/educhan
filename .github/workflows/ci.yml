@@ -1,0 +1,97 @@
+name: CI
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    # The integration tests skip themselves when no database answers, and a run
+    # of nothing still exits 0 — so the database is part of the job, not an
+    # optional extra. Matches the PostgreSQL the compose stack runs.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: educhan
+          POSTGRES_PASSWORD: educhan
+          POSTGRES_DB: educhan
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U educhan -d educhan"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      TEST_DATABASE_URL: postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Verify formatting
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files need gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet
+        run: go vet ./...
+
+      # -json so the next step can tell a skipped test from a passing one;
+      # piped back through jq so the log still reads like ordinary test output.
+      #
+      # -count=1 disables the test cache deliberately. Whether the database
+      # answered is not part of the cache key, so a cached result from a run
+      # that skipped everything can be replayed against a healthy database —
+      # and this job's whole claim is that the tests actually ran.
+      - name: Test
+        run: |
+          set -o pipefail
+          go test -race -count=1 -json ./... | tee test-output.json | jq -j 'select(.Action=="output") | .Output'
+
+      # The guarantee this job exists to make. `go test` exits 0 when every
+      # integration test skipped itself for want of a database, so success is
+      # not evidence that anything ran: assert that nothing skipped.
+      #
+      # Only test-level events count. A package with no test files reports
+      # Action=skip too, with no Test field — cmd/server and internal/mailer
+      # are both in that state, so matching on the action alone fails every run.
+      - name: Fail if any test skipped
+        if: always()
+        run: |
+          if [ ! -f test-output.json ]; then
+            echo "No test output was produced, so nothing can be asserted about it."
+            exit 1
+          fi
+          skipped=$(jq -r 'select(.Action=="skip" and has("Test")) | "\(.Package)\t\(.Test)"' test-output.json | sort -u)
+          if [ -n "$skipped" ]; then
+            count=$(printf '%s\n' "$skipped" | wc -l | tr -d ' ')
+            echo "::error::${count} test(s) skipped; a run that skips its integration tests proves nothing."
+            printf '%s\n' "$skipped"
+            exit 1
+          fi
+          echo "No tests skipped."
+
+      - name: Build
+        run: go build ./...
