@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -46,7 +47,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		pool.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
-	blobs, err := media.NewLocalStore(cfg.UploadDir)
+	blobs, err := newMediaStore(ctx, cfg)
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("prepare media store: %w", err)
@@ -91,10 +92,37 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	}, nil
 }
 
-// Close releases database resources.
+// newMediaStore builds the blob store the configured backend calls for. It is
+// the single place a media.Store is constructed: everything above the interface
+// — handlers, SQL, the media package's own Save and Remove — is the same code
+// whichever backend answers.
+func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
+	switch cfg.MediaBackend {
+	case MediaBackendGCS:
+		// The client outlives startup, so it must not hold a context that is
+		// cancelled once startup is over: cmd/server bounds app.New with a
+		// timeout, and a client whose credentials could not refresh past it
+		// would fail its first upload half a minute in.
+		return media.NewGCSStore(context.WithoutCancel(ctx), cfg.GCSBucket, cfg.GCSPrefix)
+	case MediaBackendLocal, "":
+		// Empty means local as well, so a Config built in code — the tests do —
+		// needs no backend field to behave as it always has.
+		return media.NewLocalStore(cfg.UploadDir)
+	default:
+		return nil, fmt.Errorf("unknown media backend %q", cfg.MediaBackend)
+	}
+}
+
+// Close releases database resources and, for a backend that holds a connection
+// of its own, the media store's.
 func (a *App) Close() {
 	if a.pool != nil {
 		a.pool.Close()
+	}
+	if closer, ok := a.media.(io.Closer); ok {
+		if err := closer.Close(); err != nil {
+			a.log.Warn("closing media store", "error", err)
+		}
 	}
 }
 

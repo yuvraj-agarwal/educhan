@@ -27,7 +27,10 @@ implemented. Janitor accounts, bans, and reports are not.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
-  its local-filesystem implementation.
+  its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
+  (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
+  against both. `internal/media/mediatest` starts an in-process Cloud Storage emulator and
+  is imported only by tests.
 - `internal/mailer` — the `Sender` interface verification codes go out through, with a
   development implementation that prints them to stdout.
 - `Dockerfile`, `docker-compose.yml`, `deploy/` — container image, the local stack, and
@@ -221,14 +224,32 @@ the index, and the thread view each have their own narrow-screen layout.
 
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
   than by the filename or the client-supplied content type.
-- Files land under `$EDUCHAN_UPLOAD_DIR` as `originals/{board}/{YYYY}/{MM}/{random}.{ext}`
-  and `thumbs/{board}/{YYYY}/{MM}/…`, served from `/media/original/…` and `/media/thumb/…`
-  with immutable caching.
+- Files are keyed `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and
+  `thumbs/{board}/{YYYY}/{MM}/…`, served from `/media/original/…` and `/media/thumb/…`
+  with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
+  `gcs` backend puts them in `$EDUCHAN_GCS_BUCKET` under an optional
+  `$EDUCHAN_GCS_PREFIX`. The key layout is identical either way.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
-- `internal/media.Store` is the only route to blob storage. Adding Google Cloud Storage
-  means writing another `Store`, not touching handlers or SQL.
+- `internal/media.Store` is the only route to blob storage, and `newMediaStore` in
+  `app.go` is the only place one is constructed. Both backends are held to
+  `testStoreContract` in `conformance_test.go`, and `internal/app/media_backend_test.go`
+  runs the whole attachment story end to end over each. A new backend is a new `Store`
+  plus a case in that switch — never a change to a handler or to SQL.
+- `GCSStore` streams through the process rather than redirecting, so the bucket is never
+  public and the URLs, headers, and range handling are the backends' shared behaviour
+  rather than each one's own. Its `Get` returns a reader that seeks by deferring the range
+  read until the first `Read`, which is what makes `http.ServeContent` cost one download
+  of exactly the range served. Signed URLs are a later optimisation and are noted as such
+  in `deploy/README.md`; nothing in the schema or the routes would have to change for
+  them.
+- Cloud Storage credentials are Application Default Credentials only — the attached
+  service account on Cloud Run, `GOOGLE_APPLICATION_CREDENTIALS` locally. There is no
+  setting that accepts a key file, and none belongs in the repository or the image. The
+  tests need no credentials at all: `mediatest.StartGCS` runs an emulator in process and
+  points the client at it through `STORAGE_EMULATOR_HOST`, so nothing skips for want of
+  cloud access — which matters, because CI fails the build if any test skips.
 
 ### Notes
 
@@ -241,7 +262,8 @@ the index, and the thread view each have their own narrow-screen layout.
   `/api/threads/{id}` compatibility routes.
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_UPLOAD_DIR`,
+  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
+  `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
   `EDUCHAN_VERIFY_DOMAINS`. See `.env.example` and the README table.
@@ -335,8 +357,10 @@ the index, and the thread view each have their own narrow-screen layout.
   mounted there inherits that ownership, which is what lets the non-root user write
   uploads. Compose publishes Postgres on `127.0.0.1:5433` to avoid colliding with
   `make db-up` on 5432.
-- On Cloud Run: `EDUCHAN_UPLOAD_DIR` must be under `/tmp` (the only writable path, and
-  in-memory and per-instance — uploads do not survive), `EDUCHAN_TRUST_PROXY` is `1`, and
+- On Cloud Run: attachments belong in Cloud Storage (`EDUCHAN_MEDIA_BACKEND=gcs` plus
+  `EDUCHAN_GCS_BUCKET`, with `roles/storage.objectAdmin` on that bucket and nothing
+  broader) — the `local` backend can only write to `/tmp`, which is in-memory and
+  per-instance, so uploads would not survive. `EDUCHAN_TRUST_PROXY` is `1`, and
   `EDUCHAN_POSTER_ID_SALT` has to come from Secret Manager or poster IDs differ per
   instance. Cloud SQL is reached over the socket Cloud Run mounts at
   `/cloudsql/{connection name}`; `pgx` takes that as `?host=/cloudsql/…` in `DATABASE_URL`,

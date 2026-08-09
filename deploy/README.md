@@ -7,9 +7,9 @@ directory holds the Google Cloud Run definition; the `Dockerfile` and
 
 | File | Purpose |
 | --- | --- |
-| `Dockerfile` | Multi-stage build; distroless runtime, non-root, ~21 MB |
+| `Dockerfile` | Multi-stage build; distroless runtime, non-root |
 | `docker-compose.yml` | Local stack: educhan + PostgreSQL + volumes |
-| `deploy/cloudrun/service.yaml` | Declarative Cloud Run service, Cloud SQL attached |
+| `deploy/cloudrun/service.yaml` | Declarative Cloud Run service, Cloud SQL attached, media in Cloud Storage |
 
 ---
 
@@ -75,6 +75,7 @@ gcloud services enable \
   artifactregistry.googleapis.com \
   sqladmin.googleapis.com \
   secretmanager.googleapis.com \
+  storage.googleapis.com \
   cloudbuild.googleapis.com
 
 # Somewhere to push the image
@@ -108,7 +109,57 @@ export CLOUDSQL_INSTANCE="$(gcloud sql instances describe educhan-db \
   --format='value(connectionName)')"
 ```
 
-### 2.3 Secrets
+### 2.3 The media bucket
+
+Attachments go to Cloud Storage. The container filesystem does not outlive the
+container — `/tmp` is the only writable path on Cloud Run, and it is per-instance
+and in-memory — so a bucket is what makes an uploaded image survive a scale to
+zero, a new revision, or simply being read by a different instance than the one
+that stored it.
+
+```bash
+# Bucket names are globally unique; the project ID keeps this one distinct
+export MEDIA_BUCKET="${PROJECT_ID}-educhan-media"
+
+gcloud storage buckets create "gs://${MEDIA_BUCKET}" \
+  --location="$REGION" \
+  --uniform-bucket-level-access \
+  --public-access-prevention
+```
+
+`--uniform-bucket-level-access` turns off per-object ACLs so access is decided
+in one place, and `--public-access-prevention` makes the bucket un-publishable
+even by accident. **Neither is a workaround: the bucket is meant to be private.**
+educhan streams media through the process on `/media/original/…` and
+`/media/thumb/…`, so nothing ever reads the bucket directly.
+
+Grant the service account access **on the bucket**, not on the project:
+
+```bash
+gcloud storage buckets add-iam-policy-binding "gs://${MEDIA_BUCKET}" \
+  --member="serviceAccount:${RUN_SA}" \
+  --role=roles/storage.objectAdmin
+```
+
+`roles/storage.objectAdmin` is exactly what educhan does with the bucket and no
+more: create, read, delete, and list objects. It carries no permission over the
+bucket itself — not to reconfigure it, not to change its IAM policy, not to
+delete it — and scoping the binding to this one bucket keeps it away from every
+other bucket in the project. Do not substitute `roles/storage.admin`, and do not
+grant it at the project level.
+
+Two of those verbs are load-bearing and worth naming, because a narrower role
+looks tempting and breaks something:
+
+- **delete** is how a moderator removing a post removes its image and its
+  thumbnail. `roles/storage.objectCreator` alone leaves every deleted post's
+  blobs in the bucket for ever.
+- **list** is how the server checks at startup that the bucket is usable. The
+  API answers `404` for a missing bucket and a missing object alike, so without
+  that check a mistyped name or a missing grant would show up as every image
+  quietly 404ing rather than as a failure to start.
+
+### 2.4 Secrets
 
 Three values do not belong in a deployment command: the database URL (it carries
 the password), the poster-ID salt, and the moderation key.
@@ -134,7 +185,7 @@ done
 secure tripcodes; without it each instance and each revision generates its own,
 so the same person shows a different ID depending on which container answered.
 
-### 2.4 Build and push
+### 2.5 Build and push
 
 Either build locally:
 
@@ -155,7 +206,7 @@ export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/educhan/educhan:${IMAGE_TAG
 gcloud builds submit --tag "$IMAGE"
 ```
 
-### 2.5 Deploy
+### 2.6 Deploy
 
 Either apply the service definition, which keeps the whole configuration in
 version control:
@@ -169,9 +220,9 @@ gcloud run services add-iam-policy-binding educhan --region "$REGION" \
   --member=allUsers --role=roles/run.invoker
 ```
 
-(`envsubst` substitutes `PROJECT_ID`, `REGION`, `CLOUDSQL_INSTANCE`, and
-`IMAGE_TAG` from the environment. Without gettext installed, edit the four
-placeholders by hand.)
+(`envsubst` substitutes `PROJECT_ID`, `REGION`, `CLOUDSQL_INSTANCE`,
+`MEDIA_BUCKET`, and `IMAGE_TAG` from the environment. Without gettext installed,
+edit the five placeholders by hand.)
 
 Or do it in one command:
 
@@ -182,19 +233,31 @@ gcloud run deploy educhan \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_UPLOAD_DIR=/tmp/uploads,EDUCHAN_LOG_FORMAT=json" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json" \
   --cpu 1 --memory 512Mi --concurrency 80 --max-instances 4 \
   --allow-unauthenticated
 ```
 
-### 2.6 Verify
+### 2.7 Verify
 
 ```bash
 URL="$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')"
 curl -s "$URL/healthz"     # {"status":"ok"} — this also pings PostgreSQL
 curl -s "$URL/api/boards"  # the seeded boards, so migrations ran
 open "$URL"                # the UI
+
+# Media round-trips through the bucket. Post an image, read its URL back, and
+# fetch it — then confirm the object is really in Cloud Storage.
+curl -s -X POST "$URL/api/boards/general/threads" \
+  -F subject="storage check" -F body="does this survive" -F image=@photo.jpg
+curl -s "$URL/api/boards/general/catalog"     # threads[].attachment.url
+curl -sI "$URL/media/original/general/2026/08/<name>.jpg"   # 200, image/jpeg
+gcloud storage ls -r "gs://${MEDIA_BUCKET}/media/originals/**"
 ```
+
+If the bucket is missing or the grant did not land, the revision fails to start
+and the log says so by name — `cloud storage bucket "…" is not usable` — rather
+than serving a site whose images all 404.
 
 Migrations are applied at startup inside a Postgres advisory lock, so rolling out
 a revision while the old one still serves traffic is safe: whichever container
@@ -249,7 +312,10 @@ ones whose value differs in a container or on Cloud Run:
 | `PORT` | unset | injected | Cloud Run's contract. Used as the listen port when `EDUCHAN_ADDR` is unset |
 | `EDUCHAN_ADDR` | `:8080` | leave unset | Setting it overrides `PORT`, which breaks Cloud Run's health checking |
 | `DATABASE_URL` | `postgres://educhan:educhan@db:5432/educhan?sslmode=disable` | from Secret Manager | Unix-socket form on Cloud Run; see section 3 |
-| `EDUCHAN_UPLOAD_DIR` | `/data/uploads` (volume) | `/tmp/uploads` | `/tmp` is the writable path on Cloud Run, and it is in-memory |
+| `EDUCHAN_MEDIA_BACKEND` | `local` | `gcs` | Where attachments live. `local` on Cloud Run means they do not outlive the container |
+| `EDUCHAN_UPLOAD_DIR` | `/data/uploads` (volume) | unused | Only read by the `local` backend |
+| `EDUCHAN_GCS_BUCKET` | unused | the media bucket | Required by the `gcs` backend; the service account needs `roles/storage.objectAdmin` on it (section 2.3) |
+| `EDUCHAN_GCS_PREFIX` | unused | `media` | Optional key prefix, so the bucket can hold other things too |
 | `EDUCHAN_POSTER_ID_SALT` | fixed dev value | from Secret Manager | Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | `dev-mod-key` | from Secret Manager | Unset means every moderation endpoint answers `403` |
 | `EDUCHAN_VERIFY_SECRET` | `dev-verify-secret` | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
@@ -267,18 +333,26 @@ load balancer or CDN in front and it becomes two.
 
 ## 5. Limitations
 
-**Uploads do not survive an instance.** `EDUCHAN_UPLOAD_DIR` points at `/tmp`,
-which on Cloud Run is per-instance and in-memory: it is discarded when the
-container stops, it counts against the memory limit, and an image uploaded to one
-instance answers `404` from another. Options, in order of effort:
+**Media is served through the process, not from the bucket.** Every image and
+thumbnail is streamed by the container on `/media/original/…` and
+`/media/thumb/…`, which is what keeps the bucket private and the URLs, headers,
+and range handling identical on both backends. The cost is that attachment
+traffic uses container CPU and egress, and that a popular thread's images are
+fetched from Cloud Storage on every cache miss rather than by the client
+directly. Signed URLs would remove that hop — `/media/…` would answer `302` with
+a short-lived URL instead of the bytes — and are the obvious next optimisation,
+along with a CDN in front. Neither is built; both are additive, because the
+storage layout and the object metadata already suit them: object names are
+stable, and each object carries the same immutable `Cache-Control` the handler
+sets today. Until then, keep an eye on egress if traffic grows.
 
-- Set `--max-instances 1` and accept that uploads are lost on every scale-to-zero
-  or new revision. Fine for a demo, not for anything real.
-- Mount a Cloud Storage bucket with Cloud Run's volume mounts, which puts a FUSE
-  filesystem behind the same `EDUCHAN_UPLOAD_DIR` — no code change, but FUSE
-  latency and semantics apply.
-- Implement a Cloud Storage `media.Store`, which is what the interface is there
-  for (section 6). This is the intended answer.
+**Uploads do not survive an instance on the `local` backend.** That is what
+`EDUCHAN_MEDIA_BACKEND=gcs` is for, and the configuration above sets it. Leave the
+backend at `local` on Cloud Run and `EDUCHAN_UPLOAD_DIR` can only point at `/tmp`,
+which is per-instance and in-memory: it is discarded when the container stops, it
+counts against the memory limit, and an image uploaded to one instance answers
+`404` from another. Use `local` there only for a throwaway demo, and pin
+`--max-instances 1` if you do.
 
 **Flood control is per instance.** `cooldownLimiter` in
 `internal/app/ratelimit.go` holds its state in process memory, so with N
@@ -299,12 +373,20 @@ new `Sender` plus the commented-out secret block in `service.yaml`.
 metadata live in PostgreSQL, and the migrations are embedded in the binary and
 guarded by an advisory lock, so instances can start in any order and any number.
 
+**The image is larger than it was.** The Cloud Storage client brings a sizeable
+dependency tree with it: the stripped static binary goes from about 11 MB to
+about 33 MB, and the image grows by the same amount. It is paid once at deploy
+time and does not affect request latency, but it does lengthen a cold pull —
+`run.googleapis.com/startup-cpu-boost` is already set in `service.yaml`, and
+keeping `minScale` above zero avoids the pull on a cold start altogether if the
+extra cost is worth it to you.
+
 **Not covered here:** CI/CD, custom domains and certificates, Cloud CDN, Cloud
 Armor, and backups beyond Cloud SQL's automatic ones.
 
 ---
 
-## 6. Preparing for Google Cloud Storage
+## 6. How the storage backend is chosen
 
 Nothing in the handlers or the SQL touches the filesystem. `internal/media.Store`
 is the only route to blob storage:
@@ -317,9 +399,34 @@ type Store interface {
 }
 ```
 
-`LocalStore` in `internal/media/local.go` is the implementation used today, and
-`app.New` is the single place it is constructed. A `GCSStore` alongside it —
-selected by, say, an `EDUCHAN_MEDIA_BUCKET` being set — is the whole change:
-keys are already slash-separated, relative, and validated by `CleanKey`, which is
-exactly an object name. Serving can stay as it is, with `/media/…` streaming
-through the process, or move to signed URLs later.
+Two implementations satisfy it — `LocalStore` in `internal/media/local.go` and
+`GCSStore` in `internal/media/gcs.go` — and `newMediaStore` in
+`internal/app/app.go` is the single place either is constructed, from
+`EDUCHAN_MEDIA_BACKEND`. Nothing above the interface knows which one answered:
+no handler, no query, no column, and no URL.
+
+Keys are the reason the swap is this cheap. They were already slash-separated,
+relative, and validated by `CleanKey`, which is exactly the shape of an object
+name, so `originals/general/2026/08/{random}.jpg` addresses a file on disk and an
+object in a bucket without translation. `GCSStore` applies the same validation
+even though a flat namespace could not be escaped by a `..`, so that a key stays
+portable: a bucket can be synced to a directory and back.
+
+`internal/media/conformance_test.go` is what keeps the two honest. It is one
+suite — round trips, content types, missing keys, traversal rejection, both
+renditions written and removed, cleanup after a partial write, and serving
+through `http.ServeContent` including range requests — run against each backend
+in turn. `internal/app/media_backend_test.go` then runs the whole attachment
+story end to end, through the real routes, over both. Both use an in-process
+Cloud Storage emulator, so they need no credentials, no network, and no
+container, and nothing skips for want of them.
+
+Credentials are Application Default Credentials and nothing else: the attached
+service account on Cloud Run, `GOOGLE_APPLICATION_CREDENTIALS` locally. There is
+no setting that takes a key file, and none belongs in the image or the
+repository.
+
+**Not covered by this backend:** signed URLs and direct-to-bucket resumable
+uploads, CDN configuration, RAW image and video support, and lifecycle or
+cold-storage tiering. Object names are stable and prefixed, so a lifecycle rule
+can be added later without touching the application.

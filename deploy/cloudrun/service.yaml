@@ -1,7 +1,7 @@
 # Declarative Cloud Run service for educhan. Substitute the placeholders and
 # apply it; see deploy/README.md for the full walkthrough.
 #
-#   export PROJECT_ID=… REGION=… CLOUDSQL_INSTANCE=… IMAGE_TAG=…
+#   export PROJECT_ID=… REGION=… CLOUDSQL_INSTANCE=… MEDIA_BUCKET=… IMAGE_TAG=…
 #   envsubst < deploy/cloudrun/service.yaml > /tmp/educhan-service.yaml
 #   gcloud run services replace /tmp/educhan-service.yaml --region "$REGION"
 apiVersion: serving.knative.dev/v1
@@ -39,7 +39,7 @@ spec:
               cpu: "1"
               memory: 512Mi
           env:
-            # Secrets. Create them first (deploy/README.md step 4) and grant the
+            # Secrets. Create them first (deploy/README.md section 2.4) and grant the
             # service account roles/secretmanager.secretAccessor.
             - name: DATABASE_URL
               valueFrom:
@@ -71,12 +71,21 @@ spec:
             # control of their own rate-limit bucket and poster ID.
             - name: EDUCHAN_TRUST_PROXY
               value: "1"
-            # /tmp is the writable path on every Cloud Run execution
-            # environment. It is per-instance and in-memory: uploads do not
-            # outlive the container and count against the memory limit. See the
-            # limitations in deploy/README.md.
-            - name: EDUCHAN_UPLOAD_DIR
-              value: /tmp/uploads
+            # Attachments go to Cloud Storage, because the container filesystem
+            # does not outlive the container: /tmp is the only writable path on
+            # Cloud Run, and it is per-instance, in-memory, and charged against
+            # the memory limit. Credentials come from the service account above
+            # through Application Default Credentials — nothing to configure —
+            # and it needs roles/storage.objectAdmin on this bucket and nothing
+            # broader. Create the bucket and grant the role first:
+            # deploy/README.md section 2.3.
+            - name: EDUCHAN_MEDIA_BACKEND
+              value: gcs
+            - name: EDUCHAN_GCS_BUCKET
+              value: ${MEDIA_BUCKET}
+            # Optional; objects live at the bucket root when unset.
+            - name: EDUCHAN_GCS_PREFIX
+              value: media
             - name: EDUCHAN_LOG_FORMAT
               value: json
             - name: EDUCHAN_THREAD_COOLDOWN
