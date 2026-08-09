@@ -19,7 +19,7 @@ jobs:
 
     # The integration tests skip themselves when no database answers, and a run
     # of nothing still exits 0 — so the database is part of the job, not an
-    # optional extra. Matches the PostgreSQL the compose stack runs.
+    # optional extra. Matches the PostgreSQL `make db-up` starts locally.
     services:
       postgres:
         image: postgres:16-alpine

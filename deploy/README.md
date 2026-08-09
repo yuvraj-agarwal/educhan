@@ -1,29 +1,39 @@
 # Deploying educhan
 
 educhan builds to a single static binary with the web UI and the SQL migrations
-embedded, so a deployment is one container plus a PostgreSQL database. This
-directory holds the Google Cloud Run definition; the `Dockerfile` and
-`docker-compose.yml` in the repository root cover building and running it.
+embedded, so a deployment is one container plus a PostgreSQL database. The image
+is built by **Google Cloud Build** from the `Dockerfile` and pushed to
+**Artifact Registry**; this directory holds the Cloud Run definition that runs
+it.
 
 | File | Purpose |
 | --- | --- |
-| `Dockerfile` | Multi-stage build; distroless runtime, non-root |
-| `docker-compose.yml` | Local stack: educhan + PostgreSQL + volumes |
+| `Dockerfile` | Multi-stage build; distroless runtime, non-root. Cloud Build consumes it directly |
+| `cloudbuild.yaml` | The build itself: one image, tagged with the short commit SHA and `latest`, pushed to Artifact Registry |
+| `.gcloudignore` | What `gcloud builds submit` uploads as the build source |
 | `deploy/cloudrun/service.yaml` | Declarative Cloud Run service, Cloud SQL attached, media in Cloud Storage |
+
+Nothing below needs a Docker daemon on your machine, and neither does local
+development — the container is a deployment artifact, not a development tool.
 
 ---
 
-## 1. Locally with Docker Compose
+## 1. Locally, with no container at all
 
-The only prerequisite is Docker with the Compose plugin.
+Local development runs the server natively against a real PostgreSQL. It needs
+Go 1.22+ and nothing else: `make db-up` starts a user-owned PostgreSQL cluster on
+`localhost:5432` and ensures the `educhan` role and database exist. It is
+`.cursor/scripts/start.sh`, it is idempotent, and it is safe to re-run.
 
 ```bash
-docker compose up --build      # http://localhost:8080
+make db-up                                        # PostgreSQL on localhost:5432
+EDUCHAN_MOD_KEY=dev-mod-key go run ./cmd/server   # http://localhost:8080
 ```
 
-That builds the image, starts PostgreSQL 16, waits for it to pass `pg_isready`,
-and starts educhan. Migrations are applied on first boot; the seeded boards are
-`placements`, `research`, and `general`.
+`make run` is the second line without the moderation key. Migrations are applied
+at startup; the seeded boards are `placements`, `research`, and `general`.
+Attachments go to `./data/uploads`, because `EDUCHAN_MEDIA_BACKEND` defaults to
+`local`.
 
 ```bash
 curl -s localhost:8080/healthz     # {"status":"ok"}
@@ -33,31 +43,26 @@ curl -s localhost:8080/api/boards
 curl -s -X POST localhost:8080/api/boards/general/threads \
   -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
 
-# Moderation, using the compose default key
+# Moderation, using the key the server was started with
 curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
   -H 'Authorization: Bearer dev-mod-key'
 ```
 
-```bash
-docker compose logs -f app     # structured JSON logs
-docker compose down            # stop, keeping the database and uploads
-docker compose down -v         # stop and discard both volumes
-```
-
-Two named volumes hold the state: `pgdata` for PostgreSQL and `uploads` for
-originals and thumbnails, both of which survive `down` and a rebuild. Override
-any setting by exporting it or putting it in a `.env` beside the compose file —
-`EDUCHAN_MOD_KEY`, the cooldowns, and `EDUCHAN_POSTER_ID_SALT` all read from
-there. PostgreSQL is published on `127.0.0.1:5433` so it never collides with a
-cluster already using 5432 on the host:
+Point it at any other PostgreSQL by exporting `DATABASE_URL`; the default is
+`postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable`.
 
 ```bash
-psql postgres://educhan:educhan@localhost:5433/educhan
+psql postgres://educhan:educhan@localhost:5432/educhan
 ```
 
-This stack is for development and testing. The compose file ships a fixed
-poster-ID salt and a `dev-mod-key` so restarts are predictable; neither is
-suitable for anything reachable.
+Two settings are worth setting even locally. `EDUCHAN_POSTER_ID_SALT` is random
+per process unless you set it, so poster IDs change on every restart; and
+`EDUCHAN_MOD_KEY` is empty unless you set it, which makes every moderation
+endpoint answer `403`. Use throwaway values — they are development conveniences,
+not secrets, and nothing reachable should run with either of them.
+
+**The image is not part of this loop.** A change to the `Dockerfile` is checked
+by submitting a build (section 2.5), not by building locally.
 
 ---
 
@@ -71,22 +76,93 @@ export REGION=asia-south1
 
 gcloud config set project "$PROJECT_ID"
 gcloud services enable \
-  run.googleapis.com \
+  cloudbuild.googleapis.com \
   artifactregistry.googleapis.com \
+  run.googleapis.com \
   sqladmin.googleapis.com \
   secretmanager.googleapis.com \
-  storage.googleapis.com \
-  cloudbuild.googleapis.com
+  storage.googleapis.com
 
-# Somewhere to push the image
+# Somewhere to push the image. The location is part of every image reference, so
+# it has to match `_REGION` in cloudbuild.yaml (or `REGION` on the make command
+# line) — a repository in the wrong region is not a repository at all.
 gcloud artifacts repositories create educhan \
-  --repository-format=docker --location="$REGION"
+  --repository-format=docker \
+  --location="$REGION" \
+  --description="educhan container images"
 
 # The identity the service runs as — not the default compute account
 gcloud iam service-accounts create educhan-run --display-name="educhan Cloud Run"
 export RUN_SA="educhan-run@${PROJECT_ID}.iam.gserviceaccount.com"
 gcloud projects add-iam-policy-binding "$PROJECT_ID" \
   --member="serviceAccount:${RUN_SA}" --role=roles/cloudsql.client
+```
+
+#### What the build runs as
+
+Cloud Build runs every build as a service account, and *which* account depends on
+how old the project is: older projects use the legacy Cloud Build account,
+`PROJECT_NUMBER@cloudbuild.gserviceaccount.com`, while newer ones run builds as
+the Compute Engine default account,
+`PROJECT_NUMBER-compute@developer.gserviceaccount.com`. Look it up rather than
+assume — the console's build details name it, as does the first build's
+`serviceAccount` field:
+
+```bash
+export PROJECT_NUMBER="$(gcloud projects describe "$PROJECT_ID" --format='value(projectNumber)')"
+gcloud builds list --limit=1 --format='value(serviceAccount)'
+
+# Whichever of the two it turns out to be:
+export BUILD_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
+```
+
+That account needs two grants for `cloudbuild.yaml` to work:
+
+```bash
+# Push to Artifact Registry — bound to this repository, not to the project.
+gcloud artifacts repositories add-iam-policy-binding educhan \
+  --location="$REGION" \
+  --member="serviceAccount:${BUILD_SA}" \
+  --role=roles/artifactregistry.writer
+
+# Write build logs. cloudbuild.yaml sets `logging: CLOUD_LOGGING_ONLY`, and a
+# build whose logs have nowhere to go is rejected before it starts.
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${BUILD_SA}" \
+  --role=roles/logging.logWriter
+```
+
+In a project that still has the automatic grants on its default service accounts
+these are no-ops, because `roles/editor` already covers both. In a project with
+`constraints/iam.automaticIamGrantsForDefaultServiceAccounts` enforced the
+account starts with nothing, and without them the build either never starts or
+dies at the push with `denied: Permission
+"artifactregistry.repositories.uploadArtifacts" denied`. Granting them
+explicitly is right in both cases.
+
+`gcloud builds submit` uploads the source to a staging bucket it creates on first
+use, `gs://${PROJECT_ID}_cloudbuild`, and the build reads it back from there. If
+a build fails fetching its own source, that read is what is missing:
+
+```bash
+gcloud storage buckets add-iam-policy-binding "gs://${PROJECT_ID}_cloudbuild" \
+  --member="serviceAccount:${BUILD_SA}" --role=roles/storage.objectViewer
+```
+
+**Deploying is a separate identity question.** `make cloud-deploy` runs
+`gcloud run deploy` as *you*, so the roles that matter are on your own account:
+`roles/run.developer`, plus `roles/iam.serviceAccountUser` on `$RUN_SA` — Cloud
+Run will not let you deploy a service that runs as an identity you cannot act as.
+Project Owner covers both. Move that deploy into Cloud Build later — a second
+step in `cloudbuild.yaml`, or a trigger — and the same two roles have to move
+onto `$BUILD_SA`:
+
+```bash
+# Only needed if Cloud Build itself deploys. `make cloud-deploy` does not.
+gcloud projects add-iam-policy-binding "$PROJECT_ID" \
+  --member="serviceAccount:${BUILD_SA}" --role=roles/run.developer
+gcloud iam service-accounts add-iam-policy-binding "$RUN_SA" \
+  --member="serviceAccount:${BUILD_SA}" --role=roles/iam.serviceAccountUser
 ```
 
 ### 2.2 Cloud SQL
@@ -187,23 +263,49 @@ so the same person shows a different ID depending on which container answered.
 
 ### 2.5 Build and push
 
-Either build locally:
+`cloudbuild.yaml` in the repository root is the build. It runs one `docker build`
+against the repository's `Dockerfile` on Cloud Build's machines and pushes the
+result to Artifact Registry under two tags — the short commit SHA and `latest` —
+which name the same digest, because the image is built once and tagged twice.
 
 ```bash
-gcloud auth configure-docker "${REGION}-docker.pkg.dev"
-export IMAGE_TAG="$(git rev-parse --short HEAD)"
-export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/educhan/educhan:${IMAGE_TAG}"
-
-docker build -t "$IMAGE" .
-docker push "$IMAGE"
+make cloud-build
 ```
 
-or let Cloud Build do it, which needs no local Docker:
+That is exactly this, with the values filled in from the Makefile:
+
+```bash
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions "_REGION=${REGION},_REPOSITORY=educhan,_IMAGE=educhan,_TAG=$(git rev-parse --short HEAD)"
+```
+
+The commit is passed in rather than read from `$SHORT_SHA` because that built-in
+substitution is populated only for builds started by a Cloud Build trigger; a
+build submitted by hand would be tagged with an empty string. `make cloud-build`
+refuses to submit when the tag or the project would be empty, so the failure is a
+sentence rather than a malformed image reference.
+
+Everything is overridable on the command line, and the defaults are
+`asia-south1`, the `educhan` repository, and `gcloud config get-value project`:
+
+```bash
+make cloud-build REGION=europe-west1 PROJECT_ID=other-project IMAGE_TAG=v0.3.0
+make cloud-image        # print the image reference these produce
+```
+
+What gets uploaded as the build source is governed by `.gcloudignore` — history,
+`.env`, and `data/` stay behind — and inside the build, `.dockerignore` trims the
+context a second time before the daemon sees it.
+
+The pushed tags stay in the registry, which is what makes a rollback a deploy of
+an older commit rather than a rebuild:
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
 export IMAGE="${REGION}-docker.pkg.dev/${PROJECT_ID}/educhan/educhan:${IMAGE_TAG}"
-gcloud builds submit --tag "$IMAGE"
+
+gcloud artifacts docker images list \
+  "${REGION}-docker.pkg.dev/${PROJECT_ID}/educhan/educhan" --include-tags
 ```
 
 ### 2.6 Deploy
@@ -237,6 +339,21 @@ gcloud run deploy educhan \
   --cpu 1 --memory 512Mi --concurrency 80 --max-instances 4 \
   --allow-unauthenticated
 ```
+
+Once the service exists, every later release is just the new image:
+
+```bash
+make cloud-build && make cloud-deploy
+```
+
+`make cloud-deploy` is `gcloud run deploy educhan --image <the tag just built>`
+and nothing more. Cloud Run carries the rest of the configuration — the service
+account, the Cloud SQL instance, the secrets, the environment — over from the
+current revision, so it is not duplicated in the Makefile and cannot drift from
+it. Changing any of that is a change to `service.yaml` (or to the long form
+above), which is where the service's configuration is meant to live. The target
+checks the service exists first and tells you to create it if it does not, rather
+than quietly creating a bare one with no database attached.
 
 ### 2.7 Verify
 
@@ -305,22 +422,22 @@ within what the instance tier allows, or bound it explicitly with
 ## 4. Environment variables
 
 The full table lives in the [README](../README.md#configuration). These are the
-ones whose value differs in a container or on Cloud Run:
+ones whose value differs between a development machine and Cloud Run:
 
-| Variable | Local (compose) | Cloud Run | Notes |
+| Variable | Local (`make run`) | Cloud Run | Notes |
 | --- | --- | --- | --- |
 | `PORT` | unset | injected | Cloud Run's contract. Used as the listen port when `EDUCHAN_ADDR` is unset |
-| `EDUCHAN_ADDR` | `:8080` | leave unset | Setting it overrides `PORT`, which breaks Cloud Run's health checking |
-| `DATABASE_URL` | `postgres://educhan:educhan@db:5432/educhan?sslmode=disable` | from Secret Manager | Unix-socket form on Cloud Run; see section 3 |
+| `EDUCHAN_ADDR` | `:8080` (default) | leave unset | Setting it overrides `PORT`, which breaks Cloud Run's health checking |
+| `DATABASE_URL` | `postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable` | from Secret Manager | The default matches `make db-up`. Unix-socket form on Cloud Run; see section 3 |
 | `EDUCHAN_MEDIA_BACKEND` | `local` | `gcs` | Where attachments live. `local` on Cloud Run means they do not outlive the container |
-| `EDUCHAN_UPLOAD_DIR` | `/data/uploads` (volume) | unused | Only read by the `local` backend |
+| `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | unused | Only read by the `local` backend |
 | `EDUCHAN_GCS_BUCKET` | unused | the media bucket | Required by the `gcs` backend; the service account needs `roles/storage.objectAdmin` on it (section 2.3) |
 | `EDUCHAN_GCS_PREFIX` | unused | `media` | Optional key prefix, so the bucket can hold other things too |
-| `EDUCHAN_POSTER_ID_SALT` | fixed dev value | from Secret Manager | Must be stable across instances and revisions |
-| `EDUCHAN_MOD_KEY` | `dev-mod-key` | from Secret Manager | Unset means every moderation endpoint answers `403` |
-| `EDUCHAN_VERIFY_SECRET` | `dev-verify-secret` | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
+| `EDUCHAN_POSTER_ID_SALT` | random per process | from Secret Manager | Set it locally too, or poster IDs change on every restart. Must be stable across instances and revisions |
+| `EDUCHAN_MOD_KEY` | unset; export a throwaway | from Secret Manager | Unset means every moderation endpoint answers `403` |
+| `EDUCHAN_VERIFY_SECRET` | unset unless testing verification | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
 | `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
-| `EDUCHAN_LOG_FORMAT` | `json` | `json` | JSON is what Cloud Logging parses into structured fields |
+| `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
 | `EDUCHAN_THREAD_COOLDOWN` / `_POST_` / `_UPLOAD_` | `30` / `5` / `15` | same | Seconds; `0` disables one |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` | `8388608` | Cloud Run's own request limit is 32 MiB |
 
@@ -381,8 +498,16 @@ time and does not affect request latency, but it does lengthen a cold pull —
 keeping `minScale` above zero avoids the pull on a cold start altogether if the
 extra cost is worth it to you.
 
-**Not covered here:** CI/CD, custom domains and certificates, Cloud CDN, Cloud
-Armor, and backups beyond Cloud SQL's automatic ones.
+**Builds are submitted by hand.** `cloudbuild.yaml` is run by `make cloud-build`
+from a checkout, not by a Cloud Build trigger watching the repository, so nothing
+builds or deploys on a push. GitHub Actions (`.github/workflows/ci.yml`) still
+runs the tests on every push and does not build the image. Adding a trigger is a
+console or `gcloud builds triggers create` change and needs no edit to this
+config, beyond letting `$SHORT_SHA` supply `_TAG` — see section 2.5.
+
+**Not covered here:** Cloud Build triggers and CD, custom domains and
+certificates, Cloud CDN, Cloud Armor, and backups beyond Cloud SQL's automatic
+ones.
 
 ---
 

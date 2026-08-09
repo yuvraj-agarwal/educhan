@@ -320,34 +320,43 @@ a `data:` URL because that is what `img-src` allows.
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
 - **Database**: PostgreSQL 16, versioned SQL migrations applied on startup
 - **Front end**: dependency-free HTML/CSS/JS served from the Go binary
-- **Deployment**: multi-stage Docker build onto a distroless base; Cloud Run with Cloud SQL (see [Deployment](#deployment))
+- **Deployment**: multi-stage Docker build onto a distroless base, built by Cloud Build into Artifact Registry; Cloud Run with Cloud SQL (see [Deployment](#deployment))
 - **Planned**: Google Cloud Storage, Gemini API + Cloud Vision for moderation, Cloud CDN + Cloud Armor
 
 ## Running locally
 
-Requires Go 1.22+ and a reachable PostgreSQL instance.
+Requires Go 1.22+ and a reachable PostgreSQL instance. No containers are
+involved: this is the documented way to run educhan on a development machine.
 
 ```bash
-bash .cursor/scripts/start.sh   # start a local PostgreSQL cluster (or use your own)
-make run                        # serve on http://localhost:8080
+make db-up                      # start a local PostgreSQL cluster (or use your own)
+make run                        # go run ./cmd/server, on http://localhost:8080
 ```
+
+`make db-up` is `bash .cursor/scripts/start.sh`: it starts a user-owned
+PostgreSQL on `localhost:5432` and ensures the `educhan` role and database exist.
+It is idempotent, so re-running it is how you check the database is up. Point at
+a different server instead by exporting `DATABASE_URL`.
 
 Migrations in `internal/app/migrations/` are applied automatically at startup,
 guarded by a Postgres advisory lock so concurrent instances are safe.
 
-### With Docker
+### The container image
 
-Docker with the Compose plugin is the only prerequisite — no Go, no PostgreSQL:
+The image Cloud Run runs is built by **Google Cloud Build** from the `Dockerfile`
+and pushed to **Artifact Registry**, tagged with the short commit SHA and
+`latest`:
 
 ```bash
-docker compose up --build       # http://localhost:8080
+make cloud-build    # gcloud builds submit --config cloudbuild.yaml
+make cloud-deploy   # roll that image onto the Cloud Run service
 ```
 
-That builds the image, starts PostgreSQL 16, waits for it to become healthy, and
-runs educhan against it. Named volumes hold the database and the uploads, so both
-survive `docker compose down` and a rebuild; `down -v` discards them. See
-[`deploy/README.md`](deploy/README.md#1-locally-with-docker-compose) for the
-settings the compose file exposes.
+So building the image needs a Google Cloud project rather than a Docker daemon,
+and a change to the `Dockerfile` is checked by submitting a build. The
+[Deployment](#deployment) section is the short version;
+[`deploy/README.md`](deploy/README.md) has the one-time project setup, the IAM
+the build needs, and the rest of the walkthrough.
 
 ### Configuration
 
@@ -383,8 +392,8 @@ are held to the same contract by a shared conformance suite in
 `internal/media/conformance_test.go`.
 
 **`local` (the default)** keeps files under `EDUCHAN_UPLOAD_DIR`. Nothing else
-needs configuring, which is why it is the default: an existing deployment, the
-compose stack, and a fresh checkout all keep working untouched.
+needs configuring, which is why it is the default: an existing deployment and a
+fresh checkout both keep working untouched.
 
 ```bash
 EDUCHAN_MEDIA_BACKEND=local            # implied when unset
@@ -612,14 +621,31 @@ shape of it.
 educhan builds to one static binary with the web UI and the migrations embedded,
 so a deployment is that container plus a PostgreSQL. The `Dockerfile` is a
 multi-stage build onto a distroless base — no shell, no package manager, running
-as a non-root user — and `deploy/cloudrun/service.yaml` is the
-Cloud Run service that runs it.
+as a non-root user — `cloudbuild.yaml` is how that image is built and pushed, and
+`deploy/cloudrun/service.yaml` is the Cloud Run service that runs it.
 
 ```bash
-# Build and push
-gcloud builds submit --tag "$REGION-docker.pkg.dev/$PROJECT_ID/educhan/educhan:$(git rev-parse --short HEAD)"
+# Build on Cloud Build, push to Artifact Registry as :<short SHA> and :latest
+make cloud-build
 
-# Deploy, with Cloud SQL attached and secrets from Secret Manager
+# Roll it onto the existing service, keeping every other setting
+make cloud-deploy
+```
+
+Both are thin wrappers, so the underlying commands are no secret:
+
+```bash
+gcloud builds submit --config cloudbuild.yaml \
+  --substitutions "_REGION=$REGION,_REPOSITORY=educhan,_IMAGE=educhan,_TAG=$(git rev-parse --short HEAD)"
+
+gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
+```
+
+The first deploy is longer, because it is what establishes the configuration that
+later deploys inherit — the runtime service account, the Cloud SQL instance, and
+the secrets:
+
+```bash
 gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
@@ -627,6 +653,10 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_LOG_FORMAT=json" \
   --allow-unauthenticated
 ```
+
+One-time setup — enabling the Cloud Build and Artifact Registry APIs, creating
+the repository, and the roles the build service account needs to push — is in
+[`deploy/README.md`](deploy/README.md#21-one-time-project-setup).
 
 Cloud Run mounts the Cloud SQL instance's Unix socket at
 `/cloudsql/{connection name}`, and `pgx` connects to a socket whenever the
@@ -667,14 +697,21 @@ One thing remains per instance:
 ## Development
 
 ```bash
+make db-up   # local PostgreSQL for development and the integration tests
+make run     # go run ./cmd/server
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
 
-make docker-build  # build the container image as educhan:local
-make compose-up    # the whole stack on :8080
-make compose-down  # stop it, keeping the volumes
+make cloud-build   # build the image on Cloud Build, push to Artifact Registry
+make cloud-deploy  # deploy that image to Cloud Run
+make cloud-image   # print the image reference the two above use
 ```
+
+The `cloud-*` targets take `PROJECT_ID`, `REGION`, `AR_REPO`, `IMAGE_NAME`,
+`IMAGE_TAG`, and `SERVICE` as overrides — `make cloud-build REGION=europe-west1`
+— and default the project to `gcloud config get-value project` and the tag to the
+short commit SHA.
 
 ## Contributing
 
