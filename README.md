@@ -251,13 +251,15 @@ One image per post, on both thread creation and replies.
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
   carry transparency get PNG thumbnails.
-- **Storage**: originals and thumbnails are written to
-  `$EDUCHAN_UPLOAD_DIR/originals/{board}/{YYYY}/{MM}/` and `…/thumbs/{board}/{YYYY}/{MM}/`
-  under a generated random filename (default root `./data/uploads`). All writes and reads
-  go through the `internal/media.Store` interface, so moving to Google Cloud Storage is a
-  new implementation of that interface rather than a rewrite of the handlers.
+- **Storage**: originals and thumbnails are keyed
+  `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and `thumbs/{board}/{YYYY}/{MM}/…`, under a
+  generated random filename. Two backends implement that key layout — the local filesystem
+  and Google Cloud Storage — and [Storage backends](#storage-backends) covers choosing one.
+  All writes and reads go through the `internal/media.Store` interface, so which one is in
+  use is invisible to the handlers and to the database.
 - **Serving**: `/media/original/{path}` and `/media/thumb/{path}`, with the correct
-  `Content-Type`, range support, and long-lived immutable caching.
+  `Content-Type`, range support, and long-lived immutable caching. Media streams through
+  the application on every backend; a Cloud Storage bucket is never public.
 - **UI**: thumbnails appear in the board index, the catalog, and inside threads. In a
   thread a thumbnail expands to the full image in place — the full file is decoded before
   the swap, so the picture never blinks — and collapses again on a second click or
@@ -360,7 +362,10 @@ settings the compose file exposes.
 | `EDUCHAN_POST_COOLDOWN` | `5` (seconds) | Minimum interval between replies from one client, per board |
 | `EDUCHAN_UPLOAD_COOLDOWN` | `15` (seconds) | Minimum interval between attachments from one client, across all boards |
 | `EDUCHAN_LOG_FORMAT` | `text` | `text` or `json` structured logs |
-| `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the media store writes originals and thumbnails to |
+| `EDUCHAN_MEDIA_BACKEND` | `local` | Where attachments are stored: `local` or `gcs`; see [Storage backends](#storage-backends) |
+| `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the `local` backend writes originals and thumbnails to; ignored by `gcs` |
+| `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
+| `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
@@ -368,6 +373,55 @@ settings the compose file exposes.
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
+
+### Storage backends
+
+Attachments are written through one interface, `internal/media.Store`, with two
+implementations. `EDUCHAN_MEDIA_BACKEND` picks between them, and nothing above
+the interface — no handler, no query, no column — knows which one answered. Both
+are held to the same contract by a shared conformance suite in
+`internal/media/conformance_test.go`.
+
+**`local` (the default)** keeps files under `EDUCHAN_UPLOAD_DIR`. Nothing else
+needs configuring, which is why it is the default: an existing deployment, the
+compose stack, and a fresh checkout all keep working untouched.
+
+```bash
+EDUCHAN_MEDIA_BACKEND=local            # implied when unset
+EDUCHAN_UPLOAD_DIR=./data/uploads
+```
+
+**`gcs`** keeps objects in a Google Cloud Storage bucket, which is what lets
+uploads outlive a container. Use it on Cloud Run, where the local filesystem is
+per-instance and in-memory.
+
+```bash
+EDUCHAN_MEDIA_BACKEND=gcs
+EDUCHAN_GCS_BUCKET=educhan-media       # required
+EDUCHAN_GCS_PREFIX=media               # optional; omit to use the bucket root
+```
+
+- **Credentials come from [Application Default Credentials][adc]** — the attached
+  service account on Cloud Run, or `GOOGLE_APPLICATION_CREDENTIALS` pointing at a
+  key file locally. There is no key file in this repository or in the image, and
+  no setting that would accept one. The bucket needs `roles/storage.objectAdmin`
+  granted on the bucket itself, and nothing broader;
+  [`deploy/README.md`](deploy/README.md) has the exact commands.
+- **The bucket stays private.** Media is streamed through the application on
+  `/media/original/…` and `/media/thumb/…` exactly as with the local backend, so
+  the same `Content-Type`, immutable caching, and range handling apply. Serving
+  signed URLs instead would take that hop out, and is a later optimisation rather
+  than a change of contract.
+- **Keys are identical on both backends**, including the traversal rejection that
+  validates them, so the same object layout works either way and a bucket can be
+  synced to disk or back.
+- **A misconfigured bucket stops the server starting.** The API answers `404` for
+  a missing bucket and a missing object alike, so a mistyped name or a missing
+  grant would otherwise show up as every image quietly 404ing. The store probes
+  the bucket at startup instead, using the object-list permission
+  `roles/storage.objectAdmin` already carries.
+
+[adc]: https://cloud.google.com/docs/authentication/application-default-credentials
 
 ### Flood control
 
@@ -558,7 +612,7 @@ shape of it.
 educhan builds to one static binary with the web UI and the migrations embedded,
 so a deployment is that container plus a PostgreSQL. The `Dockerfile` is a
 multi-stage build onto a distroless base — no shell, no package manager, running
-as a non-root user, about 21 MB — and `deploy/cloudrun/service.yaml` is the
+as a non-root user — and `deploy/cloudrun/service.yaml` is the
 Cloud Run service that runs it.
 
 ```bash
@@ -570,7 +624,7 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_UPLOAD_DIR=/tmp/uploads,EDUCHAN_LOG_FORMAT=json" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_LOG_FORMAT=json" \
   --allow-unauthenticated
 ```
 
@@ -590,21 +644,25 @@ and `DATABASE_URL` becomes an ordinary TCP connection string.
 Three things need setting for a real deployment, and the deploy guide covers
 each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
 between instances, `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end, and
-`EDUCHAN_UPLOAD_DIR` must point at `/tmp` because that is the writable path
-there.
+media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
+`EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
+container.
 
 ### What is not stateless yet
 
 Everything the API serves lives in PostgreSQL, so instances start in any order
-and any number. Two things do not:
+and any number. Uploads used to be the exception and are not any more: set
+`EDUCHAN_MEDIA_BACKEND=gcs` with a bucket and they live in Cloud Storage,
+outliving any one container. Leave the backend at `local` on Cloud Run and the
+old caveat still applies — `/tmp` is per-instance and in-memory, so an image
+uploaded to one instance answers `404` from another and is lost when the
+container stops.
 
-- **Uploads.** Cloud Run's `/tmp` is per-instance and in-memory, so an image
-  uploaded to one instance answers `404` from another and is lost when the
-  container stops. `internal/media.Store` exists precisely so a Cloud Storage
-  backend replaces this without touching handlers or SQL; until then, pin
-  `--max-instances 1` or mount a bucket.
+One thing remains per instance:
+
 - **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
-  instances enforce the cooldowns N times over.
+  instances enforce the cooldowns N times over. Moving it to shared storage means
+  replacing that one type, which nothing else depends on.
 
 ## Development
 

@@ -40,8 +40,18 @@ type Config struct {
 	// ModKey is the shared secret moderators present to the moderation
 	// endpoints. An empty key disables them.
 	ModKey string
-	// UploadDir is the root the media store writes originals and thumbnails to.
+	// MediaBackend selects where originals and thumbnails are kept:
+	// MediaBackendLocal (the default) or MediaBackendGCS.
+	MediaBackend string
+	// UploadDir is the root the local media backend writes originals and
+	// thumbnails to. Unused by the GCS backend.
 	UploadDir string
+	// GCSBucket is the Cloud Storage bucket the GCS backend stores objects in.
+	// Required by that backend and ignored by the local one.
+	GCSBucket string
+	// GCSPrefix is an optional key prefix within GCSBucket, so a bucket can be
+	// shared with other content. Empty stores objects at the bucket root.
+	GCSPrefix string
 	// MaxUploadBytes is the largest attachment accepted with a post.
 	MaxUploadBytes int64
 	// VerifySecret keys institutional verification: the HMAC that stands in for
@@ -70,6 +80,14 @@ type Config struct {
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
 
+// The media backends EDUCHAN_MEDIA_BACKEND selects between. Local is the
+// default so an existing deployment, the compose stack, and a developer's
+// checkout all keep working with no new configuration.
+const (
+	MediaBackendLocal = "local"
+	MediaBackendGCS   = "gcs"
+)
+
 // Verification defaults: long enough to fetch an email from another device,
 // long enough that a badge is not a chore to keep, and slow enough that a code
 // request is not a way to mail somebody repeatedly.
@@ -88,7 +106,10 @@ func ConfigFromEnv() (Config, error) {
 		DatabaseURL:       envOr("DATABASE_URL", "postgres://educhan:educhan@localhost:5432/educhan?sslmode=disable"),
 		PosterIDSalt:      os.Getenv("EDUCHAN_POSTER_ID_SALT"),
 		LogFormat:         envOr("EDUCHAN_LOG_FORMAT", "text"),
+		MediaBackend:      strings.ToLower(strings.TrimSpace(envOr("EDUCHAN_MEDIA_BACKEND", MediaBackendLocal))),
 		UploadDir:         envOr("EDUCHAN_UPLOAD_DIR", "./data/uploads"),
+		GCSBucket:         strings.TrimSpace(os.Getenv("EDUCHAN_GCS_BUCKET")),
+		GCSPrefix:         strings.TrimSpace(os.Getenv("EDUCHAN_GCS_PREFIX")),
 		ModKey:            strings.TrimSpace(os.Getenv("EDUCHAN_MOD_KEY")),
 		VerifySecret:      strings.TrimSpace(os.Getenv("EDUCHAN_VERIFY_SECRET")),
 		VerifyDomainsFile: strings.TrimSpace(os.Getenv("EDUCHAN_VERIFY_DOMAINS")),
@@ -126,6 +147,18 @@ func ConfigFromEnv() (Config, error) {
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return Config{}, fmt.Errorf("EDUCHAN_LOG_FORMAT: want \"text\" or \"json\", got %q", cfg.LogFormat)
+	}
+	switch cfg.MediaBackend {
+	case MediaBackendLocal:
+	case MediaBackendGCS:
+		// Caught here rather than at the first upload: a bucketless GCS backend
+		// is a deployment that cannot store anything, and it should fail to
+		// start rather than to post.
+		if cfg.GCSBucket == "" {
+			return Config{}, fmt.Errorf("EDUCHAN_GCS_BUCKET is required when EDUCHAN_MEDIA_BACKEND is %q", MediaBackendGCS)
+		}
+	default:
+		return Config{}, fmt.Errorf("EDUCHAN_MEDIA_BACKEND: want %q or %q, got %q", MediaBackendLocal, MediaBackendGCS, cfg.MediaBackend)
 	}
 
 	if cfg.PosterIDSalt == "" {
