@@ -4,9 +4,10 @@
 .cursor
 .env
 data/
-docker-compose.yml
 Dockerfile
 .dockerignore
+.gcloudignore
+cloudbuild.yaml
 deploy/
 *.md
 LICENSE

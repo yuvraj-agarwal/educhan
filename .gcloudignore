@@ -1,0 +1,26 @@
+# What `gcloud builds submit` uploads as the build source.
+#
+# This file exists mostly so the upload is predictable: without it, gcloud
+# generates a .gcloudignore from .gitignore and writes it into the checkout,
+# which is a surprising side effect of running a build.
+#
+# It is deliberately short. The Docker build applies `.dockerignore` on top of
+# whatever arrives, so the finer trimming of the build context already happens
+# there; the only things worth keeping out of the upload itself are the ones
+# that must not travel or would make it large. `Dockerfile` must stay — Cloud
+# Build reads it from the uploaded source.
+
+# History, not source: by far the largest thing in the checkout.
+.git
+
+# Local secrets and local state.
+.env
+data/
+
+# Build and test artifacts.
+*.test
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+test-output.json

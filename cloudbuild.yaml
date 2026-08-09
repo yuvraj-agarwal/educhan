@@ -1,0 +1,59 @@
+# Cloud Build: build the runtime image from the repository's `Dockerfile` and
+# push it to Artifact Registry. This is how the image educhan runs on Cloud Run
+# is produced — nothing here needs a Docker daemon on your machine.
+#
+#   make cloud-build
+#
+# which is this, with the substitutions filled in from the Makefile:
+#
+#   gcloud builds submit --config cloudbuild.yaml \
+#     --substitutions "_REGION=asia-south1,_REPOSITORY=educhan,_IMAGE=educhan,_TAG=$(git rev-parse --short HEAD)"
+#
+# The one-time project setup — enabling the APIs, creating the Artifact Registry
+# repository, and the roles the build service account needs — is in
+# deploy/README.md section 2.1.
+
+substitutions:
+  # Must match the location the Artifact Registry repository was created in.
+  _REGION: asia-south1
+  # `gcloud artifacts repositories create educhan --repository-format=docker`.
+  _REPOSITORY: educhan
+  _IMAGE: educhan
+  # The commit-pinned tag, applied alongside `latest`. $SHORT_SHA is populated
+  # only for builds started by a Cloud Build trigger, and this config is
+  # submitted by hand, so the commit arrives as a substitution instead — that is
+  # what `make cloud-build` passes. Left at the default, a bare
+  # `gcloud builds submit --config cloudbuild.yaml` still produces a working
+  # image; it just has no immutable tag to roll back to.
+  _TAG: latest
+
+steps:
+  # One `docker build` with two tags: the image is built once and both tags name
+  # the same digest, so `latest` and the commit tag can never disagree.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    args:
+      - build
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:${_TAG}
+      - --tag=${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:latest
+      - --file=Dockerfile
+      - .
+
+# Pushed after every step succeeds, and recorded in the build's results, so
+# `gcloud builds describe` reports the digest that was published.
+images:
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:${_TAG}
+  - ${_REGION}-docker.pkg.dev/$PROJECT_ID/${_REPOSITORY}/${_IMAGE}:latest
+
+options:
+  # A build that runs as a user-managed service account, or as the Compute
+  # Engine default one, may not write to the legacy Cloud Storage logs bucket,
+  # and the build is rejected before it starts unless the logs go somewhere it
+  # can write. Cloud Logging is that place, and it is where `gcloud builds
+  # submit` streams the output from.
+  logging: CLOUD_LOGGING_ONLY
+
+# The default is 10 minutes. A cold build downloads the module graph and
+# compiles the Cloud Storage dependency tree from scratch, so give it room:
+# a build that is merely slow should not look like a build that is broken.
+timeout: 1200s

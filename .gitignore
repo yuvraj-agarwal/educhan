@@ -33,9 +33,6 @@ go.work.sum
 # Locally uploaded images (originals and thumbnails)
 /data/
 
-# Local Docker Compose customisations
-docker-compose.override.yml
-
 # Editor/IDE
 # .idea/
 # .vscode/

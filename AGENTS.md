@@ -33,9 +33,10 @@ implemented. Janitor accounts, bans, and reports are not.
   is imported only by tests.
 - `internal/mailer` — the `Sender` interface verification codes go out through, with a
   development implementation that prints them to stdout.
-- `Dockerfile`, `docker-compose.yml`, `deploy/` — container image, the local stack, and
-  the Cloud Run service definition (`deploy/cloudrun/service.yaml`), documented in
-  `deploy/README.md`.
+- `Dockerfile`, `cloudbuild.yaml`, `.gcloudignore`, `deploy/` — the container image, the
+  Cloud Build config that builds and pushes it to Artifact Registry, what that build
+  uploads, and the Cloud Run service definition (`deploy/cloudrun/service.yaml`). All
+  documented in `deploy/README.md`.
 - `.cursor/` — Cloud Agent environment (`environment.json` + `scripts/`).
 
 ## Canonical commands
@@ -43,10 +44,16 @@ implemented. Janitor accounts, bans, and reports are not.
 - Build: `go build ./...`
 - Test: `go test ./...` (the integration tests need PostgreSQL; they skip without it)
 - Vet / format: `go vet ./...` and `gofmt -l .` (must be empty), or `make check`
-- Bring up Postgres: `bash .cursor/scripts/start.sh` (or `make db-up`)
-- Run the server: `make run` (expects Postgres up), or the `server` terminal
-- Whole stack in containers: `docker compose up --build` (or `make compose-up`) — needs
-  no Go and no host Postgres, and is the way to check a change to the `Dockerfile`
+- Bring up Postgres: `make db-up` (`bash .cursor/scripts/start.sh`) — a native PostgreSQL
+  on `localhost:5432`, not a container
+- Run the server: `make run` (`go run ./cmd/server`, expects Postgres up), or the `server`
+  terminal
+- **The local loop has no containers in it**: no compose stack, no local image build
+- Build the image: `make cloud-build` — Cloud Build builds the `Dockerfile` and pushes to
+  Artifact Registry as `:<short SHA>` and `:latest`. It needs gcloud and a GCP project,
+  not a Docker daemon, so a `Dockerfile` change is verified by submitting a build.
+- Deploy: `make cloud-deploy` — `gcloud run deploy` with the new image onto the existing
+  service; every other setting comes from the current revision. See `deploy/README.md`.
 
 ## Cursor Cloud specific instructions
 
@@ -348,15 +355,21 @@ the index, and the thread view each have their own narrow-screen layout.
   attempt cap on a pending row is what keeps a six-digit code safe; a wrong guess is
   committed rather than rolled back, which is why `ConfirmVerification` returns its outcome
   beside the transaction error instead of through it.
-- Deployment (`Dockerfile`, `docker-compose.yml`, `deploy/`): the runtime image is
+- Deployment (`Dockerfile`, `cloudbuild.yaml`, `deploy/`): the runtime image is
   distroless, so there is **no shell, no package manager, and no `curl`** in it — a
   container healthcheck or a debugging `docker exec … sh` will not work; read the logs or
   hit `/healthz` from outside. The binary is built with `CGO_ENABLED=0` because distroless
   static cannot run a dynamically linked one. `/data/uploads` is created in the build stage
-  and copied in owned by uid 65532: the runtime image cannot `mkdir` it, and a named volume
+  and copied in owned by uid 65532: the runtime image cannot `mkdir` it, and a volume
   mounted there inherits that ownership, which is what lets the non-root user write
-  uploads. Compose publishes Postgres on `127.0.0.1:5433` to avoid colliding with
-  `make db-up` on 5432.
+  uploads. Cloud Build consumes that `Dockerfile` unchanged — none of this is
+  build-environment-specific.
+- `cloudbuild.yaml` tags the image `:<short SHA>` and `:latest` from one `docker build`, so
+  both tags always name the same digest. The commit arrives as the `_TAG` substitution
+  rather than through `$SHORT_SHA`, which Cloud Build populates only for trigger-started
+  builds; `make cloud-build` passes it and refuses to submit with an empty tag or project.
+  What the build uploads is `.gcloudignore`, and `.dockerignore` then trims the context
+  again inside the build.
 - On Cloud Run: attachments belong in Cloud Storage (`EDUCHAN_MEDIA_BACKEND=gcs` plus
   `EDUCHAN_GCS_BUCKET`, with `roles/storage.objectAdmin` on that bucket and nothing
   broader) — the `local` backend can only write to `/tmp`, which is in-memory and
