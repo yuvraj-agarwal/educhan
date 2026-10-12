@@ -492,6 +492,16 @@ type NewReply struct {
 func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 	var created Post
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		// The number comes first because it takes the board's row, and a new
+		// thread takes that row before it archives the threads it pushes off.
+		// Taking the thread first, as this did, deadlocks with a new thread
+		// archiving it: each would hold what the other waits for. A refused
+		// reply rolls back, so it costs no number.
+		no, err := nextPostNo(ctx, tx, in.Board.ID)
+		if err != nil {
+			return err
+		}
+
 		var (
 			threadID   int64
 			locked     bool
@@ -501,7 +511,7 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 		// Lock the thread row so concurrent replies serialise on the counters,
 		// and so the thread cannot be archived between this check and the
 		// insert.
-		err := tx.QueryRow(ctx, `
+		err = tx.QueryRow(ctx, `
 			SELECT t.id, t.locked, t.archived_at IS NOT NULL, t.reply_count
 			FROM threads t
 			WHERE t.board_id = $1 AND t.no = $2
@@ -543,10 +553,6 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			imageCount = &images
 		}
 
-		no, err := nextPostNo(ctx, tx, in.Board.ID)
-		if err != nil {
-			return err
-		}
 		created, err = insertPost(ctx, tx, newPost{
 			BoardID:    in.Board.ID,
 			ThreadID:   threadID,

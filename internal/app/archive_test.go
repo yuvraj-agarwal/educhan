@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 // archivedAt reads a thread's archived_at straight from the database, nil
@@ -229,6 +231,89 @@ func TestArchivedThreadsDoNotCountAgainstTheLimit(t *testing.T) {
 	}
 	if h.archivedAt("limit", pinned.ThreadNo) != nil {
 		t.Error("a sticky thread was archived")
+	}
+}
+
+// A new thread holds its board's row from the moment it takes a number, then
+// archives the threads it pushes off. A reply racing it for one of those
+// threads must wait for the board before it takes the thread, or each holds
+// what the other is waiting for and Postgres aborts one of them. The test
+// plays the new thread's part by hand so the two meet in that order every
+// time: it takes the board's row, waits until the reply is blocked behind it,
+// and only then archives the thread.
+func TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("race")
+	thread := h.createThread("race", "", "", "about to be archived")
+
+	ctx := context.Background()
+	newThread, err := pgx.Connect(ctx, h.app.cfg.DatabaseURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer newThread.Close(ctx)
+	tx, err := newThread.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var pid int
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE boards SET next_post_no = next_post_no + 1 WHERE slug = 'race'`); err != nil {
+		t.Fatalf("take the board's row: %v", err)
+	}
+
+	type outcome struct {
+		status int
+		body   map[string]any
+		err    error
+	}
+	replied := make(chan outcome, 1)
+	go func() {
+		path := fmt.Sprintf("%s/api/boards/race/threads/%d/posts", h.base, thread.ThreadNo)
+		res, err := http.Post(path, "application/json", strings.NewReader(`{"body":"racing the archive"}`))
+		if err != nil {
+			replied <- outcome{err: err}
+			return
+		}
+		defer res.Body.Close()
+		var body map[string]any
+		err = json.NewDecoder(res.Body).Decode(&body)
+		replied <- outcome{status: res.StatusCode, body: body, err: err}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := h.app.pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid).Scan(&waiting); err != nil {
+			t.Fatalf("look for the blocked reply: %v", err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the reply never waited on the board's row")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if _, err := tx.Exec(ctx, `UPDATE threads SET archived_at = now()
+		WHERE no = $1 AND board_id = (SELECT id FROM boards WHERE slug = 'race')`, thread.ThreadNo); err != nil {
+		t.Fatalf("archive the thread: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the new thread's part: %v", err)
+	}
+
+	got := <-replied
+	if got.err != nil {
+		t.Fatalf("reply: %v", got.err)
+	}
+	if got.status != http.StatusForbidden || got.body["error"] != "thread is archived" {
+		t.Errorf("reply: status %d %v, want 403 thread is archived", got.status, got.body)
 	}
 }
 

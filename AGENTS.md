@@ -476,7 +476,12 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   back as a convenience. `TestParseIdentityTripcodesAreAllSalted` pins the derivation.
 - Post numbers are allocated per board from `boards.next_post_no`; a thread's number is
   the number of its opening post. Thread primary keys stay internal apart from the
-  `/api/threads/{id}` compatibility routes.
+  `/api/threads/{id}` compatibility routes. Allocating a number takes the board's row
+  until the transaction ends, so **posting takes the board's row before any thread's**:
+  `CreateThread` allocates and then archives the threads it pushes off, and
+  `CreateReply` allocates before it locks the thread it replies to. Locking the other
+  way round deadlocks a reply against the new thread archiving it
+  (`TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked`).
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
   `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
