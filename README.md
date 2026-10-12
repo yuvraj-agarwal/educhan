@@ -207,8 +207,9 @@ the suffix, so two departments of one university read the same. An institution
 entry names the place instead, and wins over any suffix. An address sitting
 directly on a suffix (`someone@ac.in`) is refused: a namespace is not an
 institution. A denial refuses a domain and everything under it, whatever else
-matches; it exists for school namespaces that share a suffix with universities,
-because educhan is 18+. Suffixes shared with schools are either guarded by
+matches; it exists for school namespaces that share a suffix with universities.
+The badge names a university or college, so for now school addresses do not
+verify; that is a choice about the badge, not an age limit on the site. Suffixes shared with schools are either guarded by
 denials (`edu.au`) or left out in favour of named universities (`edu.sg`,
 `edu.hk`), and `sch.uk` is not listed. `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
