@@ -18,13 +18,17 @@
 # It also excludes the platform request logs, which carry every visitor's IP,
 # from Cloud Logging (deploy/README.md section 2.8).
 #
-# Cost: this starts a db-f1-micro Cloud SQL instance, which bills around the
-# clock whether or not anyone visits; Cloud Run scales to zero. To stop the
-# database charge later: gcloud sql instances delete educhan-db
+# Cost: this starts a db-f1-micro Cloud SQL instance and keeps one Cloud Run
+# instance warm (MIN_INSTANCES=1, for the demo window, so the first visitor
+# sees no cold start). Both bill around the clock whether or not anyone visits.
+# To drop the warm instance after the demo:
+#   gcloud run services update educhan --region REGION --min-instances 0
+# and to stop the database charge: gcloud sql instances delete educhan-db
 set -euo pipefail
 
 PROJECT_ID="${1:-${PROJECT_ID:-}}"
 REGION="${2:-${REGION:-asia-south1}}"
+MIN_INSTANCES="${MIN_INSTANCES:-1}"
 if [[ -z "$PROJECT_ID" ]]; then
   echo "usage: bash deploy/first-deploy.sh PROJECT_ID [REGION]" >&2
   exit 2
@@ -74,7 +78,8 @@ gcloud services enable \
   sqladmin.googleapis.com \
   secretmanager.googleapis.com \
   storage.googleapis.com \
-  logging.googleapis.com
+  logging.googleapis.com \
+  containerscanning.googleapis.com
 
 step "Artifact Registry repository"
 exists gcloud artifacts repositories describe "$AR_REPO" --location="$REGION" ||
@@ -173,6 +178,15 @@ else
     --add-exclusion='name=no-request-logs,description=Request logs carry client IPs,filter=LOG_ID("run.googleapis.com/requests") OR resource.type="http_load_balancer"'
 fi
 
+# Organisations created since May 2024 enforce a policy that refuses allUsers
+# as an invoker. There, skip the invoker check instead: the service is still
+# public, and ingress is what limits who can reach it.
+if [[ "$(gcloud projects describe "$PROJECT_ID" --format='value(parent.type)')" == "organization" ]]; then
+  PUBLIC_ACCESS=(--no-invoker-iam-check)
+else
+  PUBLIC_ACCESS=(--allow-unauthenticated)
+fi
+
 step "Deploying the Cloud Run service"
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
@@ -181,8 +195,9 @@ gcloud run deploy "$SERVICE" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
   --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
-  --cpu 1 --memory 512Mi --concurrency 80 --min-instances 0 --max-instances 4 \
-  --allow-unauthenticated
+  --cpu 1 --memory 512Mi --concurrency 80 \
+  --min-instances "$MIN_INSTANCES" --max-instances 4 \
+  "${PUBLIC_ACCESS[@]}"
 
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
 step "Checking ${URL}/healthz"
@@ -202,6 +217,17 @@ Moderation key (keep it private; it goes in the X-Mod-Key header):
   gcloud secrets versions access latest --secret=educhan-mod-key
 
 Image uploads and institutional verification are switched off.
+
+Check that no log holds a visitor IP: open the URL from your phone or laptop,
+search "what is my ip" to learn that device's address, wait a minute, then
+run this here. It must print nothing.
+
+  gcloud logging read '"YOUR.IP.ADDRESS"' --freshness=1d --limit=5
+
+After the demo, stop paying for the warm instance:
+
+  gcloud run services update ${SERVICE} --region ${REGION} --min-instances 0
+
 To ship a new version later, git pull in this folder and run the same command
 again: it skips what already exists, builds the new commit, and deploys it.
 

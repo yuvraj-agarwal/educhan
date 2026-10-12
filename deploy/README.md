@@ -72,7 +72,8 @@ by submitting a build (section 2.5), not by building locally.
 project that has billing linked, one script does every step in this section:
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
 the build, the deploy, and the request-log exclusion. It leaves image uploads
-and verification off, prints the service URL, and is safe to re-run.
+and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
+the environment turns that off), prints the service URL, and is safe to re-run.
 
 ```bash
 git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
