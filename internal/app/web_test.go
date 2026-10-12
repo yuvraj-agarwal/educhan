@@ -127,6 +127,24 @@ func TestVendoredWebAssetsArePinned(t *testing.T) {
 	}
 }
 
+// app.js loads the highlighter by path at run time, so a moved or renamed file
+// would fail only in a browser; this catches it at build time.
+func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
+	script, err := fs.ReadFile(webFS(), "app.js")
+	if err != nil {
+		t.Fatalf("reading app.js: %v", err)
+	}
+	refs := regexp.MustCompile(`"/(vendor/[^"]+)"`).FindAllStringSubmatch(string(script), -1)
+	if len(refs) == 0 {
+		t.Fatal("app.js references nothing under /vendor/; the highlighter is loaded from there")
+	}
+	for _, ref := range refs {
+		if _, listed := vendoredWebAssets[ref[1]]; !listed {
+			t.Errorf("app.js loads /%s, which is not a pinned vendored file", ref[1])
+		}
+	}
+}
+
 func TestWebShellReferencesItsAssets(t *testing.T) {
 	body, err := fs.ReadFile(webFS(), "index.html")
 	if err != nil {

@@ -24,6 +24,13 @@
   --green: #6ddab0;
   --warn: #f4bd6e;
   --danger: #ff9c9c;
+  /* Two more hues for highlighted code, which needs more categories than the
+     interface does. Every syntax colour clears 7:1 on the code background. */
+  --violet: #d2a8ff;
+  --cyan: #7dd3e8;
+  /* A hidden spoiler is a bar with nothing else to show it is there, so the bar
+     clears 3:1 (WCAG 1.4.11) on --panel and --panel-2, where posts sit. */
+  --spoiler: #6b7385;
 
   --radius: 10px;
   --radius-sm: 8px;
@@ -678,6 +685,118 @@ a.quotelink.dead {
   text-decoration: line-through;
   cursor: not-allowed;
 }
+
+/* Post markup ------------------------------------------------------------- */
+
+/* A spoiler is a bar until it is hovered, focused, or tapped, and everything in
+   it — greentext, links, a code block — goes transparent with it. Revealed, it
+   keeps a faint ground so it still reads as having been hidden. */
+.post-body .spoiler {
+  padding: 0 2px;
+  border-radius: 3px;
+  background: var(--panel-3);
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.post-body .spoiler:not(.revealed) { cursor: pointer; }
+
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) { background: var(--spoiler); }
+
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within),
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) * {
+  color: transparent;
+  text-decoration-color: transparent;
+}
+
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .code {
+  background: var(--spoiler);
+  border-color: transparent;
+}
+
+/* A spoiler holding a code block is a block itself, so it covers the whole box. */
+.post-body .spoiler-block { display: block; padding: 0 6px; }
+
+/* Forced colours would repaint the hidden text in the system text colour, so
+   the bar is drawn in that colour instead and the text kept in it. */
+@media (forced-colors: active) {
+  .post-body .spoiler:not(.revealed):not(:hover):not(:focus-within),
+  .post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) * {
+    forced-color-adjust: none;
+    color: CanvasText;
+    background: CanvasText;
+  }
+}
+
+/* Code keeps its own lines: it scrolls sideways rather than wrapping, inside a
+   box darker than any panel so it stands apart in a highlighted post too. */
+.post-body .code {
+  margin: 6px 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+  white-space: pre;
+  overflow-wrap: normal;
+  tab-size: 4;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+.post-body .code code { font-size: inherit; color: var(--text); }
+
+/* Syntax colours, on the highlight.js scopes. The code background is --bg, on
+   which every colour used here clears 7:1, the tinted diff lines included. */
+.post-body .code .hljs-comment,
+.post-body .code .hljs-quote { color: var(--muted); font-style: italic; }
+
+.post-body .code .hljs-code,
+.post-body .code .hljs-formula { color: var(--muted); }
+
+.post-body .code .hljs-keyword,
+.post-body .code .hljs-doctag,
+.post-body .code .hljs-meta .hljs-keyword,
+.post-body .code .hljs-template-tag,
+.post-body .code .hljs-template-variable,
+.post-body .code .hljs-variable.language_,
+.post-body .code .hljs-name,
+.post-body .code .hljs-selector-tag { color: var(--accent); }
+
+.post-body .code .hljs-string,
+.post-body .code .hljs-regexp,
+.post-body .code .hljs-char.escape_,
+.post-body .code .hljs-meta .hljs-string { color: var(--green); }
+
+.post-body .code .hljs-number,
+.post-body .code .hljs-literal,
+.post-body .code .hljs-symbol,
+.post-body .code .hljs-bullet,
+.post-body .code .hljs-variable.constant_ { color: var(--warn); }
+
+.post-body .code .hljs-title,
+.post-body .code .hljs-title.class_,
+.post-body .code .hljs-title.function_ { color: var(--violet); }
+
+.post-body .code .hljs-section { color: var(--violet); font-weight: 700; }
+
+.post-body .code .hljs-type,
+.post-body .code .hljs-built_in,
+.post-body .code .hljs-attr,
+.post-body .code .hljs-attribute,
+.post-body .code .hljs-property,
+.post-body .code .hljs-selector-id,
+.post-body .code .hljs-selector-class,
+.post-body .code .hljs-selector-attr,
+.post-body .code .hljs-selector-pseudo { color: var(--cyan); }
+
+.post-body .code .hljs-meta { color: var(--danger); }
+
+.post-body .code .hljs-addition { color: var(--green); background: rgba(109, 218, 176, 0.12); }
+.post-body .code .hljs-deletion { color: var(--danger); background: rgba(255, 156, 156, 0.12); }
+.post-body .code .hljs-emphasis { font-style: italic; }
+.post-body .code .hljs-strong { font-weight: 700; }
+.post-body .code .hljs-link { text-decoration: underline; }
 
 .backlinks {
   display: flex;

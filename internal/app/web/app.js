@@ -142,30 +142,433 @@ function announce(title) {
   el.status.textContent = title;
 }
 
-/* Post rendering ----------------------------------------------------------- */
+/* Post markup -------------------------------------------------------------- */
 
-// bodyHTML renders post text: lines starting with ">" become greentext and
-// ">>123" becomes a link when it resolves to a real post on this board.
-function bodyHTML(post, slug) {
-  const targets = new Map((post.quotes || []).map((q) => [q.no, q.thread_no]));
+// Post bodies are stored exactly as typed and get their markup here, at
+// display time:
+//
+//   >text                 greentext, on a line whose text starts with ">"
+//   >>123                 a quote link, live when 123 is a post on this board
+//   >>>/math/             a link to another board, >>>/math/123 to a post on
+//                         it, and >>>/u/iitb/123 to one on an institution board
+//   [spoiler]…[/spoiler]  hidden until hovered, focused or tapped
+//   [code]…[/code]        a code block, verbatim and highlighted
+//
+// Each tag pairs with the first closing tag after it. A tag that never closes,
+// an empty pair, and a spoiler opened inside another stay the literal text that
+// was typed, so no input can render as half an element. Code is opaque: nothing
+// inside a [code] block is markup, and extractQuotes in text.go follows the same
+// pairing so that a code sample — `x >>2` — creates no backlink.
 
-  return post.body
-    .split("\n")
-    .map((line) => {
-      const quoteLine = /^>>\d/.test(line);
-      const greentext = line.startsWith(">") && !quoteLine;
-      const html = esc(line).replace(/&gt;&gt;(\d+)/g, (match, digits) => {
-        const no = Number(digits);
-        const threadNo = targets.get(no);
-        if (threadNo === undefined) {
-          return `<a class="quotelink dead" href="#" title="post not found">${match}</a>`;
-        }
-        return `<a class="quotelink" href="${threadPath(slug, threadNo)}#p${no}">${match}</a>`;
-      });
-      return greentext ? `<span class="greentext">${html}</span>` : html;
-    })
-    .join("\n");
+const CODE_OPEN = "[code]";
+const CODE_CLOSE = "[/code]";
+const SPOILER_OPEN = "[spoiler]";
+const SPOILER_CLOSE = "[/spoiler]";
+
+// INLINE_LINK finds the links in a run of text: a cross-board link first, so
+// ">>>/math/123" is never read as ">" plus a quote, then a quote. Slugs follow
+// boardSlugPattern in boards.go, and ">>>/u/iitb/" names the stored slug
+// "u-iitb". LINE_LINK is the same pattern anchored, for asking whether a line
+// opens with a link.
+const INLINE_LINK = />>>\/(?:(u)\/)?([a-z0-9]+(?:-[a-z0-9]+)*)\/(\d+)?|>>(\d+)/g;
+const LINE_LINK = new RegExp(INLINE_LINK.source, "y");
+const MAX_SLUG_LENGTH = 24; // maxBoardSlugLen in boards.go
+const MAX_POST_DIGITS = 18; // what an int64 post number can have, as in text.go
+// Top-level paths that are never boards (reservedBoardSlugs in boards.go), so a
+// link to one would claim a board that cannot exist.
+const RESERVED_SLUGS = new Set([
+  "api", "media", "healthz", "verify", "mod", "u", "rules", "faq",
+  "legal", "terms", "privacy", "dmca", "report", "archive",
+]);
+
+// The name a hidden spoiler has for assistive tech. Its text is aria-hidden
+// until it is revealed, so a screen reader announces that something is hidden
+// rather than reading it out — the same choice a sighted reader gets.
+const SPOILER_LABEL = "Hidden spoiler: activate to reveal";
+
+// parseMarkup splits a body into text runs, code blocks, and spoilers. Runs are
+// kept as offsets into the source, so rendering can still tell where a line
+// starts. A spoiler holds text runs and code blocks; nothing nests deeper.
+function parseMarkup(source) {
+  // Pass one finds the tags. A [code] counts only when a [/code] follows with
+  // something in between, and it claims everything up to that [/code] — tags
+  // included — so the scan jumps straight past it. Checking against the last
+  // [/code] first keeps a body full of unclosed [code]s linear.
+  const tags = [];
+  const lastCodeClose = source.lastIndexOf(CODE_CLOSE);
+  for (let i = source.indexOf("["); i !== -1; i = source.indexOf("[", i)) {
+    if (source.startsWith(CODE_OPEN, i) && i + CODE_OPEN.length <= lastCodeClose) {
+      const close = source.indexOf(CODE_CLOSE, i + CODE_OPEN.length);
+      if (close > i + CODE_OPEN.length) {
+        tags.push({ kind: "code", at: i, end: close + CODE_CLOSE.length });
+        i = close + CODE_CLOSE.length;
+        continue;
+      }
+    } else if (source.startsWith(SPOILER_OPEN, i)) {
+      tags.push({ kind: "open", at: i, end: i + SPOILER_OPEN.length });
+      i += SPOILER_OPEN.length;
+      continue;
+    } else if (source.startsWith(SPOILER_CLOSE, i)) {
+      tags.push({ kind: "close", at: i, end: i + SPOILER_CLOSE.length });
+      i += SPOILER_CLOSE.length;
+      continue;
+    }
+    i += 1;
+  }
+
+  // Pass two pairs the spoilers. One opens only if a close comes after it and
+  // the pair is not empty; until that close, further opens are literal text.
+  let lastClose = -1;
+  tags.forEach((tag, n) => {
+    if (tag.kind === "close") lastClose = n;
+  });
+
+  const root = [];
+  let into = root;
+  let pos = 0;
+  const text = (end) => {
+    if (end > pos) into.push({ kind: "text", start: pos, end });
+  };
+  tags.forEach((tag, n) => {
+    if (tag.kind === "code") {
+      text(tag.at);
+      into.push({ kind: "code", start: tag.at + CODE_OPEN.length, end: tag.end - CODE_CLOSE.length });
+      pos = tag.end;
+    } else if (tag.kind === "open") {
+      const next = tags[n + 1];
+      const empty = next && next.kind === "close" && next.at === tag.end;
+      if (into === root && n < lastClose && !empty) {
+        text(tag.at);
+        const spoiler = { kind: "spoiler", children: [] };
+        root.push(spoiler);
+        into = spoiler.children;
+        pos = tag.end;
+      }
+    } else if (into !== root) {
+      text(tag.at);
+      into = root;
+      pos = tag.end;
+    }
+  });
+  text(source.length);
+  return root;
 }
+
+// A spoiler holding a code block is laid out as a block itself, so it hides the
+// whole box rather than a run of text that the block breaks out of.
+function isBlockNode(node) {
+  return node.kind === "code" || (node.kind === "spoiler" && node.children.some(isBlockNode));
+}
+
+// crossLinkHref turns a cross-board match into the SPA route it links to, or
+// null when it is not a link after all: a reserved path, a slug too long to be
+// a board, or a number too long to be a post.
+function crossLinkHref(match) {
+  const [, institution, name, no] = match;
+  const slug = institution ? `u-${name}` : name;
+  if (slug.length > MAX_SLUG_LENGTH || RESERVED_SLUGS.has(slug) || (no && no.length > MAX_POST_DIGITS)) {
+    return null;
+  }
+  return no ? `${boardPath(slug)}post/${no}` : boardPath(slug);
+}
+
+// lineIsGreen reports whether the line whose text starts at offset is
+// greentext: it starts with ">", but not with a link. A line that opens with
+// ">>123" or ">>>/math/" is a reference, as it always was for quotes.
+function lineIsGreen(source, offset) {
+  if (source[offset] !== ">") {
+    return false;
+  }
+  LINE_LINK.lastIndex = offset;
+  const match = LINE_LINK.exec(source);
+  return !match || (match[4] === undefined && crossLinkHref(match) === null);
+}
+
+// linkHTML renders one INLINE_LINK match, or returns null to leave it as text.
+// Links inside a hidden spoiler are out of the tab order until it is revealed:
+// focus must not land on something the reader cannot see.
+function linkHTML(match, ctx, hidden) {
+  const tab = hidden ? ' tabindex="-1"' : "";
+  const quote = match[4];
+  if (quote !== undefined) {
+    const no = Number(quote);
+    const threadNo = ctx.targets.get(no);
+    if (threadNo === undefined) {
+      return `<a class="quotelink dead" href="#" title="post not found"${tab}>${esc(match[0])}</a>`;
+    }
+    return `<a class="quotelink" href="${esc(`${threadPath(ctx.slug, threadNo)}#p${no}`)}"${tab}>${esc(match[0])}</a>`;
+  }
+  const href = crossLinkHref(match);
+  return href === null ? null : `<a class="quotelink crosslink" href="${esc(href)}"${tab}>${esc(match[0])}</a>`;
+}
+
+function inlineHTML(text, ctx, hidden) {
+  let html = "";
+  let last = 0;
+  for (const match of text.matchAll(INLINE_LINK)) {
+    const link = linkHTML(match, ctx, hidden);
+    if (link !== null) {
+      html += esc(text.slice(last, match.index)) + link;
+      last = match.index + match[0].length;
+    }
+  }
+  return html + esc(text.slice(last));
+}
+
+// textHTML renders source[start:end] line by line. Whether a line is greentext
+// is settled by its first character of text, wherever that falls — after a
+// newline, after a code block, or just inside a spoiler — and holds to the end
+// of the line, across spoiler edges. Each run is wrapped on its own, so a
+// greentext span never straddles a spoiler's.
+function textHTML(start, end, ctx, hidden) {
+  let offset = start;
+  ctx.source
+    .slice(start, end)
+    .split("\n")
+    .forEach((line, n) => {
+      if (n > 0) {
+        ctx.out.push("\n");
+        ctx.lineStart = true;
+      }
+      if (line) {
+        if (ctx.lineStart) {
+          ctx.green = lineIsGreen(ctx.source, offset);
+          ctx.lineStart = false;
+        }
+        const html = inlineHTML(line, ctx, hidden);
+        ctx.out.push(ctx.green ? `<span class="greentext">${html}</span>` : html);
+      }
+      offset += line.length + 1;
+    });
+}
+
+// renderMarkup writes a parsed node list into ctx.out. The body is laid out
+// with white-space: pre-wrap, so a line break beside a block would show as a
+// blank line: the one newline that separates a block from its neighbours is
+// dropped, as is the one just inside each end of a block.
+function renderMarkup(nodes, ctx, { block = false, hidden = false } = {}) {
+  const { source, out } = ctx;
+  nodes.forEach((node, k) => {
+    if (node.kind === "code") {
+      let { start, end } = node;
+      if (source[start] === "\n") start += 1;
+      if (end > start && source[end - 1] === "\n") end -= 1;
+      // Focusable, because a long line scrolls sideways and a keyboard has to
+      // be able to scroll it.
+      out.push(`<pre class="code" tabindex="0"><code>${esc(source.slice(start, end))}</code></pre>`);
+      ctx.lineStart = true;
+      return;
+    }
+    if (node.kind === "spoiler") {
+      const spoilerBlock = isBlockNode(node);
+      out.push(
+        `<span class="spoiler${spoilerBlock ? " spoiler-block" : ""}" role="button" tabindex="0" ` +
+          `aria-label="${esc(SPOILER_LABEL)}"><span class="spoiler-text" aria-hidden="true">`
+      );
+      renderMarkup(node.children, ctx, { block: spoilerBlock, hidden: true });
+      out.push("</span></span>");
+      if (spoilerBlock) ctx.lineStart = true;
+      return;
+    }
+    let { start, end } = node;
+    const before = k > 0 ? isBlockNode(nodes[k - 1]) : block;
+    const after = k < nodes.length - 1 ? isBlockNode(nodes[k + 1]) : block;
+    if (before && source[start] === "\n") start += 1;
+    if (after && end > start && source[end - 1] === "\n") end -= 1;
+    textHTML(start, end, ctx, hidden);
+  });
+}
+
+// bodyHTML renders a post's text with its markup. Every piece of the source
+// reaches the page through esc(); the only markup is what is written here.
+function bodyHTML(post, slug) {
+  const ctx = {
+    source: post.body,
+    slug,
+    targets: new Map((post.quotes || []).map((q) => [q.no, q.thread_no])),
+    out: [],
+    lineStart: true,
+    green: false,
+  };
+  renderMarkup(parseMarkup(post.body), ctx);
+  return ctx.out.join("");
+}
+
+/* Post enhancement --------------------------------------------------------- */
+
+// enhancePosts finishes rendered posts once they are in the document: code
+// blocks are highlighted here, and maths will be typeset here. Every view that
+// inserts posts calls it on what it inserted. It is safe on any element and as
+// often as wanted — work already done is skipped — and nothing it does can fail
+// a render: a block it cannot finish keeps its plain, escaped rendering.
+function enhancePosts(root) {
+  if (!root) {
+    return;
+  }
+  highlightCode(root);
+}
+
+const HIGHLIGHTER_SRC = "/vendor/highlightjs/highlight.min.js";
+// Auto-detection tries every candidate language on a block, so the candidates
+// are kept to what students post: fewer passes, and fewer wild guesses.
+const HIGHLIGHT_LANGUAGES = [
+  "bash", "c", "cpp", "csharp", "css", "diff", "go", "java", "javascript", "json",
+  "kotlin", "lua", "makefile", "markdown", "php", "python", "r", "ruby", "rust",
+  "shell", "sql", "swift", "typescript", "xml", "yaml",
+];
+// On a longer block the language is detected from its opening stretch alone and
+// the whole block then highlighted in that one language: detection is the
+// expensive part, and it costs a pass per candidate over whatever it is given.
+const HIGHLIGHT_DETECT_CHARS = 1000;
+// Highlighting yields to the page once a batch has run this long, so a thread
+// full of code never stalls scrolling or typing.
+const HIGHLIGHT_SLICE_MS = 12;
+
+let highlighter = null;
+
+// loadHighlighter fetches highlight.js the first time a code block is on
+// screen, so a reader who never meets one never downloads it. It is a
+// same-origin script element, which script-src 'self' allows. A failed load is
+// not retried until the page is reloaded: plain code is still readable, and one
+// failure is enough to report.
+function loadHighlighter() {
+  if (!highlighter) {
+    highlighter = new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = HIGHLIGHTER_SRC;
+      script.onload = () => (window.hljs ? resolve(window.hljs) : reject(new Error("highlight.js did not load")));
+      script.onerror = () => reject(new Error("highlight.js did not load"));
+      document.head.append(script);
+    }).then((hljs) => {
+      hljs.configure({ languages: HIGHLIGHT_LANGUAGES });
+      return compileGrammars(hljs);
+    });
+  }
+  return highlighter;
+}
+
+// compileGrammars prepares every candidate language ahead of the first
+// detection. highlight.js compiles a grammar the first time it is used, and
+// detection uses them all at once — close to a second of frozen page on a
+// mid-range phone. One at a time, yielding between batches, the same work
+// leaves the page responsive while the first code block waits for it.
+function compileGrammars(hljs) {
+  const pending = [...HIGHLIGHT_LANGUAGES];
+  return new Promise((resolve) => {
+    const step = () => {
+      const deadline = performance.now() + HIGHLIGHT_SLICE_MS;
+      while (pending.length > 0 && performance.now() < deadline) {
+        try {
+          hljs.highlight("", { language: pending.shift(), ignoreIllegals: true });
+        } catch {
+          // Detection simply goes without a grammar that will not compile.
+        }
+      }
+      if (pending.length > 0) {
+        setTimeout(step, 0);
+      } else {
+        resolve(hljs);
+      }
+    };
+    step();
+  });
+}
+
+function highlightCode(root) {
+  const blocks = Array.from(root.querySelectorAll("pre.code > code:not([data-highlighted])"));
+  if (blocks.length === 0) {
+    return;
+  }
+  loadHighlighter()
+    .then((hljs) => highlightBlocks(hljs, blocks))
+    .catch(() => {
+      // The blocks keep their plain rendering.
+    });
+}
+
+function highlightBlocks(hljs, blocks) {
+  const deadline = performance.now() + HIGHLIGHT_SLICE_MS;
+  while (blocks.length > 0) {
+    if (performance.now() > deadline) {
+      setTimeout(() => highlightBlocks(hljs, blocks), 0);
+      return;
+    }
+    const code = blocks.shift();
+    // A re-render may have replaced the block since it was queued, and an
+    // earlier pass may already have done it; highlight.js complains about both.
+    if (!code.isConnected || code.dataset.highlighted) {
+      continue;
+    }
+    try {
+      const text = code.textContent;
+      if (text.length > HIGHLIGHT_DETECT_CHARS) {
+        const guess = hljs.highlightAuto(text.slice(0, HIGHLIGHT_DETECT_CHARS)).language;
+        code.classList.add(`language-${guess || "plaintext"}`);
+      }
+      hljs.highlightElement(code);
+    } catch {
+      code.dataset.highlighted = "failed";
+    }
+  }
+}
+
+/* Spoilers ----------------------------------------------------------------- */
+
+// revealSpoiler shows a spoiler for good: its text joins the accessibility
+// tree, its links rejoin the tab order, and it stops being a button. It stays
+// focusable (tabindex -1) so focus is not dropped when it was the thing focused.
+function revealSpoiler(spoiler) {
+  spoiler.classList.add("revealed");
+  spoiler.removeAttribute("role");
+  spoiler.removeAttribute("aria-label");
+  spoiler.tabIndex = -1;
+  const text = spoiler.querySelector(":scope > .spoiler-text");
+  if (text) {
+    text.removeAttribute("aria-hidden");
+  }
+  spoiler.querySelectorAll("a[tabindex]").forEach((link) => link.removeAttribute("tabindex"));
+}
+
+// The pointer behind the most recent press, so a click can tell a tap — which
+// had no hover to show the spoiler first — from a mouse that has already seen it.
+let lastPointerType = "mouse";
+
+document.addEventListener(
+  "pointerdown",
+  (event) => {
+    lastPointerType = event.pointerType || "mouse";
+  },
+  { capture: true, passive: true }
+);
+
+// Registered ahead of the page's own click handler, which skips any event this
+// one has handled. A tap on a hidden spoiler only reveals it: following a link
+// inside it would follow one the reader has not seen. A mouse click reveals it
+// too, but the hover already showed it, so a link inside works as normal.
+document.addEventListener("click", (event) => {
+  const spoiler = event.target instanceof Element ? event.target.closest(".spoiler:not(.revealed)") : null;
+  if (!spoiler) {
+    return;
+  }
+  revealSpoiler(spoiler);
+  if (event.detail > 0 && lastPointerType !== "mouse") {
+    event.preventDefault();
+  }
+});
+
+// Focus shows a spoiler (in CSS); Enter or Space reveals it, as for any button.
+document.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") {
+    return;
+  }
+  const target = event.target;
+  if (target instanceof Element && target.matches(".spoiler:not(.revealed)")) {
+    event.preventDefault();
+    revealSpoiler(target);
+  }
+});
+
+/* Post rendering ----------------------------------------------------------- */
 
 function backlinksHTML(post, slug) {
   if (!post.backlinks || post.backlinks.length === 0) {
@@ -861,6 +1264,7 @@ async function render() {
   } finally {
     finish();
   }
+  enhancePosts(el.main);
   restoreDraft(draft);
   focusHash();
 }
@@ -1045,6 +1449,7 @@ function showQuotePreview(link) {
   const box = document.createElement("div");
   box.className = "quote-preview";
   box.append(clone);
+  enhancePosts(box);
   box.style.visibility = "hidden";
   document.body.append(box);
 

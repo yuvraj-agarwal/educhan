@@ -291,9 +291,9 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | --- | --- |
 | Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
 | Posting | Anonymous by default; `name#secret` and `name##secret` produce tripcodes; a per-thread poster ID keeps a conversation followable |
-| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
+| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
-| Catalog | Every live thread on one page as excerpt tiles with thumbnails |
+| Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
@@ -302,7 +302,8 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 ## Front end
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
-`internal/app/web/` — with no build step and no framework. `app.js` renders the JSON API
+`internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
+that is fetched only when a post with code is on screen. `app.js` renders the JSON API
 into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
 `/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
 
@@ -310,6 +311,18 @@ into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
   time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
   tinted chips. On a fine pointer, hovering `>>123` floats a preview of the quoted post
   when it is already on the page — a preview never costs a request.
+- **Post markup**, rendered at display time from the text as typed:
+  - `>text` is greentext; `>>123` links to a post on the same board and adds a backlink.
+  - `>>>/math/` links to a board, `>>>/math/123` to a post on it, and `>>>/u/iitb/123` to
+    one on an institution board.
+  - `[spoiler]…[/spoiler]` is a bar until hovered, focused, or tapped; a screen reader
+    hears "hidden spoiler" until the reader activates it, and catalog excerpts show the
+    word, not the text.
+  - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
+    auto-detected. Nothing inside it is markup, so `x >>2` in code links nothing and
+    creates no backlink.
+  - A tag pairs with the first closing tag after it; one that never closes, an empty
+    pair, or a `[spoiler]` opened inside another shows as the text that was typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a

@@ -3,9 +3,10 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, threads with quote links, per-client flood control, key-authenticated
-moderation and board management, and optional institutional verification badges are
-implemented. Janitor accounts, bans, and reports are not.
+a catalog view, threads with quote links and post markup (spoilers, highlighted code,
+cross-board links), per-client flood control, key-authenticated moderation and board
+management, and optional institutional verification badges are implemented. Janitor
+accounts, bans, and reports are not.
 
 ## Stack & layout
 
@@ -21,7 +22,9 @@ implemented. Janitor accounts, bans, and reports are not.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
-  - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
+  - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules,
+    including where `[code]` and `[spoiler]` tags pair (`markupBlocks`), which the front
+    end's `parseMarkup` mirrors.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
@@ -230,6 +233,16 @@ the index, and the thread view each have their own narrow-screen layout.
   the one exception and is for decoration only.
 - `app.js` renders HTML strings through `esc()`. Anything interpolated from the API must
   go through it.
+- Post text is markup only at display time: `bodyHTML` and the helpers above it
+  (`parseMarkup`, `renderMarkup`) turn the stored body into HTML, every piece of it
+  through `esc()`. Tags pair by one rule, mirrored in `markupBlocks` in `text.go` so that
+  code never yields quotes and a spoiler never reaches an excerpt; change both together,
+  and `TestMarkupBlocks` with them. Cross-board links build their href with `boardPath`.
+- `enhancePosts(root)` is the one hook for work on posts after they are in the document
+  (code highlighting, and maths next): `render()` and `showQuotePreview()` each call it
+  once. It must stay idempotent and must never throw — a block it cannot finish keeps its
+  plain rendering. highlight.js is loaded from `/vendor/` by a script element the first
+  time a code block is on screen, never up front.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.
@@ -393,8 +406,8 @@ the index, and the thread view each have their own narrow-screen layout.
   so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
-  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
-  whole app against an isolated schema in
+  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
+  `internal/app/markup_api_test.go`) run the whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
   development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
