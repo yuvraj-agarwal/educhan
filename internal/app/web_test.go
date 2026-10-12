@@ -216,6 +216,35 @@ func TestVendoredStylesheetsReferenceVendoredFiles(t *testing.T) {
 	}
 }
 
+// The UI and the server each keep the list of top-level words that are never a
+// board: the UI so it does not read a page's path as a board, the server so no
+// board can take one. A word on one list only is either a board the UI cannot
+// show or a page whose path a board can claim.
+func TestUIReservesTheSameTopLevelWordsAsTheServer(t *testing.T) {
+	script, err := fs.ReadFile(webFS(), "app.js")
+	if err != nil {
+		t.Fatalf("reading app.js: %v", err)
+	}
+	list := regexp.MustCompile(`(?s)const RESERVED_PATHS = new Set\(\[(.*?)\]\);`).FindSubmatch(script)
+	if list == nil {
+		t.Fatal("app.js has no RESERVED_PATHS set; this test reads it")
+	}
+	var ui []string
+	for _, word := range regexp.MustCompile(`"([^"]*)"`).FindAllSubmatch(list[1], -1) {
+		ui = append(ui, string(word[1]))
+	}
+	slices.Sort(ui)
+
+	var server []string
+	for word := range reservedBoardSlugs {
+		server = append(server, word)
+	}
+	slices.Sort(server)
+	if !slices.Equal(ui, server) {
+		t.Errorf("app.js RESERVED_PATHS = %v, boards.go reservedBoardSlugs = %v; keep them the same", ui, server)
+	}
+}
+
 func TestWebShellReferencesItsAssets(t *testing.T) {
 	body, err := fs.ReadFile(webFS(), "index.html")
 	if err != nil {

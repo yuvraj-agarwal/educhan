@@ -305,7 +305,9 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   board's slug is `u-{name}` but its address is `/u/{name}/`, and those two helpers are
   the only places that know it. `parseRoute` maps `/u/{name}/…` back to the slug, and
   `RESERVED_PATHS` lists the top-level words that are never a board; keep it in step with
-  `reservedBoardSlugs` on the server. `/{board}/post/{no}` resolves through
+  `reservedBoardSlugs` on the server (`TestUIReservesTheSameTopLevelWordsAsTheServer`
+  reads both and fails when they differ). Cross-board links in post text use the same
+  list, so a link to a reserved word stays text. `/{board}/post/{no}` resolves through
   `GET /api/boards/{slug}/posts/{no}` and replaces its own history entry with the thread.
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
@@ -507,8 +509,9 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 - **Routes.** The UI reads any first path segment it does not recognise as a board's
   slug, so `reservedBoardSlugs` in `boards.go` holds every first segment that means
   something else — the server's own routes, the UI's pages, and `u` — and has to agree
-  with `parseRoute` in `app.js`; a new top-level page means adding its name to both.
-  `TestReservedBoardSlugs` covers the list. An institution board is stored as
+  with `RESERVED_PATHS` in `app.js`, which `parseRoute` reads; a new top-level page means
+  adding its name to both. `TestReservedBoardSlugs` covers the list, and
+  `TestUIReservesTheSameTopLevelWordsAsTheServer` that the two agree. An institution board is stored as
   `u-<name>` and shown at `/u/<name>/`: the UI does the mapping, and the server needs no
   alias because `webHandler` serves the shell for every path that is not an asset, an
   API route, or media (`TestPageLoadsServeTheShell`). The API only ever takes the
