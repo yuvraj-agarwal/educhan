@@ -216,6 +216,37 @@ func TestVendoredStylesheetsReferenceVendoredFiles(t *testing.T) {
 	}
 }
 
+// app.js is loaded as a module, and a module that declares one name twice at
+// its top level is a SyntaxError: the browser runs none of it, so the whole UI
+// is a blank page. Two features written apart can each bring a helper of the
+// same name — a text spoiler's revealSpoiler and an image spoiler's did — and
+// nothing short of a browser would notice. Top-level declarations in app.js
+// start at the first column, so they can be read off line by line.
+func TestAppDeclaresEachTopLevelNameOnce(t *testing.T) {
+	script, err := fs.ReadFile(webFS(), "app.js")
+	if err != nil {
+		t.Fatalf("reading app.js: %v", err)
+	}
+	declaration := regexp.MustCompile(`^(?:async\s+)?(?:function\*?|const|let|var|class)\s+([A-Za-z_$][\w$]*)`)
+	seen := map[string]int{}
+	for n, line := range strings.Split(string(script), "\n") {
+		m := declaration.FindStringSubmatch(line)
+		if m == nil {
+			continue
+		}
+		if first, dup := seen[m[1]]; dup {
+			t.Errorf("app.js declares %s on line %d and again on line %d; the module will not load", m[1], first, n+1)
+			continue
+		}
+		seen[m[1]] = n + 1
+	}
+	// app.js declares well over a hundred names; finding few means the
+	// pattern stopped matching, not that the names are unique.
+	if len(seen) < 100 {
+		t.Errorf("found %d top-level declarations in app.js, want at least 100", len(seen))
+	}
+}
+
 // The UI and the server each keep the list of top-level words that are never a
 // board: the UI so it does not read a page's path as a board, the server so no
 // board can take one. A word on one list only is either a board the UI cannot

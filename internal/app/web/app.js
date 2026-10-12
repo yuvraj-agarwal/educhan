@@ -933,12 +933,17 @@ document.addEventListener(
   { capture: true, passive: true }
 );
 
+// A hidden spoiler in post text. The selector stays inside .post-body because
+// a spoilered image's wrapper is a .spoiler too, and its tile is the page's
+// own click handler's to reveal: matched here, a tap on it would be cancelled.
+const TEXT_SPOILER = ".post-body .spoiler:not(.revealed)";
+
 // Registered ahead of the page's own click handler, which skips any event this
 // one has handled. A tap on a hidden spoiler only reveals it: following a link
 // inside it would follow one the reader has not seen. A mouse click reveals it
 // too, but the hover already showed it, so a link inside works as normal.
 document.addEventListener("click", (event) => {
-  const spoiler = event.target instanceof Element ? event.target.closest(".spoiler:not(.revealed)") : null;
+  const spoiler = event.target instanceof Element ? event.target.closest(TEXT_SPOILER) : null;
   if (!spoiler) {
     return;
   }
@@ -954,7 +959,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   const target = event.target;
-  if (target instanceof Element && target.matches(".spoiler:not(.revealed)")) {
+  if (target instanceof Element && target.matches(TEXT_SPOILER)) {
     event.preventDefault();
     revealSpoiler(target);
   }
@@ -1015,7 +1020,7 @@ function attachmentHTML(att, { expandable = false } = {}) {
     </div>`;
 }
 
-function revealSpoiler(button) {
+function revealImageSpoiler(button) {
   const file = button.closest(".post-file");
   const content = file && file.querySelector(".spoiler-content");
   if (!content) {
@@ -2656,7 +2661,7 @@ document.addEventListener("click", (event) => {
   if (spoiler) {
     event.preventDefault();
     hideQuotePreview();
-    revealSpoiler(spoiler);
+    revealImageSpoiler(spoiler);
     return;
   }
 

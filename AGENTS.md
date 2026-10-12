@@ -273,6 +273,11 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   the one exception and is for decoration only.
 - `app.js` renders HTML strings through `esc()`. Anything interpolated from the API must
   go through it.
+- `app.js` is loaded as a module (`type="module"`), so it runs in strict mode and a name
+  declared twice at its top level stops the whole file from loading.
+  `TestAppDeclaresEachTopLevelNameOnce` reads the top-level declarations off the first
+  column; keep them there. `node --check` treats a `.js` file as a classic script and
+  lets a duplicate through, so check a copy named `.mjs` instead.
 - Post text is markup only at display time: `bodyHTML` and the helpers above it
   (`parseMarkup`, `renderMarkup`) turn the stored body into HTML, every piece of it
   through `esc()`. Tags pair by one rule, mirrored in `markupBlocks` in `text.go` so that
