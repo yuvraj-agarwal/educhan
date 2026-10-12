@@ -1176,8 +1176,9 @@ function formHTML({ kind, slug, thread = null, open = false }) {
           <p class="hint body-hint" id="f-body-hint"><code>[spoiler]…[/spoiler]</code> hides text,
             <code>[code]…[/code]</code> shows code, <code>[math]…[/math]</code> typesets maths,
             and <code>&gt;&gt;&gt;/board/</code> links a board.</p>
-          <p class="hint body-hint" id="f-contact-hint">No contact details: educhan has no private
-            messages, on purpose.</p>
+          <p class="hint body-hint" id="f-contact-hint">Don't post contact details like phone
+            numbers or Snapchat or Discord names. educhan has no private messages, on
+            purpose.</p>
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>
