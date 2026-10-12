@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,8 +86,66 @@ func TestDomainAllowlistPrefersInstitutions(t *testing.T) {
 	}
 }
 
+// TestDomainAllowlistRefusesSchoolNamespaces pins the 18+ position in the
+// embedded list: school addresses that share a namespace with universities do
+// not verify, and the universities beside them still do.
+func TestDomainAllowlistRefusesSchoolNamespaces(t *testing.T) {
+	list := testAllowlist(t)
+
+	for _, domain := range []string{
+		"school.sch.uk",
+		"students.edu.sg",
+		"x.students.edu.sg",
+		"rafflesgirlssch.edu.sg",
+		"barker.nsw.edu.au",
+		"school.vic.edu.au",
+		"moe-dl.edu.my",
+		"school.edu.hk",
+	} {
+		if label, ok := list.lookup(domain); ok {
+			t.Errorf("%s was accepted as %q, want refused", domain, label)
+		}
+	}
+
+	for domain, want := range map[string]string{
+		"unsw.edu.au":            "unsw.edu.au",
+		"student.unimelb.edu.au": "University of Melbourne",
+		"e.ntu.edu.sg":           "Nanyang Technological University",
+		"u.nus.edu":              "National University of Singapore",
+		"connect.hku.hk":         "University of Hong Kong",
+		"link.cuhk.edu.hk":       "Chinese University of Hong Kong",
+		"um.edu.my":              "um.edu.my",
+	} {
+		if label, ok := list.lookup(domain); !ok || label != want {
+			t.Errorf("%s = %q/%v, want %q", domain, label, ok, want)
+		}
+	}
+}
+
+// A denial wins over every other kind of entry, and covers its subdomains.
+func TestDomainAllowlistDenials(t *testing.T) {
+	list, err := parseDomainAllowlist("edu\nuni.edu = Uni\n!school.edu\n!labs.uni.edu # comment\n")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	for _, domain := range []string{"school.edu", "class.school.edu", "labs.uni.edu", "x.labs.uni.edu"} {
+		if label, ok := list.lookup(domain); ok {
+			t.Errorf("%s was accepted as %q, want refused", domain, label)
+		}
+	}
+	if label, _ := list.lookup("cs.uni.edu"); label != "Uni" {
+		t.Errorf("cs.uni.edu = %q, want Uni", label)
+	}
+	if label, _ := list.lookup("college.edu"); label != "college.edu" {
+		t.Errorf("college.edu = %q, want college.edu", label)
+	}
+}
+
 func TestDomainAllowlistRejectsBadFiles(t *testing.T) {
 	cases := map[string]string{
+		"single-label denial":      "edu\n!edu\n",
+		"empty denial":             "edu\n!\n",
+		"denial with a label":      "edu\n!school.edu = School\n",
 		"not a domain":             "hello world\n",
 		"empty label":              "iitb.ac.in =\n",
 		"long label":               "iitb.ac.in = " + strings.Repeat("x", maxBadgeLabelLen+1) + "\n",
@@ -300,4 +360,26 @@ func mustParseEmail(t *testing.T, raw string) address {
 		t.Fatalf("parseEmail(%q): %v", raw, err)
 	}
 	return addr
+}
+
+// TestStartupRefusesTheDevSenderByDefault: with verification on and no mail
+// provider, the server must not quietly print addresses and codes into its
+// log. Only an explicit EDUCHAN_MAIL_DEV allows that.
+func TestStartupRefusesTheDevSenderByDefault(t *testing.T) {
+	// New fails before it touches the database, so an unreachable one is fine.
+	cfg := Config{DatabaseURL: "postgres://nobody@127.0.0.1:1/none", VerifySecret: "secret"}
+	_, err := New(context.Background(), cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err == nil || !strings.Contains(err.Error(), "EDUCHAN_MAIL_DEV") {
+		t.Fatalf("New = %v, want a refusal naming EDUCHAN_MAIL_DEV", err)
+	}
+
+	for name, ok := range map[string]Config{
+		"verification off":       {},
+		"dev sender asked for":   {VerifySecret: "secret", MailDev: true},
+		"real sender configured": {VerifySecret: "secret", Sender: mailer.NewDev(io.Discard)},
+	} {
+		if err := checkMailer(ok); err != nil {
+			t.Errorf("%s: checkMailer = %v, want nil", name, err)
+		}
+	}
 }

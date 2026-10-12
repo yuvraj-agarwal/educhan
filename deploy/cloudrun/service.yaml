@@ -96,6 +96,11 @@ spec:
               value: "15"
             - name: EDUCHAN_MAX_UPLOAD_BYTES
               value: "8388608"
+            # Image posts are refused until originals are stripped of metadata
+            # and scanned before storage. Off is the default; it is spelled out
+            # so turning it on is a visible change.
+            - name: EDUCHAN_UPLOADS_ENABLED
+              value: "false"
           startupProbe:
             httpGet:
               path: /healthz

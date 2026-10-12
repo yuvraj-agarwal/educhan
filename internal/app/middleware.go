@@ -46,7 +46,13 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 }
 
 // requestLogger emits one structured line per request.
-func requestLogger(log *slog.Logger, trustedHops int) middleware {
+//
+// The line deliberately carries no client address. In production these lines
+// land in Cloud Logging next to the method, path, and time, and an address
+// beside "POST /api/verify/request" at the moment a code was issued is exactly
+// the join verification is built to avoid. Flood control still keys on the
+// address in memory; it is only kept out of the log.
+func requestLogger(log *slog.Logger) middleware {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
@@ -62,7 +68,6 @@ func requestLogger(log *slog.Logger, trustedHops int) middleware {
 				"path", r.URL.Path,
 				"status", rec.status,
 				"duration_ms", time.Since(start).Milliseconds(),
-				"client", clientIP(r, trustedHops),
 			)
 		})
 	}

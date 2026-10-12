@@ -110,7 +110,8 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 ```
 
 Attachments use `multipart/form-data` on the same two endpoints; `image` is the file
-field, and everything else stays the same:
+field, and everything else stays the same. Uploads are off unless
+`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`):
 
 ```bash
 # Thread with an image, then read back the attachment metadata
@@ -159,7 +160,7 @@ configured the code is printed to the server's **stdout**, so read it from the l
 flow sets cookies, so use a jar:
 
 ```bash
-EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_VERIFY_COOLDOWN=0 make run
+EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 EDUCHAN_VERIFY_COOLDOWN=0 make run
 ```
 
 ```bash

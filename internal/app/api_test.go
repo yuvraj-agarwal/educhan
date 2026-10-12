@@ -43,6 +43,13 @@ func (h *harness) exec(query string, args ...any) {
 // reachable.
 func testServer(t *testing.T, tune func(*Config)) *harness {
 	t.Helper()
+	return testServerLogging(t, tune, io.Discard)
+}
+
+// testServerLogging is testServer with the application's log written to logs
+// as JSON, for tests that assert on what the server logs.
+func testServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *harness {
+	t.Helper()
 
 	baseURL := firstEnv("TEST_DATABASE_URL", "DATABASE_URL")
 	if baseURL == "" {
@@ -83,12 +90,13 @@ func testServer(t *testing.T, tune func(*Config)) *harness {
 		LogFormat:      "text",
 		UploadDir:      t.TempDir(),
 		MaxUploadBytes: defaultMaxUploadBytes,
+		UploadsEnabled: true,
 	}
 	if tune != nil {
 		tune(&cfg)
 	}
 
-	app, err := New(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := New(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("start app: %v", err)
 	}

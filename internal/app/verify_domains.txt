@@ -16,8 +16,20 @@
 #                             earns [IIT Bombay]. Institution entries win over
 #                             suffix entries however long each one is.
 #
+#   !nsw.edu.au               A denial. The domain and every subdomain of it
+#                             are refused, whatever else matches. It is for
+#                             school namespaces that sit inside an academic
+#                             suffix: educhan is 18+, and a suffix that also
+#                             hands out pupils' addresses must not badge them.
+#
 # An address sitting directly on a suffix (someone@ac.in) is refused: a suffix
 # is a namespace, not an institution.
+#
+# Reviewing a suffix: a namespace only belongs here when it is reserved for
+# higher education. Where a country puts schools under the same suffix as its
+# universities, either deny the school namespaces below or drop the suffix and
+# list the universities as institutions instead. The edu.* suffixes not
+# mentioned in the review notes below have not been checked this way yet.
 
 # --- Academic suffixes ------------------------------------------------------
 
@@ -25,8 +37,8 @@
 edu
 
 # United Kingdom and Ireland
+# (sch.uk is deliberately absent: it is the UK schools namespace.)
 ac.uk
-sch.uk
 
 # South Asia
 ac.in
@@ -41,10 +53,10 @@ edu.np
 ac.jp
 ac.kr
 edu.cn
-edu.hk
 edu.tw
-edu.sg
 edu.my
+# edu.hk and edu.sg are not suffixes here: both are shared with schools, so
+# their universities are listed as institutions below instead.
 ac.th
 ac.id
 edu.ph
@@ -86,11 +98,35 @@ edu.mx
 edu.pe
 edu.uy
 
+# --- Denied school namespaces -----------------------------------------------
+
+# Australia: universities sit directly under edu.au; the state and territory
+# namespaces below it belong to schools.
+!act.edu.au
+!nsw.edu.au
+!nt.edu.au
+!qld.edu.au
+!sa.edu.au
+!tas.edu.au
+!vic.edu.au
+!wa.edu.au
+
+# Malaysia: pupils' Ministry of Education accounts.
+!moe-dl.edu.my
+
+# Singapore: pupils' Ministry of Education accounts. edu.sg is not a suffix
+# here, so this only guards against an institution entry or a deployment's own
+# file adding it back.
+!students.edu.sg
+
 # --- Institutions -----------------------------------------------------------
 #
-# A handful to start with, and the shape for the rest. Every entry here is
-# cosmetic: without it the address still verifies through its suffix, and the
-# badge names the domain rather than the institution.
+# A handful to start with, and the shape for the rest. Most entries are
+# cosmetic: without one the address still verifies through its suffix, and the
+# badge names the domain rather than the institution. The Hong Kong and
+# Singapore entries are not: their suffixes are not listed, so these are the
+# only addresses there that verify. Polytechnics are left out on purpose,
+# because their students start at 17.
 
 iitb.ac.in     = IIT Bombay
 iitd.ac.in     = IIT Delhi
@@ -112,6 +148,22 @@ imperial.ac.uk = Imperial College London
 ed.ac.uk       = University of Edinburgh
 
 ethz.ch        = ETH Zurich
-nus.edu.sg     = National University of Singapore
 unimelb.edu.au = University of Melbourne
 utoronto.ca    = University of Toronto
+
+nus.edu.sg     = National University of Singapore
+nus.edu        = National University of Singapore  # student addresses are @u.nus.edu
+ntu.edu.sg     = Nanyang Technological University
+smu.edu.sg     = Singapore Management University
+sutd.edu.sg    = Singapore University of Technology and Design
+singaporetech.edu.sg = Singapore Institute of Technology
+suss.edu.sg    = Singapore University of Social Sciences
+
+hku.hk         = University of Hong Kong
+cuhk.edu.hk    = Chinese University of Hong Kong
+ust.hk         = HKUST
+polyu.edu.hk   = Hong Kong Polytechnic University
+cityu.edu.hk   = City University of Hong Kong
+hkbu.edu.hk    = Hong Kong Baptist University
+ln.edu.hk      = Lingnan University
+eduhk.hk       = Education University of Hong Kong

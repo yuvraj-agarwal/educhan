@@ -12,6 +12,8 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -301,6 +303,60 @@ func TestUploadRejections(t *testing.T) {
 			t.Errorf("stored %d attachments, want 0", count)
 		}
 	})
+}
+
+// TestUploadsSwitchedOff covers the default deployment: a post carrying an
+// image is refused before anything is stored, and text posts are unaffected,
+// including multipart ones whose file input was left empty.
+func TestUploadsSwitchedOff(t *testing.T) {
+	c := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = false })
+	image := pngBytes(t, 64, 64)
+
+	var refused createdPost
+	if status := c.upload("/api/boards/general/threads", map[string]string{"body": "pic"},
+		"pic.png", image, &refused); status != http.StatusForbidden {
+		t.Fatalf("thread with image: status %d, want 403", status)
+	}
+	if !strings.Contains(refused.Error, "switched off") {
+		t.Errorf("error = %q, want it to say uploads are switched off", refused.Error)
+	}
+
+	var thread createdPost
+	if status := c.upload("/api/boards/general/threads", map[string]string{"body": "text only"},
+		"", nil, &thread); status != http.StatusCreated {
+		t.Fatalf("multipart thread without image: status %d (%s)", status, thread.Error)
+	}
+	var reply createdPost
+	if status := c.upload(fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo),
+		map[string]string{"body": "empty file input"}, "", nil, &reply); status != http.StatusCreated {
+		t.Fatalf("multipart reply without image: status %d (%s)", status, reply.Error)
+	}
+	if status := c.upload(fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo),
+		map[string]string{"body": "empty part"}, "blank.png", nil, &reply); status != http.StatusCreated {
+		t.Fatalf("reply with an empty file part: status %d (%s)", status, reply.Error)
+	}
+	if status := c.upload(fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo),
+		map[string]string{"body": "pic"}, "pic.png", image, &refused); status != http.StatusForbidden {
+		t.Fatalf("reply with image: status %d, want 403", status)
+	}
+
+	var count int
+	if err := c.app.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM attachments`).Scan(&count); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("stored %d attachments, want 0", count)
+	}
+	entries, err := os.ReadDir(c.app.cfg.UploadDir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read upload dir: %v", err)
+	}
+	for _, e := range entries {
+		if files, _ := os.ReadDir(filepath.Join(c.app.cfg.UploadDir, e.Name())); len(files) > 0 {
+			t.Errorf("upload dir %s has %d files, want none", e.Name(), len(files))
+		}
+	}
 }
 
 func TestJSONSubmissionsCarryNoAttachment(t *testing.T) {

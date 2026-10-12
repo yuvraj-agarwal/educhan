@@ -170,6 +170,7 @@ gcloud iam service-accounts add-iam-policy-binding "$RUN_SA" \
 ```bash
 gcloud sql instances create educhan-db \
   --database-version=POSTGRES_16 \
+  --edition=ENTERPRISE \
   --tier=db-f1-micro \
   --region="$REGION" \
   --storage-size=10GB
@@ -184,6 +185,11 @@ gcloud sql users create educhan --instance=educhan-db --password="$DB_PASSWORD"
 export CLOUDSQL_INSTANCE="$(gcloud sql instances describe educhan-db \
   --format='value(connectionName)')"
 ```
+
+`--edition=ENTERPRISE` is needed for `db-f1-micro`: for PostgreSQL 16 and later
+Cloud SQL defaults to Enterprise Plus, which has no shared-core tiers, and the
+create fails without it. Shared-core tiers carry no SLA and allow about 25
+connections; section 3 covers how the pool size and `maxScale` add up.
 
 ### 2.3 The media bucket
 
@@ -440,6 +446,8 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
 | `EDUCHAN_THREAD_COOLDOWN` / `_POST_` / `_UPLOAD_` | `30` / `5` / `15` | same | Seconds; `0` disables one |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` | `8388608` | Cloud Run's own request limit is 32 MiB |
+| `EDUCHAN_UPLOADS_ENABLED` | `1` when testing images | **`false`** | Off refuses image posts with `403`. Keep it off until images are stripped of metadata and scanned |
+| `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
 value higher than the real chain lets a client pick its own rate-limit bucket and
@@ -481,6 +489,8 @@ is per instance too.
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay
 that way here until `internal/mailer` grows an SMTP or Google Workspace `Sender`.
+Setting it anyway makes the server refuse to start unless `EDUCHAN_MAIL_DEV=1`
+is also set, which it must not be here.
 The development sender prints the code *and the address it was sent to* to
 stdout, and on Cloud Run stdout is Cloud Logging — which would write into a log
 sink exactly the thing the feature promises never to store. Enabling it is one

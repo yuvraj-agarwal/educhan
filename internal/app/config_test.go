@@ -39,6 +39,14 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	if cfg.VerifyCooldown <= 0 {
 		t.Error("code requests must be rate limited by default")
 	}
+	// Both are opt-in: uploads until images are stripped and scanned, the
+	// development mailer because it writes addresses into the log.
+	if cfg.UploadsEnabled {
+		t.Error("UploadsEnabled must be off by default")
+	}
+	if cfg.MailDev {
+		t.Error("MailDev must be off by default")
+	}
 }
 
 func TestConfigFromEnvOverrides(t *testing.T) {
@@ -54,6 +62,8 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	t.Setenv("EDUCHAN_VERIFY_CODE_TTL", "300")
 	t.Setenv("EDUCHAN_VERIFY_CREDENTIAL_TTL", "24h")
 	t.Setenv("EDUCHAN_VERIFY_COOLDOWN", "90")
+	t.Setenv("EDUCHAN_UPLOADS_ENABLED", "true")
+	t.Setenv("EDUCHAN_MAIL_DEV", "1")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
@@ -89,6 +99,9 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	}
 	if cfg.LogFormat != "json" {
 		t.Errorf("LogFormat = %q, want json", cfg.LogFormat)
+	}
+	if !cfg.UploadsEnabled || !cfg.MailDev {
+		t.Errorf("UploadsEnabled/MailDev = %t/%t, want both on", cfg.UploadsEnabled, cfg.MailDev)
 	}
 }
 
@@ -149,6 +162,12 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 		t.Setenv("EDUCHAN_TRUST_PROXY", "-1")
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Error("expected an error for a negative proxy hop count")
+		}
+	})
+	t.Run("uploads switch", func(t *testing.T) {
+		t.Setenv("EDUCHAN_UPLOADS_ENABLED", "maybe")
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Error("expected an error for an unparseable boolean")
 		}
 	})
 	// A zero TTL would mint codes and credentials that have already expired,

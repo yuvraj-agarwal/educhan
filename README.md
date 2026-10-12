@@ -199,13 +199,18 @@ database and gets reviewed in a diff. The default is embedded in the binary at
 ```
 ac.in                     # a suffix: ana@cse.nitk.ac.in earns [nitk.ac.in]
 iitb.ac.in = IIT Bombay   # an institution: ana@cse.iitb.ac.in earns [IIT Bombay]
+!nsw.edu.au               # a denial: refused, with every subdomain
 ```
 
 A suffix entry accepts anything under it and badges the domain one level below
 the suffix, so two departments of one university read the same. An institution
 entry names the place instead, and wins over any suffix. An address sitting
 directly on a suffix (`someone@ac.in`) is refused: a namespace is not an
-institution. `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
+institution. A denial refuses a domain and everything under it, whatever else
+matches; it exists for school namespaces that share a suffix with universities,
+because educhan is 18+. Suffixes shared with schools are either guarded by
+denials (`edu.au`) or left out in favour of named universities (`edu.sg`,
+`edu.hk`), and `sch.uk` is not listed. `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
 configured.
 
@@ -221,7 +226,9 @@ the box:
 ```
 
 That sender prints the address, which makes it a development tool only — it is
-the one place in educhan an address is rendered at all. Adding SMTP or Google
+the one place in educhan an address is rendered at all. So the server refuses to
+start with `EDUCHAN_VERIFY_SECRET` set and no real sender unless
+`EDUCHAN_MAIL_DEV=1` says the development sender is meant. Adding SMTP or Google
 Workspace means writing another `Sender` and assigning it to `Config.Sender`;
 no handler and no SQL changes.
 
@@ -243,7 +250,10 @@ at all — see above.
 
 ## Image attachments
 
-One image per post, on both thread creation and replies.
+One image per post, on both thread creation and replies, **when
+`EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
+image is then refused with `403`, because originals are stored and served as
+uploaded: no metadata stripping and no content scanning yet.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims.
@@ -376,12 +386,14 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
+| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403` |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
+| `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 
 ### Storage backends
 
