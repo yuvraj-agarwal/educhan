@@ -316,7 +316,9 @@ top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
   newest first; an archived thread still opens, says when it was archived and how long it
-  is kept, and shows why it takes no replies where the reply form would be. On a fine pointer, hovering `>>123` floats a preview of the quoted post
+  is kept, and shows why it takes no replies where the reply form would be. A board with
+  rules shows them under a **Rules** disclosure in its header, as plain text with the line
+  breaks kept. On a fine pointer, hovering `>>123` floats a preview of the quoted post
   when it is already on the page — a preview never costs a request.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives

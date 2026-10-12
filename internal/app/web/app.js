@@ -554,12 +554,19 @@ function boardHeadHTML(board, view) {
   const links = views
     .map((v) => `<a href="${v.href}"${v.key === view ? ' aria-current="page"' : ""}>${v.label}</a>`)
     .join("");
+  // Rules are a board's own words, closed until asked for so they do not push
+  // the threads down on every visit. Escaped like anything else from the API;
+  // the stylesheet keeps their line breaks.
+  const rules = board.rules
+    ? `<details class="board-rules"><summary>Rules</summary><div class="rules-text">${esc(board.rules)}</div></details>`
+    : "";
 
   return `
     <div class="board-head">
       <h1>${esc(boardLabel(board.slug))} <span class="board-name">${esc(board.name)}</span></h1>
       <span class="desc">${esc(board.description)}</span>
       <nav class="views" aria-label="Board views">${links}</nav>
+      ${rules}
     </div>`;
 }
 
