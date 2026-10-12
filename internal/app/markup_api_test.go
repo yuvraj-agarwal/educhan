@@ -63,3 +63,30 @@ func TestCatalogExcerptHidesSpoilers(t *testing.T) {
 		t.Errorf("excerpt = %q, want %q", got, want)
 	}
 }
+
+func TestMathsMakesNoQuotesAndExcerptsAsTeX(t *testing.T) {
+	c := modServer(t)
+	c.createBoard(map[string]any{"slug": "markup"})
+
+	thread := c.createThread("markup", "orders of growth", "", `if [math]a \gg b[/math] then`)
+	reply := c.reply("markup", thread.ThreadNo, "",
+		fmt.Sprintf("[math]x >>%d[/math]\n[eqn]\n>>%d\n[/eqn]", thread.No, thread.No), false)
+
+	detail := fetchThread(t, c, "markup", thread.ThreadNo)
+	op, replyPost := detail.Posts[0], detail.Posts[1]
+	if replyPost.No != reply.No {
+		t.Fatalf("second post is %d, want the reply %d", replyPost.No, reply.No)
+	}
+	if len(replyPost.Quotes) != 0 || len(op.Backlinks) != 0 {
+		t.Errorf("TeX made quotes %+v and backlinks %+v; maths is not markup", replyPost.Quotes, op.Backlinks)
+	}
+
+	var catalog Catalog
+	c.get("/api/boards/markup/catalog", &catalog)
+	if len(catalog.Threads) != 1 {
+		t.Fatalf("catalog has %d threads, want 1", len(catalog.Threads))
+	}
+	if got, want := catalog.Threads[0].Excerpt, `if a \gg b then`; got != want {
+		t.Errorf("excerpt = %q, want %q", got, want)
+	}
+}

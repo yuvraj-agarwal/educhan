@@ -152,20 +152,28 @@ func TestVendoredWebAssetsArePinned(t *testing.T) {
 	}
 }
 
-// app.js loads the highlighter by path at run time, so a moved or renamed file
-// would fail only in a browser; this catches it at build time.
+// app.js loads the highlighter and KaTeX by path at run time, so a moved or
+// renamed file would fail only in a browser; this catches it at build time.
 func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
 	script, err := fs.ReadFile(webFS(), "app.js")
 	if err != nil {
 		t.Fatalf("reading app.js: %v", err)
 	}
 	refs := regexp.MustCompile(`"/(vendor/[^"]+)"`).FindAllStringSubmatch(string(script), -1)
-	if len(refs) == 0 {
-		t.Fatal("app.js references nothing under /vendor/; the highlighter is loaded from there")
-	}
+	var loaded []string
 	for _, ref := range refs {
+		loaded = append(loaded, ref[1])
 		if _, listed := vendoredWebAssets[ref[1]]; !listed {
 			t.Errorf("app.js loads /%s, which is not a pinned vendored file", ref[1])
+		}
+	}
+	for _, want := range []string{
+		"vendor/highlightjs/highlight.min.js",
+		"vendor/katex/katex.min.js",
+		"vendor/katex/katex.min.css",
+	} {
+		if !slices.Contains(loaded, want) {
+			t.Errorf("app.js does not load /%s; found %v", want, loaded)
 		}
 	}
 }

@@ -57,54 +57,88 @@ func collapseControl(s string) string {
 }
 
 // Post markup tags. Rendering is the front end's (parseMarkup in web/app.js);
-// the server needs to know where the tags pair only so that code is not read
-// as quotes and a spoiler does not leak into an excerpt, and markupBlocks
-// follows the same rules for that.
+// the server needs to know where the tags pair only so that code and maths are
+// not read as quotes and a spoiler does not leak into an excerpt, and
+// markupBlocks follows the same rules for that.
 const (
-	codeOpenTag     = "[code]"
-	codeCloseTag    = "[/code]"
 	spoilerOpenTag  = "[spoiler]"
 	spoilerCloseTag = "[/spoiler]"
 )
 
-// markupBlock is a [code] block or a [spoiler] that renders as one. start and
-// end span the tags; inner spans what is between them.
+// blockKind is what a markup block renders as.
+type blockKind int
+
+const (
+	blockSpoiler blockKind = iota
+	blockCode              // [code]: a code block
+	blockMath              // [math]: inline TeX
+	blockEqn               // [eqn]: display TeX
+)
+
+// opaqueTags are the blocks whose text is not markup: code, and TeX, which has
+// a use of its own for every character. Each claims everything up to the first
+// closing tag of its kind after it.
+var opaqueTags = []struct {
+	kind        blockKind
+	open, close string
+}{
+	{blockCode, "[code]", "[/code]"},
+	{blockMath, "[math]", "[/math]"},
+	{blockEqn, "[eqn]", "[/eqn]"},
+}
+
+// markupBlock is a [code], [math] or [eqn] block, or a [spoiler] that renders as
+// one. start and end span the tags; inner spans what is between them.
 type markupBlock struct {
-	spoiler    bool
+	kind       blockKind
 	start, end int
 	inner      [2]int
 }
 
-// markupBlocks finds the code blocks and spoilers in a body, in order of their
-// opening tags; a code block inside a spoiler is listed after it. Each tag pairs
-// with the first closing tag after it. A [code] needs a [/code] with something
-// between them and claims everything up to it, tags included; a [spoiler] needs
-// a [/spoiler] after it, outside any code block, with something between them,
-// and a [spoiler] inside one is text. Anything that does not pair is text.
+// markupBlocks finds the opaque blocks and spoilers in a body, in order of their
+// opening tags; a block inside a spoiler is listed after it. Each tag pairs with
+// the first closing tag of its kind after it. An opaque block needs its closing
+// tag with something between them and claims everything up to it, tags
+// included; a [spoiler] needs a [/spoiler] after it, outside any opaque block,
+// with something between them, and a [spoiler] inside one is text. Anything
+// that does not pair is text.
 func markupBlocks(body string) []markupBlock {
 	type tag struct {
-		kind       string
+		kind       string // "opaque", or a spoiler's "open" or "close"
 		start, end int
+		block      markupBlock // for "opaque", the block it claimed
 	}
 	var tags []tag
-	// Checked first, so a body full of unclosed [code]s is still one pass.
-	lastCodeClose := strings.LastIndex(body, codeCloseTag)
+	// Checked first, so a body full of unclosed openings is still one pass.
+	lastClose := make([]int, len(opaqueTags))
+	for k, t := range opaqueTags {
+		lastClose[k] = strings.LastIndex(body, t.close)
+	}
+scan:
 	for i := 0; i < len(body); {
 		rest := body[i:]
-		switch {
-		case strings.HasPrefix(rest, codeOpenTag) && i+len(codeOpenTag) <= lastCodeClose:
-			inner := i + len(codeOpenTag)
-			if end := strings.Index(body[inner:], codeCloseTag); end > 0 {
-				tags = append(tags, tag{"code", i, inner + end + len(codeCloseTag)})
-				i = inner + end + len(codeCloseTag)
+		for k, t := range opaqueTags {
+			inner := i + len(t.open)
+			if !strings.HasPrefix(rest, t.open) || inner > lastClose[k] {
 				continue
 			}
+			if end := strings.Index(body[inner:], t.close); end > 0 {
+				blk := markupBlock{
+					kind: t.kind, start: i, end: inner + end + len(t.close),
+					inner: [2]int{inner, inner + end},
+				}
+				tags = append(tags, tag{kind: "opaque", start: blk.start, end: blk.end, block: blk})
+				i = blk.end
+				continue scan
+			}
+		}
+		switch {
 		case strings.HasPrefix(rest, spoilerOpenTag):
-			tags = append(tags, tag{"open", i, i + len(spoilerOpenTag)})
+			tags = append(tags, tag{kind: "open", start: i, end: i + len(spoilerOpenTag)})
 			i += len(spoilerOpenTag)
 			continue
 		case strings.HasPrefix(rest, spoilerCloseTag):
-			tags = append(tags, tag{"close", i, i + len(spoilerCloseTag)})
+			tags = append(tags, tag{kind: "close", start: i, end: i + len(spoilerCloseTag)})
 			i += len(spoilerCloseTag)
 			continue
 		}
@@ -115,10 +149,10 @@ func markupBlocks(body string) []markupBlock {
 		i += 1 + next
 	}
 
-	lastClose := -1
+	lastSpoilerClose := -1
 	for n, t := range tags {
 		if t.kind == "close" {
-			lastClose = n
+			lastSpoilerClose = n
 		}
 	}
 
@@ -126,16 +160,13 @@ func markupBlocks(body string) []markupBlock {
 	open := -1 // index into blocks of the spoiler that is open, if any
 	for n, t := range tags {
 		switch t.kind {
-		case "code":
-			blocks = append(blocks, markupBlock{
-				start: t.start, end: t.end,
-				inner: [2]int{t.start + len(codeOpenTag), t.end - len(codeCloseTag)},
-			})
+		case "opaque":
+			blocks = append(blocks, t.block)
 		case "open":
 			empty := n+1 < len(tags) && tags[n+1].kind == "close" && tags[n+1].start == t.end
-			if open < 0 && n < lastClose && !empty {
+			if open < 0 && n < lastSpoilerClose && !empty {
 				open = len(blocks)
-				blocks = append(blocks, markupBlock{spoiler: true, start: t.start, inner: [2]int{t.end, 0}})
+				blocks = append(blocks, markupBlock{kind: blockSpoiler, start: t.start, inner: [2]int{t.end, 0}})
 			}
 		case "close":
 			if open >= 0 {
@@ -148,8 +179,9 @@ func markupBlocks(body string) []markupBlock {
 	return blocks
 }
 
-// plainText is a body as a summary should show it: a code block's text without
-// its tags, and a spoiler as the word, never what it hides.
+// plainText is a body as a summary should show it: the text of a code block or
+// of maths without its tags — TeX source is the readable form of an equation
+// in plain text — and a spoiler as the word, never what it hides.
 func plainText(body string) string {
 	blocks := markupBlocks(body)
 	if len(blocks) == 0 {
@@ -159,10 +191,10 @@ func plainText(body string) string {
 	pos := 0
 	for _, blk := range blocks {
 		if blk.start < pos {
-			continue // a code block inside a spoiler already written
+			continue // a block inside a spoiler already written
 		}
 		b.WriteString(body[pos:blk.start])
-		if blk.spoiler {
+		if blk.kind == blockSpoiler {
 			b.WriteString("[spoiler]")
 		} else {
 			b.WriteString(body[blk.inner[0]:blk.inner[1]])
@@ -175,14 +207,15 @@ func plainText(body string) string {
 
 // extractQuotes returns the distinct post numbers quoted by a body, in order of
 // first appearance and capped so a single post cannot fan out without bound.
-// Code blocks are left out, because the front end does not link inside them: a
-// code sample such as "x >>2" is not a reply to post 2.
+// Code and maths are left out, because the front end does not link inside
+// them: a code sample such as "x >>2" is not a reply to post 2, and neither is
+// a shift written in TeX.
 func extractQuotes(body string) []int64 {
 	if blocks := markupBlocks(body); len(blocks) > 0 {
 		var b strings.Builder
 		pos := 0
 		for _, blk := range blocks {
-			if blk.spoiler {
+			if blk.kind == blockSpoiler {
 				continue // its text is linked like any other
 			}
 			// A space where the block was, so the text either side of it

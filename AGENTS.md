@@ -4,7 +4,7 @@ educhan is an anonymous imageboard for tertiary education. This repository conta
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
 a catalog view, threads with quote links and post markup (spoilers, highlighted code,
-cross-board links), per-client flood control, key-authenticated moderation and board
+maths, cross-board links), per-client flood control, key-authenticated moderation and board
 management, and optional institutional verification badges are implemented. Janitor
 accounts, bans, and reports are not.
 
@@ -23,8 +23,8 @@ accounts, bans, and reports are not.
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules,
-    including where `[code]` and `[spoiler]` tags pair (`markupBlocks`), which the front
-    end's `parseMarkup` mirrors.
+    including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags pair
+    (`markupBlocks`), which the front end's `parseMarkup` mirrors.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
@@ -216,7 +216,9 @@ the index, and the thread view each have their own narrow-screen layout.
   browser. `TestWebAssetsHaveNoInlineStylesOrScripts` in `web_test.go` catches them first,
   in `index.html` and in the markup `app.js` builds as strings (it scans `app.js` and
   `app.css` too). Setting `element.style.left` from JavaScript is fine — CSP governs
-  markup, not the CSSOM — which is how the quote preview positions itself.
+  markup, not the CSSOM — which is how the quote preview positions itself, and how KaTeX
+  lays out maths. `setAttribute("style", …)` is not fine: the browser refuses it like a
+  `style="…"` in markup.
 - **Vendored libraries** live in `web/vendor/<name>/`: the published build unmodified, its
   `LICENSE`, and a `README.md` naming the package, version, and where it came from. They
   are served from `'self'` like everything else — never from a CDN — and are left out of
@@ -239,13 +241,27 @@ the index, and the thread view each have their own narrow-screen layout.
 - Post text is markup only at display time: `bodyHTML` and the helpers above it
   (`parseMarkup`, `renderMarkup`) turn the stored body into HTML, every piece of it
   through `esc()`. Tags pair by one rule, mirrored in `markupBlocks` in `text.go` so that
-  code never yields quotes and a spoiler never reaches an excerpt; change both together,
-  and `TestMarkupBlocks` with them. Cross-board links build their href with `boardPath`.
+  code and maths never yield quotes and a spoiler never reaches an excerpt; change both
+  together, and `TestMarkupBlocks` with them (`OPAQUE_TAGS` and `opaqueTags` list the
+  blocks whose text is not markup). Cross-board links build their href with `boardPath`.
 - `enhancePosts(root)` is the one hook for work on posts after they are in the document
-  (code highlighting, and maths next): `render()` and `showQuotePreview()` each call it
-  once. It must stay idempotent and must never throw — a block it cannot finish keeps its
-  plain rendering. highlight.js is loaded from `/vendor/` by a script element the first
-  time a code block is on screen, never up front.
+  (code highlighting and maths): `render()` and `showQuotePreview()` each call it once.
+  It must stay idempotent and must never throw — a block it cannot finish keeps its
+  plain rendering. highlight.js and KaTeX are loaded from `/vendor/` by script (and, for
+  KaTeX, stylesheet) elements the first time a post that needs them is on screen, never
+  up front.
+- Maths: `[math]`/`[eqn]` render as a placeholder carrying the TeX in `data-tex`, and
+  `typesetMaths` fills it with `katex.render` once the block is within a screen of the
+  viewport (an `IntersectionObserver`; typesetting a long thread up front froze phones).
+  **Never `renderToString` into `innerHTML`**: KaTeX's HTML carries layout in `style`
+  attributes, which the CSP refuses. A few of KaTeX's own nodes still call
+  `setAttribute("style")` (`\vec`, a tall brace, a TeX error and more), so
+  `withStyleAttributesThroughCSSOM` routes exactly those through `style.cssText` for the
+  synchronous length of one render. The options are part of the security story —
+  `trust: false`, `maxExpand`, `maxSize`, and a fresh `macros` table per expression that
+  turns `\def`, `\newcommand` and friends into errors, because `maxExpand` counts
+  expansions, not what they produce, and one defined macro used a thousand times is
+  millions of nodes. Don't loosen them without a browser check that repeats the probes.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.

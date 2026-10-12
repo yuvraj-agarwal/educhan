@@ -153,15 +153,23 @@ function announce(title) {
 //                         it, and >>>/u/iitb/123 to one on an institution board
 //   [spoiler]…[/spoiler]  hidden until hovered, focused or tapped
 //   [code]…[/code]        a code block, verbatim and highlighted
+//   [math]…[/math]        inline maths in TeX, typeset by KaTeX
+//   [eqn]…[/eqn]          display maths: an equation set on its own line
 //
-// Each tag pairs with the first closing tag after it. A tag that never closes,
-// an empty pair, and a spoiler opened inside another stay the literal text that
-// was typed, so no input can render as half an element. Code is opaque: nothing
-// inside a [code] block is markup, and extractQuotes in text.go follows the same
-// pairing so that a code sample — `x >>2` — creates no backlink.
+// Each tag pairs with the first closing tag of its kind after it. A tag that
+// never closes, an empty pair, and a spoiler opened inside another stay the
+// literal text that was typed, so no input can render as half an element. Code
+// and maths are opaque: nothing inside a [code], [math] or [eqn] block is
+// markup, and extractQuotes in text.go follows the same pairing so that a code
+// sample — `x >>2` — creates no backlink.
 
-const CODE_OPEN = "[code]";
-const CODE_CLOSE = "[/code]";
+// The opaque blocks, in the order a tie would be settled (none can be, as no
+// opening tag is a prefix of another). opaqueTags in text.go lists the same.
+const OPAQUE_TAGS = [
+  { kind: "code", open: "[code]", close: "[/code]" },
+  { kind: "math", open: "[math]", close: "[/math]" },
+  { kind: "eqn", open: "[eqn]", close: "[/eqn]" },
+];
 const SPOILER_OPEN = "[spoiler]";
 const SPOILER_CLOSE = "[/spoiler]";
 
@@ -186,25 +194,32 @@ const RESERVED_SLUGS = new Set([
 // rather than reading it out — the same choice a sighted reader gets.
 const SPOILER_LABEL = "Hidden spoiler: activate to reveal";
 
-// parseMarkup splits a body into text runs, code blocks, and spoilers. Runs are
-// kept as offsets into the source, so rendering can still tell where a line
-// starts. A spoiler holds text runs and code blocks; nothing nests deeper.
+// parseMarkup splits a body into text runs, opaque blocks (code and maths), and
+// spoilers. Runs are kept as offsets into the source, so rendering can still
+// tell where a line starts. A spoiler holds text runs and opaque blocks;
+// nothing nests deeper.
 function parseMarkup(source) {
-  // Pass one finds the tags. A [code] counts only when a [/code] follows with
-  // something in between, and it claims everything up to that [/code] — tags
-  // included — so the scan jumps straight past it. Checking against the last
-  // [/code] first keeps a body full of unclosed [code]s linear.
+  // Pass one finds the tags. An opaque tag counts only when its closing tag
+  // follows with something in between, and it claims everything up to that
+  // close — tags included — so the scan jumps straight past it. Checking
+  // against each kind's last close first keeps a body full of unclosed
+  // openings linear.
   const tags = [];
-  const lastCodeClose = source.lastIndexOf(CODE_CLOSE);
-  for (let i = source.indexOf("["); i !== -1; i = source.indexOf("[", i)) {
-    if (source.startsWith(CODE_OPEN, i) && i + CODE_OPEN.length <= lastCodeClose) {
-      const close = source.indexOf(CODE_CLOSE, i + CODE_OPEN.length);
-      if (close > i + CODE_OPEN.length) {
-        tags.push({ kind: "code", at: i, end: close + CODE_CLOSE.length });
-        i = close + CODE_CLOSE.length;
+  const lastCloses = OPAQUE_TAGS.map(({ close }) => source.lastIndexOf(close));
+  scan: for (let i = source.indexOf("["); i !== -1; i = source.indexOf("[", i)) {
+    for (const [n, { kind, open, close }] of OPAQUE_TAGS.entries()) {
+      const inner = i + open.length;
+      if (!source.startsWith(open, i) || inner > lastCloses[n]) {
         continue;
       }
-    } else if (source.startsWith(SPOILER_OPEN, i)) {
+      const at = source.indexOf(close, inner);
+      if (at > inner) {
+        tags.push({ kind, at: i, end: at + close.length, inner: [inner, at] });
+        i = at + close.length;
+        continue scan;
+      }
+    }
+    if (source.startsWith(SPOILER_OPEN, i)) {
       tags.push({ kind: "open", at: i, end: i + SPOILER_OPEN.length });
       i += SPOILER_OPEN.length;
       continue;
@@ -230,9 +245,9 @@ function parseMarkup(source) {
     if (end > pos) into.push({ kind: "text", start: pos, end });
   };
   tags.forEach((tag, n) => {
-    if (tag.kind === "code") {
+    if (tag.inner) {
       text(tag.at);
-      into.push({ kind: "code", start: tag.at + CODE_OPEN.length, end: tag.end - CODE_CLOSE.length });
+      into.push({ kind: tag.kind, start: tag.inner[0], end: tag.inner[1] });
       pos = tag.end;
     } else if (tag.kind === "open") {
       const next = tags[n + 1];
@@ -254,10 +269,11 @@ function parseMarkup(source) {
   return root;
 }
 
-// A spoiler holding a code block is laid out as a block itself, so it hides the
-// whole box rather than a run of text that the block breaks out of.
+// Code blocks and display maths are blocks. A spoiler holding one is laid out
+// as a block itself, so it hides the whole box rather than a run of text that
+// the block breaks out of.
 function isBlockNode(node) {
-  return node.kind === "code" || (node.kind === "spoiler" && node.children.some(isBlockNode));
+  return node.kind === "code" || node.kind === "eqn" || (node.kind === "spoiler" && node.children.some(isBlockNode));
 }
 
 // crossLinkHref turns a cross-board match into the SPA route it links to, or
@@ -350,13 +366,26 @@ function renderMarkup(nodes, ctx, { block = false, hidden = false } = {}) {
   const { source, out } = ctx;
   nodes.forEach((node, k) => {
     if (node.kind === "code") {
-      let { start, end } = node;
-      if (source[start] === "\n") start += 1;
-      if (end > start && source[end - 1] === "\n") end -= 1;
       // Focusable, because a long line scrolls sideways and a keyboard has to
       // be able to scroll it.
-      out.push(`<pre class="code" tabindex="0"><code>${esc(source.slice(start, end))}</code></pre>`);
+      out.push(`<pre class="code" tabindex="0"><code>${esc(blockSource(source, node))}</code></pre>`);
       ctx.lineStart = true;
+      return;
+    }
+    if (node.kind === "eqn") {
+      out.push(mathHTML(blockSource(source, node), { display: true }));
+      ctx.lineStart = true;
+      return;
+    }
+    if (node.kind === "math") {
+      // Inline maths is part of its line: a line that opens with it is not
+      // greentext, and in a greentext line it is green with the rest.
+      if (ctx.lineStart) {
+        ctx.green = false;
+        ctx.lineStart = false;
+      }
+      const html = mathHTML(source.slice(node.start, node.end), { display: false });
+      out.push(ctx.green ? `<span class="greentext">${html}</span>` : html);
       return;
     }
     if (node.kind === "spoiler") {
@@ -379,6 +408,25 @@ function renderMarkup(nodes, ctx, { block = false, hidden = false } = {}) {
   });
 }
 
+// blockSource is a block's text without the one newline just inside each end,
+// so a block written on lines of its own does not open or close on a blank one.
+function blockSource(source, { start, end }) {
+  if (source[start] === "\n") start += 1;
+  if (end > start && source[end - 1] === "\n") end -= 1;
+  return source.slice(start, end);
+}
+
+// mathHTML is what a [math] or [eqn] block renders as until KaTeX typesets it:
+// the TeX, escaped, in data-tex for typesetMaths to read, and as the text, so a
+// reader whose KaTeX never arrives still reads the source. Display maths
+// scrolls sideways when it is wider than the post, so, like a code block, it is
+// focusable for a keyboard to scroll it.
+function mathHTML(tex, { display }) {
+  return display
+    ? `<div class="math math-display" tabindex="0" data-tex="${esc(tex)}">${esc(tex)}</div>`
+    : `<span class="math" data-tex="${esc(tex)}">${esc(tex)}</span>`;
+}
+
 // bodyHTML renders a post's text with its markup. Every piece of the source
 // reaches the page through esc(); the only markup is what is written here.
 function bodyHTML(post, slug) {
@@ -397,15 +445,16 @@ function bodyHTML(post, slug) {
 /* Post enhancement --------------------------------------------------------- */
 
 // enhancePosts finishes rendered posts once they are in the document: code
-// blocks are highlighted here, and maths will be typeset here. Every view that
-// inserts posts calls it on what it inserted. It is safe on any element and as
-// often as wanted — work already done is skipped — and nothing it does can fail
-// a render: a block it cannot finish keeps its plain, escaped rendering.
+// blocks are highlighted here, and maths typeset. Every view that inserts posts
+// calls it on what it inserted. It is safe on any element and as often as
+// wanted — work already done is skipped — and nothing it does can fail a
+// render: a block it cannot finish keeps its plain, escaped rendering.
 function enhancePosts(root) {
   if (!root) {
     return;
   }
   highlightCode(root);
+  typesetMaths(root);
 }
 
 const HIGHLIGHTER_SRC = "/vendor/highlightjs/highlight.min.js";
@@ -509,6 +558,266 @@ function highlightBlocks(hljs, blocks) {
     } catch {
       code.dataset.highlighted = "failed";
     }
+  }
+}
+
+/* Maths -------------------------------------------------------------------- */
+
+const KATEX_SRC = "/vendor/katex/katex.min.js";
+const KATEX_CSS = "/vendor/katex/katex.min.css";
+
+// TeX commands that are switched off in posts. maxExpand caps how many macro
+// expansions an expression makes, not what each one produces, so a post that
+// defines one long macro and uses it a thousand times builds millions of nodes
+// in the tab of everyone who opens the thread. KaTeX's own macros are short and
+// none repeats an argument, so with definitions gone the cap bounds the output
+// too. The console commands go as well: \errmessage would write an error into
+// every reader's console.
+const KATEX_DISABLED = [
+  "\\def", "\\gdef", "\\edef", "\\xdef", "\\newcommand", "\\renewcommand",
+  "\\providecommand", "\\message", "\\errmessage", "\\show",
+];
+// Typesetting yields to the page once a batch has run this long, as
+// highlighting does.
+const TYPESET_SLICE_MS = 12;
+
+let typesetter = null;
+
+// loadTypesetter fetches KaTeX and its stylesheet the first time a post with
+// maths is rendered, so a reader who never meets any never downloads them. Both are
+// same-origin elements, which the CSP allows, and typesetting waits for both:
+// KaTeX's output laid out without its stylesheet is a scramble. A failed load
+// is not retried until the page is reloaded; the TeX stays readable.
+function loadTypesetter() {
+  if (!typesetter) {
+    const script = new Promise((resolve, reject) => {
+      const tag = document.createElement("script");
+      tag.src = KATEX_SRC;
+      tag.onload = () => (window.katex ? resolve(window.katex) : reject(new Error("KaTeX did not load")));
+      tag.onerror = () => reject(new Error("KaTeX did not load"));
+      document.head.append(tag);
+    });
+    const sheet = new Promise((resolve, reject) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = KATEX_CSS;
+      link.onload = () => resolve();
+      link.onerror = () => reject(new Error("KaTeX's stylesheet did not load"));
+      document.head.append(link);
+    });
+    typesetter = Promise.all([script, sheet]).then(([katex]) => {
+      // A glyph's width is its font's, and the fonts load as glyphs need them.
+      if (document.fonts) {
+        document.fonts.addEventListener("loadingdone", scheduleFitMaths);
+      }
+      return katex;
+    });
+  }
+  return typesetter;
+}
+
+// Typesetting waits until a block comes within a screen's height of the
+// viewport. A long thread can hold a thousand formulas, and KaTeX's output is
+// heavy: typesetting them all up front kept a mid-range phone busy for most of
+// a minute, and made every frame after it slower, for maths the reader may
+// never scroll to. A block typeset a screen ahead is ready before it is seen,
+// and the change in its size lands off screen, where scroll anchoring keeps
+// the reader's place.
+const TYPESET_AHEAD = "100% 0px";
+
+let mathsObserver = null;
+// Blocks being watched that have not yet come near the viewport.
+const watchedMaths = new Set();
+// Blocks near the viewport, waiting for a batch: on screen first.
+const typesetQueue = [];
+let typesetPending = false;
+
+function typesetMaths(root) {
+  const blocks = root.querySelectorAll(".math:not([data-typeset])");
+  if (blocks.length === 0) {
+    return;
+  }
+  loadTypesetter()
+    .then((katex) => watchMaths(katex, blocks))
+    .catch(() => {
+      // The maths keeps its TeX.
+    });
+}
+
+function watchMaths(katex, blocks) {
+  if (!mathsObserver) {
+    mathsObserver = new IntersectionObserver(
+      (entries) => {
+        for (const { target, isIntersecting, boundingClientRect: box } of entries) {
+          if (!isIntersecting) {
+            continue;
+          }
+          mathsObserver.unobserve(target);
+          watchedMaths.delete(target);
+          if (box.bottom > 0 && box.top < window.innerHeight) {
+            typesetQueue.unshift(target);
+          } else {
+            typesetQueue.push(target);
+          }
+        }
+        scheduleTypeset(katex);
+      },
+      { rootMargin: TYPESET_AHEAD }
+    );
+  }
+  // The observer holds on to what it watches, so blocks a re-render replaced
+  // before they came near are let go here.
+  for (const block of watchedMaths) {
+    if (!block.isConnected) {
+      mathsObserver.unobserve(block);
+      watchedMaths.delete(block);
+    }
+  }
+  for (const block of blocks) {
+    if (!watchedMaths.has(block)) {
+      watchedMaths.add(block);
+      mathsObserver.observe(block);
+    }
+  }
+}
+
+function scheduleTypeset(katex) {
+  if (!typesetPending && typesetQueue.length > 0) {
+    typesetPending = true;
+    setTimeout(() => typesetBatch(katex), 0);
+  }
+}
+
+function typesetBatch(katex) {
+  typesetPending = false;
+  const deadline = performance.now() + TYPESET_SLICE_MS;
+  while (typesetQueue.length > 0 && performance.now() <= deadline) {
+    const block = typesetQueue.shift();
+    // Gone in a re-render since it was queued, or done by an earlier pass.
+    if (block.isConnected && !block.dataset.typeset) {
+      typeset(katex, block);
+    }
+  }
+  if (typesetQueue.length > 0) {
+    scheduleTypeset(katex);
+  } else {
+    scheduleFitMaths();
+  }
+}
+
+// typeset renders one placeholder in place with katex.render, which builds DOM
+// nodes and gives them their styles through the CSSOM. renderToString and
+// innerHTML would carry those styles as attributes, which the CSP refuses.
+//
+// Nothing in a post is trusted: TeX makes no links, images, classes, ids or
+// data attributes, and \href, \url and the like show as unsupported commands. maxSize caps
+// any size the TeX asks for at 20em, maxExpand caps macro expansion, and a TeX
+// error renders in place as its source, in the error colour, with the message
+// as its title. Anything that throws all the same is KaTeX failing outright —
+// nesting too deep for the stack, say — and the block keeps its TeX.
+function typeset(katex, block) {
+  try {
+    withStyleAttributesThroughCSSOM(() =>
+      katex.render(block.dataset.tex, block, {
+        displayMode: block.classList.contains("math-display"),
+        throwOnError: false,
+        trust: false,
+        maxExpand: 1000,
+        maxSize: 20,
+        strict: "ignore",
+        errorColor: "var(--danger)",
+        macros: disabledCommands(katex),
+      })
+    );
+    block.dataset.typeset = "done";
+  } catch {
+    block.textContent = block.dataset.tex;
+    block.dataset.typeset = "failed";
+  }
+}
+
+// fitWideMaths gives inline maths that cannot fit its post a line of its own
+// that scrolls sideways, as display maths has. KaTeX breaks a long formula only
+// between its top-level pieces, so a single piece wider than the post — a long
+// fraction inline, say — would otherwise push the whole page sideways on a
+// phone. Pieces keep their width whatever the viewport, but the room for them
+// does not, so this runs again when the window resizes or KaTeX's fonts arrive.
+function fitWideMaths() {
+  const blocks = Array.from(document.querySelectorAll(".math[data-typeset='done']:not(.math-display)"));
+  // Every measurement first, then every change, so the page lays out once.
+  const wide = blocks.map((block) => {
+    const body = block.closest(".post-body");
+    const room = body ? body.clientWidth : Infinity;
+    return Array.from(block.querySelectorAll(".katex-html > .katex-base")).some((base) => base.getBoundingClientRect().width > room);
+  });
+  blocks.forEach((block, n) => {
+    if (wide[n] === block.classList.contains("math-wide")) {
+      return;
+    }
+    block.classList.toggle("math-wide", wide[n]);
+    // Focusable while it scrolls, for a keyboard to scroll it.
+    if (wide[n]) {
+      block.tabIndex = 0;
+    } else {
+      block.removeAttribute("tabindex");
+    }
+  });
+}
+
+let fitPending = false;
+
+function scheduleFitMaths() {
+  if (!fitPending) {
+    fitPending = true;
+    requestAnimationFrame(() => {
+      fitPending = false;
+      fitWideMaths();
+    });
+  }
+}
+
+window.addEventListener("resize", () => {
+  if (typesetter) {
+    scheduleFitMaths();
+  }
+});
+
+// disabledCommands is a fresh macro table for one expression, defining each of
+// KATEX_DISABLED as an error. User macros are consulted before KaTeX's own
+// commands, so these stand in front of the real ones, and fresh because KaTeX
+// writes \global definitions back into the table it is given: one post's
+// \global\let must never reach another post's maths.
+function disabledCommands(katex) {
+  const macros = {};
+  for (const name of KATEX_DISABLED) {
+    macros[name] = () => {
+      throw new katex.ParseError(`${name} is not available in posts`);
+    };
+  }
+  return macros;
+}
+
+// KaTeX sets most styles through the CSSOM, but a few as a style attribute: the
+// width of the SVG it draws for \vec, \oiint or a tall brace (as in a long
+// \begin{cases}), styles in the MathML for \pmb and \fcolorbox, and the colour
+// of an expression it could not parse. The CSP refuses a style attribute set
+// from script just as it refuses one in markup, so while KaTeX builds — which
+// it does synchronously, with nothing else running — setAttribute("style") is
+// sent to the element's CSSOM declarations instead: the same styles, by the
+// route the CSP allows. The original is back before anything else can run.
+function withStyleAttributesThroughCSSOM(build) {
+  const setAttribute = Element.prototype.setAttribute;
+  Element.prototype.setAttribute = function setAttributeThroughCSSOM(name, value) {
+    if (String(name).toLowerCase() === "style" && this.style) {
+      this.style.cssText = value;
+      return undefined;
+    }
+    return setAttribute.call(this, name, value);
+  };
+  try {
+    build();
+  } finally {
+    Element.prototype.setAttribute = setAttribute;
   }
 }
 

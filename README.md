@@ -291,7 +291,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | --- | --- |
 | Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
 | Posting | Anonymous by default; `name#secret` and `name##secret` produce tripcodes; a per-thread poster ID keeps a conversation followable |
-| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
+| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
@@ -303,8 +303,8 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
-that is fetched only when a post with code is on screen. `app.js` renders the JSON API
-into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
+and KaTeX, each fetched only when a post that needs it is on screen. `app.js` renders the
+JSON API into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
 `/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
 
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
@@ -321,8 +321,18 @@ into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
   - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
     auto-detected. Nothing inside it is markup, so `x >>2` in code links nothing and
     creates no backlink.
-  - A tag pairs with the first closing tag after it; one that never closes, an empty
-    pair, or a `[spoiler]` opened inside another shows as the text that was typed.
+  - `[math]…[/math]` is inline maths and `[eqn]…[/eqn]` an equation on a line of its own,
+    both in TeX and typeset by KaTeX as they come near the screen. Like code, nothing
+    inside is markup. Until KaTeX arrives, or if it never does, the TeX shows as written;
+    a TeX error shows the source in red with the reason on hover. TeX in a post makes no
+    links, images, or HTML of its own (`\href`, `\url`, `\includegraphics` and the
+    `\html…` commands show as unsupported), and cannot define macros (`\def`,
+    `\newcommand` and the like): a macro is how a short post would expand into millions
+    of symbols in every reader's tab. An equation too wide for a phone scrolls sideways
+    instead of widening the page. Catalog excerpts show maths as its TeX.
+  - A tag pairs with the first closing tag of its kind after it; one that never closes,
+    an empty pair, or a `[spoiler]` opened inside another shows as the text that was
+    typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
@@ -339,7 +349,10 @@ test (`internal/app/web_test.go`) fails the build if any appear in `index.html`,
 or `app.css`, and the image preview is a `data:` URL because that is what `img-src`
 allows. Third-party code is vendored under `internal/app/web/vendor/` and served from the
 same origin; each library keeps its licence and a note of its source, and the same test
-file pins every vendored file by SHA-256.
+file pins every vendored file by SHA-256. KaTeX is the reason maths is typeset with
+`katex.render` into the page rather than `renderToString` into `innerHTML`: its HTML
+carries layout in `style` attributes, which this CSP refuses, while `katex.render` sets
+styles through the CSSOM, which it allows.
 
 ## Tech Stack
 
