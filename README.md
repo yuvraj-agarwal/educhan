@@ -303,8 +303,8 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework. `app.js` renders the JSON API
-into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`, `/{slug}/thread/{no}`), so
-every view is a shareable link and the back button works. `/{slug}/post/{no}` names a post
+into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`, `/{slug}/archive`,
+`/{slug}/thread/{no}`), so every view is a shareable link and the back button works. `/{slug}/post/{no}` names a post
 by number alone: it asks the server which thread the post is in and replaces itself with
 that thread, scrolled to the post, so Back does not land on it twice. Institution boards
 are stored as `u-{name}` and live at `/u/{name}/`, with the same routes beneath. The
@@ -313,8 +313,10 @@ top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`
 `healthz` — are never read as boards; one without a page yet shows the not-found view.
 
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
-  time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
-  tinted chips. On a fine pointer, hovering `>>123` floats a preview of the quoted post
+  time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
+  badges are tinted chips. Each board's archive lists the threads that have left it,
+  newest first; an archived thread still opens, says when it was archived and how long it
+  is kept, and shows why it takes no replies where the reply form would be. On a fine pointer, hovering `>>123` floats a preview of the quoted post
   when it is already on the page — a preview never costs a request.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives

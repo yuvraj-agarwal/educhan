@@ -226,6 +226,10 @@ the index, and the thread view each have their own narrow-screen layout.
   `RESERVED_PATHS` lists the top-level words that are never a board; keep it in step with
   `reservedBoardSlugs` on the server. `/{board}/post/{no}` resolves through
   `GET /api/boards/{slug}/posts/{no}` and replaces its own history entry with the thread.
+- `formHTML` takes the thread it replies to and follows its state: an archived thread
+  gets an explanation instead of a form, a locked one a note. A refusal that arrives
+  after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
+  that leaves the draft in place.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.

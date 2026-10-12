@@ -5,6 +5,7 @@
 //   /verify               institutional verification
 //   /{slug}/?page=N       board index
 //   /{slug}/catalog       catalog
+//   /{slug}/archive       archived threads, read-only
 //   /{slug}/thread/{no}   thread
 //   /{slug}/post/{no}     any post by number; resolved to its thread, then replaced
 //
@@ -95,6 +96,11 @@ function errorMessage(err) {
   if (err.status === 429) {
     const seconds = err.payload && err.payload.retry_after;
     return seconds ? `Flood control: wait ${plural(seconds, "second", "seconds")} and post again.` : err.message;
+  }
+  // The form stays on screen after a refusal, so these say what happened and
+  // leave the half-written post where it is.
+  if (err.status === 403 && err.message === "thread is archived") {
+    return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
   }
   if (err.status === 403) {
     return `${err.message}.`;
@@ -251,6 +257,7 @@ function verifiedBadgeHTML(label) {
 function badgesHTML(thread) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
+  if (thread.archived_at) badges.push('<span class="badge archived">archived</span>');
   if (thread.locked) badges.push('<span class="badge locked">locked</span>');
   if (thread.at_bump_limit) badges.push('<span class="badge bumplimit">bump limit</span>');
   return badges.join(" ");
@@ -314,10 +321,20 @@ function fileFieldHTML() {
     </div>`;
 }
 
-function formHTML({ kind, threadNo = null, open = false, locked = false }) {
-  if (locked) {
+// formHTML is the posting form for a board (kind "thread") or for one thread
+// (kind "reply", with that thread passed in so the form can follow its state).
+function formHTML({ kind, slug, thread = null, open = false }) {
+  // Archived is for good, so the form gives way to where the conversation can
+  // go instead rather than to a box that could only fail.
+  if (thread && thread.archived_at) {
+    return `<p class="archived-note"><span class="badge archived">archived</span>
+      <span>Archived threads take no new replies. To carry on the conversation,
+        <a href="${boardPath(slug)}">start a new thread on ${esc(boardLabel(slug))}</a>.</span></p>`;
+  }
+  if (thread && thread.locked) {
     return `<p class="locked-note"><span class="badge locked">locked</span> This thread is locked; no new replies.</p>`;
   }
+  const threadNo = thread ? thread.no : null;
 
   const isThread = kind === "thread";
   const name = localStorage.getItem(NAME_STORAGE_KEY) || "";
@@ -467,6 +484,7 @@ function boardHeadHTML(board, view) {
   const views = [
     { href: boardPath(board.slug), label: "Index", key: "index" },
     { href: `${boardPath(board.slug)}catalog`, label: "Catalog", key: "catalog" },
+    { href: `${boardPath(board.slug)}archive`, label: "Archive", key: "archive" },
   ];
   const links = views
     .map((v) => `<a href="${v.href}"${v.key === view ? ' aria-current="page"' : ""}>${v.label}</a>`)
@@ -542,7 +560,7 @@ async function renderIndex(route) {
 
   el.main.innerHTML = `
     ${boardHeadHTML(board, "index")}
-    ${formHTML({ kind: "thread", open: index.threads.length === 0 })}
+    ${formHTML({ kind: "thread", slug: board.slug, open: index.threads.length === 0 })}
     ${threads || '<p class="empty">No threads yet — start the first one.</p>'}
     ${pagerHTML(board.slug, index.page, index.pages)}`;
   announce(`${boardLabel(board.slug)}${index.pages > 1 ? ` page ${index.page}` : ""}`);
@@ -591,18 +609,66 @@ async function renderThread(route) {
     )
     .join("");
 
+  // An archived thread no longer changes, so it has nothing to update and its
+  // state is said once, above the posts, as well as in place of the form.
+  const archived = Boolean(detail.archived_at);
+  const archiveNote = archived
+    ? `<p class="archived-note"><span class="badge archived">archived</span>
+        <span>This thread was archived ${timeHTML(detail.archived_at)}. It can still be read and
+          linked to${archiveKeptFor(board)}.</span></p>`
+    : "";
+
   el.main.innerHTML = `
-    ${boardHeadHTML(board, "index")}
+    ${boardHeadHTML(board, archived ? "archive" : "index")}
     <div class="thread-actions">
       <a href="${boardPath(board.slug)}">&larr; Back to ${esc(boardLabel(board.slug))}</a>
-      <button class="link" data-action="refresh" type="button">Update</button>
+      ${archived ? "" : '<button class="link" data-action="refresh" type="button">Update</button>'}
       <span class="muted">${plural(detail.replies, "reply", "replies")}${
-        detail.at_bump_limit ? " &middot; at bump limit, no longer bumping" : ""
+        detail.at_bump_limit && !archived ? " &middot; at bump limit, no longer bumping" : ""
       }</span>
     </div>
+    ${archiveNote}
     <section class="thread detail">${posts}</section>
-    ${formHTML({ kind: "reply", threadNo: detail.no, open: true, locked: detail.locked })}`;
+    ${formHTML({ kind: "reply", slug: board.slug, thread: detail, open: true })}`;
   announce(`${detail.subject || `Thread No. ${detail.no}`} — ${boardLabel(board.slug)}`);
+}
+
+// archiveKeptFor says how long an archived thread stays, when the board says.
+function archiveKeptFor(board) {
+  return board.archive_days > 0 ? `, and is deleted after ${plural(board.archive_days, "day", "days")} in the archive` : "";
+}
+
+async function renderArchive(route) {
+  const archive = await api(`/api/boards/${encodeURIComponent(route.slug)}/archive`);
+  const { board } = archive;
+  const label = boardLabel(board.slug);
+
+  const rows = archive.threads
+    .map((t) => {
+      // A subject heads the row when there is one; otherwise the opening
+      // post's own words do, so no row is just a number.
+      const title = t.subject
+        ? `<strong class="archive-subject">${esc(t.subject)}</strong>`
+        : "";
+      const excerpt = t.excerpt ? `<span class="archive-excerpt">${esc(t.excerpt)}</span>` : "";
+      return `
+        <li>
+          <a class="archive-row" href="${threadPath(board.slug, t.no)}">
+            <span class="archive-no mono">No.&nbsp;${t.no}</span>
+            <span class="archive-text">${title || excerpt ? `${title}${excerpt}` : `Thread No. ${t.no}`}</span>
+            <span class="archive-meta">${plural(t.replies, "reply", "replies")} &middot; archived ${timeHTML(t.archived_at)}</span>
+          </a>
+        </li>`;
+    })
+    .join("");
+
+  const kept = board.archive_days > 0 ? ` for ${plural(board.archive_days, "day", "days")}, then deleted` : "";
+  el.main.innerHTML = `
+    ${boardHeadHTML(board, "archive")}
+    <p class="archive-intro">Threads that have left ${esc(label)} are kept here, read-only${kept}.
+      Newest archived first.</p>
+    ${rows ? `<ol class="archive-list">${rows}</ol>` : `<p class="empty">Nothing on ${esc(label)} has been archived yet.</p>`}`;
+  announce(`${label} archive`);
 }
 
 /* Verification ------------------------------------------------------------- */
@@ -845,6 +911,9 @@ function boardRoute(slug, rest, query) {
   if (rest.length === 1 && section === "catalog") {
     return { view: "catalog", slug };
   }
+  if (rest.length === 1 && section === "archive") {
+    return { view: "archive", slug };
+  }
   if (rest.length === 2 && section === "thread" && /^\d+$/.test(no)) {
     return { view: "thread", slug, no: Number(no) };
   }
@@ -916,6 +985,9 @@ async function render({ draft = captureDraft() } = {}) {
       case "catalog":
         await renderCatalog(route);
         break;
+      case "archive":
+        await renderArchive(route);
+        break;
       case "thread":
         await renderThread(route);
         break;
@@ -930,14 +1002,14 @@ async function render({ draft = captureDraft() } = {}) {
         announce("Page not found");
     }
   } catch (err) {
-    // A pruned thread and a mistyped board look the same from here, and both
+    // An expired thread and a mistyped board look the same from here, and both
     // are better served by a way out than by the raw error.
     let message = `Could not load this page: ${err.message}`;
     if (err.status === 404) {
       message =
         route.view === "post"
           ? `No. ${route.no} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
-          : "That board or thread is not here — it may have been deleted or pruned.";
+          : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
     }
     el.main.innerHTML = emptyStateHTML(message, route.view === "post" ? route.slug : null);
     announce(err.status === 404 ? "Not found" : "Could not load this page");
