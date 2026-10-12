@@ -1140,8 +1140,11 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   // say otherwise on this particular post, and the credential is sent only
   // when they do.
   const held = state.verification.badge;
+  // A badged post takes its ID from the credential rather than the poster key,
+  // which is worth saying where the choice is made.
   const badge = held
-    ? `<label class="sage"><input type="checkbox" name="badge" /> post with ${verifiedBadgeHTML(held.label)}</label>`
+    ? `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
+       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread, so it is not tied to your unbadged replies.</span>`
     : "";
 
   return `
@@ -1158,8 +1161,11 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
         <div class="field">
           <label class="label" for="${FIELD_IDS.body}">${isThread ? "Message" : "Reply"}</label>
-          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000"
+          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint"
                     placeholder="${isThread ? "What's on your mind?" : "Write a reply. Use >>123 to quote a post."}"></textarea>
+          <p class="hint body-hint" id="f-body-hint"><code>[spoiler]…[/spoiler]</code> hides text,
+            <code>[code]…[/code]</code> shows code, <code>[math]…[/math]</code> typesets maths,
+            and <code>&gt;&gt;&gt;/board/</code> links a board.</p>
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>

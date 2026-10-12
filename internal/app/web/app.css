@@ -539,6 +539,7 @@ button.link:hover { text-decoration: underline; }
 }
 
 .post-form .hint { color: var(--muted); font-size: 12px; }
+.post-form .body-hint { margin: 6px 0 0; overflow-wrap: anywhere; }
 
 .sage {
   display: inline-flex;
