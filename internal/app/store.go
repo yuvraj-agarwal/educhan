@@ -16,9 +16,10 @@ import (
 // Sentinel errors returned by the store and mapped to HTTP statuses by the
 // handlers.
 var (
-	errNotFound     = errors.New("not found")
-	errThreadLocked = errors.New("thread is locked")
-	errConflict     = errors.New("already exists")
+	errNotFound       = errors.New("not found")
+	errThreadLocked   = errors.New("thread is locked")
+	errThreadArchived = errors.New("thread is archived")
+	errConflict       = errors.New("already exists")
 )
 
 // uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint failure,
@@ -32,6 +33,15 @@ const (
 	indexPageSize         = 10
 	indexRepliesPerThread = 3
 	catalogLimit          = 200
+)
+
+// archiveLimit bounds a board's archive listing, and archiveExcerptLen the
+// excerpt each entry carries. A busy board with a long archive_days can hold
+// thousands of archived threads; the listing shows the most recent of them,
+// and the rest still load by number until the sweeper takes them.
+const (
+	archiveLimit      = 3000
+	archiveExcerptLen = 120
 )
 
 // Store is the PostgreSQL-backed persistence layer.
@@ -148,7 +158,7 @@ func (s *Store) Index(ctx context.Context, board Board, page int) (BoardIndex, e
 
 	var total int
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM threads WHERE board_id = $1`, board.ID).Scan(&total); err != nil {
+		`SELECT count(*) FROM threads WHERE board_id = $1 AND archived_at IS NULL`, board.ID).Scan(&total); err != nil {
 		return BoardIndex{}, err
 	}
 
@@ -162,7 +172,7 @@ func (s *Store) Index(ctx context.Context, board Board, page int) (BoardIndex, e
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+threadColumns+`
 		FROM threads t
-		WHERE t.board_id = $1
+		WHERE t.board_id = $1 AND t.archived_at IS NULL
 		ORDER BY t.sticky DESC, t.bumped_at DESC
 		LIMIT $2 OFFSET $3`, board.ID, indexPageSize, (page-1)*indexPageSize)
 	if err != nil {
@@ -246,7 +256,7 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 		FROM threads t
 		JOIN posts p ON p.thread_id = t.id AND p.is_op
 		LEFT JOIN attachments a ON a.post_id = p.id
-		WHERE t.board_id = $1
+		WHERE t.board_id = $1 AND t.archived_at IS NULL
 		ORDER BY t.sticky DESC, t.bumped_at DESC
 		LIMIT $2`, board.ID, catalogLimit)
 	if err != nil {
@@ -274,7 +284,42 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 	return catalog, rows.Err()
 }
 
+// Archive lists a board's archived threads, most recently archived first and
+// capped at archiveLimit. Only the start of each opening post leaves the
+// database: the listing shows an excerpt, and a few thousand whole bodies could
+// run to megabytes.
+func (s *Store) Archive(ctx context.Context, board Board) (Archive, error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT t.no, t.subject, t.reply_count, t.created_at, t.archived_at, left(p.body, $3)
+		FROM threads t
+		JOIN posts p ON p.thread_id = t.id AND p.is_op
+		WHERE t.board_id = $1 AND t.archived_at IS NOT NULL
+		ORDER BY t.archived_at DESC, t.no DESC
+		LIMIT $2`, board.ID, archiveLimit, archiveExcerptLen+1)
+	if err != nil {
+		return Archive{}, err
+	}
+	defer rows.Close()
+
+	archive := Archive{Board: board, Threads: []ArchivedThread{}}
+	for rows.Next() {
+		var (
+			t    ArchivedThread
+			body string
+		)
+		if err := rows.Scan(&t.No, &t.Subject, &t.Replies, &t.CreatedAt, &t.ArchivedAt, &body); err != nil {
+			return Archive{}, err
+		}
+		// One character more than the excerpt keeps is enough for excerpt to
+		// see that the body runs on and mark the cut.
+		t.Excerpt = excerpt(body, archiveExcerptLen)
+		archive.Threads = append(archive.Threads, t)
+	}
+	return archive, rows.Err()
+}
+
 // Thread loads a thread and all of its posts by board slug and thread number.
+// Archived threads load like live ones; ArchivedAt tells them apart.
 func (s *Store) Thread(ctx context.Context, board Board, no int64) (ThreadDetail, error) {
 	detail := ThreadDetail{Board: board, Posts: []Post{}}
 	t, err := scanThread(s.pool.QueryRow(ctx,
@@ -413,26 +458,35 @@ type NewReply struct {
 
 // CreateReply appends a post to a thread. The thread is bumped unless the reply
 // is saged or the thread has reached its board's bump limit. It returns
-// errNotFound for a missing thread and errThreadLocked for a locked one.
+// errNotFound for a missing thread, errThreadArchived for an archived one, and
+// errThreadLocked for a locked one.
 func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 	var created Post
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
 		var (
 			threadID   int64
 			locked     bool
+			archived   bool
 			replyCount int
 		)
-		// Lock the thread row so concurrent replies serialise on the counters.
+		// Lock the thread row so concurrent replies serialise on the counters,
+		// and so the thread cannot be archived between this check and the
+		// insert.
 		err := tx.QueryRow(ctx, `
-			SELECT t.id, t.locked, t.reply_count
+			SELECT t.id, t.locked, t.archived_at IS NOT NULL, t.reply_count
 			FROM threads t
 			WHERE t.board_id = $1 AND t.no = $2
-			FOR UPDATE`, in.Board.ID, in.ThreadNo).Scan(&threadID, &locked, &replyCount)
+			FOR UPDATE`, in.Board.ID, in.ThreadNo).Scan(&threadID, &locked, &archived, &replyCount)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return errNotFound
 		}
 		if err != nil {
 			return err
+		}
+		// Archived comes first: an archived thread is closed whatever its lock
+		// says, and "archived" tells the poster why it will not reopen.
+		if archived {
+			return errThreadArchived
 		}
 		if locked {
 			return errThreadLocked
@@ -538,23 +592,25 @@ func nextPostNo(ctx context.Context, tx pgx.Tx, boardID int) (int64, error) {
 	return no, nil
 }
 
-// pruneThreads drops the least recently bumped non-sticky threads once a board
-// is over its thread limit, which is how imageboards stay bounded without
-// explicit deletion.
+// pruneThreads archives the least recently bumped non-sticky threads once a
+// board holds more live threads than its limit, which is how imageboards stay
+// bounded without explicit deletion. An archived thread leaves the index and
+// the catalog and stops counting against the limit, so it is never archived
+// twice; the sweeper deletes it once its board's archive_days have passed.
 func pruneThreads(ctx context.Context, tx pgx.Tx, board Board) error {
 	if board.ThreadLimit <= 0 {
 		return nil
 	}
 	_, err := tx.Exec(ctx, `
-		DELETE FROM threads
+		UPDATE threads SET archived_at = now()
 		WHERE id IN (
 		    SELECT id FROM threads
-		    WHERE board_id = $1 AND NOT sticky
+		    WHERE board_id = $1 AND NOT sticky AND archived_at IS NULL
 		    ORDER BY bumped_at DESC
 		    OFFSET $2
 		)`, board.ID, board.ThreadLimit)
 	if err != nil {
-		return fmt.Errorf("prune threads: %w", err)
+		return fmt.Errorf("archive threads: %w", err)
 	}
 	return nil
 }
@@ -1034,10 +1090,12 @@ func collectRefs(rows pgx.Rows, byID map[int64]*Post, add func(*Post, PostRef)) 
 	return rows.Err()
 }
 
-const threadColumns = `t.id, t.no, t.subject, t.sticky, t.locked, t.reply_count, t.created_at, t.bumped_at, t.last_post_at`
+const threadColumns = `t.id, t.no, t.subject, t.sticky, t.locked, t.reply_count, t.created_at, t.bumped_at,
+	t.last_post_at, t.archived_at`
 
 func threadDest(t *Thread, extra ...any) []any {
-	dest := []any{&t.ID, &t.No, &t.Subject, &t.Sticky, &t.Locked, &t.Replies, &t.CreatedAt, &t.BumpedAt, &t.LastPostAt}
+	dest := []any{&t.ID, &t.No, &t.Subject, &t.Sticky, &t.Locked, &t.Replies, &t.CreatedAt, &t.BumpedAt,
+		&t.LastPostAt, &t.ArchivedAt}
 	return append(dest, extra...)
 }
 

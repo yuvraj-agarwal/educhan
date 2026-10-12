@@ -93,6 +93,10 @@ type Thread struct {
 	BumpedAt    time.Time `json:"bumped_at"`
 	LastPostAt  time.Time `json:"last_post_at"`
 	AtBumpLimit bool      `json:"at_bump_limit"`
+	// ArchivedAt is when the thread was pushed off its board, nil while it is
+	// live. An archived thread still loads but takes no replies, and is
+	// deleted with its images once its board's archive_days have passed.
+	ArchivedAt *time.Time `json:"archived_at"`
 }
 
 // ThreadSummary is a thread as shown on a board index page: the opening post
@@ -133,4 +137,22 @@ type BoardIndex struct {
 type Catalog struct {
 	Board   Board           `json:"board"`
 	Threads []CatalogThread `json:"threads"`
+}
+
+// ArchivedThread is a thread as listed in its board's archive: enough to
+// recognise it and follow the link, with the opening post cut to a short
+// excerpt.
+type ArchivedThread struct {
+	No         int64     `json:"no"`
+	Subject    string    `json:"subject"`
+	Excerpt    string    `json:"excerpt"`
+	Replies    int       `json:"replies"`
+	CreatedAt  time.Time `json:"created_at"`
+	ArchivedAt time.Time `json:"archived_at"`
+}
+
+// Archive is a board's archived threads, most recently archived first.
+type Archive struct {
+	Board   Board            `json:"board"`
+	Threads []ArchivedThread `json:"threads"`
 }

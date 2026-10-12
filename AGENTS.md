@@ -3,7 +3,7 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, threads with quote links, per-client flood control, key-authenticated
+a catalog view, a per-board archive, threads with quote links, per-client flood control, key-authenticated
 moderation and board management, and optional institutional verification badges are
 implemented. Janitor accounts, bans, and reports are not.
 
@@ -103,6 +103,7 @@ curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts \
 curl -s localhost:8080/api/boards/general/threads/$TNO   # both posts, with backlinks
 curl -s "localhost:8080/api/boards/general/threads?page=1" # index page
 curl -s localhost:8080/api/boards/general/catalog          # catalog tiles
+curl -s localhost:8080/api/boards/general/archive          # threads pushed off the board
 
 # Confirm persistence in PostgreSQL
 psql -h localhost -p 5432 -U educhan -d educhan \
@@ -265,6 +266,19 @@ the index, and the thread view each have their own narrow-screen layout.
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
   than editing an applied one; `0001_init.sql` is deliberately written with
   `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
+- **Threads are archived, not pruned.** A new thread that takes a board past its
+  `thread_limit` sets `archived_at` on the least recently bumped non-sticky live threads
+  (`pruneThreads`). Every live view — the index count and list, the catalog, and the
+  prune subquery itself — filters `archived_at IS NULL`, which is what keeps archived
+  threads from counting against the limit or being archived a second time
+  (`TestArchivedThreadsDoNotCountAgainstTheLimit`); the partial index
+  `threads_board_live_order_idx` covers exactly that set. `Thread()` still serves an
+  archived thread, with `archived_at` set, and `CreateReply` refuses it with
+  `errThreadArchived` (`403 thread is archived`), checked before the lock flag so the
+  poster is told the reason that will not change. `/api/boards/{slug}/archive` lists at
+  most `archiveLimit` (3000) of them, newest archived first, with only the start of each
+  opening post read from the database. A new query over threads has to decide which set
+  it means.
 - Post numbers are allocated per board from `boards.next_post_no`; a thread's number is
   the number of its opening post. Thread primary keys stay internal apart from the
   `/api/threads/{id}` compatibility routes.
@@ -387,6 +401,7 @@ the index, and the thread view each have their own narrow-screen layout.
   so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
+  `internal/app/archive_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
   whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
@@ -395,4 +410,6 @@ the index, and the thread view each have their own narrow-screen layout.
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
   credential it returns is then presented explicitly with `postWithCredential`, because
-  nothing attaches it on a caller's behalf.
+  nothing attaches it on a caller's behalf. A test that needs board settings of its own
+  creates its board with `addBoard` (`archive_test.go`) instead of reconfiguring a seeded
+  one, so it does not depend on which boards the migrations seed.

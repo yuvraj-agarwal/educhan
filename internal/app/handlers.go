@@ -73,6 +73,19 @@ func (a *App) handleCatalog(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, catalog)
 }
 
+func (a *App) handleArchive(w http.ResponseWriter, r *http.Request) {
+	board, ok := a.board(w, r)
+	if !ok {
+		return
+	}
+	archive, err := a.store.Archive(r.Context(), board)
+	if err != nil {
+		a.fail(w, r, err, "could not load archive")
+		return
+	}
+	writeJSON(w, http.StatusOK, archive)
+}
+
 func (a *App) handleGetThread(w http.ResponseWriter, r *http.Request) {
 	board, ok := a.board(w, r)
 	if !ok {
@@ -333,6 +346,8 @@ func (a *App) fail(w http.ResponseWriter, r *http.Request, err error, msg string
 		writeError(w, http.StatusNotFound, "not found")
 	case errors.Is(err, errThreadLocked):
 		writeError(w, http.StatusForbidden, "thread is locked")
+	case errors.Is(err, errThreadArchived):
+		writeError(w, http.StatusForbidden, "thread is archived")
 	case errors.Is(err, context.Canceled), errors.Is(r.Context().Err(), context.Canceled):
 		// The client went away; there is nobody left to answer.
 	default:

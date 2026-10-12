@@ -297,7 +297,8 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
-| Housekeeping | Threads past a board's thread limit are pruned; per-client cooldowns limit new threads, replies, and uploads |
+| Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
+| Housekeeping | Per-client cooldowns limit new threads, replies, and uploads |
 
 ## Front end
 
@@ -510,7 +511,8 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
 | `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
-| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts |
+| `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
+| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
 | `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
@@ -532,6 +534,11 @@ local act.
 `/api/verify/confirm` sets no credential cookie, but the two-step exchange does
 use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a
 cookie jar (`curl -c/-b`) to get through it.
+
+Every thread view carries `archived_at`: `null` while the thread is live, and
+the time it was pushed off the board once it is archived. A reply to an archived
+thread answers `403` with `{"error":"thread is archived"}`, and to a locked one
+`{"error":"thread is locked"}`.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -636,8 +643,8 @@ curl -s -X PATCH localhost:8080/api/boards/comp-sci \
 
 A new board is a board like any other: it appears in the board navigation, the
 index, and the catalog, and its post numbering starts at No. 1. A lowered
-`thread_limit` is applied by the next post to that board, through the same
-pruning the limit has always driven.
+`thread_limit` is applied by the next thread posted to that board, which
+archives whatever no longer fits.
 
 ## Deployment
 
