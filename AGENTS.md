@@ -29,7 +29,7 @@ accounts, bans, and reports are not.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
-    third-party browser builds under `web/vendor/` (highlight.js).
+    third-party browser builds under `web/vendor/` (highlight.js, KaTeX).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -225,7 +225,10 @@ the index, and the thread view each have their own narrow-screen layout.
   pins every file under `vendor/` by SHA-256, so nothing lands there unlisted and nothing
   listed changes unnoticed: adding or updating a library means vetting the build and
   updating its hashes. Theme CSS is not vendored; colours stay in `app.css` with the rest
-  of the tokens.
+  of the tokens. The one modified file is KaTeX's `katex.min.css`, cut down to WOFF2 font
+  sources because only the WOFF2 fonts are vendored; its README gives the exact `sed`,
+  and `TestVendoredStylesheetsReferenceVendoredFiles` fails if any `url()` in a vendored
+  stylesheet names a file that is not pinned.
 - `img-src` is `'self' data:`, so the file picker previews an attachment as a `data:` URL.
   A `blob:` URL would need a CSP change.
 - `app.css` is tokens first (`:root`), then base, layout, and components; colours live in
