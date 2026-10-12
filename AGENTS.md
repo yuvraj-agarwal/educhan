@@ -346,9 +346,13 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   be one, so a changed screen bumps the pass key's version and never the refusal's.
   Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
-  poster key, tripcodes, what is logged, the badge. A change to any of those changes the
-  FAQ in the same commit. The rules and FAQ are readable before the age screen, so they
-  must not depend on anything fetched.
+  poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
+  about what a moderator can do to a post (delete it or its thread, lock the thread) and
+  what is not built yet (reports). A change to any of those changes the pages in the
+  same commit, and neither page describes a feature before it exists. Both end with
+  `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
+  external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
+  the age screen, so they must not depend on anything fetched.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the

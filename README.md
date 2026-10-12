@@ -393,11 +393,19 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
   browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
-- **Rules and FAQ**: `/rules` holds the global rules in plain language, written for an
-  audience that includes school students; boards can add their own under the header's
-  **Rules** disclosure. `/faq` covers what educhan is, who can use it, what anonymity here
-  does and does not hide, staying safe, the badge, tripcodes, per-thread IDs, markup, and
-  the bump limit, image cap, and archive. The footer links to both on every view.
+- **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
+  as 13. It lists what is not allowed for anyone, kind by kind (sexual content,
+  encouraging suicide, self-harm or eating disorders, "kys", bullying, hate, threats,
+  violence and gore, dangerous challenges, harmful substances, contact details and moving
+  to other apps, and posts about real people you know), says there are no private
+  messages on purpose, and says what moderators can do today: delete posts and threads,
+  and lock a thread. Boards can add their own rules under the header's **Rules**
+  disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
+  born, why there are no accounts or private messages, what anonymity here does and does
+  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
+  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
+  Australia, and Find A Helpline for everyone else), which is static text: nothing works
+  out where the reader is. The footer links to both on every view.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
