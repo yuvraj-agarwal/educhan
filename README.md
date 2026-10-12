@@ -310,8 +310,26 @@ that thread, scrolled to the post, so Back does not land on it twice. Institutio
 are stored as `u-{name}` and live at `/u/{name}/`, with the same routes beneath. The
 top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`, `terms`,
 `privacy`, `dmca`, `report`, `archive`, and the server's own `api`, `media`, and
-`healthz` — are never read as boards; one without a page yet shows the not-found view.
+`healthz` — are never read as boards. `/verify`, `/rules`, and `/faq` are pages; a word
+without a page yet shows the not-found view.
 
+- **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
+  13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
+  Before anything is shown or fetched, a first visit gets a modal asking only "When were
+  you born?", as a month and a year with nothing preselected and nothing hinting at the
+  threshold. Age is counted conservatively, so a birthday in the current month has not
+  happened yet. The answer is compared in the browser and then removed from the page: it
+  is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
+  outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
+  shows a plain page saying who educhan is for, with no way to answer again in that
+  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
+  switches it off.
+- **Rules and FAQ**: `/rules` holds the global rules in plain language, written for an
+  audience that includes school students; boards can add their own under the header's
+  **Rules** disclosure. `/faq` covers what educhan is, who can use it, what anonymity here
+  does and does not hide, staying safe, the badge, tripcodes, per-thread IDs, markup, and
+  the bump limit, image cap, and archive. The footer links to both on every view.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,

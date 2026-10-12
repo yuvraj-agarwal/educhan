@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>educhan</title>
-  <meta name="description" content="Anonymous imageboard for tertiary education." />
+  <meta name="description" content="Anonymous imageboard for students." />
   <meta name="color-scheme" content="dark" />
   <link rel="stylesheet" href="/app.css" />
 </head>
@@ -14,9 +14,9 @@
   <header class="site-header">
     <div class="bar">
       <a class="brand" href="/">educhan</a>
-      <span class="tagline">anonymous imageboard for tertiary education</span>
+      <span class="tagline">anonymous imageboard for students</span>
       <nav class="board-nav" id="board-nav" aria-label="Boards"></nav>
-      <a class="verify-link" href="/verify">Verify</a>
+      <a class="verify-link" href="/verify" data-page="verify">Verify</a>
     </div>
   </header>
 
@@ -30,12 +30,20 @@
   <p class="sr-only" id="route-status" role="status" aria-live="polite"></p>
 
   <footer class="site-footer">
-    <p class="muted">
-      Posts are anonymous. A per-thread ID keeps a conversation followable;
-      add <code>#secret</code> to your name for a tripcode.
-      <a href="/verify">Verify an institutional address</a> for an optional
-      badge &mdash; it is never linked to your posts.
-    </p>
+    <div class="bar">
+      <!-- On every view, the age screen's refusal included: these two pages are
+           readable before the screen is answered. -->
+      <nav class="footer-nav" aria-label="About educhan">
+        <a href="/rules" data-page="rules">Rules</a>
+        <a href="/faq" data-page="faq">FAQ</a>
+      </nav>
+      <p class="muted">
+        Posts are anonymous. A per-thread ID keeps a conversation followable;
+        add <code>#secret</code> to your name for a tripcode.
+        <a href="/verify">Verify an institutional address</a> for an optional
+        badge &mdash; it is never linked to your posts.
+      </p>
+    </div>
   </footer>
 
   <script src="/app.js" type="module"></script>

@@ -203,7 +203,10 @@ For UI changes, the app is served at `http://localhost:8080` (dark-themed single
 board index at `/general/`, catalog at `/general/catalog`, thread at
 `/general/thread/{no}`). Prefer a browser walkthrough for anything that affects
 `internal/app/web/`, and check a phone viewport as well as a desktop one — the catalog,
-the index, and the thread view each have their own narrow-screen layout.
+the index, and the thread view each have their own narrow-screen layout. A fresh browser
+meets the age screen first: answer it, or, when a check is not about the screen itself,
+set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright's
+`addInitScript`).
 
 ### Front end conventions
 
@@ -241,6 +244,24 @@ the index, and the thread view each have their own narrow-screen layout.
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
   hidden wrapper: a lazy image there is not fetched until it is revealed.
+- **The age screen** (`MIN_AGE` in `app.js`: 13, and 0 switches it off) stands in front
+  of every view but `UNGATED_VIEWS` (`/rules`, `/faq`). `render` asks `ageStatus()` before
+  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list
+  and the verification flag once, on the first page past the screen, not at start-up.
+  The screen is a `<dialog>` opened with `showModal()`; Escape is blocked three ways
+  (keydown, `cancel`, and reopening on `close`), because Chrome lets a repeated Escape
+  through a cancelled `cancel`. Only the outcome is stored, as `educhan:age-ok-v1` or
+  `educhan:age-refused-v1`, through `storageGet`/`storageSet` so blocked storage means
+  asking again next visit rather than a broken page. **The birth month and year are
+  never stored, sent, or logged**: they live in two unnamed selects in a
+  `method="dialog"` form and are removed from the page once compared. Keep it that way,
+  keep the question neutral (no threshold in the copy, nothing preselected, no "I am old
+  enough" box), and never add a way back from a refusal. Every sentence that names the
+  age is built from `MIN_AGE`.
+- The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
+  poster key, tripcodes, what is logged, the badge. A change to any of those changes the
+  FAQ in the same commit. The rules and FAQ are readable before the age screen, so they
+  must not depend on anything fetched.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the

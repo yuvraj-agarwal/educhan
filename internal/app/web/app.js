@@ -3,6 +3,7 @@
 // Routes mirror the API so links are shareable:
 //   /                     board list
 //   /verify               institutional verification
+//   /rules, /faq          the site's rules and questions; readable before the age screen
 //   /{slug}/?page=N       board index
 //   /{slug}/catalog       catalog
 //   /{slug}/archive       archived threads, read-only
@@ -20,7 +21,29 @@ const RESERVED_PATHS = new Set([
   "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
   "terms", "privacy", "dmca", "report", "archive",
 ]);
+// The reserved words that have a page of their own so far.
+const PAGE_VIEWS = new Set(["verify", "rules", "faq"]);
 const INSTITUTION_PREFIX = "u-";
+// The youngest age educhan is open to. Below 13, COPPA requires verifiable
+// parental consent, and an anonymous site has no parent to ask, so it cannot
+// give it. Every sentence on the site that names the age is built from this,
+// and 0 switches the age screen off altogether.
+const MIN_AGE = 13;
+// All the age screen remembers is its outcome — passed, or refused — and never
+// the answer: the month and year live in the dialog's two selects only until
+// they have been compared. The version suffix lets a changed screen ask again
+// without taking an old outcome for a new one.
+const AGE_OK_STORAGE_KEY = "educhan:age-ok-v1";
+const AGE_REFUSED_STORAGE_KEY = "educhan:age-refused-v1";
+// How far back the year list goes.
+const AGE_YEARS = 100;
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+// What anyone can read before answering the age screen: what they would be
+// agreeing to, and how the site treats them.
+const UNGATED_VIEWS = new Set(["rules", "faq"]);
 // The verification credential lives in localStorage and is sent only on the
 // posts that ask for a badge, in this header. It is deliberately not a cookie:
 // a cookie would ride along on every request to the origin — anonymous posts,
@@ -59,7 +82,9 @@ const state = {
 const el = {
   main: document.getElementById("main"),
   nav: document.getElementById("board-nav"),
-  verifyLink: document.querySelector(".verify-link"),
+  // The links to the site's own pages — Verify in the header, Rules and FAQ in
+  // the footer — each named by the view it opens.
+  pageLinks: document.querySelectorAll("a[data-page]"),
   notice: document.getElementById("notice"),
   status: document.getElementById("route-status"),
 };
@@ -109,6 +134,27 @@ function errorMessage(err) {
     return `${err.message}.`;
   }
   return err.message;
+}
+
+/* Storage ------------------------------------------------------------------ */
+
+// localStorage throws rather than degrading in some privacy modes. A browser
+// that will not keep a value should cost only what the value was for — a
+// remembered name, an age screen asked again next visit — never the page.
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Not kept; whatever it was for is asked for or made again next time.
+  }
 }
 
 /* Rendering helpers -------------------------------------------------------- */
@@ -372,7 +418,7 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   const threadNo = thread ? thread.no : null;
 
   const isThread = kind === "thread";
-  const name = localStorage.getItem(NAME_STORAGE_KEY) || "";
+  const name = storageGet(NAME_STORAGE_KEY) || "";
   const subject = isThread
     ? `<div class="field">
          <label class="label" for="${FIELD_IDS.subject}">Subject</label>
@@ -535,13 +581,12 @@ function renderNav(route) {
     })
     .join("");
 
-  if (!el.verifyLink) {
-    return;
-  }
-  if (route.view === "verify") {
-    el.verifyLink.setAttribute("aria-current", "page");
-  } else {
-    el.verifyLink.removeAttribute("aria-current");
+  for (const link of el.pageLinks) {
+    if (link.dataset.page === route.view) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
   }
 }
 
@@ -957,6 +1002,477 @@ async function renderVerify() {
   announce("Institutional verification");
 }
 
+/* Rules and FAQ ------------------------------------------------------------ */
+
+// Both pages are readable before the age screen is answered, so neither may
+// lean on anything fetched: they are the site's own words, not the API's.
+
+// audienceText is who the site is open to, in the one form every page uses.
+function audienceText() {
+  return MIN_AGE > 0 ? `anyone aged ${MIN_AGE} and over` : "anyone";
+}
+
+function renderRules() {
+  el.main.innerHTML = `
+    <article class="page" aria-labelledby="page-title">
+      <h1 id="page-title">Rules</h1>
+      <p class="lede">These rules apply to every post on every board. educhan is open to
+        ${audienceText()}, school students included, so keep everything you post fit for a
+        school student to read.</p>
+      <ol class="rules-list">
+        <li><strong>Keep it safe for work, on every board.</strong> No sexual content, nudity,
+          gore or shock images anywhere, not as a joke and not behind a spoiler.</li>
+        <li><strong>Nothing illegal.</strong> Don't post anything, or link to anything, that
+          breaks the law.</li>
+        <li><strong>No personal or contact details, your own included.</strong> Never post
+          phone numbers, home or school addresses, email addresses, social media, Discord,
+          Snapchat or Instagram handles, or timetables, whoever they belong to. Never ask
+          anyone to move to a private chat or another app.</li>
+        <li><strong>No bullying, threats or harassment.</strong> Don't name private people,
+          such as classmates, teachers or staff, or describe them so that they could be
+          identified.</li>
+        <li><strong>No spam or flooding.</strong> No advertising, no posting the same thing
+          again and again, and no filling threads with junk.</li>
+        <li><strong>Don't impersonate.</strong> Don't pretend to speak for a school, university
+          or any other institution, and don't fake the verified badge, in your name or
+          anywhere else.</li>
+        <li><strong>Stay on topic.</strong> Post on the board your post belongs on, and keep
+          to what that board is for.</li>
+      </ol>
+      <p>Some boards add rules of their own. You'll find them under <strong>Rules</strong> at
+        the top of the board.</p>
+      <h2>When a post breaks the rules</h2>
+      <p>Moderators remove posts that break these rules, and a removed post shows the reason
+        it was removed.</p>
+      <h2>If someone is in danger</h2>
+      <p class="callout">If you think someone is in danger, contact your local emergency
+        services straight away.</p>
+      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymity works here and how
+        to stay safe.</p>
+    </article>`;
+  announce("Rules");
+}
+
+// FAQ_SECTIONS are the FAQ's questions in order, for the page and its contents
+// list alike. Every claim in an answer is one the code holds to; change the
+// two together.
+const FAQ_SECTIONS = [
+  {
+    id: "faq-what",
+    question: "What is educhan?",
+    answer: `
+      <p>educhan is an anonymous imageboard for students. There are boards for school and
+        university subjects and for student life, such as admissions, exams, careers and
+        studying abroad, and anyone can read and post without an account. Institutions can
+        also have boards of their own, at addresses like <code>/u/iitb/</code>.</p>
+      <p>Threads don't last forever. A reply moves its thread to the top of its board, and
+        threads that stop getting replies sink, move to the board's archive, and are
+        deleted after a while.</p>`,
+  },
+  {
+    id: "faq-who",
+    question: "Who can use it?",
+    answer:
+      MIN_AGE > 0
+        ? `
+      <p>Anyone aged ${MIN_AGE} and over. The first time you visit, educhan asks when
+        you were born. Your answer is checked in your browser and is never stored or sent
+        anywhere, not even to educhan's server. The browser keeps only the result, so you
+        aren't asked on every visit; if it blocks site storage, you're asked each time
+        instead.</p>
+      <p>Everyone who uses educhan agrees to its <a href="/rules">rules</a>.</p>`
+        : `
+      <p>Anyone. There is nothing to sign up for. Everyone who uses educhan agrees to its
+        <a href="/rules">rules</a>.</p>`,
+  },
+  {
+    id: "faq-anonymity",
+    question: "How anonymous am I?",
+    answer: `
+      <p>There are no accounts, and every post is signed &ldquo;Anonymous&rdquo; unless you
+        type a name. Beyond that:</p>
+      <ul>
+        <li>Each post carries an ID that is the same for all your posts in one thread and
+          different in every other, so a conversation can be followed without you being
+          followed around the site (<a href="#faq-ids">more about IDs</a>).</li>
+        <li>educhan's server keeps no IP addresses in its logs, and posts are not stored with
+          one.</li>
+        <li>The verified badge proves you have an address at an institution, never who you
+          are. It's optional, except to post on an institution's own board.</li>
+      </ul>
+      <p>Anonymity has limits, and it's worth knowing them:</p>
+      <ul>
+        <li>What you write can give you away. Details about your class, school, timetable or
+          friends can be enough for someone who knows you.</li>
+        <li>Photos can carry hidden details, such as where they were taken, and educhan
+          doesn't remove them yet. Post a screenshot of a photo rather than the original.</li>
+        <li>A tripcode links every post that carries it. A badge narrows you down to your
+          institution, which at a small one can say a lot.</li>
+        <li>Your internet provider, the network you're on (a school's, say) and anyone who
+          can use your device can see that you visit educhan.</li>
+      </ul>`,
+  },
+  {
+    id: "faq-safety",
+    question: "How do I stay safe?",
+    answer: `
+      <ul>
+        <li>Never share contact details, yours or anyone else's: phone numbers, home or school
+          addresses, email addresses, or social media, Discord, Snapchat or Instagram
+          handles.</li>
+        <li>educhan has no private messages. Be wary of anyone who asks you to move to a
+          private chat or another app: it's a common way to get someone on their own, away
+          from everyone else. You don't owe anyone a reply.</li>
+        <li>If something here upsets or worries you, step away and talk to someone you
+          trust.</li>
+        <li>If someone is in danger, contact your local emergency services.</li>
+      </ul>`,
+  },
+  {
+    id: "faq-badge",
+    question: "How does the verified badge work?",
+    answer: `
+      <ol>
+        <li>On the <a href="/verify">Verify</a> page, enter an email address at a recognised
+          institution.</li>
+        <li>Type in the six-digit code that's emailed to you.</li>
+        <li>Your browser is given a badge naming the institution, such as
+          ${verifiedBadgeHTML("IIT Bombay")}, and keeps it until it expires. The Verify page
+          shows when that is.</li>
+        <li>To use it, tick <strong>post with</strong> the badge on the posting form. It's off
+          by default, and it's sent only with the posts you tick it on.</li>
+      </ol>
+      <p>The address itself is never stored. The server keeps only a keyed fingerprint of
+        it, so that one address holds one badge at a time, in a table with no link to any
+        post. The badge holds the institution's name, an expiry date and a random number,
+        and nothing about you. So a badge proves an institution, never a person, and nothing
+        connects a badged post to your email address or to the posts you make without
+        it.</p>
+      <p>On a shared computer, forget the badge on the Verify page before you leave: it stays
+        in that browser for whoever uses it next.</p>`,
+  },
+  {
+    id: "faq-tripcodes",
+    question: "What are tripcodes?",
+    answer: `
+      <p>Type a name, then <code>#</code> and a secret, in the Name field.
+        <code>ana#my-long-secret</code> posts as <strong>ana</strong> followed by a tripcode
+        such as <code>!!Ab3dE5fG7h</code>. The same secret always gives the same tripcode, so
+        you can show that several posts are yours without an account.
+        <code>ana##my-long-secret</code> works exactly the same way.</p>
+      <p>The server mixes a secret of its own into yours before making the tripcode, so
+        nobody can crack it offline by trying guesses on their own computer. But anyone who
+        learns your secret can post with your tripcode, so pick a long one and use it
+        nowhere else, least of all as a password. And since a tripcode links every post that
+        carries it, use one only when that's what you want.</p>`,
+  },
+  {
+    id: "faq-ids",
+    question: "What is the ID on each post?",
+    answer: `
+      <p>Every post shows <strong>ID:</strong> and eight characters. All your posts in one
+        thread share an ID, and you get a different one in every thread, so readers can tell
+        who's who in a conversation but can't follow anyone from thread to thread.</p>
+      <p>The ID is made on the server from the thread and a random key your browser creates
+        the first time you post. The browser keeps the key and sends it only with your
+        posts; the server uses it to make the ID and doesn't store it. A post with the
+        verified badge takes its ID from the badge instead, so it never shares an ID with
+        your posts without one. Clearing this site's data starts a new key, and with it new
+        IDs.</p>`,
+  },
+  {
+    id: "faq-markup",
+    question: "How do I format a post?",
+    answer: `
+      <dl class="markup-list">
+        <dt><code>&gt;text</code> at the start of a line</dt>
+        <dd>Greentext: the line shows in green. Used for quoting and for telling stories.</dd>
+        <dt><code>&gt;&gt;123</code></dt>
+        <dd>Links to post 123 on the same board. In a thread, clicking a post's number adds
+          this to your reply.</dd>
+        <dt><code>&gt;&gt;&gt;/math/</code>, <code>&gt;&gt;&gt;/math/123</code></dt>
+        <dd>Link to another board, or to post 123 on it. For an institution's board, write
+          <code>&gt;&gt;&gt;/u/iitb/</code>.</dd>
+        <dt><code>[spoiler]text[/spoiler]</code></dt>
+        <dd>Hides the text until a reader reveals it.</dd>
+        <dt><code>[code]text[/code]</code></dt>
+        <dd>A block of code, in a fixed-width font with its spacing kept.</dd>
+        <dt><code>[math]\\frac{a}{b}[/math]</code></dt>
+        <dd>Maths written in TeX, inside a line of text.</dd>
+        <dt><code>[eqn]\\sqrt{x^2 + y^2}[/eqn]</code></dt>
+        <dd>Maths written in TeX, on a line of its own.</dd>
+      </dl>
+      <p>An image can be marked <strong>Spoiler image</strong>, which hides it behind a plain
+        tile until someone clicks it.</p>`,
+  },
+  {
+    id: "faq-threads",
+    question: "What are the bump limit, image limit and archive?",
+    answer: `
+      <p>Each board lists its most recently bumped threads first. A reply bumps its thread
+        to the top, unless you tick <strong>sage</strong>, which replies without bumping.</p>
+      <ul>
+        <li><strong>Bump limit.</strong> Once a thread has as many replies as its board's bump
+          limit, replies stop bumping it, so it sinks and makes room for new threads. It
+          still takes replies until it's archived.</li>
+        <li><strong>Image limit.</strong> Each board caps how many images one thread can hold.
+          A thread shows its count, such as &ldquo;12 of 150 images&rdquo;, and once it's
+          full, text replies still work.</li>
+        <li><strong>The archive.</strong> Each board holds a set number of threads. When a new
+          thread pushes the least recently bumped one off the board, that thread moves to
+          the board's archive, where it can still be read and linked to but takes no
+          replies. It's deleted after the number of days the archive page shows.</li>
+      </ul>`,
+  },
+];
+
+function renderFAQ() {
+  const contents = FAQ_SECTIONS.map((s) => `<li><a href="#${s.id}">${s.question}</a></li>`).join("");
+  const sections = FAQ_SECTIONS.map(
+    (s) => `
+      <section aria-labelledby="${s.id}">
+        <h2 id="${s.id}" tabindex="-1">${s.question}</h2>
+        ${s.answer}
+      </section>`
+  ).join("");
+  el.main.innerHTML = `
+    <article class="page" aria-labelledby="page-title">
+      <h1 id="page-title">Frequently asked questions</h1>
+      <nav class="page-contents" aria-label="Questions on this page"><ul>${contents}</ul></nav>
+      ${sections}
+    </article>`;
+  announce("FAQ");
+}
+
+/* Age screen --------------------------------------------------------------- */
+
+// The age screen is a neutral question asked once, before anything of the site
+// is shown or fetched. Neutral means it gives nothing away: no threshold, no
+// preselected year, no "I am old enough" box to tick, and no second go at the
+// question once it has said no. It is the browser's own check, not proof, and
+// the answer never leaves the page: not stored, not sent, not put in the URL.
+
+let ageScreen = null;
+// This page's own outcome, for a browser whose storage will not keep it: the
+// screen is then asked again on the next visit, but not on every navigation.
+let ageAnswer = "";
+
+// ageStatus is "ok" once the screen is passed, "refused" once it has said no,
+// and "ask" until either. A refusal outranks a pass, wherever either came from.
+function ageStatus() {
+  if (MIN_AGE <= 0) {
+    return "ok";
+  }
+  if (ageAnswer === "refused" || storageGet(AGE_REFUSED_STORAGE_KEY) === "1") {
+    return "refused";
+  }
+  if (ageAnswer === "ok" || storageGet(AGE_OK_STORAGE_KEY) === "1") {
+    return "ok";
+  }
+  return "ask";
+}
+
+// ageFrom is the age someone born in that month and year has certainly reached.
+// With no day to go on, a birthday in the current month may not have come yet,
+// so it is counted as not yet: the guess only ever errs young.
+function ageFrom(month, year, now = new Date()) {
+  const age = now.getFullYear() - year;
+  return month >= now.getMonth() + 1 ? age - 1 : age;
+}
+
+// The selects have no name and the form submits to the dialog, so even with
+// the handler gone there is nothing for the browser to send anywhere.
+// Autocomplete is off so the browser does not offer to remember a birth date
+// the site itself refuses to keep.
+function ageQuestionHTML() {
+  const thisYear = new Date().getFullYear();
+  const months = MONTHS.map((name, i) => `<option value="${i + 1}">${name}</option>`).join("");
+  const years = Array.from({ length: AGE_YEARS + 1 }, (_, i) => thisYear - i)
+    .map((year) => `<option value="${year}">${year}</option>`)
+    .join("");
+  return `
+    <form class="age-step fields" method="dialog" novalidate>
+      <h2 class="age-title" id="age-title">When were you born?</h2>
+      <p class="age-note" id="age-note">Your answer is checked in this browser and is never
+        stored or sent anywhere.</p>
+      <div class="age-fields" role="group" aria-labelledby="age-title" aria-describedby="age-note">
+        <div class="field">
+          <label class="label" for="age-month">Month</label>
+          <select id="age-month" autocomplete="off" required aria-describedby="age-error">
+            <option value="">Select&hellip;</option>${months}
+          </select>
+        </div>
+        <div class="field">
+          <label class="label" for="age-year">Year</label>
+          <select id="age-year" autocomplete="off" required aria-describedby="age-error">
+            <option value="">Select&hellip;</option>${years}
+          </select>
+        </div>
+      </div>
+      <p class="age-error" id="age-error" role="alert" hidden></p>
+      <div class="actions">
+        <button class="btn primary" type="submit">Next</button>
+      </div>
+    </form>`;
+}
+
+function ageAgreeHTML() {
+  return `
+    <div class="age-step">
+      <h2 class="age-title" id="age-title">Welcome to educhan</h2>
+      <p id="age-agree">By continuing you agree to the <a href="/rules">rules</a>.</p>
+      <p class="age-note">The <a href="/faq">FAQ</a> explains how anonymity works here and
+        how to stay safe.</p>
+      <div class="actions">
+        <button class="btn primary" type="button" data-action="age-continue"
+                aria-describedby="age-agree">Continue</button>
+      </div>
+    </div>`;
+}
+
+function ageRefusedHTML() {
+  return `
+    <section class="age-refused" aria-labelledby="page-title">
+      <h1 id="page-title">Sorry, you can't use educhan</h1>
+      <p>educhan is for people aged ${MIN_AGE} and over.</p>
+    </section>`;
+}
+
+// renderAgeGate stands in for a page the age screen has not let through.
+function renderAgeGate(status) {
+  if (status === "refused") {
+    closeAgeScreen({ remove: true });
+    el.main.innerHTML = ageRefusedHTML();
+    announce("Not available");
+    return;
+  }
+  // Nothing of the site sits behind the screen, not even the loading text.
+  el.main.innerHTML = "";
+  document.title = "educhan";
+  openAgeScreen();
+}
+
+// openAgeScreen shows the screen as it was last left: a reader who went to
+// read the rules from it comes back to the same step, not to the question.
+function openAgeScreen() {
+  if (!ageScreen) {
+    ageScreen = document.createElement("dialog");
+    ageScreen.className = "age-screen";
+    ageScreen.setAttribute("aria-labelledby", "age-title");
+    ageScreen.innerHTML = ageQuestionHTML();
+    // Escape must not wave anyone through. Cancelling the keydown stops the
+    // close request in the first place, cancelling "cancel" covers any that
+    // get through, and the close handler covers the rest.
+    ageScreen.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") event.preventDefault();
+    });
+    ageScreen.addEventListener("cancel", (event) => event.preventDefault());
+    ageScreen.addEventListener("close", reopenAgeScreen);
+    ageScreen.addEventListener("submit", answerAgeQuestion);
+    ageScreen.addEventListener("change", clearAgeError);
+    ageScreen.addEventListener("click", (event) => {
+      if (event.target.closest('[data-action="age-continue"]')) {
+        passAgeScreen();
+      }
+    });
+    document.body.append(ageScreen);
+  }
+  if (!ageScreen.open) {
+    ageScreen.showModal();
+  }
+  focusAgeScreen();
+}
+
+function focusAgeScreen() {
+  const target = ageScreen && ageScreen.querySelector('[data-action="age-continue"], select');
+  if (target) target.focus();
+}
+
+// closeAgeScreen puts the screen away: kept, for a page readable without it,
+// or removed for good once it has an answer.
+function closeAgeScreen({ remove = false } = {}) {
+  const dialog = ageScreen;
+  if (!dialog) {
+    return;
+  }
+  if (remove) {
+    ageScreen = null;
+  }
+  if (dialog.open) {
+    dialog.close();
+  }
+  if (remove) {
+    dialog.remove();
+  }
+}
+
+// Chrome lets a repeated Escape through even when "cancel" is cancelled, if
+// nothing was clicked in between. A screen that closes with no answer, on a
+// page that needs one, therefore opens again.
+function reopenAgeScreen() {
+  if (
+    ageScreen &&
+    ageScreen.isConnected &&
+    !ageScreen.open &&
+    ageStatus() === "ask" &&
+    !UNGATED_VIEWS.has(state.route.view)
+  ) {
+    ageScreen.showModal();
+    focusAgeScreen();
+  }
+}
+
+function clearAgeError() {
+  const error = ageScreen && ageScreen.querySelector("#age-error");
+  if (!error) {
+    return;
+  }
+  error.hidden = true;
+  error.textContent = "";
+  ageScreen.querySelectorAll("select").forEach((select) => select.removeAttribute("aria-invalid"));
+}
+
+function answerAgeQuestion(event) {
+  event.preventDefault();
+  const month = ageScreen.querySelector("#age-month");
+  const year = ageScreen.querySelector("#age-year");
+  const missing = [month, year].filter((select) => !select.value);
+  if (missing.length > 0) {
+    const error = ageScreen.querySelector("#age-error");
+    error.textContent =
+      missing.length === 2 ? "Choose a month and a year." : `Choose a ${missing[0] === month ? "month" : "year"}.`;
+    error.hidden = false;
+    missing.forEach((select) => select.setAttribute("aria-invalid", "true"));
+    missing[0].focus();
+    return;
+  }
+  const eligible = ageFrom(Number(month.value), Number(year.value)) >= MIN_AGE;
+  // Either way the question goes, and the month and year with it: from here on
+  // they are nowhere on the page, let alone anywhere else.
+  if (eligible) {
+    ageScreen.innerHTML = ageAgreeHTML();
+    focusAgeScreen();
+  } else {
+    refuseAgeScreen();
+  }
+}
+
+function passAgeScreen() {
+  storageSet(AGE_OK_STORAGE_KEY, "1");
+  ageAnswer = "ok";
+  closeAgeScreen({ remove: true });
+  render();
+}
+
+// A refusal is final in this browser: the screen is removed rather than reset,
+// and nothing on the page offers to ask again.
+function refuseAgeScreen() {
+  storageSet(AGE_REFUSED_STORAGE_KEY, "1");
+  ageAnswer = "refused";
+  closeAgeScreen({ remove: true });
+  render();
+}
+
 /* Routing ------------------------------------------------------------------ */
 
 function parseRoute(location = window.location) {
@@ -973,9 +1489,9 @@ function parseRoute(location = window.location) {
     return { view: "home" };
   }
   // Checked before the board route, and reserved server-side too, so no board
-  // can take this path out from under it.
-  if (parts.length === 1 && parts[0] === "verify") {
-    return { view: "verify" };
+  // can take one of these paths out from under its page.
+  if (parts.length === 1 && PAGE_VIEWS.has(parts[0])) {
+    return { view: parts[0] };
   }
   if (parts[0] === "u") {
     // /u/ alone is the namespace, not a board.
@@ -1063,9 +1579,31 @@ async function render({ draft = captureDraft() } = {}) {
   // Whatever was expanded belongs to the view being replaced.
   expandedLink = null;
 
+  // Until the age screen has its answer, nothing of the site is shown or even
+  // fetched, apart from the two pages that say what answering means.
+  const age = ageStatus();
+  const ungated = UNGATED_VIEWS.has(route.view);
+  if (age !== "ok" && !ungated) {
+    renderAgeGate(age);
+    return;
+  }
+  // Those two are read with the screen put away; it comes back, as it was
+  // left, on the next page that needs it.
+  closeAgeScreen();
+
   const finish = beginLoading();
   let resolved = null;
   try {
+    if (age === "ok") {
+      try {
+        await loadSite();
+      } catch (err) {
+        // The rules and the FAQ need nothing from the server, so a board list
+        // that will not load costs them only the navigation.
+        if (!ungated) throw err;
+      }
+      renderNav(route);
+    }
     switch (route.view) {
       case "home":
         renderHome();
@@ -1087,6 +1625,12 @@ async function render({ draft = captureDraft() } = {}) {
         break;
       case "verify":
         await renderVerify();
+        break;
+      case "rules":
+        renderRules();
+        break;
+      case "faq":
+        renderFAQ();
         break;
       default:
         el.main.innerHTML = emptyStateHTML("That is not a page on this site.");
@@ -1133,6 +1677,11 @@ function focusHash() {
   if (target) {
     target.scrollIntoView({ block: "center" });
     target.classList.add("flash");
+    // A heading jumped to from a page's contents takes focus as well, so the
+    // next Tab carries on from the question rather than from the top.
+    if (target.hasAttribute("tabindex")) {
+      target.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -1624,7 +2173,7 @@ el.main.addEventListener("submit", async (event) => {
   clearNotice();
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
-    localStorage.setItem(NAME_STORAGE_KEY, name);
+    storageSet(NAME_STORAGE_KEY, name);
     // Clear before navigating so the draft carried across the re-render is the
     // empty form rather than the post that just went through.
     form.reset();
@@ -1711,18 +2260,21 @@ async function submitVerification(form) {
 
 /* Bootstrap ---------------------------------------------------------------- */
 
-async function start() {
-  try {
-    const { boards } = await api("/api/boards");
-    state.boards = boards;
-  } catch (err) {
-    el.main.innerHTML = `<p class="empty">Could not reach the server: ${esc(err.message)}</p>`;
+// The board list, and whether verification exists here, are fetched the first
+// time a page past the age screen needs them, and kept from then on. A failure
+// is not kept: the next navigation tries again.
+let siteLoaded = false;
+
+async function loadSite() {
+  if (siteLoaded) {
     return;
   }
+  const { boards } = await api("/api/boards");
+  state.boards = boards;
   // The posting form needs to know whether to offer the badge checkbox, and a
   // failure here must not stop the board from loading.
   await loadVerification();
-  await render();
+  siteLoaded = true;
 }
 
-start();
+render();
