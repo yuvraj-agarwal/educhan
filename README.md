@@ -356,9 +356,9 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | --- | --- |
 | Boards | Twenty seeded from a migration — subjects from `/math/` to `/lang/`, then student life from `/adm/` to `/meta/` — and more created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
 | Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID, from a random key the browser keeps, keeps a conversation followable |
-| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
+| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
-| Catalog | Every live thread on one page as excerpt tiles with thumbnails |
+| Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
@@ -368,14 +368,37 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 ## Front end
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
-`internal/app/web/` — with no build step and no framework. `app.js` renders the JSON API
-into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
+`internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
+and KaTeX, each fetched only when a post that needs it is on screen. `app.js` renders the
+JSON API into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
 `/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
 
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
   tinted chips. On a fine pointer, hovering `>>123` floats a preview of the quoted post
   when it is already on the page — a preview never costs a request.
+- **Post markup**, rendered at display time from the text as typed:
+  - `>text` is greentext; `>>123` links to a post on the same board and adds a backlink.
+  - `>>>/math/` links to a board, `>>>/math/123` to a post on it, and `>>>/u/iitb/123` to
+    one on an institution board.
+  - `[spoiler]…[/spoiler]` is a bar until hovered, focused, or tapped; a screen reader
+    hears "hidden spoiler" until the reader activates it, and catalog excerpts show the
+    word, not the text.
+  - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
+    auto-detected. Nothing inside it is markup, so `x >>2` in code links nothing and
+    creates no backlink.
+  - `[math]…[/math]` is inline maths and `[eqn]…[/eqn]` an equation on a line of its own,
+    both in TeX and typeset by KaTeX as they come near the screen. Like code, nothing
+    inside is markup. Until KaTeX arrives, or if it never does, the TeX shows as written;
+    a TeX error shows the source in red with the reason on hover. TeX in a post makes no
+    links, images, or HTML of its own (`\href`, `\url`, `\includegraphics` and the
+    `\html…` commands show as unsupported), and cannot define macros (`\def`,
+    `\newcommand` and the like): a macro is how a short post would expand into millions
+    of symbols in every reader's tab. An equation too wide for a phone scrolls sideways
+    instead of widening the page. Catalog excerpts show maths as its TeX.
+  - A tag pairs with the first closing tag of its kind after it; one that never closes,
+    an empty pair, or a `[spoiler]` opened inside another shows as the text that was
+    typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
@@ -388,8 +411,14 @@ into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
 
 The page runs under the same-origin CSP in `middleware.go`, which has no `unsafe-inline`
 exception: no inline `<script>`, no inline `<style>`, and no `style` attributes. A unit
-test (`internal/app/web_test.go`) fails the build if any appear, and the image preview is
-a `data:` URL because that is what `img-src` allows.
+test (`internal/app/web_test.go`) fails the build if any appear in `index.html`, `app.js`,
+or `app.css`, and the image preview is a `data:` URL because that is what `img-src`
+allows. Third-party code is vendored under `internal/app/web/vendor/` and served from the
+same origin; each library keeps its licence and a note of its source, and the same test
+file pins every vendored file by SHA-256. KaTeX is the reason maths is typeset with
+`katex.render` into the page rather than `renderToString` into `innerHTML`: its HTML
+carries layout in `style` attributes, which this CSP refuses, while `katex.render` sets
+styles through the CSSOM, which it allows.
 
 ## Tech Stack
 

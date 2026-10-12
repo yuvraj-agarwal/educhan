@@ -3,7 +3,8 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, a per-board archive, threads with quote links, per-client flood control, key-authenticated
+a catalog view, a per-board archive, threads with quote links and post markup (spoilers,
+highlighted code, maths, cross-board links), per-client flood control, key-authenticated
 moderation and board management, and optional institutional verification badges are
 implemented. Janitor accounts, bans, and reports are not.
 
@@ -24,11 +25,13 @@ implemented. Janitor accounts, bans, and reports are not.
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, the poster key, poster IDs; `text.go` —
-    post text rules.
+    post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
+    pair (`markupBlocks`), which the front end's `parseMarkup` mirrors.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
-  - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`).
+  - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
+    third-party browser builds under `web/vendor/` (highlight.js, KaTeX).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -241,9 +244,24 @@ the index, and the thread view each have their own narrow-screen layout.
 
 - **No inline styles or scripts.** The CSP in `middleware.go` has no `unsafe-inline`
   exception, so `<style>`, `style="…"`, and inline `<script>` are all refused by the
-  browser. `TestWebAssetsHaveNoInlineStylesOrScripts` in `web_test.go` catches them first.
-  Setting `element.style.left` from JavaScript is fine — CSP governs markup, not the CSSOM
-  — which is how the quote preview positions itself.
+  browser. `TestWebAssetsHaveNoInlineStylesOrScripts` in `web_test.go` catches them first,
+  in `index.html` and in the markup `app.js` builds as strings (it scans `app.js` and
+  `app.css` too). Setting `element.style.left` from JavaScript is fine — CSP governs
+  markup, not the CSSOM — which is how the quote preview positions itself, and how KaTeX
+  lays out maths. `setAttribute("style", …)` is not fine: the browser refuses it like a
+  `style="…"` in markup.
+- **Vendored libraries** live in `web/vendor/<name>/`: the published build unmodified, its
+  `LICENSE`, and a `README.md` naming the package, version, and where it came from. They
+  are served from `'self'` like everything else — never from a CDN — and are left out of
+  the inline-markup scan, a heuristic for markup this project writes that a minified
+  library's grammars and templates are not. Instead `vendoredWebAssets` in `web_test.go`
+  pins every file under `vendor/` by SHA-256, so nothing lands there unlisted and nothing
+  listed changes unnoticed: adding or updating a library means vetting the build and
+  updating its hashes. Theme CSS is not vendored; colours stay in `app.css` with the rest
+  of the tokens. The one modified file is KaTeX's `katex.min.css`, cut down to WOFF2 font
+  sources because only the WOFF2 fonts are vendored; its README gives the exact `sed`,
+  and `TestVendoredStylesheetsReferenceVendoredFiles` fails if any `url()` in a vendored
+  stylesheet names a file that is not pinned.
 - `img-src` is `'self' data:`, so the file picker previews an attachment as a `data:` URL.
   A `blob:` URL would need a CSP change.
 - `app.css` is tokens first (`:root`), then base, layout, and components; colours live in
@@ -251,6 +269,30 @@ the index, and the thread view each have their own narrow-screen layout.
   the one exception and is for decoration only.
 - `app.js` renders HTML strings through `esc()`. Anything interpolated from the API must
   go through it.
+- Post text is markup only at display time: `bodyHTML` and the helpers above it
+  (`parseMarkup`, `renderMarkup`) turn the stored body into HTML, every piece of it
+  through `esc()`. Tags pair by one rule, mirrored in `markupBlocks` in `text.go` so that
+  code and maths never yield quotes and a spoiler never reaches an excerpt; change both
+  together, and `TestMarkupBlocks` with them (`OPAQUE_TAGS` and `opaqueTags` list the
+  blocks whose text is not markup). Cross-board links build their href with `boardPath`.
+- `enhancePosts(root)` is the one hook for work on posts after they are in the document
+  (code highlighting and maths): `render()` and `showQuotePreview()` each call it once.
+  It must stay idempotent and must never throw — a block it cannot finish keeps its
+  plain rendering. highlight.js and KaTeX are loaded from `/vendor/` by script (and, for
+  KaTeX, stylesheet) elements the first time a post that needs them is on screen, never
+  up front.
+- Maths: `[math]`/`[eqn]` render as a placeholder carrying the TeX in `data-tex`, and
+  `typesetMaths` fills it with `katex.render` once the block is within a screen of the
+  viewport (an `IntersectionObserver`; typesetting a long thread up front froze phones).
+  **Never `renderToString` into `innerHTML`**: KaTeX's HTML carries layout in `style`
+  attributes, which the CSP refuses. A few of KaTeX's own nodes still call
+  `setAttribute("style")` (`\vec`, a tall brace, a TeX error and more), so
+  `withStyleAttributesThroughCSSOM` routes exactly those through `style.cssText` for the
+  synchronous length of one render. The options are part of the security story —
+  `trust: false`, `maxExpand`, `maxSize`, and a fresh `macros` table per expression that
+  turns `\def`, `\newcommand` and friends into errors, because `maxExpand` counts
+  expansions, not what they produce, and one defined macro used a thousand times is
+  millions of nodes. Don't loosen them without a browser check that repeats the probes.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.
@@ -531,9 +573,9 @@ the index, and the thread view each have their own narrow-screen layout.
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
-  `internal/app/migrate_test.go`) run the whole app against an isolated schema in
-  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
-  development database. `testServer` builds its `Config` directly, which leaves every
+  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`) run the whole app
+  against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
+  they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
