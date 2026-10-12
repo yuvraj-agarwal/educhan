@@ -301,6 +301,9 @@ the index, and the thread view each have their own narrow-screen layout.
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
   than editing an applied one; `0001_init.sql` is deliberately written with
   `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
+  A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
+  (`verify_api_test.go`) in the same change: everything on that table is stored about
+  every poster, so each column is there because somebody decided it should be.
 - **Threads are archived, not pruned.** A new thread that takes a board past its
   `thread_limit` sets `archived_at` on the least recently bumped non-sticky live threads
   (`pruneThreads`). Every live view — the index count and list, the catalog, and the

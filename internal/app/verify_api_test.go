@@ -673,6 +673,37 @@ func TestVerificationTablesCannotBeJoinedToPosts(t *testing.T) {
 	}
 }
 
+// TestPostsTableColumnsArePinned holds the posts table to the columns it has
+// today, so every future column is a decision somebody made on purpose rather
+// than a migration that slipped through. A post is the record every reader can
+// see the public half of, and anything stored beside it is stored about every
+// poster. In particular nothing derived from a credential, an address, or an
+// email belongs here unless a change says why and a test pins what it can be
+// used for; the ban handles planned for later are exactly such a column, and
+// adding one should mean editing this list in the same change.
+func TestPostsTableColumnsArePinned(t *testing.T) {
+	h := testServer(t, nil)
+
+	want := []string{
+		"badge",      // the institution label, as text; never a reference to a credential
+		"board_id",   // which board's numbering the post belongs to
+		"body",       // the post text
+		"created_at", // shown on the post
+		"id",         // internal primary key
+		"is_op",      // the opening post of its thread
+		"name",       // display name, "Anonymous" by default
+		"no",         // the per-board number posters quote
+		"poster_id",  // the per-thread ID: a keyed hash, never the input it came from
+		"thread_id",  // the thread the post is in
+		"tripcode",   // the tripcode, if the poster used one; never the secret
+	}
+	if got := h.columns("posts"); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("posts has columns %v, want exactly %v\n"+
+			"a new column on posts is stored about every poster: add it here deliberately, "+
+			"with what it holds and why it cannot identify anyone", got, want)
+	}
+}
+
 /* Schema helpers ------------------------------------------------------------ */
 
 func (h *harness) countRows(table string) int {
