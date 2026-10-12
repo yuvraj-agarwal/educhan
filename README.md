@@ -377,9 +377,10 @@ button works. `/{slug}/post/{no}` names a post by number alone: it asks the serv
 thread the post is in and replaces itself with that thread, scrolled to the post, so Back
 does not land on it twice. Institution boards are stored as `u-{name}` and live at
 `/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`, and
-the server's own `api`, `media`, and `healthz` — are never read as boards. `/verify`,
-`/rules`, and `/faq` are pages; a word without a page yet shows the not-found view.
+`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
+`safety`, and the server's own `api`, `media`, and `healthz` — are never read as boards.
+`/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
+view.
 
 - **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
   13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
@@ -759,9 +760,9 @@ A slug is the board's address in every URL, so it is lowercase letters and
 digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
 and not a first path segment that already means something else: the server's
 own routes (`api`, `media`, `healthz`), the UI's pages (`verify`, `mod`,
-`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`), or
-`u`. It is normalised before use, so `/CompSci/` and `/compsci/` cannot both
-exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
+`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
+`safety`), or `u`. It is normalised before use, so `/CompSci/` and `/compsci/`
+cannot both exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
 shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
 slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
 100, an image limit of 150, and 7 days in the archive), and the rules to none. A

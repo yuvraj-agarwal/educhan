@@ -400,7 +400,7 @@ func TestPageLoadsServeTheShell(t *testing.T) {
 	for _, path := range []string{
 		"/", "/meta/", "/meta/catalog", "/meta/archive", "/meta/thread/1", "/meta/post/5",
 		"/u/iitb/", "/u/iitb/catalog", "/u/iitb/thread/1", "/u/iitb/post/5",
-		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy",
+		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy", "/safety",
 	} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)

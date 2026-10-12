@@ -19,7 +19,7 @@ const NAME_STORAGE_KEY = "educhan:name";
 // under a page that is added later. "u" is the institution namespace.
 const RESERVED_PATHS = new Set([
   "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
-  "terms", "privacy", "dmca", "report", "archive",
+  "terms", "privacy", "dmca", "report", "archive", "safety",
 ]);
 // The reserved words that have a page of their own so far.
 const PAGE_VIEWS = new Set(["verify", "rules", "faq"]);
