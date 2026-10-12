@@ -137,6 +137,11 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A header, so a malformed one is refused before the body is read.
+	key, ok := posterKey(w, r)
+	if !ok {
+		return
+	}
 
 	sub, ok := a.parseSubmission(w, r, &createThreadRequest{})
 	if !ok {
@@ -172,8 +177,8 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		Subject:    subject,
 		Identity:   parseIdentity(sub.Name, a.cfg.PosterIDSalt),
 		Body:       body,
-		PosterID:   a.posterIDFunc(clientKey),
-		Badge:      badge,
+		PosterID:   a.posterIDFunc(posterSourceFor(badge, key, clientKey)),
+		Badge:      badge.Label,
 		Attachment: attachmentInput(sub, img),
 	})
 	if err != nil {
@@ -222,6 +227,11 @@ func (a *App) handleCreatePostByThreadID(w http.ResponseWriter, r *http.Request)
 }
 
 func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no int64) {
+	// A header, so a malformed one is refused before the body is read.
+	key, ok := posterKey(w, r)
+	if !ok {
+		return
+	}
 	sub, ok := a.parseSubmission(w, r, &createPostRequest{})
 	if !ok {
 		return
@@ -251,8 +261,8 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		Identity:   parseIdentity(sub.Name, a.cfg.PosterIDSalt),
 		Body:       body,
 		Sage:       sub.Sage,
-		PosterID:   a.posterIDFunc(clientKey),
-		Badge:      badge,
+		PosterID:   a.posterIDFunc(posterSourceFor(badge, key, clientKey)),
+		Badge:      badge.Label,
 		Attachment: attachmentInput(sub, img),
 	})
 	if err != nil {
@@ -274,9 +284,11 @@ func newPostResponse(board Board, post Post) map[string]any {
 	}
 }
 
-func (a *App) posterIDFunc(clientKey string) func(int64) string {
+// posterIDFunc defers the poster ID until the store knows the thread's ID,
+// which a new thread does not have until its row is inserted.
+func (a *App) posterIDFunc(source posterSource) func(int64) string {
 	return func(threadID int64) string {
-		return posterID(a.cfg.PosterIDSalt, clientKey, threadID)
+		return posterID(a.cfg.PosterIDSalt, source, threadID)
 	}
 }
 
@@ -313,6 +325,10 @@ func (a *App) resolveThreadID(w http.ResponseWriter, r *http.Request) (Board, in
 // two boards at once, which is how an imageboard is meant to be read. Uploads
 // are limited across the whole server instead, because decoding, thumbnailing,
 // and storing an image costs the same wherever the post lands.
+//
+// Both are keyed on the client address even when the poster ID comes from a
+// poster key. The key is chosen by the client, so a limit keyed on it would be
+// one any client could step around by sending a new key with every post.
 func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey string, hasUpload bool) []cooldown {
 	cooldowns := []cooldown{{limiter: limiter, key: board.Slug + "|" + clientKey}}
 	if hasUpload {

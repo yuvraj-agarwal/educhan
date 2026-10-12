@@ -23,7 +23,8 @@ implemented. Janitor accounts, bans, and reports are not.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
-  - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
+  - `identity.go` — anonymous names, tripcodes, the poster key, poster IDs; `text.go` —
+    post text rules.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
@@ -107,6 +108,12 @@ curl -s localhost:8080/api/boards/general/threads/$TNO   # both posts, with back
 curl -s "localhost:8080/api/boards/general/threads?page=1" # index page
 curl -s localhost:8080/api/boards/general/catalog          # catalog tiles
 curl -s localhost:8080/api/boards/general/archive          # threads pushed off the board
+
+# A poster key, as the browser makes one: 16 random bytes, base64url, no padding.
+# Posts carrying it get their poster ID from it; posts without it, from the address.
+KEY=$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
+curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -H "X-Educhan-Poster-Key: $KEY" -d '{"body":"keyed"}'
 
 # Confirm persistence in PostgreSQL
 psql -h localhost -p 5432 -U educhan -d educhan \
@@ -328,6 +335,39 @@ the index, and the thread view each have their own narrow-screen layout.
   (`TestSweepLogsOnlyCounts`), and returns an error — a non-zero exit — on a database
   failure or if any blob could not be removed. **Legal holds (build plan 2.10) are not
   built**; when they are, `SweepArchived` must skip held threads, and its comment says so.
+- **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
+  `identity.go` picks the source: on a badged post the credential's random id, otherwise
+  the browser's poster key, otherwise the client address. The poster key is 16 random
+  bytes the client keeps in `localStorage` under `educhan:poster-key` and sends,
+  base64url-encoded, in `X-Educhan-Poster-Key` on thread and reply requests only;
+  `posterKey` reads it in the two posting handlers and nowhere else. `posterSource` is a
+  tagged type (`key:`, `ip:`, `cred:`) made only through its three constructors, so the
+  sources can never produce the same HMAC input and an untagged string cannot reach
+  `posterID` by accident. What keeps it honest:
+  - The poster key is never stored and never logged. `TestPosterKeyIsNeverStoredOrLogged`
+    drives every posting path with one, then searches every column of every table and
+    the captured log for it, with positive controls. Do not put it in a log line, a
+    column, a cooldown key, or anything else that outlives the request: kept anywhere, it
+    is one identifier across all of a browser's threads.
+  - Flood control stays on `clientIP`. The key is client-chosen, so a limit keyed on it
+    is one any client can step around; for the same reason a poster ID is a courtesy for
+    following a thread, not proof of anything.
+  - A badged post's ID comes from the raw credential id as presented, never from
+    `credential_id_hash` or any other stored value: an ID derived from stored data could
+    be recomputed by anyone holding the database and the salt, for every credential in
+    every thread, tying badged posts across threads back to a verification row. It never
+    uses the poster key either, or a badged post and an unbadged reply from one browser
+    would share an ID and tie the reply to the institution. `postBadge` returns the id in
+    `badgeGrant.CredentialID`; `TestCredentialIDOnlyFeedsThePosterID` pins that only
+    `postBadge` and `posterSourceFor` touch it, and
+    `TestBadgedPosterIDCannotBeRecomputedFromTheDatabase` tries every plausible
+    derivation from the verification tables, with the true one as its positive control.
+  - Header absent means the address fallback; present but not exactly 22 base64url
+    characters (empty, padded, sent twice) is `400 invalid poster key`, checked before the
+    body is parsed, so it costs no cooldown and stores no upload.
+  - Changing the derivation changes every live thread's IDs mid-conversation. There was
+    no production data when the poster key arrived, so that change was free; later ones
+    will not be.
 - **Tripcodes are salted, always.** `name#secret` and `name##secret` give the same
   tripcode, `"!!"` plus `HMAC(EDUCHAN_POSTER_ID_SALT, "trip:"+secret)` (`tripcode` in
   `identity.go`), which is the derivation `##` always had, so existing secure tripcodes
@@ -358,7 +398,8 @@ the index, and the thread view each have their own narrow-screen layout.
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
   configured depth or a non-IP entry falls back to the peer address. Setting it higher than
-  the real chain hands clients control of their own rate-limit bucket and poster ID.
+  the real chain hands clients control of their own rate-limit bucket, and of their poster
+  ID when they send no poster key.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
@@ -399,6 +440,8 @@ the index, and the thread view each have their own narrow-screen layout.
     `GET /api/verify` reports whether the feature is configured and nothing about the
     caller: answering "am I verified?" would mean the credential travelling off the
     badge path. The client reads its own label and expiry out of the credential locally.
+    The one thing besides the label that leaves the badge path is the credential's random
+    id, and only as far as the badged post's poster ID (see **Poster IDs** above).
   - The trade-off `localStorage` buys that with is documented in the README: it is
     JS-readable where an HttpOnly cookie was not, which is acceptable because the CSP
     forbids inline scripts (`TestWebAssetsHaveNoInlineStylesOrScripts` keeps it that
@@ -459,7 +502,7 @@ the index, and the thread view each have their own narrow-screen layout.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
-  `internal/app/sweep_test.go`,
+  `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
   whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
@@ -468,7 +511,9 @@ the index, and the thread view each have their own narrow-screen layout.
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
   credential it returns is then presented explicitly with `postWithCredential`, because
-  nothing attaches it on a caller's behalf. A test that needs board settings of its own
+  nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
+  (`poster_id_test.go`), which sends its poster key on every post and its credential only
+  on a badged one, the way the client does. A test that needs board settings of its own
   creates its board with `addBoard` (`archive_test.go`) instead of reconfiguring a seeded
   one, so it does not depend on which boards the migrations seed. Sweep tests call
   `app.sweep` with a small batch to cover the loop, and backdate `archived_at` with

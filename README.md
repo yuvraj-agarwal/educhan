@@ -153,6 +153,9 @@ can and cannot work out.
 - Roughly when a credential was issued — to the *day*, because the stored
   expiry is rounded up to a UTC day boundary and nothing else is timestamped.
 - Which posts carry which badge, because a badge is displayed on the post.
+- Which badged posts in one thread came from the same credential, because they
+  share a poster ID there, as any poster's posts in a thread do. In different
+  threads the same credential's IDs differ.
 - **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
   the secret, an operator who suspects a particular address can recompute the
   HMAC and check whether that person is verified. This is inherent to a
@@ -180,11 +183,15 @@ can and cannot work out.
   verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
   asserts the exact column list of both tables so a future migration cannot
   quietly add one.
-- Link two badged posts to each other. Two posts showing the same institution
-  say only that: an institution with one verified user and one badged post is
-  as anonymous as its user base is large. **A badge narrows you to your
-  institution — that is the whole of what it discloses, and it is not nothing
-  at a small one.**
+- Recompute a badged post's poster ID. It is derived from the random id inside
+  the credential as the poster presents it; the database holds only that id's
+  SHA-256, and no derivation from anything in the verification tables
+  reproduces it (`TestBadgedPosterIDCannotBeRecomputedFromTheDatabase`).
+- Link two badged posts in different threads to each other. Their poster IDs
+  differ, and two posts showing the same institution say only that: an
+  institution with one verified user and one badged post is as anonymous as its
+  user base is large. **A badge narrows you to your institution — that is the
+  whole of what it discloses, and it is not nothing at a small one.**
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
@@ -249,6 +256,39 @@ verification endpoints and nowhere else. It is `HttpOnly`, `SameSite=Lax`, and
 at all — see above.
 
 ## Posting identity
+
+### Poster IDs
+
+Every post shows an eight-character ID that is the same for one poster
+throughout a thread and different in every other thread, so a conversation can
+be followed without anybody being followable from thread to thread. It is
+`HMAC(EDUCHAN_POSTER_ID_SALT, thread, source)`, and the source is the first of:
+
+1. **On a badged post, the credential's random id.** Never the browser's key or
+   address: if a badged post and an unbadged reply from one browser showed the
+   same ID, the ID would tie the unbadged reply to the institution. It is the id
+   inside the credential the poster presented, not anything the database keeps
+   (which is only its SHA-256), so a badged post's ID can be recomputed only by
+   somebody holding the credential itself. One credential's badged posts share
+   an ID within a thread, as anybody's posts do.
+2. **Otherwise the poster key**: 16 random bytes the browser makes once, keeps
+   in `localStorage`, and sends base64url-encoded in `X-Educhan-Poster-Key` on
+   thread and reply requests and nothing else. This is what gives two people
+   behind one campus NAT two IDs.
+3. **Otherwise the client address**, which is what every ID used to be, so a
+   client that sends no key can still post.
+
+The three are tagged before hashing (`key:`, `ip:`, `cred:`), so no choice of
+key can land on the ID an address or a credential gets.
+
+The poster key is HMAC input and nothing else: it is never written to the
+database and never logged. `TestPosterKeyIsNeverStoredOrLogged` posts every way
+there is with one, then searches every column of every table and every log line
+for it. Kept anywhere, it would be a single identifier across all of a
+browser's threads, which is exactly what per-thread IDs avoid. Because the
+client chooses it, a poster ID is a courtesy rather than proof: clearing site
+data gives a fresh one, as changing networks always did, and flood control
+stays keyed on the address for that reason.
 
 ### Tripcodes
 
@@ -315,7 +355,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Area | Behaviour |
 | --- | --- |
 | Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
-| Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID keeps a conversation followable |
+| Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID, from a random key the browser keeps, keeps a conversation followable |
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails |
@@ -501,9 +541,9 @@ depends on.
 
 ### Running behind a proxy
 
-Flood control and poster IDs are keyed on the client address, so the server has
-to know how to find it. `EDUCHAN_TRUST_PROXY` is the number of reverse proxies
-in front of it:
+Flood control is keyed on the client address, and so is the poster ID of a
+client that sends no poster key, so the server has to know how to find it.
+`EDUCHAN_TRUST_PROXY` is the number of reverse proxies in front of it:
 
 - **`0` (default)** — `X-Forwarded-For` is ignored and the peer address is used.
   Correct whenever the server is reachable directly.
@@ -555,6 +595,12 @@ cooldown; the body carries `"credential": "missing" | "expired" | "revoked"`
 so a client can discard one the server will not honour again. There is no
 endpoint to forget a badge, because the client holds it — dropping it is a
 local act.
+
+The two posting endpoints read the poster key from `X-Educhan-Poster-Key` (22
+base64url characters, no padding) and no other endpoint reads it. Without the
+header the poster ID comes from the client address; with a malformed one the
+post is refused with `400` and `{"error":"invalid poster key"}` before its body
+is read, so the refusal costs no cooldown.
 
 `/api/verify/confirm` sets no credential cookie, but the two-step exchange does
 use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a

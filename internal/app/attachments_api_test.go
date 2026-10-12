@@ -72,6 +72,13 @@ func jpegBytes(t *testing.T, w, h int) []byte {
 // It returns the status and decodes the response into out.
 func (c *client) upload(path string, fields map[string]string, filename string, file []byte, out any) int {
 	c.t.Helper()
+	return c.uploadWithHeaders(nil, path, fields, filename, file, out)
+}
+
+// uploadWithHeaders is upload with extra request headers, for the poster key
+// and the credential a browser sends alongside a multipart post.
+func (c *client) uploadWithHeaders(header http.Header, path string, fields map[string]string, filename string, file []byte, out any) int {
+	c.t.Helper()
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -96,6 +103,9 @@ func (c *client) upload(path string, fields map[string]string, filename string, 
 	req, err := http.NewRequest(http.MethodPost, c.base+path, &body)
 	if err != nil {
 		c.t.Fatalf("build request: %v", err)
+	}
+	for k, values := range header {
+		req.Header[k] = values
 	}
 	req.Header.Set("Content-Type", form.FormDataContentType())
 	return c.send(req, out)

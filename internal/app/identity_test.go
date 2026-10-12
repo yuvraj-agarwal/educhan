@@ -4,6 +4,8 @@ import (
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 )
@@ -90,26 +92,115 @@ func TestParseIdentityClampsLongName(t *testing.T) {
 
 func TestPosterID(t *testing.T) {
 	const salt = "salt"
+	source := addressSource("10.0.0.1")
 
-	first := posterID(salt, "10.0.0.1", 7)
+	first := posterID(salt, source, 7)
 	if len(first) != posterIDLen {
 		t.Fatalf("poster ID %q length = %d, want %d", first, len(first), posterIDLen)
 	}
-	if again := posterID(salt, "10.0.0.1", 7); again != first {
+	if again := posterID(salt, source, 7); again != first {
 		t.Errorf("poster ID is not stable: %q != %q", again, first)
 	}
-	if otherThread := posterID(salt, "10.0.0.1", 8); otherThread == first {
+	if otherThread := posterID(salt, source, 8); otherThread == first {
 		t.Error("poster IDs must differ between threads")
 	}
-	if otherClient := posterID(salt, "10.0.0.2", 7); otherClient == first {
+	if otherClient := posterID(salt, addressSource("10.0.0.2"), 7); otherClient == first {
 		t.Error("poster IDs must differ between clients")
 	}
-	if otherSalt := posterID("other", "10.0.0.1", 7); otherSalt == first {
+	if otherSalt := posterID("other", source, 7); otherSalt == first {
 		t.Error("poster IDs must depend on the salt")
 	}
 	for _, r := range first {
 		if !strings.ContainsRune(posterIDAlpha, r) {
 			t.Errorf("poster ID %q contains unexpected rune %q", first, r)
 		}
+	}
+}
+
+// The three sources are tagged so that equal values from different sources
+// never meet in the HMAC: a client choosing its own poster key must not be
+// able to land on the ID an address or a credential gets.
+func TestPosterSourcesNeverCollide(t *testing.T) {
+	const (
+		salt  = "salt"
+		value = "AAAAAAAAAAAAAAAAAAAAAA"
+	)
+	ids := map[string]string{
+		"key":  posterID(salt, posterKeySource(value), 7),
+		"ip":   posterID(salt, addressSource(value), 7),
+		"cred": posterID(salt, credentialSource(value), 7),
+	}
+	seen := map[string]string{}
+	for source, id := range ids {
+		if other, ok := seen[id]; ok {
+			t.Errorf("%s and %s sources gave the same poster ID %q for one value", source, other, id)
+		}
+		seen[id] = source
+	}
+}
+
+func TestPosterSourceFor(t *testing.T) {
+	const key, ip = "AAAAAAAAAAAAAAAAAAAAAA", "203.0.113.9"
+	badged := badgeGrant{Label: "IIT Bombay", CredentialID: "random-credential-id"}
+
+	tests := []struct {
+		name    string
+		granted badgeGrant
+		key     string
+		want    posterSource
+	}{
+		{name: "badged post uses the credential, not the key", granted: badged, key: key, want: credentialSource(badged.CredentialID)},
+		{name: "badged post without a key", granted: badged, want: credentialSource(badged.CredentialID)},
+		{name: "unbadged post uses the key", key: key, want: posterKeySource(key)},
+		{name: "no key falls back to the address", want: addressSource(ip)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := posterSourceFor(tc.granted, tc.key, ip); got != tc.want {
+				t.Errorf("source = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestPosterKeyHeader(t *testing.T) {
+	const valid = "abcdefghijklmnopqrst-_"
+
+	tests := []struct {
+		name    string
+		values  []string
+		wantKey string
+		wantOK  bool
+	}{
+		{name: "absent", wantOK: true},
+		{name: "well formed", values: []string{valid}, wantKey: valid, wantOK: true},
+		{name: "every alphabet class", values: []string{"AZaz09-_AZaz09-_AZaz09"}, wantKey: "AZaz09-_AZaz09-_AZaz09", wantOK: true},
+		{name: "empty", values: []string{""}},
+		{name: "one short", values: []string{valid[:21]}},
+		{name: "one long", values: []string{valid + "A"}},
+		{name: "padded", values: []string{valid[:20] + "=="}},
+		{name: "standard base64 plus", values: []string{valid[:21] + "+"}},
+		{name: "standard base64 slash", values: []string{valid[:21] + "/"}},
+		{name: "space", values: []string{valid[:21] + " "}},
+		{name: "non-ASCII", values: []string{valid[:20] + "é"}},
+		{name: "sent twice", values: []string{valid, valid}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			r := httptest.NewRequest(http.MethodPost, "/api/boards/general/threads", nil)
+			for _, v := range tc.values {
+				r.Header.Add(posterKeyHeader, v)
+			}
+			w := httptest.NewRecorder()
+			key, ok := posterKey(w, r)
+			if ok != tc.wantOK || key != tc.wantKey {
+				t.Fatalf("posterKey = (%q, %v), want (%q, %v)", key, ok, tc.wantKey, tc.wantOK)
+			}
+			if !ok {
+				if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), `"invalid poster key"`) {
+					t.Errorf("refusal = %d %s, want 400 invalid poster key", w.Code, w.Body.String())
+				}
+			}
+		})
 	}
 }
