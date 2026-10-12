@@ -2920,6 +2920,7 @@ el.main.addEventListener("submit", async (event) => {
       const option = box && box.closest("label");
       if (option) {
         option.remove();
+        form.querySelector("#f-badge-hint")?.remove();
       } else if (box) {
         box.checked = false;
       }
