@@ -150,7 +150,7 @@ curl -s -X POST localhost:8080/api/boards \
   -d '{"slug":"comp-sci","name":"Computer Science"}'          # 409 if the slug is taken
 curl -s -X PATCH localhost:8080/api/boards/comp-sci \
   -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
-  -d '{"description":"Systems and theory","thread_limit":50}' # omitted fields are unchanged
+  -d '{"description":"Systems and theory","thread_limit":50,"image_limit":100}' # omitted fields are unchanged
 curl -s localhost:8080/api/boards/comp-sci/catalog            # a new board works everywhere
 ```
 
@@ -294,10 +294,15 @@ the index, and the thread view each have their own narrow-screen layout.
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
-- Board management (`boards.go`) reuses that gate and needs no migration: `0002` already
-  gives `boards` its limits and `next_post_no`. Slugs are validated and normalised before
-  they reach SQL, a duplicate comes back as `errConflict` from the unique index (`409`),
-  and the slug itself is not updatable because it is the board's address.
+- Board management (`boards.go`) reuses that gate. `0002` gives `boards` its bump and
+  thread limits and `next_post_no`; `0005` adds `image_limit`, `archive_days`, and
+  `rules`. The API defaults in `boards.go` mirror the column defaults, and
+  `TestCreateBoardDefaults` holds the two together. Slugs are validated and normalised
+  before they reach SQL, a duplicate comes back as `errConflict` from the unique index
+  (`409`), and the slug itself is not updatable because it is the board's address.
+  No numeric setting has an "unlimited" value: `boardLimit` refuses zero for the bump
+  and thread limits and reads it literally for `image_limit` (no images in replies) and
+  `archive_days` (gone at the next sweep).
 - **Verified Anonymity is a privacy guarantee before it is a feature, and the README
   states it in full.** Three rules make it true, and a change that breaks any of them
   breaks the promise rather than just the code: the address is never written anywhere

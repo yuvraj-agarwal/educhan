@@ -45,11 +45,13 @@ func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
 // Ping reports whether the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
 
-const boardColumns = `b.id, b.slug, b.name, b.description, b.bump_limit, b.thread_limit`
+const boardColumns = `b.id, b.slug, b.name, b.description, b.bump_limit, b.thread_limit,
+	b.image_limit, b.archive_days, b.rules`
 
 func scanBoard(row pgx.Row) (Board, error) {
 	var b Board
-	err := row.Scan(&b.ID, &b.Slug, &b.Name, &b.Description, &b.BumpLimit, &b.ThreadLimit)
+	err := row.Scan(&b.ID, &b.Slug, &b.Name, &b.Description, &b.BumpLimit, &b.ThreadLimit,
+		&b.ImageLimit, &b.ArchiveDays, &b.Rules)
 	return b, err
 }
 
@@ -88,6 +90,9 @@ type BoardSettings struct {
 	Description *string
 	BumpLimit   *int
 	ThreadLimit *int
+	ImageLimit  *int
+	ArchiveDays *int
+	Rules       *string
 }
 
 // CreateBoard inserts a board, returning errConflict when the slug is taken.
@@ -95,10 +100,10 @@ type BoardSettings struct {
 // at No. 1 like every seeded one.
 func (s *Store) CreateBoard(ctx context.Context, in Board) (Board, error) {
 	b, err := scanBoard(s.pool.QueryRow(ctx, `
-		INSERT INTO boards AS b (slug, name, description, bump_limit, thread_limit)
-		VALUES ($1, $2, $3, $4, $5)
+		INSERT INTO boards AS b (slug, name, description, bump_limit, thread_limit, image_limit, archive_days, rules)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		RETURNING `+boardColumns,
-		in.Slug, in.Name, in.Description, in.BumpLimit, in.ThreadLimit))
+		in.Slug, in.Name, in.Description, in.BumpLimit, in.ThreadLimit, in.ImageLimit, in.ArchiveDays, in.Rules))
 	if isUniqueViolation(err) {
 		return Board{}, errConflict
 	}
@@ -114,10 +119,13 @@ func (s *Store) UpdateBoard(ctx context.Context, slug string, in BoardSettings) 
 		    name         = COALESCE($2::text, b.name),
 		    description  = COALESCE($3::text, b.description),
 		    bump_limit   = COALESCE($4::integer, b.bump_limit),
-		    thread_limit = COALESCE($5::integer, b.thread_limit)
+		    thread_limit = COALESCE($5::integer, b.thread_limit),
+		    image_limit  = COALESCE($6::integer, b.image_limit),
+		    archive_days = COALESCE($7::integer, b.archive_days),
+		    rules        = COALESCE($8::text, b.rules)
 		WHERE b.slug = $1
 		RETURNING `+boardColumns,
-		slug, in.Name, in.Description, in.BumpLimit, in.ThreadLimit))
+		slug, in.Name, in.Description, in.BumpLimit, in.ThreadLimit, in.ImageLimit, in.ArchiveDays, in.Rules))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Board{}, errNotFound
 	}

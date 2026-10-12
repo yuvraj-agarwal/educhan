@@ -569,7 +569,7 @@ janitor accounts, bans, and reports are still to come.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/boards` | Create a board — `{"slug","name","description","bump_limit","thread_limit"}` |
+| `POST` | `/api/boards` | Create a board — `{"slug","name","description","rules","bump_limit","thread_limit","image_limit","archive_days"}` |
 | `PATCH` | `/api/boards/{slug}` | Update a board's settings; every field is optional |
 | `POST` | `/api/boards/{slug}/threads/{no}/sticky` | Pin a thread to the top of its board |
 | `POST` | `/api/boards/{slug}/threads/{no}/unsticky` | Unpin it |
@@ -602,8 +602,21 @@ digits in dash-separated groups (`general`, `comp-sci`), at most 24 characters,
 and not one of the paths the server already answers on (`api`, `media`,
 `healthz`). It is normalised before use, so `/CompSci/` and `/compsci/` cannot
 both exist. Everything but the slug is optional: the name falls back to the
-slug, and the limits to the schema defaults of 300 and 100. A duplicate slug
-answers `409`.
+slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
+100, an image limit of 150, and 7 days in the archive), and the rules to none. A
+duplicate slug answers `409`.
+
+| Setting | Range | Meaning |
+| --- | --- | --- |
+| `bump_limit` | 1–10000 | Replies after which a reply no longer bumps the thread |
+| `thread_limit` | 1–1000 | Live threads the board keeps |
+| `image_limit` | 0–1000 | Posts with an image one thread may hold, the opening post included; `0` means replies can never carry one |
+| `archive_days` | 0–365 | Days an archived thread is kept before it is deleted; `0` means at the next sweep |
+| `rules` | up to 4000 characters | The board's own rules, multi-line, normalised like a post body |
+
+None of the numbers has an "unlimited" value: zero is refused for the two
+limits where it would break the board, and read literally for the two where it
+is a real choice.
 
 ```bash
 curl -s -X POST localhost:8080/api/boards \
@@ -611,7 +624,7 @@ curl -s -X POST localhost:8080/api/boards \
   -d '{"slug":"comp-sci","name":"Computer Science","description":"Algorithms and all that"}'
 ```
 
-`PATCH` changes `name`, `description`, `bump_limit`, and `thread_limit`; an
+`PATCH` changes any of those settings, and `name` and `description`; an
 omitted field keeps its stored value, and at least one must be given. The slug
 is not updatable — it is what every bookmark and stored quote link points at.
 

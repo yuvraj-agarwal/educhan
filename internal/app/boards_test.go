@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"testing"
 )
 
@@ -74,12 +75,16 @@ func TestCreateBoardAndPostToIt(t *testing.T) {
 		"slug":         "comp-sci",
 		"name":         "Computer Science",
 		"description":  "Algorithms and all that",
+		"rules":        "1. Show your working.\n2. No homework dumps.",
 		"bump_limit":   50,
 		"thread_limit": 20,
+		"image_limit":  30,
+		"archive_days": 14,
 	})
 	want := Board{
 		Slug: "comp-sci", Name: "Computer Science",
 		Description: "Algorithms and all that", BumpLimit: 50, ThreadLimit: 20,
+		ImageLimit: 30, ArchiveDays: 14, Rules: "1. Show your working.\n2. No homework dumps.",
 	}
 	if created != want {
 		t.Errorf("created board = %+v, want %+v", created, want)
@@ -139,6 +144,22 @@ func TestCreateBoardDefaults(t *testing.T) {
 		t.Errorf("limits = %d/%d, want the schema defaults %d/%d",
 			created.BumpLimit, created.ThreadLimit, defaultBoardBumpLimit, defaultBoardThreadLimit)
 	}
+	if created.ImageLimit != defaultBoardImageLimit || created.ArchiveDays != defaultBoardArchiveDays {
+		t.Errorf("image limit and archive days = %d/%d, want the schema defaults %d/%d",
+			created.ImageLimit, created.ArchiveDays, defaultBoardImageLimit, defaultBoardArchiveDays)
+	}
+	if created.Rules != "" {
+		t.Errorf("rules = %q, want empty", created.Rules)
+	}
+
+	// The API defaults have to be the column defaults, or a board opened over
+	// the API and one inserted by a migration would behave differently.
+	var seeded Board
+	c.get("/api/boards/general", &seeded)
+	if seeded.ImageLimit != defaultBoardImageLimit || seeded.ArchiveDays != defaultBoardArchiveDays {
+		t.Errorf("seeded board image limit and archive days = %d/%d, want %d/%d",
+			seeded.ImageLimit, seeded.ArchiveDays, defaultBoardImageLimit, defaultBoardArchiveDays)
+	}
 
 	// A name that is only whitespace is no name at all, so it takes the same
 	// fallback as an omitted one.
@@ -190,6 +211,12 @@ func TestCreateBoardValidation(t *testing.T) {
 		{"zero bump limit", map[string]any{"slug": "zero", "bump_limit": 0}},
 		{"negative thread limit", map[string]any{"slug": "negative", "thread_limit": -1}},
 		{"absurd thread limit", map[string]any{"slug": "absurd", "thread_limit": maxBoardThreadLimit + 1}},
+		{"negative image limit", map[string]any{"slug": "negative", "image_limit": -1}},
+		{"absurd image limit", map[string]any{"slug": "absurd", "image_limit": maxBoardImageLimit + 1}},
+		{"negative archive days", map[string]any{"slug": "negative", "archive_days": -1}},
+		{"absurd archive days", map[string]any{"slug": "absurd", "archive_days": maxBoardArchiveDays + 1}},
+		{"rules too long", map[string]any{"slug": "verbose", "rules": strings.Repeat("r", maxBoardRulesLen+1)}},
+		{"image limit as a string", map[string]any{"slug": "stringly", "image_limit": "150"}},
 		{"unknown field", map[string]any{"slug": "extra", "colour": "blue"}},
 	}
 
@@ -255,8 +282,11 @@ func TestUpdateBoardSettings(t *testing.T) {
 	status := c.modBody(http.MethodPatch, "/api/boards/general", testModKey, map[string]any{
 		"name":         "General Discussion",
 		"description":  "Anything about campus life",
+		"rules":        "Be kind.",
 		"bump_limit":   42,
 		"thread_limit": 7,
+		"image_limit":  12,
+		"archive_days": 3,
 	}, &updated)
 	if status != http.StatusOK {
 		t.Fatalf("update status = %d, want 200", status)
@@ -265,6 +295,7 @@ func TestUpdateBoardSettings(t *testing.T) {
 	want := Board{
 		Slug: "general", Name: "General Discussion",
 		Description: "Anything about campus life", BumpLimit: 42, ThreadLimit: 7,
+		ImageLimit: 12, ArchiveDays: 3, Rules: "Be kind.",
 	}
 	if updated != want {
 		t.Errorf("update returned %+v, want %+v", updated, want)
@@ -343,6 +374,11 @@ func TestUpdateBoardValidation(t *testing.T) {
 		{"blank name", "/api/boards/general", map[string]any{"name": "  "}, http.StatusBadRequest},
 		{"zero bump limit", "/api/boards/general", map[string]any{"bump_limit": 0}, http.StatusBadRequest},
 		{"negative thread limit", "/api/boards/general", map[string]any{"thread_limit": -5}, http.StatusBadRequest},
+		{"negative image limit", "/api/boards/general", map[string]any{"image_limit": -1}, http.StatusBadRequest},
+		{"absurd image limit", "/api/boards/general", map[string]any{"image_limit": maxBoardImageLimit + 1}, http.StatusBadRequest},
+		{"negative archive days", "/api/boards/general", map[string]any{"archive_days": -1}, http.StatusBadRequest},
+		{"absurd archive days", "/api/boards/general", map[string]any{"archive_days": maxBoardArchiveDays + 1}, http.StatusBadRequest},
+		{"rules too long", "/api/boards/general", map[string]any{"rules": strings.Repeat("r", maxBoardRulesLen+1)}, http.StatusBadRequest},
 		{"slug is not updatable", "/api/boards/general", map[string]any{"slug": "renamed"}, http.StatusBadRequest},
 	}
 
@@ -361,6 +397,78 @@ func TestUpdateBoardValidation(t *testing.T) {
 	c.get("/api/boards/general", &general)
 	if general.Slug != "general" || general.Name == "" || general.BumpLimit < 1 || general.ThreadLimit < 1 {
 		t.Errorf("board damaged by refused updates: %+v", general)
+	}
+	if general.ImageLimit != defaultBoardImageLimit || general.ArchiveDays != defaultBoardArchiveDays ||
+		general.Rules != "" {
+		t.Errorf("board settings changed by refused updates: %+v", general)
+	}
+}
+
+// Zero is a real value for the image cap and the archive period, at both ends
+// of the API, and the maximum is accepted as well as refused one past it.
+func TestBoardSettingsBoundaries(t *testing.T) {
+	c := modServer(t)
+
+	zero := c.createBoard(map[string]any{"slug": "text-only", "image_limit": 0, "archive_days": 0})
+	if zero.ImageLimit != 0 || zero.ArchiveDays != 0 {
+		t.Errorf("created image limit and archive days = %d/%d, want 0/0", zero.ImageLimit, zero.ArchiveDays)
+	}
+
+	var updated Board
+	if status := c.modBody(http.MethodPatch, "/api/boards/text-only", testModKey, map[string]any{
+		"image_limit": maxBoardImageLimit, "archive_days": maxBoardArchiveDays,
+	}, &updated); status != http.StatusOK {
+		t.Fatalf("update to the maxima: status %d", status)
+	}
+	if updated.ImageLimit != maxBoardImageLimit || updated.ArchiveDays != maxBoardArchiveDays {
+		t.Errorf("updated image limit and archive days = %d/%d, want %d/%d",
+			updated.ImageLimit, updated.ArchiveDays, maxBoardImageLimit, maxBoardArchiveDays)
+	}
+
+	// And back to zero through PATCH, which a pointer field has to tell apart
+	// from the setting being left out.
+	if status := c.modBody(http.MethodPatch, "/api/boards/text-only", testModKey,
+		map[string]any{"image_limit": 0, "archive_days": 0}, &updated); status != http.StatusOK {
+		t.Fatalf("update to zero: status %d", status)
+	}
+	if updated.ImageLimit != 0 || updated.ArchiveDays != 0 {
+		t.Errorf("updated image limit and archive days = %d/%d, want 0/0", updated.ImageLimit, updated.ArchiveDays)
+	}
+}
+
+// Rules are free text, normalised like a post body: line endings, stray
+// control characters, trailing spaces, and blank runs, so what is stored is
+// what every client will render.
+func TestBoardRulesAreNormalised(t *testing.T) {
+	c := modServer(t)
+
+	created := c.createBoard(map[string]any{
+		"slug":  "ruled",
+		"rules": "  1. Be kind.   \r\n\r\n\r\n\r\n2. No\x00 doxxing.\t\n  ",
+	})
+	if want := "1. Be kind.\n\n2. No doxxing."; created.Rules != want {
+		t.Errorf("rules = %q, want %q", created.Rules, want)
+	}
+
+	// The cap counts characters, not bytes: a rules page in Devanagari is as
+	// long as one in English.
+	long := strings.Repeat("\u0928", maxBoardRulesLen)
+	var updated Board
+	if status := c.modBody(http.MethodPatch, "/api/boards/ruled", testModKey,
+		map[string]any{"rules": long}, &updated); status != http.StatusOK {
+		t.Fatalf("rules at the cap: status %d", status)
+	}
+	if updated.Rules != long {
+		t.Errorf("rules at the cap were altered")
+	}
+
+	// Clearing them is an update like any other, not "no settings given".
+	if status := c.modBody(http.MethodPatch, "/api/boards/ruled", testModKey,
+		map[string]any{"rules": ""}, &updated); status != http.StatusOK {
+		t.Fatalf("clearing rules: status %d", status)
+	}
+	if updated.Rules != "" {
+		t.Errorf("rules = %q, want them cleared", updated.Rules)
 	}
 }
 

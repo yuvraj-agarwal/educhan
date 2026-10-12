@@ -39,6 +39,14 @@ type Board struct {
 	// ThreadLimit is how many threads a board keeps before the least recently
 	// bumped ones are pruned.
 	ThreadLimit int `json:"thread_limit"`
+	// ImageLimit is the most posts with an image a thread may hold, the opening
+	// post included. Zero means replies can never carry one.
+	ImageLimit int `json:"image_limit"`
+	// ArchiveDays is how long an archived thread is kept before the sweeper
+	// deletes it.
+	ArchiveDays int `json:"archive_days"`
+	// Rules is the board's own rules text, shown alongside the site-wide ones.
+	Rules string `json:"rules"`
 }
 
 // Post is a single message. Posts are numbered per board ("No. 42"), which is
