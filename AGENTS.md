@@ -234,6 +234,13 @@ the index, and the thread view each have their own narrow-screen layout.
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
   every badged post, so a forged local claim buys a 403 and nothing else.
+- The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
+  22 characters of unpadded base64url, made by `posterKey()` on the first post rather
+  than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
+  reply requests and nowhere else, so it cannot become a session identifier. A badged
+  post sends the credential **instead of** the key: the server takes a badged post's ID
+  from the credential, and the two travelling together would be the one place a
+  browser's key met its credential.
 
 ### Attachments
 

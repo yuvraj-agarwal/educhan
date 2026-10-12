@@ -32,6 +32,15 @@ const INSTITUTION_PREFIX = "u-";
 // Persisting is what makes the credential TTL mean anything.
 const CREDENTIAL_STORAGE_KEY = "educhan:credential";
 const CREDENTIAL_HEADER = "X-Educhan-Credential";
+// The poster key makes a per-thread poster ID belong to a browser rather than
+// to a network: behind a campus NAT every client shares one address, and IDs
+// keyed on it merge a lecture hall into one poster. It is random, made here,
+// and sent only on the two requests that create a post — never on a read, an
+// image, or anything else — because a key attached to everything would be a
+// session identifier. The server mixes it into its HMAC and never stores it.
+const POSTER_KEY_STORAGE_KEY = "educhan:poster-key";
+const POSTER_KEY_HEADER = "X-Educhan-Poster-Key";
+const POSTER_KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const ACCEPTED_IMAGES = "image/jpeg,image/png,image/webp,image/gif";
 const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|gif)$/i;
 // Fine pointers get quote previews on hover; touch screens have no hover to
@@ -1348,6 +1357,40 @@ document.addEventListener("drop", (event) => {
   setFile(field, event.dataTransfer.files[0]);
 });
 
+/* Poster key --------------------------------------------------------------- */
+
+// Held for the life of the page when storage refuses it, so posts made in one
+// sitting still share an ID; it is only lost on reload.
+let pagePosterKey = "";
+
+// newPosterKey is 16 random bytes as unpadded base64url: 22 characters.
+function newPosterKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// posterKey returns this browser's key, making it on the first post rather
+// than on the first visit: a reader who never posts never has one.
+function posterKey() {
+  try {
+    const stored = localStorage.getItem(POSTER_KEY_STORAGE_KEY);
+    if (stored && POSTER_KEY_PATTERN.test(stored)) {
+      return stored;
+    }
+  } catch {
+    // Storage is unavailable; the page's own key stands in below.
+  }
+  if (!pagePosterKey) {
+    pagePosterKey = newPosterKey();
+  }
+  try {
+    localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey);
+  } catch {
+    // Kept for this page only.
+  }
+  return pagePosterKey;
+}
+
 /* Submitting --------------------------------------------------------------- */
 
 el.main.addEventListener("submit", async (event) => {
@@ -1379,7 +1422,11 @@ el.main.addEventListener("submit", async (event) => {
     showNotice("Your badge is no longer available in this browser — verify again to post with it.");
     return;
   }
-  const headers = held ? { [CREDENTIAL_HEADER]: held.token } : undefined;
+  // A badged post carries the credential and not the poster key. The server
+  // derives a badged post's ID from the credential, so the key would do
+  // nothing there, and sending the two together would put this browser's key
+  // beside its credential in one request — the only place they could meet.
+  const headers = held ? { [CREDENTIAL_HEADER]: held.token } : { [POSTER_KEY_HEADER]: posterKey() };
 
   const isThread = form.dataset.kind === "thread";
   const payload = { name, body, badge: wantsBadge };

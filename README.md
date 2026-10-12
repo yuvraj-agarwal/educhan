@@ -320,6 +320,10 @@ top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
   post number quotes it into the reply box.
+- **Poster key**: the first post from a browser makes a random key and keeps it in
+  `localStorage`; it travels in `X-Educhan-Poster-Key` on new threads and replies only, so
+  two people on one campus network get different poster IDs without the key riding on
+  anything else. A badged post sends the credential instead, never both.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
