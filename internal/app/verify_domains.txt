@@ -19,10 +19,9 @@
 #   !nsw.edu.au               A denial. The domain and every subdomain of it
 #                             are refused, whatever else matches. It is for
 #                             school namespaces that sit inside an academic
-#                             suffix: the badge names higher-education
-#                             institutions, and whether a school address could
-#                             earn one is not decided, so a suffix that also
-#                             hands out pupils' addresses must not badge them.
+#                             suffix: the badge names a university or college,
+#                             so for now school addresses do not verify. This
+#                             limits the badge, not who may use the site.
 #
 # An address sitting directly on a suffix (someone@ac.in) is refused: a suffix
 # is a namespace, not an institution.
@@ -127,8 +126,7 @@ edu.uy
 # cosmetic: without one the address still verifies through its suffix, and the
 # badge names the domain rather than the institution. The Hong Kong and
 # Singapore entries are not: their suffixes are not listed, so these are the
-# only addresses there that verify. Polytechnics are left out on purpose,
-# because their students start at 17.
+# only addresses there that verify. Polytechnics are not listed yet.
 
 iitb.ac.in     = IIT Bombay
 iitd.ac.in     = IIT Delhi
