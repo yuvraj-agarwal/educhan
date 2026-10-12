@@ -1,4 +1,4 @@
-.PHONY: run build test check tidy fmt vet db-up cloud-preflight cloud-build cloud-deploy cloud-image
+.PHONY: run sweep build test check tidy fmt vet db-up cloud-preflight cloud-build cloud-deploy cloud-image
 
 # Start (or reuse) the local PostgreSQL cluster used for development.
 db-up:
@@ -7,6 +7,11 @@ db-up:
 # Run the development server (expects Postgres to be up; see `make db-up`).
 run:
 	go run ./cmd/server
+
+# Delete archived threads past their board's archive_days, media included, once.
+# In production the same binary runs this as a scheduled Cloud Run Job.
+sweep:
+	go run ./cmd/server -sweep
 
 build:
 	go build ./...

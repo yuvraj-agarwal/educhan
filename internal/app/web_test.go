@@ -1,7 +1,11 @@
 package app
 
 import (
+	"io"
 	"io/fs"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"regexp"
 	"strings"
 	"testing"
@@ -62,5 +66,54 @@ func TestWebShellReferencesItsAssets(t *testing.T) {
 		if !strings.Contains(shell, want) {
 			t.Errorf("index.html is missing %s", want)
 		}
+	}
+}
+
+// The UI reads its route from the path, so a page load of any of its views has
+// to come back as the shell: a board's views, a post link (where a cross-board
+// >>>/meta/5 lands), the institution boards' /u/<name>/ routes, which the UI
+// maps to the board stored as u-<name>, and the pages whose names are reserved
+// as board slugs. None of them touch the database, so the app has none.
+func TestPageLoadsServeTheShell(t *testing.T) {
+	shell, err := fs.ReadFile(webFS(), "index.html")
+	if err != nil {
+		t.Fatalf("reading index.html: %v", err)
+	}
+	routes := (&App{log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Routes()
+
+	for _, path := range []string{
+		"/", "/meta/", "/meta/catalog", "/meta/archive", "/meta/thread/1", "/meta/post/5",
+		"/u/iitb/", "/u/iitb/catalog", "/u/iitb/thread/1", "/u/iitb/post/5",
+		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy",
+	} {
+		t.Run(path, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, path, nil)
+			req.Header.Set("Accept", "text/html,application/xhtml+xml")
+			rec := httptest.NewRecorder()
+			routes.ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200", rec.Code)
+			}
+			if ct := rec.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+				t.Errorf("content type = %q, want text/html", ct)
+			}
+			if rec.Body.String() != string(shell) {
+				t.Errorf("body is not the shell: %.80q", rec.Body.String())
+			}
+			if rec.Header().Get("Content-Security-Policy") == "" {
+				t.Error("the shell went out without its CSP")
+			}
+		})
+	}
+
+	// The /u/ alias is the UI's alone. The API addresses a board by the slug it
+	// is stored under, and an unknown API path is a JSON 404, never the shell.
+	req := httptest.NewRequest(http.MethodGet, "/api/u/iitb/threads", nil)
+	req.Header.Set("Accept", "text/html")
+	rec := httptest.NewRecorder()
+	routes.ServeHTTP(rec, req)
+	if ct := rec.Header().Get("Content-Type"); rec.Code != http.StatusNotFound || !strings.HasPrefix(ct, "application/json") {
+		t.Errorf("GET /api/u/iitb/threads: status %d, %s; want a JSON 404", rec.Code, ct)
 	}
 }

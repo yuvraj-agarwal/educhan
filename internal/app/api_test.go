@@ -7,14 +7,17 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -38,6 +41,18 @@ func (h *harness) exec(query string, args ...any) {
 	}
 }
 
+// addBoard inserts boards straight into the database, with the column defaults
+// for every setting. A test posts to boards of its own rather than to seeded
+// ones, so it does not depend on which boards the migrations happen to seed;
+// one that needs other settings changes them with exec, like any other setup
+// the API does not expose to a poster.
+func (h *harness) addBoard(slugs ...string) {
+	h.t.Helper()
+	for _, slug := range slugs {
+		h.exec(`INSERT INTO boards (slug, name) VALUES ($1, $1)`, slug)
+	}
+}
+
 // testServer starts the application against an isolated schema in the
 // development database. Tests are skipped when no PostgreSQL instance is
 // reachable.
@@ -49,6 +64,47 @@ func testServer(t *testing.T, tune func(*Config)) *harness {
 // testServerLogging is testServer with the application's log written to logs
 // as JSON, for tests that assert on what the server logs.
 func testServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *harness {
+	t.Helper()
+
+	ctx := context.Background()
+	cfg := Config{
+		DatabaseURL:    testDatabaseURL(t),
+		PosterIDSalt:   "test-salt",
+		LogFormat:      "text",
+		UploadDir:      t.TempDir(),
+		MaxUploadBytes: defaultMaxUploadBytes,
+		UploadsEnabled: true,
+	}
+	if tune != nil {
+		tune(&cfg)
+	}
+
+	app, err := New(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)))
+	if err != nil {
+		t.Fatalf("start app: %v", err)
+	}
+	t.Cleanup(app.Close)
+
+	srv := httptest.NewServer(app.Routes())
+	t.Cleanup(srv.Close)
+
+	// A jar so the harness behaves like a browser: verification hands out
+	// cookies, and posting with a badge depends on one coming back.
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookie jar: %v", err)
+	}
+	return &harness{
+		client: &client{t: t, base: srv.URL, http: &http.Client{Jar: jar}},
+		app:    app,
+	}
+}
+
+// testDatabaseURL creates an isolated schema in the development database,
+// dropped when the test ends, and returns a connection string whose
+// search_path points into it. Tests are skipped when no PostgreSQL instance is
+// reachable.
+func testDatabaseURL(t *testing.T) string {
 	t.Helper()
 
 	baseURL := firstEnv("TEST_DATABASE_URL", "DATABASE_URL")
@@ -84,37 +140,7 @@ func testServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *harnes
 	if strings.Contains(baseURL, "?") {
 		separator = "&"
 	}
-	cfg := Config{
-		DatabaseURL:    baseURL + separator + "search_path=" + schema,
-		PosterIDSalt:   "test-salt",
-		LogFormat:      "text",
-		UploadDir:      t.TempDir(),
-		MaxUploadBytes: defaultMaxUploadBytes,
-		UploadsEnabled: true,
-	}
-	if tune != nil {
-		tune(&cfg)
-	}
-
-	app, err := New(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)))
-	if err != nil {
-		t.Fatalf("start app: %v", err)
-	}
-	t.Cleanup(app.Close)
-
-	srv := httptest.NewServer(app.Routes())
-	t.Cleanup(srv.Close)
-
-	// A jar so the harness behaves like a browser: verification hands out
-	// cookies, and posting with a badge depends on one coming back.
-	jar, err := cookiejar.New(nil)
-	if err != nil {
-		t.Fatalf("cookie jar: %v", err)
-	}
-	return &harness{
-		client: &client{t: t, base: srv.URL, http: &http.Client{Jar: jar}},
-		app:    app,
-	}
+	return baseURL + separator + "search_path=" + schema
 }
 
 type client struct {
@@ -231,28 +257,45 @@ func firstEnv(keys ...string) string {
 
 /* Tests -------------------------------------------------------------------- */
 
+// seededBoards is the board set the migrations open with, in listing order:
+// the subjects, then student life, with /meta/ last.
+var seededBoards = []string{
+	"math", "phys", "chem", "bio", "cs", "eng", "med", "law", "econ", "lit", "his", "phil", "lang",
+	"adm", "exam", "grad", "career", "abroad", "adv", "meta",
+}
+
 func TestBoardsAreSeeded(t *testing.T) {
 	c := testServer(t, nil)
+	// Opened later and alphabetically first, so it would lead a listing ordered
+	// by either; the seeded set has to come first regardless.
+	c.addBoard("aaa")
 
 	var out struct {
 		Boards []Board `json:"boards"`
 	}
 	c.get("/api/boards", &out)
-	if len(out.Boards) == 0 {
-		t.Fatal("expected the migration to seed boards")
+
+	var slugs []string
+	for _, b := range out.Boards {
+		slugs = append(slugs, b.Slug)
+	}
+	if want := append(slices.Clone(seededBoards), "aaa"); !slices.Equal(slugs, want) {
+		t.Fatalf("boards = %v, want exactly %v in that order", slugs, want)
 	}
 
-	slugs := map[string]Board{}
-	for _, b := range out.Boards {
-		slugs[b.Slug] = b
-	}
-	for _, want := range []string{"placements", "research", "general"} {
-		board, ok := slugs[want]
-		if !ok {
-			t.Fatalf("board %q missing from %v", want, slugs)
-		}
-		if board.BumpLimit <= 0 || board.ThreadLimit <= 0 {
-			t.Errorf("board %q has unusable limits: %+v", want, board)
+	// The migration writes these rows without going through the API, so hold
+	// them to what the API would have accepted.
+	for _, b := range out.Boards[:len(seededBoards)] {
+		switch {
+		case !boardSlugPattern.MatchString(b.Slug) || reservedBoardSlugs[b.Slug]:
+			t.Errorf("/%s/ is not a slug the API would accept", b.Slug)
+		case b.Name == "" || utf8.RuneCountInString(b.Name) > maxBoardNameLen:
+			t.Errorf("/%s/ has an unusable name %q", b.Slug, b.Name)
+		case b.Description == "" || utf8.RuneCountInString(b.Description) > maxBoardDescLen:
+			t.Errorf("/%s/ has an unusable description %q", b.Slug, b.Description)
+		case b.BumpLimit != defaultBoardBumpLimit || b.ThreadLimit != defaultBoardThreadLimit ||
+			b.ImageLimit != defaultBoardImageLimit || b.ArchiveDays != defaultBoardArchiveDays:
+			t.Errorf("/%s/ does not have the default limits: %+v", b.Slug, b)
 		}
 	}
 }
@@ -269,6 +312,7 @@ func TestHealthz(t *testing.T) {
 
 func TestPostNumbersArePerBoard(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general", "research")
 
 	general := c.createThread("general", "first", "", "hello /general/")
 	if general.No != 1 || general.ThreadNo != 1 {
@@ -287,6 +331,7 @@ func TestPostNumbersArePerBoard(t *testing.T) {
 
 func TestAnonymousIdentity(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	thread := c.createThread("general", "identity", "", "no name given")
 	c.reply("general", thread.ThreadNo, "ana#secret", "with a tripcode", false)
@@ -303,8 +348,9 @@ func TestAnonymousIdentity(t *testing.T) {
 	if op.Tripcode != "" {
 		t.Errorf("op should have no tripcode, got %q", op.Tripcode)
 	}
-	if reply.Name != "ana" || !strings.HasPrefix(reply.Tripcode, "!") {
-		t.Errorf("reply identity = %q/%q, want ana with a tripcode", reply.Name, reply.Tripcode)
+	// "#secret" makes the salted tripcode, the only kind there is.
+	if reply.Name != "ana" || !strings.HasPrefix(reply.Tripcode, "!!") {
+		t.Errorf("reply identity = %q/%q, want ana with a \"!!\" tripcode", reply.Name, reply.Tripcode)
 	}
 	if op.PosterID == "" || op.PosterID != reply.PosterID {
 		t.Errorf("both posts come from the same client, so poster IDs should match: %q vs %q",
@@ -320,6 +366,7 @@ func TestAnonymousIdentity(t *testing.T) {
 
 func TestQuotesAndBacklinks(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	thread := c.createThread("general", "quoting", "", "the original post")
 	first := c.reply("general", thread.ThreadNo, "", fmt.Sprintf(">>%d\nagreed", thread.No), false)
@@ -347,6 +394,7 @@ func TestQuotesAndBacklinks(t *testing.T) {
 
 func TestIndexOrdersByBumpAndHonoursSage(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	older := c.createThread("general", "older", "", "posted first")
 	newer := c.createThread("general", "newer", "", "posted second")
@@ -374,6 +422,7 @@ func TestIndexOrdersByBumpAndHonoursSage(t *testing.T) {
 
 func TestIndexShowsOpAndLastReplies(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	thread := c.createThread("general", "tail", "", "opening post")
 	for i := 1; i <= indexRepliesPerThread+2; i++ {
@@ -398,6 +447,7 @@ func TestIndexShowsOpAndLastReplies(t *testing.T) {
 
 func TestIndexPagination(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	for i := 0; i < indexPageSize+2; i++ {
 		c.createThread("general", "", "", fmt.Sprintf("thread %d", i))
@@ -427,6 +477,7 @@ func TestIndexPagination(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	long := strings.Repeat("verbose ", 60)
 	thread := c.createThread("general", "catalog subject", "", long)
@@ -452,6 +503,7 @@ func TestCatalog(t *testing.T) {
 
 func TestValidation(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	cases := []struct {
 		name      string
@@ -482,6 +534,7 @@ func TestValidation(t *testing.T) {
 
 func TestNotFoundResponses(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	cases := []struct {
 		method string
@@ -511,6 +564,7 @@ func TestNotFoundResponses(t *testing.T) {
 
 func TestThreadRoutesByPrimaryKey(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general", "research")
 
 	// Thread 1 on /general/ and thread 1 on /research/ share a number but not a
 	// primary key, so the legacy id route must resolve the right one.
@@ -532,11 +586,72 @@ func TestThreadRoutesByPrimaryKey(t *testing.T) {
 	}
 }
 
+// A post link names a board and a number and nothing else, so the resolver is
+// what turns >>>/slug/123 into a thread to open and a post to scroll to. It
+// answers exactly the board, the post, and the thread, and nothing about the
+// post itself.
+func TestResolvePost(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("here", "there")
+
+	thread := h.createThread("here", "", "", "opening post")
+	reply := h.reply("here", thread.ThreadNo, "", "a reply", false)
+	other := h.createThread("here", "", "", "another thread")
+	// Numbered from 1 like every board, so its numbers collide with /here/'s.
+	elsewhere := h.createThread("there", "", "", "on another board")
+	elsewhereReply := h.reply("there", elsewhere.ThreadNo, "", "No. 2 on /there/", false)
+
+	resolve := func(path string) (int, map[string]any) {
+		t.Helper()
+		var out map[string]any
+		return h.do(http.MethodGet, path, nil, &out), out
+	}
+	expect := func(board string, no, threadNo int64) {
+		t.Helper()
+		path := fmt.Sprintf("/api/boards/%s/posts/%d", board, no)
+		status, out := resolve(path)
+		want := map[string]any{"board": board, "no": float64(no), "thread_no": float64(threadNo)}
+		if status != http.StatusOK || !maps.Equal(out, want) {
+			t.Errorf("GET %s: status %d, %v; want 200, %v", path, status, out, want)
+		}
+	}
+
+	expect("here", thread.No, thread.ThreadNo)
+	expect("here", reply.No, thread.ThreadNo)
+	expect("here", other.No, other.ThreadNo)
+	expect("there", elsewhere.No, elsewhere.ThreadNo)
+	expect("there", elsewhereReply.No, elsewhere.ThreadNo)
+
+	// An archived thread still loads, so its posts still resolve.
+	h.archiveThread("here", thread.ThreadNo, 0)
+	expect("here", reply.No, thread.ThreadNo)
+
+	// /there/ has a No. 2 and so does /here/; a deleted one is gone from
+	// its own board only.
+	h.modAction(http.MethodDelete, fmt.Sprintf("/api/boards/there/threads/%d/posts/%d", elsewhere.ThreadNo, elsewhereReply.No))
+	expect("here", reply.No, thread.ThreadNo)
+
+	for path, wantStatus := range map[string]int{
+		fmt.Sprintf("/api/boards/there/posts/%d", elsewhereReply.No): http.StatusNotFound,
+		"/api/boards/here/posts/999":                                 http.StatusNotFound,
+		"/api/boards/nowhere/posts/1":                                http.StatusNotFound,
+		"/api/boards/here/posts/abc":                                 http.StatusBadRequest,
+		"/api/boards/here/posts/0":                                   http.StatusBadRequest,
+		"/api/boards/here/posts/-1":                                  http.StatusBadRequest,
+	} {
+		status, out := resolve(path)
+		if status != wantStatus || out["error"] == nil {
+			t.Errorf("GET %s: status %d, %v; want %d with an error", path, status, out, wantStatus)
+		}
+	}
+}
+
 func TestFloodControl(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.ThreadCooldown = time.Minute
 		cfg.PostCooldown = time.Minute
 	})
+	c.addBoard("general")
 
 	thread := c.createThread("general", "first", "", "allowed")
 
@@ -568,6 +683,7 @@ func TestFloodControl(t *testing.T) {
 // boards without being told to slow down.
 func TestFloodControlIsPerBoard(t *testing.T) {
 	c := testServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Minute })
+	c.addBoard("general", "research")
 
 	c.createThread("general", "first", "", "allowed")
 	c.createThread("research", "first", "", "a different board has its own cooldown")
@@ -583,6 +699,7 @@ func TestFloodControlIsPerBoard(t *testing.T) {
 // wherever the post lands, so a second board is no way around it.
 func TestUploadFloodControl(t *testing.T) {
 	c := testServer(t, func(cfg *Config) { cfg.UploadCooldown = time.Minute })
+	c.addBoard("general", "research")
 	image := pngBytes(t, 32, 32)
 
 	var out map[string]any
@@ -615,6 +732,7 @@ func TestUploadRejectionDoesNotConsumeThePostCooldown(t *testing.T) {
 		cfg.PostCooldown = time.Millisecond
 		cfg.UploadCooldown = time.Minute
 	})
+	c.addBoard("general")
 	image := pngBytes(t, 32, 32)
 
 	thread := c.createThread("general", "uploads", "", "opening post")
@@ -639,6 +757,7 @@ func TestUploadRejectionDoesNotConsumeThePostCooldown(t *testing.T) {
 
 func TestThreadPruning(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	const limit = 3
 	c.exec(`UPDATE boards SET thread_limit = $1 WHERE slug = 'general'`, limit)
@@ -672,6 +791,7 @@ func TestThreadPruning(t *testing.T) {
 
 func TestLockedThreadRejectsReplies(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	thread := c.createThread("general", "locked", "", "no more replies please")
 	c.exec(`UPDATE threads SET locked = TRUE WHERE no = $1`, thread.ThreadNo)
@@ -693,6 +813,7 @@ func TestLockedThreadRejectsReplies(t *testing.T) {
 
 func TestStickyThreadLeadsIndex(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	pinned := c.createThread("general", "read me first", "", "board rules")
 	c.exec(`UPDATE threads SET sticky = TRUE WHERE no = $1`, pinned.ThreadNo)
@@ -707,6 +828,7 @@ func TestStickyThreadLeadsIndex(t *testing.T) {
 
 func TestBumpLimitStopsBumping(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	c.exec(`UPDATE boards SET bump_limit = 1 WHERE slug = 'general'`)
 	first := c.createThread("general", "will stop bumping", "", "opening post")

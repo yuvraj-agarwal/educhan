@@ -36,6 +36,11 @@ import (
 //  3. Nothing links a credential to a post. The badge is copied onto the post
 //     as text, the verification tables reference no post, and using a
 //     credential updates no row, so there is no timestamp to line up against.
+//     A badged post's poster ID is derived from the random id inside the
+//     credential as presented, never from what the database keeps of it, so
+//     it ties a credential's posts together within one thread — as any
+//     poster's ID does — and can be recomputed only by someone holding the
+//     credential itself as well as the salt.
 //  4. The credential travels only when it is being used. It is handed to the
 //     client once and presented in a header on the posts that ask for a badge,
 //     so it is absent from every anonymous post, every page load, and every
@@ -345,25 +350,38 @@ func (a *App) credential(ctx context.Context, r *http.Request) (credential, erro
 	return cred, nil
 }
 
-// postBadge resolves the badge a submission asked for. It answers "" for a post
-// made without one, which is every post by default.
+// badgeGrant is what postBadge hands a posting handler: the label to show on
+// the post, and the random id of the credential that earned it. The zero value
+// is an unbadged post.
+type badgeGrant struct {
+	Label string
+	// CredentialID is the id inside the credential the request presented and
+	// postBadge verified. It leaves postBadge for one purpose, deriving the
+	// post's poster ID in posterSourceFor, and must never be logged, stored, or
+	// put in a response: it is the credential's identity, and posts carry none.
+	// TestCredentialIDOnlyFeedsThePosterID holds it to that.
+	CredentialID string
+}
+
+// postBadge resolves the badge a submission asked for. It answers the zero
+// badgeGrant for a post made without one, which is every post by default.
 //
 // A request for a badge that cannot be honoured is refused rather than quietly
 // posted bare: the poster asked to be seen as verified, and finding out
 // afterwards that they were not is worse than being told now.
-func (a *App) postBadge(w http.ResponseWriter, r *http.Request, want bool) (string, bool) {
+func (a *App) postBadge(w http.ResponseWriter, r *http.Request, want bool) (badgeGrant, bool) {
 	if !want {
-		return "", true
+		return badgeGrant{}, true
 	}
 	if !a.verifyEnabled() {
 		writeError(w, http.StatusForbidden, "verification is not configured")
-		return "", false
+		return badgeGrant{}, false
 	}
 
 	cred, err := a.credential(r.Context(), r)
 	switch {
 	case err == nil:
-		return cred.Label, true
+		return badgeGrant{Label: cred.Label, CredentialID: cred.ID}, true
 	case errors.Is(err, errNoCredential):
 		refuseBadge(w, credentialMissing,
 			"verify an institutional address before posting with a badge")
@@ -376,7 +394,7 @@ func (a *App) postBadge(w http.ResponseWriter, r *http.Request, want bool) (stri
 	default:
 		a.fail(w, r, err, "could not read verification")
 	}
-	return "", false
+	return badgeGrant{}, false
 }
 
 // refuseBadge answers a post that asked for a badge it cannot have. The reason

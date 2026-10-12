@@ -377,6 +377,7 @@ func TestVerificationRejectsNonAcademicDomains(t *testing.T) {
 // moved to another browser, and it takes the previous credential with it.
 func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 
 	first := h.verify("ana@iitb.ac.in").Credential
 
@@ -416,6 +417,7 @@ func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 // consulted, and says so in a way that tells the holder what to do about it.
 func TestExpiredCredentialStopsBadging(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.VerifyCredentialTTL = 40 * time.Millisecond })
+	h.addBoard("general")
 
 	credential := h.verify("ana@iitb.ac.in").Credential
 	time.Sleep(60 * time.Millisecond)
@@ -479,6 +481,7 @@ func TestVerificationRateLimits(t *testing.T) {
 
 func TestPostingWithAndWithoutABadge(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 
 	// Without a credential, asking for a badge is refused rather than quietly
 	// dropped: being told now beats finding out from the posted thread.
@@ -531,10 +534,15 @@ func TestPostingWithAndWithoutABadge(t *testing.T) {
 	if badged.Badge != "IIT Bombay" {
 		t.Errorf("badged reply = %q, want IIT Bombay", badged.Badge)
 	}
-	// A badge says nothing about who posted: the poster ID is the same across
-	// all three, and the two badged posts are no more linked than any others.
-	if op.PosterID != plain.PosterID {
-		t.Errorf("poster IDs differ within a thread: %q vs %q", op.PosterID, plain.PosterID)
+	// The unbadged reply came from the same client, and must not share the
+	// badged posts' ID: if it did, the ID would tie it to the institution. The
+	// two badged posts share one, derived from the credential, as any poster's
+	// posts in one thread do.
+	if op.PosterID == plain.PosterID {
+		t.Errorf("a badged and an unbadged post from one client share the poster ID %q", op.PosterID)
+	}
+	if op.PosterID != badged.PosterID {
+		t.Errorf("one credential in one thread got poster IDs %q and %q, want one", op.PosterID, badged.PosterID)
 	}
 
 	// The index builds its posts from a different query, so it needs asserting
@@ -558,6 +566,7 @@ func TestPostingWithAndWithoutABadge(t *testing.T) {
 
 func TestVerificationIsOffWithoutASecret(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	var status verifyResponse
 	c.get("/api/verify", &status)
@@ -586,6 +595,7 @@ func TestVerificationIsOffWithoutASecret(t *testing.T) {
 // look for the address in every column of every table.
 func TestNoEmailAddressReachesTheDatabase(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 
 	// iitb.ac.in maps to a named institution, so even the domain has no reason
 	// to appear. For a domain matched by suffix alone the badge *is* the
@@ -670,6 +680,37 @@ func TestVerificationTablesCannotBeJoinedToPosts(t *testing.T) {
 		if strings.Contains(column, "verif") || strings.Contains(column, "credential") {
 			t.Errorf("posts.%s links a post to a verification record", column)
 		}
+	}
+}
+
+// TestPostsTableColumnsArePinned holds the posts table to the columns it has
+// today, so every future column is a decision somebody made on purpose rather
+// than a migration that slipped through. A post is the record every reader can
+// see the public half of, and anything stored beside it is stored about every
+// poster. In particular nothing derived from a poster key, a credential, an
+// address, or an email belongs here unless a change says why and a test pins
+// what it can be used for; the ban handles planned for later are exactly such
+// a column, and adding one should mean editing this list in the same change.
+func TestPostsTableColumnsArePinned(t *testing.T) {
+	h := testServer(t, nil)
+
+	want := []string{
+		"badge",      // the institution label, as text; never a reference to a credential
+		"board_id",   // which board's numbering the post belongs to
+		"body",       // the post text
+		"created_at", // shown on the post
+		"id",         // internal primary key
+		"is_op",      // the opening post of its thread
+		"name",       // display name, "Anonymous" by default
+		"no",         // the per-board number posters quote
+		"poster_id",  // the per-thread ID: a keyed hash, never the input it came from
+		"thread_id",  // the thread the post is in
+		"tripcode",   // the salted tripcode, if the poster used one; never the secret
+	}
+	if got := h.columns("posts"); strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("posts has columns %v, want exactly %v\n"+
+			"a new column on posts is stored about every poster: add it here deliberately, "+
+			"with what it holds and why it cannot identify anyone", got, want)
 	}
 }
 

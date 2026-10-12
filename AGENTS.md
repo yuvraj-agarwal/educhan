@@ -3,7 +3,7 @@
 educhan is an anonymous imageboard for tertiary education. This repository contains the
 working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
 anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, threads with quote links, per-client flood control, key-authenticated
+a catalog view, a per-board archive, threads with quote links, per-client flood control, key-authenticated
 moderation and board management, and optional institutional verification badges are
 implemented. Janitor accounts, bans, and reports are not.
 
@@ -11,17 +11,20 @@ implemented. Janitor accounts, bans, and reports are not.
 
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
   `golang.org/x/image` (WebP decoding and thumbnail scaling).
-- `cmd/server` — entrypoint (config, logger, graceful shutdown).
+- `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
+  `-sweep` mode that deletes expired archived threads and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
   - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
   - `boards.go` — board creation and settings updates, behind the same key.
+  - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
-  - `identity.go` — anonymous names, tripcodes, poster IDs; `text.go` — post text rules.
+  - `identity.go` — anonymous names, tripcodes, the poster key, poster IDs; `text.go` —
+    post text rules.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
@@ -48,6 +51,7 @@ implemented. Janitor accounts, bans, and reports are not.
   on `localhost:5432`, not a container
 - Run the server: `make run` (`go run ./cmd/server`, expects Postgres up), or the `server`
   terminal
+- Sweep the archive once: `make sweep` (`go run ./cmd/server -sweep`, same configuration)
 - **The local loop has no containers in it**: no compose stack, no local image build
 - Build the image: `make cloud-build` — Cloud Build builds the `Dockerfile` and pushes to
   Artifact Registry as `:<short SHA>` and `:latest`. It needs gcloud and a GCP project,
@@ -91,18 +95,26 @@ rejected, so pass the header explicitly.
 ```bash
 # Health + seeded boards
 curl -s localhost:8080/healthz    # -> {"status":"ok"}
-curl -s localhost:8080/api/boards # -> placements / research / general
+curl -s localhost:8080/api/boards # -> /math/ … /lang/, then /adm/ … /meta/
 
 # Create a thread, reply to it with a quote link, and read it back
-TNO=$(curl -s -X POST localhost:8080/api/boards/general/threads \
+TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"smoke test","name":"ana#trip","body":"hello"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["no"])')
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts \
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
   -H 'Content-Type: application/json' -d "{\"body\":\">>$TNO\nreply\"}"
-curl -s localhost:8080/api/boards/general/threads/$TNO   # both posts, with backlinks
-curl -s "localhost:8080/api/boards/general/threads?page=1" # index page
-curl -s localhost:8080/api/boards/general/catalog          # catalog tiles
+curl -s localhost:8080/api/boards/meta/threads/$TNO   # both posts, with backlinks
+curl -s "localhost:8080/api/boards/meta/threads?page=1" # index page
+curl -s localhost:8080/api/boards/meta/catalog          # catalog tiles
+curl -s localhost:8080/api/boards/meta/archive          # threads pushed off the board
+curl -s localhost:8080/api/boards/meta/posts/$TNO       # {"board","no","thread_no"}: where a post lives
+
+# A poster key, as the browser makes one: 16 random bytes, base64url, no padding.
+# Posts carrying it get their poster ID from it; posts without it, from the address.
+KEY=$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -H "X-Educhan-Poster-Key: $KEY" -d '{"body":"keyed"}'
 
 # Confirm persistence in PostgreSQL
 psql -h localhost -p 5432 -U educhan -d educhan \
@@ -115,13 +127,13 @@ field, and everything else stays the same. Uploads are off unless
 
 ```bash
 # Thread with an image, then read back the attachment metadata
-TNO=$(curl -s -X POST localhost:8080/api/boards/general/threads \
+TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="with image" -F body="look at this" -F image=@/path/to/photo.png \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["no"])')
-curl -s localhost:8080/api/boards/general/threads/$TNO # posts[].attachment.{url,thumb_url,…}
+curl -s localhost:8080/api/boards/meta/threads/$TNO # posts[].attachment.{url,thumb_url,…}
 
 # Reply with an image; the body may be empty when an image is attached
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts -F image=@/path/to/photo.jpg
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts -F image=@/path/to/photo.jpg
 ```
 
 Moderation needs `EDUCHAN_MOD_KEY` set on the server; without it every moderation
@@ -132,17 +144,18 @@ EDUCHAN_MOD_KEY=dev-mod-key make run
 ```
 
 ```bash
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/sticky \
   -H 'Authorization: Bearer dev-mod-key'   # also /unsticky, /lock, /unlock
-curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO/posts/$PNO \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
   -H 'Authorization: Bearer dev-mod-key'   # one post plus its attachment files
-curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO \
   -H 'Authorization: Bearer dev-mod-key'   # the thread, its posts, its attachments
 ```
 
 Boards are created and reconfigured with the same key. Everything but the slug is
 optional; the slug is lowercase letters and digits in dash-separated groups, at most 24
-characters, and may not be `api`, `media`, or `healthz`:
+characters, and may not be one of `reservedBoardSlugs` (`boards.go`). An institution
+board is stored as `u-<name>` and shown by the UI at `/u/<name>/`:
 
 ```bash
 curl -s -X POST localhost:8080/api/boards \
@@ -150,8 +163,27 @@ curl -s -X POST localhost:8080/api/boards \
   -d '{"slug":"comp-sci","name":"Computer Science"}'          # 409 if the slug is taken
 curl -s -X PATCH localhost:8080/api/boards/comp-sci \
   -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
-  -d '{"description":"Systems and theory","thread_limit":50}' # omitted fields are unchanged
+  -d '{"description":"Systems and theory","thread_limit":50,"image_limit":100}' # omitted fields are unchanged
 curl -s localhost:8080/api/boards/comp-sci/catalog            # a new board works everywhere
+curl -s -X POST localhost:8080/api/boards \
+  -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
+  -d '{"slug":"u-iitb","name":"IIT Bombay"}'                  # page at /u/iitb/, API at /api/boards/u-iitb
+```
+
+Archiving and the sweeper are easiest to see on a board with room for one thread and no
+archive period, with the server running with `EDUCHAN_THREAD_COOLDOWN=0` so the two
+threads can be posted back to back. The sweeper is the same binary in a one-shot mode,
+run against the same database while the server keeps running:
+
+```bash
+curl -s -X PATCH localhost:8080/api/boards/comp-sci \
+  -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
+  -d '{"thread_limit":1,"archive_days":0}'
+for body in first second; do curl -s -X POST localhost:8080/api/boards/comp-sci/threads \
+  -H 'Content-Type: application/json' -d "{\"body\":\"$body\"}"; done
+curl -s localhost:8080/api/boards/comp-sci/archive   # "first", archived by "second"
+make sweep                                           # logs: msg=sweep threads=1 posts=1 …
+curl -s localhost:8080/api/boards/comp-sci/archive   # empty; the thread now answers 404
 ```
 
 Institutional verification needs `EDUCHAN_VERIFY_SECRET`; without it `/api/verify` reports
@@ -171,10 +203,10 @@ CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
   -H 'Content-Type: application/json' -d '{"code":"481920"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
 curl -s localhost:8080/api/verify                   # -> {"enabled":true}, and nothing about you
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/meta/threads \
   -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
   -d '{"body":"badged","badge":true}'
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/meta/threads \
   -H 'Content-Type: application/json' -d '{"body":"anonymous"}'  # no header, no badge
 ```
 
@@ -200,8 +232,8 @@ EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make
 ```
 
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
-board index at `/general/`, catalog at `/general/catalog`, thread at
-`/general/thread/{no}`). Prefer a browser walkthrough for anything that affects
+board index at `/meta/`, catalog at `/meta/catalog`, thread at
+`/meta/thread/{no}`). Prefer a browser walkthrough for anything that affects
 `internal/app/web/`, and check a phone viewport as well as a desktop one — the catalog,
 the index, and the thread view each have their own narrow-screen layout.
 
@@ -237,6 +269,22 @@ the index, and the thread view each have their own narrow-screen layout.
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
   `gcs` backend puts them in `$EDUCHAN_GCS_BUCKET` under an optional
   `$EDUCHAN_GCS_PREFIX`. The key layout is identical either way.
+- Spoilers are a flag on the attachment row (`attachments.spoiler`), accepted as
+  `spoiler` in JSON and in multipart (through `isTruthy`), and returned on every
+  attachment as `spoiler`, `false` included. The server still makes and serves a normal
+  thumbnail; covering it is the client's job. A JSON post can carry the flag but never
+  an image, so there it has nothing to apply to.
+- **Per-thread image cap.** `boards.image_limit` caps the posts with an image in one
+  thread, the opening post included; thread creation is not capped (there is no
+  conversation yet to cap). `CreateReply` enforces it for a reply bringing an image by
+  counting the thread's posts with attachments while it holds the thread row lock, so
+  concurrent replies cannot both take the last slot
+  (`TestImageLimitHoldsUnderConcurrentReplies`), and refuses with `errImageLimit`
+  (`403 image limit reached`). `threads.image_count` is the denormalised copy the
+  listings read for `images`/`at_image_limit`: set on thread creation, set from that
+  count on every image reply, and recounted when a post is deleted. Nothing enforces
+  the cap against the counter. The upload is stored before the check, as it is before
+  the lock and archive checks, and the handler's `discardUpload` removes it on refusal.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
@@ -265,6 +313,72 @@ the index, and the thread view each have their own narrow-screen layout.
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
   than editing an applied one; `0001_init.sql` is deliberately written with
   `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
+  A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
+  (`verify_api_test.go`) in the same change: everything on that table is stored about
+  every poster, so each column is there because somebody decided it should be.
+- **Threads are archived, not pruned.** A new thread that takes a board past its
+  `thread_limit` sets `archived_at` on the least recently bumped non-sticky live threads
+  (`pruneThreads`). Every live view — the index count and list, the catalog, and the
+  prune subquery itself — filters `archived_at IS NULL`, which is what keeps archived
+  threads from counting against the limit or being archived a second time
+  (`TestArchivedThreadsDoNotCountAgainstTheLimit`); the partial index
+  `threads_board_live_order_idx` covers exactly that set. `Thread()` still serves an
+  archived thread, with `archived_at` set, and `CreateReply` refuses it with
+  `errThreadArchived` (`403 thread is archived`), checked before the lock flag so the
+  poster is told the reason that will not change. `/api/boards/{slug}/archive` lists at
+  most `archiveLimit` (3000) of them, newest archived first, with only the start of each
+  opening post read from the database. A new query over threads has to decide which set
+  it means.
+- **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
+  board's `archive_days` have passed. It is a one-shot mode rather than a timer because
+  Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
+  on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
+  `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
+  a cutoff fixed when the sweep starts, so a sweep always terminates; each batch's blobs
+  go through `removeBlobs` after its commit, exactly as a moderator's deletion does. It
+  logs one record of counts and nothing that names a board or thread
+  (`TestSweepLogsOnlyCounts`), and returns an error — a non-zero exit — on a database
+  failure or if any blob could not be removed. **Legal holds (build plan 2.10) are not
+  built**; when they are, `SweepArchived` must skip held threads, and its comment says so.
+- **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
+  `identity.go` picks the source: on a badged post the credential's random id, otherwise
+  the browser's poster key, otherwise the client address. The poster key is 16 random
+  bytes the client keeps in `localStorage` under `educhan:poster-key` and sends,
+  base64url-encoded, in `X-Educhan-Poster-Key` on thread and reply requests only;
+  `posterKey` reads it in the two posting handlers and nowhere else. `posterSource` is a
+  tagged type (`key:`, `ip:`, `cred:`) made only through its three constructors, so the
+  sources can never produce the same HMAC input and an untagged string cannot reach
+  `posterID` by accident. What keeps it honest:
+  - The poster key is never stored and never logged. `TestPosterKeyIsNeverStoredOrLogged`
+    drives every posting path with one, then searches every column of every table and
+    the captured log for it, with positive controls. Do not put it in a log line, a
+    column, a cooldown key, or anything else that outlives the request: kept anywhere, it
+    is one identifier across all of a browser's threads.
+  - Flood control stays on `clientIP`. The key is client-chosen, so a limit keyed on it
+    is one any client can step around; for the same reason a poster ID is a courtesy for
+    following a thread, not proof of anything.
+  - A badged post's ID comes from the raw credential id as presented, never from
+    `credential_id_hash` or any other stored value: an ID derived from stored data could
+    be recomputed by anyone holding the database and the salt, for every credential in
+    every thread, tying badged posts across threads back to a verification row. It never
+    uses the poster key either, or a badged post and an unbadged reply from one browser
+    would share an ID and tie the reply to the institution. `postBadge` returns the id in
+    `badgeGrant.CredentialID`; `TestCredentialIDOnlyFeedsThePosterID` pins that only
+    `postBadge` and `posterSourceFor` touch it, and
+    `TestBadgedPosterIDCannotBeRecomputedFromTheDatabase` tries every plausible
+    derivation from the verification tables, with the true one as its positive control.
+  - Header absent means the address fallback; present but not exactly 22 base64url
+    characters (empty, padded, sent twice) is `400 invalid poster key`, checked before the
+    body is parsed, so it costs no cooldown and stores no upload.
+  - Changing the derivation changes every live thread's IDs mid-conversation. There was
+    no production data when the poster key arrived, so that change was free; later ones
+    will not be.
+- **Tripcodes are salted, always.** `name#secret` and `name##secret` give the same
+  tripcode, `"!!"` plus `HMAC(EDUCHAN_POSTER_ID_SALT, "trip:"+secret)` (`tripcode` in
+  `identity.go`), which is the derivation `##` always had, so existing secure tripcodes
+  did not change. The unkeyed single-`!` kind was retired because a plain hash of a
+  hand-picked secret can be cracked offline from the tripcode alone; do not bring it
+  back as a convenience. `TestParseIdentityTripcodesAreAllSalted` pins the derivation.
 - Post numbers are allocated per board from `boards.next_post_no`; a thread's number is
   the number of its opening post. Thread primary keys stay internal apart from the
   `/api/threads/{id}` compatibility routes.
@@ -289,15 +403,45 @@ the index, and the thread view each have their own narrow-screen layout.
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
   configured depth or a non-IP entry falls back to the peer address. Setting it higher than
-  the real chain hands clients control of their own rate-limit bucket and poster ID.
+  the real chain hands clients control of their own rate-limit bucket, and of their poster
+  ID when they send no poster key.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
-- Board management (`boards.go`) reuses that gate and needs no migration: `0002` already
-  gives `boards` its limits and `next_post_no`. Slugs are validated and normalised before
-  they reach SQL, a duplicate comes back as `errConflict` from the unique index (`409`),
-  and the slug itself is not updatable because it is the board's address.
+  `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
+  nothing would come back for the files later.
+- **Routes.** The UI reads any first path segment it does not recognise as a board's
+  slug, so `reservedBoardSlugs` in `boards.go` holds every first segment that means
+  something else — the server's own routes, the UI's pages, and `u` — and has to agree
+  with `parseRoute` in `app.js`; a new top-level page means adding its name to both.
+  `TestReservedBoardSlugs` covers the list. An institution board is stored as
+  `u-<name>` and shown at `/u/<name>/`: the UI does the mapping, and the server needs no
+  alias because `webHandler` serves the shell for every path that is not an asset, an
+  API route, or media (`TestPageLoadsServeTheShell`). The API only ever takes the
+  stored slug. A post link — `/<board>/post/<no>`, which is where `>>>/slug/123` in post
+  text points — names no thread, so the UI asks `GET /api/boards/{slug}/posts/{no}`
+  (`handleResolvePost`) for the thread number before opening it at `#p<no>`. It answers
+  for archived threads too, since they still load, and says nothing about the post but
+  where it is.
+- **The board set** is seeded by `0006_board_set.sql`: thirteen subject boards (`/math/`
+  to `/lang/`) and seven student-life ones (`/adm/` to `/meta/`). It renamed the three
+  boards `0001` seeded in place — `placements` to `career`, `research` to `grad`,
+  `general` to `meta` — so their rows and threads carried over, and it skips any rename
+  or insert whose slug is already taken, so it cannot clobber a board a moderator
+  opened. `boards.sort_order` is the listing order: `Boards()` lists the seeded set in
+  that order and then everything opened over the API (`NULL`), oldest first.
+  `/adm/` is admissions and entrance exams at every level, school-leaving included;
+  `/meta/` is about educhan itself.
+- Board management (`boards.go`) reuses that gate. `0002` gives `boards` its bump and
+  thread limits and `next_post_no`; `0005` adds `image_limit`, `archive_days`, and
+  `rules`. The API defaults in `boards.go` mirror the column defaults, and
+  `TestCreateBoardDefaults` holds the two together. Slugs are validated and normalised
+  before they reach SQL, a duplicate comes back as `errConflict` from the unique index
+  (`409`), and the slug itself is not updatable because it is the board's address.
+  No numeric setting has an "unlimited" value: `boardLimit` refuses zero for the bump
+  and thread limits and reads it literally for `image_limit` (no images in replies) and
+  `archive_days` (gone at the next sweep).
 - **Verified Anonymity is a privacy guarantee before it is a feature, and the README
   states it in full.** Three rules make it true, and a change that breaks any of them
   breaks the promise rather than just the code: the address is never written anywhere
@@ -323,6 +467,8 @@ the index, and the thread view each have their own narrow-screen layout.
     `GET /api/verify` reports whether the feature is configured and nothing about the
     caller: answering "am I verified?" would mean the credential travelling off the
     badge path. The client reads its own label and expiry out of the credential locally.
+    The one thing besides the label that leaves the badge path is the credential's random
+    id, and only as far as the badged post's poster ID (see **Poster IDs** above).
   - The trade-off `localStorage` buys that with is documented in the README: it is
     JS-readable where an HttpOnly cookie was not, which is acceptable because the CSP
     forbids inline scripts (`TestWebAssetsHaveNoInlineStylesOrScripts` keeps it that
@@ -382,12 +528,24 @@ the index, and the thread view each have their own narrow-screen layout.
   so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
-  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
-  whole app against an isolated schema in
+  `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
+  `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
+  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
+  `internal/app/migrate_test.go`) run the whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
   development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
   credential it returns is then presented explicitly with `postWithCredential`, because
-  nothing attaches it on a caller's behalf.
+  nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
+  (`poster_id_test.go`), which sends its poster key on every post and its credential only
+  on a badged one, the way the client does. Tests post to boards they create with
+  `addBoard` (`api_test.go`), never to seeded ones, so they do not depend on which boards
+  the migrations seed; `TestBoardsAreSeeded` is the one test that names the seeded set.
+  A migration's effect on existing data is tested by stopping a schema at an earlier
+  version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
+  starting a server on it with `serverOn`, which applies the rest. Sweep tests call
+  `app.sweep` with a small batch to cover the loop, and backdate `archived_at` with
+  `archiveThread` rather than waiting. `cmd/server/main_test.go` runs the `-sweep` mode as
+  a whole process against its own schema in the same database.

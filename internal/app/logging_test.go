@@ -81,6 +81,7 @@ func TestServerLogsCarryNoClientAddress(t *testing.T) {
 		cfg.VerifyCredentialTTL = defaultVerifyCredentialTTL
 		cfg.Sender = mail
 	}, &logs)
+	h.addBoard("general")
 
 	const forwarded = "198.51.100.23"
 	send := func(method, path, body string) int {

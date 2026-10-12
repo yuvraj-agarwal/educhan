@@ -153,6 +153,9 @@ can and cannot work out.
 - Roughly when a credential was issued — to the *day*, because the stored
   expiry is rounded up to a UTC day boundary and nothing else is timestamped.
 - Which posts carry which badge, because a badge is displayed on the post.
+- Which badged posts in one thread came from the same credential, because they
+  share a poster ID there, as any poster's posts in a thread do. In different
+  threads the same credential's IDs differ.
 - **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
   the secret, an operator who suspects a particular address can recompute the
   HMAC and check whether that person is verified. This is inherent to a
@@ -180,11 +183,15 @@ can and cannot work out.
   verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
   asserts the exact column list of both tables so a future migration cannot
   quietly add one.
-- Link two badged posts to each other. Two posts showing the same institution
-  say only that: an institution with one verified user and one badged post is
-  as anonymous as its user base is large. **A badge narrows you to your
-  institution — that is the whole of what it discloses, and it is not nothing
-  at a small one.**
+- Recompute a badged post's poster ID. It is derived from the random id inside
+  the credential as the poster presents it; the database holds only that id's
+  SHA-256, and no derivation from anything in the verification tables
+  reproduces it (`TestBadgedPosterIDCannotBeRecomputedFromTheDatabase`).
+- Link two badged posts in different threads to each other. Their poster IDs
+  differ, and two posts showing the same institution say only that: an
+  institution with one verified user and one badged post is as anonymous as its
+  user base is large. **A badge narrows you to your institution — that is the
+  whole of what it discloses, and it is not nothing at a small one.**
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
@@ -248,6 +255,56 @@ verification endpoints and nowhere else. It is `HttpOnly`, `SameSite=Lax`, and
 `Secure` whenever the request arrived over TLS. The credential is not a cookie
 at all — see above.
 
+## Posting identity
+
+### Poster IDs
+
+Every post shows an eight-character ID that is the same for one poster
+throughout a thread and different in every other thread, so a conversation can
+be followed without anybody being followable from thread to thread. It is
+`HMAC(EDUCHAN_POSTER_ID_SALT, thread, source)`, and the source is the first of:
+
+1. **On a badged post, the credential's random id.** Never the browser's key or
+   address: if a badged post and an unbadged reply from one browser showed the
+   same ID, the ID would tie the unbadged reply to the institution. It is the id
+   inside the credential the poster presented, not anything the database keeps
+   (which is only its SHA-256), so a badged post's ID can be recomputed only by
+   somebody holding the credential itself. One credential's badged posts share
+   an ID within a thread, as anybody's posts do.
+2. **Otherwise the poster key**: 16 random bytes the browser makes once, keeps
+   in `localStorage`, and sends base64url-encoded in `X-Educhan-Poster-Key` on
+   thread and reply requests and nothing else. This is what gives two people
+   behind one campus NAT two IDs.
+3. **Otherwise the client address**, which is what every ID used to be, so a
+   client that sends no key can still post.
+
+The three are tagged before hashing (`key:`, `ip:`, `cred:`), so no choice of
+key can land on the ID an address or a credential gets.
+
+The poster key is HMAC input and nothing else: it is never written to the
+database and never logged. `TestPosterKeyIsNeverStoredOrLogged` posts every way
+there is with one, then searches every column of every table and every log line
+for it. Kept anywhere, it would be a single identifier across all of a
+browser's threads, which is exactly what per-thread IDs avoid. Because the
+client chooses it, a poster ID is a courtesy rather than proof: clearing site
+data gives a fresh one, as changing networks always did, and flood control
+stays keyed on the address for that reason.
+
+### Tripcodes
+
+A name of `ana#secret` posts as **ana** with a tripcode such as `!!Xq3vB0e9kT`,
+which lets a poster show that two posts came from whoever knows the secret,
+without an account. `#secret` and `##secret` are the same thing: both make the
+one kind of tripcode educhan has, `HMAC(EDUCHAN_POSTER_ID_SALT, secret)`, shown
+with the `!!` prefix imageboards use for a server-keyed tripcode.
+
+The classic unkeyed tripcode, with a single `!`, is not offered. It is a plain
+hash of a secret somebody chose by hand, so anyone who sees the tripcode can
+search for the secret offline and then post as its owner. Keyed by the salt, a
+tripcode can only be produced through this server. The salt is also what keeps
+tripcodes stable: rotate `EDUCHAN_POSTER_ID_SALT` and every one of them changes,
+along with every poster ID.
+
 ## Image attachments
 
 One image per post, on both thread creation and replies, **when
@@ -257,6 +314,14 @@ uploaded: no metadata stripping and no content scanning yet.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims.
+- **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
+  the image to be covered until it is clicked. The attachment comes back with
+  `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
+  it is the client's job.
+- **Per-thread cap**: a thread holds at most its board's `image_limit` posts with an image
+  (150 by default), the opening post included. Past it a reply with an image answers
+  `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
+  `images` and `at_image_limit` so a client can hide the picker before anyone tries.
 - **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
@@ -279,7 +344,7 @@ uploaded: no metadata stripping and no content scanning yet.
 Posting an image over HTTP is a plain multipart form:
 
 ```bash
-curl -X POST localhost:8080/api/boards/general/threads \
+curl -X POST localhost:8080/api/boards/chem/threads \
   -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
 ```
 
@@ -289,15 +354,16 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 | Area | Behaviour |
 | --- | --- |
-| Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
-| Posting | Anonymous by default; `name#secret` and `name##secret` produce tripcodes; a per-thread poster ID keeps a conversation followable |
+| Boards | Twenty seeded from a migration — subjects from `/math/` to `/lang/`, then student life from `/adm/` to `/meta/` — and more created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
+| Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID, from a random key the browser keeps, keeps a conversation followable |
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails |
-| Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
-| Housekeeping | Threads past a board's thread limit are pruned; per-client cooldowns limit new threads, replies, and uploads |
+| Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
 
 ## Front end
 
@@ -475,9 +541,9 @@ depends on.
 
 ### Running behind a proxy
 
-Flood control and poster IDs are keyed on the client address, so the server has
-to know how to find it. `EDUCHAN_TRUST_PROXY` is the number of reverse proxies
-in front of it:
+Flood control is keyed on the client address, and so is the poster ID of a
+client that sends no poster key, so the server has to know how to find it.
+`EDUCHAN_TRUST_PROXY` is the number of reverse proxies in front of it:
 
 - **`0` (default)** — `X-Forwarded-For` is ignored and the peer address is used.
   Correct whenever the server is reachable directly.
@@ -508,10 +574,12 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
-| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge"}` |
+| `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
+| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
+| `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
@@ -529,9 +597,22 @@ so a client can discard one the server will not honour again. There is no
 endpoint to forget a badge, because the client holds it — dropping it is a
 local act.
 
+The two posting endpoints read the poster key from `X-Educhan-Poster-Key` (22
+base64url characters, no padding) and no other endpoint reads it. Without the
+header the poster ID comes from the client address; with a malformed one the
+post is refused with `400` and `{"error":"invalid poster key"}` before its body
+is read, so the refusal costs no cooldown.
+
 `/api/verify/confirm` sets no credential cookie, but the two-step exchange does
 use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a
 cookie jar (`curl -c/-b`) to get through it.
+
+Every thread view carries `archived_at`: `null` while the thread is live, and
+the time it was pushed off the board once it is archived. It also carries
+`images`, the posts in the thread with an image, and `at_image_limit`. A reply
+to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
+locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
+at its board's image limit `{"error":"image limit reached"}`.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -540,7 +621,7 @@ plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
 
 ```bash
 curl -s localhost:8080/api/boards
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
@@ -555,7 +636,7 @@ CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
 
 # The badge is the header plus the flag. Leave both off and the post is
 # anonymous — the credential is not sent at all.
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/career/threads \
   -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
   -d '{"subject":"from the inside","body":"we saw the same numbers","badge":true}'
 ```
@@ -569,7 +650,7 @@ janitor accounts, bans, and reports are still to come.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/boards` | Create a board — `{"slug","name","description","bump_limit","thread_limit"}` |
+| `POST` | `/api/boards` | Create a board — `{"slug","name","description","rules","bump_limit","thread_limit","image_limit","archive_days"}` |
 | `PATCH` | `/api/boards/{slug}` | Update a board's settings; every field is optional |
 | `POST` | `/api/boards/{slug}/threads/{no}/sticky` | Pin a thread to the top of its board |
 | `POST` | `/api/boards/{slug}/threads/{no}/unsticky` | Unpin it |
@@ -585,25 +666,41 @@ the thread's reply count, so bump-limit state stays accurate.
 
 ```bash
 export MOD_KEY=…
-curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/1/sticky \
   -H "Authorization: Bearer $MOD_KEY"
-curl -s -X DELETE localhost:8080/api/boards/general/threads/1/posts/4 \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/1/posts/4 \
   -H "X-Mod-Key: $MOD_KEY"
 ```
 
 #### Board management
 
-The three seeded boards are a starting point, not the whole list: a board can be
+The seeded boards are a starting point, not the whole list: a board can be
 opened and reconfigured with the same key, without a migration or a release.
 Listing boards stays public.
 
 A slug is the board's address in every URL, so it is lowercase letters and
-digits in dash-separated groups (`general`, `comp-sci`), at most 24 characters,
-and not one of the paths the server already answers on (`api`, `media`,
-`healthz`). It is normalised before use, so `/CompSci/` and `/compsci/` cannot
-both exist. Everything but the slug is optional: the name falls back to the
-slug, and the limits to the schema defaults of 300 and 100. A duplicate slug
-answers `409`.
+digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
+and not a first path segment that already means something else: the server's
+own routes (`api`, `media`, `healthz`), the UI's pages (`verify`, `mod`,
+`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`), or
+`u`. It is normalised before use, so `/CompSci/` and `/compsci/` cannot both
+exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
+shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
+slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
+100, an image limit of 150, and 7 days in the archive), and the rules to none. A
+duplicate slug answers `409`.
+
+| Setting | Range | Meaning |
+| --- | --- | --- |
+| `bump_limit` | 1–10000 | Replies after which a reply no longer bumps the thread |
+| `thread_limit` | 1–1000 | Live threads the board keeps |
+| `image_limit` | 0–1000 | Posts with an image one thread may hold, the opening post included; `0` means replies can never carry one |
+| `archive_days` | 0–365 | Days an archived thread is kept before it is deleted; `0` means at the next sweep |
+| `rules` | up to 4000 characters | The board's own rules, multi-line, normalised like a post body |
+
+None of the numbers has an "unlimited" value: zero is refused for the two
+limits where it would break the board, and read literally for the two where it
+is a real choice.
 
 ```bash
 curl -s -X POST localhost:8080/api/boards \
@@ -611,7 +708,7 @@ curl -s -X POST localhost:8080/api/boards \
   -d '{"slug":"comp-sci","name":"Computer Science","description":"Algorithms and all that"}'
 ```
 
-`PATCH` changes `name`, `description`, `bump_limit`, and `thread_limit`; an
+`PATCH` changes any of those settings, and `name` and `description`; an
 omitted field keeps its stored value, and at least one must be given. The slug
 is not updatable — it is what every bookmark and stored quote link points at.
 
@@ -623,8 +720,8 @@ curl -s -X PATCH localhost:8080/api/boards/comp-sci \
 
 A new board is a board like any other: it appears in the board navigation, the
 index, and the catalog, and its post numbering starts at No. 1. A lowered
-`thread_limit` is applied by the next post to that board, through the same
-pruning the limit has always driven.
+`thread_limit` is applied by the next thread posted to that board, which
+archives whatever no longer fits.
 
 ## Deployment
 
@@ -691,6 +788,30 @@ media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
 `EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
 container.
 
+### The archive sweeper
+
+Archived threads are deleted by a one-shot mode of the same binary rather than
+by anything running inside the server:
+
+```bash
+educhan -sweep          # or, from a checkout: make sweep
+```
+
+It loads the usual configuration, connects, applies any pending migrations,
+deletes every archived thread whose board's `archive_days` have passed — posts,
+attachment rows, and then the images and thumbnails in the media store — and
+exits. It works in batches of 100 threads, one transaction each, removing a
+batch's files only after its transaction has committed, so a failure leaves an
+orphaned file rather than a broken post. It logs one line of counts and nothing
+about which boards or threads went, and exits non-zero if the database fails or
+any file could not be removed.
+
+On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
+started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
+a request, so a timer inside the server would fire whenever it happened to, and
+a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
+`deploy/` yet.
+
 ### What is not stateless yet
 
 Everything the API serves lives in PostgreSQL, so instances start in any order
@@ -712,6 +833,7 @@ One thing remains per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
+make sweep   # go run ./cmd/server -sweep: delete expired archived threads once
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
