@@ -410,8 +410,8 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
   - `>>>/math/` links to a board, `>>>/math/123` to a post on it, and `>>>/u/iitb/123` to
     one on an institution board.
   - `[spoiler]…[/spoiler]` is a bar until hovered, focused, or tapped; a screen reader
-    hears "hidden spoiler" until the reader activates it, and catalog excerpts show the
-    word, not the text.
+    hears "hidden spoiler" until the reader activates it, and catalog and archive
+    excerpts show the word, not the text.
   - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
     auto-detected. Nothing inside it is markup, so `x >>2` in code links nothing and
     creates no backlink.

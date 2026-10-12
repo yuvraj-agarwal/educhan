@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math/rand"
 	"reflect"
 	"strconv"
 	"strings"
@@ -205,6 +206,82 @@ func TestExcerpt(t *testing.T) {
 	}
 	if runes := len([]rune(got)); runes != 11 {
 		t.Errorf("excerpt has %d runes, want 11 (10 + ellipsis)", runes)
+	}
+}
+
+func TestSettledStart(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want string
+	}{
+		{name: "plain", in: "no tags at all", want: "no tags at all"},
+		{name: "closed blocks stay", in: "a [spoiler]b[/spoiler] [code]c[/code] d", want: "a [spoiler]b[/spoiler] [code]c[/code] d"},
+		{name: "a spoiler closed further on", in: "a [spoiler]secret", want: "a "},
+		{name: "code closed further on", in: "a [code]x := 1", want: "a "},
+		{name: "maths closed further on", in: "a [math]x^2 [eqn]y", want: "a "},
+		{name: "a tag cut in half", in: "a [spoi", want: "a "},
+		{name: "a close cut in half", in: "a [spoiler]b[/spoiler] c [/spo", want: "a [spoiler]b[/spoiler] c "},
+		{name: "a bracket that is no tag", in: "a [b] [1, 2]", want: "a [b] [1, 2]"},
+		{name: "an empty pair is text", in: "a [spoiler][/spoiler] b", want: "a [spoiler][/spoiler] b"},
+		{name: "a spoiler inside a spoiler is text", in: "[spoiler]a [spoiler] b[/spoiler] c", want: "[spoiler]a [spoiler] b[/spoiler] c"},
+		{name: "tags inside closed code are code", in: "[code][spoiler]x[/code] y", want: "[code][spoiler]x[/code] y"},
+		// The rest of the body could close the [code], which would take the
+		// [/spoiler] with it and leave the spoiler to close later; so the
+		// [code] goes, and then the spoiler it unpaired.
+		{name: "a spoiler around code closed further on", in: "a [spoiler]b [code] c [/spoiler] d", want: "a "},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := settledStart(tc.in); got != tc.want {
+				t.Errorf("settledStart(%q) = %q, want %q", tc.in, got, tc.want)
+			}
+		})
+	}
+}
+
+// A settled start pairs exactly as the whole body does: every block the body
+// opens within it closes within it, and nothing else pairs there. Checked over
+// tag-heavy bodies cut everywhere, since that is where the rules can disagree.
+func TestSettledStartPairsAsTheWholeBody(t *testing.T) {
+	pieces := []string{
+		"[spoiler]", "[/spoiler]", "[code]", "[/code]", "[math]", "[/math]", "[eqn]", "[/eqn]",
+		"x", "y ", "[", "]", "[spo", "[/co",
+	}
+	rng := rand.New(rand.NewSource(1))
+	for n := 0; n < 3000; n++ {
+		var b strings.Builder
+		for range 4 + rng.Intn(10) {
+			b.WriteString(pieces[rng.Intn(len(pieces))])
+		}
+		body := b.String()
+		whole := markupBlocks(body)
+		for cut := 0; cut <= len(body); cut++ {
+			start := settledStart(body[:cut])
+			var want []markupBlock
+			for _, blk := range whole {
+				if blk.start < len(start) {
+					want = append(want, blk)
+				}
+			}
+			got := markupBlocks(start)
+			if !reflect.DeepEqual(got, want) {
+				t.Fatalf("body %q cut at %d settles to %q, which pairs as %+v; the whole body pairs there as %+v",
+					body, cut, start, got, want)
+			}
+		}
+	}
+}
+
+func TestExcerptOfStart(t *testing.T) {
+	if got, want := excerptOfStart("whole [spoiler]body[/spoiler]", false, 120), "whole [spoiler]"; got != want {
+		t.Errorf("uncut: %q, want %q", got, want)
+	}
+	if got, want := excerptOfStart("the twist: [spoiler]the narrator", true, 120), "the twist:\u2026"; got != want {
+		t.Errorf("a cut spoiler: %q, want %q", got, want)
+	}
+	if got, want := excerptOfStart(strings.Repeat("é", 30), true, 10), strings.Repeat("é", 10)+"\u2026"; got != want {
+		t.Errorf("a long cut start: %q, want %q", got, want)
 	}
 }
 

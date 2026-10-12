@@ -277,7 +277,11 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   through `esc()`. Tags pair by one rule, mirrored in `markupBlocks` in `text.go` so that
   code and maths never yield quotes and a spoiler never reaches an excerpt; change both
   together, and `TestMarkupBlocks` with them (`OPAQUE_TAGS` and `opaqueTags` list the
-  blocks whose text is not markup). Cross-board links build their href with `boardPath`.
+  blocks whose text is not markup). The archive reads only the start of each opening
+  post, and a cut can unpair a tag — a spoiler whose close was cut off reads as text — so
+  its excerpts go through `excerptOfStart`, which first cuts back to `settledStart`, the
+  part that pairs as the whole body would. Cross-board links build their href with
+  `boardPath`.
 - `enhancePosts(root)` is the one hook for work on posts after they are in the document
   (code highlighting and maths): `render()` and `showQuotePreview()` each call it once.
   It must stay idempotent and must never throw — a block it cannot finish keeps its

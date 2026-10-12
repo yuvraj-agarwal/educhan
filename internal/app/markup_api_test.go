@@ -90,3 +90,28 @@ func TestMathsMakesNoQuotesAndExcerptsAsTeX(t *testing.T) {
 		t.Errorf("excerpt = %q, want %q", got, want)
 	}
 }
+
+// The archive reads only the start of each opening post, and a spoiler whose
+// closing tag lies past that start must stay hidden all the same: cut off on
+// its own, it would read as plain text, and so would what it hides.
+func TestArchiveExcerptHidesSpoilers(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("markup")
+	h.exec(`UPDATE boards SET thread_limit = 1 WHERE slug = 'markup'`)
+
+	secret := strings.Repeat("the narrator was the villain ", 80)
+	long := h.createThread("markup", "film night", "", "the twist: [spoiler]"+secret+"[/spoiler] after")
+	short := h.createThread("markup", "short", "", "[spoiler]hidden[/spoiler] shown")
+	h.createThread("markup", "live", "", "pushes the others into the archive")
+
+	excerpts := map[int64]string{}
+	for _, thread := range fetchArchive(t, h, "markup").Threads {
+		excerpts[thread.No] = thread.Excerpt
+	}
+	if got, want := excerpts[long.ThreadNo], "the twist:…"; got != want {
+		t.Errorf("excerpt of a spoiler cut short = %q, want %q", got, want)
+	}
+	if got, want := excerpts[short.ThreadNo], "[spoiler] shown"; got != want {
+		t.Errorf("excerpt of a short post = %q, want %q", got, want)
+	}
+}

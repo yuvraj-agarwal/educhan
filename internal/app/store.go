@@ -43,6 +43,11 @@ const (
 const (
 	archiveLimit      = 3000
 	archiveExcerptLen = 120
+	// archiveBodyWindow is how much of each opening post the archive reads.
+	// It leaves room past the excerpt for the tags in it to close: a tag
+	// whose close lies further on is cut away, spoilers included, by
+	// excerptOfStart.
+	archiveBodyWindow = 500
 )
 
 // Store is the PostgreSQL-backed persistence layer.
@@ -293,12 +298,13 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 // run to megabytes.
 func (s *Store) Archive(ctx context.Context, board Board) (Archive, error) {
 	rows, err := s.pool.Query(ctx, `
-		SELECT t.no, t.subject, t.reply_count, t.created_at, t.archived_at, left(p.body, $3)
+		SELECT t.no, t.subject, t.reply_count, t.created_at, t.archived_at,
+		       left(p.body, $3), length(p.body) > $3
 		FROM threads t
 		JOIN posts p ON p.thread_id = t.id AND p.is_op
 		WHERE t.board_id = $1 AND t.archived_at IS NOT NULL
 		ORDER BY t.archived_at DESC, t.no DESC
-		LIMIT $2`, board.ID, archiveLimit, archiveExcerptLen+1)
+		LIMIT $2`, board.ID, archiveLimit, archiveBodyWindow)
 	if err != nil {
 		return Archive{}, err
 	}
@@ -307,15 +313,14 @@ func (s *Store) Archive(ctx context.Context, board Board) (Archive, error) {
 	archive := Archive{Board: board, Threads: []ArchivedThread{}}
 	for rows.Next() {
 		var (
-			t    ArchivedThread
-			body string
+			t     ArchivedThread
+			start string
+			cut   bool
 		)
-		if err := rows.Scan(&t.No, &t.Subject, &t.Replies, &t.CreatedAt, &t.ArchivedAt, &body); err != nil {
+		if err := rows.Scan(&t.No, &t.Subject, &t.Replies, &t.CreatedAt, &t.ArchivedAt, &start, &cut); err != nil {
 			return Archive{}, err
 		}
-		// One character more than the excerpt keeps is enough for excerpt to
-		// see that the body runs on and mark the cut.
-		t.Excerpt = excerpt(body, archiveExcerptLen)
+		t.Excerpt = excerptOfStart(start, cut, archiveExcerptLen)
 		archive.Threads = append(archive.Threads, t)
 	}
 	return archive, rows.Err()

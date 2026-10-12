@@ -259,6 +259,99 @@ func excerpt(body string, limit int) string {
 	return strings.TrimRight(truncateRunes(body, limit), " \t\n") + "\u2026"
 }
 
+// excerptOfStart is excerpt for the first runes of a body, as the archive reads
+// them; cut says whether the body ran on past them. Cutting can change how tags
+// pair — a [spoiler] whose [/spoiler] was cut off reads as text, and so would
+// what it hides — so a cut start is first shortened to settledStart, and its
+// excerpt always ends in an ellipsis.
+func excerptOfStart(start string, cut bool, limit int) string {
+	if !cut {
+		return excerpt(start, limit)
+	}
+	text := strings.TrimSpace(plainText(settledStart(start)))
+	return strings.TrimRight(truncateRunes(text, limit), " \t\n") + "\u2026"
+}
+
+// markupTags is every tag markupBlocks knows, for recognising one cut in half.
+var markupTags = func() []string {
+	tags := []string{spoilerOpenTag, spoilerCloseTag}
+	for _, t := range opaqueTags {
+		tags = append(tags, t.open, t.close)
+	}
+	return tags
+}()
+
+// settledStart shortens the start of a longer body to the part whose tags pair
+// the same way whatever followed it. That part ends before the first opening
+// tag that pairs with nothing in it, because what followed could hold its
+// close, and before a tag cut in half. Shortening can unpair an earlier tag —
+// a spoiler whose close sat after an unclosed [code], which the rest of the
+// body may well have closed — so it repeats until nothing changes.
+func settledStart(s string) string {
+	for {
+		at := firstUnsettledTag(s)
+		if at < 0 {
+			return s
+		}
+		s = s[:at]
+	}
+}
+
+// firstUnsettledTag returns where settledStart has to cut s, or -1 when every
+// tag in s pairs as it would in any longer body.
+func firstUnsettledTag(s string) int {
+	blocks := markupBlocks(s)
+	inside := func(i int, spoiler bool) bool {
+		for _, blk := range blocks {
+			if (blk.kind == blockSpoiler) == spoiler && blk.start < i && i < blk.end {
+				return true
+			}
+		}
+		return false
+	}
+	opens := func(i int) bool {
+		for _, blk := range blocks {
+			if blk.start == i {
+				return true
+			}
+		}
+		return false
+	}
+
+	for i := strings.IndexByte(s, '['); i >= 0; {
+		rest := s[i:]
+		switch {
+		case inside(i, false):
+			// Text of a code or maths block, which closed within s.
+		case strings.HasPrefix(rest, spoilerOpenTag+spoilerCloseTag):
+			// An empty pair is text whatever follows it.
+		case strings.HasPrefix(rest, spoilerOpenTag):
+			// Inside an open spoiler a [spoiler] is text, and the spoiler
+			// around it is settled or found unsettled on its own account.
+			if !opens(i) && !inside(i, true) {
+				return i
+			}
+		default:
+			for _, t := range opaqueTags {
+				if strings.HasPrefix(rest, t.open) && !opens(i) {
+					return i
+				}
+			}
+			for _, tag := range markupTags {
+				if len(rest) < len(tag) && strings.HasPrefix(tag, rest) {
+					return i
+				}
+			}
+		}
+		next := strings.IndexByte(s[i+1:], '[')
+		if next < 0 {
+			break
+		}
+		i += 1 + next
+	}
+	return -1
+}
+
 func truncateRunes(s string, limit int) string {
 	if limit <= 0 || utf8.RuneCountInString(s) <= limit {
 		return s
