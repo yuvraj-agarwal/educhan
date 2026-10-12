@@ -6,8 +6,20 @@
 //   /{slug}/?page=N       board index
 //   /{slug}/catalog       catalog
 //   /{slug}/thread/{no}   thread
+//   /{slug}/post/{no}     any post by number; resolved to its thread, then replaced
+//
+// Institution boards are stored as "u-{name}" and live under /u/{name}/ instead
+// of /{slug}/, with the same routes beneath.
 
 const NAME_STORAGE_KEY = "educhan:name";
+// Top-level paths that are pages or reserved for them, never boards. The server
+// refuses these as board slugs too, so a board cannot take a path out from
+// under a page that is added later. "u" is the institution namespace.
+const RESERVED_PATHS = new Set([
+  "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
+  "terms", "privacy", "dmca", "report", "archive",
+]);
+const INSTITUTION_PREFIX = "u-";
 // The verification credential lives in localStorage and is sent only on the
 // posts that ask for a badge, in this header. It is deliberately not a cookie:
 // a cookie would ride along on every request to the origin — anonymous posts,
@@ -89,8 +101,19 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
 }
 
+// boardPath is the one place a board's address is decided; every link to a
+// board, thread, or post is built on it, the post-text markup included.
 function boardPath(slug) {
+  if (slug.startsWith(INSTITUTION_PREFIX)) {
+    return `/u/${encodeURIComponent(slug.slice(INSTITUTION_PREFIX.length))}/`;
+  }
   return `/${encodeURIComponent(slug)}/`;
+}
+
+// boardLabel is how a board is named on screen: its path, so what a reader
+// sees is what they would type. Unescaped, like any other value from the API.
+function boardLabel(slug) {
+  return slug.startsWith(INSTITUTION_PREFIX) ? `/u/${slug.slice(INSTITUTION_PREFIX.length)}/` : `/${slug}/`;
 }
 
 function threadPath(slug, no) {
@@ -417,7 +440,7 @@ function renderNav(route) {
   el.nav.innerHTML = state.boards
     .map((b) => {
       const current = b.slug === route.slug ? ' aria-current="page"' : "";
-      return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>/${esc(b.slug)}/</a>`;
+      return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>${esc(boardLabel(b.slug))}</a>`;
     })
     .join("");
 
@@ -442,7 +465,7 @@ function boardHeadHTML(board, view) {
 
   return `
     <div class="board-head">
-      <h1>/${esc(board.slug)}/ <span class="board-name">${esc(board.name)}</span></h1>
+      <h1>${esc(boardLabel(board.slug))} <span class="board-name">${esc(board.name)}</span></h1>
       <span class="desc">${esc(board.description)}</span>
       <nav class="views" aria-label="Board views">${links}</nav>
     </div>`;
@@ -453,7 +476,7 @@ function renderHome() {
     .map(
       (b) => `
       <a class="board-card" href="${boardPath(b.slug)}">
-        <strong>/${esc(b.slug)}/ &mdash; ${esc(b.name)}</strong>
+        <strong>${esc(boardLabel(b.slug))} &mdash; ${esc(b.name)}</strong>
         <small>${esc(b.description)}</small>
       </a>`
     )
@@ -513,7 +536,7 @@ async function renderIndex(route) {
     ${formHTML({ kind: "thread", open: index.threads.length === 0 })}
     ${threads || '<p class="empty">No threads yet — start the first one.</p>'}
     ${pagerHTML(board.slug, index.page, index.pages)}`;
-  announce(`/${board.slug}/${index.pages > 1 ? ` page ${index.page}` : ""}`);
+  announce(`${boardLabel(board.slug)}${index.pages > 1 ? ` page ${index.page}` : ""}`);
 }
 
 async function renderCatalog(route) {
@@ -541,7 +564,7 @@ async function renderCatalog(route) {
   el.main.innerHTML = `
     ${boardHeadHTML(board, "catalog")}
     <div class="catalog">${tiles || '<p class="empty">No threads yet — start the first one.</p>'}</div>`;
-  announce(`/${board.slug}/ catalog`);
+  announce(`${boardLabel(board.slug)} catalog`);
 }
 
 async function renderThread(route) {
@@ -562,7 +585,7 @@ async function renderThread(route) {
   el.main.innerHTML = `
     ${boardHeadHTML(board, "index")}
     <div class="thread-actions">
-      <a href="${boardPath(board.slug)}">&larr; Back to /${esc(board.slug)}/</a>
+      <a href="${boardPath(board.slug)}">&larr; Back to ${esc(boardLabel(board.slug))}</a>
       <button class="link" data-action="refresh" type="button">Update</button>
       <span class="muted">${plural(detail.replies, "reply", "replies")}${
         detail.at_bump_limit ? " &middot; at bump limit, no longer bumping" : ""
@@ -570,7 +593,7 @@ async function renderThread(route) {
     </div>
     <section class="thread detail">${posts}</section>
     ${formHTML({ kind: "reply", threadNo: detail.no, open: true, locked: detail.locked })}`;
-  announce(`${detail.subject || `Thread No. ${detail.no}`} — /${board.slug}/`);
+  announce(`${detail.subject || `Thread No. ${detail.no}`} — ${boardLabel(board.slug)}`);
 }
 
 /* Verification ------------------------------------------------------------- */
@@ -771,7 +794,13 @@ async function renderVerify() {
 /* Routing ------------------------------------------------------------------ */
 
 function parseRoute(location = window.location) {
-  const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  let parts;
+  try {
+    parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch {
+    // A malformed escape in a hand-typed address names nothing.
+    return { view: "notfound" };
+  }
   const query = new URLSearchParams(location.search);
 
   if (parts.length === 0) {
@@ -782,15 +811,36 @@ function parseRoute(location = window.location) {
   if (parts.length === 1 && parts[0] === "verify") {
     return { view: "verify" };
   }
-  const [slug, section, no] = parts;
-  if (parts.length === 1) {
+  if (parts[0] === "u") {
+    // /u/ alone is the namespace, not a board.
+    if (parts.length < 2) {
+      return { view: "notfound" };
+    }
+    return boardRoute(INSTITUTION_PREFIX + parts[1], parts.slice(2), query);
+  }
+  // A reserved word without a page of its own yet is still not a board: it
+  // gets the not-found view rather than a request for a board by that name.
+  if (RESERVED_PATHS.has(parts[0])) {
+    return { view: "notfound" };
+  }
+  return boardRoute(parts[0], parts.slice(1), query);
+}
+
+// boardRoute reads the part of a path below a board's own address, which is
+// the same whether the board lives at /{slug}/ or /u/{name}/.
+function boardRoute(slug, rest, query) {
+  const [section, no] = rest;
+  if (rest.length === 0) {
     return { view: "index", slug, page: Math.max(Number(query.get("page")) || 1, 1) };
   }
-  if (parts.length === 2 && section === "catalog") {
+  if (rest.length === 1 && section === "catalog") {
     return { view: "catalog", slug };
   }
-  if (parts.length === 3 && section === "thread" && /^\d+$/.test(no)) {
+  if (rest.length === 2 && section === "thread" && /^\d+$/.test(no)) {
     return { view: "thread", slug, no: Number(no) };
+  }
+  if (rest.length === 2 && section === "post" && /^\d+$/.test(no)) {
+    return { view: "post", slug, no: Number(no) };
   }
   return { view: "notfound" };
 }
@@ -799,8 +849,11 @@ function routeKey(route) {
   return `${route.view}:${route.slug || ""}:${route.no || ""}`;
 }
 
-function emptyStateHTML(message) {
-  return `<p class="empty">${esc(message)}<br /><a href="/">Back to the board list</a></p>`;
+// emptyStateHTML is a dead end with a way out: back to the board list, and to
+// the board itself when the board is known and only something on it is not.
+function emptyStateHTML(message, slug = null) {
+  const board = slug ? `<a href="${boardPath(slug)}">Go to ${esc(boardLabel(slug))}</a> &middot; ` : "";
+  return `<p class="empty">${esc(message)}<br />${board}<a href="/">Back to the board list</a></p>`;
 }
 
 // beginLoading dims the current view and only falls back to a skeleton if the
@@ -816,8 +869,23 @@ function beginLoading() {
   };
 }
 
-async function render() {
-  const draft = captureDraft();
+// resolvePost finds the thread a board-wide post number belongs to, so a link
+// can name a post — a cross-board quote, say — without knowing where it lives.
+async function resolvePost(route) {
+  const found = await api(`/api/boards/${encodeURIComponent(route.slug)}/posts/${route.no}`);
+  return `${threadPath(found.board || route.slug, found.thread_no)}#p${found.no}`;
+}
+
+// The draft defaults to whatever is on screen now; a render that hands over to
+// another passes its own along, because by then the screen may be a skeleton.
+async function render({ draft = captureDraft() } = {}) {
+  // /u-{name}/ is the stored slug typed as a path. The board answers to it,
+  // but the address it is shared under is /u/{name}/.
+  const { pathname, search, hash } = window.location;
+  if (/^\/u-[^/]/.test(pathname)) {
+    window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
+  }
+  const requested = window.location.href;
   const route = parseRoute();
   state.route = route;
   renderNav(route);
@@ -827,6 +895,7 @@ async function render() {
   expandedLink = null;
 
   const finish = beginLoading();
+  let resolved = null;
   try {
     switch (route.view) {
       case "home":
@@ -841,6 +910,9 @@ async function render() {
       case "thread":
         await renderThread(route);
         break;
+      case "post":
+        resolved = await resolvePost(route);
+        break;
       case "verify":
         await renderVerify();
         break;
@@ -851,15 +923,29 @@ async function render() {
   } catch (err) {
     // A pruned thread and a mistyped board look the same from here, and both
     // are better served by a way out than by the raw error.
-    const message =
-      err.status === 404
-        ? "That board or thread is not here — it may have been deleted or pruned."
-        : `Could not load this page: ${err.message}`;
-    el.main.innerHTML = emptyStateHTML(message);
+    let message = `Could not load this page: ${err.message}`;
+    if (err.status === 404) {
+      message =
+        route.view === "post"
+          ? `No. ${route.no} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
+          : "That board or thread is not here — it may have been deleted or pruned.";
+    }
+    el.main.innerHTML = emptyStateHTML(message, route.view === "post" ? route.slug : null);
     announce(err.status === 404 ? "Not found" : "Could not load this page");
     return;
   } finally {
     finish();
+  }
+
+  if (resolved !== null) {
+    // The history entry is replaced rather than added: /post/N is an address,
+    // not a page, and Back should not land on it only to bounce forward again.
+    // Skipped if the reader went somewhere else while the number was looked up.
+    if (window.location.href === requested) {
+      window.history.replaceState(null, "", resolved);
+      await render({ draft });
+    }
+    return;
   }
   restoreDraft(draft);
   focusHash();
@@ -1181,7 +1267,7 @@ document.addEventListener("click", (event) => {
   navigate(anchor.href);
 });
 
-window.addEventListener("popstate", render);
+window.addEventListener("popstate", () => render());
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {

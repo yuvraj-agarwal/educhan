@@ -219,6 +219,13 @@ the index, and the thread view each have their own narrow-screen layout.
   the one exception and is for decoration only.
 - `app.js` renders HTML strings through `esc()`. Anything interpolated from the API must
   go through it.
+- Every link to a board, thread, or post is built on `boardPath(slug)` (and
+  `threadPath`), and every on-screen board name on `boardLabel(slug)`: an institution
+  board's slug is `u-{name}` but its address is `/u/{name}/`, and those two helpers are
+  the only places that know it. `parseRoute` maps `/u/{name}/…` back to the slug, and
+  `RESERVED_PATHS` lists the top-level words that are never a board; keep it in step with
+  `reservedBoardSlugs` on the server. `/{board}/post/{no}` resolves through
+  `GET /api/boards/{slug}/posts/{no}` and replaces its own history entry with the thread.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.

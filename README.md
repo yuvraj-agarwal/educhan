@@ -303,8 +303,14 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework. `app.js` renders the JSON API
-into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
-`/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
+into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`, `/{slug}/thread/{no}`), so
+every view is a shareable link and the back button works. `/{slug}/post/{no}` names a post
+by number alone: it asks the server which thread the post is in and replaces itself with
+that thread, scrolled to the post, so Back does not land on it twice. Institution boards
+are stored as `u-{name}` and live at `/u/{name}/`, with the same routes beneath. The
+top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`, `terms`,
+`privacy`, `dmca`, `report`, `archive`, and the server's own `api`, `media`, and
+`healthz` — are never read as boards; one without a page yet shows the not-found view.
 
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
