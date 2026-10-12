@@ -6,9 +6,9 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 ## Core Features
 
-- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a trusted badge while remaining fully anonymous
+- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
 - **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **Technical media support** — Accepts raw camera files and high-bitrate video with automatic web-optimised proxies
+- **One image per post** — JPEG, PNG, WebP or GIF
 - **Selective permanence** — High-value threads can be automatically archived
 - **Google Cloud native** — Built for scalability and low operational overhead
 
