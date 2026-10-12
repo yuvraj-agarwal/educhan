@@ -108,6 +108,7 @@ curl -s localhost:8080/api/boards/meta/threads/$TNO   # both posts, with backlin
 curl -s "localhost:8080/api/boards/meta/threads?page=1" # index page
 curl -s localhost:8080/api/boards/meta/catalog          # catalog tiles
 curl -s localhost:8080/api/boards/meta/archive          # threads pushed off the board
+curl -s localhost:8080/api/boards/meta/posts/$TNO       # {"board","no","thread_no"}: where a post lives
 
 # A poster key, as the browser makes one: 16 random bytes, base64url, no padding.
 # Posts carrying it get their poster ID from it; posts without it, from the address.
@@ -418,7 +419,11 @@ the index, and the thread view each have their own narrow-screen layout.
   `u-<name>` and shown at `/u/<name>/`: the UI does the mapping, and the server needs no
   alias because `webHandler` serves the shell for every path that is not an asset, an
   API route, or media (`TestPageLoadsServeTheShell`). The API only ever takes the
-  stored slug.
+  stored slug. A post link — `/<board>/post/<no>`, which is where `>>>/slug/123` in post
+  text points — names no thread, so the UI asks `GET /api/boards/{slug}/posts/{no}`
+  (`handleResolvePost`) for the thread number before opening it at `#p<no>`. It answers
+  for archived threads too, since they still load, and says nothing about the post but
+  where it is.
 - **The board set** is seeded by `0006_board_set.sql`: thirteen subject boards (`/math/`
   to `/lang/`) and seven student-life ones (`/adm/` to `/meta/`). It renamed the three
   boards `0001` seeded in place — `placements` to `career`, `research` to `grad`,

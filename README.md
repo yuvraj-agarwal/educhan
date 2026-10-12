@@ -578,6 +578,7 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
 | `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
+| `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
 | `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |

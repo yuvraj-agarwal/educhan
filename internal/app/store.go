@@ -390,6 +390,20 @@ func (s *Store) ThreadByID(ctx context.Context, id int64) (Board, int64, error) 
 	return board, no, err
 }
 
+// PostThreadNo resolves a post number on a board to the number of the thread
+// holding it, live or archived. It returns errNotFound when the board has no
+// such post, which includes one a moderator has deleted.
+func (s *Store) PostThreadNo(ctx context.Context, board Board, no int64) (int64, error) {
+	var threadNo int64
+	err := s.pool.QueryRow(ctx, `
+		SELECT t.no FROM posts p JOIN threads t ON t.id = p.thread_id
+		WHERE p.board_id = $1 AND p.no = $2`, board.ID, no).Scan(&threadNo)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, errNotFound
+	}
+	return threadNo, err
+}
+
 // NewThread describes a thread to create along with its opening post.
 type NewThread struct {
 	Board    Board

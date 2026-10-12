@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -582,6 +583,66 @@ func TestThreadRoutesByPrimaryKey(t *testing.T) {
 	}
 	if created.Board != "research" {
 		t.Errorf("reply landed on board %q, want research", created.Board)
+	}
+}
+
+// A post link names a board and a number and nothing else, so the resolver is
+// what turns >>>/slug/123 into a thread to open and a post to scroll to. It
+// answers exactly the board, the post, and the thread, and nothing about the
+// post itself.
+func TestResolvePost(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("here", "there")
+
+	thread := h.createThread("here", "", "", "opening post")
+	reply := h.reply("here", thread.ThreadNo, "", "a reply", false)
+	other := h.createThread("here", "", "", "another thread")
+	// Numbered from 1 like every board, so its numbers collide with /here/'s.
+	elsewhere := h.createThread("there", "", "", "on another board")
+	elsewhereReply := h.reply("there", elsewhere.ThreadNo, "", "No. 2 on /there/", false)
+
+	resolve := func(path string) (int, map[string]any) {
+		t.Helper()
+		var out map[string]any
+		return h.do(http.MethodGet, path, nil, &out), out
+	}
+	expect := func(board string, no, threadNo int64) {
+		t.Helper()
+		path := fmt.Sprintf("/api/boards/%s/posts/%d", board, no)
+		status, out := resolve(path)
+		want := map[string]any{"board": board, "no": float64(no), "thread_no": float64(threadNo)}
+		if status != http.StatusOK || !maps.Equal(out, want) {
+			t.Errorf("GET %s: status %d, %v; want 200, %v", path, status, out, want)
+		}
+	}
+
+	expect("here", thread.No, thread.ThreadNo)
+	expect("here", reply.No, thread.ThreadNo)
+	expect("here", other.No, other.ThreadNo)
+	expect("there", elsewhere.No, elsewhere.ThreadNo)
+	expect("there", elsewhereReply.No, elsewhere.ThreadNo)
+
+	// An archived thread still loads, so its posts still resolve.
+	h.archiveThread("here", thread.ThreadNo, 0)
+	expect("here", reply.No, thread.ThreadNo)
+
+	// /there/ has a No. 2 and so does /here/; a deleted one is gone from
+	// its own board only.
+	h.modAction(http.MethodDelete, fmt.Sprintf("/api/boards/there/threads/%d/posts/%d", elsewhere.ThreadNo, elsewhereReply.No))
+	expect("here", reply.No, thread.ThreadNo)
+
+	for path, wantStatus := range map[string]int{
+		fmt.Sprintf("/api/boards/there/posts/%d", elsewhereReply.No): http.StatusNotFound,
+		"/api/boards/here/posts/999":                                 http.StatusNotFound,
+		"/api/boards/nowhere/posts/1":                                http.StatusNotFound,
+		"/api/boards/here/posts/abc":                                 http.StatusBadRequest,
+		"/api/boards/here/posts/0":                                   http.StatusBadRequest,
+		"/api/boards/here/posts/-1":                                  http.StatusBadRequest,
+	} {
+		status, out := resolve(path)
+		if status != wantStatus || out["error"] == nil {
+			t.Errorf("GET %s: status %d, %v; want %d with an error", path, status, out, wantStatus)
+		}
 	}
 }
 

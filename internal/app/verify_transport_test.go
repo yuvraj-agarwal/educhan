@@ -192,6 +192,7 @@ func TestCredentialHasNoEffectOffTheBadgePath(t *testing.T) {
 		"/api/boards/general/catalog",
 		"/api/boards/general/archive",
 		fmt.Sprintf("/api/boards/general/threads/%d", created.ThreadNo),
+		fmt.Sprintf("/api/boards/general/posts/%d", created.No),
 		"/healthz",
 	} {
 		t.Run(path, func(t *testing.T) {

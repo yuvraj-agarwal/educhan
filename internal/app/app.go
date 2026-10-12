@@ -164,6 +164,7 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/boards/{slug}/archive", a.handleArchive)
 	mux.HandleFunc("GET /api/boards/{slug}/threads/{no}", a.handleGetThread)
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts", a.handleCreatePost)
+	mux.HandleFunc("GET /api/boards/{slug}/posts/{no}", a.handleResolvePost)
 
 	// Institutional verification. Nothing here is addressed by anything a post
 	// carries, which is the point.

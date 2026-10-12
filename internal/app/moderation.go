@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/subtle"
 	"net/http"
-	"strconv"
 	"strings"
 
 	"github.com/yuvraj-agarwal/educhan/internal/media"
@@ -121,24 +120,23 @@ func (a *App) handleDeletePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	postNo, err := strconv.ParseInt(r.PathValue("post"), 10, 64)
-	if err != nil || postNo <= 0 {
-		writeError(w, http.StatusBadRequest, "invalid post number")
+	post, ok := postNo(w, r.PathValue("post"))
+	if !ok {
 		return
 	}
 
-	deleted, err := a.store.DeletePost(r.Context(), board, no, postNo)
+	deleted, err := a.store.DeletePost(r.Context(), board, no, post)
 	if err != nil {
 		a.fail(w, r, err, "could not delete post")
 		return
 	}
 	a.removeBlobs(r.Context(), deleted.Images)
-	a.log.Info("moderation", "action", "delete post", "board", board.Slug, "thread", no, "post", postNo,
+	a.log.Info("moderation", "action", "delete post", "board", board.Slug, "thread", no, "post", post,
 		"thread_deleted", deleted.ThreadDeleted, "attachments", len(deleted.Images))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"board":               board.Slug,
 		"thread_no":           no,
-		"post_no":             postNo,
+		"post_no":             post,
 		"deleted_attachments": len(deleted.Images),
 		// Deleting an opening post takes its thread with it, which the client
 		// needs to know before it navigates back to the thread.

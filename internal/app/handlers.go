@@ -98,6 +98,31 @@ func (a *App) handleGetThread(w http.ResponseWriter, r *http.Request) {
 	a.writeThread(w, r, board, no)
 }
 
+// handleResolvePost answers which thread a post is in. A post link names only
+// a board and a number, as >>>/meta/123 in a post's text does, so the UI asks
+// here before it can open the thread at that post. A post in an archived
+// thread resolves like any other, because the thread still loads.
+func (a *App) handleResolvePost(w http.ResponseWriter, r *http.Request) {
+	board, ok := a.board(w, r)
+	if !ok {
+		return
+	}
+	no, ok := postNo(w, r.PathValue("no"))
+	if !ok {
+		return
+	}
+	threadNo, err := a.store.PostThreadNo(r.Context(), board, no)
+	if err != nil {
+		a.fail(w, r, err, "could not look up post")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"board":     board.Slug,
+		"no":        no,
+		"thread_no": threadNo,
+	})
+}
+
 // handleGetThreadByID serves the primary-key thread route, which predates
 // per-board thread numbers.
 func (a *App) handleGetThreadByID(w http.ResponseWriter, r *http.Request) {
@@ -421,6 +446,15 @@ func threadNo(w http.ResponseWriter, raw string) (int64, bool) {
 	no, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil || no <= 0 {
 		writeError(w, http.StatusBadRequest, "invalid thread number")
+		return 0, false
+	}
+	return no, true
+}
+
+func postNo(w http.ResponseWriter, raw string) (int64, bool) {
+	no, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || no <= 0 {
+		writeError(w, http.StatusBadRequest, "invalid post number")
 		return 0, false
 	}
 	return no, true
