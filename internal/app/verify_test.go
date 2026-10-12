@@ -86,9 +86,11 @@ func TestDomainAllowlistPrefersInstitutions(t *testing.T) {
 	}
 }
 
-// TestDomainAllowlistRefusesSchoolNamespaces pins the 18+ position in the
-// embedded list: school addresses that share a namespace with universities do
-// not verify, and the universities beside them still do.
+// TestDomainAllowlistRefusesSchoolNamespaces pins the embedded list to
+// higher education: school addresses that share a namespace with universities
+// do not verify, and the universities beside them still do. School students may
+// use educhan, but whether a school address could earn a badge is not decided,
+// and until it is, none does.
 func TestDomainAllowlistRefusesSchoolNamespaces(t *testing.T) {
 	list := testAllowlist(t)
 

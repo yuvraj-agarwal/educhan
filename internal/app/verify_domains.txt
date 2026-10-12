@@ -19,7 +19,9 @@
 #   !nsw.edu.au               A denial. The domain and every subdomain of it
 #                             are refused, whatever else matches. It is for
 #                             school namespaces that sit inside an academic
-#                             suffix: educhan is 18+, and a suffix that also
+#                             suffix: the badge names higher-education
+#                             institutions, and whether a school address could
+#                             earn one is not decided, so a suffix that also
 #                             hands out pupils' addresses must not badge them.
 #
 # An address sitting directly on a suffix (someone@ac.in) is refused: a suffix

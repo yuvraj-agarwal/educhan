@@ -1,12 +1,13 @@
 # Agent guide — educhan
 
-educhan is an anonymous imageboard for tertiary education. This repository contains the
-working prototype: a Go HTTP API plus an embedded web UI, backed by PostgreSQL. Boards,
-anonymous posting (tripcodes, per-thread poster IDs), image attachments, a paginated index,
-a catalog view, a per-board archive, threads with quote links and post markup (spoilers,
-highlighted code, maths, cross-board links), per-client flood control, key-authenticated
-moderation and board management, and optional institutional verification badges are
-implemented. Janitor accounts, bans, and reports are not.
+educhan is an anonymous imageboard for students, open to anyone aged 13 and over. This
+repository contains the working prototype: a Go HTTP API plus an embedded web UI, backed
+by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
+attachments, a paginated index, a catalog view, a per-board archive, threads with quote
+links and post markup (spoilers, highlighted code, maths, cross-board links), per-client
+flood control, key-authenticated moderation and board management, and optional
+institutional verification badges are implemented. Janitor accounts, bans, and reports are
+not.
 
 ## Stack & layout
 
