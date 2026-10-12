@@ -1154,6 +1154,9 @@ function formHTML({ kind, slug, thread = null, open = false }) {
        <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread, so it is not tied to your unbadged replies.</span>`
     : "";
 
+  // Under the message, on every form: no contact details, because they are
+  // how a conversation leaves the site for a private one, which educhan
+  // deliberately does not have.
   return `
     <details class="post-form" ${open ? "open" : ""}>
       <summary>${isThread ? "Start a new thread" : "Reply to this thread"}</summary>
@@ -1168,11 +1171,13 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
         <div class="field">
           <label class="label" for="${FIELD_IDS.body}">${isThread ? "Message" : "Reply"}</label>
-          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint"
+          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint f-contact-hint"
                     placeholder="${isThread ? "What's on your mind?" : "Write a reply. Use >>123 to quote a post."}"></textarea>
           <p class="hint body-hint" id="f-body-hint"><code>[spoiler]…[/spoiler]</code> hides text,
             <code>[code]…[/code]</code> shows code, <code>[math]…[/math]</code> typesets maths,
             and <code>&gt;&gt;&gt;/board/</code> links a board.</p>
+          <p class="hint body-hint" id="f-contact-hint">No contact details: educhan has no private
+            messages, on purpose.</p>
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>
