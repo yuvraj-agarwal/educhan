@@ -11,13 +11,15 @@ implemented. Janitor accounts, bans, and reports are not.
 
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
   `golang.org/x/image` (WebP decoding and thumbnail scaling).
-- `cmd/server` — entrypoint (config, logger, graceful shutdown).
+- `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
+  `-sweep` mode that deletes expired archived threads and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
   - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
   - `boards.go` — board creation and settings updates, behind the same key.
+  - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
@@ -48,6 +50,7 @@ implemented. Janitor accounts, bans, and reports are not.
   on `localhost:5432`, not a container
 - Run the server: `make run` (`go run ./cmd/server`, expects Postgres up), or the `server`
   terminal
+- Sweep the archive once: `make sweep` (`go run ./cmd/server -sweep`, same configuration)
 - **The local loop has no containers in it**: no compose stack, no local image build
 - Build the image: `make cloud-build` — Cloud Build builds the `Dockerfile` and pushes to
   Artifact Registry as `:<short SHA>` and `:latest`. It needs gcloud and a GCP project,
@@ -153,6 +156,22 @@ curl -s -X PATCH localhost:8080/api/boards/comp-sci \
   -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
   -d '{"description":"Systems and theory","thread_limit":50,"image_limit":100}' # omitted fields are unchanged
 curl -s localhost:8080/api/boards/comp-sci/catalog            # a new board works everywhere
+```
+
+Archiving and the sweeper are easiest to see on a board with room for one thread and no
+archive period, with the server running with `EDUCHAN_THREAD_COOLDOWN=0` so the two
+threads can be posted back to back. The sweeper is the same binary in a one-shot mode,
+run against the same database while the server keeps running:
+
+```bash
+curl -s -X PATCH localhost:8080/api/boards/comp-sci \
+  -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
+  -d '{"thread_limit":1,"archive_days":0}'
+for body in first second; do curl -s -X POST localhost:8080/api/boards/comp-sci/threads \
+  -H 'Content-Type: application/json' -d "{\"body\":\"$body\"}"; done
+curl -s localhost:8080/api/boards/comp-sci/archive   # "first", archived by "second"
+make sweep                                           # logs: msg=sweep threads=1 posts=1 …
+curl -s localhost:8080/api/boards/comp-sci/archive   # empty; the thread now answers 404
 ```
 
 Institutional verification needs `EDUCHAN_VERIFY_SECRET`; without it `/api/verify` reports
@@ -295,6 +314,17 @@ the index, and the thread view each have their own narrow-screen layout.
   most `archiveLimit` (3000) of them, newest archived first, with only the start of each
   opening post read from the database. A new query over threads has to decide which set
   it means.
+- **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
+  board's `archive_days` have passed. It is a one-shot mode rather than a timer because
+  Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
+  on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
+  `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
+  a cutoff fixed when the sweep starts, so a sweep always terminates; each batch's blobs
+  go through `removeBlobs` after its commit, exactly as a moderator's deletion does. It
+  logs one record of counts and nothing that names a board or thread
+  (`TestSweepLogsOnlyCounts`), and returns an error — a non-zero exit — on a database
+  failure or if any blob could not be removed. **Legal holds (build plan 2.10) are not
+  built**; when they are, `SweepArchived` must skip held threads, and its comment says so.
 - Post numbers are allocated per board from `boards.next_post_no`; a thread's number is
   the number of its opening post. Thread primary keys stay internal apart from the
   `/api/threads/{id}` compatibility routes.
@@ -324,6 +354,8 @@ the index, and the thread view each have their own narrow-screen layout.
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
+  `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
+  nothing would come back for the files later.
 - Board management (`boards.go`) reuses that gate. `0002` gives `boards` its bump and
   thread limits and `next_post_no`; `0005` adds `image_limit`, `archive_days`, and
   `rules`. The API defaults in `boards.go` mirror the column defaults, and
@@ -418,6 +450,7 @@ the index, and the thread view each have their own narrow-screen layout.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
+  `internal/app/sweep_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
   whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
@@ -428,4 +461,7 @@ the index, and the thread view each have their own narrow-screen layout.
   credential it returns is then presented explicitly with `postWithCredential`, because
   nothing attaches it on a caller's behalf. A test that needs board settings of its own
   creates its board with `addBoard` (`archive_test.go`) instead of reconfiguring a seeded
-  one, so it does not depend on which boards the migrations seed.
+  one, so it does not depend on which boards the migrations seed. Sweep tests call
+  `app.sweep` with a small batch to cover the loop, and backdate `archived_at` with
+  `archiveThread` rather than waiting. `cmd/server/main_test.go` runs the `-sweep` mode as
+  a whole process against its own schema in the same database.

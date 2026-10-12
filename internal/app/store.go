@@ -796,6 +796,75 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 	return deleted, nil
 }
 
+/* Archive sweep ------------------------------------------------------------ */
+
+// SweptThreads reports what one sweep batch deleted. Images are returned so
+// the caller can drop the blobs once the transaction has committed.
+type SweptThreads struct {
+	Threads int
+	Posts   int
+	Images  []media.StoredImage
+}
+
+// SweepArchived deletes up to limit archived threads whose board's
+// archive_days had run out by asOf, oldest first, along with their posts and
+// attachments. Rows go through ON DELETE CASCADE, exactly as a moderator's
+// deletion does; the blobs are the caller's to remove after the commit.
+//
+// asOf is fixed by the caller for a whole sweep, so threads archived while it
+// runs wait for the next one and a sweep always finishes. SKIP LOCKED leaves a
+// thread somebody else holds — a reply being refused, an overlapping sweep —
+// for next time rather than queueing behind it.
+//
+// Legal holds (build plan 2.10) do not exist yet. When they do, a thread under
+// one must be skipped here however long ago it was archived.
+func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (SweptThreads, error) {
+	var swept SweptThreads
+	err := s.inTx(ctx, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT t.id
+			FROM threads t
+			JOIN boards b ON b.id = t.board_id
+			WHERE t.archived_at IS NOT NULL
+			  AND t.archived_at <= $1::timestamptz - b.archive_days * interval '1 day'
+			ORDER BY t.archived_at
+			LIMIT $2
+			FOR UPDATE OF t SKIP LOCKED`, asOf, limit)
+		if err != nil {
+			return fmt.Errorf("find expired threads: %w", err)
+		}
+		ids, err := pgx.CollectRows(rows, pgx.RowTo[int64])
+		if err != nil {
+			return fmt.Errorf("find expired threads: %w", err)
+		}
+		if len(ids) == 0 {
+			return nil
+		}
+
+		swept.Images, err = attachedImages(ctx, tx,
+			`SELECT a.original_path, a.thumb_path
+			 FROM attachments a JOIN posts p ON p.id = a.post_id
+			 WHERE p.thread_id = ANY($1)`, ids)
+		if err != nil {
+			return err
+		}
+		if err := tx.QueryRow(ctx,
+			`SELECT count(*) FROM posts WHERE thread_id = ANY($1)`, ids).Scan(&swept.Posts); err != nil {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `DELETE FROM threads WHERE id = ANY($1)`, ids)
+		if err != nil {
+			return fmt.Errorf("delete expired threads: %w", err)
+		}
+		swept.Threads = int(tag.RowsAffected())
+		return nil
+	})
+	if err != nil {
+		return SweptThreads{}, err
+	}
+	return swept, nil
+}
+
 /* Verification ------------------------------------------------------------- */
 
 // Outcomes of confirming a code, mapped to responses by handleVerifyConfirm.

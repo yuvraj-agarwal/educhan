@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 	"github.com/yuvraj-agarwal/educhan/internal/media/mediatest"
@@ -230,6 +231,35 @@ func TestFailedPostRemovesItsBlobs(t *testing.T) {
 			for _, key := range written {
 				requireBlob(t, blobs.Store, key, false)
 			}
+		})
+	}
+}
+
+// The sweeper removes media through the same interface on every backend; on
+// Cloud Run it is the GCS one, and a sweep that dropped the rows but not the
+// objects would keep images past their archive period.
+func TestSweepRemovesBlobsOnEveryBackend(t *testing.T) {
+	for _, backend := range mediaBackends {
+		t.Run(backend.name, func(t *testing.T) {
+			c := backendServer(t, backend)
+			c.addBoard("swept")
+			c.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'swept'`)
+
+			thread := c.imageThread("swept", "archived with an image")
+			c.archiveThread("swept", thread.ThreadNo, time.Minute)
+			originalKey, thumbKey := blobKeys(t, fetchThread(t, c, "swept", thread.ThreadNo).Posts[0].Attachment)
+			requireBlob(t, c.app.media, originalKey, true)
+			requireBlob(t, c.app.media, thumbKey, true)
+
+			report, err := c.app.Sweep(context.Background())
+			if err != nil {
+				t.Fatalf("sweep: %v", err)
+			}
+			if report.Threads != 1 || report.Attachments != 1 {
+				t.Errorf("sweep report = %+v, want one thread with one attachment", report)
+			}
+			requireBlob(t, c.app.media, originalKey, false)
+			requireBlob(t, c.app.media, thumbKey, false)
 		})
 	}
 }

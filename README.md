@@ -306,7 +306,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | Per-client cooldowns limit new threads, replies, and uploads |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
 
 ## Front end
 
@@ -721,6 +721,30 @@ media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
 `EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
 container.
 
+### The archive sweeper
+
+Archived threads are deleted by a one-shot mode of the same binary rather than
+by anything running inside the server:
+
+```bash
+educhan -sweep          # or, from a checkout: make sweep
+```
+
+It loads the usual configuration, connects, applies any pending migrations,
+deletes every archived thread whose board's `archive_days` have passed — posts,
+attachment rows, and then the images and thumbnails in the media store — and
+exits. It works in batches of 100 threads, one transaction each, removing a
+batch's files only after its transaction has committed, so a failure leaves an
+orphaned file rather than a broken post. It logs one line of counts and nothing
+about which boards or threads went, and exits non-zero if the database fails or
+any file could not be removed.
+
+On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
+started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
+a request, so a timer inside the server would fire whenever it happened to, and
+a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
+`deploy/` yet.
+
 ### What is not stateless yet
 
 Everything the API serves lives in PostgreSQL, so instances start in any order
@@ -742,6 +766,7 @@ One thing remains per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
+make sweep   # go run ./cmd/server -sweep: delete expired archived threads once
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
