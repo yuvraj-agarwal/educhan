@@ -41,17 +41,33 @@ const (
 )
 
 // boardSlugPattern allows lowercase alphanumerics in dash-separated groups:
-// /general/ and /comp-sci/ are fine, "-x", "x-", and "a--b" are not.
+// /math/ and /comp-sci/ are fine, "-x", "x-", and "a--b" are not. Institution
+// boards are stored as u-<name>, which the pattern allows like any other slug.
 var boardSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// reservedBoardSlugs are the first path segments the server already answers on.
-// A board using one would be reachable through the API but not through the UI,
-// whose board route is /{slug}/.
+// reservedBoardSlugs are the first path segments that mean something other
+// than a board. The UI reads any other first segment as a board's slug, so a
+// board using one of these would be reachable through the API but not through
+// the UI. The UI's parseRoute keeps the same list.
 var reservedBoardSlugs = map[string]bool{
+	// Answered by the server itself.
 	"api":     true,
 	"media":   true,
 	"healthz": true,
+	// Pages of the UI.
 	"verify":  true,
+	"mod":     true,
+	"rules":   true,
+	"faq":     true,
+	"legal":   true,
+	"terms":   true,
+	"privacy": true,
+	"dmca":    true,
+	"report":  true,
+	"archive": true,
+	// Institution boards: the board stored as u-iitb is shown at /u/iitb/, so
+	// "u" is a route prefix and cannot be a board of its own.
+	"u": true,
 }
 
 type createBoardRequest struct {

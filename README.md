@@ -679,9 +679,12 @@ Listing boards stays public.
 
 A slug is the board's address in every URL, so it is lowercase letters and
 digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
-and not one of the paths the server already answers on (`api`, `media`,
-`healthz`). It is normalised before use, so `/CompSci/` and `/compsci/` cannot
-both exist. Everything but the slug is optional: the name falls back to the
+and not a first path segment that already means something else: the server's
+own routes (`api`, `media`, `healthz`), the UI's pages (`verify`, `mod`,
+`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`), or
+`u`. It is normalised before use, so `/CompSci/` and `/compsci/` cannot both
+exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
+shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
 slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
 100, an image limit of 150, and 7 days in the archive), and the rules to none. A
 duplicate slug answers `409`.

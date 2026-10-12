@@ -23,7 +23,10 @@ func webFS() fs.FS {
 }
 
 // webHandler serves the embedded assets and falls back to the single-page app
-// for client-side routes such as /general/ or /general/thread/12.
+// for client-side routes such as /math/, /math/thread/12, or /math/post/12.
+// That fallback is also what serves an institution board's /u/iitb/ routes:
+// the UI maps them to the board stored as u-iitb, so the server needs no alias
+// for them.
 func (a *App) webHandler() http.Handler {
 	assets := webFS()
 	files := http.FileServerFS(assets)

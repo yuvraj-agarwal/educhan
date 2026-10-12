@@ -205,11 +205,6 @@ func TestCreateBoardValidation(t *testing.T) {
 		{"slug with a leading dash", map[string]any{"slug": "-lead"}},
 		{"slug with a double dash", map[string]any{"slug": "a--b"}},
 		{"slug too long", map[string]any{"slug": "abcdefghijklmnopqrstuvwxyz"}},
-		{"reserved slug", map[string]any{"slug": "api"}},
-		{"reserved media slug", map[string]any{"slug": "media"}},
-		// /verify is the verification page's route, so a board cannot take it
-		// out from under the UI.
-		{"reserved verify slug", map[string]any{"slug": "verify"}},
 		{"zero bump limit", map[string]any{"slug": "zero", "bump_limit": 0}},
 		{"negative thread limit", map[string]any{"slug": "negative", "thread_limit": -1}},
 		{"absurd thread limit", map[string]any{"slug": "absurd", "thread_limit": maxBoardThreadLimit + 1}},
@@ -233,6 +228,39 @@ func TestCreateBoardValidation(t *testing.T) {
 				t.Errorf("400 should explain itself, got %v", out)
 			}
 		})
+	}
+}
+
+// Every first path segment that means something other than a board is closed
+// to boards, whatever its case: the server's own routes, the UI's pages, and
+// "u", the prefix of institution boards' /u/<name>/ routes. The u-<name> slugs
+// those boards are stored under are ordinary slugs.
+func TestReservedBoardSlugs(t *testing.T) {
+	c := modServer(t)
+
+	reserved := []string{
+		"api", "media", "healthz", "verify", "mod", "u", "rules", "faq",
+		"legal", "terms", "privacy", "dmca", "report", "archive",
+	}
+	for _, slug := range reserved {
+		for _, given := range []string{slug, strings.ToUpper(slug)} {
+			t.Run(given, func(t *testing.T) {
+				var out map[string]any
+				status := c.modBody(http.MethodPost, "/api/boards", testModKey, map[string]any{"slug": given}, &out)
+				if status != http.StatusBadRequest || !strings.Contains(fmt.Sprint(out["error"]), "reserved") {
+					t.Errorf("status = %d (%v), want 400 because %q is reserved", status, out["error"], slug)
+				}
+			})
+		}
+	}
+
+	institution := c.createBoard(map[string]any{"slug": "u-iitb", "name": "IIT Bombay"})
+	if institution.Slug != "u-iitb" {
+		t.Fatalf("slug = %q, want u-iitb", institution.Slug)
+	}
+	thread := c.createThread("u-iitb", "first", "", "an institution board is a board")
+	if detail := fetchThread(t, c, "u-iitb", thread.ThreadNo); detail.Board.Slug != "u-iitb" {
+		t.Errorf("thread is on /%s/, want /u-iitb/", detail.Board.Slug)
 	}
 }
 

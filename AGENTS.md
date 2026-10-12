@@ -153,7 +153,8 @@ curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO \
 
 Boards are created and reconfigured with the same key. Everything but the slug is
 optional; the slug is lowercase letters and digits in dash-separated groups, at most 24
-characters, and may not be `api`, `media`, or `healthz`:
+characters, and may not be one of `reservedBoardSlugs` (`boards.go`). An institution
+board is stored as `u-<name>` and shown by the UI at `/u/<name>/`:
 
 ```bash
 curl -s -X POST localhost:8080/api/boards \
@@ -163,6 +164,9 @@ curl -s -X PATCH localhost:8080/api/boards/comp-sci \
   -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
   -d '{"description":"Systems and theory","thread_limit":50,"image_limit":100}' # omitted fields are unchanged
 curl -s localhost:8080/api/boards/comp-sci/catalog            # a new board works everywhere
+curl -s -X POST localhost:8080/api/boards \
+  -H 'X-Mod-Key: dev-mod-key' -H 'Content-Type: application/json' \
+  -d '{"slug":"u-iitb","name":"IIT Bombay"}'                  # page at /u/iitb/, API at /api/boards/u-iitb
 ```
 
 Archiving and the sweeper are easiest to see on a board with room for one thread and no
@@ -406,6 +410,15 @@ the index, and the thread view each have their own narrow-screen layout.
   failure there is logged and leaves an orphaned file rather than a broken post.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
   nothing would come back for the files later.
+- **Routes.** The UI reads any first path segment it does not recognise as a board's
+  slug, so `reservedBoardSlugs` in `boards.go` holds every first segment that means
+  something else — the server's own routes, the UI's pages, and `u` — and has to agree
+  with `parseRoute` in `app.js`; a new top-level page means adding its name to both.
+  `TestReservedBoardSlugs` covers the list. An institution board is stored as
+  `u-<name>` and shown at `/u/<name>/`: the UI does the mapping, and the server needs no
+  alias because `webHandler` serves the shell for every path that is not an asset, an
+  API route, or media (`TestPageLoadsServeTheShell`). The API only ever takes the
+  stored slug.
 - **The board set** is seeded by `0006_board_set.sql`: thirteen subject boards (`/math/`
   to `/lang/`) and seven student-life ones (`/adm/` to `/meta/`). It renamed the three
   boards `0001` seeded in place — `placements` to `career`, `research` to `grad`,
