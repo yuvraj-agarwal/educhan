@@ -377,6 +377,7 @@ func TestVerificationRejectsNonAcademicDomains(t *testing.T) {
 // moved to another browser, and it takes the previous credential with it.
 func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 
 	first := h.verify("ana@iitb.ac.in").Credential
 
@@ -416,6 +417,7 @@ func TestReverificationRevokesThePreviousCredential(t *testing.T) {
 // consulted, and says so in a way that tells the holder what to do about it.
 func TestExpiredCredentialStopsBadging(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.VerifyCredentialTTL = 40 * time.Millisecond })
+	h.addBoard("general")
 
 	credential := h.verify("ana@iitb.ac.in").Credential
 	time.Sleep(60 * time.Millisecond)
@@ -479,6 +481,7 @@ func TestVerificationRateLimits(t *testing.T) {
 
 func TestPostingWithAndWithoutABadge(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 
 	// Without a credential, asking for a badge is refused rather than quietly
 	// dropped: being told now beats finding out from the posted thread.
@@ -563,6 +566,7 @@ func TestPostingWithAndWithoutABadge(t *testing.T) {
 
 func TestVerificationIsOffWithoutASecret(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	var status verifyResponse
 	c.get("/api/verify", &status)
@@ -591,6 +595,7 @@ func TestVerificationIsOffWithoutASecret(t *testing.T) {
 // look for the address in every column of every table.
 func TestNoEmailAddressReachesTheDatabase(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 
 	// iitb.ac.in maps to a named institution, so even the domain has no reason
 	// to appear. For a domain matched by suffix alone the badge *is* the

@@ -98,6 +98,7 @@ func TestAttachmentLifecycleAcrossBackends(t *testing.T) {
 	for _, backend := range mediaBackends {
 		t.Run(backend.name, func(t *testing.T) {
 			c := backendServer(t, backend)
+			c.addBoard("general")
 			original := pngBytes(t, 800, 400)
 
 			var created createdPost
@@ -207,6 +208,7 @@ func TestFailedPostRemovesItsBlobs(t *testing.T) {
 	for _, backend := range mediaBackends {
 		t.Run(backend.name, func(t *testing.T) {
 			c := backendServer(t, backend)
+			c.addBoard("general")
 
 			// Watch every write, so the assertion covers whatever the upload
 			// actually stored rather than the keys the test guessed at.

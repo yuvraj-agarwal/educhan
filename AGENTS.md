@@ -95,24 +95,24 @@ rejected, so pass the header explicitly.
 ```bash
 # Health + seeded boards
 curl -s localhost:8080/healthz    # -> {"status":"ok"}
-curl -s localhost:8080/api/boards # -> placements / research / general
+curl -s localhost:8080/api/boards # -> /math/ … /lang/, then /adm/ … /meta/
 
 # Create a thread, reply to it with a quote link, and read it back
-TNO=$(curl -s -X POST localhost:8080/api/boards/general/threads \
+TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"smoke test","name":"ana#trip","body":"hello"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["no"])')
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts \
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
   -H 'Content-Type: application/json' -d "{\"body\":\">>$TNO\nreply\"}"
-curl -s localhost:8080/api/boards/general/threads/$TNO   # both posts, with backlinks
-curl -s "localhost:8080/api/boards/general/threads?page=1" # index page
-curl -s localhost:8080/api/boards/general/catalog          # catalog tiles
-curl -s localhost:8080/api/boards/general/archive          # threads pushed off the board
+curl -s localhost:8080/api/boards/meta/threads/$TNO   # both posts, with backlinks
+curl -s "localhost:8080/api/boards/meta/threads?page=1" # index page
+curl -s localhost:8080/api/boards/meta/catalog          # catalog tiles
+curl -s localhost:8080/api/boards/meta/archive          # threads pushed off the board
 
 # A poster key, as the browser makes one: 16 random bytes, base64url, no padding.
 # Posts carrying it get their poster ID from it; posts without it, from the address.
 KEY=$(head -c 16 /dev/urandom | base64 | tr '+/' '-_' | tr -d '=')
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts \
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
   -H 'Content-Type: application/json' -H "X-Educhan-Poster-Key: $KEY" -d '{"body":"keyed"}'
 
 # Confirm persistence in PostgreSQL
@@ -126,13 +126,13 @@ field, and everything else stays the same. Uploads are off unless
 
 ```bash
 # Thread with an image, then read back the attachment metadata
-TNO=$(curl -s -X POST localhost:8080/api/boards/general/threads \
+TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="with image" -F body="look at this" -F image=@/path/to/photo.png \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["no"])')
-curl -s localhost:8080/api/boards/general/threads/$TNO # posts[].attachment.{url,thumb_url,…}
+curl -s localhost:8080/api/boards/meta/threads/$TNO # posts[].attachment.{url,thumb_url,…}
 
 # Reply with an image; the body may be empty when an image is attached
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/posts -F image=@/path/to/photo.jpg
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts -F image=@/path/to/photo.jpg
 ```
 
 Moderation needs `EDUCHAN_MOD_KEY` set on the server; without it every moderation
@@ -143,11 +143,11 @@ EDUCHAN_MOD_KEY=dev-mod-key make run
 ```
 
 ```bash
-curl -s -X POST localhost:8080/api/boards/general/threads/$TNO/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/sticky \
   -H 'Authorization: Bearer dev-mod-key'   # also /unsticky, /lock, /unlock
-curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO/posts/$PNO \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
   -H 'Authorization: Bearer dev-mod-key'   # one post plus its attachment files
-curl -s -X DELETE localhost:8080/api/boards/general/threads/$TNO \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO \
   -H 'Authorization: Bearer dev-mod-key'   # the thread, its posts, its attachments
 ```
 
@@ -198,10 +198,10 @@ CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
   -H 'Content-Type: application/json' -d '{"code":"481920"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
 curl -s localhost:8080/api/verify                   # -> {"enabled":true}, and nothing about you
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/meta/threads \
   -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
   -d '{"body":"badged","badge":true}'
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/meta/threads \
   -H 'Content-Type: application/json' -d '{"body":"anonymous"}'  # no header, no badge
 ```
 
@@ -227,8 +227,8 @@ EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make
 ```
 
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
-board index at `/general/`, catalog at `/general/catalog`, thread at
-`/general/thread/{no}`). Prefer a browser walkthrough for anything that affects
+board index at `/meta/`, catalog at `/meta/catalog`, thread at
+`/meta/thread/{no}`). Prefer a browser walkthrough for anything that affects
 `internal/app/web/`, and check a phone viewport as well as a desktop one — the catalog,
 the index, and the thread view each have their own narrow-screen layout.
 
@@ -406,6 +406,15 @@ the index, and the thread view each have their own narrow-screen layout.
   failure there is logged and leaves an orphaned file rather than a broken post.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
   nothing would come back for the files later.
+- **The board set** is seeded by `0006_board_set.sql`: thirteen subject boards (`/math/`
+  to `/lang/`) and seven student-life ones (`/adm/` to `/meta/`). It renamed the three
+  boards `0001` seeded in place — `placements` to `career`, `research` to `grad`,
+  `general` to `meta` — so their rows and threads carried over, and it skips any rename
+  or insert whose slug is already taken, so it cannot clobber a board a moderator
+  opened. `boards.sort_order` is the listing order: `Boards()` lists the seeded set in
+  that order and then everything opened over the API (`NULL`), oldest first.
+  `/adm/` is admissions and entrance exams at every level, school-leaving included;
+  `/meta/` is about educhan itself.
 - Board management (`boards.go`) reuses that gate. `0002` gives `boards` its bump and
   thread limits and `next_post_no`; `0005` adds `image_limit`, `archive_days`, and
   `rules`. The API defaults in `boards.go` mirror the column defaults, and
@@ -513,9 +522,12 @@ the index, and the thread view each have their own narrow-screen layout.
   credential it returns is then presented explicitly with `postWithCredential`, because
   nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
   (`poster_id_test.go`), which sends its poster key on every post and its credential only
-  on a badged one, the way the client does. A test that needs board settings of its own
-  creates its board with `addBoard` (`archive_test.go`) instead of reconfiguring a seeded
-  one, so it does not depend on which boards the migrations seed. Sweep tests call
+  on a badged one, the way the client does. Tests post to boards they create with
+  `addBoard` (`api_test.go`), never to seeded ones, so they do not depend on which boards
+  the migrations seed; `TestBoardsAreSeeded` is the one test that names the seeded set.
+  A migration's effect on existing data is tested by stopping a schema at an earlier
+  version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
+  starting a server on it with `serverOn`, which applies the rest. Sweep tests call
   `app.sweep` with a small batch to cover the loop, and backdate `archived_at` with
   `archiveThread` rather than waiting. `cmd/server/main_test.go` runs the `-sweep` mode as
   a whole process against its own schema in the same database.

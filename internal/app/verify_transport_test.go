@@ -157,6 +157,7 @@ func TestCredentialIDOnlyFeedsThePosterID(t *testing.T) {
 // nothing changes. Whatever the source says, this is what a client can observe.
 func TestCredentialHasNoEffectOffTheBadgePath(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 	credential := h.verify("ana@iitb.ac.in").Credential
 
 	// A post that does not ask for a badge does not get one, even carrying a

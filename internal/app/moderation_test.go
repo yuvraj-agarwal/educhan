@@ -74,6 +74,7 @@ func requireFile(t *testing.T, path string, want bool) {
 
 func TestModerationRequiresTheKey(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 	thread := c.createThread("general", "guarded", "", "cannot be pinned by anyone")
 	path := fmt.Sprintf("/api/boards/general/threads/%d/sticky", thread.ThreadNo)
 
@@ -113,6 +114,7 @@ func TestModerationRequiresTheKey(t *testing.T) {
 
 func TestModerationIsClosedWithoutAConfiguredKey(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 	thread := c.createThread("general", "unmoderated", "", "no key configured")
 
 	for _, call := range []struct{ method, path string }{
@@ -141,6 +143,7 @@ func TestModerationIsClosedWithoutAConfiguredKey(t *testing.T) {
 
 func TestStickyAndUnsticky(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 
 	pinned := c.createThread("general", "read me first", "", "board rules")
 	newer := c.createThread("general", "newer", "", "posted later")
@@ -174,6 +177,7 @@ func TestStickyAndUnsticky(t *testing.T) {
 
 func TestLockAndUnlock(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 	thread := c.createThread("general", "heated", "", "this will get out of hand")
 	replyPath := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
 
@@ -204,6 +208,7 @@ func TestLockAndUnlock(t *testing.T) {
 
 func TestDeletePostRemovesItAndItsAttachment(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 	thread := c.createThread("general", "with a bad reply", "", "opening post")
 	c.reply("general", thread.ThreadNo, "", "an innocent reply", false)
 
@@ -258,6 +263,7 @@ func TestDeletePostRemovesItAndItsAttachment(t *testing.T) {
 
 func TestDeleteOpeningPostDeletesTheThread(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 	thread := c.createThread("general", "spam", "", "the whole thread has to go")
 	c.reply("general", thread.ThreadNo, "", "a reply", false)
 
@@ -279,6 +285,7 @@ func TestDeleteOpeningPostDeletesTheThread(t *testing.T) {
 
 func TestDeleteThreadRemovesPostsAndAttachments(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 
 	var thread createdPost
 	if status := c.upload("/api/boards/general/threads",
@@ -332,6 +339,7 @@ func TestDeleteThreadRemovesPostsAndAttachments(t *testing.T) {
 
 func TestModerationNotFoundResponses(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general", "research")
 	thread := c.createThread("general", "present", "", "opening post")
 
 	cases := map[string]struct {

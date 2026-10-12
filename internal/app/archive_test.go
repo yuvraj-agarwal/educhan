@@ -12,15 +12,6 @@ import (
 	"time"
 )
 
-// addBoard inserts a board straight into the database, for tests that need
-// settings of their own and should not depend on which boards the migrations
-// happen to seed. Settings are then changed with exec, like any other setup
-// the API does not expose to a poster.
-func (h *harness) addBoard(slug string) {
-	h.t.Helper()
-	h.exec(`INSERT INTO boards (slug, name) VALUES ($1, $1)`, slug)
-}
-
 // archivedAt reads a thread's archived_at straight from the database, nil
 // while the thread is live.
 func (h *harness) archivedAt(board string, no int64) *time.Time {

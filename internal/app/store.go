@@ -66,9 +66,11 @@ func scanBoard(row pgx.Row) (Board, error) {
 	return b, err
 }
 
-// Boards lists every board in display order.
+// Boards lists every board in display order: the seeded set in the order
+// 0006_board_set.sql gives it, then boards opened over the API, oldest first.
 func (s *Store) Boards(ctx context.Context) ([]Board, error) {
-	rows, err := s.pool.Query(ctx, `SELECT `+boardColumns+` FROM boards b ORDER BY b.id`)
+	rows, err := s.pool.Query(ctx,
+		`SELECT `+boardColumns+` FROM boards b ORDER BY b.sort_order NULLS LAST, b.id`)
 	if err != nil {
 		return nil, err
 	}

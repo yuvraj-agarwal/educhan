@@ -138,6 +138,7 @@ func (c *client) fetch(path string, header http.Header) (*http.Response, []byte)
 
 func TestCreateThreadWithImage(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 	original := pngBytes(t, 800, 400)
 
 	var created createdPost
@@ -225,6 +226,7 @@ func TestCreateThreadWithImage(t *testing.T) {
 
 func TestReplyWithImageAndNoBody(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 	thread := c.createThread("general", "text only op", "", "no image here")
 
 	var created createdPost
@@ -268,6 +270,7 @@ func TestReplyWithImageAndNoBody(t *testing.T) {
 
 func TestUploadRejections(t *testing.T) {
 	c := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = 1 << 20 })
+	c.addBoard("general")
 	target := "/api/boards/general/threads"
 
 	t.Run("non-image payload", func(t *testing.T) {
@@ -321,6 +324,7 @@ func TestUploadRejections(t *testing.T) {
 // including multipart ones whose file input was left empty.
 func TestUploadsSwitchedOff(t *testing.T) {
 	c := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = false })
+	c.addBoard("general")
 	image := pngBytes(t, 64, 64)
 
 	var refused createdPost
@@ -372,6 +376,7 @@ func TestUploadsSwitchedOff(t *testing.T) {
 
 func TestJSONSubmissionsCarryNoAttachment(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 
 	thread := c.createThread("general", "json", "curl", "still text-only")
 	c.reply("general", thread.ThreadNo, "curl", "a reply", false)
@@ -418,6 +423,7 @@ func TestMediaServingEdgeCases(t *testing.T) {
 
 func TestMediaSupportsRangeRequests(t *testing.T) {
 	c := testServer(t, nil)
+	c.addBoard("general")
 	original := pngBytes(t, 300, 300)
 
 	var created createdPost

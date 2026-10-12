@@ -73,7 +73,13 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	return applyMigrations(ctx, pool, log, migrations)
+}
 
+// applyMigrations is migrate over a given list, which lets a test stop a
+// database at an earlier version, put data in front of a later migration, and
+// then let migrate bring it up to date the way a deploy would.
+func applyMigrations(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, migrations []migration) error {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
 		return err

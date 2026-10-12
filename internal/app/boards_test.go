@@ -154,11 +154,12 @@ func TestCreateBoardDefaults(t *testing.T) {
 
 	// The API defaults have to be the column defaults, or a board opened over
 	// the API and one inserted by a migration would behave differently.
-	var seeded Board
-	c.get("/api/boards/general", &seeded)
-	if seeded.ImageLimit != defaultBoardImageLimit || seeded.ArchiveDays != defaultBoardArchiveDays {
-		t.Errorf("seeded board image limit and archive days = %d/%d, want %d/%d",
-			seeded.ImageLimit, seeded.ArchiveDays, defaultBoardImageLimit, defaultBoardArchiveDays)
+	c.addBoard("by-column")
+	var inserted Board
+	c.get("/api/boards/by-column", &inserted)
+	if inserted.BumpLimit != created.BumpLimit || inserted.ThreadLimit != created.ThreadLimit ||
+		inserted.ImageLimit != created.ImageLimit || inserted.ArchiveDays != created.ArchiveDays {
+		t.Errorf("column defaults %+v differ from the API defaults %+v", inserted, created)
 	}
 
 	// A name that is only whitespace is no name at all, so it takes the same
@@ -171,19 +172,20 @@ func TestCreateBoardDefaults(t *testing.T) {
 
 func TestCreateBoardRejectsDuplicateSlug(t *testing.T) {
 	c := modServer(t)
+	c.createBoard(map[string]any{"slug": "taken", "name": "First"})
 
 	var out map[string]any
 	status := c.modBody(http.MethodPost, "/api/boards", testModKey,
-		map[string]any{"slug": "general", "name": "General again"}, &out)
+		map[string]any{"slug": "taken", "name": "Second"}, &out)
 	if status != http.StatusConflict {
 		t.Fatalf("duplicate slug status = %d, want 409", status)
 	}
 
-	// The seeded board must be untouched.
-	var general Board
-	c.get("/api/boards/general", &general)
-	if general.Name != "General" {
-		t.Errorf("existing board name = %q, want General", general.Name)
+	// The existing board must be untouched.
+	var taken Board
+	c.get("/api/boards/taken", &taken)
+	if taken.Name != "First" {
+		t.Errorf("existing board name = %q, want First", taken.Name)
 	}
 }
 
@@ -255,6 +257,7 @@ func TestCreateBoardNormalisesSlug(t *testing.T) {
 
 func TestUpdateBoardRequiresTheKey(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 	body := map[string]any{"name": "Hijacked"}
 
 	var out map[string]any
@@ -274,6 +277,7 @@ func TestUpdateBoardRequiresTheKey(t *testing.T) {
 
 func TestUpdateBoardSettings(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 
 	var before Board
 	c.get("/api/boards/general", &before)
@@ -311,6 +315,7 @@ func TestUpdateBoardSettings(t *testing.T) {
 // A partial update must leave the settings it does not name alone.
 func TestUpdateBoardIsPartial(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 
 	var before Board
 	c.get("/api/boards/general", &before)
@@ -332,6 +337,7 @@ func TestUpdateBoardIsPartial(t *testing.T) {
 // The thread limit is not just stored: the existing pruning path has to read it.
 func TestUpdateBoardThreadLimitPrunes(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 
 	const limit = 2
 	var updated Board
@@ -362,6 +368,7 @@ func TestUpdateBoardThreadLimitPrunes(t *testing.T) {
 
 func TestUpdateBoardValidation(t *testing.T) {
 	c := modServer(t)
+	c.addBoard("general")
 
 	cases := []struct {
 		name       string

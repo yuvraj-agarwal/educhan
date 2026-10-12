@@ -344,7 +344,7 @@ uploaded: no metadata stripping and no content scanning yet.
 Posting an image over HTTP is a plain multipart form:
 
 ```bash
-curl -X POST localhost:8080/api/boards/general/threads \
+curl -X POST localhost:8080/api/boards/chem/threads \
   -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
 ```
 
@@ -354,7 +354,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 | Area | Behaviour |
 | --- | --- |
-| Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
+| Boards | Twenty seeded from a migration — subjects from `/math/` to `/lang/`, then student life from `/adm/` to `/meta/` — and more created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
 | Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID, from a random key the browser keeps, keeps a conversation followable |
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
@@ -620,7 +620,7 @@ plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
 
 ```bash
 curl -s localhost:8080/api/boards
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
@@ -635,7 +635,7 @@ CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
 
 # The badge is the header plus the flag. Leave both off and the post is
 # anonymous — the credential is not sent at all.
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/career/threads \
   -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
   -d '{"subject":"from the inside","body":"we saw the same numbers","badge":true}'
 ```
@@ -665,20 +665,20 @@ the thread's reply count, so bump-limit state stays accurate.
 
 ```bash
 export MOD_KEY=…
-curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/1/sticky \
   -H "Authorization: Bearer $MOD_KEY"
-curl -s -X DELETE localhost:8080/api/boards/general/threads/1/posts/4 \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/1/posts/4 \
   -H "X-Mod-Key: $MOD_KEY"
 ```
 
 #### Board management
 
-The three seeded boards are a starting point, not the whole list: a board can be
+The seeded boards are a starting point, not the whole list: a board can be
 opened and reconfigured with the same key, without a migration or a release.
 Listing boards stays public.
 
 A slug is the board's address in every URL, so it is lowercase letters and
-digits in dash-separated groups (`general`, `comp-sci`), at most 24 characters,
+digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
 and not one of the paths the server already answers on (`api`, `media`,
 `healthz`). It is normalised before use, so `/CompSci/` and `/compsci/` cannot
 both exist. Everything but the slug is optional: the name falls back to the
