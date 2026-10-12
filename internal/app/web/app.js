@@ -1863,8 +1863,7 @@ const FAQ_SECTIONS = [
       <p>Your answer never leaves your browser. The browser works out from the month and year
         whether you're old enough, then forgets them: they are never saved, and never sent to
         educhan or anyone else. All it keeps is the result, so you aren't asked on every
-        visit, and if the result is no, it doesn't ask again. If your browser blocks this
-        site from storing anything, you're asked once each visit instead.</p>`,
+        visit, and if the result is no, it doesn't ask again.</p>`,
         },
       ]
     : []),
@@ -2040,7 +2039,7 @@ function renderFAQ() {
 // The age screen is a neutral question asked once, before anything of the site
 // is shown or fetched. Neutral means it gives nothing away: no threshold, no
 // preselected year, no "I am old enough" box to tick, and no second go at the
-// question once it has said no. It is the browser's own check, not proof, and
+// question once it has said no. It is a question taken on trust, not proof, and
 // the answer never leaves the page: not stored, not sent, not put in the URL.
 
 let ageScreen = null;
@@ -2084,8 +2083,8 @@ function ageQuestionHTML() {
   return `
     <form class="age-step fields" method="dialog" novalidate>
       <h2 class="age-title" id="age-title">When were you born?</h2>
-      <p class="age-note" id="age-note">Your answer is checked in this browser and is never
-        stored or sent anywhere.</p>
+      <p class="age-note" id="age-note">Your answer stays in this browser and is never saved
+        or sent anywhere.</p>
       <div class="age-fields" role="group" aria-labelledby="age-title" aria-describedby="age-note">
         <div class="field">
           <label class="label" for="age-month">Month</label>
