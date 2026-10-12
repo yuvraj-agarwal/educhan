@@ -658,7 +658,7 @@ async function renderCatalog(route) {
       <a class="tile" href="${threadPath(board.slug, t.no)}">
         <div class="stats">
           <span class="replies">${plural(t.replies, "reply", "replies")}</span>
-          ${t.images > 0 ? `<span class="images">${plural(t.images, "image", "images")}</span>` : ""}
+          ${t.images > 0 ? `<span class="images">&middot; ${plural(t.images, "image", "images")}</span>` : ""}
           ${badgesHTML(t)}
         </div>
         ${media}
