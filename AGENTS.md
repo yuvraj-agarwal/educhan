@@ -399,11 +399,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   all (OSA s.230(4)), so calling it more claims a protection educhan does not have
   (§4.1). `TestAgeScreenIsNeverCalledVerification` searches the repository for the
   wording.
-- **Safe for work, for everyone.** No NSFW board, no "18+" or adult area, and no opt-in
+- **Safe for work, for everyone.** No NSFW board, no adult-content area, and no opt-in
   to one: the rules ban pornography, self-harm and eating-disorder promotion and the
   rest for every user, and that ban is what keeps the UK's highly effective age checks
   out of the plan. 4chan was fined £450,000 for adult boards without them (§3.4 item 2,
-  §4.1).
+  §4.1). The badge's planned 18+ attestation (build plan 2.14), and with it posting on
+  `/u/` boards, limits who can post there, not what may be posted: the same rules hold
+  on every board, for everyone.
 - **Never market educhan as safe for teenagers.** No "safe space", no claim that a
   filter catches bullying or anything else, and no feature described to users before it
   is built. NGL, an anonymous app that did the first two, was banned by the FTC from
