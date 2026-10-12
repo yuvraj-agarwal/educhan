@@ -303,8 +303,9 @@ func TestAnonymousIdentity(t *testing.T) {
 	if op.Tripcode != "" {
 		t.Errorf("op should have no tripcode, got %q", op.Tripcode)
 	}
-	if reply.Name != "ana" || !strings.HasPrefix(reply.Tripcode, "!") {
-		t.Errorf("reply identity = %q/%q, want ana with a tripcode", reply.Name, reply.Tripcode)
+	// "#secret" makes the salted tripcode, the only kind there is.
+	if reply.Name != "ana" || !strings.HasPrefix(reply.Tripcode, "!!") {
+		t.Errorf("reply identity = %q/%q, want ana with a \"!!\" tripcode", reply.Name, reply.Tripcode)
 	}
 	if op.PosterID == "" || op.PosterID != reply.PosterID {
 		t.Errorf("both posts come from the same client, so poster IDs should match: %q vs %q",

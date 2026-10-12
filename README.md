@@ -248,6 +248,23 @@ verification endpoints and nowhere else. It is `HttpOnly`, `SameSite=Lax`, and
 `Secure` whenever the request arrived over TLS. The credential is not a cookie
 at all — see above.
 
+## Posting identity
+
+### Tripcodes
+
+A name of `ana#secret` posts as **ana** with a tripcode such as `!!Xq3vB0e9kT`,
+which lets a poster show that two posts came from whoever knows the secret,
+without an account. `#secret` and `##secret` are the same thing: both make the
+one kind of tripcode educhan has, `HMAC(EDUCHAN_POSTER_ID_SALT, secret)`, shown
+with the `!!` prefix imageboards use for a server-keyed tripcode.
+
+The classic unkeyed tripcode, with a single `!`, is not offered. It is a plain
+hash of a secret somebody chose by hand, so anyone who sees the tripcode can
+search for the secret offline and then post as its owner. Keyed by the salt, a
+tripcode can only be produced through this server. The salt is also what keeps
+tripcodes stable: rotate `EDUCHAN_POSTER_ID_SALT` and every one of them changes,
+along with every poster ID.
+
 ## Image attachments
 
 One image per post, on both thread creation and replies, **when
@@ -298,7 +315,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Area | Behaviour |
 | --- | --- |
 | Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
-| Posting | Anonymous by default; `name#secret` and `name##secret` produce tripcodes; a per-thread poster ID keeps a conversation followable |
+| Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID keeps a conversation followable |
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails |

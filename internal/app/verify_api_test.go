@@ -695,7 +695,7 @@ func TestPostsTableColumnsArePinned(t *testing.T) {
 		"no",         // the per-board number posters quote
 		"poster_id",  // the per-thread ID: a keyed hash, never the input it came from
 		"thread_id",  // the thread the post is in
-		"tripcode",   // the tripcode, if the poster used one; never the secret
+		"tripcode",   // the salted tripcode, if the poster used one; never the secret
 	}
 	if got := h.columns("posts"); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("posts has columns %v, want exactly %v\n"+

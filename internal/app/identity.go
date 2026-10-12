@@ -13,12 +13,15 @@ import (
 const anonymousName = "Anonymous"
 
 const (
-	maxNameLen     = 64
-	tripcodeLen    = 10
-	posterIDLen    = 8
-	posterIDAlpha  = "0123456789abcdefghijklmnopqrstuvwxyz"
-	tripcodeAlpha1 = "!"  // name#secret  — anyone with the secret reproduces it
-	tripcodeAlpha2 = "!!" // name##secret — additionally keyed by the server salt
+	maxNameLen    = 64
+	tripcodeLen   = 10
+	posterIDLen   = 8
+	posterIDAlpha = "0123456789abcdefghijklmnopqrstuvwxyz"
+	// tripcodePrefix marks a tripcode. It is "!!", the prefix imageboards use
+	// for a secure (server-keyed) tripcode, because that is the only kind
+	// educhan makes: a single "!" would advertise the classic unkeyed kind,
+	// which can be cracked offline from the tripcode alone.
+	tripcodePrefix = "!!"
 )
 
 // identity is the public, non-account-based identity attached to a post.
@@ -32,14 +35,17 @@ type identity struct {
 //
 //	"" or "  "        -> Anonymous
 //	"ana"             -> name "ana"
-//	"ana#secret"      -> name "ana" + insecure tripcode "!xxxxxxxxxx"
-//	"ana##secret"     -> name "ana" + secure tripcode "!!xxxxxxxxxx"
-//	"#secret"         -> Anonymous + insecure tripcode
+//	"ana#secret"      -> name "ana" + tripcode "!!xxxxxxxxxx"
+//	"ana##secret"     -> the same name and the same tripcode
+//	"#secret"         -> Anonymous + that tripcode
 //
 // Tripcodes let a poster prove continuity between posts without an account.
-// Unlike the original crypt(3) scheme they are derived with SHA-256 (and, for
-// secure tripcodes, HMAC keyed by the server salt) so they cannot be cracked
-// with off-the-shelf DES tooling.
+// Every tripcode is keyed by the server salt. The classic "#secret" form is an
+// unkeyed hash, and an unkeyed hash of a short, human-chosen secret can be
+// brute-forced offline by anyone who sees the tripcode — which is everyone — so
+// it would prove nothing. "#" and "##" are both accepted so that posters used
+// to either convention get the tripcode they expect, and they give the same
+// one, so nobody has to know which form they first used.
 func parseIdentity(field, salt string) identity {
 	name, secret, hasSecret := strings.Cut(field, "#")
 	id := identity{Name: clampName(name)}
@@ -50,20 +56,20 @@ func parseIdentity(field, salt string) identity {
 		return id
 	}
 
-	secure := false
-	if rest, ok := strings.CutPrefix(secret, "#"); ok {
-		secure, secret = true, rest
-	}
+	secret = strings.TrimPrefix(secret, "#")
 	if strings.TrimSpace(secret) == "" {
 		return id
 	}
-
-	if secure {
-		id.Tripcode = tripcodeAlpha2 + digest([]byte(salt), "trip:"+secret)
-	} else {
-		id.Tripcode = tripcodeAlpha1 + digest(nil, "trip:"+secret)
-	}
+	id.Tripcode = tripcode(salt, secret)
 	return id
+}
+
+// tripcode derives the tripcode for a secret. The derivation is the one secure
+// tripcodes have always used here, so a "##secret" tripcode from before the
+// unkeyed kind was retired is still the same tripcode.
+func tripcode(salt, secret string) string {
+	sum := hmacSum([]byte(salt), "trip:"+secret)
+	return tripcodePrefix + base64.RawURLEncoding.EncodeToString(sum)[:tripcodeLen]
 }
 
 // posterID derives the short per-thread identifier shown next to a post. It is
@@ -78,18 +84,7 @@ func posterID(salt, clientKey string, threadID int64) string {
 	return string(out)
 }
 
-// digest returns a short URL-safe digest of value. When key is nil the digest is
-// unkeyed, so it can be reproduced by anyone holding the same value.
-func digest(key []byte, value string) string {
-	sum := hmacSum(key, value)
-	return base64.RawURLEncoding.EncodeToString(sum)[:tripcodeLen]
-}
-
 func hmacSum(key []byte, value string) []byte {
-	if key == nil {
-		sum := sha256.Sum256([]byte(value))
-		return sum[:]
-	}
 	mac := hmac.New(sha256.New, key)
 	mac.Write([]byte(value))
 	return mac.Sum(nil)

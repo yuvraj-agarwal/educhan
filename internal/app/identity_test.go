@@ -1,6 +1,9 @@
 package app
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"strings"
 	"testing"
 )
@@ -13,15 +16,16 @@ func TestParseIdentity(t *testing.T) {
 		field       string
 		wantName    string
 		wantTripSet bool
-		wantPrefix  string
 	}{
 		{name: "empty defaults to anonymous", field: "", wantName: anonymousName},
 		{name: "whitespace defaults to anonymous", field: "   ", wantName: anonymousName},
 		{name: "plain name is trimmed", field: "  ana  ", wantName: "ana"},
-		{name: "insecure tripcode", field: "ana#secret", wantName: "ana", wantTripSet: true, wantPrefix: "!"},
-		{name: "secure tripcode", field: "ana##secret", wantName: "ana", wantTripSet: true, wantPrefix: "!!"},
-		{name: "tripcode without a name", field: "#secret", wantName: anonymousName, wantTripSet: true, wantPrefix: "!"},
+		{name: "single hash tripcode", field: "ana#secret", wantName: "ana", wantTripSet: true},
+		{name: "double hash tripcode", field: "ana##secret", wantName: "ana", wantTripSet: true},
+		{name: "tripcode without a name", field: "#secret", wantName: anonymousName, wantTripSet: true},
+		{name: "double hash without a name", field: "##secret", wantName: anonymousName, wantTripSet: true},
 		{name: "empty secret is ignored", field: "ana#", wantName: "ana"},
+		{name: "empty double hash secret is ignored", field: "ana##", wantName: "ana"},
 		{name: "blank secret is ignored", field: "ana#   ", wantName: "ana"},
 	}
 
@@ -31,35 +35,49 @@ func TestParseIdentity(t *testing.T) {
 			if got.Name != tc.wantName {
 				t.Errorf("name = %q, want %q", got.Name, tc.wantName)
 			}
-			if tc.wantTripSet {
-				if got.Tripcode == "" {
-					t.Fatal("expected a tripcode")
+			if !tc.wantTripSet {
+				if got.Tripcode != "" {
+					t.Errorf("unexpected tripcode %q", got.Tripcode)
 				}
-				if !strings.HasPrefix(got.Tripcode, tc.wantPrefix) {
-					t.Errorf("tripcode %q does not start with %q", got.Tripcode, tc.wantPrefix)
-				}
-			} else if got.Tripcode != "" {
-				t.Errorf("unexpected tripcode %q", got.Tripcode)
+				return
+			}
+			if len(got.Tripcode) != len(tripcodePrefix)+tripcodeLen || !strings.HasPrefix(got.Tripcode, "!!") {
+				t.Errorf("tripcode %q, want \"!!\" and %d characters", got.Tripcode, tripcodeLen)
 			}
 		})
 	}
 }
 
-func TestParseIdentityTripcodeStability(t *testing.T) {
-	insecure := parseIdentity("ana#secret", "salt-a").Tripcode
-	if other := parseIdentity("bob#secret", "salt-b").Tripcode; other != insecure {
-		t.Errorf("insecure tripcodes must not depend on name or salt: %q != %q", other, insecure)
+// The unkeyed "!" tripcode is gone: an unsalted hash of a short secret can be
+// cracked from the tripcode alone, so both conventions make the salted one.
+func TestParseIdentityTripcodesAreAllSalted(t *testing.T) {
+	single := parseIdentity("ana#secret", "salt-a").Tripcode
+	double := parseIdentity("ana##secret", "salt-a").Tripcode
+	if single != double {
+		t.Errorf("#secret gave %q and ##secret gave %q; they must be one tripcode", single, double)
 	}
-	if changed := parseIdentity("ana#other", "salt-a").Tripcode; changed == insecure {
+	if bare := parseIdentity("#secret", "salt-a").Tripcode; bare != single {
+		t.Errorf("a tripcode must not depend on the name: %q != %q", bare, single)
+	}
+	if other := parseIdentity("bob#secret", "salt-a").Tripcode; other != single {
+		t.Errorf("a tripcode must not depend on the name: %q != %q", other, single)
+	}
+	if changed := parseIdentity("ana#other", "salt-a").Tripcode; changed == single {
 		t.Error("different secrets must produce different tripcodes")
 	}
-
-	secure := parseIdentity("ana##secret", "salt-a").Tripcode
-	if same := parseIdentity("ana##secret", "salt-b").Tripcode; same == secure {
-		t.Error("secure tripcodes must depend on the server salt")
+	for _, field := range []string{"ana#secret", "ana##secret"} {
+		if resalted := parseIdentity(field, "salt-b").Tripcode; resalted == single {
+			t.Errorf("%s: the tripcode must depend on the server salt", field)
+		}
 	}
-	if secure == "!"+strings.TrimPrefix(insecure, "!") {
-		t.Error("secure and insecure tripcodes must differ for the same secret")
+
+	// Pinned to the derivation secure tripcodes have always had, computed
+	// here independently, so a "##secret" tripcode from before the change is
+	// unchanged by it.
+	mac := hmac.New(sha256.New, []byte("salt-a"))
+	mac.Write([]byte("trip:secret"))
+	if want := "!!" + base64.RawURLEncoding.EncodeToString(mac.Sum(nil))[:tripcodeLen]; double != want {
+		t.Errorf("##secret = %q, want %q: the secure derivation must not move", double, want)
 	}
 }
 

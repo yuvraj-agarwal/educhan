@@ -328,6 +328,12 @@ the index, and the thread view each have their own narrow-screen layout.
   (`TestSweepLogsOnlyCounts`), and returns an error — a non-zero exit — on a database
   failure or if any blob could not be removed. **Legal holds (build plan 2.10) are not
   built**; when they are, `SweepArchived` must skip held threads, and its comment says so.
+- **Tripcodes are salted, always.** `name#secret` and `name##secret` give the same
+  tripcode, `"!!"` plus `HMAC(EDUCHAN_POSTER_ID_SALT, "trip:"+secret)` (`tripcode` in
+  `identity.go`), which is the derivation `##` always had, so existing secure tripcodes
+  did not change. The unkeyed single-`!` kind was retired because a plain hash of a
+  hand-picked secret can be cracked offline from the tripcode alone; do not bring it
+  back as a convenience. `TestParseIdentityTripcodesAreAllSalted` pins the derivation.
 - Post numbers are allocated per board from `boards.next_post_no`; a thread's number is
   the number of its opening post. Thread primary keys stay internal apart from the
   `/api/threads/{id}` compatibility routes.
