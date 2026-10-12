@@ -81,7 +81,8 @@ gcloud services enable \
   run.googleapis.com \
   sqladmin.googleapis.com \
   secretmanager.googleapis.com \
-  storage.googleapis.com
+  storage.googleapis.com \
+  cloudscheduler.googleapis.com
 
 # Somewhere to push the image. The location is part of every image reference, so
 # it has to match `_REGION` in cloudbuild.yaml (or `REGION` on the make command
@@ -265,7 +266,10 @@ done
 
 **Set the salt once and leave it alone.** It keys per-thread poster IDs and
 secure tripcodes; without it each instance and each revision generates its own,
-so the same person shows a different ID depending on which container answered.
+so the same browser shows a different ID depending on which container answered.
+A poster ID is an HMAC of the browser's poster key (or of the badge credential's
+id, on a badged post) under this salt; only a post that arrives without a poster
+key falls back to the client address.
 
 ### 2.5 Build and push
 
@@ -417,6 +421,69 @@ sink only carries audit logs, so it holds no request entries. Application logs
 (stdout and stderr) are unaffected and still reach Cloud Logging, which is why
 the app keeps addresses out of them itself.
 
+### 2.9 The archive sweeper
+
+A thread that falls off the end of its board is archived, and the sweeper
+deletes it, with its images, once its board's `archive_days` (7 by default)
+have passed. It is the same image run as `educhan -sweep`: one pass, then it
+exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
+because a Cloud Run service only has CPU while it answers a request, so a timer
+inside it would fire whenever it happened to.
+
+The Job runs as the service's account and needs only what deleting takes: the
+database and the bucket. It gets neither the moderation key nor
+`EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
+with that secret set and no mail sender). The poster-ID salt is left out too, as
+nothing the sweeper does touches a poster ID.
+
+```bash
+gcloud run jobs deploy educhan-sweep \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --service-account "$RUN_SA" \
+  --args=-sweep \
+  --set-cloudsql-instances "$CLOUDSQL_INSTANCE" \
+  --set-secrets "DATABASE_URL=educhan-database-url:latest" \
+  --set-env-vars "EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
+  --tasks 1 --max-retries 1 --task-timeout 15m \
+  --cpu 1 --memory 512Mi
+```
+
+The media settings must match the service's exactly. A file that is not where
+the sweeper looks counts as already gone, so a mismatched bucket or prefix fails
+silently: the rows go and every file stays behind. Run it once by hand and read what it did;
+the log line carries counts only, never which boards or threads went:
+
+```bash
+gcloud run jobs execute educhan-sweep --region "$REGION" --wait
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="educhan-sweep" AND jsonPayload.msg="sweep"' \
+  --freshness=1h --limit=1 --format='value(jsonPayload)'
+```
+
+Then schedule it. Cloud Scheduler calls the Run API as its own service account,
+which may run this one Job and nothing else:
+
+```bash
+gcloud iam service-accounts create educhan-scheduler --display-name="educhan sweeper schedule"
+export SCHEDULER_SA="educhan-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud run jobs add-iam-policy-binding educhan-sweep --region "$REGION" \
+  --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker
+
+gcloud scheduler jobs create http educhan-sweep-daily \
+  --location "$REGION" \
+  --schedule "17 3 * * *" --time-zone "Etc/UTC" \
+  --http-method POST \
+  --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/educhan-sweep:run" \
+  --oauth-service-account-email "$SCHEDULER_SA"
+```
+
+A sweep that could not remove a file exits non-zero, so the execution shows as
+failed in the console (`gcloud run jobs executions list --job educhan-sweep
+--region "$REGION"`) and the next run carries on; the rows are already gone and
+the file is an orphan in the bucket, not a broken post. `make cloud-deploy` moves
+the Job onto each new image along with the service, so the two never run
+different schemas.
+
 ---
 
 ## 3. How the Cloud SQL connection works
@@ -493,8 +560,10 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
-value higher than the real chain lets a client pick its own rate-limit bucket and
-poster ID by sending an `X-Forwarded-For` of its own. Cloud Run is one hop; put a
+value higher than the real chain lets a client pick its own rate-limit bucket by
+sending an `X-Forwarded-For` of its own. Poster IDs mostly no longer depend on
+it: they come from the browser's poster key, and only a post sent without one
+(a script, say) falls back to the client address. Cloud Run is one hop; put a
 load balancer or CDN in front and it becomes two.
 
 ---
