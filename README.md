@@ -208,10 +208,17 @@ entry names the place instead, and wins over any suffix. An address sitting
 directly on a suffix (`someone@ac.in`) is refused: a namespace is not an
 institution. A denial refuses a domain and everything under it, whatever else
 matches; it exists for school namespaces that share a suffix with universities.
-The badge names a university or college, so for now school addresses do not
-verify; that is a choice about the badge, not an age limit on the site. Suffixes shared with schools are either guarded by
-denials (`edu.au`) or left out in favour of named universities (`edu.sg`,
-`edu.hk`), and `sch.uk` is not listed. `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
+School addresses are refused on purpose, for child safety: a badge naming a
+school marks its poster as a child at a findable place, and school mailboxes are
+often monitored and closed when a pupil leaves. That limits the badge, not who
+may use the site. The aim is that every badge names a university or college, but
+that is a goal, not a guarantee: `ac.uk` also admits sixth-form colleges, and no
+suffix maps exactly onto higher education. Suffixes shared with schools are
+either guarded by denials (`edu.au`, `kvs.ac.in`) or left out in favour of named
+universities (`edu.in`, `ac.jp`, `ac.th`, `edu.sg`, `edu.hk`), and `sch.uk` is
+not listed. Every suffix in the file is marked reviewed or not checked yet. No
+EU member-state suffixes are listed while the site does not target the EU.
+`EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
 configured.
 
