@@ -238,7 +238,10 @@ For UI changes, the app is served at `http://localhost:8080` (dark-themed single
 board index at `/meta/`, catalog at `/meta/catalog`, thread at
 `/meta/thread/{no}`). Prefer a browser walkthrough for anything that affects
 `internal/app/web/`, and check a phone viewport as well as a desktop one — the catalog,
-the index, and the thread view each have their own narrow-screen layout.
+the index, and the thread view each have their own narrow-screen layout. A fresh browser
+meets the age screen first: answer it, or, when a check is not about the screen itself,
+set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright's
+`addInitScript`).
 
 ### Front end conventions
 
@@ -293,14 +296,58 @@ the index, and the thread view each have their own narrow-screen layout.
   turns `\def`, `\newcommand` and friends into errors, because `maxExpand` counts
   expansions, not what they produce, and one defined macro used a thousand times is
   millions of nodes. Don't loosen them without a browser check that repeats the probes.
+- Every link to a board, thread, or post is built on `boardPath(slug)` (and
+  `threadPath`), and every on-screen board name on `boardLabel(slug)`: an institution
+  board's slug is `u-{name}` but its address is `/u/{name}/`, and those two helpers are
+  the only places that know it. `parseRoute` maps `/u/{name}/…` back to the slug, and
+  `RESERVED_PATHS` lists the top-level words that are never a board; keep it in step with
+  `reservedBoardSlugs` on the server. `/{board}/post/{no}` resolves through
+  `GET /api/boards/{slug}/posts/{no}` and replaces its own history entry with the thread.
+- `formHTML` takes the thread it replies to and follows its state: an archived thread
+  gets an explanation instead of a form, a locked one a note. A refusal that arrives
+  after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
+  that leaves the draft in place. A thread at its image cap renders the picker through
+  `fileFieldHTML(reason)`, switched off with the reason on screen; `blockFileField` puts
+  a live form into the same state when `image limit reached` arrives mid-draft. A
+  disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
-  fields need adding there too.
+  fields need adding there too. The spoiler box lives in the file preview and is
+  restored only alongside the file it was ticked for.
+- A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
+  caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
+  usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
+  hidden wrapper: a lazy image there is not fetched until it is revealed.
+- **The age screen** (`MIN_AGE` in `app.js`: 13, and 0 switches it off) stands in front
+  of every view but `UNGATED_VIEWS` (`/rules`, `/faq`). `render` asks `ageStatus()` before
+  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list
+  and the verification flag once, on the first page past the screen, not at start-up.
+  The screen is a `<dialog>` opened with `showModal()`; Escape is blocked three ways
+  (keydown, `cancel`, and reopening on `close`), because Chrome lets a repeated Escape
+  through a cancelled `cancel`. Only the outcome is stored, as `educhan:age-ok-v1` or
+  `educhan:age-refused-v1`, through `storageGet`/`storageSet` so blocked storage means
+  asking again next visit rather than a broken page. **The birth month and year are
+  never stored, sent, or logged**: they live in two unnamed selects in a
+  `method="dialog"` form and are removed from the page once compared. Keep it that way,
+  keep the question neutral (no threshold in the copy, nothing preselected, no "I am old
+  enough" box), and never add a way back from a refusal. Every sentence that names the
+  age is built from `MIN_AGE`.
+- The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
+  poster key, tripcodes, what is logged, the badge. A change to any of those changes the
+  FAQ in the same commit. The rules and FAQ are readable before the age screen, so they
+  must not depend on anything fetched.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
   every badged post, so a forged local claim buys a 403 and nothing else.
+- The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
+  22 characters of unpadded base64url, made by `posterKey()` on the first post rather
+  than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
+  reply requests and nowhere else, so it cannot become a session identifier. A badged
+  post sends the credential **instead of** the key: the server takes a badged post's ID
+  from the credential, and the two travelling together would be the one place a
+  browser's key met its credential.
 
 ### Attachments
 

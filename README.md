@@ -370,12 +370,40 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
 and KaTeX, each fetched only when a post that needs it is on screen. `app.js` renders the
-JSON API into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
-`/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
+JSON API into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`,
+`/{slug}/archive`, `/{slug}/thread/{no}`), so every view is a shareable link and the back
+button works. `/{slug}/post/{no}` names a post by number alone: it asks the server which
+thread the post is in and replaces itself with that thread, scrolled to the post, so Back
+does not land on it twice. Institution boards are stored as `u-{name}` and live at
+`/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
+`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`, and
+the server's own `api`, `media`, and `healthz` — are never read as boards. `/verify`,
+`/rules`, and `/faq` are pages; a word without a page yet shows the not-found view.
 
+- **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
+  13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
+  Before anything is shown or fetched, a first visit gets a modal asking only "When were
+  you born?", as a month and a year with nothing preselected and nothing hinting at the
+  threshold. Age is counted conservatively, so a birthday in the current month has not
+  happened yet. The answer is compared in the browser and then removed from the page: it
+  is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
+  outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
+  shows a plain page saying who educhan is for, with no way to answer again in that
+  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
+  switches it off.
+- **Rules and FAQ**: `/rules` holds the global rules in plain language, written for an
+  audience that includes school students; boards can add their own under the header's
+  **Rules** disclosure. `/faq` covers what educhan is, who can use it, what anonymity here
+  does and does not hide, staying safe, the badge, tripcodes, per-thread IDs, markup, and
+  the bump limit, image cap, and archive. The footer links to both on every view.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
-  time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
-  tinted chips. On a fine pointer, hovering `>>123` floats a preview of the quoted post
+  time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
+  badges are tinted chips. Each board's archive lists the threads that have left it,
+  newest first; an archived thread still opens, says when it was archived and how long it
+  is kept, and shows why it takes no replies where the reply form would be. A board with
+  rules shows them under a **Rules** disclosure in its header, as plain text with the line
+  breaks kept. On a fine pointer, hovering `>>123` floats a preview of the quoted post
   when it is already on the page — a preview never costs a request.
 - **Post markup**, rendered at display time from the text as typed:
   - `>text` is greentext; `>>123` links to a post on the same board and adds a backlink.
@@ -402,7 +430,18 @@ JSON API into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/ca
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
-  post number quotes it into the reply box.
+  post number quotes it into the reply box. With an image attached, **Spoiler image**
+  sends it hidden: readers see a neutral tile, filename included, until they click it or
+  press Enter on it, and it then expands like any other; the catalog shows the tile only.
+- **Image cap**: the index and catalog show how many images a thread has, and the thread
+  view shows the count against its board's cap. A thread at the cap keeps its reply form
+  with the image picker switched off and the reason beside it; if the cap is reached
+  while a reply is being written, the refusal takes the image off, keeps the text, and
+  the next press posts it.
+- **Poster key**: the first post from a browser makes a random key and keeps it in
+  `localStorage`; it travels in `X-Educhan-Poster-Key` on new threads and replies only, so
+  two people on one campus network get different poster IDs without the key riding on
+  anything else. A badged post sends the credential instead, never both.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

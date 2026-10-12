@@ -3,11 +3,47 @@
 // Routes mirror the API so links are shareable:
 //   /                     board list
 //   /verify               institutional verification
+//   /rules, /faq          the site's rules and questions; readable before the age screen
 //   /{slug}/?page=N       board index
 //   /{slug}/catalog       catalog
+//   /{slug}/archive       archived threads, read-only
 //   /{slug}/thread/{no}   thread
+//   /{slug}/post/{no}     any post by number; resolved to its thread, then replaced
+//
+// Institution boards are stored as "u-{name}" and live under /u/{name}/ instead
+// of /{slug}/, with the same routes beneath.
 
 const NAME_STORAGE_KEY = "educhan:name";
+// Top-level paths that are pages or reserved for them, never boards. The server
+// refuses these as board slugs too, so a board cannot take a path out from
+// under a page that is added later. "u" is the institution namespace.
+const RESERVED_PATHS = new Set([
+  "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
+  "terms", "privacy", "dmca", "report", "archive",
+]);
+// The reserved words that have a page of their own so far.
+const PAGE_VIEWS = new Set(["verify", "rules", "faq"]);
+const INSTITUTION_PREFIX = "u-";
+// The youngest age educhan is open to. Below 13, COPPA requires verifiable
+// parental consent, and an anonymous site has no parent to ask, so it cannot
+// give it. Every sentence on the site that names the age is built from this,
+// and 0 switches the age screen off altogether.
+const MIN_AGE = 13;
+// All the age screen remembers is its outcome — passed, or refused — and never
+// the answer: the month and year live in the dialog's two selects only until
+// they have been compared. The version suffix lets a changed screen ask again
+// without taking an old outcome for a new one.
+const AGE_OK_STORAGE_KEY = "educhan:age-ok-v1";
+const AGE_REFUSED_STORAGE_KEY = "educhan:age-refused-v1";
+// How far back the year list goes.
+const AGE_YEARS = 100;
+const MONTHS = [
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
+];
+// What anyone can read before answering the age screen: what they would be
+// agreeing to, and how the site treats them.
+const UNGATED_VIEWS = new Set(["rules", "faq"]);
 // The verification credential lives in localStorage and is sent only on the
 // posts that ask for a badge, in this header. It is deliberately not a cookie:
 // a cookie would ride along on every request to the origin — anonymous posts,
@@ -20,6 +56,15 @@ const NAME_STORAGE_KEY = "educhan:name";
 // Persisting is what makes the credential TTL mean anything.
 const CREDENTIAL_STORAGE_KEY = "educhan:credential";
 const CREDENTIAL_HEADER = "X-Educhan-Credential";
+// The poster key makes a per-thread poster ID belong to a browser rather than
+// to a network: behind a campus NAT every client shares one address, and IDs
+// keyed on it merge a lecture hall into one poster. It is random, made here,
+// and sent only on the two requests that create a post — never on a read, an
+// image, or anything else — because a key attached to everything would be a
+// session identifier. The server mixes it into its HMAC and never stores it.
+const POSTER_KEY_STORAGE_KEY = "educhan:poster-key";
+const POSTER_KEY_HEADER = "X-Educhan-Poster-Key";
+const POSTER_KEY_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 const ACCEPTED_IMAGES = "image/jpeg,image/png,image/webp,image/gif";
 const ACCEPTED_EXTENSIONS = /\.(jpe?g|png|webp|gif)$/i;
 // Fine pointers get quote previews on hover; touch screens have no hover to
@@ -37,7 +82,9 @@ const state = {
 const el = {
   main: document.getElementById("main"),
   nav: document.getElementById("board-nav"),
-  verifyLink: document.querySelector(".verify-link"),
+  // The links to the site's own pages — Verify in the header, Rules and FAQ in
+  // the footer — each named by the view it opens.
+  pageLinks: document.querySelectorAll("a[data-page]"),
   notice: document.getElementById("notice"),
   status: document.getElementById("route-status"),
 };
@@ -75,10 +122,39 @@ function errorMessage(err) {
     const seconds = err.payload && err.payload.retry_after;
     return seconds ? `Flood control: wait ${plural(seconds, "second", "seconds")} and post again.` : err.message;
   }
+  // The form stays on screen after a refusal, so these say what happened and
+  // leave the half-written post where it is.
+  if (err.status === 403 && err.message === "image limit reached") {
+    return "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own.";
+  }
+  if (err.status === 403 && err.message === "thread is archived") {
+    return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
+  }
   if (err.status === 403) {
     return `${err.message}.`;
   }
   return err.message;
+}
+
+/* Storage ------------------------------------------------------------------ */
+
+// localStorage throws rather than degrading in some privacy modes. A browser
+// that will not keep a value should cost only what the value was for — a
+// remembered name, an age screen asked again next visit — never the page.
+function storageGet(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key, value) {
+  try {
+    localStorage.setItem(key, value);
+  } catch {
+    // Not kept; whatever it was for is asked for or made again next time.
+  }
 }
 
 /* Rendering helpers -------------------------------------------------------- */
@@ -89,8 +165,19 @@ function esc(value) {
   return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);
 }
 
+// boardPath is the one place a board's address is decided; every link to a
+// board, thread, or post is built on it, the post-text markup included.
 function boardPath(slug) {
+  if (slug.startsWith(INSTITUTION_PREFIX)) {
+    return `/u/${encodeURIComponent(slug.slice(INSTITUTION_PREFIX.length))}/`;
+  }
   return `/${encodeURIComponent(slug)}/`;
+}
+
+// boardLabel is how a board is named on screen: its path, so what a reader
+// sees is what they would type. Unescaped, like any other value from the API.
+function boardLabel(slug) {
+  return slug.startsWith(INSTITUTION_PREFIX) ? `/u/${slug.slice(INSTITUTION_PREFIX.length)}/` : `/${slug}/`;
 }
 
 function threadPath(slug, no) {
@@ -182,12 +269,6 @@ const INLINE_LINK = />>>\/(?:(u)\/)?([a-z0-9]+(?:-[a-z0-9]+)*)\/(\d+)?|>>(\d+)/g
 const LINE_LINK = new RegExp(INLINE_LINK.source, "y");
 const MAX_SLUG_LENGTH = 24; // maxBoardSlugLen in boards.go
 const MAX_POST_DIGITS = 18; // what an int64 post number can have, as in text.go
-// Top-level paths that are never boards (reservedBoardSlugs in boards.go), so a
-// link to one would claim a board that cannot exist.
-const RESERVED_SLUGS = new Set([
-  "api", "media", "healthz", "verify", "mod", "u", "rules", "faq",
-  "legal", "terms", "privacy", "dmca", "report", "archive",
-]);
 
 // The name a hidden spoiler has for assistive tech. Its text is aria-hidden
 // until it is revealed, so a screen reader announces that something is hidden
@@ -282,7 +363,9 @@ function isBlockNode(node) {
 function crossLinkHref(match) {
   const [, institution, name, no] = match;
   const slug = institution ? `u-${name}` : name;
-  if (slug.length > MAX_SLUG_LENGTH || RESERVED_SLUGS.has(slug) || (no && no.length > MAX_POST_DIGITS)) {
+  // A reserved path is never a board, so a link to one would claim a board
+  // that cannot exist.
+  if (slug.length > MAX_SLUG_LENGTH || RESERVED_PATHS.has(slug) || (no && no.length > MAX_POST_DIGITS)) {
     return null;
   }
   return no ? `${boardPath(slug)}post/${no}` : boardPath(slug);
@@ -918,7 +1001,32 @@ function attachmentHTML(att, { expandable = false } = {}) {
          title="Expand image">${thumbHTML(att)}</a>`
     : `<a class="thumb-link" href="${esc(att.url)}" target="_blank" rel="noopener"
          title="Open the full image">${thumbHTML(att)}</a>`;
-  return `<div class="post-file">${caption}${link}</div>`;
+  if (!att.spoiler) {
+    return `<div class="post-file">${caption}${link}</div>`;
+  }
+  // A spoilered image is a neutral tile until someone asks for it. The
+  // filename waits behind it with the thumbnail — a name can give away as much
+  // as a picture — and the lazy thumbnail is not fetched while it is hidden.
+  // Once shown it is an ordinary attachment and expands like one.
+  return `
+    <div class="post-file spoiler">
+      <button class="spoiler-tile" type="button" data-action="reveal-spoiler">Spoiler image, click to show</button>
+      <div class="spoiler-content" hidden>${caption}${link}</div>
+    </div>`;
+}
+
+function revealSpoiler(button) {
+  const file = button.closest(".post-file");
+  const content = file && file.querySelector(".spoiler-content");
+  if (!content) {
+    return;
+  }
+  content.hidden = false;
+  file.classList.remove("spoiler");
+  button.remove();
+  // Focus follows the image, so a keyboard reader's next Enter expands it.
+  const link = content.querySelector("a.thumb-link");
+  if (link) link.focus();
 }
 
 // verifiedBadgeHTML renders the institution a post was signed with. It says
@@ -931,8 +1039,10 @@ function verifiedBadgeHTML(label) {
 function badgesHTML(thread) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
+  if (thread.archived_at) badges.push('<span class="badge archived">archived</span>');
   if (thread.locked) badges.push('<span class="badge locked">locked</span>');
   if (thread.at_bump_limit) badges.push('<span class="badge bumplimit">bump limit</span>');
+  if (thread.at_image_limit) badges.push('<span class="badge imagelimit">image limit</span>');
   return badges.join(" ");
 }
 
@@ -979,28 +1089,44 @@ function postHTML(post, context) {
 // Only one posting form is on screen at a time, so these ids are unique.
 const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image: "f-image" };
 
-function fileFieldHTML() {
+// fileFieldHTML draws the image picker. `blocked` is the reason it cannot be
+// used, when there is one; the field then renders exactly as blockFileField
+// leaves a live one, so a refusal mid-draft and a fresh render look the same.
+function fileFieldHTML(blocked = "") {
   return `
-    <div class="file-field" data-file-field>
+    <div class="file-field${blocked ? " blocked" : ""}" data-file-field>
       <input class="file-input" type="file" id="${FIELD_IDS.image}" name="image"
-             accept="${ACCEPTED_IMAGES}" aria-labelledby="f-image-label" />
+             accept="${ACCEPTED_IMAGES}" aria-labelledby="f-image-label"
+             aria-describedby="f-image-blocked"${blocked ? " disabled" : ""} />
       <label class="btn secondary file-button" for="${FIELD_IDS.image}">Choose image</label>
       <span class="file-hint">or drop one on this form &middot; JPEG, PNG, WebP, GIF</span>
+      <span class="file-blocked" id="f-image-blocked"${blocked ? "" : " hidden"}>${esc(blocked)}</span>
       <div class="file-preview" aria-live="polite" hidden>
         <img class="file-thumb" alt="" />
         <span class="file-meta"></span>
+        <label class="sage spoiler-option"><input type="checkbox" name="spoiler" value="1" /> Spoiler image</label>
         <button class="btn subtle file-remove" type="button" data-action="clear-file">Remove</button>
       </div>
     </div>`;
 }
 
-function formHTML({ kind, threadNo = null, open = false, locked = false }) {
-  if (locked) {
+// formHTML is the posting form for a board (kind "thread") or for one thread
+// (kind "reply", with that thread passed in so the form can follow its state).
+function formHTML({ kind, slug, thread = null, open = false }) {
+  // Archived is for good, so the form gives way to where the conversation can
+  // go instead rather than to a box that could only fail.
+  if (thread && thread.archived_at) {
+    return `<p class="archived-note"><span class="badge archived">archived</span>
+      <span>Archived threads take no new replies. To carry on the conversation,
+        <a href="${boardPath(slug)}">start a new thread on ${esc(boardLabel(slug))}</a>.</span></p>`;
+  }
+  if (thread && thread.locked) {
     return `<p class="locked-note"><span class="badge locked">locked</span> This thread is locked; no new replies.</p>`;
   }
+  const threadNo = thread ? thread.no : null;
 
   const isThread = kind === "thread";
-  const name = localStorage.getItem(NAME_STORAGE_KEY) || "";
+  const name = storageGet(NAME_STORAGE_KEY) || "";
   const subject = isThread
     ? `<div class="field">
          <label class="label" for="${FIELD_IDS.subject}">Subject</label>
@@ -1037,7 +1163,7 @@ function formHTML({ kind, threadNo = null, open = false, locked = false }) {
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>
-          ${fileFieldHTML()}
+          ${fileFieldHTML(thread && thread.at_image_limit ? imageLimitReason(thread.board) : "")}
         </div>
         <div class="actions">
           <button class="btn primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
@@ -1063,6 +1189,11 @@ function setFile(field, file) {
   if (!input || !file) {
     return false;
   }
+  // A drop reaches a blocked field too; say why it was not taken.
+  if (input.disabled) {
+    showNotice(field.querySelector(".file-blocked").textContent);
+    return false;
+  }
   if (!isAcceptedImage(file)) {
     showNotice("That file is not an accepted image. Use JPEG, PNG, WebP, or GIF.");
     return false;
@@ -1076,6 +1207,27 @@ function setFile(field, file) {
   }
   updateFileField(field);
   return true;
+}
+
+// imageLimitReason is why a thread's reply form takes no image.
+function imageLimitReason(board) {
+  const limit = board && board.image_limit;
+  return limit > 0
+    ? `This thread has reached its limit of ${plural(limit, "image", "images")}. Text replies still work.`
+    : "This thread has reached its image limit. Text replies still work.";
+}
+
+// blockFileField takes the image off a live form and switches the picker off
+// with the reason on screen, for when the server says no after the form was
+// drawn. A disabled input is also left out of the form's data.
+function blockFileField(field, reason) {
+  clearFileField(field);
+  const input = field.querySelector(".file-input");
+  const note = field.querySelector(".file-blocked");
+  input.disabled = true;
+  note.textContent = reason;
+  note.hidden = false;
+  field.classList.add("blocked");
 }
 
 function clearFileField(field) {
@@ -1100,6 +1252,10 @@ function updateFileField(field) {
     preview.hidden = true;
     thumb.removeAttribute("src");
     meta.textContent = "";
+    // The spoiler box lives in the preview and means nothing without a file,
+    // so it does not stay ticked for the next one.
+    const spoiler = field.querySelector('input[name="spoiler"]');
+    if (spoiler) spoiler.checked = false;
     return;
   }
 
@@ -1129,17 +1285,16 @@ function renderNav(route) {
   el.nav.innerHTML = state.boards
     .map((b) => {
       const current = b.slug === route.slug ? ' aria-current="page"' : "";
-      return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>/${esc(b.slug)}/</a>`;
+      return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>${esc(boardLabel(b.slug))}</a>`;
     })
     .join("");
 
-  if (!el.verifyLink) {
-    return;
-  }
-  if (route.view === "verify") {
-    el.verifyLink.setAttribute("aria-current", "page");
-  } else {
-    el.verifyLink.removeAttribute("aria-current");
+  for (const link of el.pageLinks) {
+    if (link.dataset.page === route.view) {
+      link.setAttribute("aria-current", "page");
+    } else {
+      link.removeAttribute("aria-current");
+    }
   }
 }
 
@@ -1147,16 +1302,24 @@ function boardHeadHTML(board, view) {
   const views = [
     { href: boardPath(board.slug), label: "Index", key: "index" },
     { href: `${boardPath(board.slug)}catalog`, label: "Catalog", key: "catalog" },
+    { href: `${boardPath(board.slug)}archive`, label: "Archive", key: "archive" },
   ];
   const links = views
     .map((v) => `<a href="${v.href}"${v.key === view ? ' aria-current="page"' : ""}>${v.label}</a>`)
     .join("");
+  // Rules are a board's own words, closed until asked for so they do not push
+  // the threads down on every visit. Escaped like anything else from the API;
+  // the stylesheet keeps their line breaks.
+  const rules = board.rules
+    ? `<details class="board-rules"><summary>Rules</summary><div class="rules-text">${esc(board.rules)}</div></details>`
+    : "";
 
   return `
     <div class="board-head">
-      <h1>/${esc(board.slug)}/ <span class="board-name">${esc(board.name)}</span></h1>
+      <h1>${esc(boardLabel(board.slug))} <span class="board-name">${esc(board.name)}</span></h1>
       <span class="desc">${esc(board.description)}</span>
       <nav class="views" aria-label="Board views">${links}</nav>
+      ${rules}
     </div>`;
 }
 
@@ -1165,7 +1328,7 @@ function renderHome() {
     .map(
       (b) => `
       <a class="board-card" href="${boardPath(b.slug)}">
-        <strong>/${esc(b.slug)}/ &mdash; ${esc(b.name)}</strong>
+        <strong>${esc(boardLabel(b.slug))} &mdash; ${esc(b.name)}</strong>
         <small>${esc(b.description)}</small>
       </a>`
     )
@@ -1212,7 +1375,9 @@ async function renderIndex(route) {
         <section class="thread" aria-label="${esc(label)}">
           ${postHTML(summary.op, context)}
           <div class="thread-actions">
-            <a href="${threadPath(board.slug, summary.no)}">Open thread (${plural(summary.replies, "reply", "replies")})</a>
+            <a href="${threadPath(board.slug, summary.no)}">Open thread (${plural(summary.replies, "reply", "replies")}${
+              summary.images > 0 ? `, ${plural(summary.images, "image", "images")}` : ""
+            })</a>
           </div>
           ${omitted}
           ${replies}
@@ -1222,10 +1387,10 @@ async function renderIndex(route) {
 
   el.main.innerHTML = `
     ${boardHeadHTML(board, "index")}
-    ${formHTML({ kind: "thread", open: index.threads.length === 0 })}
+    ${formHTML({ kind: "thread", slug: board.slug, open: index.threads.length === 0 })}
     ${threads || '<p class="empty">No threads yet — start the first one.</p>'}
     ${pagerHTML(board.slug, index.page, index.pages)}`;
-  announce(`/${board.slug}/${index.pages > 1 ? ` page ${index.page}` : ""}`);
+  announce(`${boardLabel(board.slug)}${index.pages > 1 ? ` page ${index.page}` : ""}`);
 }
 
 async function renderCatalog(route) {
@@ -1234,13 +1399,19 @@ async function renderCatalog(route) {
 
   const tiles = catalog.threads
     .map((t) => {
-      const media = t.attachment
-        ? `<div class="tile-media">${thumbHTML(t.attachment, { alt: "" })}</div>`
-        : `<div class="tile-media empty-media">no image</div>`;
+      // The tile is one link to the thread, so a spoiler cannot be revealed in
+      // place here; it stays a plain tile and opens in the thread.
+      let media = `<div class="tile-media empty-media">no image</div>`;
+      if (t.attachment && t.attachment.spoiler) {
+        media = `<div class="tile-media spoiler-media">Spoiler image</div>`;
+      } else if (t.attachment) {
+        media = `<div class="tile-media">${thumbHTML(t.attachment, { alt: "" })}</div>`;
+      }
       return `
       <a class="tile" href="${threadPath(board.slug, t.no)}">
         <div class="stats">
           <span class="replies">${plural(t.replies, "reply", "replies")}</span>
+          ${t.images > 0 ? `<span class="images">&middot; ${plural(t.images, "image", "images")}</span>` : ""}
           ${badgesHTML(t)}
         </div>
         ${media}
@@ -1253,7 +1424,7 @@ async function renderCatalog(route) {
   el.main.innerHTML = `
     ${boardHeadHTML(board, "catalog")}
     <div class="catalog">${tiles || '<p class="empty">No threads yet — start the first one.</p>'}</div>`;
-  announce(`/${board.slug}/ catalog`);
+  announce(`${boardLabel(board.slug)} catalog`);
 }
 
 async function renderThread(route) {
@@ -1271,18 +1442,77 @@ async function renderThread(route) {
     )
     .join("");
 
+  // An archived thread no longer changes, so it has nothing to update and its
+  // state is said once, above the posts, as well as in place of the form.
+  const archived = Boolean(detail.archived_at);
+  const archiveNote = archived
+    ? `<p class="archived-note"><span class="badge archived">archived</span>
+        <span>This thread was archived ${timeHTML(detail.archived_at)}. It can still be read and
+          linked to${archiveKeptFor(board)}.</span></p>`
+    : "";
+
   el.main.innerHTML = `
-    ${boardHeadHTML(board, "index")}
+    ${boardHeadHTML(board, archived ? "archive" : "index")}
     <div class="thread-actions">
-      <a href="${boardPath(board.slug)}">&larr; Back to /${esc(board.slug)}/</a>
-      <button class="link" data-action="refresh" type="button">Update</button>
-      <span class="muted">${plural(detail.replies, "reply", "replies")}${
-        detail.at_bump_limit ? " &middot; at bump limit, no longer bumping" : ""
-      }</span>
+      <a href="${boardPath(board.slug)}">&larr; Back to ${esc(boardLabel(board.slug))}</a>
+      ${archived ? "" : '<button class="link" data-action="refresh" type="button">Update</button>'}
+      <span class="muted">${threadCounts(detail, board, archived).join(" &middot; ")}</span>
     </div>
+    ${archiveNote}
     <section class="thread detail">${posts}</section>
-    ${formHTML({ kind: "reply", threadNo: detail.no, open: true, locked: detail.locked })}`;
-  announce(`${detail.subject || `Thread No. ${detail.no}`} — /${board.slug}/`);
+    ${formHTML({ kind: "reply", slug: board.slug, thread: detail, open: true })}`;
+  announce(`${detail.subject || `Thread No. ${detail.no}`} — ${boardLabel(board.slug)}`);
+}
+
+// threadCounts is the thread view's summary line. The image count carries the
+// board's cap, because the cap is what a poster with an image needs to know.
+function threadCounts(thread, board, archived) {
+  const images = Number(thread.images) || 0;
+  const counts = [
+    plural(thread.replies, "reply", "replies"),
+    board.image_limit > 0 ? `${images} of ${plural(board.image_limit, "image", "images")}` : plural(images, "image", "images"),
+  ];
+  if (!archived && thread.at_bump_limit) counts.push("at bump limit, no longer bumping");
+  if (!archived && thread.at_image_limit) counts.push("image limit reached, text replies only");
+  return counts;
+}
+
+// archiveKeptFor says how long an archived thread stays, when the board says.
+function archiveKeptFor(board) {
+  return board.archive_days > 0 ? `, and is deleted after ${plural(board.archive_days, "day", "days")} in the archive` : "";
+}
+
+async function renderArchive(route) {
+  const archive = await api(`/api/boards/${encodeURIComponent(route.slug)}/archive`);
+  const { board } = archive;
+  const label = boardLabel(board.slug);
+
+  const rows = archive.threads
+    .map((t) => {
+      // A subject heads the row when there is one; otherwise the opening
+      // post's own words do, so no row is just a number.
+      const title = t.subject
+        ? `<strong class="archive-subject">${esc(t.subject)}</strong>`
+        : "";
+      const excerpt = t.excerpt ? `<span class="archive-excerpt">${esc(t.excerpt)}</span>` : "";
+      return `
+        <li>
+          <a class="archive-row" href="${threadPath(board.slug, t.no)}">
+            <span class="archive-no mono">No.&nbsp;${t.no}</span>
+            <span class="archive-text">${title || excerpt ? `${title}${excerpt}` : `Thread No. ${t.no}`}</span>
+            <span class="archive-meta">${plural(t.replies, "reply", "replies")} &middot; archived ${timeHTML(t.archived_at)}</span>
+          </a>
+        </li>`;
+    })
+    .join("");
+
+  const kept = board.archive_days > 0 ? ` for ${plural(board.archive_days, "day", "days")}, then deleted` : "";
+  el.main.innerHTML = `
+    ${boardHeadHTML(board, "archive")}
+    <p class="archive-intro">Threads that have left ${esc(label)} are kept here, read-only${kept}.
+      Newest archived first.</p>
+    ${rows ? `<ol class="archive-list">${rows}</ol>` : `<p class="empty">Nothing on ${esc(label)} has been archived yet.</p>`}`;
+  announce(`${label} archive`);
 }
 
 /* Verification ------------------------------------------------------------- */
@@ -1480,29 +1710,530 @@ async function renderVerify() {
   announce("Institutional verification");
 }
 
+/* Rules and FAQ ------------------------------------------------------------ */
+
+// Both pages are readable before the age screen is answered, so neither may
+// lean on anything fetched: they are the site's own words, not the API's.
+
+// audienceText is who the site is open to, in the one form every page uses.
+function audienceText() {
+  return MIN_AGE > 0 ? `anyone aged ${MIN_AGE} and over` : "anyone";
+}
+
+function renderRules() {
+  el.main.innerHTML = `
+    <article class="page" aria-labelledby="page-title">
+      <h1 id="page-title">Rules</h1>
+      <p class="lede">These rules apply to every post on every board. educhan is open to
+        ${audienceText()}, school students included, so keep everything you post fit for a
+        school student to read.</p>
+      <ol class="rules-list">
+        <li><strong>Keep it safe for work, on every board.</strong> No sexual content, nudity,
+          gore or shock images anywhere, not as a joke and not behind a spoiler.</li>
+        <li><strong>Nothing illegal.</strong> Don't post anything, or link to anything, that
+          breaks the law.</li>
+        <li><strong>No personal or contact details, your own included.</strong> Never post
+          phone numbers, home or school addresses, email addresses, social media, Discord,
+          Snapchat or Instagram handles, or timetables, whoever they belong to. Never ask
+          anyone to move to a private chat or another app.</li>
+        <li><strong>No bullying, threats or harassment.</strong> Don't name private people,
+          such as classmates, teachers or staff, or describe them so that they could be
+          identified.</li>
+        <li><strong>No spam or flooding.</strong> No advertising, no posting the same thing
+          again and again, and no filling threads with junk.</li>
+        <li><strong>Don't impersonate.</strong> Don't pretend to speak for a school, university
+          or any other institution, and don't fake the verified badge, in your name or
+          anywhere else.</li>
+        <li><strong>Stay on topic.</strong> Post on the board your post belongs on, and keep
+          to what that board is for.</li>
+      </ol>
+      <p>Some boards add rules of their own. You'll find them under <strong>Rules</strong> at
+        the top of the board.</p>
+      <h2>When a post breaks the rules</h2>
+      <p>Moderators remove posts that break these rules, and a removed post shows the reason
+        it was removed.</p>
+      <h2>If someone is in danger</h2>
+      <p class="callout">If you think someone is in danger, contact your local emergency
+        services straight away.</p>
+      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymity works here and how
+        to stay safe.</p>
+    </article>`;
+  announce("Rules");
+}
+
+// FAQ_SECTIONS are the FAQ's questions in order, for the page and its contents
+// list alike. Every claim in an answer is one the code holds to; change the
+// two together.
+const FAQ_SECTIONS = [
+  {
+    id: "faq-what",
+    question: "What is educhan?",
+    answer: `
+      <p>educhan is an anonymous imageboard for students. There are boards for school and
+        university subjects and for student life, such as admissions, exams, careers and
+        studying abroad, and anyone can read and post without an account. Institutions can
+        also have boards of their own, at addresses like <code>/u/iitb/</code>.</p>
+      <p>Threads don't last forever. A reply moves its thread to the top of its board, and
+        threads that stop getting replies sink, move to the board's archive, and are
+        deleted after a while.</p>`,
+  },
+  {
+    id: "faq-who",
+    question: "Who can use it?",
+    answer:
+      MIN_AGE > 0
+        ? `
+      <p>Anyone aged ${MIN_AGE} and over. The first time you visit, educhan asks when
+        you were born. Your answer is checked in your browser and is never stored or sent
+        anywhere, not even to educhan's server. The browser keeps only the result, so you
+        aren't asked on every visit; if it blocks site storage, you're asked each time
+        instead.</p>
+      <p>Everyone who uses educhan agrees to its <a href="/rules">rules</a>.</p>`
+        : `
+      <p>Anyone. There is nothing to sign up for. Everyone who uses educhan agrees to its
+        <a href="/rules">rules</a>.</p>`,
+  },
+  {
+    id: "faq-anonymity",
+    question: "How anonymous am I?",
+    answer: `
+      <p>There are no accounts, and every post is signed &ldquo;Anonymous&rdquo; unless you
+        type a name. Beyond that:</p>
+      <ul>
+        <li>Each post carries an ID that is the same for all your posts in one thread and
+          different in every other, so a conversation can be followed without you being
+          followed around the site (<a href="#faq-ids">more about IDs</a>).</li>
+        <li>educhan's server keeps no IP addresses in its logs, and posts are not stored with
+          one.</li>
+        <li>The verified badge proves you have an address at an institution, never who you
+          are. It's optional, except to post on an institution's own board.</li>
+      </ul>
+      <p>Anonymity has limits, and it's worth knowing them:</p>
+      <ul>
+        <li>What you write can give you away. Details about your class, school, timetable or
+          friends can be enough for someone who knows you.</li>
+        <li>Photos can carry hidden details, such as where they were taken, and educhan
+          doesn't remove them yet. Post a screenshot of a photo rather than the original.</li>
+        <li>A tripcode links every post that carries it. A badge narrows you down to your
+          institution, which at a small one can say a lot.</li>
+        <li>Your internet provider, the network you're on (a school's, say) and anyone who
+          can use your device can see that you visit educhan.</li>
+      </ul>`,
+  },
+  {
+    id: "faq-safety",
+    question: "How do I stay safe?",
+    answer: `
+      <ul>
+        <li>Never share contact details, yours or anyone else's: phone numbers, home or school
+          addresses, email addresses, or social media, Discord, Snapchat or Instagram
+          handles.</li>
+        <li>educhan has no private messages. Be wary of anyone who asks you to move to a
+          private chat or another app: it's a common way to get someone on their own, away
+          from everyone else. You don't owe anyone a reply.</li>
+        <li>If something here upsets or worries you, step away and talk to someone you
+          trust.</li>
+        <li>If someone is in danger, contact your local emergency services.</li>
+      </ul>`,
+  },
+  {
+    id: "faq-badge",
+    question: "How does the verified badge work?",
+    answer: `
+      <ol>
+        <li>On the <a href="/verify">Verify</a> page, enter an email address at a recognised
+          institution.</li>
+        <li>Type in the six-digit code that's emailed to you.</li>
+        <li>Your browser is given a badge naming the institution, such as
+          ${verifiedBadgeHTML("IIT Bombay")}, and keeps it until it expires. The Verify page
+          shows when that is.</li>
+        <li>To use it, tick <strong>post with</strong> the badge on the posting form. It's off
+          by default, and it's sent only with the posts you tick it on.</li>
+      </ol>
+      <p>The address itself is never stored. The server keeps only a keyed fingerprint of
+        it, so that one address holds one badge at a time, in a table with no link to any
+        post. The badge holds the institution's name, an expiry date and a random number,
+        and nothing about you. So a badge proves an institution, never a person, and nothing
+        connects a badged post to your email address or to the posts you make without
+        it.</p>
+      <p>On a shared computer, forget the badge on the Verify page before you leave: it stays
+        in that browser for whoever uses it next.</p>`,
+  },
+  {
+    id: "faq-tripcodes",
+    question: "What are tripcodes?",
+    answer: `
+      <p>Type a name, then <code>#</code> and a secret, in the Name field.
+        <code>ana#my-long-secret</code> posts as <strong>ana</strong> followed by a tripcode
+        such as <code>!!Ab3dE5fG7h</code>. The same secret always gives the same tripcode, so
+        you can show that several posts are yours without an account.
+        <code>ana##my-long-secret</code> works exactly the same way.</p>
+      <p>The server mixes a secret of its own into yours before making the tripcode, so
+        nobody can crack it offline by trying guesses on their own computer. But anyone who
+        learns your secret can post with your tripcode, so pick a long one and use it
+        nowhere else, least of all as a password. And since a tripcode links every post that
+        carries it, use one only when that's what you want.</p>`,
+  },
+  {
+    id: "faq-ids",
+    question: "What is the ID on each post?",
+    answer: `
+      <p>Every post shows <strong>ID:</strong> and eight characters. All your posts in one
+        thread share an ID, and you get a different one in every thread, so readers can tell
+        who's who in a conversation but can't follow anyone from thread to thread.</p>
+      <p>The ID is made on the server from the thread and a random key your browser creates
+        the first time you post. The browser keeps the key and sends it only with your
+        posts; the server uses it to make the ID and doesn't store it. A post with the
+        verified badge takes its ID from the badge instead, so it never shares an ID with
+        your posts without one. Clearing this site's data starts a new key, and with it new
+        IDs.</p>`,
+  },
+  {
+    id: "faq-markup",
+    question: "How do I format a post?",
+    answer: `
+      <dl class="markup-list">
+        <dt><code>&gt;text</code> at the start of a line</dt>
+        <dd>Greentext: the line shows in green. Used for quoting and for telling stories.</dd>
+        <dt><code>&gt;&gt;123</code></dt>
+        <dd>Links to post 123 on the same board. In a thread, clicking a post's number adds
+          this to your reply.</dd>
+        <dt><code>&gt;&gt;&gt;/math/</code>, <code>&gt;&gt;&gt;/math/123</code></dt>
+        <dd>Link to another board, or to post 123 on it. For an institution's board, write
+          <code>&gt;&gt;&gt;/u/iitb/</code>.</dd>
+        <dt><code>[spoiler]text[/spoiler]</code></dt>
+        <dd>Hides the text until a reader reveals it.</dd>
+        <dt><code>[code]text[/code]</code></dt>
+        <dd>A block of code, in a fixed-width font with its spacing kept.</dd>
+        <dt><code>[math]\\frac{a}{b}[/math]</code></dt>
+        <dd>Maths written in TeX, inside a line of text.</dd>
+        <dt><code>[eqn]\\sqrt{x^2 + y^2}[/eqn]</code></dt>
+        <dd>Maths written in TeX, on a line of its own.</dd>
+      </dl>
+      <p>An image can be marked <strong>Spoiler image</strong>, which hides it behind a plain
+        tile until someone clicks it.</p>`,
+  },
+  {
+    id: "faq-threads",
+    question: "What are the bump limit, image limit and archive?",
+    answer: `
+      <p>Each board lists its most recently bumped threads first. A reply bumps its thread
+        to the top, unless you tick <strong>sage</strong>, which replies without bumping.</p>
+      <ul>
+        <li><strong>Bump limit.</strong> Once a thread has as many replies as its board's bump
+          limit, replies stop bumping it, so it sinks and makes room for new threads. It
+          still takes replies until it's archived.</li>
+        <li><strong>Image limit.</strong> Each board caps how many images one thread can hold.
+          A thread shows its count, such as &ldquo;12 of 150 images&rdquo;, and once it's
+          full, text replies still work.</li>
+        <li><strong>The archive.</strong> Each board holds a set number of threads. When a new
+          thread pushes the least recently bumped one off the board, that thread moves to
+          the board's archive, where it can still be read and linked to but takes no
+          replies. It's deleted after the number of days the archive page shows.</li>
+      </ul>`,
+  },
+];
+
+function renderFAQ() {
+  const contents = FAQ_SECTIONS.map((s) => `<li><a href="#${s.id}">${s.question}</a></li>`).join("");
+  const sections = FAQ_SECTIONS.map(
+    (s) => `
+      <section aria-labelledby="${s.id}">
+        <h2 id="${s.id}" tabindex="-1">${s.question}</h2>
+        ${s.answer}
+      </section>`
+  ).join("");
+  el.main.innerHTML = `
+    <article class="page" aria-labelledby="page-title">
+      <h1 id="page-title">Frequently asked questions</h1>
+      <nav class="page-contents" aria-label="Questions on this page"><ul>${contents}</ul></nav>
+      ${sections}
+    </article>`;
+  announce("FAQ");
+}
+
+/* Age screen --------------------------------------------------------------- */
+
+// The age screen is a neutral question asked once, before anything of the site
+// is shown or fetched. Neutral means it gives nothing away: no threshold, no
+// preselected year, no "I am old enough" box to tick, and no second go at the
+// question once it has said no. It is the browser's own check, not proof, and
+// the answer never leaves the page: not stored, not sent, not put in the URL.
+
+let ageScreen = null;
+// This page's own outcome, for a browser whose storage will not keep it: the
+// screen is then asked again on the next visit, but not on every navigation.
+let ageAnswer = "";
+
+// ageStatus is "ok" once the screen is passed, "refused" once it has said no,
+// and "ask" until either. A refusal outranks a pass, wherever either came from.
+function ageStatus() {
+  if (MIN_AGE <= 0) {
+    return "ok";
+  }
+  if (ageAnswer === "refused" || storageGet(AGE_REFUSED_STORAGE_KEY) === "1") {
+    return "refused";
+  }
+  if (ageAnswer === "ok" || storageGet(AGE_OK_STORAGE_KEY) === "1") {
+    return "ok";
+  }
+  return "ask";
+}
+
+// ageFrom is the age someone born in that month and year has certainly reached.
+// With no day to go on, a birthday in the current month may not have come yet,
+// so it is counted as not yet: the guess only ever errs young.
+function ageFrom(month, year, now = new Date()) {
+  const age = now.getFullYear() - year;
+  return month >= now.getMonth() + 1 ? age - 1 : age;
+}
+
+// The selects have no name and the form submits to the dialog, so even with
+// the handler gone there is nothing for the browser to send anywhere.
+// Autocomplete is off so the browser does not offer to remember a birth date
+// the site itself refuses to keep.
+function ageQuestionHTML() {
+  const thisYear = new Date().getFullYear();
+  const months = MONTHS.map((name, i) => `<option value="${i + 1}">${name}</option>`).join("");
+  const years = Array.from({ length: AGE_YEARS + 1 }, (_, i) => thisYear - i)
+    .map((year) => `<option value="${year}">${year}</option>`)
+    .join("");
+  return `
+    <form class="age-step fields" method="dialog" novalidate>
+      <h2 class="age-title" id="age-title">When were you born?</h2>
+      <p class="age-note" id="age-note">Your answer is checked in this browser and is never
+        stored or sent anywhere.</p>
+      <div class="age-fields" role="group" aria-labelledby="age-title" aria-describedby="age-note">
+        <div class="field">
+          <label class="label" for="age-month">Month</label>
+          <select id="age-month" autocomplete="off" required aria-describedby="age-error">
+            <option value="">Select&hellip;</option>${months}
+          </select>
+        </div>
+        <div class="field">
+          <label class="label" for="age-year">Year</label>
+          <select id="age-year" autocomplete="off" required aria-describedby="age-error">
+            <option value="">Select&hellip;</option>${years}
+          </select>
+        </div>
+      </div>
+      <p class="age-error" id="age-error" role="alert" hidden></p>
+      <div class="actions">
+        <button class="btn primary" type="submit">Next</button>
+      </div>
+    </form>`;
+}
+
+function ageAgreeHTML() {
+  return `
+    <div class="age-step">
+      <h2 class="age-title" id="age-title">Welcome to educhan</h2>
+      <p id="age-agree">By continuing you agree to the <a href="/rules">rules</a>.</p>
+      <p class="age-note">The <a href="/faq">FAQ</a> explains how anonymity works here and
+        how to stay safe.</p>
+      <div class="actions">
+        <button class="btn primary" type="button" data-action="age-continue"
+                aria-describedby="age-agree">Continue</button>
+      </div>
+    </div>`;
+}
+
+function ageRefusedHTML() {
+  return `
+    <section class="age-refused" aria-labelledby="page-title">
+      <h1 id="page-title">Sorry, you can't use educhan</h1>
+      <p>educhan is for people aged ${MIN_AGE} and over.</p>
+    </section>`;
+}
+
+// renderAgeGate stands in for a page the age screen has not let through.
+function renderAgeGate(status) {
+  if (status === "refused") {
+    closeAgeScreen({ remove: true });
+    el.main.innerHTML = ageRefusedHTML();
+    announce("Not available");
+    return;
+  }
+  // Nothing of the site sits behind the screen, not even the loading text.
+  el.main.innerHTML = "";
+  document.title = "educhan";
+  openAgeScreen();
+}
+
+// openAgeScreen shows the screen as it was last left: a reader who went to
+// read the rules from it comes back to the same step, not to the question.
+function openAgeScreen() {
+  if (!ageScreen) {
+    ageScreen = document.createElement("dialog");
+    ageScreen.className = "age-screen";
+    ageScreen.setAttribute("aria-labelledby", "age-title");
+    ageScreen.innerHTML = ageQuestionHTML();
+    // Escape must not wave anyone through. Cancelling the keydown stops the
+    // close request in the first place, cancelling "cancel" covers any that
+    // get through, and the close handler covers the rest.
+    ageScreen.addEventListener("keydown", (event) => {
+      if (event.key === "Escape") event.preventDefault();
+    });
+    ageScreen.addEventListener("cancel", (event) => event.preventDefault());
+    ageScreen.addEventListener("close", reopenAgeScreen);
+    ageScreen.addEventListener("submit", answerAgeQuestion);
+    ageScreen.addEventListener("change", clearAgeError);
+    ageScreen.addEventListener("click", (event) => {
+      if (event.target.closest('[data-action="age-continue"]')) {
+        passAgeScreen();
+      }
+    });
+    document.body.append(ageScreen);
+  }
+  if (!ageScreen.open) {
+    ageScreen.showModal();
+  }
+  focusAgeScreen();
+}
+
+function focusAgeScreen() {
+  const target = ageScreen && ageScreen.querySelector('[data-action="age-continue"], select');
+  if (target) target.focus();
+}
+
+// closeAgeScreen puts the screen away: kept, for a page readable without it,
+// or removed for good once it has an answer.
+function closeAgeScreen({ remove = false } = {}) {
+  const dialog = ageScreen;
+  if (!dialog) {
+    return;
+  }
+  if (remove) {
+    ageScreen = null;
+  }
+  if (dialog.open) {
+    dialog.close();
+  }
+  if (remove) {
+    dialog.remove();
+  }
+}
+
+// Chrome lets a repeated Escape through even when "cancel" is cancelled, if
+// nothing was clicked in between. A screen that closes with no answer, on a
+// page that needs one, therefore opens again.
+function reopenAgeScreen() {
+  if (
+    ageScreen &&
+    ageScreen.isConnected &&
+    !ageScreen.open &&
+    ageStatus() === "ask" &&
+    !UNGATED_VIEWS.has(state.route.view)
+  ) {
+    ageScreen.showModal();
+    focusAgeScreen();
+  }
+}
+
+function clearAgeError() {
+  const error = ageScreen && ageScreen.querySelector("#age-error");
+  if (!error) {
+    return;
+  }
+  error.hidden = true;
+  error.textContent = "";
+  ageScreen.querySelectorAll("select").forEach((select) => select.removeAttribute("aria-invalid"));
+}
+
+function answerAgeQuestion(event) {
+  event.preventDefault();
+  const month = ageScreen.querySelector("#age-month");
+  const year = ageScreen.querySelector("#age-year");
+  const missing = [month, year].filter((select) => !select.value);
+  if (missing.length > 0) {
+    const error = ageScreen.querySelector("#age-error");
+    error.textContent =
+      missing.length === 2 ? "Choose a month and a year." : `Choose a ${missing[0] === month ? "month" : "year"}.`;
+    error.hidden = false;
+    missing.forEach((select) => select.setAttribute("aria-invalid", "true"));
+    missing[0].focus();
+    return;
+  }
+  const eligible = ageFrom(Number(month.value), Number(year.value)) >= MIN_AGE;
+  // Either way the question goes, and the month and year with it: from here on
+  // they are nowhere on the page, let alone anywhere else.
+  if (eligible) {
+    ageScreen.innerHTML = ageAgreeHTML();
+    focusAgeScreen();
+  } else {
+    refuseAgeScreen();
+  }
+}
+
+function passAgeScreen() {
+  storageSet(AGE_OK_STORAGE_KEY, "1");
+  ageAnswer = "ok";
+  closeAgeScreen({ remove: true });
+  render();
+}
+
+// A refusal is final in this browser: the screen is removed rather than reset,
+// and nothing on the page offers to ask again.
+function refuseAgeScreen() {
+  storageSet(AGE_REFUSED_STORAGE_KEY, "1");
+  ageAnswer = "refused";
+  closeAgeScreen({ remove: true });
+  render();
+}
+
 /* Routing ------------------------------------------------------------------ */
 
 function parseRoute(location = window.location) {
-  const parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  let parts;
+  try {
+    parts = location.pathname.split("/").filter(Boolean).map(decodeURIComponent);
+  } catch {
+    // A malformed escape in a hand-typed address names nothing.
+    return { view: "notfound" };
+  }
   const query = new URLSearchParams(location.search);
 
   if (parts.length === 0) {
     return { view: "home" };
   }
   // Checked before the board route, and reserved server-side too, so no board
-  // can take this path out from under it.
-  if (parts.length === 1 && parts[0] === "verify") {
-    return { view: "verify" };
+  // can take one of these paths out from under its page.
+  if (parts.length === 1 && PAGE_VIEWS.has(parts[0])) {
+    return { view: parts[0] };
   }
-  const [slug, section, no] = parts;
-  if (parts.length === 1) {
+  if (parts[0] === "u") {
+    // /u/ alone is the namespace, not a board.
+    if (parts.length < 2) {
+      return { view: "notfound" };
+    }
+    return boardRoute(INSTITUTION_PREFIX + parts[1], parts.slice(2), query);
+  }
+  // A reserved word without a page of its own yet is still not a board: it
+  // gets the not-found view rather than a request for a board by that name.
+  if (RESERVED_PATHS.has(parts[0])) {
+    return { view: "notfound" };
+  }
+  return boardRoute(parts[0], parts.slice(1), query);
+}
+
+// boardRoute reads the part of a path below a board's own address, which is
+// the same whether the board lives at /{slug}/ or /u/{name}/.
+function boardRoute(slug, rest, query) {
+  const [section, no] = rest;
+  if (rest.length === 0) {
     return { view: "index", slug, page: Math.max(Number(query.get("page")) || 1, 1) };
   }
-  if (parts.length === 2 && section === "catalog") {
+  if (rest.length === 1 && section === "catalog") {
     return { view: "catalog", slug };
   }
-  if (parts.length === 3 && section === "thread" && /^\d+$/.test(no)) {
+  if (rest.length === 1 && section === "archive") {
+    return { view: "archive", slug };
+  }
+  if (rest.length === 2 && section === "thread" && /^\d+$/.test(no)) {
     return { view: "thread", slug, no: Number(no) };
+  }
+  if (rest.length === 2 && section === "post" && /^\d+$/.test(no)) {
+    return { view: "post", slug, no: Number(no) };
   }
   return { view: "notfound" };
 }
@@ -1511,8 +2242,11 @@ function routeKey(route) {
   return `${route.view}:${route.slug || ""}:${route.no || ""}`;
 }
 
-function emptyStateHTML(message) {
-  return `<p class="empty">${esc(message)}<br /><a href="/">Back to the board list</a></p>`;
+// emptyStateHTML is a dead end with a way out: back to the board list, and to
+// the board itself when the board is known and only something on it is not.
+function emptyStateHTML(message, slug = null) {
+  const board = slug ? `<a href="${boardPath(slug)}">Go to ${esc(boardLabel(slug))}</a> &middot; ` : "";
+  return `<p class="empty">${esc(message)}<br />${board}<a href="/">Back to the board list</a></p>`;
 }
 
 // beginLoading dims the current view and only falls back to a skeleton if the
@@ -1528,8 +2262,23 @@ function beginLoading() {
   };
 }
 
-async function render() {
-  const draft = captureDraft();
+// resolvePost finds the thread a board-wide post number belongs to, so a link
+// can name a post — a cross-board quote, say — without knowing where it lives.
+async function resolvePost(route) {
+  const found = await api(`/api/boards/${encodeURIComponent(route.slug)}/posts/${route.no}`);
+  return `${threadPath(found.board || route.slug, found.thread_no)}#p${found.no}`;
+}
+
+// The draft defaults to whatever is on screen now; a render that hands over to
+// another passes its own along, because by then the screen may be a skeleton.
+async function render({ draft = captureDraft() } = {}) {
+  // /u-{name}/ is the stored slug typed as a path. The board answers to it,
+  // but the address it is shared under is /u/{name}/.
+  const { pathname, search, hash } = window.location;
+  if (/^\/u-[^/]/.test(pathname)) {
+    window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
+  }
+  const requested = window.location.href;
   const route = parseRoute();
   state.route = route;
   renderNav(route);
@@ -1538,8 +2287,31 @@ async function render() {
   // Whatever was expanded belongs to the view being replaced.
   expandedLink = null;
 
+  // Until the age screen has its answer, nothing of the site is shown or even
+  // fetched, apart from the two pages that say what answering means.
+  const age = ageStatus();
+  const ungated = UNGATED_VIEWS.has(route.view);
+  if (age !== "ok" && !ungated) {
+    renderAgeGate(age);
+    return;
+  }
+  // Those two are read with the screen put away; it comes back, as it was
+  // left, on the next page that needs it.
+  closeAgeScreen();
+
   const finish = beginLoading();
+  let resolved = null;
   try {
+    if (age === "ok") {
+      try {
+        await loadSite();
+      } catch (err) {
+        // The rules and the FAQ need nothing from the server, so a board list
+        // that will not load costs them only the navigation.
+        if (!ungated) throw err;
+      }
+      renderNav(route);
+    }
     switch (route.view) {
       case "home":
         renderHome();
@@ -1550,28 +2322,54 @@ async function render() {
       case "catalog":
         await renderCatalog(route);
         break;
+      case "archive":
+        await renderArchive(route);
+        break;
       case "thread":
         await renderThread(route);
         break;
+      case "post":
+        resolved = await resolvePost(route);
+        break;
       case "verify":
         await renderVerify();
+        break;
+      case "rules":
+        renderRules();
+        break;
+      case "faq":
+        renderFAQ();
         break;
       default:
         el.main.innerHTML = emptyStateHTML("That is not a page on this site.");
         announce("Page not found");
     }
   } catch (err) {
-    // A pruned thread and a mistyped board look the same from here, and both
+    // An expired thread and a mistyped board look the same from here, and both
     // are better served by a way out than by the raw error.
-    const message =
-      err.status === 404
-        ? "That board or thread is not here — it may have been deleted or pruned."
-        : `Could not load this page: ${err.message}`;
-    el.main.innerHTML = emptyStateHTML(message);
+    let message = `Could not load this page: ${err.message}`;
+    if (err.status === 404) {
+      message =
+        route.view === "post"
+          ? `No. ${route.no} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
+          : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
+    }
+    el.main.innerHTML = emptyStateHTML(message, route.view === "post" ? route.slug : null);
     announce(err.status === 404 ? "Not found" : "Could not load this page");
     return;
   } finally {
     finish();
+  }
+
+  if (resolved !== null) {
+    // The history entry is replaced rather than added: /post/N is an address,
+    // not a page, and Back should not land on it only to bounce forward again.
+    // Skipped if the reader went somewhere else while the number was looked up.
+    if (window.location.href === requested) {
+      window.history.replaceState(null, "", resolved);
+      await render({ draft });
+    }
+    return;
   }
   enhancePosts(el.main);
   restoreDraft(draft);
@@ -1588,6 +2386,11 @@ function focusHash() {
   if (target) {
     target.scrollIntoView({ block: "center" });
     target.classList.add("flash");
+    // A heading jumped to from a page's contents takes focus as well, so the
+    // next Tab carries on from the question rather than from the top.
+    if (target.hasAttribute("tabindex")) {
+      target.focus({ preventScroll: true });
+    }
   }
 }
 
@@ -1626,6 +2429,7 @@ function captureDraft() {
   };
   const sage = field(form, "sage");
   const badge = field(form, "badge");
+  const spoiler = field(form, "spoiler");
   return {
     key: routeKey(state.route),
     open: details ? details.open : true,
@@ -1635,6 +2439,7 @@ function captureDraft() {
     sage: sage ? sage.checked : false,
     badge: badge ? badge.checked : false,
     file: image && image.files ? image.files[0] : null,
+    spoiler: spoiler ? spoiler.checked : false,
   };
 }
 
@@ -1658,8 +2463,10 @@ function restoreDraft(draft) {
   if (badge) badge.checked = draft.badge;
 
   const fileField = form.querySelector("[data-file-field]");
-  if (fileField && draft.file) {
-    setFile(fileField, draft.file);
+  if (fileField && draft.file && setFile(fileField, draft.file)) {
+    // Only alongside the file it was ticked for.
+    const spoiler = field(form, "spoiler");
+    if (spoiler) spoiler.checked = draft.spoiler;
   }
   const details = form.closest("details");
   if (details && (draft.open || draft.body || draft.file)) {
@@ -1839,6 +2646,14 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const spoiler = event.target.closest('[data-action="reveal-spoiler"]');
+  if (spoiler) {
+    event.preventDefault();
+    hideQuotePreview();
+    revealSpoiler(spoiler);
+    return;
+  }
+
   const expandable = event.target.closest("a.thumb-link.expandable");
   if (expandable) {
     event.preventDefault();
@@ -1895,7 +2710,7 @@ document.addEventListener("click", (event) => {
   navigate(anchor.href);
 });
 
-window.addEventListener("popstate", render);
+window.addEventListener("popstate", () => render());
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
@@ -1950,7 +2765,8 @@ document.addEventListener("dragover", (event) => {
   }
   event.preventDefault();
   const field = dropField(event.target);
-  if (field) {
+  // A blocked picker is not a drop target; the drop itself says why.
+  if (field && !field.classList.contains("blocked")) {
     field.classList.add("dragging");
   }
 });
@@ -1976,6 +2792,40 @@ document.addEventListener("drop", (event) => {
   setFile(field, event.dataTransfer.files[0]);
 });
 
+/* Poster key --------------------------------------------------------------- */
+
+// Held for the life of the page when storage refuses it, so posts made in one
+// sitting still share an ID; it is only lost on reload.
+let pagePosterKey = "";
+
+// newPosterKey is 16 random bytes as unpadded base64url: 22 characters.
+function newPosterKey() {
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return btoa(String.fromCharCode(...bytes)).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+// posterKey returns this browser's key, making it on the first post rather
+// than on the first visit: a reader who never posts never has one.
+function posterKey() {
+  try {
+    const stored = localStorage.getItem(POSTER_KEY_STORAGE_KEY);
+    if (stored && POSTER_KEY_PATTERN.test(stored)) {
+      return stored;
+    }
+  } catch {
+    // Storage is unavailable; the page's own key stands in below.
+  }
+  if (!pagePosterKey) {
+    pagePosterKey = newPosterKey();
+  }
+  try {
+    localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey);
+  } catch {
+    // Kept for this page only.
+  }
+  return pagePosterKey;
+}
+
 /* Submitting --------------------------------------------------------------- */
 
 el.main.addEventListener("submit", async (event) => {
@@ -1990,7 +2840,7 @@ el.main.addEventListener("submit", async (event) => {
   const name = String(data.get("name") || "");
   const body = String(data.get("body") || "");
   const image = field(form, "image");
-  const file = image && image.files[0];
+  const file = image && !image.disabled && image.files[0];
 
   if (!body.trim() && !file) {
     showNotice("Write something or attach an image.");
@@ -2007,7 +2857,11 @@ el.main.addEventListener("submit", async (event) => {
     showNotice("Your badge is no longer available in this browser — verify again to post with it.");
     return;
   }
-  const headers = held ? { [CREDENTIAL_HEADER]: held.token } : undefined;
+  // A badged post carries the credential and not the poster key. The server
+  // derives a badged post's ID from the credential, so the key would do
+  // nothing there, and sending the two together would put this browser's key
+  // beside its credential in one request — the only place they could meet.
+  const headers = held ? { [CREDENTIAL_HEADER]: held.token } : { [POSTER_KEY_HEADER]: posterKey() };
 
   const isThread = form.dataset.kind === "thread";
   const payload = { name, body, badge: wantsBadge };
@@ -2029,7 +2883,7 @@ el.main.addEventListener("submit", async (event) => {
   clearNotice();
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
-    localStorage.setItem(NAME_STORAGE_KEY, name);
+    storageSet(NAME_STORAGE_KEY, name);
     // Clear before navigating so the draft carried across the re-render is the
     // empty form rather than the post that just went through.
     form.reset();
@@ -2057,6 +2911,14 @@ el.main.addEventListener("submit", async (event) => {
         option.remove();
       } else if (box) {
         box.checked = false;
+      }
+    }
+    // The cap was reached after this form was drawn: take the image off and
+    // switch the picker off, so the next press posts the text that is left.
+    if (err.status === 403 && err.message === "image limit reached") {
+      const fileField = form.querySelector("[data-file-field]");
+      if (fileField) {
+        blockFileField(fileField, imageLimitReason(null));
       }
     }
     showNotice(errorMessage(err));
@@ -2108,18 +2970,21 @@ async function submitVerification(form) {
 
 /* Bootstrap ---------------------------------------------------------------- */
 
-async function start() {
-  try {
-    const { boards } = await api("/api/boards");
-    state.boards = boards;
-  } catch (err) {
-    el.main.innerHTML = `<p class="empty">Could not reach the server: ${esc(err.message)}</p>`;
+// The board list, and whether verification exists here, are fetched the first
+// time a page past the age screen needs them, and kept from then on. A failure
+// is not kept: the next navigation tries again.
+let siteLoaded = false;
+
+async function loadSite() {
+  if (siteLoaded) {
     return;
   }
+  const { boards } = await api("/api/boards");
+  state.boards = boards;
   // The posting form needs to know whether to offer the badge checkbox, and a
   // failure here must not stop the board from loading.
   await loadVerification();
-  await render();
+  siteLoaded = true;
 }
 
-start();
+render();
