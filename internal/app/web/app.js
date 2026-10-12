@@ -1793,9 +1793,10 @@ function renderRules() {
           phone number, an email address, a home or school address, or a Discord, Snapchat,
           Instagram, Telegram or WhatsApp name or link, yours or anyone else's. Don't ask
           anyone to talk to you somewhere else.</li>
-        <li><strong>Don't post about real people you know.</strong> Leave classmates, teachers
-          and anyone else from your own life out of it: don't name them, and don't describe
-          them so they could be recognised.</li>
+        <li><strong>Don't name or point out real people you know.</strong> Never name a
+          classmate, teacher or anyone else from your own life, or describe them so they could
+          be recognised. You can ask for advice about a friend or teacher, as long as nobody
+          could tell who they are.</li>
         <li><strong>Nothing illegal.</strong> Don't post or link to anything that breaks the
           law.</li>
         <li><strong>No spam.</strong> No ads, no posting the same thing again and again, and no
@@ -1817,8 +1818,8 @@ function renderRules() {
         coming.</p>
       <h2 id="help" tabindex="-1">Where to get help</h2>
       ${HELPLINES_HTML}
-      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymous you are here, and why
-        educhan asks when you were born.</p>
+      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymous you are
+        here${MIN_AGE > 0 ? ", and why educhan asks when you were born" : ""}.</p>
     </article>`;
   announce("Rules");
 }
@@ -1916,9 +1917,9 @@ const FAQ_SECTIONS = [
     question: "What is the verified badge?",
     answer: `
       <p>An optional label on a post, such as ${verifiedBadgeHTML("IIT Bombay")}, which shows
-        that the poster has an email address at that university or college. It's only for
-        universities and colleges, so school email addresses can't get one. You don't need
-        it to read or to post.</p>
+        that the poster has an email address at that university or college. It's meant for
+        universities and colleges, not schools, so please don't use a school email address.
+        You don't need it to read or to post.</p>
       <ol>
         <li>On the <a href="/verify">Verify</a> page, enter your university or college email
           address.</li>
