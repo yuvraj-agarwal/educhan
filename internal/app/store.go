@@ -19,6 +19,7 @@ var (
 	errNotFound       = errors.New("not found")
 	errThreadLocked   = errors.New("thread is locked")
 	errThreadArchived = errors.New("thread is archived")
+	errImageLimit     = errors.New("image limit reached")
 	errConflict       = errors.New("already exists")
 )
 
@@ -274,7 +275,7 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 		if err := rows.Scan(threadDest(&t, append([]any{&body}, att.dest()...)...)...); err != nil {
 			return Catalog{}, err
 		}
-		t.AtBumpLimit = t.Replies >= board.BumpLimit
+		t.applyLimits(board)
 		catalog.Threads = append(catalog.Threads, CatalogThread{
 			Thread:     t,
 			Excerpt:    excerpt(body, excerptLen),
@@ -411,11 +412,17 @@ func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 			return err
 		}
 
+		// The opening post is not held to the image limit: the limit caps a
+		// conversation, and there is none yet.
+		images := 0
+		if in.Attachment != nil {
+			images = 1
+		}
 		var threadID int64
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO threads (board_id, no, subject)
-			VALUES ($1, $2, $3)
-			RETURNING id`, in.Board.ID, no, in.Subject).Scan(&threadID); err != nil {
+			INSERT INTO threads (board_id, no, subject, image_count)
+			VALUES ($1, $2, $3, $4)
+			RETURNING id`, in.Board.ID, no, in.Subject, images).Scan(&threadID); err != nil {
 			return fmt.Errorf("insert thread: %w", err)
 		}
 
@@ -458,8 +465,9 @@ type NewReply struct {
 
 // CreateReply appends a post to a thread. The thread is bumped unless the reply
 // is saged or the thread has reached its board's bump limit. It returns
-// errNotFound for a missing thread, errThreadArchived for an archived one, and
-// errThreadLocked for a locked one.
+// errNotFound for a missing thread, errThreadArchived for an archived one,
+// errThreadLocked for a locked one, and errImageLimit for a reply bringing an
+// image to a thread that already holds its board's image limit.
 func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 	var created Post
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -492,6 +500,28 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			return errThreadLocked
 		}
 
+		// The cap is checked against the posts themselves rather than the
+		// image_count the listings read: this is the check that enforces it,
+		// so it answers to the rows. The thread lock taken above keeps a
+		// concurrent image reply from landing between the count and the
+		// insert, so two replies cannot both take the last slot.
+		var imageCount *int
+		if in.Attachment != nil {
+			var images int
+			if err := tx.QueryRow(ctx, `
+				SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
+				WHERE p.thread_id = $1`, threadID).Scan(&images); err != nil {
+				return fmt.Errorf("count images: %w", err)
+			}
+			if images >= in.Board.ImageLimit {
+				return errImageLimit
+			}
+			// Set from the count rather than incremented, so a counter that
+			// had drifted is right again after the next image.
+			images++
+			imageCount = &images
+		}
+
 		no, err := nextPostNo(ctx, tx, in.Board.ID)
 		if err != nil {
 			return err
@@ -515,9 +545,10 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 		_, err = tx.Exec(ctx, `
 			UPDATE threads
 			SET reply_count  = reply_count + 1,
+			    image_count  = COALESCE($3::integer, image_count),
 			    last_post_at = now(),
 			    bumped_at    = CASE WHEN $2 THEN now() ELSE bumped_at END
-			WHERE id = $1`, threadID, bump)
+			WHERE id = $1`, threadID, bump, imageCount)
 		return err
 	})
 	return created, err
@@ -748,10 +779,13 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 		}
 		// The counters are maintained on write, so they have to be corrected
 		// here as well: an index that still counts a deleted reply would report
-		// the wrong bump-limit state.
+		// the wrong bump-limit state, and a deleted image has to free its slot
+		// under the image limit.
 		_, err = tx.Exec(ctx, `
 			UPDATE threads
 			SET reply_count  = GREATEST(reply_count - 1, 0),
+			    image_count  = (SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
+			                    WHERE p.thread_id = $1),
 			    last_post_at = COALESCE((SELECT max(created_at) FROM posts WHERE thread_id = $1), created_at)
 			WHERE id = $1`, threadID)
 		return err
@@ -1091,11 +1125,11 @@ func collectRefs(rows pgx.Rows, byID map[int64]*Post, add func(*Post, PostRef)) 
 }
 
 const threadColumns = `t.id, t.no, t.subject, t.sticky, t.locked, t.reply_count, t.created_at, t.bumped_at,
-	t.last_post_at, t.archived_at`
+	t.last_post_at, t.archived_at, t.image_count`
 
 func threadDest(t *Thread, extra ...any) []any {
 	dest := []any{&t.ID, &t.No, &t.Subject, &t.Sticky, &t.Locked, &t.Replies, &t.CreatedAt, &t.BumpedAt,
-		&t.LastPostAt, &t.ArchivedAt}
+		&t.LastPostAt, &t.ArchivedAt, &t.Images}
 	return append(dest, extra...)
 }
 
@@ -1104,8 +1138,16 @@ func scanThread(row pgx.Row, board Board) (Thread, error) {
 	if err := row.Scan(threadDest(&t)...); err != nil {
 		return Thread{}, err
 	}
-	t.AtBumpLimit = t.Replies >= board.BumpLimit
+	t.applyLimits(board)
 	return t, nil
+}
+
+// applyLimits derives the flags that compare a thread's counters with its
+// board's limits. They are computed on read, so changing a limit takes effect
+// on every thread at once.
+func (t *Thread) applyLimits(board Board) {
+	t.AtBumpLimit = t.Replies >= board.BumpLimit
+	t.AtImageLimit = t.Images >= board.ImageLimit
 }
 
 // attachmentColumns is the projection shared by every query that joins

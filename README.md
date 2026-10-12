@@ -257,6 +257,10 @@ uploaded: no metadata stripping and no content scanning yet.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims.
+- **Per-thread cap**: a thread holds at most its board's `image_limit` posts with an image
+  (150 by default), the opening post included. Past it a reply with an image answers
+  `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
+  `images` and `at_image_limit` so a client can hide the picker before anyone tries.
 - **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
@@ -294,7 +298,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails |
-| Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
@@ -536,9 +540,11 @@ use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a
 cookie jar (`curl -c/-b`) to get through it.
 
 Every thread view carries `archived_at`: `null` while the thread is live, and
-the time it was pushed off the board once it is archived. A reply to an archived
-thread answers `403` with `{"error":"thread is archived"}`, and to a locked one
-`{"error":"thread is locked"}`.
+the time it was pushed off the board once it is archived. It also carries
+`images`, the posts in the thread with an image, and `at_image_limit`. A reply
+to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
+locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
+at its board's image limit `{"error":"image limit reached"}`.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields

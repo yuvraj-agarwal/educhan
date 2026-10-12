@@ -348,6 +348,8 @@ func (a *App) fail(w http.ResponseWriter, r *http.Request, err error, msg string
 		writeError(w, http.StatusForbidden, "thread is locked")
 	case errors.Is(err, errThreadArchived):
 		writeError(w, http.StatusForbidden, "thread is archived")
+	case errors.Is(err, errImageLimit):
+		writeError(w, http.StatusForbidden, "image limit reached")
 	case errors.Is(err, context.Canceled), errors.Is(r.Context().Err(), context.Canceled):
 		// The client went away; there is nobody left to answer.
 	default:

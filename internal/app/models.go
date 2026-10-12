@@ -93,6 +93,11 @@ type Thread struct {
 	BumpedAt    time.Time `json:"bumped_at"`
 	LastPostAt  time.Time `json:"last_post_at"`
 	AtBumpLimit bool      `json:"at_bump_limit"`
+	// Images is how many posts in the thread carry an image, the opening post
+	// included. Once it reaches the board's image limit, replies can still be
+	// posted but cannot bring another image.
+	Images       int  `json:"images"`
+	AtImageLimit bool `json:"at_image_limit"`
 	// ArchivedAt is when the thread was pushed off its board, nil while it is
 	// live. An archived thread still loads but takes no replies, and is
 	// deleted with its images once its board's archive_days have passed.

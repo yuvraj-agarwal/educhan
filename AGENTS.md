@@ -238,6 +238,17 @@ the index, and the thread view each have their own narrow-screen layout.
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
   `gcs` backend puts them in `$EDUCHAN_GCS_BUCKET` under an optional
   `$EDUCHAN_GCS_PREFIX`. The key layout is identical either way.
+- **Per-thread image cap.** `boards.image_limit` caps the posts with an image in one
+  thread, the opening post included; thread creation is not capped (there is no
+  conversation yet to cap). `CreateReply` enforces it for a reply bringing an image by
+  counting the thread's posts with attachments while it holds the thread row lock, so
+  concurrent replies cannot both take the last slot
+  (`TestImageLimitHoldsUnderConcurrentReplies`), and refuses with `errImageLimit`
+  (`403 image limit reached`). `threads.image_count` is the denormalised copy the
+  listings read for `images`/`at_image_limit`: set on thread creation, set from that
+  count on every image reply, and recounted when a post is deleted. Nothing enforces
+  the cap against the counter. The upload is stored before the check, as it is before
+  the lock and archive checks, and the handler's `discardUpload` removes it on refusal.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
@@ -401,7 +412,7 @@ the index, and the thread view each have their own narrow-screen layout.
   so no proxy process and no code change. Details and the caveats in `deploy/README.md`.
 - Integration tests (`internal/app/api_test.go`, `internal/app/attachments_api_test.go`,
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
-  `internal/app/archive_test.go`,
+  `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
   whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
