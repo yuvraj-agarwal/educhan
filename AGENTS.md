@@ -530,8 +530,8 @@ the index, and the thread view each have their own narrow-screen layout.
   `internal/app/moderation_test.go`, `internal/app/boards_test.go`,
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
-  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`) run the
-  whole app against an isolated schema in
+  `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
+  `internal/app/migrate_test.go`) run the whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against the
   development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
