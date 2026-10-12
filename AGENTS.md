@@ -229,7 +229,10 @@ the index, and the thread view each have their own narrow-screen layout.
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
-  that leaves the draft in place.
+  that leaves the draft in place. A thread at its image cap renders the picker through
+  `fileFieldHTML(reason)`, switched off with the reason on screen; `blockFileField` puts
+  a live form into the same state when `image limit reached` arrives mid-draft. A
+  disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too.

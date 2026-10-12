@@ -436,6 +436,15 @@ button.link:hover { text-decoration: underline; }
 .file-hint { color: var(--muted); font-size: 12px; }
 .file-field.has-file .file-hint { display: none; }
 
+/* A blocked picker stays on screen, switched off, with the reason beside it:
+   a form that silently lost its image field would read as a bug. */
+.file-field.blocked { border-style: solid; }
+.file-field.blocked .file-button { opacity: 0.5; cursor: not-allowed; }
+.file-field.blocked .file-button:hover { border-color: var(--border-strong); }
+.file-field.blocked .file-hint { display: none; }
+.file-blocked { color: var(--warn); font-size: 12.5px; }
+.file-blocked[hidden] { display: none; }
+
 .file-preview {
   display: flex;
   align-items: center;
@@ -826,7 +835,7 @@ a.thumb-link.loading::before {
   color: var(--muted);
 }
 
-.tile .replies { font-family: var(--mono); }
+.tile .replies, .tile .images { font-family: var(--mono); }
 
 .tile-media {
   display: grid;

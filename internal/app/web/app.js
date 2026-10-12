@@ -99,6 +99,9 @@ function errorMessage(err) {
   }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
+  if (err.status === 403 && err.message === "image limit reached") {
+    return "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own.";
+  }
   if (err.status === 403 && err.message === "thread is archived") {
     return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
   }
@@ -260,6 +263,7 @@ function badgesHTML(thread) {
   if (thread.archived_at) badges.push('<span class="badge archived">archived</span>');
   if (thread.locked) badges.push('<span class="badge locked">locked</span>');
   if (thread.at_bump_limit) badges.push('<span class="badge bumplimit">bump limit</span>');
+  if (thread.at_image_limit) badges.push('<span class="badge imagelimit">image limit</span>');
   return badges.join(" ");
 }
 
@@ -306,13 +310,18 @@ function postHTML(post, context) {
 // Only one posting form is on screen at a time, so these ids are unique.
 const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image: "f-image" };
 
-function fileFieldHTML() {
+// fileFieldHTML draws the image picker. `blocked` is the reason it cannot be
+// used, when there is one; the field then renders exactly as blockFileField
+// leaves a live one, so a refusal mid-draft and a fresh render look the same.
+function fileFieldHTML(blocked = "") {
   return `
-    <div class="file-field" data-file-field>
+    <div class="file-field${blocked ? " blocked" : ""}" data-file-field>
       <input class="file-input" type="file" id="${FIELD_IDS.image}" name="image"
-             accept="${ACCEPTED_IMAGES}" aria-labelledby="f-image-label" />
+             accept="${ACCEPTED_IMAGES}" aria-labelledby="f-image-label"
+             aria-describedby="f-image-blocked"${blocked ? " disabled" : ""} />
       <label class="btn secondary file-button" for="${FIELD_IDS.image}">Choose image</label>
       <span class="file-hint">or drop one on this form &middot; JPEG, PNG, WebP, GIF</span>
+      <span class="file-blocked" id="f-image-blocked"${blocked ? "" : " hidden"}>${esc(blocked)}</span>
       <div class="file-preview" aria-live="polite" hidden>
         <img class="file-thumb" alt="" />
         <span class="file-meta"></span>
@@ -374,7 +383,7 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>
-          ${fileFieldHTML()}
+          ${fileFieldHTML(thread && thread.at_image_limit ? imageLimitReason(thread.board) : "")}
         </div>
         <div class="actions">
           <button class="btn primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
@@ -400,6 +409,11 @@ function setFile(field, file) {
   if (!input || !file) {
     return false;
   }
+  // A drop reaches a blocked field too; say why it was not taken.
+  if (input.disabled) {
+    showNotice(field.querySelector(".file-blocked").textContent);
+    return false;
+  }
   if (!isAcceptedImage(file)) {
     showNotice("That file is not an accepted image. Use JPEG, PNG, WebP, or GIF.");
     return false;
@@ -413,6 +427,27 @@ function setFile(field, file) {
   }
   updateFileField(field);
   return true;
+}
+
+// imageLimitReason is why a thread's reply form takes no image.
+function imageLimitReason(board) {
+  const limit = board && board.image_limit;
+  return limit > 0
+    ? `This thread has reached its limit of ${plural(limit, "image", "images")}. Text replies still work.`
+    : "This thread has reached its image limit. Text replies still work.";
+}
+
+// blockFileField takes the image off a live form and switches the picker off
+// with the reason on screen, for when the server says no after the form was
+// drawn. A disabled input is also left out of the form's data.
+function blockFileField(field, reason) {
+  clearFileField(field);
+  const input = field.querySelector(".file-input");
+  const note = field.querySelector(".file-blocked");
+  input.disabled = true;
+  note.textContent = reason;
+  note.hidden = false;
+  field.classList.add("blocked");
 }
 
 function clearFileField(field) {
@@ -550,7 +585,9 @@ async function renderIndex(route) {
         <section class="thread" aria-label="${esc(label)}">
           ${postHTML(summary.op, context)}
           <div class="thread-actions">
-            <a href="${threadPath(board.slug, summary.no)}">Open thread (${plural(summary.replies, "reply", "replies")})</a>
+            <a href="${threadPath(board.slug, summary.no)}">Open thread (${plural(summary.replies, "reply", "replies")}${
+              summary.images > 0 ? `, ${plural(summary.images, "image", "images")}` : ""
+            })</a>
           </div>
           ${omitted}
           ${replies}
@@ -579,6 +616,7 @@ async function renderCatalog(route) {
       <a class="tile" href="${threadPath(board.slug, t.no)}">
         <div class="stats">
           <span class="replies">${plural(t.replies, "reply", "replies")}</span>
+          ${t.images > 0 ? `<span class="images">${plural(t.images, "image", "images")}</span>` : ""}
           ${badgesHTML(t)}
         </div>
         ${media}
@@ -623,14 +661,25 @@ async function renderThread(route) {
     <div class="thread-actions">
       <a href="${boardPath(board.slug)}">&larr; Back to ${esc(boardLabel(board.slug))}</a>
       ${archived ? "" : '<button class="link" data-action="refresh" type="button">Update</button>'}
-      <span class="muted">${plural(detail.replies, "reply", "replies")}${
-        detail.at_bump_limit && !archived ? " &middot; at bump limit, no longer bumping" : ""
-      }</span>
+      <span class="muted">${threadCounts(detail, board, archived).join(" &middot; ")}</span>
     </div>
     ${archiveNote}
     <section class="thread detail">${posts}</section>
     ${formHTML({ kind: "reply", slug: board.slug, thread: detail, open: true })}`;
   announce(`${detail.subject || `Thread No. ${detail.no}`} — ${boardLabel(board.slug)}`);
+}
+
+// threadCounts is the thread view's summary line. The image count carries the
+// board's cap, because the cap is what a poster with an image needs to know.
+function threadCounts(thread, board, archived) {
+  const images = Number(thread.images) || 0;
+  const counts = [
+    plural(thread.replies, "reply", "replies"),
+    board.image_limit > 0 ? `${images} of ${plural(board.image_limit, "image", "images")}` : plural(images, "image", "images"),
+  ];
+  if (!archived && thread.at_bump_limit) counts.push("at bump limit, no longer bumping");
+  if (!archived && thread.at_image_limit) counts.push("image limit reached, text replies only");
+  return counts;
 }
 
 // archiveKeptFor says how long an archived thread stays, when the board says.
@@ -1403,7 +1452,8 @@ document.addEventListener("dragover", (event) => {
   }
   event.preventDefault();
   const field = dropField(event.target);
-  if (field) {
+  // A blocked picker is not a drop target; the drop itself says why.
+  if (field && !field.classList.contains("blocked")) {
     field.classList.add("dragging");
   }
 });
@@ -1477,7 +1527,7 @@ el.main.addEventListener("submit", async (event) => {
   const name = String(data.get("name") || "");
   const body = String(data.get("body") || "");
   const image = field(form, "image");
-  const file = image && image.files[0];
+  const file = image && !image.disabled && image.files[0];
 
   if (!body.trim() && !file) {
     showNotice("Write something or attach an image.");
@@ -1548,6 +1598,14 @@ el.main.addEventListener("submit", async (event) => {
         option.remove();
       } else if (box) {
         box.checked = false;
+      }
+    }
+    // The cap was reached after this form was drawn: take the image off and
+    // switch the picker off, so the next press posts the text that is left.
+    if (err.status === 403 && err.message === "image limit reached") {
+      const fileField = form.querySelector("[data-file-field]");
+      if (fileField) {
+        blockFileField(fileField, imageLimitReason(null));
       }
     }
     showNotice(errorMessage(err));

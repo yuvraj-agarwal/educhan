@@ -322,6 +322,11 @@ top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
   post number quotes it into the reply box.
+- **Image cap**: the index and catalog show how many images a thread has, and the thread
+  view shows the count against its board's cap. A thread at the cap keeps its reply form
+  with the image picker switched off and the reason beside it; if the cap is reached
+  while a reply is being written, the refusal takes the image off, keeps the text, and
+  the next press posts it.
 - **Poster key**: the first post from a browser makes a random key and keeps it in
   `localStorage`; it travels in `X-Educhan-Poster-Key` on new threads and replies only, so
   two people on one campus network get different poster IDs without the key riding on
