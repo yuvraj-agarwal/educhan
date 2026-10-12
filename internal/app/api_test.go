@@ -781,3 +781,12 @@ func fetchIndex(t *testing.T, c *harness, board string, page int) BoardIndex {
 	c.get(fmt.Sprintf("/api/boards/%s/threads?page=%d", board, page), &index)
 	return index
 }
+
+// TestPoolSizeIsCapped: the configured cap is what the pool actually uses,
+// since instances times this is the database's connection budget.
+func TestPoolSizeIsCapped(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.DBMaxConns = 2 })
+	if got := h.app.pool.Config().MaxConns; got != 2 {
+		t.Errorf("pool MaxConns = %d, want 2", got)
+	}
+}

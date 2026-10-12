@@ -47,6 +47,9 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	if cfg.MailDev {
 		t.Error("MailDev must be off by default")
 	}
+	if cfg.DBMaxConns != defaultDBMaxConns {
+		t.Errorf("DBMaxConns = %d, want %d", cfg.DBMaxConns, defaultDBMaxConns)
+	}
 }
 
 func TestConfigFromEnvOverrides(t *testing.T) {
@@ -64,6 +67,7 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	t.Setenv("EDUCHAN_VERIFY_COOLDOWN", "90")
 	t.Setenv("EDUCHAN_UPLOADS_ENABLED", "true")
 	t.Setenv("EDUCHAN_MAIL_DEV", "1")
+	t.Setenv("EDUCHAN_DB_MAX_CONNS", "7")
 
 	cfg, err := ConfigFromEnv()
 	if err != nil {
@@ -99,6 +103,9 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	}
 	if cfg.LogFormat != "json" {
 		t.Errorf("LogFormat = %q, want json", cfg.LogFormat)
+	}
+	if cfg.DBMaxConns != 7 {
+		t.Errorf("DBMaxConns = %d, want 7", cfg.DBMaxConns)
 	}
 	if !cfg.UploadsEnabled || !cfg.MailDev {
 		t.Errorf("UploadsEnabled/MailDev = %t/%t, want both on", cfg.UploadsEnabled, cfg.MailDev)
@@ -164,6 +171,14 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 			t.Error("expected an error for a negative proxy hop count")
 		}
 	})
+	for _, raw := range []string{"0", "-2", "lots"} {
+		t.Run("pool size "+raw, func(t *testing.T) {
+			t.Setenv("EDUCHAN_DB_MAX_CONNS", raw)
+			if _, err := ConfigFromEnv(); err == nil {
+				t.Errorf("expected an error for EDUCHAN_DB_MAX_CONNS=%q", raw)
+			}
+		})
+	}
 	t.Run("uploads switch", func(t *testing.T) {
 		t.Setenv("EDUCHAN_UPLOADS_ENABLED", "maybe")
 		if _, err := ConfigFromEnv(); err == nil {

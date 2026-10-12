@@ -18,6 +18,10 @@ type Config struct {
 	Addr string
 	// DatabaseURL is a libpq-style PostgreSQL connection string.
 	DatabaseURL string
+	// DBMaxConns caps this process's connection pool. Every instance holds its
+	// own pool, so instances times this is what the database has to allow.
+	// Zero leaves the pool at pgx's default or a pool_max_conns in DatabaseURL.
+	DBMaxConns int32
 	// PosterIDSalt keys the per-thread poster IDs and secure tripcodes. It must
 	// stay secret and stable: rotating it changes every future ID.
 	PosterIDSalt string
@@ -85,6 +89,11 @@ type Config struct {
 	MailDev bool
 }
 
+// defaultDBMaxConns keeps one instance's pool small. The smallest Cloud SQL
+// tier allows about 25 connections, and Cloud Run runs several instances, each
+// with a pool of its own; deploy/README.md section 3 has the budget.
+const defaultDBMaxConns = 3
+
 // defaultMaxUploadBytes caps a single attachment. Imageboard posts are small;
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
@@ -135,6 +144,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.UploadCooldown, err = envDuration("EDUCHAN_UPLOAD_COOLDOWN", 15*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.DBMaxConns, err = envPoolSize("EDUCHAN_DB_MAX_CONNS", defaultDBMaxConns); err != nil {
 		return Config{}, err
 	}
 	if cfg.MaxUploadBytes, err = envBytes("EDUCHAN_MAX_UPLOAD_BYTES", defaultMaxUploadBytes); err != nil {
@@ -229,6 +241,22 @@ func envBytes(key string, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("%s: must be positive", key)
 	}
 	return n, nil
+}
+
+// envPoolSize reads a connection count, which must be at least one.
+func envPoolSize(key string, fallback int32) (int32, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("%s: must be at least 1", key)
+	}
+	return int32(n), nil
 }
 
 // envBool reads an on/off setting that is off unless set. Anything that is not
