@@ -247,7 +247,32 @@ function attachmentHTML(att, { expandable = false } = {}) {
          title="Expand image">${thumbHTML(att)}</a>`
     : `<a class="thumb-link" href="${esc(att.url)}" target="_blank" rel="noopener"
          title="Open the full image">${thumbHTML(att)}</a>`;
-  return `<div class="post-file">${caption}${link}</div>`;
+  if (!att.spoiler) {
+    return `<div class="post-file">${caption}${link}</div>`;
+  }
+  // A spoilered image is a neutral tile until someone asks for it. The
+  // filename waits behind it with the thumbnail — a name can give away as much
+  // as a picture — and the lazy thumbnail is not fetched while it is hidden.
+  // Once shown it is an ordinary attachment and expands like one.
+  return `
+    <div class="post-file spoiler">
+      <button class="spoiler-tile" type="button" data-action="reveal-spoiler">Spoiler image, click to show</button>
+      <div class="spoiler-content" hidden>${caption}${link}</div>
+    </div>`;
+}
+
+function revealSpoiler(button) {
+  const file = button.closest(".post-file");
+  const content = file && file.querySelector(".spoiler-content");
+  if (!content) {
+    return;
+  }
+  content.hidden = false;
+  file.classList.remove("spoiler");
+  button.remove();
+  // Focus follows the image, so a keyboard reader's next Enter expands it.
+  const link = content.querySelector("a.thumb-link");
+  if (link) link.focus();
 }
 
 // verifiedBadgeHTML renders the institution a post was signed with. It says
@@ -325,6 +350,7 @@ function fileFieldHTML(blocked = "") {
       <div class="file-preview" aria-live="polite" hidden>
         <img class="file-thumb" alt="" />
         <span class="file-meta"></span>
+        <label class="sage spoiler-option"><input type="checkbox" name="spoiler" value="1" /> Spoiler image</label>
         <button class="btn subtle file-remove" type="button" data-action="clear-file">Remove</button>
       </div>
     </div>`;
@@ -472,6 +498,10 @@ function updateFileField(field) {
     preview.hidden = true;
     thumb.removeAttribute("src");
     meta.textContent = "";
+    // The spoiler box lives in the preview and means nothing without a file,
+    // so it does not stay ticked for the next one.
+    const spoiler = field.querySelector('input[name="spoiler"]');
+    if (spoiler) spoiler.checked = false;
     return;
   }
 
@@ -609,9 +639,14 @@ async function renderCatalog(route) {
 
   const tiles = catalog.threads
     .map((t) => {
-      const media = t.attachment
-        ? `<div class="tile-media">${thumbHTML(t.attachment, { alt: "" })}</div>`
-        : `<div class="tile-media empty-media">no image</div>`;
+      // The tile is one link to the thread, so a spoiler cannot be revealed in
+      // place here; it stays a plain tile and opens in the thread.
+      let media = `<div class="tile-media empty-media">no image</div>`;
+      if (t.attachment && t.attachment.spoiler) {
+        media = `<div class="tile-media spoiler-media">Spoiler image</div>`;
+      } else if (t.attachment) {
+        media = `<div class="tile-media">${thumbHTML(t.attachment, { alt: "" })}</div>`;
+      }
       return `
       <a class="tile" href="${threadPath(board.slug, t.no)}">
         <div class="stats">
@@ -1129,6 +1164,7 @@ function captureDraft() {
   };
   const sage = field(form, "sage");
   const badge = field(form, "badge");
+  const spoiler = field(form, "spoiler");
   return {
     key: routeKey(state.route),
     open: details ? details.open : true,
@@ -1138,6 +1174,7 @@ function captureDraft() {
     sage: sage ? sage.checked : false,
     badge: badge ? badge.checked : false,
     file: image && image.files ? image.files[0] : null,
+    spoiler: spoiler ? spoiler.checked : false,
   };
 }
 
@@ -1161,8 +1198,10 @@ function restoreDraft(draft) {
   if (badge) badge.checked = draft.badge;
 
   const fileField = form.querySelector("[data-file-field]");
-  if (fileField && draft.file) {
-    setFile(fileField, draft.file);
+  if (fileField && draft.file && setFile(fileField, draft.file)) {
+    // Only alongside the file it was ticked for.
+    const spoiler = field(form, "spoiler");
+    if (spoiler) spoiler.checked = draft.spoiler;
   }
   const details = form.closest("details");
   if (details && (draft.open || draft.body || draft.file)) {
@@ -1338,6 +1377,14 @@ document.addEventListener("click", (event) => {
   if (quoteButton && quoteTarget()) {
     event.preventDefault();
     insertQuote(Number(quoteButton.dataset.quote));
+    return;
+  }
+
+  const spoiler = event.target.closest('[data-action="reveal-spoiler"]');
+  if (spoiler) {
+    event.preventDefault();
+    hideQuotePreview();
+    revealSpoiler(spoiler);
     return;
   }
 

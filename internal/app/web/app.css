@@ -447,6 +447,7 @@ button.link:hover { text-decoration: underline; }
 
 .file-preview {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   min-width: 0;
@@ -751,6 +752,29 @@ a.thumb-link:hover .thumb { border-color: var(--accent); }
   object-fit: contain;
 }
 
+/* A spoilered image waits behind a tile of the same weight as any other
+   control: nothing about it hints at what is underneath. */
+.spoiler-tile {
+  display: grid;
+  place-items: center;
+  width: 150px;
+  max-width: 100%;
+  aspect-ratio: 1;
+  padding: 12px;
+  background: var(--panel-3);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--muted);
+  font: inherit;
+  font-size: 12.5px;
+  line-height: 1.4;
+  text-align: center;
+  cursor: pointer;
+}
+
+.spoiler-tile:hover { color: var(--text); border-color: var(--accent); }
+.spoiler-content[hidden] { display: none; }
+
 /* The full image is preloaded before the swap, so this covers the wait only. */
 a.thumb-link.loading::after {
   content: "";
@@ -851,6 +875,13 @@ a.thumb-link.loading::before {
 .tile-media.empty-media {
   border: 1px dashed var(--border);
   color: var(--faint);
+  font-size: 12px;
+}
+
+.tile-media.spoiler-media {
+  border: 1px dashed var(--border-strong);
+  background: var(--panel-3);
+  color: var(--muted);
   font-size: 12px;
 }
 

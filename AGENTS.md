@@ -235,7 +235,12 @@ the index, and the thread view each have their own narrow-screen layout.
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
-  fields need adding there too.
+  fields need adding there too. The spoiler box lives in the file preview and is
+  restored only alongside the file it was ticked for.
+- A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
+  caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
+  usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
+  hidden wrapper: a lazy image there is not fetched until it is revealed.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the

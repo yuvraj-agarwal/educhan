@@ -321,7 +321,9 @@ top-level words kept for pages — `verify`, `mod`, `u`, `rules`, `faq`, `legal`
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
-  post number quotes it into the reply box.
+  post number quotes it into the reply box. With an image attached, **Spoiler image**
+  sends it hidden: readers see a neutral tile, filename included, until they click it or
+  press Enter on it, and it then expands like any other; the catalog shows the tile only.
 - **Image cap**: the index and catalog show how many images a thread has, and the thread
   view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
