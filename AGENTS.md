@@ -342,8 +342,9 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   never stored, sent, or logged**: they live in two unnamed selects in a
   `method="dialog"` form and are removed from the page once compared. Keep it that way,
   keep the question neutral (no threshold in the copy, nothing preselected, no "I am old
-  enough" box), and never add a way back from a refusal. Every sentence that names the
-  age is built from `MIN_AGE`.
+  enough" box), and never add a way back from a refusal. Renaming the refusal key would
+  be one, so a changed screen bumps the pass key's version and never the refusal's.
+  Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
   poster key, tripcodes, what is logged, the badge. A change to any of those changes the
   FAQ in the same commit. The rules and FAQ are readable before the age screen, so they

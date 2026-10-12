@@ -32,7 +32,9 @@ const MIN_AGE = 13;
 // All the age screen remembers is its outcome — passed, or refused — and never
 // the answer: the month and year live in the dialog's two selects only until
 // they have been compared. The version suffix lets a changed screen ask again
-// without taking an old outcome for a new one.
+// without taking an old pass for a new one. Only the pass key is ever bumped:
+// a refusal is final, and a new screen is no reason to give a child it has
+// already turned away another go, so the refusal key keeps its name for good.
 const AGE_OK_STORAGE_KEY = "educhan:age-ok-v1";
 const AGE_REFUSED_STORAGE_KEY = "educhan:age-refused-v1";
 // How far back the year list goes.
