@@ -322,8 +322,11 @@ into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
 
 The page runs under the same-origin CSP in `middleware.go`, which has no `unsafe-inline`
 exception: no inline `<script>`, no inline `<style>`, and no `style` attributes. A unit
-test (`internal/app/web_test.go`) fails the build if any appear, and the image preview is
-a `data:` URL because that is what `img-src` allows.
+test (`internal/app/web_test.go`) fails the build if any appear in `index.html`, `app.js`,
+or `app.css`, and the image preview is a `data:` URL because that is what `img-src`
+allows. Third-party code is vendored under `internal/app/web/vendor/` and served from the
+same origin; each library keeps its licence and a note of its source, and the same test
+file pins every vendored file by SHA-256.
 
 ## Tech Stack
 

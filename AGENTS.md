@@ -25,7 +25,8 @@ implemented. Janitor accounts, bans, and reports are not.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
-  - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`).
+  - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
+    third-party browser builds under `web/vendor/` (highlight.js).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -209,9 +210,19 @@ the index, and the thread view each have their own narrow-screen layout.
 
 - **No inline styles or scripts.** The CSP in `middleware.go` has no `unsafe-inline`
   exception, so `<style>`, `style="…"`, and inline `<script>` are all refused by the
-  browser. `TestWebAssetsHaveNoInlineStylesOrScripts` in `web_test.go` catches them first.
-  Setting `element.style.left` from JavaScript is fine — CSP governs markup, not the CSSOM
-  — which is how the quote preview positions itself.
+  browser. `TestWebAssetsHaveNoInlineStylesOrScripts` in `web_test.go` catches them first,
+  in `index.html` and in the markup `app.js` builds as strings (it scans `app.js` and
+  `app.css` too). Setting `element.style.left` from JavaScript is fine — CSP governs
+  markup, not the CSSOM — which is how the quote preview positions itself.
+- **Vendored libraries** live in `web/vendor/<name>/`: the published build unmodified, its
+  `LICENSE`, and a `README.md` naming the package, version, and where it came from. They
+  are served from `'self'` like everything else — never from a CDN — and are left out of
+  the inline-markup scan, a heuristic for markup this project writes that a minified
+  library's grammars and templates are not. Instead `vendoredWebAssets` in `web_test.go`
+  pins every file under `vendor/` by SHA-256, so nothing lands there unlisted and nothing
+  listed changes unnoticed: adding or updating a library means vetting the build and
+  updating its hashes. Theme CSS is not vendored; colours stay in `app.css` with the rest
+  of the tokens.
 - `img-src` is `'self' data:`, so the file picker previews an attachment as a `data:` URL.
   A `blob:` URL would need a CSP change.
 - `app.css` is tokens first (`:root`), then base, layout, and components; colours live in
