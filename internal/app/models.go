@@ -18,6 +18,10 @@ type Attachment struct {
 	Height      int    `json:"height"`
 	ThumbWidth  int    `json:"thumb_width"`
 	ThumbHeight int    `json:"thumb_height"`
+	// Spoiler means the poster asked for the image to be covered until it is
+	// clicked. ThumbURL is a real thumbnail regardless; covering it is the
+	// client's job.
+	Spoiler bool `json:"spoiler"`
 }
 
 // newAttachment is an image that has been written to the media store and is
@@ -25,6 +29,7 @@ type Attachment struct {
 type newAttachment struct {
 	OriginalName string
 	Image        media.StoredImage
+	Spoiler      bool
 }
 
 // Board is a top-level category threads are posted under.

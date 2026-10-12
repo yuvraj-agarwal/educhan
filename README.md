@@ -257,6 +257,10 @@ uploaded: no metadata stripping and no content scanning yet.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims.
+- **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
+  the image to be covered until it is clicked. The attachment comes back with
+  `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
+  it is the client's job.
 - **Per-thread cap**: a thread holds at most its board's `image_limit` posts with an image
   (150 by default), the opening post included. Past it a reply with an image answers
   `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
@@ -513,11 +517,11 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
 | `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge"}` |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |

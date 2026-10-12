@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"fmt"
 	"image"
 	"image/color"
@@ -422,5 +423,124 @@ func TestMediaSupportsRangeRequests(t *testing.T) {
 	}
 	if !bytes.Equal(payload, original[:8]) {
 		t.Errorf("range body = %v, want the first 8 bytes of the original", payload)
+	}
+}
+
+/* Spoilers ----------------------------------------------------------------- */
+
+// A spoilered image is stored and thumbnailed like any other; the flag rides
+// along on the attachment in every view, for the client to cover it with.
+func TestSpoilerRoundTripsThroughMultipart(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("spoil")
+
+	var thread createdPost
+	if status := h.upload("/api/boards/spoil/threads",
+		map[string]string{"body": "ending of the film", "spoiler": "on"},
+		"ending.png", pngBytes(t, 300, 200), &thread); status != http.StatusCreated {
+		t.Fatalf("create thread: status %d (%s)", status, thread.Error)
+	}
+
+	// The three encodings the contract names, plus values that are not a yes.
+	values := []struct {
+		value string
+		want  bool
+	}{
+		{"1", true}, {"true", true}, {"on", true},
+		{"", false}, {"0", false}, {"false", false}, {"off", false},
+	}
+	path := fmt.Sprintf("/api/boards/spoil/threads/%d/posts", thread.ThreadNo)
+	for _, v := range values {
+		var out createdPost
+		if status := h.upload(path, map[string]string{"body": "spoiler=" + v.value, "spoiler": v.value},
+			"reply.png", pngBytes(t, 40, 40), &out); status != http.StatusCreated {
+			t.Fatalf("reply with spoiler=%q: status %d (%s)", v.value, status, out.Error)
+		}
+	}
+	// And a reply that does not send the field at all.
+	if status, msg := h.imageReply("spoil", thread.ThreadNo, "no spoiler field"); status != http.StatusCreated {
+		t.Fatalf("reply without a spoiler field: status %d (%s)", status, msg)
+	}
+
+	detail := fetchThread(t, h, "spoil", thread.ThreadNo)
+	if len(detail.Posts) != len(values)+2 {
+		t.Fatalf("thread has %d posts, want %d", len(detail.Posts), len(values)+2)
+	}
+	op := detail.Posts[0].Attachment
+	if op == nil || !op.Spoiler {
+		t.Fatalf("opening post attachment = %+v, want a spoiler", op)
+	}
+	for i, v := range values {
+		att := detail.Posts[i+1].Attachment
+		if att == nil || att.Spoiler != v.want {
+			t.Errorf("spoiler=%q stored as %+v, want spoiler %v", v.value, att, v.want)
+		}
+	}
+	if att := detail.Posts[len(detail.Posts)-1].Attachment; att == nil || att.Spoiler {
+		t.Errorf("reply without the field stored as %+v, want no spoiler", att)
+	}
+
+	// The thumbnail is a real one: hiding it is the client's job, not the
+	// server's.
+	if op.ThumbWidth == 0 || op.ThumbHeight == 0 {
+		t.Errorf("spoilered image has thumbnail dimensions %dx%d", op.ThumbWidth, op.ThumbHeight)
+	}
+	if res, _ := h.fetch(op.ThumbURL, nil); res.StatusCode != http.StatusOK {
+		t.Errorf("spoilered thumbnail: status %d, want 200", res.StatusCode)
+	}
+
+	// The index and the catalog carry the flag on the opening post too.
+	index := fetchIndex(t, h, "spoil", 1)
+	if att := index.Threads[0].OP.Attachment; att == nil || !att.Spoiler {
+		t.Errorf("index opening post attachment = %+v, want a spoiler", att)
+	}
+	if last := index.Threads[0].LastReplies; len(last) == 0 || last[len(last)-1].Attachment == nil ||
+		last[len(last)-1].Attachment.Spoiler {
+		t.Errorf("index last reply should carry an unspoilered image, got %+v", last)
+	}
+	var catalog Catalog
+	h.get("/api/boards/spoil/catalog", &catalog)
+	if att := catalog.Threads[0].Attachment; att == nil || !att.Spoiler {
+		t.Errorf("catalog attachment = %+v, want a spoiler", att)
+	}
+
+	// Present as false, not omitted, so a client never has to guess.
+	var raw struct {
+		Posts []struct {
+			Attachment map[string]json.RawMessage `json:"attachment"`
+		} `json:"posts"`
+	}
+	h.get(fmt.Sprintf("/api/boards/spoil/threads/%d", thread.ThreadNo), &raw)
+	if got := string(raw.Posts[len(raw.Posts)-1].Attachment["spoiler"]); got != "false" {
+		t.Errorf("unspoilered attachment spoiler = %q, want false", got)
+	}
+}
+
+// The JSON endpoints reject unknown fields, so spoiler has to be a known one
+// on both. A JSON post carries no image, so the flag has nothing to apply to.
+func TestSpoilerIsAcceptedInJSON(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("spoil")
+
+	var thread createdPost
+	if status := h.post("/api/boards/spoil/threads",
+		map[string]any{"body": "text only", "spoiler": true}, &thread); status != http.StatusCreated {
+		t.Fatalf("thread with spoiler: status %d (%s)", status, thread.Error)
+	}
+	var reply createdPost
+	if status := h.post(fmt.Sprintf("/api/boards/spoil/threads/%d/posts", thread.ThreadNo),
+		map[string]any{"body": "also text", "spoiler": true}, &reply); status != http.StatusCreated {
+		t.Fatalf("reply with spoiler: status %d (%s)", status, reply.Error)
+	}
+	for _, p := range fetchThread(t, h, "spoil", thread.ThreadNo).Posts {
+		if p.Attachment != nil {
+			t.Errorf("post No. %d has an attachment from a JSON post", p.No)
+		}
+	}
+
+	var out map[string]any
+	if status := h.post("/api/boards/spoil/threads",
+		map[string]any{"body": "x", "spoiler": "yes please"}, &out); status != http.StatusBadRequest {
+		t.Errorf("spoiler as a string: status %d, want 400", status)
 	}
 }

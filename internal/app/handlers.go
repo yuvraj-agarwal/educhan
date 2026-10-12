@@ -123,10 +123,13 @@ type createThreadRequest struct {
 	Body    string `json:"body"`
 	// Badge asks for the poster's verified institution to be shown on the post.
 	Badge bool `json:"badge"`
+	// Spoiler asks for the attached image to be hidden until it is clicked. A
+	// JSON post carries no image, so it is accepted and has nothing to apply to.
+	Spoiler bool `json:"spoiler"`
 }
 
 func (r *createThreadRequest) submission() submission {
-	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge}
+	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler}
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
@@ -171,7 +174,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		Body:       body,
 		PosterID:   a.posterIDFunc(clientKey),
 		Badge:      badge,
-		Attachment: attachmentInput(sub.Upload, img),
+		Attachment: attachmentInput(sub, img),
 	})
 	if err != nil {
 		a.discardUpload(img)
@@ -188,10 +191,12 @@ type createPostRequest struct {
 	Sage bool `json:"sage"`
 	// Badge asks for the poster's verified institution to be shown on the post.
 	Badge bool `json:"badge"`
+	// Spoiler asks for the attached image to be hidden until it is clicked.
+	Spoiler bool `json:"spoiler"`
 }
 
 func (r *createPostRequest) submission() submission {
-	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge}
+	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler}
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -248,7 +253,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		Sage:       sub.Sage,
 		PosterID:   a.posterIDFunc(clientKey),
 		Badge:      badge,
-		Attachment: attachmentInput(sub.Upload, img),
+		Attachment: attachmentInput(sub, img),
 	})
 	if err != nil {
 		a.discardUpload(img)

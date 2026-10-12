@@ -1153,7 +1153,7 @@ func (t *Thread) applyLimits(board Board) {
 // attachmentColumns is the projection shared by every query that joins
 // attachments; the order matches attachmentRow.dest.
 const attachmentColumns = `a.original_name, a.original_path, a.thumb_path, a.content_type,
-	       a.byte_size, a.width, a.height, a.thumb_width, a.thumb_height`
+	       a.byte_size, a.width, a.height, a.thumb_width, a.thumb_height, a.spoiler`
 
 // attachmentRow scans the nullable columns produced by a LEFT JOIN on
 // attachments.
@@ -1167,11 +1167,12 @@ type attachmentRow struct {
 	height      *int
 	thumbWidth  *int
 	thumbHeight *int
+	spoiler     *bool
 }
 
 func (r *attachmentRow) dest() []any {
 	return []any{&r.name, &r.path, &r.thumbPath, &r.contentType,
-		&r.size, &r.width, &r.height, &r.thumbWidth, &r.thumbHeight}
+		&r.size, &r.width, &r.height, &r.thumbWidth, &r.thumbHeight, &r.spoiler}
 }
 
 func (r *attachmentRow) toAttachment() *Attachment {
@@ -1189,6 +1190,7 @@ func (r *attachmentRow) toAttachment() *Attachment {
 	deref(&att.Height, r.height)
 	deref(&att.ThumbWidth, r.thumbWidth)
 	deref(&att.ThumbHeight, r.thumbHeight)
+	deref(&att.Spoiler, r.spoiler)
 	return att
 }
 
@@ -1206,10 +1208,10 @@ func insertAttachment(ctx context.Context, tx pgx.Tx, postID int64, in *newAttac
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO attachments (
 		    post_id, original_name, original_path, thumb_path, content_type, thumb_content_type,
-		    byte_size, width, height, thumb_width, thumb_height, checksum
-		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
+		    byte_size, width, height, thumb_width, thumb_height, checksum, spoiler
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
 		postID, in.OriginalName, img.Path, img.ThumbPath, img.ContentType, img.ThumbContentType,
-		img.Size, img.Width, img.Height, img.ThumbWidth, img.ThumbHeight, img.Checksum); err != nil {
+		img.Size, img.Width, img.Height, img.ThumbWidth, img.ThumbHeight, img.Checksum, in.Spoiler); err != nil {
 		return nil, fmt.Errorf("insert attachment: %w", err)
 	}
 	return &Attachment{
@@ -1222,5 +1224,6 @@ func insertAttachment(ctx context.Context, tx pgx.Tx, postID int64, in *newAttac
 		Height:      img.Height,
 		ThumbWidth:  img.ThumbWidth,
 		ThumbHeight: img.ThumbHeight,
+		Spoiler:     in.Spoiler,
 	}, nil
 }

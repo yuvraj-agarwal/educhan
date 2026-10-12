@@ -238,6 +238,11 @@ the index, and the thread view each have their own narrow-screen layout.
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
   `gcs` backend puts them in `$EDUCHAN_GCS_BUCKET` under an optional
   `$EDUCHAN_GCS_PREFIX`. The key layout is identical either way.
+- Spoilers are a flag on the attachment row (`attachments.spoiler`), accepted as
+  `spoiler` in JSON and in multipart (through `isTruthy`), and returned on every
+  attachment as `spoiler`, `false` included. The server still makes and serves a normal
+  thumbnail; covering it is the client's job. A JSON post can carry the flag but never
+  an image, so there it has nothing to apply to.
 - **Per-thread image cap.** `boards.image_limit` caps the posts with an image in one
   thread, the opening post included; thread creation is not capped (there is no
   conversation yet to cap). `CreateReply` enforces it for a reply bringing an image by
