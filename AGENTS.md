@@ -428,14 +428,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **Per-thread image cap.** `boards.image_limit` caps the posts with an image in one
   thread, the opening post included; thread creation is not capped (there is no
   conversation yet to cap). `CreateReply` enforces it for a reply bringing an image by
-  counting the thread's posts with attachments while it holds the thread row lock, so
-  concurrent replies cannot both take the last slot
-  (`TestImageLimitHoldsUnderConcurrentReplies`), and refuses with `errImageLimit`
-  (`403 image limit reached`). `threads.image_count` is the denormalised copy the
-  listings read for `images`/`at_image_limit`: set on thread creation, set from that
-  count on every image reply, and recounted when a post is deleted. Nothing enforces
-  the cap against the counter. The upload is stored before the check, as it is before
-  the lock and archive checks, and the handler's `discardUpload` removes it on refusal.
+  counting the thread's posts with attachments inside the transaction that took the
+  board row for its post number (`nextPostNo`). Every reply to the board waits on that
+  row, so concurrent replies cannot both take the last slot
+  (`TestImageLimitHoldsUnderConcurrentReplies`); the thread row lock it also takes keeps
+  out a moderator's lock, delete or recount, which do not touch the board row. It
+  refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
+  the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
+  creation, set from that count on every image reply, and recounted when a post is
+  deleted. Nothing enforces the cap against the counter. The upload is stored before
+  the check, as it is before the lock and archive checks, and the handler's
+  `discardUpload` removes it on refusal.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.

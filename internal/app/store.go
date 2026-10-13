@@ -508,9 +508,13 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			archived   bool
 			replyCount int
 		)
-		// Lock the thread row so concurrent replies serialise on the counters,
-		// and so the thread cannot be archived between this check and the
-		// insert.
+		// Replies to one board already wait for each other on the board row
+		// nextPostNo took, and so do the new threads that archive this one;
+		// that is what keeps two replies from both taking the last image slot.
+		// Locking the thread row as well keeps out what does not go through
+		// the board row — a moderator locking, archiving-by-sweep or deleting
+		// the thread, or a deletion recounting its counters — between these
+		// checks and the insert.
 		err = tx.QueryRow(ctx, `
 			SELECT t.id, t.locked, t.archived_at IS NOT NULL, t.reply_count
 			FROM threads t

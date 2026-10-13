@@ -174,8 +174,8 @@ func TestImageLimitCountsThePostsNotTheCounter(t *testing.T) {
 	}
 }
 
-// Replies racing for the last slot serialise on the thread lock: exactly one
-// gets it, however many arrive at once.
+// Replies racing for the last slot serialise on the board row each takes for
+// its post number: exactly one gets it, however many arrive at once.
 func TestImageLimitHoldsUnderConcurrentReplies(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("race")
