@@ -622,11 +622,18 @@ func TestFilterCostIsBounded(t *testing.T) {
 			return strings.Repeat("shooting up the school. ", n/24)
 		},
 	}
+	// The best of three runs, so a moment the scheduler gave to another
+	// package's tests is not read as the filter's cost; the bound below is
+	// unchanged.
 	cost := func(body string) time.Duration {
 		in := contentInput{Subject: truncateRunes(body, maxSubjectLen), Name: truncateRunes(body, maxNameLen), Body: body}
-		start := time.Now()
-		checkContent(in, true)
-		return time.Since(start)
+		best := time.Duration(1<<63 - 1)
+		for range 3 {
+			start := time.Now()
+			checkContent(in, true)
+			best = min(best, time.Since(start))
+		}
+		return best
 	}
 	for name, build := range bodies {
 		small, full := cost(build(maxBodyLen/8)), cost(build(maxBodyLen))
