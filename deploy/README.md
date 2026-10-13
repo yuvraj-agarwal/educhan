@@ -31,7 +31,8 @@ EDUCHAN_MOD_KEY=dev-mod-key go run ./cmd/server   # http://localhost:8080
 ```
 
 `make run` is the second line without the moderation key. Migrations are applied
-at startup; the seeded boards are `placements`, `research`, and `general`.
+at startup, and `0006` seeds twenty boards: thirteen subject boards (`/math/` to
+`/lang/`), then seven student-life ones (`/adm/` to `/meta/`).
 Attachments go to `./data/uploads`, because `EDUCHAN_MEDIA_BACKEND` defaults to
 `local`.
 
@@ -40,11 +41,11 @@ curl -s localhost:8080/healthz     # {"status":"ok"}
 curl -s localhost:8080/api/boards
 
 # Posting, with an attachment
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
 
 # Moderation, using the key the server was started with
-curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/1/sticky \
   -H 'Authorization: Bearer dev-mod-key'
 ```
 
@@ -68,6 +69,22 @@ by submitting a build (section 2.5), not by building locally.
 
 ## 2. Cloud Run
 
+**The short way.** In [Cloud Shell](https://shell.cloud.google.com), with a
+project that has billing linked, one script does every step in this section:
+APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
+the build, the deploy, and the request-log exclusion. It leaves image uploads
+and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
+the environment turns that off), prints the service URL, and is safe to re-run.
+
+```bash
+git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
+bash deploy/first-deploy.sh YOUR_PROJECT_ID            # region defaults to asia-south1
+```
+
+It runs builds as a service account of its own (`educhan-build`) rather than
+the project's default build account, so the build grants below are the same in
+every project. The rest of this section is what the script does, step by step.
+
 ### 2.1 One-time project setup
 
 ```bash
@@ -81,7 +98,8 @@ gcloud services enable \
   run.googleapis.com \
   sqladmin.googleapis.com \
   secretmanager.googleapis.com \
-  storage.googleapis.com
+  storage.googleapis.com \
+  cloudscheduler.googleapis.com
 
 # Somewhere to push the image. The location is part of every image reference, so
 # it has to match `_REGION` in cloudbuild.yaml (or `REGION` on the make command
@@ -265,7 +283,10 @@ done
 
 **Set the salt once and leave it alone.** It keys per-thread poster IDs and
 secure tripcodes; without it each instance and each revision generates its own,
-so the same person shows a different ID depending on which container answered.
+so the same browser shows a different ID depending on which container answered.
+A poster ID is an HMAC of the browser's poster key (or of the badge credential's
+id, on a badged post) under this salt; only a post that arrives without a poster
+key falls back to the client address.
 
 ### 2.5 Build and push
 
@@ -304,7 +325,12 @@ What gets uploaded as the build source is governed by `.gcloudignore` — histor
 context a second time before the daemon sees it.
 
 The pushed tags stay in the registry, which is what makes a rollback a deploy of
-an older commit rather than a rebuild:
+an older commit rather than a rebuild. **Never roll back across migration
+`0005`**, to an image from before the archive existed: that code lists archived
+threads as live, and its pruning deletes them with their images left in the
+bucket. A binary that finds migrations it does not know logs an error saying so
+and still serves, so read the log after any rollback. `-sweep` refuses to run at
+all in that state.
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -373,10 +399,10 @@ open "$URL"                # the UI
 # fetch it — then confirm the object is really in Cloud Storage. With
 # EDUCHAN_UPLOADS_ENABLED off, as service.yaml sets it, the post answers 403
 # instead; that is the check to run until uploads are switched on.
-curl -s -X POST "$URL/api/boards/general/threads" \
+curl -s -X POST "$URL/api/boards/meta/threads" \
   -F subject="storage check" -F body="does this survive" -F image=@photo.jpg
-curl -s "$URL/api/boards/general/catalog"     # threads[].attachment.url
-curl -sI "$URL/media/original/general/2026/08/<name>.jpg"   # 200, image/jpeg
+curl -s "$URL/api/boards/meta/catalog"     # threads[].attachment.url
+curl -sI "$URL/media/original/meta/2026/08/<name>.jpg"   # 200, image/jpeg
 gcloud storage ls -r "gs://${MEDIA_BUCKET}/media/originals/**"
 ```
 
@@ -416,6 +442,78 @@ already kept, which expire on the bucket's 30-day retention. The `_Required`
 sink only carries audit logs, so it holds no request entries. Application logs
 (stdout and stderr) are unaffected and still reach Cloud Logging, which is why
 the app keeps addresses out of them itself.
+
+### 2.9 The archive sweeper
+
+A thread that falls off the end of its board is archived, and the sweeper
+deletes it, with its images, once its board's `archive_days` (7 by default)
+have passed. It is the same image run as `educhan -sweep`: one pass, then it
+exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
+because a Cloud Run service only has CPU while it answers a request, so a timer
+inside it would fire whenever it happened to.
+
+The Job runs as the service's account and needs only what deleting takes: the
+database, and `storage.objects.get` and `storage.objects.delete` on the bucket,
+both already in the `roles/storage.objectAdmin` grant from section 2.3 (it checks
+that each file is there before deleting it). It gets neither the moderation key nor
+`EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
+with that secret set and no mail sender). The poster-ID salt is left out too, as
+nothing the sweeper does touches a poster ID.
+
+```bash
+gcloud run jobs deploy educhan-sweep \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --service-account "$RUN_SA" \
+  --args=-sweep \
+  --set-cloudsql-instances "$CLOUDSQL_INSTANCE" \
+  --set-secrets "DATABASE_URL=educhan-database-url:latest" \
+  --set-env-vars "EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
+  --tasks 1 --max-retries 1 --task-timeout 15m \
+  --cpu 1 --memory 512Mi
+```
+
+The media settings (`EDUCHAN_MEDIA_BACKEND`, `EDUCHAN_GCS_BUCKET`,
+`EDUCHAN_GCS_PREFIX`) must match the service's exactly. The sweeper queues each
+swept file's key in `media_deletions` in the same transaction that deletes its
+rows, then removes the files one by one; a queued file the store does not hold
+makes the run exit non-zero with an error naming those settings, and the key
+stays queued. The Job's image must also be no older than the service's: `-sweep`
+refuses to run against a database migrated by a newer release, which is why
+`make cloud-deploy` moves the two together.
+
+Run it once by hand and read what it did; the log line carries counts only,
+never which boards or threads went:
+
+```bash
+gcloud run jobs execute educhan-sweep --region "$REGION" --wait
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="educhan-sweep" AND jsonPayload.msg="sweep"' \
+  --freshness=1h --limit=1 --format='value(jsonPayload)'
+```
+
+Then schedule it. Cloud Scheduler calls the Run API as its own service account,
+which may run this one Job and nothing else:
+
+```bash
+gcloud iam service-accounts create educhan-scheduler --display-name="educhan sweeper schedule"
+export SCHEDULER_SA="educhan-scheduler@${PROJECT_ID}.iam.gserviceaccount.com"
+gcloud run jobs add-iam-policy-binding educhan-sweep --region "$REGION" \
+  --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker
+
+gcloud scheduler jobs create http educhan-sweep-daily \
+  --location "$REGION" \
+  --schedule "17 3 * * *" --time-zone "Etc/UTC" \
+  --http-method POST \
+  --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/educhan-sweep:run" \
+  --oauth-service-account-email "$SCHEDULER_SA"
+```
+
+A sweep that could not remove a file exits non-zero, so the execution shows as
+failed in the console (`gcloud run jobs executions list --job educhan-sweep
+--region "$REGION"`). The file's key stays in `media_deletions` and the next run,
+or the Job's own retry, tries it again, so a retry is always safe. In the log,
+`blobs_missing` above zero means the media settings are wrong; `blob_failures`
+means the store refused or was unreachable.
 
 ---
 
@@ -493,8 +591,10 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
-value higher than the real chain lets a client pick its own rate-limit bucket and
-poster ID by sending an `X-Forwarded-For` of its own. Cloud Run is one hop; put a
+value higher than the real chain lets a client pick its own rate-limit bucket by
+sending an `X-Forwarded-For` of its own. Poster IDs mostly no longer depend on
+it: they come from the browser's poster key, and only a post sent without one
+(a script, say) falls back to the client address. Cloud Run is one hop; put a
 load balancer or CDN in front and it becomes two.
 
 ---
@@ -585,7 +685,7 @@ no handler, no query, no column, and no URL.
 
 Keys are the reason the swap is this cheap. They were already slash-separated,
 relative, and validated by `CleanKey`, which is exactly the shape of an object
-name, so `originals/general/2026/08/{random}.jpg` addresses a file on disk and an
+name, so `originals/meta/2026/08/{random}.jpg` addresses a file on disk and an
 object in a bucket without translation. `GCSStore` applies the same validation
 even though a flat namespace could not be escaped by a `..`, so that a key stays
 portable: a bucket can be synced to a directory and back.
