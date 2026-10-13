@@ -1677,6 +1677,41 @@ function forgetCredential() {
   state.verification.badge = null;
 }
 
+// forgetBrowser removes everything this browser keeps that ties posts to it:
+// the badge, the poster key every unbadged post's ID is made from — the next
+// person at a shared computer would otherwise get the same ID in the same
+// threads, and see which posts there were yours — and the remembered name,
+// with its tripcode secret. The age answer stays: it says nothing about any
+// post. Like forgetting the badge, it is entirely local.
+function forgetBrowser() {
+  forgetCredential();
+  for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Nothing was stored, so nothing needs removing.
+    }
+  }
+  pagePosterKey = "";
+}
+
+// forgetBrowserHTML is the control for forgetBrowser, on the Verify page
+// whatever state verification is in, since the key and the name are there
+// for every poster.
+function forgetBrowserHTML() {
+  return `
+    <div class="verify-forget forget-browser" id="forget-browser">
+      <p><strong>Leaving a shared or borrowed computer?</strong> This browser keeps the random
+        key your post IDs are made from and the name you last posted with, tripcode secret
+        included. Whoever uses it next would get your IDs in the threads you posted in, which
+        shows them which posts there are yours, and could post under your tripcode.</p>
+      <p class="muted">Forgetting this browser removes the key, the name and any badge. Your
+        next post starts a new key, and with it new IDs. Posts you have made stay as they
+        are.</p>
+      <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
+    </div>`;
+}
+
 // readBadge decodes the claims out of the credential this browser holds. The
 // signature is not checked here and could not be — the key is the server's.
 // This only decides what to display and whether to offer the checkbox; the
@@ -1752,7 +1787,8 @@ function verifyViewHTML() {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
-      <p class="empty">Verification is not configured on this server.</p>`;
+      <p class="empty">Verification is not configured on this server.</p>
+      ${forgetBrowserHTML()}`;
   }
 
   if (v.badge && !verifyStep.replacing) {
@@ -1772,7 +1808,8 @@ function verifyViewHTML() {
           <p><strong>On a shared or borrowed computer, forget it before you walk away.</strong>
             The badge stays in this browser for whoever sits down next, and it is
             usable by anyone who has the browser &mdash; it is the whole of what
-            proves your institution.</p>
+            proves your institution. Forgetting this browser, below, removes it
+            along with everything else that ties your posts to this browser.</p>
           <p class="muted">Forgetting is final: the server issues a badge once
             and cannot show you this one again, so you would verify from the
             start. It removes the badge from this browser only &mdash; the server
@@ -1782,7 +1819,8 @@ function verifyViewHTML() {
         <div class="actions">
           <button class="btn subtle" type="button" data-action="verify-again">Verify another address</button>
         </div>
-      </div>`;
+      </div>
+      ${forgetBrowserHTML()}`;
   }
 
   if (verifyStep.step === "code") {
@@ -1821,7 +1859,8 @@ function verifyViewHTML() {
       <div class="actions">
         <button class="btn primary" type="submit">Send code</button>
       </div>
-    </form>`;
+    </form>
+    ${forgetBrowserHTML()}`;
 }
 
 async function renderVerify() {
@@ -2014,6 +2053,10 @@ const FAQ_SECTIONS = [
           or college you're at.</li>
         <li>Your internet provider, the network you're on (a school's, say) and anyone who can
           use your device can see that you visit educhan.</li>
+        <li>Your browser keeps the key your IDs are made from and the name you last posted
+          with. On a shared computer, use <strong>Forget this browser</strong> on the
+          <a href="/verify#forget-browser">Verify</a> page before you leave, or the next person
+          gets your IDs in the threads you posted in, and your tripcode.</li>
       </ul>`,
   },
   {
@@ -2037,9 +2080,13 @@ const FAQ_SECTIONS = [
         it, so that one address holds one badge at a time, in a table with no link to any
         post. The badge holds the institution's name, an expiry date and a random number, and
         nothing about you. So nothing connects a badged post to your email address, or to the
-        posts you make without the badge.</p>
-      <p>On a shared computer, forget the badge on the Verify page before you leave: it stays
-        in that browser for whoever uses it next.</p>`,
+        posts you make without the badge &mdash; unless you give both the same name or tripcode,
+        which would show they're yours. That's why the Name field empties when you tick the
+        badge.</p>
+      <p>On a shared computer, use <strong>Forget this browser</strong> on the
+        <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
+        that browser for whoever uses it next, and so do the key your IDs are made from and
+        your name.</p>`,
   },
   {
     id: "faq-tripcodes",
@@ -2067,8 +2114,9 @@ const FAQ_SECTIONS = [
         the first time you post. The browser keeps the key and sends it only with your
         posts; the server uses it to make the ID and doesn't store it. A post with the
         verified badge takes its ID from the badge instead, so it never shares an ID with
-        your posts without one. Clearing this site's data starts a new key, and with it new
-        IDs.</p>`,
+        your posts without one. <strong>Forget this browser</strong> on the
+        <a href="/verify#forget-browser">Verify</a> page, or clearing this site's data, starts a
+        new key, and with it new IDs.</p>`,
   },
   {
     id: "faq-markup",
@@ -2864,6 +2912,16 @@ document.addEventListener("click", (event) => {
     forgetCredential();
     verifyStep = { step: "email", label: "" };
     renderVerify();
+    return;
+  }
+
+  if (event.target.closest('[data-action="forget-browser"]')) {
+    event.preventDefault();
+    forgetBrowser();
+    verifyStep = { step: "email", label: "" };
+    renderVerify().then(() => {
+      showNotice("This browser no longer holds your post key, your name or a badge.");
+    });
     return;
   }
 

@@ -602,6 +602,14 @@ button.link:hover { text-decoration: underline; }
 .verify-forget p { margin: 0; line-height: 1.6; }
 .verify-forget .muted { font-size: 13px; }
 
+/* Forgetting the browser is on the Verify page in every state, outside the
+   verification panel, since the poster key and the name belong to everyone. */
+.forget-browser {
+  max-width: 68ch;
+  margin: 18px 0 0;
+  font-size: 14px;
+}
+
 .locked-note,
 .archived-note {
   display: flex;
