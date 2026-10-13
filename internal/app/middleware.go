@@ -101,7 +101,8 @@ func securityHeaders(next http.Handler) http.Handler {
 	})
 }
 
-// clientIP returns the address flood control and poster IDs are keyed on.
+// clientIP returns the address flood control is keyed on, and that a poster ID
+// is derived from when the request carries no poster key.
 //
 // X-Forwarded-For is read only when the deployment declares how many reverse
 // proxies stand in front of the server (EDUCHAN_TRUST_PROXY). Each of those

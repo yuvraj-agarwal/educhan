@@ -9,6 +9,7 @@ import (
 	"go/token"
 	"net/http"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -132,11 +133,31 @@ func TestCredentialIsReadOnlyOnTheBadgePath(t *testing.T) {
 	}
 }
 
+// TestCredentialIDOnlyFeedsThePosterID pins what happens to the credential's
+// random id once postBadge has verified it. It leaves postBadge in a badgeGrant
+// for exactly one reason, to derive the badged post's poster ID, and goes
+// nowhere else: not into a log line, a column, or a response. A credential id
+// written down anywhere would be the credential's identity sitting next to the
+// posts it made, which is the link Verified Anonymity promises does not exist.
+func TestCredentialIDOnlyFeedsThePosterID(t *testing.T) {
+	// A function is listed once per reference, and posterSourceFor has two.
+	got := slices.Compact(funcsReferencing(t, func(n ast.Node) bool {
+		ident, ok := n.(*ast.Ident)
+		return ok && ident.Name == "CredentialID"
+	}))
+	want := []string{"postBadge", "posterSourceFor"}
+	if strings.Join(got, ",") != strings.Join(want, ",") {
+		t.Errorf("functions that touch badgeGrant.CredentialID = %v, want exactly %v\n"+
+			"postBadge sets it and posterSourceFor consumes it; nothing else has a use for it", got, want)
+	}
+}
+
 // TestCredentialHasNoEffectOffTheBadgePath is the same claim from the outside:
 // present a real, valid credential to everything else the server answers and
 // nothing changes. Whatever the source says, this is what a client can observe.
 func TestCredentialHasNoEffectOffTheBadgePath(t *testing.T) {
 	h := verifyServer(t, nil)
+	h.addBoard("general")
 	credential := h.verify("ana@iitb.ac.in").Credential
 
 	// A post that does not ask for a badge does not get one, even carrying a
@@ -169,7 +190,9 @@ func TestCredentialHasNoEffectOffTheBadgePath(t *testing.T) {
 		"/api/boards/general",
 		"/api/boards/general/threads",
 		"/api/boards/general/catalog",
+		"/api/boards/general/archive",
 		fmt.Sprintf("/api/boards/general/threads/%d", created.ThreadNo),
+		fmt.Sprintf("/api/boards/general/posts/%d", created.No),
 		"/healthz",
 	} {
 		t.Run(path, func(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -68,15 +69,28 @@ func loadMigrations() ([]migration, error) {
 // migrate applies every migration that has not been recorded in
 // schema_migrations yet. Each migration runs in its own transaction, so a
 // failure leaves the database on the last successfully applied version.
-func migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
+//
+// It returns the versions the database has that this binary does not know: a
+// database a newer release migrated, which this one is serving after a
+// rollback. There are no down migrations, and code older than the schema reads
+// it without the newer rules — a phase-0 binary on an archive-era schema shows
+// archived threads as live and deletes them on its first prune — so that is
+// logged as an error, and the sweeper refuses to run at all.
+func migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) ([]int, error) {
 	migrations, err := loadMigrations()
 	if err != nil {
-		return err
+		return nil, err
 	}
+	return applyMigrations(ctx, pool, log, migrations)
+}
 
+// applyMigrations is migrate over a given list, which lets a test stop a
+// database at an earlier version, put data in front of a later migration, and
+// then let migrate bring it up to date the way a deploy would.
+func applyMigrations(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger, migrations []migration) ([]int, error) {
 	conn, err := pool.Acquire(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer conn.Release()
 
@@ -86,11 +100,11 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 		    name       TEXT NOT NULL,
 		    applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
 		)`); err != nil {
-		return fmt.Errorf("create schema_migrations: %w", err)
+		return nil, fmt.Errorf("create schema_migrations: %w", err)
 	}
 
 	if _, err := conn.Exec(ctx, `SELECT pg_advisory_lock($1)`, migrateLockID); err != nil {
-		return fmt.Errorf("acquire migration lock: %w", err)
+		return nil, fmt.Errorf("acquire migration lock: %w", err)
 	}
 	defer func() {
 		if _, err := conn.Exec(context.WithoutCancel(ctx), `SELECT pg_advisory_unlock($1)`, migrateLockID); err != nil {
@@ -100,30 +114,101 @@ func migrate(ctx context.Context, pool *pgxpool.Pool, log *slog.Logger) error {
 
 	applied, err := appliedVersions(ctx, conn)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
+	known := map[int]bool{}
 	for _, m := range migrations {
+		known[m.version] = true
 		if applied[m.version] {
 			continue
 		}
 		tx, err := conn.Begin(ctx)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		if _, err := tx.Exec(ctx, m.sql); err != nil {
 			_ = tx.Rollback(ctx)
-			return fmt.Errorf("apply migration %s: %w", m.name, err)
+			return nil, fmt.Errorf("apply migration %s: %w", m.name, err)
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO schema_migrations (version, name) VALUES ($1, $2)`, m.version, m.name); err != nil {
 			_ = tx.Rollback(ctx)
-			return fmt.Errorf("record migration %s: %w", m.name, err)
+			return nil, fmt.Errorf("record migration %s: %w", m.name, err)
 		}
 		if err := tx.Commit(ctx); err != nil {
-			return fmt.Errorf("commit migration %s: %w", m.name, err)
+			return nil, fmt.Errorf("commit migration %s: %w", m.name, err)
 		}
 		log.Info("applied migration", "version", m.version, "name", m.name)
+	}
+
+	var ahead []int
+	for v := range applied {
+		if !known[v] {
+			ahead = append(ahead, v)
+		}
+	}
+	sort.Ints(ahead)
+	if len(ahead) > 0 {
+		log.Error("the database was migrated by a newer release than this one; this binary does not "+
+			"know its newest rules, so it may show or delete data it should not (a rollback across "+
+			"0005 shows archived threads as live and deletes them)",
+			"unknown_versions", ahead)
+	}
+
+	if err := renameReservedBoards(ctx, conn, log); err != nil {
+		return nil, err
+	}
+	return ahead, nil
+}
+
+// renameReservedBoards moves any board whose slug has since become a reserved
+// word — a page of the site, like /archive/ or /rules/ — to "<slug>-board"
+// ("board-u" for "u", whose "u-board" would be an institution's address).
+// The UI reads such a path as the page, so the board would stay in the board
+// list with every link to it landing on something else. Board creation
+// refuses reserved slugs, so only a board made before its word was reserved
+// is ever renamed, and it keeps its row, its threads and its post numbers.
+// It runs under the migration lock, after the migrations, on every start, so
+// it follows reservedBoardSlugs as the list grows.
+func renameReservedBoards(ctx context.Context, conn *pgxpool.Conn, log *slog.Logger) error {
+	reserved := make([]string, 0, len(reservedBoardSlugs))
+	for slug := range reservedBoardSlugs {
+		reserved = append(reserved, slug)
+	}
+	rows, err := conn.Query(ctx, `SELECT slug FROM boards WHERE slug = ANY($1) ORDER BY slug`, reserved)
+	if err != nil {
+		return fmt.Errorf("find boards under reserved slugs: %w", err)
+	}
+	clashing, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Errorf("find boards under reserved slugs: %w", err)
+	}
+	for _, slug := range clashing {
+		base := slug + "-board"
+		if strings.HasPrefix(base, "u-") {
+			// "u-board" would be the institution board shown at /u/board/.
+			base = "board-" + slug
+		}
+		for n := 1; ; n++ {
+			if n > 100 {
+				return fmt.Errorf("rename /%s/: no free slug to rename it to", slug)
+			}
+			renamed := base
+			if n > 1 {
+				renamed += "-" + strconv.Itoa(n)
+			}
+			tag, err := conn.Exec(ctx, `
+				UPDATE boards SET slug = $2
+				WHERE slug = $1 AND NOT EXISTS (SELECT 1 FROM boards WHERE slug = $2)`, slug, renamed)
+			if err != nil {
+				return fmt.Errorf("rename /%s/: %w", slug, err)
+			}
+			if tag.RowsAffected() == 1 {
+				log.Warn("renamed a board whose address is now a page of the site", "from", slug, "to", renamed)
+				break
+			}
+		}
 	}
 	return nil
 }

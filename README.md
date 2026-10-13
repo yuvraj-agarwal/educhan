@@ -1,15 +1,15 @@
 # educhan
 
-**Anonymous imageboard for tertiary education**
+**Anonymous imageboard for students**
 
-educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about placements, research, courses, and campus life.
+educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about courses, exams, admissions, careers, and student life.
 
 ## Core Features
 
-- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a trusted badge while remaining fully anonymous
+- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
 - **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **Technical media support** — Accepts raw camera files and high-bitrate video with automatic web-optimised proxies
-- **Selective permanence** — High-value threads can be automatically archived
+- **One image per post** — JPEG, PNG, WebP or GIF
+- **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
 - **Google Cloud native** — Built for scalability and low operational overhead
 
 ## Current Status
@@ -130,7 +130,10 @@ after the sitting**, available to whoever uses the browser next, until it
 expires or someone clears it. That is why `/verify` gives **Forget this
 credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
-again, so it means verifying from the start.
+again, so it means verifying from the start. Beside it, in every state of the
+page, **Forget this browser** removes the badge together with the poster key and
+the remembered name (see below), which are what would otherwise let the next
+person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -153,6 +156,9 @@ can and cannot work out.
 - Roughly when a credential was issued — to the *day*, because the stored
   expiry is rounded up to a UTC day boundary and nothing else is timestamped.
 - Which posts carry which badge, because a badge is displayed on the post.
+- Which badged posts in one thread came from the same credential, because they
+  share a poster ID there, as any poster's posts in a thread do. In different
+  threads the same credential's IDs differ.
 - **Confirmation of a guess.** The email hash is keyed, not encrypted: holding
   the secret, an operator who suspects a particular address can recompute the
   HMAC and check whether that person is verified. This is inherent to a
@@ -180,11 +186,15 @@ can and cannot work out.
   verification tables and `posts` or `threads`; `TestVerificationTablesCannotBeJoinedToPosts`
   asserts the exact column list of both tables so a future migration cannot
   quietly add one.
-- Link two badged posts to each other. Two posts showing the same institution
-  say only that: an institution with one verified user and one badged post is
-  as anonymous as its user base is large. **A badge narrows you to your
-  institution — that is the whole of what it discloses, and it is not nothing
-  at a small one.**
+- Recompute a badged post's poster ID. It is derived from the random id inside
+  the credential as the poster presents it; the database holds only that id's
+  SHA-256, and no derivation from anything in the verification tables
+  reproduces it (`TestBadgedPosterIDCannotBeRecomputedFromTheDatabase`).
+- Link two badged posts in different threads to each other. Their poster IDs
+  differ, and two posts showing the same institution say only that: an
+  institution with one verified user and one badged post is as anonymous as its
+  user base is large. **A badge narrows you to your institution — that is the
+  whole of what it discloses, and it is not nothing at a small one.**
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
@@ -256,6 +266,56 @@ verification endpoints and nowhere else. It is `HttpOnly`, `SameSite=Lax`, and
 `Secure` whenever the request arrived over TLS. The credential is not a cookie
 at all — see above.
 
+## Posting identity
+
+### Poster IDs
+
+Every post shows an eight-character ID that is the same for one poster
+throughout a thread and different in every other thread, so a conversation can
+be followed without anybody being followable from thread to thread. It is
+`HMAC(EDUCHAN_POSTER_ID_SALT, thread, source)`, and the source is the first of:
+
+1. **On a badged post, the credential's random id.** Never the browser's key or
+   address: if a badged post and an unbadged reply from one browser showed the
+   same ID, the ID would tie the unbadged reply to the institution. It is the id
+   inside the credential the poster presented, not anything the database keeps
+   (which is only its SHA-256), so a badged post's ID can be recomputed only by
+   somebody holding the credential itself. One credential's badged posts share
+   an ID within a thread, as anybody's posts do.
+2. **Otherwise the poster key**: 16 random bytes the browser makes once, keeps
+   in `localStorage`, and sends base64url-encoded in `X-Educhan-Poster-Key` on
+   thread and reply requests and nothing else. This is what gives two people
+   behind one campus NAT two IDs.
+3. **Otherwise the client address**, which is what every ID used to be, so a
+   client that sends no key can still post.
+
+The three are tagged before hashing (`key:`, `ip:`, `cred:`), so no choice of
+key can land on the ID an address or a credential gets.
+
+The poster key is HMAC input and nothing else: it is never written to the
+database and never logged. `TestPosterKeyIsNeverStoredOrLogged` posts every way
+there is with one, then searches every column of every table and every log line
+for it. Kept anywhere, it would be a single identifier across all of a
+browser's threads, which is exactly what per-thread IDs avoid. Because the
+client chooses it, a poster ID is a courtesy rather than proof: clearing site
+data gives a fresh one, as changing networks always did, and flood control
+stays keyed on the address for that reason.
+
+### Tripcodes
+
+A name of `ana#secret` posts as **ana** with a tripcode such as `!!Xq3vB0e9kT`,
+which lets a poster show that two posts came from whoever knows the secret,
+without an account. `#secret` and `##secret` are the same thing: both make the
+one kind of tripcode educhan has, `HMAC(EDUCHAN_POSTER_ID_SALT, secret)`, shown
+with the `!!` prefix imageboards use for a server-keyed tripcode.
+
+The classic unkeyed tripcode, with a single `!`, is not offered. It is a plain
+hash of a secret somebody chose by hand, so anyone who sees the tripcode can
+search for the secret offline and then post as its owner. Keyed by the salt, a
+tripcode can only be produced through this server. The salt is also what keeps
+tripcodes stable: rotate `EDUCHAN_POSTER_ID_SALT` and every one of them changes,
+along with every poster ID.
+
 ## Image attachments
 
 One image per post, on both thread creation and replies, **when
@@ -265,6 +325,14 @@ uploaded: no metadata stripping and no content scanning yet.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims.
+- **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
+  the image to be covered until it is clicked. The attachment comes back with
+  `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
+  it is the client's job.
+- **Per-thread cap**: a thread holds at most its board's `image_limit` posts with an image
+  (150 by default), the opening post included. Past it a reply with an image answers
+  `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
+  `images` and `at_image_limit` so a client can hide the picker before anyone tries.
 - **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
@@ -287,7 +355,7 @@ uploaded: no metadata stripping and no content scanning yet.
 Posting an image over HTTP is a plain multipart form:
 
 ```bash
-curl -X POST localhost:8080/api/boards/general/threads \
+curl -X POST localhost:8080/api/boards/chem/threads \
   -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
 ```
 
@@ -297,31 +365,115 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 
 | Area | Behaviour |
 | --- | --- |
-| Boards | Seeded from a migration, then created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
-| Posting | Anonymous by default; `name#secret` and `name##secret` produce tripcodes; a per-thread poster ID keeps a conversation followable |
-| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, sage, bump limits, sticky and locked flags |
+| Boards | Twenty seeded from a migration — subjects from `/math/` to `/lang/`, then student life from `/adm/` to `/meta/` — and more created and reconfigured over the API with the moderation key; each has its own bump limit, thread limit, and post numbering |
+| Posting | Anonymous by default; `name#secret` and `name##secret` both produce the same salted `!!` tripcode; a per-thread poster ID, from a random key the browser keeps, keeps a conversation followable |
+| Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
-| Catalog | Every live thread on one page as excerpt tiles with thumbnails |
-| Attachments | One image per post, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
-| Housekeeping | Threads past a board's thread limit are pruned; per-client cooldowns limit new threads, replies, and uploads |
+| Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
 
 ## Front end
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
-`internal/app/web/` — with no build step and no framework. `app.js` renders the JSON API
-into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
-`/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
+`internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
+and KaTeX, each fetched only when a post that needs it is on screen. `app.js` renders the
+JSON API into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`,
+`/{slug}/archive`, `/{slug}/thread/{no}`), so every view is a shareable link and the back
+button works. `/{slug}/post/{no}` names a post by number alone: it asks the server which
+thread the post is in and replaces itself with that thread, scrolled to the post, so Back
+does not land on it twice. Institution boards are stored as `u-{name}` and live at
+`/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
+`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
+`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
+boards.
+`/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
+view.
 
+- **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
+  13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
+  Before anything is shown or fetched, a first visit gets a modal asking only "When were
+  you born?", as a month and a year with nothing preselected and nothing hinting at the
+  threshold. Age is counted conservatively, so a birthday in the current month has not
+  happened yet. The answer is compared in the browser and then removed from the page: it
+  is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
+  outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
+  shows a plain page saying who educhan is for, with no way to answer again in that
+  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
+  switches it off.
+- **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
+  as 13. It lists what is not allowed for anyone, kind by kind (sexual content,
+  encouraging suicide, self-harm or eating disorders, "kys", bullying, hate, threats,
+  violence and gore, dangerous challenges, harmful substances, contact details and moving
+  to other apps, and posts about real people you know), says there are no private
+  messages on purpose, and says what moderators can do today: delete posts and threads,
+  and lock a thread. Boards can add their own rules under the header's **Rules**
+  disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
+  born, why there are no accounts or private messages, what anonymity here does and does
+  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
+  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
+  Australia, and Find A Helpline for everyone else), which is static text: nothing works
+  out where the reader is. The footer links to both on every view.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
-  time, and post number as secondary metadata; sticky, locked, and bump-limit badges are
-  tinted chips. On a fine pointer, hovering `>>123` floats a preview of the quoted post
+  time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
+  badges are tinted chips. Each board's archive lists the threads that have left it,
+  newest first; an archived thread still opens, says when it was archived and how long it
+  is kept, and shows why it takes no replies where the reply form would be. A board with
+  rules shows them under a **Rules** disclosure in its header, as plain text with the line
+  breaks kept. On a fine pointer, hovering `>>123` floats a preview of the quoted post
   when it is already on the page — a preview never costs a request.
+- **Post markup**, rendered at display time from the text as typed:
+  - `>text` is greentext; `>>123` links to a post on the same board and adds a backlink.
+  - `>>>/math/` links to a board, `>>>/math/123` to a post on it, and `>>>/u/iitb/123` to
+    one on an institution board.
+  - `[spoiler]…[/spoiler]` is a bar until hovered, focused, or tapped; a screen reader
+    hears "hidden spoiler" until the reader activates it, and catalog and archive
+    excerpts show the word, not the text.
+  - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
+    auto-detected, as it comes near the screen; a block over 2,000 characters is shown
+    plain, because highlighting one that long could stall a reader's tab. Nothing inside
+    it is markup, so `x >>2` in code links nothing and creates no backlink.
+  - `[math]…[/math]` is inline maths and `[eqn]…[/eqn]` an equation on a line of its own,
+    both in TeX and typeset by KaTeX as they come near the screen. Like code, nothing
+    inside is markup. Until KaTeX arrives, or if it never does, the TeX shows as written;
+    a TeX error shows the source in red with the reason on hover. TeX in a post makes no
+    links, images, or HTML of its own (`\href`, `\url`, `\includegraphics` and the
+    `\html…` commands show as unsupported), and cannot define macros (`\def`,
+    `\newcommand` and the like): a macro is how a short post would expand into millions
+    of symbols in every reader's tab. Equation tags and numbering still work (`\tag{1}`,
+    `\tag*{A}`, `\nonumber`, `\notag`). An equation too wide for a phone scrolls sideways
+    instead of widening the page. Catalog excerpts show maths as its TeX. Inside a hidden
+    spoiler, maths and code show nothing — not a TeX error's red source, nor a diff's line
+    tints — and are out of the tab order until the spoiler is revealed.
+  - A tag pairs with the first closing tag of its kind after it; one that never closes,
+    an empty pair, or a `[spoiler]` opened inside another shows as the text that was
+    typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
-  **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
-  post number quotes it into the reply box.
+  **Update**, image included, so refreshing a busy thread never costs a draft; if the
+  thread was archived or locked meanwhile, the text stays on the page in a read-only box
+  to copy. Following a quote link within a thread jumps to the post without reloading
+  the thread, so revealed spoilers stay revealed. Clicking a
+  post number quotes it into the reply box. With an image attached, **Spoiler image**
+  sends it hidden: readers see a neutral tile, filename included, until they click it or
+  press Enter on it, and it then expands like any other; the catalog shows the tile only.
+- **Image cap**: the index and catalog show how many images a thread has, and the thread
+  view shows the count against its board's cap. A thread at the cap keeps its reply form
+  with the image picker switched off and the reason beside it; if the cap is reached
+  while a reply is being written, the refusal takes the image off, keeps the text, and
+  the next press posts it. On a board whose `image_limit` is 0 the picker says replies
+  there can't carry images, and no thread is badged as at its limit.
+- **Poster key**: the first post from a browser makes a random key and keeps it in
+  `localStorage`; it travels in `X-Educhan-Poster-Key` on new threads and replies only, so
+  two people on one campus network get different poster IDs without the key riding on
+  anything else. A badged post sends the credential instead, never both. The Name field
+  remembers the last unbadged post's name; ticking the badge empties it, because a
+  tripcode on both kinds of post would tie them together. **Forget this browser** on
+  `/verify` drops the key, the name and any badge, for a shared computer.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
@@ -330,8 +482,23 @@ into the same four routes the API exposes (`/`, `/{slug}/`, `/{slug}/catalog`,
 
 The page runs under the same-origin CSP in `middleware.go`, which has no `unsafe-inline`
 exception: no inline `<script>`, no inline `<style>`, and no `style` attributes. A unit
-test (`internal/app/web_test.go`) fails the build if any appear, and the image preview is
-a `data:` URL because that is what `img-src` allows.
+test (`internal/app/web_test.go`) fails the build if any appear in `index.html`, `app.js`,
+or `app.css`, and the image preview is a `data:` URL because that is what `img-src`
+allows. Third-party code is vendored under `internal/app/web/lib/` and served from the
+same origin; each library keeps its licence and a note of its source, and the same test
+file pins every vendored file by SHA-256. The directory is not called `vendor/` because a
+Go module zip leaves out every directory of that name, so a binary built from the module
+proxy would have shipped without the libraries. KaTeX is the reason maths is typeset with
+`katex.render` into the page rather than `renderToString` into `innerHTML`: its HTML
+carries layout in `style` attributes, which this CSP refuses, while `katex.render` sets
+styles through the CSSOM, which it allows.
+
+None of these files has a version in its URL — `/app.js` is `/app.js` in every release —
+so each goes out with `Cache-Control: no-cache` and a strong `ETag` from a hash of its
+bytes: a browser keeps its copy and revalidates it, and an unchanged file costs a `304`
+with no body. Text files (HTML, JavaScript, CSS) are gzipped once at startup and sent
+compressed to a client that accepts gzip, with their own `ETag` and `Vary:
+Accept-Encoding`; the fonts are compressed already. JSON from the API is not compressed.
 
 ## Tech Stack
 
@@ -357,7 +524,13 @@ It is idempotent, so re-running it is how you check the database is up. Point at
 a different server instead by exporting `DATABASE_URL`.
 
 Migrations in `internal/app/migrations/` are applied automatically at startup,
-guarded by a Postgres advisory lock so concurrent instances are safe.
+guarded by a Postgres advisory lock so concurrent instances are safe. There are
+no down migrations. A release started on a database that a newer release has
+migrated still serves, but logs an error naming the versions it does not know,
+and the sweeper refuses to run on it. After the migrations, any board whose slug
+has since become a reserved word (a page such as `/archive/` or `/rules/`) is
+renamed to `<slug>-board`, with a warning in the log, because the UI would read
+its address as the page.
 
 ### The container image
 
@@ -483,9 +656,9 @@ depends on.
 
 ### Running behind a proxy
 
-Flood control and poster IDs are keyed on the client address, so the server has
-to know how to find it. `EDUCHAN_TRUST_PROXY` is the number of reverse proxies
-in front of it:
+Flood control is keyed on the client address, and so is the poster ID of a
+client that sends no poster key, so the server has to know how to find it.
+`EDUCHAN_TRUST_PROXY` is the number of reverse proxies in front of it:
 
 - **`0` (default)** — `X-Forwarded-For` is ignored and the peer address is used.
   Correct whenever the server is reachable directly.
@@ -516,10 +689,12 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
-| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge"}` |
+| `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
+| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
+| `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
@@ -537,9 +712,22 @@ so a client can discard one the server will not honour again. There is no
 endpoint to forget a badge, because the client holds it — dropping it is a
 local act.
 
+The two posting endpoints read the poster key from `X-Educhan-Poster-Key` (22
+base64url characters, no padding) and no other endpoint reads it. Without the
+header the poster ID comes from the client address; with a malformed one the
+post is refused with `400` and `{"error":"invalid poster key"}` before its body
+is read, so the refusal costs no cooldown.
+
 `/api/verify/confirm` sets no credential cookie, but the two-step exchange does
 use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a
 cookie jar (`curl -c/-b`) to get through it.
+
+Every thread view carries `archived_at`: `null` while the thread is live, and
+the time it was pushed off the board once it is archived. It also carries
+`images`, the posts in the thread with an image, and `at_image_limit`. A reply
+to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
+locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
+at its board's image limit `{"error":"image limit reached"}`.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -548,7 +736,7 @@ plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
 
 ```bash
 curl -s localhost:8080/api/boards
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
@@ -563,7 +751,7 @@ CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
 
 # The badge is the header plus the flag. Leave both off and the post is
 # anonymous — the credential is not sent at all.
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/career/threads \
   -H "X-Educhan-Credential: $CRED" -H 'Content-Type: application/json' \
   -d '{"subject":"from the inside","body":"we saw the same numbers","badge":true}'
 ```
@@ -577,7 +765,7 @@ janitor accounts, bans, and reports are still to come.
 
 | Method | Path | Description |
 | --- | --- | --- |
-| `POST` | `/api/boards` | Create a board — `{"slug","name","description","bump_limit","thread_limit"}` |
+| `POST` | `/api/boards` | Create a board — `{"slug","name","description","rules","bump_limit","thread_limit","image_limit","archive_days"}` |
 | `PATCH` | `/api/boards/{slug}` | Update a board's settings; every field is optional |
 | `POST` | `/api/boards/{slug}/threads/{no}/sticky` | Pin a thread to the top of its board |
 | `POST` | `/api/boards/{slug}/threads/{no}/unsticky` | Unpin it |
@@ -593,25 +781,41 @@ the thread's reply count, so bump-limit state stays accurate.
 
 ```bash
 export MOD_KEY=…
-curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/1/sticky \
   -H "Authorization: Bearer $MOD_KEY"
-curl -s -X DELETE localhost:8080/api/boards/general/threads/1/posts/4 \
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/1/posts/4 \
   -H "X-Mod-Key: $MOD_KEY"
 ```
 
 #### Board management
 
-The three seeded boards are a starting point, not the whole list: a board can be
+The seeded boards are a starting point, not the whole list: a board can be
 opened and reconfigured with the same key, without a migration or a release.
 Listing boards stays public.
 
 A slug is the board's address in every URL, so it is lowercase letters and
-digits in dash-separated groups (`general`, `comp-sci`), at most 24 characters,
-and not one of the paths the server already answers on (`api`, `media`,
-`healthz`). It is normalised before use, so `/CompSci/` and `/compsci/` cannot
-both exist. Everything but the slug is optional: the name falls back to the
-slug, and the limits to the schema defaults of 300 and 100. A duplicate slug
-answers `409`.
+digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
+and not a first path segment that already means something else: the server's
+own routes (`api`, `media`, `healthz`, and `lib` for the UI's libraries), the
+UI's pages (`verify`, `mod`, `rules`, `faq`, `legal`, `terms`, `privacy`,
+`dmca`, `report`, `archive`, `safety`), or `u`. It is normalised before use, so `/CompSci/` and `/compsci/`
+cannot both exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
+shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
+slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
+100, an image limit of 150, and 7 days in the archive), and the rules to none. A
+duplicate slug answers `409`.
+
+| Setting | Range | Meaning |
+| --- | --- | --- |
+| `bump_limit` | 1–10000 | Replies after which a reply no longer bumps the thread |
+| `thread_limit` | 1–1000 | Live threads the board keeps |
+| `image_limit` | 0–1000 | Posts with an image one thread may hold, the opening post included; `0` means replies can never carry one |
+| `archive_days` | 0–365 | Days an archived thread is kept before it is deleted; `0` means at the next sweep |
+| `rules` | up to 4000 characters | The board's own rules, multi-line, normalised like a post body |
+
+None of the numbers has an "unlimited" value: zero is refused for the two
+limits where it would break the board, and read literally for the two where it
+is a real choice.
 
 ```bash
 curl -s -X POST localhost:8080/api/boards \
@@ -619,7 +823,7 @@ curl -s -X POST localhost:8080/api/boards \
   -d '{"slug":"comp-sci","name":"Computer Science","description":"Algorithms and all that"}'
 ```
 
-`PATCH` changes `name`, `description`, `bump_limit`, and `thread_limit`; an
+`PATCH` changes any of those settings, and `name` and `description`; an
 omitted field keeps its stored value, and at least one must be given. The slug
 is not updatable — it is what every bookmark and stored quote link points at.
 
@@ -631,8 +835,8 @@ curl -s -X PATCH localhost:8080/api/boards/comp-sci \
 
 A new board is a board like any other: it appears in the board navigation, the
 index, and the catalog, and its post numbering starts at No. 1. A lowered
-`thread_limit` is applied by the next post to that board, through the same
-pruning the limit has always driven.
+`thread_limit` is applied by the next thread posted to that board, which
+archives whatever no longer fits.
 
 ## Deployment
 
@@ -699,6 +903,46 @@ media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
 `EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
 container.
 
+### The archive sweeper
+
+Archived threads are deleted by a one-shot mode of the same binary rather than
+by anything running inside the server:
+
+```bash
+educhan -sweep          # or, from a checkout: make sweep
+```
+
+It loads the usual configuration, connects, applies any pending migrations,
+deletes every archived thread whose board's `archive_days` have passed — posts,
+attachment rows, and then the images and thumbnails in the media store — and
+exits. It works in batches of 100 threads, one transaction each. Each batch
+records the storage keys of its threads' files in the `media_deletions` table in
+the same transaction as it deletes the rows; once the batches are done the
+sweep removes each queued file and forgets its key. A file the store refuses to
+delete keeps its key, so the next sweep tries it again rather than leaving an
+image public with nothing left to say it exists.
+
+A file the media store does not hold also keeps its key and fails the sweep.
+Every queued key is a file the server stored, so a store without it is almost
+always the wrong store: **the sweeper must run with the server's media
+settings** — `EDUCHAN_MEDIA_BACKEND`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
+`EDUCHAN_UPLOAD_DIR` — or it reports every file missing. Once the settings are
+fixed, the next sweep removes them. A file that really is gone for good (lost
+with a container's disk, or removed by hand) fails every sweep until its row is
+deleted from `media_deletions` by hand.
+
+It logs one line of counts (threads, posts, attachments, and files removed,
+failed, and missing) and nothing about which boards or threads went, and exits
+non-zero if the database fails or any file could not be removed or was missing;
+the error it exits with says why without naming the file. It also refuses to
+run on a database a newer release has migrated (see below).
+
+On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
+started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
+a request, so a timer inside the server would fire whenever it happened to, and
+a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
+`deploy/` yet.
+
 ### What is not stateless yet
 
 Everything the API serves lives in PostgreSQL, so instances start in any order
@@ -720,6 +964,7 @@ One thing remains per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
+make sweep   # go run ./cmd/server -sweep: delete expired archived threads once
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test

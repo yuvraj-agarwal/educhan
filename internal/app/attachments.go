@@ -50,8 +50,12 @@ type submission struct {
 	Body    string
 	Sage    bool
 	// Badge asks for the poster's verified institution to be shown on the post.
-	Badge  bool
-	Upload *upload
+	Badge bool
+	// Spoiler asks for the image to be covered until it is clicked. It is a
+	// display preference: the thumbnail is made either way, and a submission
+	// without an image ignores it.
+	Spoiler bool
+	Upload  *upload
 }
 
 // submissionForm is a JSON request body that can be reduced to a submission.
@@ -90,6 +94,7 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 		Body:    r.FormValue("body"),
 		Sage:    isTruthy(r.FormValue("sage")),
 		Badge:   isTruthy(r.FormValue("badge")),
+		Spoiler: isTruthy(r.FormValue("spoiler")),
 	}
 
 	file, header, err := r.FormFile(uploadFieldName)
@@ -170,16 +175,17 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 	}
 }
 
-// attachmentInput pairs the stored blob metadata with the original filename.
-func attachmentInput(up *upload, img *media.StoredImage) *newAttachment {
+// attachmentInput pairs the stored blob metadata with what the submission said
+// about it: the original filename and whether it is a spoiler.
+func attachmentInput(sub *submission, img *media.StoredImage) *newAttachment {
 	if img == nil {
 		return nil
 	}
 	name := ""
-	if up != nil {
-		name = up.Filename
+	if sub.Upload != nil {
+		name = sub.Upload.Filename
 	}
-	return &newAttachment{OriginalName: name, Image: *img}
+	return &newAttachment{OriginalName: name, Image: *img, Spoiler: sub.Spoiler}
 }
 
 // isTruthy reads the checkbox and flag encodings a multipart form may use for a

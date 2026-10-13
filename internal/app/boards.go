@@ -21,39 +21,69 @@ const (
 	maxBoardSlugLen     = 24
 	maxBoardNameLen     = 64
 	maxBoardDescLen     = 256
+	maxBoardRulesLen    = 4000
 	maxBoardBumpLimit   = 10000
 	maxBoardThreadLimit = 1000
+	maxBoardImageLimit  = 1000
+	// maxBoardArchiveDays bounds how long a board can keep archived threads,
+	// and with them their images. It is a sanity bound, not a retention policy.
+	maxBoardArchiveDays = 365
 )
 
 // Defaults for a board created without explicit limits. They mirror the column
-// defaults in 0002_imageboard.sql so an API-created board matches a seeded one.
+// defaults in 0002_imageboard.sql and 0005_archive_and_limits.sql so an
+// API-created board matches a seeded one.
 const (
 	defaultBoardBumpLimit   = 300
 	defaultBoardThreadLimit = 100
+	defaultBoardImageLimit  = 150
+	defaultBoardArchiveDays = 7
 )
 
 // boardSlugPattern allows lowercase alphanumerics in dash-separated groups:
-// /general/ and /comp-sci/ are fine, "-x", "x-", and "a--b" are not.
+// /math/ and /comp-sci/ are fine, "-x", "x-", and "a--b" are not. Institution
+// boards are stored as u-<name>, which the pattern allows like any other slug.
 var boardSlugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
-// reservedBoardSlugs are the first path segments the server already answers on.
-// A board using one would be reachable through the API but not through the UI,
-// whose board route is /{slug}/.
+// reservedBoardSlugs are the first path segments that mean something other
+// than a board. The UI reads any other first segment as a board's slug, so a
+// board using one of these would be reachable through the API but not through
+// the UI. The UI's parseRoute keeps the same list.
 var reservedBoardSlugs = map[string]bool{
+	// Answered by the server itself.
 	"api":     true,
 	"media":   true,
 	"healthz": true,
+	// The UI's third-party libraries, served from web/lib/.
+	"lib": true,
+	// Pages of the UI.
 	"verify":  true,
+	"mod":     true,
+	"rules":   true,
+	"faq":     true,
+	"legal":   true,
+	"terms":   true,
+	"privacy": true,
+	"dmca":    true,
+	"report":  true,
+	"archive": true,
+	"safety":  true,
+	// Institution boards: the board stored as u-iitb is shown at /u/iitb/, so
+	// "u" is a route prefix and cannot be a board of its own.
+	"u": true,
 }
 
 type createBoardRequest struct {
 	Slug        string `json:"slug"`
 	Name        string `json:"name"`
 	Description string `json:"description"`
+	Rules       string `json:"rules"`
 	// Limits are optional; omitting one takes the default rather than zero,
 	// which is why they are pointers.
 	BumpLimit   *int `json:"bump_limit"`
 	ThreadLimit *int `json:"thread_limit"`
+	ImageLimit  *int `json:"image_limit"`
+	ArchiveDays *int `json:"archive_days"`
 }
 
 func (a *App) handleCreateBoard(w http.ResponseWriter, r *http.Request) {
@@ -65,7 +95,12 @@ func (a *App) handleCreateBoard(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	board := Board{BumpLimit: defaultBoardBumpLimit, ThreadLimit: defaultBoardThreadLimit}
+	board := Board{
+		BumpLimit:   defaultBoardBumpLimit,
+		ThreadLimit: defaultBoardThreadLimit,
+		ImageLimit:  defaultBoardImageLimit,
+		ArchiveDays: defaultBoardArchiveDays,
+	}
 	var ok bool
 	if board.Slug, ok = boardSlug(w, req.Slug); !ok {
 		return
@@ -82,13 +117,26 @@ func (a *App) handleCreateBoard(w http.ResponseWriter, r *http.Request) {
 	if board.Description, ok = boardDescription(w, req.Description); !ok {
 		return
 	}
+	if board.Rules, ok = boardRules(w, req.Rules); !ok {
+		return
+	}
 	if req.BumpLimit != nil {
-		if board.BumpLimit, ok = boardLimit(w, "bump_limit", *req.BumpLimit, maxBoardBumpLimit); !ok {
+		if board.BumpLimit, ok = boardLimit(w, "bump_limit", *req.BumpLimit, 1, maxBoardBumpLimit); !ok {
 			return
 		}
 	}
 	if req.ThreadLimit != nil {
-		if board.ThreadLimit, ok = boardLimit(w, "thread_limit", *req.ThreadLimit, maxBoardThreadLimit); !ok {
+		if board.ThreadLimit, ok = boardLimit(w, "thread_limit", *req.ThreadLimit, 1, maxBoardThreadLimit); !ok {
+			return
+		}
+	}
+	if req.ImageLimit != nil {
+		if board.ImageLimit, ok = boardLimit(w, "image_limit", *req.ImageLimit, 0, maxBoardImageLimit); !ok {
+			return
+		}
+	}
+	if req.ArchiveDays != nil {
+		if board.ArchiveDays, ok = boardLimit(w, "archive_days", *req.ArchiveDays, 0, maxBoardArchiveDays); !ok {
 			return
 		}
 	}
@@ -111,8 +159,11 @@ func (a *App) handleCreateBoard(w http.ResponseWriter, r *http.Request) {
 type updateBoardRequest struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	Rules       *string `json:"rules"`
 	BumpLimit   *int    `json:"bump_limit"`
 	ThreadLimit *int    `json:"thread_limit"`
+	ImageLimit  *int    `json:"image_limit"`
+	ArchiveDays *int    `json:"archive_days"`
 }
 
 func (a *App) handleUpdateBoard(w http.ResponseWriter, r *http.Request) {
@@ -143,19 +194,40 @@ func (a *App) handleUpdateBoard(w http.ResponseWriter, r *http.Request) {
 		}
 		settings.Description = &description
 	}
+	if req.Rules != nil {
+		rules, ok := boardRules(w, *req.Rules)
+		if !ok {
+			return
+		}
+		settings.Rules = &rules
+	}
 	if req.BumpLimit != nil {
-		limit, ok := boardLimit(w, "bump_limit", *req.BumpLimit, maxBoardBumpLimit)
+		limit, ok := boardLimit(w, "bump_limit", *req.BumpLimit, 1, maxBoardBumpLimit)
 		if !ok {
 			return
 		}
 		settings.BumpLimit = &limit
 	}
 	if req.ThreadLimit != nil {
-		limit, ok := boardLimit(w, "thread_limit", *req.ThreadLimit, maxBoardThreadLimit)
+		limit, ok := boardLimit(w, "thread_limit", *req.ThreadLimit, 1, maxBoardThreadLimit)
 		if !ok {
 			return
 		}
 		settings.ThreadLimit = &limit
+	}
+	if req.ImageLimit != nil {
+		limit, ok := boardLimit(w, "image_limit", *req.ImageLimit, 0, maxBoardImageLimit)
+		if !ok {
+			return
+		}
+		settings.ImageLimit = &limit
+	}
+	if req.ArchiveDays != nil {
+		days, ok := boardLimit(w, "archive_days", *req.ArchiveDays, 0, maxBoardArchiveDays)
+		if !ok {
+			return
+		}
+		settings.ArchiveDays = &days
 	}
 
 	// A lowered thread limit is applied by the next post to the board rather
@@ -215,12 +287,27 @@ func boardDescription(w http.ResponseWriter, raw string) (string, bool) {
 	return description, true
 }
 
-// boardLimit bounds a board's counters. Zero is rejected rather than read as
-// "unlimited": a zero bump limit would freeze every thread on the board.
-func boardLimit(w http.ResponseWriter, field string, value, maximum int) (int, bool) {
-	if value < 1 || value > maximum {
+// boardRules accepts multi-line text, normalised the way a post body is, and
+// an empty string, which clears a board's own rules.
+func boardRules(w http.ResponseWriter, raw string) (string, bool) {
+	rules := normalizeBody(raw)
+	if utf8.RuneCountInString(rules) > maxBoardRulesLen {
 		writeError(w, http.StatusBadRequest,
-			field+" must be between 1 and "+strconv.Itoa(maximum))
+			"rules must be at most "+strconv.Itoa(maxBoardRulesLen)+" characters")
+		return "", false
+	}
+	return rules, true
+}
+
+// boardLimit bounds a board's numeric settings. None of them has an
+// "unlimited" value: the bump and thread limits take a minimum of one, because
+// a zero bump limit would freeze every thread on the board, while a zero image
+// limit or archive period means exactly what it says — no images in replies,
+// no time in the archive.
+func boardLimit(w http.ResponseWriter, field string, value, minimum, maximum int) (int, bool) {
+	if value < minimum || value > maximum {
+		writeError(w, http.StatusBadRequest,
+			field+" must be between "+strconv.Itoa(minimum)+" and "+strconv.Itoa(maximum))
 		return 0, false
 	}
 	return value, true
