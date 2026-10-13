@@ -48,8 +48,8 @@ type identity struct {
 // to either convention get the tripcode they expect, and they give the same
 // one, so nobody has to know which form they first used.
 func parseIdentity(field, salt string) identity {
-	name, secret, hasSecret := strings.Cut(field, "#")
-	id := identity{Name: clampName(name)}
+	_, secret, hasSecret := strings.Cut(field, "#")
+	id := identity{Name: displayedName(field)}
 	if id.Name == "" {
 		id.Name = anonymousName
 	}
@@ -63,6 +63,15 @@ func parseIdentity(field, salt string) identity {
 	}
 	id.Tripcode = tripcode(salt, secret)
 	return id
+}
+
+// displayedName is the part of a Name field that is shown: everything before
+// the first "#", as it will be stored. It is all the content filter reads of a
+// name, so the tripcode secret is never inspected or quoted back. Empty means
+// the post will be shown as Anonymous.
+func displayedName(field string) string {
+	name, _, _ := strings.Cut(field, "#")
+	return clampName(name)
 }
 
 // tripcode derives the tripcode for a secret. The derivation is the one secure
