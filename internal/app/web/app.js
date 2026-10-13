@@ -1916,8 +1916,11 @@ const VERIFY_INTRO = `
     Verifying proves you hold an address at a recognised institution and earns
     you an optional badge. The address itself is never stored: what is kept is
     a keyed hash of it, in a table that has no link to any post or thread. The
-    badge you get carries only the institution and an expiry, so no one — this
-    server included — can work back from a post to your address.
+    badge you get carries only the institution, an expiry and a random number,
+    so no one — this server included — can work back from a post to your
+    address. The random number is what keeps your ID the same within a thread
+    on the posts you badge. It is not made from your address, and cannot be
+    traced back to it.
   </p>
   <p class="verify-note muted">
     The badge is off by default on every post, and is sent to the server only
