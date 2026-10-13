@@ -2256,8 +2256,8 @@ const FAQ_SECTIONS = [
       <p>The address itself is never stored. The server keeps only a scrambled fingerprint of
         it, so that one address holds one badge at a time, in a table with no link to any
         post. The badge holds the institution's name, an expiry date and a random number, and
-        nothing about you. So nothing connects a badged post to your email address, or to the
-        posts you make without the badge &mdash; unless you give both the same name or tripcode,
+        nothing about you. So nothing stored with a badged post points to your email address,
+        or to the posts you make without the badge &mdash; unless you give both the same name or tripcode,
         which would show they're yours. That's why the Name field empties when you tick the
         badge.</p>
       <p>On a shared computer, use <strong>Forget this browser</strong> on the
