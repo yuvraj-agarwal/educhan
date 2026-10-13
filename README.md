@@ -451,7 +451,7 @@ view.
   shows a plain page saying who educhan is for, with no way to answer again in that
   browser. The one refusal not kept is an answer in the current month exactly 13 years
   back, since that reader may have turned 13 this month: it lasts until the page is
-  closed, and the FAQ says a reader who may only just have become old enough is asked
+  reloaded or closed, and the FAQ says a reader who may only just have become old enough is asked
   again. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
@@ -818,10 +818,10 @@ to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
 locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
 at its board's image limit `{"error":"image limit reached"}`. These refusals,
 and a reply to a thread that does not exist, come before flood control and
-before the image is stored, so they start no cooldown: the same text sent again
-without the image posts at once. (Two replies racing for a thread's last image
-slot can both get that far; the loser is refused inside the transaction, after
-its cooldowns have started.)
+before the image is stored, so they start no cooldown, and a reply refused at
+the image limit posts at once when sent again without the image. (Two replies
+racing for a thread's last image slot can both get that far; the loser is
+refused inside the transaction, after its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields

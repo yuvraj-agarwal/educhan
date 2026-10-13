@@ -2593,7 +2593,7 @@ function passAgeScreen() {
 // A refusal is final in this browser: the screen is removed rather than reset,
 // and nothing on the page offers to ask again. The one refusal not kept is for
 // an answer that may already be old enough (see answerAgeQuestion); it lasts
-// until the page is closed.
+// until the page is reloaded or closed.
 function refuseAgeScreen({ keep = true } = {}) {
   if (keep) {
     storageSet(AGE_REFUSED_STORAGE_KEY, "1");
