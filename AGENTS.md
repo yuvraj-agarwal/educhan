@@ -375,6 +375,9 @@ needs a browser check before the test changes.
   the rest of the visit. The client knows both refusals by `UPLOADS_SWITCHED_OFF` and
   `IMAGE_LIMIT_REACHED`, which `TestClientKnowsTheServersImageRefusals` checks against
   what the server answers, so change their words on both sides together.
+  `max_upload_bytes` is the server-wide limit: a picked file over it is taken off the
+  form at once, and the picker's hint and the `413` notice name it through
+  `uploadLimitText` — never a board, since no board has a limit of its own.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is

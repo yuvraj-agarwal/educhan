@@ -151,7 +151,7 @@ function errorMessage(err, { hasText = true } = {}) {
     return `${UNREACHABLE} What you wrote is still in the box.`;
   }
   if (err.status === 413) {
-    return "That image is too large for this board. Try a smaller file.";
+    return imageTooLargeMessage();
   }
   if (err.status === 429) {
     const seconds = err.payload && err.payload.retry_after;
@@ -252,6 +252,23 @@ function fileSize(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
+}
+
+// uploadLimitText is the largest image this server takes, in words ("8 MB"),
+// or "" while that is unknown. The limit is the server's, the same for every
+// board, so nothing that uses it names a board.
+function uploadLimitText() {
+  const max = state.site.maxUploadBytes;
+  return max > 0 ? fileSize(max).replace(".0 ", " ") : "";
+}
+
+// imageTooLargeMessage is what a file over the limit is told, whether the page
+// caught it when it was picked or the server's 413 did.
+function imageTooLargeMessage() {
+  const limit = uploadLimitText();
+  return limit
+    ? `That image is too large: images can be up to ${limit}. Try a smaller file.`
+    : "That image is too large. Try a smaller file.";
 }
 
 function showNotice(message) {
@@ -1248,13 +1265,14 @@ const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image:
 // used, when there is one; the field then renders exactly as blockFileField
 // leaves a live one, so a refusal mid-draft and a fresh render look the same.
 function fileFieldHTML(blocked = "") {
+  const limit = uploadLimitText();
   return `
     <div class="file-field${blocked ? " blocked" : ""}" data-file-field>
       <input class="file-input" type="file" id="${FIELD_IDS.image}" name="image"
              accept="${ACCEPTED_IMAGES}" aria-labelledby="f-image-label"
              aria-describedby="f-image-blocked"${blocked ? " disabled" : ""} />
       <label class="btn secondary file-button" for="${FIELD_IDS.image}">Choose image</label>
-      <span class="file-hint">or drop one on this form &middot; JPEG, PNG, WebP, GIF</span>
+      <span class="file-hint">or drop one on this form &middot; JPEG, PNG, WebP, GIF${limit ? `, up to ${esc(limit)}` : ""}</span>
       <span class="file-blocked" id="f-image-blocked"${blocked ? "" : " hidden"}>${esc(blocked)}</span>
       <div class="file-preview" aria-live="polite" hidden>
         <img class="file-thumb" alt="" />
@@ -1445,6 +1463,14 @@ function updateFileField(field) {
 
   if (!isAcceptedImage(file)) {
     showNotice("That file is not an accepted image. Use JPEG, PNG, WebP, or GIF.");
+    clearFileField(field);
+    return;
+  }
+  // Said now, not after the upload: the server would read the whole file
+  // only to refuse it. An unknown limit leaves the call to the server.
+  const max = state.site.maxUploadBytes;
+  if (max > 0 && file.size > max) {
+    showNotice(imageTooLargeMessage());
     clearFileField(field);
     return;
   }

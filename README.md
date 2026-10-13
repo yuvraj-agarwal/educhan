@@ -479,7 +479,9 @@ view.
   and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
   which the page learns from `GET /api/site`, the form has no image field at all and the
   thread view leaves out the image cap; a page that missed the switch takes the image off
-  when the server refuses it, keeps the text, and the next press posts it. A half-written reply survives
+  when the server refuses it, keeps the text, and the next press posts it. The picker
+  names the server's size limit, and a file over it is turned away when it is picked
+  rather than after the upload. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft; if the
   thread was archived or locked meanwhile, the text stays on the page in a read-only box
   to copy. Following a quote link within a thread jumps to the post without reloading
