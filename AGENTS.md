@@ -493,12 +493,25 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
   on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
-  a cutoff fixed when the sweep starts, so a sweep always terminates; each batch's blobs
-  go through `removeBlobs` after its commit, exactly as a moderator's deletion does. It
-  logs one record of counts and nothing that names a board or thread
-  (`TestSweepLogsOnlyCounts`), and returns an error — a non-zero exit — on a database
-  failure or if any blob could not be removed. **Legal holds (build plan 2.10) are not
-  built**; when they are, `SweepArchived` must skip held threads, and its comment says so.
+  a cutoff fixed when the sweep starts, so a sweep always terminates. Each batch queues
+  the storage keys of its files in `media_deletions` (`0007`) in the same transaction
+  as it deletes the rows; afterwards `removeQueuedMedia` takes the queue one key per
+  transaction (`NextMediaDeletion`, `SKIP LOCKED`), removes the file and forgets the
+  key. A file the store refuses to delete keeps its key and is retried by the next
+  sweep (`TestSweepRetriesFilesItCouldNotRemove`). A file the store does not hold keeps
+  its key too and fails the sweep, because every queued key is a file the server
+  stored: a sweeper whose media settings differ from the server's would otherwise
+  delete nothing and report success (`TestSweepAgainstAnotherMediaStoreFails`). That is
+  why the sweep checks with `Get` before `Delete` rather than going through
+  `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's
+  deletion should. A cancelled sweep stops between files, never between a file and
+  its key. It logs one record of counts and nothing that names a board or thread,
+  failures included, and the error it returns has the key taken out
+  (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
+  failure, a file it could not remove or did not find, or a database a newer release
+  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). **Legal holds (build plan
+  2.10) are not built**; when they are, `SweepArchived` must skip held threads, and its
+  comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random

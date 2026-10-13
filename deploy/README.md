@@ -392,6 +392,14 @@ If the bucket is missing or the grant did not land, the revision fails to start
 and the log says so by name — `cloud storage bucket "…" is not usable` — rather
 than serving a site whose images all 404.
 
+The archive sweeper (`educhan -sweep`, see the main README) is meant to run as a
+Cloud Run Job from the same image; that Job is not defined here yet. When it is,
+give it the service's media settings exactly — `EDUCHAN_MEDIA_BACKEND`,
+`EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX` — and the same database. A sweeper
+looking at a different store finds none of the files it was queued to remove,
+and fails rather than quietly leaving them public; the next run with the right
+settings removes them.
+
 Migrations are applied at startup inside a Postgres advisory lock, so rolling out
 a revision while the old one still serves traffic is safe: whichever container
 gets there first applies them and the rest wait.

@@ -884,11 +884,27 @@ educhan -sweep          # or, from a checkout: make sweep
 It loads the usual configuration, connects, applies any pending migrations,
 deletes every archived thread whose board's `archive_days` have passed — posts,
 attachment rows, and then the images and thumbnails in the media store — and
-exits. It works in batches of 100 threads, one transaction each, removing a
-batch's files only after its transaction has committed, so a failure leaves an
-orphaned file rather than a broken post. It logs one line of counts and nothing
-about which boards or threads went, and exits non-zero if the database fails or
-any file could not be removed.
+exits. It works in batches of 100 threads, one transaction each. Each batch
+records the storage keys of its threads' files in the `media_deletions` table in
+the same transaction as it deletes the rows; once the batches are done the
+sweep removes each queued file and forgets its key. A file the store refuses to
+delete keeps its key, so the next sweep tries it again rather than leaving an
+image public with nothing left to say it exists.
+
+A file the media store does not hold also keeps its key and fails the sweep.
+Every queued key is a file the server stored, so a store without it is almost
+always the wrong store: **the sweeper must run with the server's media
+settings** — `EDUCHAN_MEDIA_BACKEND`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
+`EDUCHAN_UPLOAD_DIR` — or it reports every file missing. Once the settings are
+fixed, the next sweep removes them. A file that really is gone for good (lost
+with a container's disk, or removed by hand) fails every sweep until its row is
+deleted from `media_deletions` by hand.
+
+It logs one line of counts (threads, posts, attachments, and files removed,
+failed, and missing) and nothing about which boards or threads went, and exits
+non-zero if the database fails or any file could not be removed or was missing;
+the error it exits with says why without naming the file. It also refuses to
+run on a database a newer release has migrated (see below).
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers

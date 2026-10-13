@@ -854,18 +854,21 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 
 /* Archive sweep ------------------------------------------------------------ */
 
-// SweptThreads reports what one sweep batch deleted. Images are returned so
-// the caller can drop the blobs once the transaction has committed.
+// SweptThreads reports what one sweep batch deleted. The batch's files are not
+// in it: their keys went into media_deletions with the rows, for the caller to
+// remove through NextMediaDeletion once the transaction has committed.
 type SweptThreads struct {
-	Threads int
-	Posts   int
-	Images  []media.StoredImage
+	Threads     int
+	Posts       int
+	Attachments int
 }
 
 // SweepArchived deletes up to limit archived threads whose board's
 // archive_days had run out by asOf, oldest first, along with their posts and
 // attachments. Rows go through ON DELETE CASCADE, exactly as a moderator's
-// deletion does; the blobs are the caller's to remove after the commit.
+// deletion does, and in the same transaction the storage keys of their files
+// are queued in media_deletions: whatever happens to the sweep after the
+// commit, nothing loses track of a file it was meant to remove.
 //
 // asOf is fixed by the caller for a whole sweep, so threads archived while it
 // runs wait for the next one and a sweep always finishes. SKIP LOCKED leaves a
@@ -897,12 +900,23 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 			return nil
 		}
 
-		swept.Images, err = attachedImages(ctx, tx,
+		images, err := attachedImages(ctx, tx,
 			`SELECT a.original_path, a.thumb_path
 			 FROM attachments a JOIN posts p ON p.id = a.post_id
 			 WHERE p.thread_id = ANY($1)`, ids)
 		if err != nil {
 			return err
+		}
+		swept.Attachments = len(images)
+		keys := make([]string, 0, 2*len(images))
+		for _, img := range images {
+			keys = append(keys, media.OriginalKey(img.Path), media.ThumbKey(img.ThumbPath))
+		}
+		if len(keys) > 0 {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO media_deletions (key) SELECT unnest($1::text[])`, keys); err != nil {
+				return fmt.Errorf("queue media deletions: %w", err)
+			}
 		}
 		if err := tx.QueryRow(ctx,
 			`SELECT count(*) FROM posts WHERE thread_id = ANY($1)`, ids).Scan(&swept.Posts); err != nil {
@@ -919,6 +933,42 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 		return SweptThreads{}, err
 	}
 	return swept, nil
+}
+
+// NextMediaDeletion takes the first key queued in media_deletions after
+// afterID that no other sweep is working on, hands it to remove, and forgets
+// it when remove reports the file gone. It returns the key's id, so the caller
+// can carry on past a key it could not remove, and found false once nothing is
+// left after afterID.
+//
+// One key per transaction keeps the gap between a file going and its key
+// going as short as it can be: a sweep killed in between leaves a key whose
+// file is already gone, which the next sweep reports as missing.
+func (s *Store) NextMediaDeletion(ctx context.Context, afterID int64, remove func(key string) bool) (id int64, found bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var key string
+		err := tx.QueryRow(ctx, `
+			SELECT id, key FROM media_deletions
+			WHERE id > $1
+			ORDER BY id
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED`, afterID).Scan(&id, &key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("next media deletion: %w", err)
+		}
+		found = true
+		if !remove(key) {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM media_deletions WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("forget media deletion: %w", err)
+		}
+		return nil
+	})
+	return id, found, err
 }
 
 /* Verification ------------------------------------------------------------- */

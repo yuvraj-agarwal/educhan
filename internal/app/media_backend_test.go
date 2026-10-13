@@ -257,8 +257,8 @@ func TestSweepRemovesBlobsOnEveryBackend(t *testing.T) {
 			if err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
-			if report.Threads != 1 || report.Attachments != 1 {
-				t.Errorf("sweep report = %+v, want one thread with one attachment", report)
+			if report.Threads != 1 || report.Attachments != 1 || report.BlobsRemoved != 2 {
+				t.Errorf("sweep report = %+v, want one thread with one attachment, both its files removed", report)
 			}
 			requireBlob(t, c.app.media, originalKey, false)
 			requireBlob(t, c.app.media, thumbKey, false)
