@@ -403,6 +403,12 @@ Because a refused post costs no cooldown, that time is spent on every refused
 request; if it ever matters, a limit on refusals per client is the place to
 add one.
 
+The web page answers each outcome in the posting form and keeps the draft: a
+block quotes what to remove and selects it in its field, support shows the
+helplines with **Post anyway** and **Go back**, and a held post is acknowledged
+as waiting for a moderator without opening anything (see
+[Front end](#front-end)).
+
 ### Held posts
 
 A held post is stored with `held_at` and `held_reason` set and is in no public
@@ -526,12 +532,16 @@ view.
   encouraging suicide, self-harm or eating disorders, "kys", bullying, hate, threats,
   violence and gore, dangerous challenges, harmful substances, contact details and moving
   to other apps, and posts about real people you know), says there are no private
-  messages on purpose, and says what moderators can do today: delete posts and threads,
-  and lock a thread. Boards can add their own rules under the header's **Rules**
+  messages on purpose, says what the automatic checks do (send a post with contact
+  details or an ID number back, keep a possible threat, self-harm encouragement or
+  grooming cue for a moderator, and show where to get help before a post about wanting
+  to hurt yourself, which can still be posted) and that they are word patterns that miss
+  plenty, and says what moderators can do today: approve a held post, delete posts and
+  threads, and lock a thread. Boards can add their own rules under the header's **Rules**
   disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
-  born, why there are no accounts or private messages, what anonymity here does and does
-  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
-  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
+  born, why there are no accounts or private messages, whether posts are checked before
+  they appear, what anonymity here does and does not hide, the badge, tripcodes,
+  per-thread IDs, markup, and the bump limit, image cap, and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
   Australia, and Find A Helpline for everyone else), which is static text: nothing works
   out where the reader is. The footer links to both on every view; its invitation to
   verify an address shows only on a server with verification switched on.
@@ -583,6 +593,16 @@ view.
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
+- **Content rules in the form**: the server's answers appear in the posting form, above
+  its buttons, and the draft is never lost. A post sent back for contact details or an ID
+  number says what kind of thing is not allowed and quotes the part to remove (naming the
+  Name field or the Subject when it is there), and that field takes the focus with the
+  part selected. A post with crisis language opens a **Before you post** panel with the
+  same helplines as the rules and the FAQ and two buttons: **Post anyway**, which sends
+  the same post again with `support_seen` for that one request (never stored), and **Go
+  back**, which closes the panel. A post kept for a moderator empties the form as any post
+  does, stays on the thread or board, and says it is waiting for a moderator and will only
+  appear if they approve it; nothing navigates to it.
 - **Image cap**: the index and catalog show how many images a thread has, and on a server
   that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached

@@ -378,3 +378,114 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
 	}
 }
+
+// A post about wanting to hurt yourself is answered once with where to get
+// help, and "Post anyway" sends the same post again with support_seen, which
+// takes it past that one step. The flag belongs to that one submission: the
+// submit handler reads it from the button that submitted and puts it on that
+// request, and nothing keeps it — not storage, not the draft, not a field or
+// attribute on the form — so the next post with the same words is asked
+// again, and no browser carries a standing mark that it has seen the help.
+func TestSupportSeenIsSentOnlyFromSubmitAndNeverKept(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	submit := withoutComments(submitHandler(t, script))
+
+	// The wire name twice, both in the submit handler: a JSON post and a
+	// multipart one.
+	if n, in := strings.Count(code, "support_seen"), strings.Count(submit, "support_seen"); n != 2 || in != 2 {
+		t.Errorf(`"support_seen" appears %d times in app.js, %d of them in the submit handler; want twice, both there`, n, in)
+	}
+	for _, want := range []string{
+		`const supportSeen = Boolean(event.submitter && event.submitter.matches('[data-action="post-anyway"]'));`,
+		`payload.support_seen = true;`,
+		`data.set("support_seen", "1");`,
+	} {
+		if !strings.Contains(submit, want) {
+			t.Errorf("the submit handler no longer has %s", want)
+		}
+	}
+	// supportSeen is the submit handler's own, and lives no longer than it.
+	if n, in := strings.Count(code, "supportSeen"), strings.Count(submit, "supportSeen"); n != in || in == 0 {
+		t.Errorf("supportSeen appears %d times in app.js and %d in the submit handler; want every use there", n, in)
+	}
+	for _, line := range strings.Split(code, "\n") {
+		if !strings.Contains(line, "supportSeen") && !strings.Contains(line, "support_seen") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		for _, keeper := range []string{"storage", "dataset", "setattribute", "cookie", "history", "draft", "indexeddb"} {
+			if strings.Contains(lower, keeper) {
+				t.Errorf("the support flag is kept somewhere: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	// The draft carried across a re-render knows nothing of the support step.
+	for _, name := range []string{"captureDraft", "restoreDraft", "keepUnsentDraft", "storageSet", "storageGet", "api"} {
+		if body := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(body), "support") {
+			t.Errorf("%s mentions the support step; the flag must not outlive one submission", name)
+		}
+	}
+	// The panel's button is what says which submission it is: a submit
+	// button with no name, so no form data carries it, and no field beside it.
+	panel := withoutComments(jsFunction(t, script, "supportPanelHTML"))
+	button := regexp.MustCompile(`<button[^>]*data-action="post-anyway"[^>]*>`).FindString(panel)
+	if button == "" || !strings.Contains(button, `type="submit"`) || strings.Contains(button, "name=") {
+		t.Errorf("Post anyway is no longer an unnamed submit button of the form: %q", button)
+	}
+	if strings.Contains(panel, "<input") {
+		t.Error("the support panel has a field, which every later submission would carry")
+	}
+}
+
+// The posting form reads the content rules' answers by the server's own words:
+// the two refusal outcomes, the block rules it has sentences for, the held
+// acknowledgement, and support_seen in the encodings submit sends it in. If
+// they drifted apart, a post with crisis language could not be made from the
+// page at all, and a held post would send its poster to a page without it.
+func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	for _, want := range []string{
+		`outcome === "support"`, `outcome === "block"`, `err.payload.outcome === "block"`,
+		`case "` + ruleContact + `":`, `case "` + ruleIDNumber + `":`, `created.held`,
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("app.js no longer reads %s", want)
+		}
+	}
+
+	h := testServer(t, nil)
+	h.addBoard("words")
+	thread := h.createThread("words", "", "", "a thread")
+	replies := repliesPath("words", thread.ThreadNo)
+
+	status, out := h.postJSON(replies, map[string]any{"name": "", "body": "call me on 9876543210", "badge": false, "sage": false})
+	if status != http.StatusUnprocessableEntity || out["outcome"] != "block" || out["rule"] != ruleContact ||
+		out["field"] != "body" || out["match"] != "9876543210" {
+		t.Errorf("a phone number: %d %v, want 422 block contact in body", status, out)
+	}
+
+	// What submit sends: the form as JSON, and as multipart with an image.
+	crisis := map[string]any{"name": "", "body": "i want to die", "badge": false, "sage": false}
+	if status, out := h.postJSON(replies, crisis); status != http.StatusUnprocessableEntity || out["outcome"] != "support" {
+		t.Errorf("crisis language: %d %v, want 422 support", status, out)
+	}
+	crisis["support_seen"] = true
+	if status, out := h.postJSON(replies, crisis); status != http.StatusCreated {
+		t.Errorf("crisis language with support_seen: %d %v, want 201", status, out)
+	}
+	fields := map[string]string{"name": "", "body": "i want to die"}
+	if status, out := h.uploadMap(replies, fields, "pic.png", pngBytes(t, 24, 24)); status != http.StatusUnprocessableEntity || out["outcome"] != "support" {
+		t.Errorf("multipart crisis language: %d %v, want 422 support", status, out)
+	}
+	fields["support_seen"] = "1"
+	if status, out := h.uploadMap(replies, fields, "pic.png", pngBytes(t, 24, 24)); status != http.StatusCreated {
+		t.Errorf(`multipart crisis language with support_seen "1": %d %v, want 201`, status, out)
+	}
+
+	status, out = h.postJSON(threadsPath("words"), map[string]any{"name": "", "body": "how old are you? dm me", "badge": false, "subject": ""})
+	if status != http.StatusAccepted || out["held"] != true || out["no"] != nil {
+		t.Errorf("a held thread: %d %v, want 202 held with no number", status, out)
+	}
+}

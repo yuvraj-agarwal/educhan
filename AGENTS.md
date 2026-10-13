@@ -257,6 +257,7 @@ CI runs no browser, so the client's privacy and safety invariants are pinned by 
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
+`support_seen` sent only on the one resubmission from the support panel and never kept,
 KaTeX's options, and the highlighting cap. They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
@@ -391,6 +392,32 @@ needs a browser check before the test changes.
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
   restored only alongside the file it was ticked for.
+- **The content rules' answers** (see Content rules and held posts below) are shown in
+  the form, never as a page change, and the draft stays put for all three. They go in
+  the form's own notice (`data-form-notice`, above the buttons) rather than the page's
+  `#notice`, because on a long thread the poster is looking at the bottom of the page.
+  A `422` block is worded by `blockedMessage` (through `errorMessage`): the rule in
+  plain words, the server's `match` quoted, and the field when it is the Name or the
+  Subject; `pointAtMatch` focuses that field, selects the match (an exact search, then
+  one that lets whitespace runs differ, since the server quotes its normalised text),
+  marks it `aria-invalid` and describes it by the notice until the poster edits it, and
+  scrolls the field and the notice into view together. A `422` support answer opens
+  `showSupport`'s panel above the buttons — the server's sentence, `HELPLINES_HTML`, and
+  **Post anyway** / **Go back** — and hides the form's own buttons while it is open.
+  Post anyway is an unnamed submit button of the form, so the resubmission goes through
+  the one submit handler and the one headers line: `supportSeen` is read from
+  `event.submitter` and adds `support_seen` to that request only, as `true` in JSON or
+  `"1"` in multipart. It is never stored, put in the draft, or left on the form, so the
+  next post with the same words is asked again
+  (`TestSupportSeenIsSentOnlyFromSubmitAndNeverKept`). Go back closes the panel and puts
+  the cursor in the message; nothing here traps the reader or blocks the post. A `202`
+  held post empties the form as a published one does, stays on the thread or board (the
+  answer has no number, and nothing could show the post yet), and says it is waiting
+  for a moderator (`heldNoticeHTML`), linking to the FAQ's `faq-checks`. The outcome
+  names, the two block rules, `created.held` and both `support_seen` encodings are
+  checked against the server in `TestClientReadsTheContentRulesAnswersTheServerGives`.
+  Copy here follows the rules page: plain, kind, no claim that a check keeps anyone safe
+  or that anyone is watching, and no "this was a mistake" button until reports exist.
 - A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
@@ -415,8 +442,9 @@ needs a browser check before the test changes.
   `MIN_AGE` this week, and next month the same answer passes.
   Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
-  poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
-  about what the content checks send back and hold, what a moderator can do to a post
+  poster key, tripcodes, what is logged, the badge, the age screen, the content checks
+  (`faq-checks`). So do the rules, about what the content checks send back, hold, and
+  answer with where to get help first, what a moderator can do to a post
   (approve a held one, delete it or its thread, lock the thread) and what is not built
   yet (reports). A change to any of those changes the pages in the
   same commit, and neither page describes a feature before it exists. Both end with
@@ -617,10 +645,8 @@ curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
 **Not built**: a held image stays at its ordinary random key and its URL is never
 published, but the file is served to whoever has the URL; build plan 2.2 moves held
 images under a `quarantine/` prefix. Nothing pages an on-duty moderator when a threat is
-held (2.11); the queue has to be read. The client does not yet send `support_seen` or
-show a support screen, and treats a `202` like a `201`: until it does, a post with
-crisis language cannot be made from the UI, and a held post's poster is sent to a page
-that does not have it.
+held (2.11); the queue has to be read. The page handles all three answers in the
+posting form (see **The content rules' answers** under Front end conventions).
 
 ### Attachments
 
@@ -1025,7 +1051,9 @@ that does not have it.
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
   `internal/app/filter_api_test.go`, and
-  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
+  `TestClientKnowsTheServersImageRefusals` and
+  `TestClientReadsTheContentRulesAnswersTheServerGives` in
+  `internal/app/web_invariants_test.go`) run
   the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
   `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every

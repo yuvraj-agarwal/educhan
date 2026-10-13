@@ -24,6 +24,8 @@
   --green: #6ddab0;
   --warn: #f4bd6e;
   --danger: #ff9c9c;
+  /* The wash behind a notice in --danger: the text on it still clears 4.5:1. */
+  --danger-soft: rgba(255, 156, 156, 0.1);
   /* Two more hues for highlighted code, which needs more categories than the
      interface does. Every syntax colour clears 7:1 on the code background. */
   --violet: #d2a8ff;
@@ -325,7 +327,7 @@ main[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s ease 0.15s; }
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  background: rgba(255, 156, 156, 0.1);
+  background: var(--danger-soft);
   border: 1px solid var(--danger);
   border-radius: var(--radius);
   color: var(--danger);
@@ -573,6 +575,71 @@ button.link:hover { text-decoration: underline; }
 }
 
 .sage input { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* Content rules ----------------------------------------------------------- */
+
+/* The form's buttons step aside while the support panel offers its own. */
+.post-form .actions[hidden] { display: none; }
+
+/* What the content rules said about the post just sent, above the buttons
+   where the poster is looking: what to take out, or that it is waiting. */
+.form-notice {
+  padding: 10px 12px;
+  background: var(--danger-soft);
+  border: 1px solid var(--danger);
+  border-radius: var(--radius-sm);
+  color: var(--danger);
+  font-size: 14px;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+  scroll-margin-bottom: 16px;
+}
+
+.form-notice[hidden] { display: none; }
+
+/* A post waiting for a moderator is news, not a problem. */
+.form-notice.info {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+/* The field a block was found in, until the poster edits it. It and the
+   notice are scrolled into view together, clear of the sticky header. */
+.fields input[type="text"][aria-invalid="true"],
+.fields textarea[aria-invalid="true"] { border-color: var(--danger); }
+.post-form .fields input[type="text"],
+.post-form .fields textarea { scroll-margin-top: 76px; }
+
+/* Where to get help, before a post about wanting to hurt yourself. Calm, in
+   the accent rather than a warning colour, and the same list as the rules
+   and the FAQ. The heading takes focus when it opens, and stops clear of the
+   sticky header. */
+.support-panel {
+  display: grid;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  font-size: 14px;
+  line-height: 1.6;
+  scroll-margin-top: 76px;
+  overflow-wrap: anywhere;
+}
+
+.support-panel .support-title { margin: 0; font-size: 16px; line-height: 1.35; }
+.support-panel p { margin: 0; }
+.support-panel ul { margin: 0; padding-left: 22px; display: grid; gap: 6px; }
+.support-panel li::marker { color: var(--muted); }
+
+.support-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px 12px;
+  padding-top: 2px;
+}
 
 /* Verification page ------------------------------------------------------- */
 
@@ -1453,6 +1520,10 @@ a.thumb-link.loading::before {
 
   .post-form .actions .hint { flex: 1 0 100%; }
   .btn.primary { flex: 1 1 auto; }
+  .support-panel { padding: 12px; scroll-margin-top: 150px; }
+  .post-form .fields input[type="text"],
+  .post-form .fields textarea { scroll-margin-top: 150px; }
+  .support-actions .btn { flex: 1 1 auto; }
 
   /* The header wraps to three rows here, so a heading jumped to has further
      to stop short of it. */
