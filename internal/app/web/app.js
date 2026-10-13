@@ -876,6 +876,13 @@ window.addEventListener("resize", () => {
 // commands, so these stand in front of the real ones, and fresh because KaTeX
 // writes \global definitions back into the table it is given: one post's
 // \global\let must never reach another post's maths.
+//
+// KaTeX builds \nonumber (and \notag, which is \nonumber) and \tag, \tag* on
+// \gdef, so with \gdef refused they would fail with an error naming a command
+// the poster never typed. The table replaces the two macros that call it with
+// ones that set the same values directly: \@eqnsw, which says whether a line
+// of an equation or align is numbered, and \df@tag, the tag \tag gives it —
+// taken once, as \gdef\df@tag{\text{#1}} would, so no expansion repeats.
 function disabledCommands(katex) {
   const macros = {};
   for (const name of KATEX_DISABLED) {
@@ -883,6 +890,26 @@ function disabledCommands(katex) {
       throw new katex.ParseError(`${name} is not available in posts`);
     };
   }
+  macros["\\nonumber"] = (context) => {
+    context.macros.set("\\@eqnsw", "0", true);
+    return "";
+  };
+  macros["\\tag@literal"] = (context) => {
+    if (context.macros.get("\\df@tag")) {
+      throw new katex.ParseError("Multiple \\tag");
+    }
+    // The argument's tokens come in stack order, last first, and the start
+    // token is a token like any other, which gives the constructor for the
+    // three around them.
+    const { tokens, start } = context.consumeArg();
+    const Token = start.constructor;
+    context.macros.set(
+      "\\df@tag",
+      { tokens: [new Token("}"), ...tokens, new Token("{"), new Token("\\text")], numArgs: 0 },
+      true
+    );
+    return "";
+  };
   return macros;
 }
 
