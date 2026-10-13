@@ -510,9 +510,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
   the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
   creation, set from that count on every image reply, and recounted when a post is
-  deleted. Nothing enforces the cap against the counter. The upload is stored before
-  the check, as it is before the lock and archive checks, and the handler's
-  `discardUpload` removes it on refusal.
+  deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
+  parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
+  makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
+  image the cap, counted from the posts like the real check) — then flood control,
+  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  cooldown and stores nothing, and the client's "send the text on its own" goes
+  through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
+  nothing: replies racing for the last slot both pass it, and the check inside
+  `CreateReply`'s transaction is the one that holds (`TestCreateReplyRefusesOnItsOwn`
+  calls it with no handler in front). A reply refused there has already been charged
+  its cooldowns and stored its upload, which `discardUpload` removes. Never move the
+  enforcement into the pre-check or drop it from the transaction.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
@@ -655,7 +664,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
   cooldown per client across the whole server. A submission clears every cooldown that
   applies to it or none is started, so a post refused by one limit is not charged for the
-  other; `allowAll` is what enforces that. State is per process and in memory — a shared
+  other; `allowAll` is what enforces that. Nothing is refunded once a cooldown starts,
+  so every refusal that can be known up front comes before `allow`: a malformed poster
+  key, the body, a badge the poster cannot have, uploads switched off, and a reply the
+  thread would refuse (`ReplyRefusal`). State is per process and in memory — a shared
   backend means replacing `cooldownLimiter`, which nothing else depends on.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each

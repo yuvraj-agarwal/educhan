@@ -764,7 +764,12 @@ the time it was pushed off the board once it is archived. It also carries
 `images`, the posts in the thread with an image, and `at_image_limit`. A reply
 to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
 locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
-at its board's image limit `{"error":"image limit reached"}`.
+at its board's image limit `{"error":"image limit reached"}`. These refusals,
+and a reply to a thread that does not exist, come before flood control and
+before the image is stored, so they start no cooldown: the same text sent again
+without the image posts at once. (Two replies racing for a thread's last image
+slot can both get that far; the loser is refused inside the transaction, after
+its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields

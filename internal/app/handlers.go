@@ -280,6 +280,16 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !ok {
 		return
 	}
+	// A reply the thread would refuse anyway — gone, archived, locked, or an
+	// image for a thread at its cap — is turned away here, before flood
+	// control starts a cooldown for it and before its upload is stored. The
+	// poster told to send the text on its own can then do so at once. This
+	// read takes no lock: CreateReply checks again under the board's row, and
+	// that is the check that holds when replies race for the last slot.
+	if err := a.store.ReplyRefusal(r.Context(), board, no, sub.Upload != nil); err != nil {
+		a.fail(w, r, err, "could not add post")
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
