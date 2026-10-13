@@ -249,7 +249,8 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
-box never ticked in advance or kept, KaTeX's options, and the highlighting cap. They are
+box never ticked in advance or kept, `/api/site` fetched only past the age screen,
+KaTeX's options, and the highlighting cap. They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
@@ -361,6 +362,19 @@ needs a browser check before the test changes.
   crafted link write the page's copy. A history change that keeps the rendered path (a
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
+- **A server that takes no images.** `loadSite` reads `GET /api/site`
+  (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
+  draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
+  dropped on the form goes nowhere and `UPLOADS_OFF_REASON` says why, `threadCounts` and
+  `badgesHTML` say nothing about the cap (a count of images posted before the switch
+  stays), the catalog leaves out its empty "no image" box, and the empty-post notice
+  stops offering an image. Until `/api/site` answers, or if it never does, the forms are
+  drawn as before. Either way the server's `image uploads are switched off on this
+  server` is handled like `image limit reached`: `blockFileField` takes the file off with
+  the reason, the text stays for the next press, and `state.site.uploads` turns false for
+  the rest of the visit. The client knows both refusals by `UPLOADS_SWITCHED_OFF` and
+  `IMAGE_LIMIT_REACHED`, which `TestClientKnowsTheServersImageRefusals` checks against
+  what the server answers, so change their words on both sides together.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -371,8 +385,9 @@ needs a browser check before the test changes.
   hidden wrapper: a lazy image there is not fetched until it is revealed.
 - **The age screen** (`MIN_AGE` in `app.js`: 13, and 0 switches it off) stands in front
   of every view but `UNGATED_VIEWS` (`/rules`, `/faq`). `render` asks `ageStatus()` before
-  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list
-  and the verification flag once, on the first page past the screen, not at start-up.
+  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list,
+  the verification flag and the site's settings (`GET /api/site`) once, on the first page
+  past the screen, not at start-up (`TestSiteSettingsAreFetchedOnlyPastTheAgeScreen`).
   The screen is a `<dialog>` opened with `showModal()`; Escape is blocked three ways
   (keydown, `cancel`, and reopening on `close`), because Chrome lets a repeated Escape
   through a cancelled `cancel`. Only the outcome is stored, as `educhan:age-ok-v1` or
@@ -791,7 +806,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
-  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`) run the whole app
+  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`, and
+  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run the whole app
   against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the

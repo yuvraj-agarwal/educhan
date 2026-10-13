@@ -476,7 +476,10 @@ view.
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
-  and size, and drag-and-drop anywhere on the form. A half-written reply survives
+  and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
+  which the page learns from `GET /api/site`, the form has no image field at all and the
+  thread view leaves out the image cap; a page that missed the switch takes the image off
+  when the server refuses it, keeps the text, and the next press posts it. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft; if the
   thread was archived or locked meanwhile, the text stays on the page in a read-only box
   to copy. Following a quote link within a thread jumps to the post without reloading
@@ -484,8 +487,8 @@ view.
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
-- **Image cap**: the index and catalog show how many images a thread has, and the thread
-  view shows the count against its board's cap. A thread at the cap keeps its reply form
+- **Image cap**: the index and catalog show how many images a thread has, and on a server
+  that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
   while a reply is being written, the refusal takes the image off, keeps the text, and
   the next press posts it. On a board whose `image_limit` is 0 the picker says replies
