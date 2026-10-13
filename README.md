@@ -390,10 +390,14 @@ client can leave the image picker off a server that would refuse what it sends.
   - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded at quality
     90, so a phone photo stored on its side is upright everywhere, thumbnail included,
     and its reported width and height are the upright ones.
-  - *PNG* is decoded and re-encoded with the same pixels at the same bit depth, keeping
-    none of its ancillary chunks. An animated PNG keeps its still image.
+  - *PNG* is decoded and re-encoded, keeping none of its ancillary chunks. Every pixel
+    keeps the value it decodes to, though not always the form it came in: 1-, 2- and
+    4-bit grey is stored at 8 bits, a picture with a transparent colour key gets an
+    alpha channel instead, and a palette keeps only the colours its pixels use. An
+    animated PNG keeps its still image.
   - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
-    count, and dropping comments and application data such as XMP.
+    count, and dropping comments and application data such as XMP. Its colour tables
+    keep only the colours its frames show.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90, and any other (lossless, or
     with transparency) as a PNG, which keeps a lossless picture exactly. Its `name`,
@@ -401,6 +405,13 @@ client can leave the image picker off a server that would refuse what it sends.
     the WebP with only its metadata chunks removed would not be enough: a decoder
     ignores anything after the picture inside the chunks that hold it, so a second
     file could ride through unseen. WebPs stored before this stay WebPs.
+  - Nothing is kept that the picture does not show. A fully transparent pixel is
+    stored with no colour, because an editor that erases part of a picture by clearing
+    its alpha often leaves the erased part there, and a palette or colour table loses
+    the entries no pixel uses, which could hold a second file, EXIF and all. The pixels
+    that show keep their exact values in a lossless format, so anything hidden on
+    purpose in their lowest bits stays; no rewrite that keeps a picture exact can
+    remove that.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can

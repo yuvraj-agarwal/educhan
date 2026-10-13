@@ -519,10 +519,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Orientation (`jpegOrientation`, `orient` in `orient.go`), and re-encoded at
   `storedJPEGQuality` (90); `image/jpeg` writes no APP or COM segment, so EXIF, XMP,
   APP13 IPTC/Photoshop, the APP2 ICC profile and comments all go. PNG is decoded and
-  re-encoded with the same pixels and bit depth, which keeps only IHDR, PLTE, tRNS, IDAT
-  and IEND (an APNG keeps its still image). GIF goes through `gif.DecodeAll` and
-  `EncodeAll`, which keep frames, positions, delays, disposal, background and loop count
-  and drop comments and every application extension but NETSCAPE2.0. WebP cannot be
+  re-encoded, which keeps only IHDR, PLTE, tRNS, IDAT and IEND (an APNG keeps its still
+  image); the pixels are what `image/png` decodes them to, so 1-, 2- and 4-bit grey
+  comes back at 8 bits and a colour key (tRNS on grey or truecolour) as an alpha
+  channel. GIF goes through `gif.DecodeAll` and `EncodeAll`, which keep frames,
+  positions, delays, disposal and loop count and drop comments and every application
+  extension but NETSCAPE2.0. WebP cannot be
   encoded in Go, so a WebP upload is stored as another format (`sanitizeWebP`): a JPEG
   at `storedJPEGQuality` when it is lossy and opaque, otherwise a PNG (lossless pixels
   exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's
@@ -551,6 +553,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   end to end over both backends. Every stored original is a file Go encoded from
   decoded pixels; never store, hash or serve the upload's own bytes, or any run of
   them, such as a chunk copied across.
+- **Nothing is stored that the picture does not show.** A decoded picture still holds
+  the colour of a fully transparent pixel and every palette entry, used or not, and
+  either carries data through a re-encode: the erased part of a photo under cleared
+  alpha, or a whole second file in a GIF's unused table entries. So after decoding,
+  `clearTransparentColour` zeroes the colour under alpha 0 (`NRGBA`, `NRGBA64`, and
+  `nrgbaOf` for a lossy WebP with alpha), and `cleanPaletted` (PNG) and `cleanGIF` cut a
+  palette to the entries its pixels use: one transparent entry at most, transparent
+  black, every unused entry before the last used one opaque black. `cleanGIF` keeps the
+  frames that used the global table on the rebuilt one rather than giving each its own,
+  and moves pixels on a transparent index past the end of a frame's table (which
+  `image/gif` decodes as several transparent entries and its encoder writes all but the
+  first of as opaque black) onto one entry. Visible pixels keep their exact values in
+  PNG and GIF, so low-bit steganography survives by design. `hidden_test.go` holds each
+  path, with the needles checked present in the upload first.
 - The EXIF reader is the one place educhan parses a structure an uploader controls,
   so it reads in place, bounds-checks every offset before use, follows no offset but
   IFD0's (no IFD chain, so no loop), allocates nothing, and answers 1 for anything it

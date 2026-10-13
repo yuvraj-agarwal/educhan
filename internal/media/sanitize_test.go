@@ -784,8 +784,12 @@ func sampleBitstream(t *testing.T) riffChunk {
 // (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four flat
 // quadrants (red, green / blue, white) made with Pillow at quality 90, the
 // second with its left 16 columns transparent: a simple-format VP8 file, and
-// VP8X, ALPH and VP8. Go cannot encode WebP, so these are files rather than
-// built in code.
+// VP8X, ALPH and VP8. hidden-lossless.webp and hidden-lossy-alpha.webp are
+// 32×32, made with Pillow with exact=True so the colour under transparent
+// pixels is kept (the second lossy, at quality 90): the left half fully
+// transparent over random colours (seed 7), the right half opaque
+// (200, 30, 30). Go cannot encode WebP, so these are files rather than built
+// in code.
 func readTestdata(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))
