@@ -65,6 +65,7 @@ var reservedBoardSlugs = map[string]bool{
 	"dmca":    true,
 	"report":  true,
 	"archive": true,
+	"safety":  true,
 	// Institution boards: the board stored as u-iitb is shown at /u/iitb/, so
 	// "u" is a route prefix and cannot be a board of its own.
 	"u": true,

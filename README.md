@@ -2,14 +2,14 @@
 
 **Anonymous imageboard for students**
 
-educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about placements, research, courses, and campus life.
+educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about courses, exams, admissions, careers, and student life.
 
 ## Core Features
 
-- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a trusted badge while remaining fully anonymous
+- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
 - **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **Technical media support** — Accepts raw camera files and high-bitrate video with automatic web-optimised proxies
-- **Selective permanence** — High-value threads can be automatically archived
+- **One image per post** — JPEG, PNG, WebP or GIF
+- **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
 - **Google Cloud native** — Built for scalability and low operational overhead
 
 ## Current Status
@@ -377,9 +377,10 @@ button works. `/{slug}/post/{no}` names a post by number alone: it asks the serv
 thread the post is in and replaces itself with that thread, scrolled to the post, so Back
 does not land on it twice. Institution boards are stored as `u-{name}` and live at
 `/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`, and
-the server's own `api`, `media`, and `healthz` — are never read as boards. `/verify`,
-`/rules`, and `/faq` are pages; a word without a page yet shows the not-found view.
+`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
+`safety`, and the server's own `api`, `media`, and `healthz` — are never read as boards.
+`/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
+view.
 
 - **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
   13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
@@ -393,11 +394,19 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
   browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
-- **Rules and FAQ**: `/rules` holds the global rules in plain language, written for an
-  audience that includes school students; boards can add their own under the header's
-  **Rules** disclosure. `/faq` covers what educhan is, who can use it, what anonymity here
-  does and does not hide, staying safe, the badge, tripcodes, per-thread IDs, markup, and
-  the bump limit, image cap, and archive. The footer links to both on every view.
+- **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
+  as 13. It lists what is not allowed for anyone, kind by kind (sexual content,
+  encouraging suicide, self-harm or eating disorders, "kys", bullying, hate, threats,
+  violence and gore, dangerous challenges, harmful substances, contact details and moving
+  to other apps, and posts about real people you know), says there are no private
+  messages on purpose, and says what moderators can do today: delete posts and threads,
+  and lock a thread. Boards can add their own rules under the header's **Rules**
+  disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
+  born, why there are no accounts or private messages, what anonymity here does and does
+  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
+  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
+  Australia, and Find A Helpline for everyone else), which is static text: nothing works
+  out where the reader is. The footer links to both on every view.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -751,9 +760,9 @@ A slug is the board's address in every URL, so it is lowercase letters and
 digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
 and not a first path segment that already means something else: the server's
 own routes (`api`, `media`, `healthz`), the UI's pages (`verify`, `mod`,
-`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`), or
-`u`. It is normalised before use, so `/CompSci/` and `/compsci/` cannot both
-exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
+`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
+`safety`), or `u`. It is normalised before use, so `/CompSci/` and `/compsci/`
+cannot both exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
 shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
 slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
 100, an image limit of 150, and 7 days in the archive), and the rules to none. A

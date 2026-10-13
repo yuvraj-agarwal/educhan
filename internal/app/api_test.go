@@ -501,6 +501,39 @@ func TestCatalog(t *testing.T) {
 	}
 }
 
+// The catalog is in bump order and nothing else decides it: a thread with
+// more replies does not outrank a newer one. Ranking by how busy a thread is
+// would make the catalog a popularity feed, which the child-safety rules in
+// AGENTS.md keep out.
+func TestCatalogOrdersByBumpNotByReplies(t *testing.T) {
+	c := testServer(t, nil)
+	c.addBoard("general")
+
+	busy := c.createThread("general", "busy", "", "lots of replies")
+	for i := 1; i <= 5; i++ {
+		c.reply("general", busy.ThreadNo, "", fmt.Sprintf("saged reply %d", i), true)
+	}
+	quiet := c.createThread("general", "quiet", "", "no replies at all")
+
+	order := func() []int64 {
+		var catalog Catalog
+		c.get("/api/boards/general/catalog", &catalog)
+		var nos []int64
+		for _, tile := range catalog.Threads {
+			nos = append(nos, tile.No)
+		}
+		return nos
+	}
+	if got, want := order(), []int64{quiet.ThreadNo, busy.ThreadNo}; !slices.Equal(got, want) {
+		t.Fatalf("catalog = %v, want %v: the last bumped thread leads, however many replies the other has", got, want)
+	}
+
+	c.reply("general", busy.ThreadNo, "", "a reply that bumps", false)
+	if got, want := order(), []int64{busy.ThreadNo, quiet.ThreadNo}; !slices.Equal(got, want) {
+		t.Errorf("catalog = %v, want %v after a bumping reply", got, want)
+	}
+}
+
 func TestValidation(t *testing.T) {
 	c := testServer(t, nil)
 	c.addBoard("general")

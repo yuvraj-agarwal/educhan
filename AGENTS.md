@@ -342,12 +342,17 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   never stored, sent, or logged**: they live in two unnamed selects in a
   `method="dialog"` form and are removed from the page once compared. Keep it that way,
   keep the question neutral (no threshold in the copy, nothing preselected, no "I am old
-  enough" box), and never add a way back from a refusal. Every sentence that names the
-  age is built from `MIN_AGE`.
+  enough" box), and never add a way back from a refusal. Renaming the refusal key would
+  be one, so a changed screen bumps the pass key's version and never the refusal's.
+  Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
-  poster key, tripcodes, what is logged, the badge. A change to any of those changes the
-  FAQ in the same commit. The rules and FAQ are readable before the age screen, so they
-  must not depend on anything fetched.
+  poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
+  about what a moderator can do to a post (delete it or its thread, lock the thread) and
+  what is not built yet (reports). A change to any of those changes the pages in the
+  same commit, and neither page describes a feature before it exists. Both end with
+  `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
+  external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
+  the age screen, so they must not depend on anything fetched.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
@@ -360,6 +365,51 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   post sends the credential **instead of** the key: the server takes a badged post's ID
   from the credential, and the two travelling together would be the one place a
   browser's key met its credential.
+
+### Child safety
+
+educhan is open to anyone aged 13 and over, so some of its readers are children, and
+these rules hold for every user rather than for the young ones only. They sit beside the
+privacy rules above and work the same way: each is something educhan does not have, and
+a change that adds one breaks a promise the rules, the FAQ and the risk assessments are
+written on, not just the code. Section numbers are design-recommendations.md's.
+
+- **No private channels.** No direct messages, private replies, profiles, follows,
+  friend lists, mentions that notify anyone, or display of where a poster is, not even
+  as an opt-in: moving a child from a public thread into a private conversation is how
+  grooming usually starts, and having nowhere private to move to is educhan's biggest
+  safety asset (§3.4 item 1). The rules and the posting form say so in as many words.
+- **The credential gates three things and nothing else**: the badge on a post, skipping
+  the captcha, and posting on `/u/` boards, the last two not built yet. Anything more
+  behind it starts to make the badge an account, and accounts are what Australia's
+  under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
+  `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
+  hold the code to the badge alone today.
+- **Bump order only.** The index and the catalog list stickies, then threads by their
+  last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
+  ranking by views, likes, replies or images, because ranking by popularity is what
+  Ofcom's recommender measures regulate (§4.1). The reply and image counts on a catalog
+  tile are facts about the thread, as on 4chan, and stay; never add view or like counts,
+  or show any count as a score of how others engaged with a post, which is one of the
+  "logged-in features" Australia's under-16 law looks for (§4.5).
+  `TestCatalogOrdersByBumpNotByReplies` and `TestIndexOrdersByBumpAndHonoursSage` pin the
+  order.
+- **The age screen is never called verification**, in copy, code, comments or docs. It
+  asks a question and takes the answer on trust, which UK law says is no check of age at
+  all (OSA s.230(4)), so calling it more claims a protection educhan does not have
+  (§4.1). `TestAgeScreenIsNeverCalledVerification` searches the repository for the
+  wording.
+- **Safe for work, for everyone.** No NSFW board, no adult-content area, and no opt-in
+  to one: the rules ban pornography, self-harm and eating-disorder promotion and the
+  rest for every user, and that ban is what keeps the UK's highly effective age checks
+  out of the plan. 4chan was fined £450,000 for adult boards without them (§3.4 item 2,
+  §4.1). The badge's planned 18+ attestation (build plan 2.14), and with it posting on
+  `/u/` boards, limits who can post there, not what may be posted: the same rules hold
+  on every board, for everyone.
+- **Never market educhan as safe for teenagers.** No "safe space", no claim that a
+  filter catches bullying or anything else, and no feature described to users before it
+  is built. NGL, an anonymous app that did the first two, was banned by the FTC from
+  offering itself to under-18s (§3.4 item 10).
 
 ### Attachments
 

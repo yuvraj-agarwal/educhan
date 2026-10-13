@@ -8,7 +8,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -276,6 +278,96 @@ func TestUIReservesTheSameTopLevelWordsAsTheServer(t *testing.T) {
 	}
 }
 
+// ageCheckWording is what the age screen must never be called. The screen asks
+// a question and takes the answer on trust, and UK law says self-declaration
+// does not count as checking anyone's age at all (Online Safety Act
+// s.230(4)), so a name that says otherwise, in copy, a comment, or the docs,
+// claims a protection educhan does not have. The institution badge's email
+// verification is another thing and keeps its name: these match only the
+// words next to "age".
+var ageCheckWording = regexp.MustCompile(`(?i)\bage[\s_-]*(?:verif|assur)|\b(?:verif|assur)\w*\s+(?:\w+'?s?\s+)?age\b`)
+
+// The files a reader or a later change takes the project's words from: its
+// code, its pages, and its docs. Vendored libraries are not the project's
+// words, and the rest is binary or generated.
+var wordedFile = regexp.MustCompile(`\.(?:go|js|css|html|md|sql|txt|ya?ml|sh)$|(?:^|/)(?:Makefile|Dockerfile|\.env\.example)$`)
+
+func TestAgeScreenIsNeverCalledVerification(t *testing.T) {
+	// The pattern has to catch the wording it exists for. Each phrase is
+	// assembled here so that this file does not trip the scan below.
+	for _, phrase := range []string{
+		"an age " + "verification screen", "Age" + "-verified", "age" + "Verified",
+		"verify your " + "age", "verify " + "age", "age " + "assurance",
+	} {
+		if !ageCheckWording.MatchString(phrase) {
+			t.Fatalf("ageCheckWording does not match %q", phrase)
+		}
+	}
+	for _, fine := range []string{"Verify an institutional address", "message verified", "storage check", "the age screen"} {
+		if ageCheckWording.MatchString(fine) {
+			t.Fatalf("ageCheckWording matches %q, which is not about the age screen", fine)
+		}
+	}
+
+	root, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatal("no go.mod above the test's directory; this test scans the repository from there")
+		}
+		root = parent
+	}
+
+	var scanned []string
+	err = filepath.WalkDir(root, func(file string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			// Git's own files, local uploads (/data/, as .gitignore has it),
+			// and third-party builds.
+			if d.Name() == ".git" || rel == "data" || rel == "internal/app/web/"+strings.TrimSuffix(vendorDir, "/") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() || !wordedFile.MatchString(rel) {
+			return nil
+		}
+		body, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		scanned = append(scanned, rel)
+		for _, loc := range ageCheckWording.FindAllIndex(body, -1) {
+			line := 1 + strings.Count(string(body[:loc[0]]), "\n")
+			t.Errorf("%s:%d calls the age screen %q; it is a question, not a check", rel, line, body[loc[0]:loc[1]])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+
+	// A walk that stopped short would pass for the wrong reason.
+	for _, want := range []string{"README.md", "AGENTS.md", "internal/app/web/app.js", "internal/app/web/index.html", "internal/app/web_test.go"} {
+		if !slices.Contains(scanned, want) {
+			t.Errorf("%s was not scanned", want)
+		}
+	}
+}
+
 func TestWebShellReferencesItsAssets(t *testing.T) {
 	body, err := fs.ReadFile(webFS(), "index.html")
 	if err != nil {
@@ -308,7 +400,7 @@ func TestPageLoadsServeTheShell(t *testing.T) {
 	for _, path := range []string{
 		"/", "/meta/", "/meta/catalog", "/meta/archive", "/meta/thread/1", "/meta/post/5",
 		"/u/iitb/", "/u/iitb/catalog", "/u/iitb/thread/1", "/u/iitb/post/5",
-		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy",
+		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy", "/safety",
 	} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)

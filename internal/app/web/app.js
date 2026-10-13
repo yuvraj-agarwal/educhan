@@ -19,7 +19,7 @@ const NAME_STORAGE_KEY = "educhan:name";
 // under a page that is added later. "u" is the institution namespace.
 const RESERVED_PATHS = new Set([
   "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
-  "terms", "privacy", "dmca", "report", "archive",
+  "terms", "privacy", "dmca", "report", "archive", "safety",
 ]);
 // The reserved words that have a page of their own so far.
 const PAGE_VIEWS = new Set(["verify", "rules", "faq"]);
@@ -32,7 +32,9 @@ const MIN_AGE = 13;
 // All the age screen remembers is its outcome — passed, or refused — and never
 // the answer: the month and year live in the dialog's two selects only until
 // they have been compared. The version suffix lets a changed screen ask again
-// without taking an old outcome for a new one.
+// without taking an old pass for a new one. Only the pass key is ever bumped:
+// a refusal is final, and a new screen is no reason to give a child it has
+// already turned away another go, so the refusal key keeps its name for good.
 const AGE_OK_STORAGE_KEY = "educhan:age-ok-v1";
 const AGE_REFUSED_STORAGE_KEY = "educhan:age-refused-v1";
 // How far back the year list goes.
@@ -1152,6 +1154,9 @@ function formHTML({ kind, slug, thread = null, open = false }) {
        <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread, so it is not tied to your unbadged replies.</span>`
     : "";
 
+  // Under the message, on every form: no contact details, because they are
+  // how a conversation leaves the site for a private one, which educhan
+  // deliberately does not have.
   return `
     <details class="post-form" ${open ? "open" : ""}>
       <summary>${isThread ? "Start a new thread" : "Reply to this thread"}</summary>
@@ -1166,11 +1171,14 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
         <div class="field">
           <label class="label" for="${FIELD_IDS.body}">${isThread ? "Message" : "Reply"}</label>
-          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint"
+          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint f-contact-hint"
                     placeholder="${isThread ? "What's on your mind?" : "Write a reply. Use >>123 to quote a post."}"></textarea>
           <p class="hint body-hint" id="f-body-hint"><code>[spoiler]…[/spoiler]</code> hides text,
             <code>[code]…[/code]</code> shows code, <code>[math]…[/math]</code> typesets maths,
             and <code>&gt;&gt;&gt;/board/</code> links a board.</p>
+          <p class="hint body-hint" id="f-contact-hint">Don't post contact details like phone
+            numbers or Snapchat or Discord names. educhan has no private messages, on
+            purpose.</p>
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>
@@ -1731,43 +1739,88 @@ function audienceText() {
   return MIN_AGE > 0 ? `anyone aged ${MIN_AGE} and over` : "anyone";
 }
 
+// HELPLINES_HTML is where to get help, the same on the rules and the FAQ. It is
+// one fixed list for everyone, because educhan never works out where a reader
+// is: it names the countries and lets each reader find their own. The numbers
+// are the build plan's (2.12), and the links leave without a referrer.
+const HELPLINES_HTML = `
+  <p class="callout">If someone is in danger right now, call your local emergency number.</p>
+  <p>If something here upsets or worries you, step away and talk to someone you trust. If
+    you're having a hard time, or you're worried about someone else, you can also call one of
+    these helplines:</p>
+  <ul>
+    <li><strong>US:</strong> call or text <a href="tel:988">988</a></li>
+    <li><strong>UK and Ireland:</strong> Samaritans, <a href="tel:116123">116 123</a></li>
+    <li><strong>UK:</strong> Childline, <a href="tel:08001111">0800 1111</a></li>
+    <li><strong>India:</strong> Tele-MANAS, <a href="tel:14416">14416</a></li>
+    <li><strong>Australia:</strong> Lifeline, <a href="tel:131114">13 11 14</a>, and Kids
+      Helpline, <a href="tel:1800551800">1800 55 1800</a></li>
+    <li><strong>Anywhere else:</strong> find one near you at
+      <a href="https://findahelpline.com" rel="noopener noreferrer">findahelpline.com</a></li>
+  </ul>`;
+
+// The rules name every kind of post that is not allowed, for everyone on every
+// board, and say what happens to one using only what is built: moderators can
+// delete posts and threads and lock a thread, and nothing else yet.
 function renderRules() {
   el.main.innerHTML = `
     <article class="page" aria-labelledby="page-title">
       <h1 id="page-title">Rules</h1>
-      <p class="lede">These rules apply to every post on every board. educhan is open to
+      <p class="lede">These rules are for everyone, on every board. educhan is open to
         ${audienceText()}, school students included, so keep everything you post fit for a
         school student to read.</p>
       <ol class="rules-list">
-        <li><strong>Keep it safe for work, on every board.</strong> No sexual content, nudity,
-          gore or shock images anywhere, not as a joke and not behind a spoiler.</li>
-        <li><strong>Nothing illegal.</strong> Don't post anything, or link to anything, that
-          breaks the law.</li>
-        <li><strong>No personal or contact details, your own included.</strong> Never post
-          phone numbers, home or school addresses, email addresses, social media, Discord,
-          Snapchat or Instagram handles, or timetables, whoever they belong to. Never ask
-          anyone to move to a private chat or another app.</li>
-        <li><strong>No bullying, threats or harassment.</strong> Don't name private people,
-          such as classmates, teachers or staff, or describe them so that they could be
-          identified.</li>
-        <li><strong>No spam or flooding.</strong> No advertising, no posting the same thing
-          again and again, and no filling threads with junk.</li>
-        <li><strong>Don't impersonate.</strong> Don't pretend to speak for a school, university
-          or any other institution, and don't fake the verified badge, in your name or
-          anywhere else.</li>
-        <li><strong>Stay on topic.</strong> Post on the board your post belongs on, and keep
-          to what that board is for.</li>
+        <li><strong>Nothing sexual.</strong> No porn, nudity or sexual posts, and never any
+          sexual talk with or about anyone under 18. Not as a joke, and not behind a
+          spoiler.</li>
+        <li><strong>Nothing that encourages suicide, self-harm or eating disorders,</strong>
+          and nothing that shows how. Saying you're having a hard time is fine, and so is
+          asking for help: see <a href="#help">where to get help</a>.</li>
+        <li><strong>Never tell anyone to kill themselves.</strong> &ldquo;kys&rdquo; is not
+          allowed here, not even as a joke.</li>
+        <li><strong>No bullying.</strong> Don't pick on, insult, mock or gang up on
+          anyone.</li>
+        <li><strong>No hate.</strong> Don't attack people for who they are, such as their
+          race, religion, nationality, sex, gender, sexuality or disability.</li>
+        <li><strong>No threats.</strong> Don't threaten to hurt anyone, or to attack a school
+          or anywhere else, not even as a joke.</li>
+        <li><strong>No violence or gore.</strong> Don't encourage anyone to seriously hurt
+          people, and don't post gory or shocking pictures or descriptions.</li>
+        <li><strong>No dangerous stunts or challenges.</strong> Don't dare anyone, or show them
+          how, to do something that could hurt them or someone else.</li>
+        <li><strong>No pushing drugs or other harmful substances.</strong> Don't encourage
+          anyone to take anything that could harm them.</li>
+        <li><strong>No contact details, and no moving to other apps.</strong> Never post a
+          phone number, an email address, a home or school address, or a Discord, Snapchat,
+          Instagram, Telegram or WhatsApp name or link, yours or anyone else's. Don't ask
+          anyone to talk to you somewhere else.</li>
+        <li><strong>Don't name or point out real people you know.</strong> Never name a
+          classmate, teacher or anyone else from your own life, or describe them so they could
+          be recognised. You can ask for advice about a friend or teacher, as long as nobody
+          could tell who they are.</li>
+        <li><strong>Nothing illegal.</strong> Don't post or link to anything that breaks the
+          law.</li>
+        <li><strong>No spam.</strong> No ads, no posting the same thing again and again, and no
+          filling threads with junk.</li>
+        <li><strong>Don't pretend to be someone you're not.</strong> Don't pretend to speak for
+          a school, a university or anyone else, and don't fake the verified badge.</li>
+        <li><strong>Stay on topic.</strong> Post on the board your post belongs on.</li>
       </ol>
-      <p>Some boards add rules of their own. You'll find them under <strong>Rules</strong> at
+      <p>A board can add rules of its own. You'll find them under <strong>Rules</strong> at
         the top of the board.</p>
+      <h2>No private messages, on purpose</h2>
+      <p>educhan has no private messages, no profiles and no friend lists. Everything here is
+        said in public, where everyone can see it. That's deliberate: someone who wants to get
+        you on your own usually starts by asking to talk somewhere private. If anyone asks you
+        to move to another app, you don't have to reply.</p>
       <h2>When a post breaks the rules</h2>
-      <p>Moderators remove posts that break these rules, and a removed post shows the reason
-        it was removed.</p>
-      <h2>If someone is in danger</h2>
-      <p class="callout">If you think someone is in danger, contact your local emergency
-        services straight away.</p>
-      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymity works here and how
-        to stay safe.</p>
+      <p>Moderators can delete posts and whole threads that break these rules, and can lock a
+        thread so it takes no more replies. There's no report button yet, but one is
+        coming.</p>
+      <h2 id="help" tabindex="-1">Where to get help</h2>
+      ${HELPLINES_HTML}
+      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymous you are
+        here${MIN_AGE > 0 ? ", and why educhan asks when you were born" : ""}.</p>
     </article>`;
   announce("Rules");
 }
@@ -1780,93 +1833,108 @@ const FAQ_SECTIONS = [
     id: "faq-what",
     question: "What is educhan?",
     answer: `
-      <p>educhan is an anonymous imageboard for students. There are boards for school and
-        university subjects and for student life, such as admissions, exams, careers and
-        studying abroad, and anyone can read and post without an account. Institutions can
-        also have boards of their own, at addresses like <code>/u/iitb/</code>.</p>
+      <p>An anonymous imageboard for students: a set of boards where anyone can read and post
+        without an account. There are boards for school and university subjects, and for
+        student life, such as admissions, exams, careers and studying abroad.</p>
       <p>Threads don't last forever. A reply moves its thread to the top of its board, and
-        threads that stop getting replies sink, move to the board's archive, and are
-        deleted after a while.</p>`,
+        threads that stop getting replies sink, move to the board's archive, and are deleted
+        after a while.</p>`,
   },
   {
     id: "faq-who",
-    question: "Who can use it?",
+    question: "Who is educhan for?",
     answer:
       MIN_AGE > 0
         ? `
-      <p>Anyone aged ${MIN_AGE} and over. The first time you visit, educhan asks when
-        you were born. Your answer is checked in your browser and is never stored or sent
-        anywhere, not even to educhan's server. The browser keeps only the result, so you
-        aren't asked on every visit; if it blocks site storage, you're asked each time
-        instead.</p>
+      <p>Students, and anyone else aged ${MIN_AGE} or over. If you're under ${MIN_AGE},
+        educhan isn't for you.</p>
       <p>Everyone who uses educhan agrees to its <a href="/rules">rules</a>.</p>`
         : `
-      <p>Anyone. There is nothing to sign up for. Everyone who uses educhan agrees to its
-        <a href="/rules">rules</a>.</p>`,
+      <p>Students, and anyone else. There is nothing to sign up for. Everyone who uses
+        educhan agrees to its <a href="/rules">rules</a>.</p>`,
+  },
+  // With the age screen switched off there is no question to explain.
+  ...(MIN_AGE > 0
+    ? [
+        {
+          id: "faq-age",
+          question: "Why does educhan ask when I was born?",
+          answer: `
+      <p>Because educhan is only for people aged ${MIN_AGE} and over. Everyone is asked the
+        same question, once, the first time they visit.</p>
+      <p>Your answer never leaves your browser. The browser works out from the month and year
+        whether you're old enough, then forgets them: they are never saved, and never sent to
+        educhan or anyone else. All it keeps is the result, so you aren't asked on every
+        visit, and if the result is no, it doesn't ask again.</p>`,
+        },
+      ]
+    : []),
+  {
+    id: "faq-private",
+    question: "Why are there no accounts or private messages?",
+    answer: `
+      <p>On purpose. With no accounts, there's no profile, no followers or friends, and no list
+        of your posts for anyone to look through. There's nothing to sign up for and no
+        password to lose.</p>
+      <p>With no private messages, everything said on educhan is said in public, where
+        everyone can see it. Someone who wants to get you on their own, away from everyone
+        else, usually starts by asking to talk privately, often on another app. So educhan
+        has no private messages, and its <a href="/rules">rules</a> don't allow contact
+        details or asking people to move to other apps. If anyone asks you to, you don't have
+        to reply.</p>`,
   },
   {
     id: "faq-anonymity",
     question: "How anonymous am I?",
     answer: `
-      <p>There are no accounts, and every post is signed &ldquo;Anonymous&rdquo; unless you
-        type a name. Beyond that:</p>
+      <p>Fairly anonymous, but not completely. Here's what educhan does:</p>
       <ul>
-        <li>Each post carries an ID that is the same for all your posts in one thread and
-          different in every other, so a conversation can be followed without you being
-          followed around the site (<a href="#faq-ids">more about IDs</a>).</li>
-        <li>educhan's server keeps no IP addresses in its logs, and posts are not stored with
-          one.</li>
-        <li>The verified badge proves you have an address at an institution, never who you
-          are. It's optional, except to post on an institution's own board.</li>
+        <li>There are no accounts, and every post says &ldquo;Anonymous&rdquo; unless you type
+          a name.</li>
+        <li>educhan doesn't keep IP addresses, the numbers that identify an internet
+          connection. They aren't written to its logs, and posts aren't stored with one.</li>
+        <li>educhan never asks for your email address unless you want a badge, and even then
+          it keeps only a scrambled fingerprint of it, never the address itself
+          (<a href="#faq-badge">more about the badge</a>).</li>
+        <li>Each post has an ID that's the same for all your posts in one thread and different
+          in every other, so people can follow a conversation without following you around
+          the site (<a href="#faq-ids">more about IDs</a>).</li>
       </ul>
-      <p>Anonymity has limits, and it's worth knowing them:</p>
+      <p>But what you write can still give you away. Details about your class, your school,
+        your town, your timetable or your friends can be enough for someone who knows you to
+        work out that it's you. So:</p>
       <ul>
-        <li>What you write can give you away. Details about your class, school, timetable or
-          friends can be enough for someone who knows you.</li>
-        <li>Photos can carry hidden details, such as where they were taken, and educhan
-          doesn't remove them yet. Post a screenshot of a photo rather than the original.</li>
-        <li>A tripcode links every post that carries it. A badge narrows you down to your
-          institution, which at a small one can say a lot.</li>
-        <li>Your internet provider, the network you're on (a school's, say) and anyone who
-          can use your device can see that you visit educhan.</li>
-      </ul>`,
-  },
-  {
-    id: "faq-safety",
-    question: "How do I stay safe?",
-    answer: `
-      <ul>
-        <li>Never share contact details, yours or anyone else's: phone numbers, home or school
-          addresses, email addresses, or social media, Discord, Snapchat or Instagram
-          handles.</li>
-        <li>educhan has no private messages. Be wary of anyone who asks you to move to a
-          private chat or another app: it's a common way to get someone on their own, away
-          from everyone else. You don't owe anyone a reply.</li>
-        <li>If something here upsets or worries you, step away and talk to someone you
-          trust.</li>
-        <li>If someone is in danger, contact your local emergency services.</li>
+        <li>Don't post your name, your school, or photos of yourself or anyone else.</li>
+        <li>Remember that photos can carry hidden details, such as where they were taken, and
+          educhan doesn't remove them yet.</li>
+        <li>A tripcode links every post that carries it, and a badge shows which university
+          or college you're at.</li>
+        <li>Your internet provider, the network you're on (a school's, say) and anyone who can
+          use your device can see that you visit educhan.</li>
       </ul>`,
   },
   {
     id: "faq-badge",
-    question: "How does the verified badge work?",
+    question: "What is the verified badge?",
     answer: `
+      <p>An optional label on a post, such as ${verifiedBadgeHTML("IIT Bombay")}, which shows
+        that the poster has an email address at that university or college. It's meant for
+        universities and colleges, not schools, so please don't use a school email address.
+        You don't need it to read or to post.</p>
       <ol>
-        <li>On the <a href="/verify">Verify</a> page, enter an email address at a recognised
-          institution.</li>
+        <li>On the <a href="/verify">Verify</a> page, enter your university or college email
+          address.</li>
         <li>Type in the six-digit code that's emailed to you.</li>
-        <li>Your browser is given a badge naming the institution, such as
-          ${verifiedBadgeHTML("IIT Bombay")}, and keeps it until it expires. The Verify page
-          shows when that is.</li>
+        <li>Your browser is given a badge naming the university or college, and keeps it until
+          it expires. The Verify page shows when that is.</li>
         <li>To use it, tick <strong>post with</strong> the badge on the posting form. It's off
           by default, and it's sent only with the posts you tick it on.</li>
       </ol>
-      <p>The address itself is never stored. The server keeps only a keyed fingerprint of
+      <p>The address itself is never stored. The server keeps only a scrambled fingerprint of
         it, so that one address holds one badge at a time, in a table with no link to any
-        post. The badge holds the institution's name, an expiry date and a random number,
-        and nothing about you. So a badge proves an institution, never a person, and nothing
-        connects a badged post to your email address or to the posts you make without
-        it.</p>
+        post. The badge holds the institution's name, an expiry date and a random number, and
+        nothing about you. So nothing connects a badged post to your email address, or to the
+        posts you make without the badge.</p>
       <p>On a shared computer, forget the badge on the Verify page before you leave: it stays
         in that browser for whoever uses it next.</p>`,
   },
@@ -1943,6 +2011,11 @@ const FAQ_SECTIONS = [
           replies. It's deleted after the number of days the archive page shows.</li>
       </ul>`,
   },
+  {
+    id: "faq-help",
+    question: "Where can I get help?",
+    answer: HELPLINES_HTML,
+  },
 ];
 
 function renderFAQ() {
@@ -1968,7 +2041,7 @@ function renderFAQ() {
 // The age screen is a neutral question asked once, before anything of the site
 // is shown or fetched. Neutral means it gives nothing away: no threshold, no
 // preselected year, no "I am old enough" box to tick, and no second go at the
-// question once it has said no. It is the browser's own check, not proof, and
+// question once it has said no. It is a question taken on trust, not proof, and
 // the answer never leaves the page: not stored, not sent, not put in the URL.
 
 let ageScreen = null;
@@ -2012,8 +2085,8 @@ function ageQuestionHTML() {
   return `
     <form class="age-step fields" method="dialog" novalidate>
       <h2 class="age-title" id="age-title">When were you born?</h2>
-      <p class="age-note" id="age-note">Your answer is checked in this browser and is never
-        stored or sent anywhere.</p>
+      <p class="age-note" id="age-note">Your answer stays in this browser and is never saved
+        or sent anywhere.</p>
       <div class="age-fields" role="group" aria-labelledby="age-title" aria-describedby="age-note">
         <div class="field">
           <label class="label" for="age-month">Month</label>
@@ -2040,8 +2113,8 @@ function ageAgreeHTML() {
     <div class="age-step">
       <h2 class="age-title" id="age-title">Welcome to educhan</h2>
       <p id="age-agree">By continuing you agree to the <a href="/rules">rules</a>.</p>
-      <p class="age-note">The <a href="/faq">FAQ</a> explains how anonymity works here and
-        how to stay safe.</p>
+      <p class="age-note">The <a href="/faq">FAQ</a> explains how anonymous you are here,
+        and where to get help.</p>
       <div class="actions">
         <button class="btn primary" type="button" data-action="age-continue"
                 aria-describedby="age-agree">Continue</button>
