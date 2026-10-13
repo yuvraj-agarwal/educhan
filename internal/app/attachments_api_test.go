@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -320,6 +322,78 @@ func TestUploadRejections(t *testing.T) {
 			t.Errorf("stored %d attachments, want 0", count)
 		}
 	})
+}
+
+// pngClaiming is a one-pixel PNG whose header claims to be w×h. IHDR follows
+// the 8-byte signature: its length, its type, the width and the height, and
+// after the rest of its data a CRC over the type and the data.
+func pngClaiming(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	data := pngBytes(t, 1, 1)
+	binary.BigEndian.PutUint32(data[16:20], w)
+	binary.BigEndian.PutUint32(data[20:24], h)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+// A file whose header shows it cannot be used, because it is not an accepted
+// image or has too many pixels, is refused before flood control, so the poster
+// can send the text on its own at once. An image whose header is sound but
+// whose pixels do not decode is found only by decoding, after the cooldowns
+// have started, which is the one exception the README names.
+func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
+	c := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.ThreadCooldown = time.Minute
+		cfg.PostCooldown = time.Minute
+		cfg.UploadCooldown = time.Minute
+	})
+	c.addBoard("general")
+	threads := "/api/boards/general/threads"
+	unusable := []struct {
+		name, filename string
+		data           []byte
+		want           string
+	}{
+		{"not an image", "notes.png", []byte("#!/bin/sh\necho hello\n"), "unsupported image format"},
+		{"too many pixels", "huge.png", pngClaiming(t, 10000, 10000), "image resolution is too large"},
+	}
+
+	const poster = "198.51.100.21"
+	from := http.Header{"X-Forwarded-For": {poster}}
+	for _, tc := range unusable {
+		var out createdPost
+		if status := c.uploadWithHeaders(from, threads, map[string]string{"body": "look"}, tc.filename, tc.data, &out); status != http.StatusBadRequest || !strings.Contains(out.Error, tc.want) {
+			t.Errorf("thread with %s: %d %q, want 400 %q", tc.name, status, out.Error, tc.want)
+		}
+	}
+	var thread createdPost
+	if status := c.postFrom(poster, threads, map[string]any{"body": "look, no image"}, &thread); status != http.StatusCreated {
+		t.Fatalf("text thread after the refusals: %d %q, want 201: a refused image started the thread cooldown", status, thread.Error)
+	}
+
+	replies := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+	for _, tc := range unusable {
+		var out createdPost
+		if status := c.uploadWithHeaders(from, replies, map[string]string{"body": "look"}, tc.filename, tc.data, &out); status != http.StatusBadRequest || !strings.Contains(out.Error, tc.want) {
+			t.Errorf("reply with %s: %d %q, want 400 %q", tc.name, status, out.Error, tc.want)
+		}
+	}
+	var reply createdPost
+	if status := c.postFrom(poster, replies, map[string]any{"body": "and no image"}, &reply); status != http.StatusCreated {
+		t.Errorf("text reply after the refusals: %d %q, want 201: a refused image started the reply cooldown", status, reply.Error)
+	}
+
+	// The header of a PNG and none of its pixels.
+	const another = "198.51.100.22"
+	var out createdPost
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {another}}, replies, map[string]string{"body": "look"},
+		"cut.png", pngBytes(t, 24, 24)[:33], &out); status != http.StatusBadRequest || !strings.Contains(out.Error, "image could not be decoded") {
+		t.Fatalf("reply with pixels missing: %d %q, want 400 %q", status, out.Error, "image could not be decoded")
+	}
+	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after an image that failed to decode: %d, want 429: decoding comes after flood control", status)
+	}
 }
 
 // TestUploadsSwitchedOff covers the default deployment: a post carrying an

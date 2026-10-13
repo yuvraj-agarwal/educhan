@@ -363,7 +363,9 @@ reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
 client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
-  or the content type the client claims.
+  or the content type the client claims. Anything else, or an image whose header claims
+  more than 50 megapixels, is refused with `400` from its header alone, before flood
+  control.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -695,8 +697,13 @@ limits never compound.
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
 request rejected for any other reason — an empty body, an oversized image, a
-reply to a locked or archived thread or an image past a thread's cap — does
-not start a cooldown, so a typo never costs a wait.
+file that is not an accepted image or whose header claims too many pixels, a
+reply to a missing, locked or archived thread or an image past a thread's cap —
+does not start a cooldown, so a typo never costs a wait. Two refusals come only
+after the cooldowns have started: an image whose header reads but whose pixels
+do not decode, which only decoding it can find, and decoding is the cost the
+upload cooldown is there for; and the loser of two replies racing for a
+thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose

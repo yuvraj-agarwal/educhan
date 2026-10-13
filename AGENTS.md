@@ -498,7 +498,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 ### Attachments
 
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
-  than by the filename or the client-supplied content type.
+  than by the filename or the client-supplied content type. `media.Inspect` checks the
+  format and the header's dimensions without decoding, and `Process` runs it first, so
+  the early refusal in `parseSubmission` and the full one in `media.Save` cannot
+  disagree about a file's header.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
   as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
@@ -697,9 +700,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   applies to it or none is started, so a post refused by one limit is not charged for the
   other; `allowAll` is what enforces that. Nothing is refunded once a cooldown starts,
   so every refusal that can be known up front comes before `allow`: a malformed poster
-  key, the body, a badge the poster cannot have, uploads switched off, and a reply the
-  thread would refuse (`ReplyRefusal`). State is per process and in memory — a shared
-  backend means replacing `cooldownLimiter`, which nothing else depends on.
+  key, the body, a badge the poster cannot have, uploads switched off, a file its header
+  shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format,
+  or more than `media.MaxPixels`), and a reply the thread would refuse
+  (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
+  upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
+  after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
+  State is per process and in memory — a shared backend means replacing
+  `cooldownLimiter`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
   builds a `cooldownSweep` over all four limiters and starts its timer, which drops
   every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.

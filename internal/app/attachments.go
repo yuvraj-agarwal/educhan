@@ -154,6 +154,16 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 	if len(data) == 0 {
 		return sub, true
 	}
+	// What the file says about itself, its format and its decoded size, is
+	// cheap to read, so a file that is not an accepted image, or one too large
+	// to decode, is refused here, before flood control starts a cooldown for
+	// it. Decoding, the cost the upload cooldown is there for, waits until
+	// after: an image whose pixels then fail to decode has started its
+	// cooldowns.
+	if _, err := media.Inspect(data); err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return nil, false
+	}
 	sub.Upload = &upload{Filename: sanitizeFilename(header.Filename), Data: data}
 	return sub, true
 }
