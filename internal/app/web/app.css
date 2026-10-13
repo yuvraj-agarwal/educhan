@@ -601,6 +601,26 @@ button.link:hover { text-decoration: underline; }
 .verify-panel p { margin: 0; line-height: 1.6; }
 .verify-panel .hint { color: var(--muted); font-size: 12px; }
 
+/* The 18+ attestation: a sentence the visitor confirms, so it reads at body
+   size, and the whole label is the hit area. */
+.attest {
+  display: inline-flex;
+  align-items: flex-start;
+  justify-self: start;
+  gap: 9px;
+  color: var(--text);
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.attest input {
+  flex: none;
+  width: 18px;
+  height: 18px;
+  margin: 1px 0 0;
+  accent-color: var(--accent);
+}
+
 .verify-panel .actions {
   display: flex;
   flex-wrap: wrap;

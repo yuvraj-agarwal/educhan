@@ -33,6 +33,7 @@
 # guarantee: no suffix maps exactly onto higher education. ac.uk, for one,
 # admits further-education and sixth-form colleges, whose students can be 16,
 # and a few US schools kept .edu domains registered before 2001.
+# The badge is also 18+ by attestation (build plan 2.14), whatever the domain.
 #
 # Reviewing a suffix: a namespace only belongs here when it is reserved for
 # higher education. Where a country puts schools under the same suffix as its

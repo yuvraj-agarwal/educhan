@@ -10,8 +10,9 @@ import (
 
 // The client keeps promises the server cannot check: that the poster key and
 // the credential leave the browser only on a post, that a birth date is never
-// kept or sent, and that TeX in a post is typeset with its dangerous parts
-// switched off. CI runs no browser, so these tests read app.js and pin the
+// kept or sent, that the badge's 18+ attestation is never ticked in advance or
+// kept, and that TeX in a post is typeset with its dangerous parts switched
+// off. CI runs no browser, so these tests read app.js and pin the
 // code that keeps each one, the way the CSP tests pin the markup. They are a
 // floor, not a proof: an edit that trips one has changed a privacy or safety
 // property and needs a browser check before the test is changed to match.
@@ -160,6 +161,48 @@ func TestAgeScreenNeverKeepsOrSendsTheAnswer(t *testing.T) {
 	if strings.Count(script, "month.value") != strings.Count(answer, "month.value") ||
 		strings.Count(script, "year.value") != strings.Count(answer, "year.value") {
 		t.Error("the age answer is read outside answerAgeQuestion")
+	}
+}
+
+// The badge is for students aged 18 and over, on their own word (build plan
+// 2.14), and that word is asked for, sent once and kept nowhere. The box
+// starts unticked on every render, the attestation lives only in the address
+// step and the request it submits, neither of which touches storage, and the
+// server's refusal is recognised in the server's own words.
+func TestBadgeAttestationIsNeverPreselectedOrKept(t *testing.T) {
+	script := appScript(t)
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+
+	box := regexp.MustCompile(`<input[^>]*\bid="f-adult"[^>]*>`).FindString(view)
+	if box == "" {
+		t.Fatal(`verifyViewHTML has no input with id "f-adult"; the address step asks for the attestation there`)
+	}
+	if !strings.Contains(box, `type="checkbox"`) {
+		t.Errorf("the attestation is not a checkbox: %s", box)
+	}
+	// Ticked in advance it would be the page's word, not the visitor's; and
+	// required, the browser's message would replace the page's refusal.
+	for _, banned := range []string{"checked", "required"} {
+		if regexp.MustCompile(`\s` + banned + `\b`).MatchString(box) {
+			t.Errorf("the attestation box is %s: %s", banned, box)
+		}
+	}
+
+	if all, here := strings.Count(withoutComments(script), "adult"),
+		strings.Count(view, "adult")+strings.Count(submit, "adult"); all != here {
+		t.Errorf("app.js mentions the attestation %d times outside verifyViewHTML and submitVerification", all-here)
+	}
+	for name, body := range map[string]string{"verifyViewHTML": view, "submitVerification": submit} {
+		for _, banned := range []string{"localStorage", "sessionStorage", "storageSet", "document.cookie", "indexedDB"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s uses %s; the attestation is never stored", name, banned)
+			}
+		}
+	}
+
+	if !strings.Contains(script, `const BADGE_AGE_REFUSED = "`+adultRequired+`";`) {
+		t.Errorf("BADGE_AGE_REFUSED in app.js is not the server's refusal %q, so the page would show it raw", adultRequired)
 	}
 }
 

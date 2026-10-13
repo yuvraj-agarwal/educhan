@@ -100,7 +100,7 @@ func TestServerLogsCarryNoClientAddress(t *testing.T) {
 	}
 	h.post("/api/boards/general/threads", map[string]any{"subject": "log", "body": "hello"}, &thread)
 	send(http.MethodPost, fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.No), `{"body":"reply"}`)
-	send(http.MethodPost, "/api/verify/request", `{"email":"ana@iitb.ac.in"}`)
+	send(http.MethodPost, "/api/verify/request", `{"email":"ana@iitb.ac.in","adult":true}`)
 	send(http.MethodGet, "/api/boards/nope", "")
 	if mail.count() != 1 {
 		t.Fatalf("expected one verification code to be sent, got %d", mail.count())

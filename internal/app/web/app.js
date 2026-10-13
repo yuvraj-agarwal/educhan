@@ -1813,9 +1813,28 @@ async function loadVerification() {
   return state.verification;
 }
 
+// The badge is for students aged 18 and over, on their own word (build plan
+// 2.14): the address step has a box to tick, and nothing is sent until it is
+// ticked. BADGE_AGE_REFUSAL is what the page says when it is not;
+// BADGE_AGE_REFUSED is the server's wording of the same refusal, which the
+// page shows as BADGE_AGE_REFUSAL too. The answer is never stored, here or
+// there: the box starts unticked on every render. It is not `required`, since
+// the browser's own message would stand in for this one, which says what the
+// visitor can still do.
+const BADGE_AGE_REFUSAL =
+  "The badge is for students aged 18 and over. You can still read and post anonymously without it.";
+const BADGE_AGE_REFUSED = "the badge is for students aged 18 and over; you can still read and post anonymously";
+
 // The claim the page is making, in the words the README uses. It belongs on
-// screen next to the form, not only in the repository.
+// screen next to the form, not only in the repository. Who the badge is for
+// comes first: most readers need to know they don't need one.
 const VERIFY_INTRO = `
+  <p class="verify-note">
+    The badge is for students aged 18 and over who have a university or college
+    email address. Getting one means confirming that you're 18 or over, and that
+    answer isn't saved anywhere. You don't need a badge to use educhan:
+    ${audienceText()} can still read and post anonymously without one.
+  </p>
   <p class="verify-note">
     Verifying proves you hold an address at a recognised institution and earns
     you an optional badge. The address itself is never stored: what is kept is
@@ -1904,6 +1923,10 @@ function verifyViewHTML() {
                placeholder="you@institution.edu" required />
         <span class="hint">Academic domains only &mdash; .edu, .ac.in, .ac.uk, .edu.au and others.</span>
       </div>
+      <label class="attest" for="f-adult">
+        <input type="checkbox" id="f-adult" name="adult" autocomplete="off" />
+        <span>I confirm I am 18 or over</span>
+      </label>
       <div class="actions">
         <button class="btn primary" type="submit">Send code</button>
       </div>
@@ -2112,12 +2135,13 @@ const FAQ_SECTIONS = [
     question: "What is the verified badge?",
     answer: `
       <p>An optional label on a post, such as ${verifiedBadgeHTML("IIT Bombay")}, which shows
-        that the poster has an email address at that university or college. It's meant for
-        universities and colleges, not schools, so please don't use a school email address.
-        You don't need it to read or to post.</p>
+        that the poster has an email address at that university or college. It's for people
+        aged 18 and over at universities and colleges, not schools, so please don't use a
+        school email address. You don't need it to read or to post.</p>
       <ol>
         <li>On the <a href="/verify">Verify</a> page, enter your university or college email
-          address.</li>
+          address and tick the box to confirm that you're 18 or over. educhan doesn't save
+          your answer.</li>
         <li>Type in the six-digit code that's emailed to you.</li>
         <li>Your browser is given a badge naming the university or college, and keeps it until
           it expires. The Verify page shows when that is.</li>
@@ -3349,6 +3373,15 @@ async function submitVerification(form) {
   const data = new FormData(form);
   const requesting = form.dataset.verify === "request";
 
+  // The badge is for students aged 18 and over. Without the box ticked the
+  // page refuses on its own and sends nothing, the address included.
+  const adult = requesting ? field(form, "adult") : null;
+  if (requesting && !(adult && adult.checked)) {
+    showNotice(BADGE_AGE_REFUSAL);
+    if (adult) adult.focus();
+    return;
+  }
+
   button.disabled = true;
   button.textContent = requesting ? "Sending…" : "Verifying…";
   clearNotice();
@@ -3356,7 +3389,8 @@ async function submitVerification(form) {
     if (requesting) {
       const sent = await api("/api/verify/request", {
         method: "POST",
-        body: JSON.stringify({ email: String(data.get("email") || "") }),
+        // adult is true here, because an unticked box stopped above.
+        body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),
       });
       verifyStep = { step: "code", label: sent.label || "" };
       el.main.innerHTML = verifyViewHTML();
@@ -3374,7 +3408,10 @@ async function submitVerification(form) {
     verifyStep = { step: "email", label: "" };
     await renderVerify();
   } catch (err) {
-    showNotice(errorMessage(err));
+    // The server's refusal of a request without the attestation reads the same
+    // as the page's own.
+    const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
+    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err));
     button.disabled = false;
     button.textContent = label;
   }
