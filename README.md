@@ -176,8 +176,14 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- Roughly when a credential was issued — to the *day*, because the stored
-  expiry is rounded up to a UTC day boundary and nothing else is timestamped.
+- When a credential was issued: in the database, only to the *day*, because the
+  stored expiry is rounded up to a UTC day boundary and nothing else in the
+  verification tables is timestamped; in the application's log, for as long as
+  it is kept, to the second, because the request line for
+  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
+  time. Neither line says which institution or address the credential was for
+  (`TestIssuanceIsLoggedWithoutTheInstitution`), so a log time picks out one
+  stored record only on a day when a single credential was issued in all.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -199,9 +205,11 @@ can and cannot work out.
 - Link a credential to a post. The credential carries a label, an expiry, and a
   random identifier — nothing derived from the address. Posts store the badge
   as text and hold no reference to the record it came from.
-- Link a post to a verification record by timing. Verification tables carry no
-  `created_at`, and using a credential updates nothing, so there is no "last
-  used" to line up against a post.
+- Link a post to a verification record by timing, beyond the issuance times
+  above. Verification tables carry no `created_at`, and using a credential
+  updates nothing, so there is no "last used" to line up against a post; the
+  log's issuance times name no institution, so they narrow a record down only
+  on a day with a single issuance.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.

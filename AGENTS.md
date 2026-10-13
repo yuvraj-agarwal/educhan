@@ -779,7 +779,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     Do not "fix" this back to `sessionStorage` without resolving the reissue problem.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
-    The credential is not logged either: it is shown once, in one response body.
+    The credential is not logged either: it is shown once, in one response body. The
+    issuance line (`verification issued`) is bare: no label, no institution, nothing
+    from the record. The row dates an issuance to the day; a label stamped to the
+    second would date it exactly whenever it was its institution's only one that day.
+    `TestIssuanceIsLoggedWithoutTheInstitution` holds it, and the README's privacy
+    section says what the log's times do and do not reveal; keep the two in step.
   - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
     column of every table for the address. It has positive controls, so it fails rather
     than passing vacuously if the scan stops working.
