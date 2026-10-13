@@ -94,9 +94,12 @@ type Thumbnail struct {
 
 // Processed is an upload validated, rewritten for storage, and thumbnailed.
 type Processed struct {
+	// Format is the stored file's, which is the upload's except for a WebP,
+	// stored as a PNG or a JPEG.
 	Format Format
-	// Data is the original as it is to be stored: re-encoded, or for WebP
-	// stripped chunk by chunk, so that it carries no metadata (sanitize.go).
+	// Data is the original as it is to be stored: encoded afresh from the
+	// decoded pixels, so that it carries no metadata and nothing else of the
+	// uploaded file (sanitize.go).
 	Data []byte
 	// Width and Height are the stored picture's, which for a JPEG is the
 	// picture after its EXIF orientation has been applied.
@@ -163,12 +166,12 @@ func Process(ctx context.Context, data []byte) (Processed, error) {
 	if err != nil {
 		return Processed{}, err
 	}
-	thumb, err := makeThumbnail(out.pic, out.canvas, format)
+	thumb, err := makeThumbnail(out.pic, out.canvas, out.format)
 	if err != nil {
 		return Processed{}, err
 	}
 	return Processed{
-		Format: format,
+		Format: out.format,
 		Data:   out.data,
 		Width:  out.canvas.Dx(),
 		Height: out.canvas.Dy(),
@@ -199,8 +202,9 @@ func atLeastOne(v int) int {
 	return v
 }
 
-// thumbFormat picks the encoding of a thumbnail. JPEG sources stay JPEG; the
-// formats that may carry transparency become PNG so it is not lost.
+// thumbFormat picks the encoding of a thumbnail from the stored format. A
+// stored JPEG has a JPEG thumbnail; the formats that may carry transparency
+// have PNG ones so it is not lost.
 func thumbFormat(src Format) Format {
 	if src.Name == FormatJPEG.Name {
 		return FormatJPEG

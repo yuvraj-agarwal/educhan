@@ -5,9 +5,10 @@ import (
 )
 
 // WebP is a RIFF file: a list of tagged chunks. golang.org/x/image/webp only
-// decodes, so a WebP upload is not re-encoded like the other formats; it is
-// stripped at the chunk level instead, which leaves the compressed image data
-// exactly as it came and costs no generation of quality.
+// decodes, so a WebP upload is stored as a PNG or a JPEG made from its pixels
+// (sanitizeWebP). Before it is decoded it is stripped here at the chunk level,
+// so the decoder is handed only the chunks that make the picture, and only
+// once their sizes have been checked to agree.
 //
 // The rewrite keeps the chunks that make the picture and drops every other one:
 // EXIF and XMP (where a camera's GPS position and an editor's history live),
@@ -15,9 +16,12 @@ import (
 // and any chunk this code does not know, since an unknown chunk is exactly where
 // a tool would put metadata nobody asked for. Readers are required to ignore
 // unknown chunks, so dropping them changes nothing on screen. The VP8X flags
-// that announce ICC, EXIF and XMP are cleared to match, the RIFF size is
-// recomputed, and anything after the RIFF's declared end is dropped with the
-// rest.
+// that announce ICC, EXIF and XMP are cleared to match, and its reserved bits
+// with them, the RIFF size is recomputed, and anything after the RIFF's
+// declared end is dropped with the rest. What it keeps of the picture chunks
+// (VP8, VP8L, ALPH) it keeps byte for byte, and a decoder ignores whatever
+// follows the picture inside them, which is why the result is decoded rather
+// than stored.
 //
 // Animation chunks are kept, and the unknown chunks inside each frame dropped,
 // so the rewrite is complete for the whole format. Process still refuses an
@@ -50,7 +54,7 @@ type riffChunk struct {
 // stripWebP rewrites a WebP file with its metadata chunks removed. Its errors
 // are ErrCorruptImage for a file whose structure does not hold together and
 // ErrImageTooLarge for a canvas over MaxPixels; the structure has to be sound
-// enough that what is stored is what was checked.
+// enough that what is decoded is what was checked.
 func stripWebP(data []byte) ([]byte, webpInfo, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
 		return nil, webpInfo{}, ErrCorruptImage
@@ -127,11 +131,12 @@ func stripExtended(chunks []riffChunk) ([]riffChunk, webpInfo, error) {
 		return nil, webpInfo{}, ErrImageTooLarge
 	}
 
+	// Only the flags describing the picture and the canvas size survive; the
+	// metadata flags and every reserved bit, in the flags byte and the three
+	// bytes after it, are left zero.
 	vp8x := make([]byte, 10)
-	copy(vp8x, head.payload)
-	// Only the flags describing the picture survive; the metadata flags and
-	// the reserved bits are cleared.
 	vp8x[0] = flags & (vp8xFlagAlpha | vp8xFlagAnimation)
+	copy(vp8x[4:], head.payload[4:])
 	kept := []riffChunk{{id: "VP8X", payload: vp8x}}
 
 	if info.Animated {

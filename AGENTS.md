@@ -34,7 +34,7 @@ not.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation, metadata stripping (`sanitize.go`, with the EXIF
-  orientation reader in `orient.go` and the WebP chunk rewrite in `webp.go`),
+  orientation reader in `orient.go` and the WebP chunk check in `webp.go`),
   thumbnailing, and the blob-storage interface with its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
   against both. `internal/media/mediatest` starts an in-process Cloud Storage emulator and
@@ -522,22 +522,34 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   and IEND (an APNG keeps its still image). GIF goes through `gif.DecodeAll` and
   `EncodeAll`, which keep frames, positions, delays, disposal, background and loop count
   and drop comments and every application extension but NETSCAPE2.0. WebP cannot be
-  encoded in Go, so `stripWebP` (`webp.go`) rewrites the RIFF: it keeps VP8X (flags
-  masked to alpha and animation), ALPH, VP8, VP8L, ANIM and ANMF (each frame cut to its
-  picture), drops EXIF, XMP, ICCP and every unknown chunk, recomputes the RIFF size,
-  drops bytes past the RIFF's end, and refuses a file whose canvas and bitstream sizes
-  disagree; the stripped bytes are what is decoded for the thumbnail. An animated WebP
-  is still refused as `ErrCorruptImage`, as before stripping: x/image cannot decode
-  one. `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's,
+  encoded in Go, so a WebP upload is stored as another format (`sanitizeWebP`): a JPEG
+  at `storedJPEGQuality` when it is lossy and opaque, otherwise a PNG (lossless pixels
+  exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's
+  extension, the content type, the attachment's `name` and the thumbnail's format all
+  follow the stored format, not the upload's. Before decoding, `stripWebP` (`webp.go`)
+  rewrites the RIFF so the decoder sees only the picture: it keeps VP8X (flags masked
+  to alpha and animation, reserved bits cleared), ALPH, VP8, VP8L, ANIM and ANMF (each
+  frame cut to its picture), drops EXIF, XMP, ICCP and every unknown chunk, recomputes
+  the RIFF size, drops bytes past the RIFF's end, and refuses a file whose canvas and
+  bitstream sizes disagree. Its output is never stored: a decoder ignores whatever
+  follows the picture inside a VP8, VP8L or ALPH chunk, so a whole second file, EXIF
+  and all, survives stripping (`TestFilesHiddenInsideWebPChunksAreNotStored`,
+  `TestUploadedWebPIsServedAsAFileMadeFromItsPixels`). Do not go back to storing the
+  stripped WebP to save the re-encode. An animated WebP is still refused as
+  `ErrCorruptImage`, as before stripping: x/image cannot decode one. A WebP stored
+  before this change stays a `.webp` and is served as `image/webp`
+  (`ContentTypeForExt`). `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's,
   the thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size`
   are of the stored bytes — the plan's `blocked_media` check on the re-encoded output
   (2.2) depends on that. Tests build their fixtures in code (`fixtures_test.go`) and
   check every needle is in the upload before checking it is gone from what is stored:
   `TestJPEGIsStoredWithoutMetadata`, `TestEveryOrientationIsApplied`,
   `TestPNGIsStoredWithoutAncillaryChunks`, `TestGIFKeepsItsAnimationAndDropsItsExtensions`,
-  `TestWebPIsStrippedChunkByChunk`, the conformance suite's "save stores no metadata",
-  and `TestUploadedPhotoKeepsNoMetadataOnEveryBackend` end to end over both backends.
-  Never store, hash or serve the upload's own bytes.
+  `TestWebPIsStrippedChunkByChunk`, `TestWebPIsStoredAsPNGOrJPEG`, the conformance
+  suite's "save stores no metadata", and `TestUploadedPhotoKeepsNoMetadataOnEveryBackend`
+  end to end over both backends. Every stored original is a file Go encoded from
+  decoded pixels; never store, hash or serve the upload's own bytes, or any run of
+  them, such as a chunk copied across.
 - The EXIF reader is the one place educhan parses a structure an uploader controls,
   so it reads in place, bounds-checks every offset before use, follows no offset but
   IFD0's (no IFD chain, so no loop), allocates nothing, and answers 1 for anything it
@@ -616,9 +628,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   its cooldowns and stored its upload, which `discardUpload` removes. Never move the
   enforcement into the pre-check or drop it from the transaction.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
-  upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
-  transparency survives. They are made from the rewritten, upright picture; a GIF's is
-  its first frame placed on the canvas.
+  upscaled. A stored JPEG (a JPEG upload, or a lossy opaque WebP) gets a JPEG
+  thumbnail; a stored PNG or GIF gets a PNG one so transparency survives. They are made
+  from the rewritten, upright picture; a GIF's is its first frame placed on the canvas.
 - `internal/media.Store` is the only route to blob storage, and `newMediaStore` in
   `app.go` is the only place one is constructed. Both backends are held to
   `testStoreContract` in `conformance_test.go`, and `internal/app/media_backend_test.go`

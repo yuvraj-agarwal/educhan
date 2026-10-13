@@ -706,11 +706,7 @@ func FuzzGIFFramePixels(f *testing.F) {
 
 func sampleWebP(t *testing.T) []byte {
 	t.Helper()
-	data, err := os.ReadFile(filepath.Join("testdata", "sample.webp"))
-	if err != nil {
-		t.Fatalf("read fixture: %v", err)
-	}
-	return data
+	return readWebP(t, "sample.webp")
 }
 
 // sampleBitstream is the lossless VP8L chunk of the 320×200 fixture.
@@ -723,14 +719,32 @@ func sampleBitstream(t *testing.T) riffChunk {
 	return chunks[0]
 }
 
-// An extended WebP carrying a profile, EXIF, XMP and a chunk nobody knows
-// comes out as the VP8X header and the untouched bitstream, with the flags
-// that announced the metadata cleared, the RIFF size right, and the same
-// pixels.
+// readWebP reads a WebP fixture from testdata. sample.webp is lossless
+// (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four flat
+// quadrants (red, green / blue, white) made with Pillow at quality 90, the
+// second with its left 16 columns transparent: a simple-format VP8 file, and
+// VP8X, ALPH and VP8. Go cannot encode WebP, so these are files rather than
+// built in code.
+func readWebP(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("testdata", name))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	return data
+}
+
+// An extended WebP carrying a profile, EXIF, XMP and a chunk nobody knows is
+// stripped to the VP8X header and the untouched bitstream, with the flags
+// that announced the metadata and every reserved bit cleared and the RIFF
+// size right; that is what is decoded. What is stored is a PNG of the same
+// pixels, with none of it.
 func TestWebPIsStrippedChunkByChunk(t *testing.T) {
 	bitstream := sampleBitstream(t)
+	head := vp8xChunk(vp8xFlagICC|vp8xFlagEXIF|vp8xFlagXMP|0xC1, 320, 200)
+	copy(head.payload[1:4], "SEC") // the 24 reserved bits after the flags
 	upload := webpFile(
-		vp8xChunk(vp8xFlagICC|vp8xFlagEXIF|vp8xFlagXMP|0xC1, 320, 200),
+		head,
 		riffChunk{id: "ICCP", payload: []byte(needleICC)},
 		bitstream,
 		riffChunk{id: "EXIF", payload: gpsTIFF(binary.LittleEndian, 1)},
@@ -739,23 +753,36 @@ func TestWebPIsStrippedChunkByChunk(t *testing.T) {
 	)
 	upload = append(upload, "after the end: "+needleIPTC...) // outside the RIFF
 	needles := []string{"ICCP", needleICC, "EXIF", needleGPS, needleDatum, needleCamera, "XMP ",
-		needleXMP, needleXMPGPS, "ZZZZ", needleComment, needleIPTC}
+		needleXMP, needleXMPGPS, "ZZZZ", needleComment, needleIPTC, "SEC"}
 	requireCarries(t, upload, needles...)
 
-	got := process(t, upload)
-	requireFree(t, got.Data, needles...)
-	chunks := webpChunks(t, got.Data)
-	if ids := strings.Join(chunkIDs(chunks), ","); ids != "VP8X,VP8L" {
-		t.Fatalf("stored chunks = %s, want VP8X,VP8L", ids)
+	stripped, info, err := stripWebP(upload)
+	if err != nil {
+		t.Fatalf("stripWebP: %v", err)
 	}
-	if flags := chunks[0].payload[0]; flags != 0 {
-		t.Errorf("VP8X flags = %#x, want none set", flags)
+	if info.Width != 320 || info.Height != 200 || info.Animated {
+		t.Errorf("info = %+v, want a still 320x200 canvas", info)
+	}
+	requireFree(t, stripped, needles...)
+	chunks := webpChunks(t, stripped)
+	if ids := strings.Join(chunkIDs(chunks), ","); ids != "VP8X,VP8L" {
+		t.Fatalf("stripped chunks = %s, want VP8X,VP8L", ids)
+	}
+	if !bytes.Equal(chunks[0].payload[:4], []byte{0, 0, 0, 0}) {
+		t.Errorf("VP8X flags and reserved bytes = % x, want all clear", chunks[0].payload[:4])
 	}
 	if !bytes.Equal(chunks[0].payload[4:], vp8xChunk(0, 320, 200).payload[4:]) {
 		t.Errorf("VP8X canvas = % x, want 320x200 unchanged", chunks[0].payload[4:])
 	}
 	if !bytes.Equal(chunks[1].payload, bitstream.payload) {
 		t.Error("the bitstream changed; stripping must leave the image data as it was")
+	}
+
+	got := process(t, upload)
+	requireFree(t, got.Data, needles...)
+	requireFree(t, got.Thumb.Data, needles...)
+	if got.Format != FormatPNG {
+		t.Errorf("stored format = %s, want png", got.Format.Name)
 	}
 	if got.Width != 320 || got.Height != 200 {
 		t.Errorf("dimensions = %dx%d, want 320x200", got.Width, got.Height)
@@ -767,11 +794,116 @@ func TestWebPIsStrippedChunkByChunk(t *testing.T) {
 	requireSamePixels(t, want, decodeStored(t, got.Data))
 }
 
-// A WebP with nothing to strip is stored byte for byte as it came.
-func TestCleanWebPIsStoredAsItCame(t *testing.T) {
-	upload := sampleWebP(t)
-	if got := process(t, upload); !bytes.Equal(got.Data, upload) {
-		t.Error("a simple WebP with no metadata was changed")
+// A WebP is stored as a file Go encoded from its pixels: a lossless one as a
+// PNG with exactly the same pixels, a lossy one with transparency as a PNG
+// that keeps it, and a lossy opaque one as a JPEG. The thumbnail follows the
+// stored format.
+func TestWebPIsStoredAsPNGOrJPEG(t *testing.T) {
+	red, green := color.RGBA{220, 30, 30, 255}, color.RGBA{30, 200, 30, 255}
+	blue, white := color.RGBA{30, 30, 220, 255}, color.RGBA{250, 250, 250, 255}
+	for _, tc := range []struct {
+		file  string
+		want  Format
+		thumb Format
+	}{
+		{"sample.webp", FormatPNG, FormatPNG},
+		{"lossy.webp", FormatJPEG, FormatJPEG},
+		{"lossy-alpha.webp", FormatPNG, FormatPNG},
+	} {
+		t.Run(tc.file, func(t *testing.T) {
+			upload := readWebP(t, tc.file)
+			src, err := webp.Decode(bytes.NewReader(upload))
+			if err != nil {
+				t.Fatalf("the fixture does not decode: %v", err)
+			}
+			got := process(t, upload)
+			if got.Format != tc.want || got.Thumb.Format != tc.thumb {
+				t.Fatalf("stored as %s with a %s thumbnail, want %s and %s",
+					got.Format.Name, got.Thumb.Format.Name, tc.want.Name, tc.thumb.Name)
+			}
+			if f, ok := DetectFormat(got.Data); !ok || f != tc.want {
+				t.Fatalf("the stored bytes are %v (%v), not %s", f, ok, tc.want.Name)
+			}
+			stored := decodeStored(t, got.Data)
+			if stored.Bounds() != src.Bounds() || got.Width != src.Bounds().Dx() || got.Height != src.Bounds().Dy() {
+				t.Fatalf("stored %v reported %dx%d, want %v", stored.Bounds(), got.Width, got.Height, src.Bounds())
+			}
+			switch tc.file {
+			case "sample.webp":
+				requireSamePixels(t, src, stored)
+			case "lossy.webp", "lossy-alpha.webp":
+				for _, p := range []struct {
+					x, y int
+					c    color.Color
+				}{{24, 4, red}, {60, 4, green}, {24, 44, blue}, {60, 44, white}} {
+					if c := stored.At(p.x, p.y); !near(c, p.c) {
+						t.Errorf("pixel (%d,%d) = %v, want about %v", p.x, p.y, c, p.c)
+					}
+				}
+				if tc.file == "lossy-alpha.webp" {
+					for _, p := range []image.Point{{2, 4}, {10, 40}} {
+						if _, _, _, a := stored.At(p.X, p.Y).RGBA(); a != 0 {
+							t.Errorf("pixel %v has alpha %d, want it transparent as uploaded", p, a)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
+// A decoder stops reading a picture chunk once it has its picture, so a whole
+// second file can ride inside one: here a JPEG carrying a camera's EXIF and GPS
+// position, inside a lossless bitstream, a lossy one, and an alpha plane. The
+// upload still decodes, so stripping has to keep the chunk; none of it is in
+// what is stored.
+func TestFilesHiddenInsideWebPChunksAreNotStored(t *testing.T) {
+	hidden := cameraJPEG(t, 16, 16)
+	needles := []string{"Exif", needleGPS, needleDatum, needleCamera, needleXMP, needleComment}
+	inside := func(t *testing.T, file, id string) []byte {
+		t.Helper()
+		var out []riffChunk
+		found := false
+		for _, c := range webpChunks(t, readWebP(t, file)) {
+			if c.id == id {
+				c.payload = append(append([]byte(nil), c.payload...), hidden...)
+				found = true
+			}
+			out = append(out, c)
+		}
+		if !found {
+			t.Fatalf("%s has no %s chunk", file, id)
+		}
+		return webpFile(out...)
+	}
+	for _, tc := range []struct{ file, id string }{
+		{"sample.webp", "VP8L"},
+		{"lossy.webp", "VP8 "},
+		{"lossy-alpha.webp", "VP8 "},
+		{"lossy-alpha.webp", "ALPH"},
+	} {
+		t.Run(tc.file+" "+tc.id, func(t *testing.T) {
+			upload := inside(t, tc.file, tc.id)
+			requireCarries(t, upload, needles...)
+			want, err := webp.Decode(bytes.NewReader(readWebP(t, tc.file)))
+			if err != nil {
+				t.Fatalf("decode the fixture: %v", err)
+			}
+			if got, err := webp.Decode(bytes.NewReader(upload)); err != nil {
+				t.Fatalf("the upload does not decode, so it proves nothing: %v", err)
+			} else {
+				requireSamePixels(t, want, got)
+			}
+			stripped, _, err := stripWebP(upload)
+			if err != nil {
+				t.Fatalf("stripWebP: %v", err)
+			}
+			requireCarries(t, stripped, needles...) // what stripping alone would have stored
+
+			got := process(t, upload)
+			requireFree(t, got.Data, needles...)
+			requireFree(t, got.Thumb.Data, needles...)
+		})
 	}
 }
 

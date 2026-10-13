@@ -387,9 +387,13 @@ client can leave the image picker off a server that would refuse what it sends.
     none of its ancillary chunks. An animated PNG keeps its still image.
   - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
     count, and dropping comments and application data such as XMP.
-  - *WebP* is stripped chunk by chunk, since nothing in Go can encode it: EXIF, XMP, ICC
-    and unknown chunks go, the flags announcing them are cleared, and the image data is
-    kept byte for byte.
+  - *WebP* cannot be encoded in Go, so it is stored as another format made from its
+    pixels: a lossy, opaque WebP as a JPEG at quality 90, and any other (lossless, or
+    with transparency) as a PNG, which keeps a lossless picture exactly. Its `name`,
+    URL and content type are the stored format's (`image.jpg`, `image.png`). Keeping
+    the WebP with only its metadata chunks removed would not be enough: a decoder
+    ignores anything after the picture inside the chunks that hold it, so a second
+    file could ride through unseen. WebPs stored before this stay WebPs.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can
@@ -413,8 +417,8 @@ client can leave the image picker off a server that would refuse what it sends.
   `images` and `at_image_limit` so a client can hide the picker before anyone tries.
 - **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
-  preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
-  carry transparency get PNG thumbnails.
+  preserved and never upscaled. An image stored as a JPEG has a JPEG thumbnail; the
+  formats that can carry transparency get PNG thumbnails.
 - **Storage**: originals and thumbnails are keyed
   `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and `thumbs/{board}/{YYYY}/{MM}/…`, under a
   generated random filename. Two backends implement that key layout — the local filesystem

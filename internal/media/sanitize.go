@@ -25,11 +25,13 @@ import (
 //   - GIF is decoded frame by frame and re-encoded with its frames, delays,
 //     disposal and loop count, and none of its comments or other application
 //     data.
-//   - WebP is stripped chunk by chunk (stripWebP), because nothing in the
-//     standard library or x/image can encode it.
+//   - WebP is decoded and stored as a PNG, or as a JPEG when it is lossy and
+//     opaque, because nothing in the standard library or x/image can encode
+//     WebP (sanitizeWebP says why it is not kept as it came).
 //
-// The stored file is the one decoded for the thumbnail and hashed for the
-// checksum, so all three describe the same picture.
+// So the stored file is always one Go encoded from decoded pixels, and holds
+// nothing of the upload's own bytes. It is the one decoded for the thumbnail
+// and hashed for the checksum, so all three describe the same picture.
 
 // storedJPEGQuality is the quality a JPEG original is re-encoded at: high
 // enough that a second generation is hard to tell from the first, which is
@@ -70,6 +72,7 @@ func acquireProcessing(ctx context.Context) (func(), error) {
 
 // sanitized is an upload rewritten for storage.
 type sanitized struct {
+	format Format          // what data is, which for a WebP upload is PNG or JPEG
 	data   []byte          // the bytes to store
 	pic    image.Image     // what to thumbnail: the picture, or a GIF's first frame
 	canvas image.Rectangle // the whole picture, which pic may only partly cover
@@ -113,7 +116,7 @@ func sanitizeJPEG(data []byte) (sanitized, error) {
 	if err := jpeg.Encode(buf, pic, &jpeg.Options{Quality: storedJPEGQuality}); err != nil {
 		return sanitized{}, fmt.Errorf("media: encode jpeg: %w", err)
 	}
-	return sanitized{data: buf.Bytes(), pic: pic, canvas: pic.Bounds()}, nil
+	return sanitized{format: FormatJPEG, data: buf.Bytes(), pic: pic, canvas: pic.Bounds()}, nil
 }
 
 // sanitizePNG decodes and re-encodes a PNG. image/png writes only the chunks
@@ -132,7 +135,7 @@ func sanitizePNG(data []byte) (sanitized, error) {
 	if err := png.Encode(buf, src); err != nil {
 		return sanitized{}, fmt.Errorf("media: encode png: %w", err)
 	}
-	return sanitized{data: buf.Bytes(), pic: src, canvas: src.Bounds()}, nil
+	return sanitized{format: FormatPNG, data: buf.Bytes(), pic: src, canvas: src.Bounds()}, nil
 }
 
 // sanitizeGIF decodes every frame of a GIF and encodes them again. The frames,
@@ -151,16 +154,27 @@ func sanitizeGIF(data []byte) (sanitized, error) {
 		return sanitized{}, fmt.Errorf("media: encode gif: %w", err)
 	}
 	return sanitized{
+		format: FormatGIF,
 		data:   buf.Bytes(),
 		pic:    g.Image[0],
 		canvas: image.Rect(0, 0, g.Config.Width, g.Config.Height),
 	}, nil
 }
 
-// sanitizeWebP strips a WebP at the chunk level, then decodes what is left:
-// the thumbnail is made from the bytes that will be stored, so a file whose
-// stripped form does not decode is refused rather than stored. An animated
-// WebP is refused as it always has been; x/image decodes still images only.
+// sanitizeWebP checks a WebP's structure and strips it to the chunks that
+// make the picture (stripWebP), decodes what is left, and stores the pixels as
+// a new file: a JPEG when the picture is lossy and opaque, which is what a
+// lossy WebP is closest to, and otherwise a PNG, which keeps a lossless
+// picture exactly and a transparent one's alpha. An animated WebP is refused
+// as it always has been; x/image decodes still images only.
+//
+// Stripping alone is not enough to store. A decoder stops reading a VP8, VP8L
+// or ALPH chunk once it has its picture and ignores whatever else the chunk
+// holds, so a whole second file — another image, its own EXIF and all — can
+// sit inside a chunk that stripping has to keep, and would be stored and
+// served byte for byte. Nobody would see it on screen, moderators and image
+// matching included, which is what makes it a hiding place. Encoding the
+// decoded pixels leaves nothing of the upload, as for the other formats.
 func sanitizeWebP(data []byte) (sanitized, error) {
 	stripped, info, err := stripWebP(data)
 	if err != nil {
@@ -176,7 +190,51 @@ func sanitizeWebP(data []byte) (sanitized, error) {
 	if b := pic.Bounds(); b.Dx() != info.Width || b.Dy() != info.Height {
 		return sanitized{}, ErrCorruptImage
 	}
-	return sanitized{data: stripped, pic: pic, canvas: pic.Bounds()}, nil
+
+	format := FormatPNG
+	buf := bytes.NewBuffer(make([]byte, 0, len(data)))
+	switch m := pic.(type) {
+	case *image.YCbCr: // lossy, with no alpha
+		format = FormatJPEG
+		err = jpeg.Encode(buf, m, &jpeg.Options{Quality: storedJPEGQuality})
+	case *image.NYCbCrA: // lossy, with an alpha plane
+		if m.Opaque() {
+			format = FormatJPEG
+			pic = &m.YCbCr
+			err = jpeg.Encode(buf, pic, &jpeg.Options{Quality: storedJPEGQuality})
+			break
+		}
+		pic = nrgbaOf(m)
+		err = png.Encode(buf, pic)
+	default: // lossless, decoded as *image.NRGBA
+		err = png.Encode(buf, pic)
+	}
+	if err != nil {
+		return sanitized{}, fmt.Errorf("media: encode webp as %s: %w", format.Name, err)
+	}
+	return sanitized{format: format, data: buf.Bytes(), pic: pic, canvas: pic.Bounds()}, nil
+}
+
+// nrgbaOf converts a lossy picture with alpha to plain non-premultiplied RGBA,
+// which image/png encodes directly rather than a pixel at a time through the
+// colour interfaces. Each pixel's colour is converted exactly as
+// color.YCbCr does, and its alpha is copied.
+func nrgbaOf(m *image.NYCbCrA) *image.NRGBA {
+	b := m.Bounds()
+	out := image.NewNRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := out.Pix[(y-b.Min.Y)*out.Stride:]
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := m.NYCbCrAAt(x, y)
+			r, g, bl, _ := c.YCbCr.RGBA()
+			i := (x - b.Min.X) * 4
+			row[i+0] = uint8(r >> 8)
+			row[i+1] = uint8(g >> 8)
+			row[i+2] = uint8(bl >> 8)
+			row[i+3] = c.A
+		}
+	}
+	return out
 }
 
 // gifFramePixels adds up the area of every frame a GIF declares, reading only

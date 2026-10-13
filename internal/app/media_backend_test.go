@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -12,6 +13,8 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -295,6 +298,83 @@ func TestUploadedPhotoKeepsNoMetadataOnEveryBackend(t *testing.T) {
 			}
 			if sum := sha256.Sum256(served); checksum != hex.EncodeToString(sum[:]) {
 				t.Errorf("checksum = %s, want the SHA-256 of the stored file", checksum)
+			}
+		})
+	}
+}
+
+// webpCarrying is a WebP fixture from internal/media's testdata with the
+// whole of hidden appended inside its picture chunk (its first one, VP8 or
+// VP8L), where a decoder never looks: the upload still shows the same
+// picture.
+func webpCarrying(t *testing.T, fixture string, hidden []byte) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "media", "testdata", fixture))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if len(data) < 20 || string(data[12:15]) != "VP8" {
+		t.Fatalf("%s is not a simple-format WebP", fixture)
+	}
+	n := int(binary.LittleEndian.Uint32(data[16:20]))
+	payload := append(append([]byte(nil), data[20:20+n]...), hidden...)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBP"), data[12:16]...)
+	out = binary.LittleEndian.AppendUint32(out, uint32(len(payload)))
+	out = append(out, payload...)
+	if len(payload)%2 == 1 {
+		out = append(out, 0)
+	}
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// A WebP is stored and served as a PNG or a JPEG made from its pixels, never
+// as the file that came in: a lossy one, here carrying a whole camera JPEG
+// inside its bitstream chunk, comes back as a JPEG with none of it.
+func TestUploadedWebPIsServedAsAFileMadeFromItsPixels(t *testing.T) {
+	for _, backend := range mediaBackends {
+		t.Run(backend.name, func(t *testing.T) {
+			c := backendServer(t, backend)
+			c.addBoard("general")
+			for _, tc := range []struct {
+				fixture, name, contentType string
+			}{
+				{"lossy.webp", "image.jpg", "image/jpeg"},
+				{"sample.webp", "image.png", "image/png"},
+			} {
+				upload := webpCarrying(t, tc.fixture, cameraJPEGBytes(t, 32, 24))
+				for _, needle := range metadataNeedles {
+					if !bytes.Contains(upload, []byte(needle)) {
+						t.Fatalf("the fixture does not carry %q, so the test would prove nothing", needle)
+					}
+				}
+				var created createdPost
+				if status := c.upload("/api/boards/general/threads", map[string]string{"body": "webp"},
+					"cat.webp", upload, &created); status != http.StatusCreated {
+					t.Fatalf("%s: create thread: status %d (%s)", tc.fixture, status, created.Error)
+				}
+				att := fetchThread(t, c, "general", created.ThreadNo).Posts[0].Attachment
+				if att == nil {
+					t.Fatalf("%s: opening post has no attachment", tc.fixture)
+				}
+				if att.Name != tc.name {
+					t.Errorf("%s: name = %q, want %s", tc.fixture, att.Name, tc.name)
+				}
+				res, served := c.fetch(att.URL, nil)
+				if res.StatusCode != http.StatusOK {
+					t.Fatalf("%s: get original: status %d", tc.fixture, res.StatusCode)
+				}
+				if ct := res.Header.Get("Content-Type"); ct != tc.contentType {
+					t.Errorf("%s: served as %q, want %s", tc.fixture, ct, tc.contentType)
+				}
+				if bytes.HasPrefix(served, []byte("RIFF")) {
+					t.Errorf("%s: the served original is still a WebP", tc.fixture)
+				}
+				requireNoMetadata(t, tc.fixture+" served original", served)
+				_, thumb := c.fetch(att.ThumbURL, nil)
+				requireNoMetadata(t, tc.fixture+" served thumbnail", thumb)
+				originalKey, _ := blobKeys(t, att)
+				requireNoMetadata(t, tc.fixture+" stored original", readBlob(t, c.app.media, originalKey))
 			}
 		})
 	}
