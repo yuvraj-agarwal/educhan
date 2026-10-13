@@ -381,6 +381,9 @@ changed one of those properties and needs a browser check before the test change
   keep the question neutral (no threshold in the copy, nothing preselected, no "I am old
   enough" box), and never add a way back from a refusal. Renaming the refusal key would
   be one, so a changed screen bumps the pass key's version and never the refusal's.
+  With no day to go on, `ageFrom` errs young, so an answer in the current month exactly
+  `MIN_AGE` years back is refused without being stored: that person may have turned
+  `MIN_AGE` this week, and next month the same answer passes.
   Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
   poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,

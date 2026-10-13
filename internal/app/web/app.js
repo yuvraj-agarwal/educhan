@@ -2437,14 +2437,19 @@ function answerAgeQuestion(event) {
     missing[0].focus();
     return;
   }
-  const eligible = ageFrom(Number(month.value), Number(year.value)) >= MIN_AGE;
+  const age = ageFrom(Number(month.value), Number(year.value));
+  // ageFrom errs young, so someone born in this month MIN_AGE years ago may
+  // already be old enough. They are refused for now, but the refusal is not
+  // kept: a final refusal would shut out for good someone who turned MIN_AGE a
+  // few days ago, and by next month the same answer passes.
+  const unsure = age === MIN_AGE - 1 && Number(month.value) === new Date().getMonth() + 1;
   // Either way the question goes, and the month and year with it: from here on
   // they are nowhere on the page, let alone anywhere else.
-  if (eligible) {
+  if (age >= MIN_AGE) {
     ageScreen.innerHTML = ageAgreeHTML();
     focusAgeScreen();
   } else {
-    refuseAgeScreen();
+    refuseAgeScreen({ keep: !unsure });
   }
 }
 
@@ -2456,9 +2461,13 @@ function passAgeScreen() {
 }
 
 // A refusal is final in this browser: the screen is removed rather than reset,
-// and nothing on the page offers to ask again.
-function refuseAgeScreen() {
-  storageSet(AGE_REFUSED_STORAGE_KEY, "1");
+// and nothing on the page offers to ask again. The one refusal not kept is for
+// an answer that may already be old enough (see answerAgeQuestion); it lasts
+// until the page is closed.
+function refuseAgeScreen({ keep = true } = {}) {
+  if (keep) {
+    storageSet(AGE_REFUSED_STORAGE_KEY, "1");
+  }
   ageAnswer = "refused";
   closeAgeScreen({ remove: true });
   render();
