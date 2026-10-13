@@ -130,7 +130,10 @@ after the sitting**, available to whoever uses the browser next, until it
 expires or someone clears it. That is why `/verify` gives **Forget this
 credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
-again, so it means verifying from the start.
+again, so it means verifying from the start. Beside it, in every state of the
+page, **Forget this browser** removes the badge together with the poster key and
+the remembered name (see below), which are what would otherwise let the next
+person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -424,8 +427,9 @@ view.
     hears "hidden spoiler" until the reader activates it, and catalog and archive
     excerpts show the word, not the text.
   - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
-    auto-detected. Nothing inside it is markup, so `x >>2` in code links nothing and
-    creates no backlink.
+    auto-detected, as it comes near the screen; a block over 2,000 characters is shown
+    plain, because highlighting one that long could stall a reader's tab. Nothing inside
+    it is markup, so `x >>2` in code links nothing and creates no backlink.
   - `[math]…[/math]` is inline maths and `[eqn]…[/eqn]` an equation on a line of its own,
     both in TeX and typeset by KaTeX as they come near the screen. Like code, nothing
     inside is markup. Until KaTeX arrives, or if it never does, the TeX shows as written;
@@ -433,14 +437,20 @@ view.
     links, images, or HTML of its own (`\href`, `\url`, `\includegraphics` and the
     `\html…` commands show as unsupported), and cannot define macros (`\def`,
     `\newcommand` and the like): a macro is how a short post would expand into millions
-    of symbols in every reader's tab. An equation too wide for a phone scrolls sideways
-    instead of widening the page. Catalog excerpts show maths as its TeX.
+    of symbols in every reader's tab. Equation tags and numbering still work (`\tag{1}`,
+    `\tag*{A}`, `\nonumber`, `\notag`). An equation too wide for a phone scrolls sideways
+    instead of widening the page. Catalog excerpts show maths as its TeX. Inside a hidden
+    spoiler, maths and code show nothing — not a TeX error's red source, nor a diff's line
+    tints — and are out of the tab order until the spoiler is revealed.
   - A tag pairs with the first closing tag of its kind after it; one that never closes,
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
-  **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
+  **Update**, image included, so refreshing a busy thread never costs a draft; if the
+  thread was archived or locked meanwhile, the text stays on the page in a read-only box
+  to copy. Following a quote link within a thread jumps to the post without reloading
+  the thread, so revealed spoilers stay revealed. Clicking a
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
@@ -448,11 +458,15 @@ view.
   view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
   while a reply is being written, the refusal takes the image off, keeps the text, and
-  the next press posts it.
+  the next press posts it. On a board whose `image_limit` is 0 the picker says replies
+  there can't carry images, and no thread is badged as at its limit.
 - **Poster key**: the first post from a browser makes a random key and keeps it in
   `localStorage`; it travels in `X-Educhan-Poster-Key` on new threads and replies only, so
   two people on one campus network get different poster IDs without the key riding on
-  anything else. A badged post sends the credential instead, never both.
+  anything else. A badged post sends the credential instead, never both. The Name field
+  remembers the last unbadged post's name; ticking the badge empties it, because a
+  tripcode on both kinds of post would tie them together. **Forget this browser** on
+  `/verify` drops the key, the name and any badge, for a shared computer.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

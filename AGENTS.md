@@ -242,7 +242,14 @@ board index at `/meta/`, catalog at `/meta/catalog`, thread at
 the index, and the thread view each have their own narrow-screen layout. A fresh browser
 meets the age screen first: answer it, or, when a check is not about the screen itself,
 set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright's
-`addInitScript`).
+`addInitScript`). Playwright's headless Chromium hides scrollbars unless launched with
+`ignoreDefaultArgs: ["--hide-scrollbars"]`; a check on the board row's scrollbar needs it.
+
+CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
+that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
+`submit`, the age screen storing its outcome alone and sending nothing, KaTeX's options,
+and the highlighting cap. They are a floor, not a proof; a change that trips one has
+changed one of those properties and needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -302,6 +309,13 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   plain rendering. highlight.js and KaTeX are loaded from `/lib/` by script (and, for
   KaTeX, stylesheet) elements the first time a post that needs them is on screen, never
   up front.
+- Code: a `[code]` block is highlighted only once it comes within a screen of the
+  viewport (an `IntersectionObserver`, as for maths), and a block over
+  `HIGHLIGHT_MAX_CHARS` stays plain (`data-highlighted="skipped"`). One highlight.js call
+  cannot be interrupted, and several grammars are quadratic on a long identifier run, so
+  a crafted thread of post-length blocks froze readers' tabs; raise the cap only with a
+  timing check on a throttled phone (`TestCodeHighlightingIsBoundedAndLazy` holds it at
+  3000 or less).
 - Maths: `[math]`/`[eqn]` render as a placeholder carrying the TeX in `data-tex`, and
   `typesetMaths` fills it with `katex.render` once the block is within a screen of the
   viewport (an `IntersectionObserver`; typesetting a long thread up front froze phones).
@@ -313,7 +327,13 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   `trust: false`, `maxExpand`, `maxSize`, and a fresh `macros` table per expression that
   turns `\def`, `\newcommand` and friends into errors, because `maxExpand` counts
   expansions, not what they produce, and one defined macro used a thousand times is
-  millions of nodes. Don't loosen them without a browser check that repeats the probes.
+  millions of nodes. KaTeX builds `\nonumber`/`\notag` and `\tag`/`\tag*` on `\gdef`, so
+  the table also replaces `\nonumber` and `\tag@literal` with stand-ins that set
+  `\@eqnsw` and `\df@tag` directly; never let one return TeX that reaches `\gdef`.
+  `TestKaTeXIsCalledWithItsSafetyOptions` (`web_invariants_test.go`) pins the options and
+  the list; don't loosen them, or change the test to match, without a browser check that
+  repeats the probes (`\href`, `\url`, `\htmlData`, `\def`, a fraction and a root under
+  the real CSP).
 - Every link to a board, thread, or post is built on `boardPath(slug)` (and
   `threadPath`), and every on-screen board name on `boardLabel(slug)`: an institution
   board's slug is `u-{name}` but its address is `/u/{name}/`, and those two helpers are
@@ -326,9 +346,18 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
-  that leaves the draft in place. A thread at its image cap renders the picker through
+  that leaves the draft in place, and a re-render that then finds the thread closed puts
+  the draft's text in a read-only box under the note (`keepUnsentDraft`) rather than
+  dropping it. A thread at its image cap renders the picker through
   `fileFieldHTML(reason)`, switched off with the reason on screen; `blockFileField` puts
-  a live form into the same state when `image limit reached` arrives mid-draft. A
+  a live form into the same state when `image limit reached` arrives mid-draft, and the
+  summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
+  `image_limit` 0 as a board whose replies never carry images, not a full thread. A
+  network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
+  browser's "Failed to fetch". A not-found page names and links a board only when it is
+  in `state.boards`: the slug comes from the address, and echoing any slug would let a
+  crafted link write the page's copy. A history change that keeps the rendered path (a
+  same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
@@ -373,6 +402,18 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   post sends the credential **instead of** the key: the server takes a badged post's ID
   from the credential, and the two travelling together would be the one place a
   browser's key met its credential.
+  `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
+  either header is attached anywhere but that one line.
+- The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
+  empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
+  a tripcode on both kinds of post would publicly tie the unbadged ones to the
+  institution, which the per-credential IDs exist to prevent. A Name the poster cleared
+  stays cleared across re-renders and after posting (`restoreDraft` restores empty
+  values; `submit` sets the field after `form.reset()`).
+- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state, removes
+  the credential, the poster key and the remembered name, and leaves the age answer. It
+  is what the FAQ's shared-computer advice points to: the key left behind would give the
+  next person at the computer the same IDs in the same threads.
 
 ### Child safety
 
@@ -679,7 +720,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     own code-request cooldown, which is applied per address hash and per client address
     — the latter shared by everyone behind a campus NAT. The cost accepted in exchange
     is that a badge outlives the sitting on a shared browser, which is why `/verify`
-    gives "Forget this credential" its own block and states that forgetting is final.
+    gives "Forget this credential" its own block and states that forgetting is final,
+    and offers "Forget this browser" for the poster key and name as well.
     Do not "fix" this back to `sessionStorage` without resolving the reissue problem.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
