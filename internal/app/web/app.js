@@ -1248,12 +1248,12 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   // Archived is for good, so the form gives way to where the conversation can
   // go instead rather than to a box that could only fail.
   if (thread && thread.archived_at) {
-    return `<p class="archived-note"><span class="badge archived">archived</span>
+    return `<p class="archived-note" data-replies-closed><span class="badge archived">archived</span>
       <span>Archived threads take no new replies. To carry on the conversation,
         <a href="${boardPath(slug)}">start a new thread on ${esc(boardLabel(slug))}</a>.</span></p>`;
   }
   if (thread && thread.locked) {
-    return `<p class="locked-note"><span class="badge locked">locked</span> This thread is locked; no new replies.</p>`;
+    return `<p class="locked-note" data-replies-closed><span class="badge locked">locked</span> This thread is locked; no new replies.</p>`;
   }
   const threadNo = thread ? thread.no : null;
 
@@ -2698,7 +2698,9 @@ function field(form, name) {
 function captureDraft() {
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
-    return null;
+    // A reply the thread closed on is carried as far as its text goes.
+    const unsent = el.main.querySelector("textarea[data-unsent]");
+    return unsent ? { key: routeKey(state.route), open: true, body: unsent.value } : null;
   }
   const image = field(form, "image");
   const details = form.closest("details");
@@ -2728,6 +2730,7 @@ function restoreDraft(draft) {
   }
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
+    keepUnsentDraft(draft);
     return;
   }
   // An empty field is restored as empty: a Name the poster cleared stays
@@ -2753,6 +2756,31 @@ function restoreDraft(draft) {
   if (details && (draft.open || draft.body || draft.file)) {
     details.open = true;
   }
+}
+
+// keepUnsentDraft is for a draft whose thread was archived or locked under it:
+// the re-render has no form to put it back in, and the draft is the only copy
+// of what the poster wrote. Its text goes into a read-only box under the note
+// that says why, to be copied somewhere it can still go.
+function keepUnsentDraft(draft) {
+  const note = el.main.querySelector("[data-replies-closed]");
+  const body = draft.body || "";
+  if (!note || (!body.trim() && !draft.file)) {
+    return;
+  }
+  const box = document.createElement("div");
+  box.className = "fields unsent-draft";
+  if (body.trim()) {
+    box.innerHTML = `
+      <div class="field">
+        <label class="label" for="f-unsent">Your reply was not sent. Copy it from here to keep it.</label>
+        <textarea id="f-unsent" data-unsent readonly rows="6"></textarea>
+      </div>`;
+    box.querySelector("textarea").value = body;
+  } else {
+    box.innerHTML = `<p class="hint">Your reply's image was not sent.</p>`;
+  }
+  note.after(box);
 }
 
 /* Images ------------------------------------------------------------------- */

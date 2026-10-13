@@ -610,6 +610,14 @@ button.link:hover { text-decoration: underline; }
   font-size: 14px;
 }
 
+/* A reply whose thread closed while it was being written, kept to be copied. */
+.unsent-draft {
+  max-width: 68ch;
+  margin: 0 0 20px;
+}
+
+.unsent-draft textarea { min-height: 112px; resize: vertical; }
+
 .locked-note,
 .archived-note {
   display: flex;
