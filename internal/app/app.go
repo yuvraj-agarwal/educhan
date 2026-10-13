@@ -31,6 +31,10 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
+
+	// schemaAhead lists the migrations the database has and this binary does
+	// not: a newer release migrated it. The sweeper refuses to run on one.
+	schemaAhead []int
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
@@ -54,7 +58,8 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		pool.Close()
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
-	if err := migrate(ctx, pool, log); err != nil {
+	schemaAhead, err := migrate(ctx, pool, log)
+	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
@@ -100,6 +105,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
+		schemaAhead:   schemaAhead,
 	}, nil
 }
 

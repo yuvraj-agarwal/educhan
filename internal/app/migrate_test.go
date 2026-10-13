@@ -57,7 +57,7 @@ func databaseAt(t *testing.T, version int) (*pgxpool.Pool, string) {
 			upTo = append(upTo, m)
 		}
 	}
-	if err := applyMigrations(ctx, pool, slog.New(slog.NewTextHandler(io.Discard, nil)), upTo); err != nil {
+	if _, err := applyMigrations(ctx, pool, slog.New(slog.NewTextHandler(io.Discard, nil)), upTo); err != nil {
 		t.Fatalf("migrate to version %d: %v", version, err)
 	}
 	return pool, url
@@ -181,5 +181,65 @@ func TestBoardSetLeavesExistingBoardsAlone(t *testing.T) {
 	}
 	if want := append(slices.Clone(seededBoards), "general"); !slices.Equal(slugs, want) {
 		t.Errorf("boards = %v, want %v", slugs, want)
+	}
+}
+
+// Phase 0 reserved only the server's own routes, so a moderator could open
+// /archive/ or /rules/; those words are now pages of the site, and the UI
+// reads the path as the page. Starting up moves such a board to
+// "<slug>-board", keeping its row and its threads, rather than leaving it in
+// the board list with every link to it landing somewhere else.
+func TestBoardsUnderNewlyReservedSlugsAreRenamed(t *testing.T) {
+	pool, url := databaseAt(t, 4)
+	ctx := context.Background()
+	if _, err := pool.Exec(ctx, `
+		INSERT INTO boards (slug, name) VALUES
+		    ('archive', 'Archive'), ('rules', 'Rules'), ('rules-board', 'Taken'), ('u', 'U')`); err != nil {
+		t.Fatalf("insert boards: %v", err)
+	}
+	seedThread(t, pool, "archive", "posted on /archive/")
+	ids := map[string]int{"archive": boardID(t, pool, "archive"), "rules": boardID(t, pool, "rules"), "u": boardID(t, pool, "u")}
+
+	var logs syncBuffer
+	h := testServerLogging(t, func(cfg *Config) { cfg.DatabaseURL = url }, &logs)
+	for old, renamed := range map[string]string{"archive": "archive-board", "rules": "rules-board-2", "u": "board-u"} {
+		if id := boardID(t, pool, renamed); id != ids[old] {
+			t.Errorf("/%s/ is row %d, want row %d, the /%s/ it was renamed from", renamed, id, ids[old], old)
+		}
+		if !strings.Contains(logs.String(), `"from":"`+old+`","to":"`+renamed+`"`) {
+			t.Errorf("the rename of /%s/ to /%s/ was not logged:\n%s", old, renamed, logs.String())
+		}
+	}
+	if detail := fetchThread(t, h, "archive-board", 1); detail.Subject != "posted on /archive/" {
+		t.Errorf("/archive-board/ thread 1 = %q, want the thread from /archive/", detail.Subject)
+	}
+	var taken Board
+	h.get("/api/boards/rules-board", &taken)
+	if taken.Name != "Taken" {
+		t.Errorf("/rules-board/ = %+v, want the board that already had the slug, untouched", taken)
+	}
+}
+
+// A database a newer release migrated is one this binary does not fully
+// understand. It still serves — a rollback has to be possible — but says so
+// loudly, and the sweeper, which deletes for good, refuses to run on it.
+func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
+	pool, url := databaseAt(t, 1000)
+	if _, err := pool.Exec(context.Background(),
+		`INSERT INTO schema_migrations (version, name) VALUES (1001, '1001_from_the_future.sql')`); err != nil {
+		t.Fatalf("record a future migration: %v", err)
+	}
+
+	var logs syncBuffer
+	h := testServerLogging(t, func(cfg *Config) { cfg.DatabaseURL = url }, &logs)
+	if !strings.Contains(logs.String(), `"unknown_versions":[1001]`) {
+		t.Errorf("starting on a newer schema logged nothing about it:\n%s", logs.String())
+	}
+	if _, err := h.app.Sweep(context.Background()); err == nil || !strings.Contains(err.Error(), "1001") {
+		t.Errorf("sweep on a newer schema = %v, want a refusal naming the version", err)
+	}
+	var out map[string]any
+	if status := h.do(http.MethodGet, "/api/boards", nil, &out); status != http.StatusOK {
+		t.Errorf("GET /api/boards on a newer schema: status %d, want the server still serving", status)
 	}
 }

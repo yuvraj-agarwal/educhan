@@ -38,6 +38,12 @@ func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 
 func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport, error) {
 	var report SweepReport
+	// A sweeper older than the schema decides what to delete without the
+	// newer rules — a hold on a thread, say — and deletion cannot be undone.
+	if len(a.schemaAhead) > 0 {
+		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
+			"run the sweeper from the same release as the server", a.schemaAhead)
+	}
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)
 		if err != nil {

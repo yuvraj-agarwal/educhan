@@ -304,7 +304,15 @@ What gets uploaded as the build source is governed by `.gcloudignore` — histor
 context a second time before the daemon sees it.
 
 The pushed tags stay in the registry, which is what makes a rollback a deploy of
-an older commit rather than a rebuild:
+an older commit rather than a rebuild. There are no down migrations, though, so a
+rollback runs the older code on the newer schema. A release started on a database
+a newer one migrated logs an error at startup naming the versions it does not
+know, and its sweeper refuses to run. **Never roll back across
+`0005_archive_and_limits.sql`** (to a phase-0 image): that code does not know
+threads can be archived, so it lists every archived thread as live, takes replies
+to them, and on the first new thread on each board deletes the archived threads
+past the limit outright, leaving their images in the bucket with nothing pointing
+at them.
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"

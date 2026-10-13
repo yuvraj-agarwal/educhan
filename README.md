@@ -493,7 +493,13 @@ It is idempotent, so re-running it is how you check the database is up. Point at
 a different server instead by exporting `DATABASE_URL`.
 
 Migrations in `internal/app/migrations/` are applied automatically at startup,
-guarded by a Postgres advisory lock so concurrent instances are safe.
+guarded by a Postgres advisory lock so concurrent instances are safe. There are
+no down migrations. A release started on a database that a newer release has
+migrated still serves, but logs an error naming the versions it does not know,
+and the sweeper refuses to run on it. After the migrations, any board whose slug
+has since become a reserved word (a page such as `/archive/` or `/rules/`) is
+renamed to `<slug>-board`, with a warning in the log, because the UI would read
+its address as the page.
 
 ### The container image
 

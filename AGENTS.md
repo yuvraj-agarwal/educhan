@@ -464,6 +464,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
   than editing an applied one; `0001_init.sql` is deliberately written with
   `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
+  There are no down migrations, so a rollback runs old code on a newer schema: `migrate`
+  logs an error naming the versions it does not know, and `App.schemaAhead` makes the
+  sweeper refuse to run. A rollback across `0005` is unsafe whatever the code says —
+  phase-0 code shows archived threads as live and its prune deletes them, leaving
+  their files behind (`deploy/README.md`). Under the same lock, after the migrations,
+  `renameReservedBoards` moves any board whose slug has since been reserved to
+  `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
+  word needs no migration of its own.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.
