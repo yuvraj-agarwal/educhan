@@ -1,6 +1,9 @@
 package app
 
 import (
+	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -136,4 +139,104 @@ func TestCooldownLimiterSweeps(t *testing.T) {
 	if got := len(limiter.seen); got != 1 {
 		t.Errorf("tracked keys = %d, want 1 after the sweep", got)
 	}
+}
+
+// trackedKeys lists what a limiter holds, under its lock, so a test can read it
+// while the sweep goroutine runs.
+func trackedKeys(l *cooldownLimiter) []string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	keys := make([]string, 0, len(l.seen))
+	for key := range l.seen {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+// setClock replaces a limiter's clock under its lock, so it can be moved while
+// the sweep goroutine reads it.
+func setClock(l *cooldownLimiter, now func() time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.now = now
+}
+
+// waitUntil polls cond until it holds, failing the test after a few seconds.
+// It stands in for a sweep goroutine's next tick, which a test cannot see.
+func waitUntil(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// A sweep keeps exactly the entries that can still refuse something: an entry
+// goes the moment its cooldown has run out by the limiter's clock, and not a
+// moment before. With a sweep every cooldownSweepInterval, that is what holds
+// an address in memory to its cooldown plus one interval.
+func TestSweepExpiredKeepsOnlyLiveCooldowns(t *testing.T) {
+	now := time.Now()
+	limiter := newCooldownLimiter(10 * time.Second)
+	limiter.now = func() time.Time { return now }
+
+	allow(limiter, "198.51.100.1")
+	now = now.Add(5 * time.Second)
+	allow(limiter, "198.51.100.2")
+
+	now = now.Add(5*time.Second - time.Nanosecond)
+	limiter.sweepExpired()
+	if got := strings.Join(trackedKeys(limiter), ","); got != "198.51.100.1,198.51.100.2" {
+		t.Errorf("a nanosecond before the first cooldown ends: tracked %s, want both", got)
+	}
+
+	now = now.Add(time.Nanosecond)
+	limiter.sweepExpired()
+	if got := strings.Join(trackedKeys(limiter), ","); got != "198.51.100.2" {
+		t.Errorf("as the first cooldown ends: tracked %s, want only the second", got)
+	}
+
+	now = now.Add(5 * time.Second)
+	limiter.sweepExpired()
+	if got := trackedKeys(limiter); len(got) != 0 {
+		t.Errorf("after both cooldowns: tracked %v, want nothing", got)
+	}
+
+	var nilLimiter *cooldownLimiter
+	nilLimiter.sweepExpired()
+}
+
+// sweepCooldowns sweeps every limiter it is given, on its own, with no request
+// arriving to prompt it, and stop leaves nothing running, however often it is
+// called.
+func TestSweepCooldownsRunsUntilStopped(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()) }
+
+	short := newCooldownLimiter(time.Second)
+	long := newCooldownLimiter(time.Minute)
+	for _, l := range []*cooldownLimiter{short, long} {
+		l.now = now
+		allow(l, "198.51.100.1")
+	}
+
+	stop := sweepCooldowns(time.Millisecond, short, long)
+	defer stop()
+
+	clock.Add(int64(2 * time.Second))
+	waitUntil(t, "the short cooldown's entry is swept", func() bool { return len(trackedKeys(short)) == 0 })
+	if got := trackedKeys(long); len(got) != 1 {
+		t.Errorf("the long cooldown holds %v, want its entry kept while it can still refuse", got)
+	}
+
+	clock.Add(int64(time.Minute))
+	waitUntil(t, "the long cooldown's entry is swept", func() bool { return len(trackedKeys(long)) == 0 })
+
+	stop()
+	stop()
 }

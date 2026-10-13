@@ -20,6 +20,10 @@ const multipartOverhead = 1 << 20
 // uploadFieldName is the multipart field carrying the attachment.
 const uploadFieldName = "image"
 
+// uploadsSwitchedOff is the refusal of an image post on a server with uploads
+// switched off. Clients match on it, so it does not change.
+const uploadsSwitchedOff = "image uploads are switched off on this server"
+
 // maxOriginalNameLen bounds the client-supplied filename kept for display.
 const maxOriginalNameLen = 128
 
@@ -77,13 +81,26 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 		return &sub, true
 	}
 
-	r.Body = http.MaxBytesReader(w, r.Body, a.cfg.MaxUploadBytes+multipartOverhead)
-	if err := r.ParseMultipartForm(multipartOverhead); err != nil {
-		if tooLarge(err) {
+	// With uploads switched off a post can carry nothing but its text fields,
+	// so its body is held to what a JSON post may be (maxRequestBytes, well
+	// above the longest legal post) instead of an image's worth. A body past
+	// that is carrying a file, and is refused for the reason that will not
+	// change, uploads switched off, once that much has been read: the rest of
+	// the file is never read, and no size limit answers first.
+	bodyLimit, inMemory := a.cfg.MaxUploadBytes+multipartOverhead, int64(multipartOverhead)
+	if !a.cfg.UploadsEnabled {
+		bodyLimit, inMemory = maxRequestBytes, maxRequestBytes
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
+	if err := r.ParseMultipartForm(inMemory); err != nil {
+		switch {
+		case tooLarge(err) && !a.cfg.UploadsEnabled:
+			writeError(w, http.StatusForbidden, uploadsSwitchedOff)
+		case tooLarge(err):
 			writeError(w, http.StatusRequestEntityTooLarge, "attachment too large")
-			return nil, false
+		default:
+			writeError(w, http.StatusBadRequest, "invalid form data")
 		}
-		writeError(w, http.StatusBadRequest, "invalid form data")
 		return nil, false
 	}
 	defer r.MultipartForm.RemoveAll()
@@ -111,11 +128,12 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 	}
 	defer file.Close()
 
-	// Checked before the bytes are read, and only for a part that has some:
-	// an untouched file input still sends an empty one, and that post carries
-	// no image.
+	// A file small enough to fit under the switched-off body limit above has
+	// been read with the form; it is refused here, before it is copied out or
+	// decoded. Only a part with bytes in it counts: an untouched file input
+	// still sends an empty one, and that post carries no image.
 	if !a.cfg.UploadsEnabled && header.Size > 0 {
-		writeError(w, http.StatusForbidden, "image uploads are switched off on this server")
+		writeError(w, http.StatusForbidden, uploadsSwitchedOff)
 		return nil, false
 	}
 

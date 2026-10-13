@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -76,7 +77,7 @@ func TestSweepModeSweepsAndExits(t *testing.T) {
 
 	// The first run has an empty schema to work on, which also proves the
 	// mode migrates before it sweeps.
-	if err := run([]string{"-sweep"}); err != nil {
+	if err := run([]string{"-sweep"}, io.Discard); err != nil {
 		t.Fatalf("sweep on an empty database: %v", err)
 	}
 
@@ -94,7 +95,7 @@ func TestSweepModeSweepsAndExits(t *testing.T) {
 		t.Fatalf("seed archived threads: %v", err)
 	}
 
-	if err := run([]string{"-sweep"}); err != nil {
+	if err := run([]string{"-sweep"}, io.Discard); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
 
@@ -117,6 +118,35 @@ func TestSweepModeSweepsAndExits(t *testing.T) {
 	}
 }
 
+// The sweeper Job runs deliberately without the poster-ID salt, the
+// moderation key and the verification secret, which only a web server uses.
+// So a sweep says nothing about them: a warning there would read as a fault
+// in the Job and invite an operator to hand it secrets it does not need. The
+// web server's own warnings are WarnServingSettings', which only serving calls.
+func TestSweepModeLogsNoServerWarnings(t *testing.T) {
+	sweepEnv(t)
+	t.Setenv("EDUCHAN_POSTER_ID_SALT", "")
+	t.Setenv("EDUCHAN_MOD_KEY", "")
+
+	var logs strings.Builder
+	if err := run([]string{"-sweep"}, &logs); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	out := logs.String()
+	// The capture works: the sweep's own record is in it.
+	if !strings.Contains(out, "msg=sweep ") {
+		t.Fatalf("the sweep's record is missing from its log:\n%s", out)
+	}
+	for _, setting := range []string{"EDUCHAN_POSTER_ID_SALT", "EDUCHAN_MOD_KEY", "EDUCHAN_VERIFY_SECRET", "EDUCHAN_MAIL_DEV"} {
+		if strings.Contains(out, setting) {
+			t.Errorf("the sweep logged about %s, which only the web server uses:\n%s", setting, out)
+		}
+	}
+	if strings.Contains(out, "level=WARN") {
+		t.Errorf("the sweep logged a warning:\n%s", out)
+	}
+}
+
 // A sweep that cannot do its job has to say so in its exit status, or the
 // scheduler reports every run as a success.
 func TestSweepModeFailsWithoutADatabase(t *testing.T) {
@@ -125,7 +155,7 @@ func TestSweepModeFailsWithoutADatabase(t *testing.T) {
 	t.Setenv("EDUCHAN_UPLOAD_DIR", t.TempDir())
 	t.Setenv("EDUCHAN_VERIFY_SECRET", "")
 
-	if err := run([]string{"-sweep"}); err == nil {
+	if err := run([]string{"-sweep"}, io.Discard); err == nil {
 		t.Error("a sweep with no database reported success")
 	}
 }
@@ -134,7 +164,7 @@ func TestSweepModeFailsWithoutADatabase(t *testing.T) {
 // server instead of sweeping would never finish.
 func TestRunRefusesWhatItDoesNotUnderstand(t *testing.T) {
 	for _, args := range [][]string{{"sweep"}, {"-sweep", "now"}, {"-swept"}} {
-		if err := run(args); err == nil {
+		if err := run(args, io.Discard); err == nil {
 			t.Errorf("run(%q) succeeded, want an error", args)
 		}
 	}

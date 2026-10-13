@@ -5,13 +5,26 @@ import (
 	"time"
 )
 
-// cooldownSweepThreshold is the number of tracked keys after which expired
-// entries are swept, keeping the map bounded without a background goroutine.
+// cooldownSweepThreshold is the number of tracked keys after which recording a
+// new one sweeps expired entries first, keeping the map bounded under a burst
+// between two periodic sweeps.
 const cooldownSweepThreshold = 4096
+
+// cooldownSweepInterval is how often sweepCooldowns drops every entry whose
+// cooldown has passed. The keys are client addresses, so this is the bound on
+// how long the server remembers one: an address is held in memory no longer
+// than the longest cooldown that applies to it plus one minute, counted from
+// its last action that started a cooldown. A quiet server forgets as surely as
+// a busy one; the address is never written anywhere else.
+const cooldownSweepInterval = time.Minute
 
 // cooldownLimiter enforces a minimum interval between two actions from the same
 // key. It is the flood control every imageboard needs: cheap, per-process, and
 // good enough to stop a single client from spamming a board.
+//
+// Its keys carry client addresses, so it keeps an entry only while the entry
+// can still refuse something: sweepCooldowns drops it within
+// cooldownSweepInterval of its cooldown running out.
 //
 // A distributed deployment would move this to shared storage; the interface is
 // kept small so that swap is contained.
@@ -105,5 +118,45 @@ func (l *cooldownLimiter) sweep(now time.Time) {
 		if now.Sub(last) >= l.interval {
 			delete(l.seen, key)
 		}
+	}
+}
+
+// sweepExpired drops every entry whose cooldown has elapsed by the limiter's
+// clock.
+func (l *cooldownLimiter) sweepExpired() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sweep(l.now())
+}
+
+// sweepCooldowns drops the expired entries of every limiter once each interval,
+// on a goroutine of its own, until stop is called. stop returns once that
+// goroutine has finished, and calling it again does nothing, so an App closed
+// twice, or a test that stops it early, leaves nothing running.
+func sweepCooldowns(every time.Duration, limiters ...*cooldownLimiter) (stop func()) {
+	ticker := time.NewTicker(every)
+	quit := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				for _, l := range limiters {
+					l.sweepExpired()
+				}
+			case <-quit:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(quit) })
+		<-finished
 	}
 }

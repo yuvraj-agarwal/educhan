@@ -3,16 +3,19 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 	"github.com/yuvraj-agarwal/educhan/internal/media/mediatest"
 )
@@ -202,8 +205,10 @@ func TestAttachmentLifecycleAcrossBackends(t *testing.T) {
 
 // Blobs are written before the row that references them exists, so a
 // transaction that refuses the post leaves them orphaned unless the handler
-// cleans up. A locked thread is the refusal that is easiest to arrange and is
-// exactly the shape of the ones that matter.
+// cleans up. A reply to a thread that is already locked is turned away before
+// its upload is stored, so the test locks the thread while the reply waits for
+// the board's row, after the upload: the race a moderator's lock really runs,
+// played in the same order every time.
 func TestFailedPostRemovesItsBlobs(t *testing.T) {
 	for _, backend := range mediaBackends {
 		t.Run(backend.name, func(t *testing.T) {
@@ -215,16 +220,105 @@ func TestFailedPostRemovesItsBlobs(t *testing.T) {
 			blobs := &recordingStore{Store: c.app.media}
 			c.app.media = blobs
 
-			thread := c.createThread("general", "closed", "", "no more replies")
-			c.modAction(http.MethodPost, fmt.Sprintf("/api/boards/general/threads/%d/lock", thread.ThreadNo))
-
+			// Already locked: refused up front, and nothing is written.
+			locked := c.createThread("general", "closed", "", "no more replies")
+			c.modAction(http.MethodPost, fmt.Sprintf("/api/boards/general/threads/%d/lock", locked.ThreadNo))
 			var out createdPost
-			status := c.upload(fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo),
+			status := c.upload(fmt.Sprintf("/api/boards/general/threads/%d/posts", locked.ThreadNo),
 				map[string]string{"body": "sneaking in"}, "late.png", pngBytes(t, 320, 240), &out)
-			if status != http.StatusForbidden {
-				t.Fatalf("reply to a locked thread: status = %d, want 403 (%s)", status, out.Error)
+			if status != http.StatusForbidden || out.Error != "thread is locked" {
+				t.Fatalf("reply to a locked thread: status = %d (%s), want 403 thread is locked", status, out.Error)
+			}
+			if written := blobs.written(); len(written) != 0 {
+				t.Fatalf("a reply refused up front wrote %v, want nothing", written)
 			}
 
+			// Locked while the reply waits: stored, refused, and cleaned up.
+			thread := c.createThread("general", "open", "", "about to be locked")
+			ctx := context.Background()
+			other, err := pgx.Connect(ctx, c.app.cfg.DatabaseURL)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			defer other.Close(ctx)
+			tx, err := other.Begin(ctx)
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			defer tx.Rollback(ctx)
+			var pid int
+			if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+				t.Fatalf("backend pid: %v", err)
+			}
+			// The board's row, as a new thread or another reply holds it.
+			if _, err := tx.Exec(ctx, `UPDATE boards SET next_post_no = next_post_no + 1 WHERE slug = 'general'`); err != nil {
+				t.Fatalf("take the board's row: %v", err)
+			}
+
+			// Built here so the goroutine does nothing but send: only the
+			// test's own goroutine may fail the test.
+			var body bytes.Buffer
+			form := multipart.NewWriter(&body)
+			_ = form.WriteField("body", "racing the lock")
+			part, err := form.CreateFormFile(uploadFieldName, "racing.png")
+			if err != nil {
+				t.Fatalf("create file part: %v", err)
+			}
+			if _, err := part.Write(pngBytes(t, 320, 240)); err != nil {
+				t.Fatalf("write file part: %v", err)
+			}
+			if err := form.Close(); err != nil {
+				t.Fatalf("close form: %v", err)
+			}
+			type outcome struct {
+				status int
+				body   createdPost
+				err    error
+			}
+			replied := make(chan outcome, 1)
+			go func() {
+				res, err := http.Post(fmt.Sprintf("%s/api/boards/general/threads/%d/posts", c.base, thread.ThreadNo),
+					form.FormDataContentType(), &body)
+				if err != nil {
+					replied <- outcome{err: err}
+					return
+				}
+				defer res.Body.Close()
+				var got createdPost
+				err = json.NewDecoder(res.Body).Decode(&got)
+				replied <- outcome{status: res.StatusCode, body: got, err: err}
+			}()
+
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				var waiting int
+				if err := c.app.pool.QueryRow(ctx,
+					`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid).Scan(&waiting); err != nil {
+					t.Fatalf("look for the blocked reply: %v", err)
+				}
+				if waiting > 0 {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatal("the reply never waited on the board's row")
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			if _, err := tx.Exec(ctx, `UPDATE threads SET locked = TRUE WHERE no = $1
+				AND board_id = (SELECT id FROM boards WHERE slug = 'general')`, thread.ThreadNo); err != nil {
+				t.Fatalf("lock the thread: %v", err)
+			}
+			if err := tx.Commit(ctx); err != nil {
+				t.Fatalf("commit: %v", err)
+			}
+
+			got := <-replied
+			if got.err != nil {
+				t.Fatalf("reply: %v", got.err)
+			}
+			if got.status != http.StatusForbidden || got.body.Error != "thread is locked" {
+				t.Fatalf("reply locked out mid-flight: status = %d (%s), want 403 thread is locked", got.status, got.body.Error)
+			}
 			written := blobs.written()
 			if len(written) != 2 {
 				t.Fatalf("the upload wrote %d objects (%v), want the original and its thumbnail — "+

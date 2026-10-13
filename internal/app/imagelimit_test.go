@@ -2,11 +2,14 @@ package app
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"sync"
 	"testing"
+	"time"
 )
 
 // threadCounters is what each view of a thread says about its images.
@@ -95,8 +98,9 @@ func TestImageLimitBoundary(t *testing.T) {
 	if status != http.StatusForbidden || msg != "image limit reached" {
 		t.Errorf("image past the limit: status %d (%q), want 403 %q", status, msg, "image limit reached")
 	}
-	// The refused image was stored before the thread was checked; the
-	// refusal has to take it away again.
+	// A refused image leaves nothing behind, whether it was turned away
+	// before it was stored or, racing another reply, stored and then refused
+	// inside the transaction.
 	if after := filesUnder(t, h.app.cfg.UploadDir); len(after) != len(files) {
 		t.Errorf("a refused image left blobs behind: %d files before, %d after", len(files), len(after))
 	}
@@ -171,6 +175,141 @@ func TestImageLimitCountsThePostsNotTheCounter(t *testing.T) {
 	}
 	if got := fetchThread(t, h, "drift", roomy.ThreadNo).Images; got != 2 {
 		t.Errorf("counter after the next image = %d, want it recounted to 2", got)
+	}
+}
+
+// A reply the thread refuses anyway — an image to a thread at its cap, or
+// anything to a thread that is locked, archived or gone — is turned away
+// before flood control charges for it and before its upload is stored. The
+// client tells a poster refused at the cap to send the text on its own, and
+// that has to go through at once rather than meet a 429.
+func TestRefusedRepliesCostNoCooldown(t *testing.T) {
+	h := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.PostCooldown = time.Minute
+		cfg.UploadCooldown = time.Minute
+	})
+	h.addBoard("full", "roomy", "closed")
+	h.exec(`UPDATE boards SET image_limit = 1 WHERE slug = 'full'`)
+
+	// Somebody else opens the threads, so the cooldowns that brings are theirs.
+	const opener, poster = "198.51.100.1", "198.51.100.2"
+	asPoster := http.Header{"X-Forwarded-For": {poster}}
+	var full, roomy createdPost
+	if status := h.uploadWithHeaders(http.Header{"X-Forwarded-For": {opener}}, "/api/boards/full/threads",
+		map[string]string{"body": "the only image"}, "op.png", pngBytes(t, 24, 24), &full); status != http.StatusCreated {
+		t.Fatalf("open the full thread: status %d (%s)", status, full.Error)
+	}
+	if status := h.postFrom(opener, "/api/boards/roomy/threads",
+		map[string]any{"body": "room for images"}, &roomy); status != http.StatusCreated {
+		t.Fatalf("open the roomy thread: status %d (%s)", status, roomy.Error)
+	}
+
+	files := filesUnder(t, h.app.cfg.UploadDir)
+	fullPath := fmt.Sprintf("/api/boards/full/threads/%d/posts", full.ThreadNo)
+	var out createdPost
+	status := h.uploadWithHeaders(asPoster, fullPath, map[string]string{"body": "one image too many"},
+		"late.png", pngBytes(t, 24, 24), &out)
+	if status != http.StatusForbidden || out.Error != "image limit reached" {
+		t.Fatalf("image past the cap: status %d %q, want 403 %q", status, out.Error, "image limit reached")
+	}
+	if after := filesUnder(t, h.app.cfg.UploadDir); len(after) != len(files) {
+		t.Errorf("the refused image was stored: %d files before, %d after", len(files), len(after))
+	}
+	// The text on its own, straight away: the reply cooldown was not started.
+	if status := h.postFrom(poster, fullPath, map[string]any{"body": "the text on its own"}, &out); status != http.StatusCreated {
+		t.Errorf("text reply right after the refusal: status %d (%s), want 201", status, out.Error)
+	}
+	// An image to a thread with room, straight away: nor was the upload one.
+	roomyPath := fmt.Sprintf("/api/boards/roomy/threads/%d/posts", roomy.ThreadNo)
+	if status := h.uploadWithHeaders(asPoster, roomyPath, map[string]string{"body": "an image with room"},
+		"room.png", pngBytes(t, 24, 24), &out); status != http.StatusCreated {
+		t.Errorf("image reply elsewhere right after the refusal: status %d (%s), want 201", status, out.Error)
+	}
+	// The cooldowns are on, so the two posts above prove something.
+	if status := h.uploadWithHeaders(asPoster, roomyPath, map[string]string{"body": "and another"},
+		"again.png", pngBytes(t, 24, 24), &out); status != http.StatusTooManyRequests {
+		t.Errorf("a second image reply at once: status %d, want 429", status)
+	}
+
+	// A locked, an archived and a missing thread refuse for free as well: the
+	// reply after all three is the poster's first to be charged.
+	locked := h.createThread("closed", "", "", "to be locked")
+	archived := h.createThread("closed", "", "", "to be archived")
+	open := h.createThread("closed", "", "", "still open")
+	h.exec(`UPDATE threads SET locked = TRUE WHERE no = $1
+		AND board_id = (SELECT id FROM boards WHERE slug = 'closed')`, locked.ThreadNo)
+	h.exec(`UPDATE threads SET archived_at = now() WHERE no = $1
+		AND board_id = (SELECT id FROM boards WHERE slug = 'closed')`, archived.ThreadNo)
+	for _, tc := range []struct {
+		no     int64
+		status int
+		error  string
+	}{
+		{locked.ThreadNo, http.StatusForbidden, "thread is locked"},
+		{archived.ThreadNo, http.StatusForbidden, "thread is archived"},
+		{open.ThreadNo + 100, http.StatusNotFound, "not found"},
+	} {
+		var refused createdPost
+		path := fmt.Sprintf("/api/boards/closed/threads/%d/posts", tc.no)
+		if status := h.postFrom(poster, path, map[string]any{"body": "refused"}, &refused); status != tc.status || refused.Error != tc.error {
+			t.Errorf("reply to No. %d: status %d %q, want %d %q", tc.no, status, refused.Error, tc.status, tc.error)
+		}
+	}
+	if status := h.postFrom(poster, fmt.Sprintf("/api/boards/closed/threads/%d/posts", open.ThreadNo),
+		map[string]any{"body": "this one lands"}, &out); status != http.StatusCreated {
+		t.Errorf("reply after three refusals: status %d (%s), want 201", status, out.Error)
+	}
+}
+
+// The handler's early refusal is a read without a lock, there for the poster's
+// sake. What holds when replies race is CreateReply's own check under the
+// board and thread locks, so called directly, with no handler in front of it,
+// it still refuses every case on its own.
+func TestCreateReplyRefusesOnItsOwn(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("direct")
+	h.exec(`UPDATE boards SET image_limit = 1 WHERE slug = 'direct'`)
+	full := h.imageThread("direct", "the only image")
+	locked := h.createThread("direct", "", "", "to be locked")
+	archived := h.createThread("direct", "", "", "to be archived")
+	h.exec(`UPDATE threads SET locked = TRUE WHERE no = $1
+		AND board_id = (SELECT id FROM boards WHERE slug = 'direct')`, locked.ThreadNo)
+	h.exec(`UPDATE threads SET archived_at = now() WHERE no = $1
+		AND board_id = (SELECT id FROM boards WHERE slug = 'direct')`, archived.ThreadNo)
+
+	ctx := context.Background()
+	board, err := h.app.store.Board(ctx, "direct")
+	if err != nil {
+		t.Fatalf("look up the board: %v", err)
+	}
+	reply := func(no int64, image bool) error {
+		in := NewReply{Board: board, ThreadNo: no, Body: "straight to the store",
+			PosterID: func(int64) string { return "direct" }}
+		if image {
+			// Refused before the insert, so it needs no stored file behind it.
+			in.Attachment = &newAttachment{}
+		}
+		_, err := h.app.store.CreateReply(ctx, in)
+		return err
+	}
+	for _, tc := range []struct {
+		what  string
+		no    int64
+		image bool
+		want  error
+	}{
+		{"an image to the full thread", full.ThreadNo, true, errImageLimit},
+		{"text to the locked thread", locked.ThreadNo, false, errThreadLocked},
+		{"text to the archived thread", archived.ThreadNo, false, errThreadArchived},
+		{"text to no thread", archived.ThreadNo + 100, false, errNotFound},
+	} {
+		if err := reply(tc.no, tc.image); !errors.Is(err, tc.want) {
+			t.Errorf("%s: %v, want %v", tc.what, err, tc.want)
+		}
+	}
+	if err := reply(full.ThreadNo, false); err != nil {
+		t.Errorf("text to the full thread: %v, want it posted", err)
 	}
 }
 

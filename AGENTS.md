@@ -29,7 +29,7 @@ not.
     post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
     pair (`markupBlocks`), which the front end's `parseMarkup` mirrors.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
-  - `ratelimit.go` — per-client flood control.
+  - `ratelimit.go` — per-client flood control, and the sweep that forgets expired entries.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
@@ -127,9 +127,12 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 
 Attachments use `multipart/form-data` on the same two endpoints; `image` is the file
 field, and everything else stays the same. Uploads are off unless
-`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`):
+`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`), and
+`GET /api/site` says which, with the size limit:
 
 ```bash
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="with image" -F body="look at this" -F image=@/path/to/photo.png \
@@ -470,6 +473,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
   than by the filename or the client-supplied content type.
+- Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
+  `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
+  as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
+  configuration: it reads nothing from the request, sets no cookie, and answers every
+  caller the same (`TestSiteReportsTheUploadSettings`, and it is on
+  `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything about
+  the caller belongs nowhere near it.
+- With uploads off, `parseSubmission` holds a multipart body to `maxRequestBytes` (the
+  JSON cap, well above the longest legal post) instead of `MaxUploadBytes` plus
+  overhead, and answers an overflow with the switched-off `403`
+  (`uploadsSwitchedOff`, a string clients match on) rather than `413`: a body that size
+  is carrying a file, and the poster should hear the reason that will not change. A
+  smaller file is refused after the form is parsed, and only a part with bytes in it
+  counts, because an untouched file input still sends an empty one. Both refusals come
+  before flood control and store nothing
+  (`TestUploadsSwitchedOffRefusesALargeFileUnread`, which also counts the bytes read).
 - Files are keyed `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and
   `thumbs/{board}/{YYYY}/{MM}/…`, served from `/media/original/…` and `/media/thumb/…`
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
@@ -491,9 +510,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
   the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
   creation, set from that count on every image reply, and recounted when a post is
-  deleted. Nothing enforces the cap against the counter. The upload is stored before
-  the check, as it is before the lock and archive checks, and the handler's
-  `discardUpload` removes it on refusal.
+  deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
+  parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
+  makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
+  image the cap, counted from the posts like the real check) — then flood control,
+  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  cooldown and stores nothing, and the client's "send the text on its own" goes
+  through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
+  nothing: replies racing for the last slot both pass it, and the check inside
+  `CreateReply`'s transaction is the one that holds (`TestCreateReplyRefusesOnItsOwn`
+  calls it with no handler in front). A reply refused there has already been charged
+  its cooldowns and stored its upload, which `discardUpload` removes. Never move the
+  enforcement into the pre-check or drop it from the transaction.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
@@ -549,7 +577,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
   board's `archive_days` have passed. It is a one-shot mode rather than a timer because
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
-  on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
+  on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
   a cutoff fixed when the sweep starts, so a sweep always terminates. Each batch queues
   the storage keys of its files in `media_deletions` (`0007`) in the same transaction
@@ -567,9 +595,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   failures included, and the error it returns has the key taken out
   (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
   failure, a file it could not remove or did not find, or a database a newer release
-  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). **Legal holds (build plan
-  2.10) are not built**; when they are, `SweepArchived` must skip held threads, and its
-  comment says so.
+  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
+  like the server, and runs without the salt, the moderation key and the verification
+  secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -636,8 +669,23 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
   cooldown per client across the whole server. A submission clears every cooldown that
   applies to it or none is started, so a post refused by one limit is not charged for the
-  other; `allowAll` is what enforces that. State is per process and in memory — a shared
+  other; `allowAll` is what enforces that. Nothing is refunded once a cooldown starts,
+  so every refusal that can be known up front comes before `allow`: a malformed poster
+  key, the body, a badge the poster cannot have, uploads switched off, and a reply the
+  thread would refuse (`ReplyRefusal`). State is per process and in memory — a shared
   backend means replacing `cooldownLimiter`, which nothing else depends on.
+  The keys carry client addresses, so the limiters are also a privacy surface: `New`
+  starts `sweepCooldowns`, which drops every expired entry of all four limiters each
+  `cooldownSweepInterval` (one minute), and `Close` stops it. **An address is held in
+  memory no longer than the longest cooldown that applies to it plus one minute**,
+  counted from its last action that started one, busy server or quiet; the README's
+  Flood control section states that bound, and anything the client says about
+  addresses rests on it. A longer interval, a new limiter left out of the sweep, or a
+  limiter keyed on something that outlives its cooldown breaks it
+  (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
+  `TestFloodControlForgetsAddressesOnAQuietServer`, which shortens the period through
+  `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold`
+  only bounds a burst between two ticks.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
@@ -731,7 +779,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     Do not "fix" this back to `sessionStorage` without resolving the reissue problem.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
-    The credential is not logged either: it is shown once, in one response body.
+    The credential is not logged either: it is shown once, in one response body. The
+    issuance line (`verification issued`) is bare: no label, no institution, nothing
+    from the record. The row dates an issuance to the day; a label stamped to the
+    second would date it exactly whenever it was its institution's only one that day.
+    `TestIssuanceIsLoggedWithoutTheInstitution` holds it, and the README's privacy
+    section says what the log's times do and do not reveal; keep the two in step.
   - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
     column of every table for the address. It has positive controls, so it fails rather
     than passing vacuously if the scan stops working.
@@ -791,7 +844,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
-  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`) run the whole app
+  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`) run the whole app
   against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the

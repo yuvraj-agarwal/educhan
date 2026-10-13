@@ -31,6 +31,9 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
+	// stopCooldownSweep stops the goroutine that drops the limiters' expired
+	// entries, which are client addresses. Close calls it.
+	stopCooldownSweep func()
 
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
@@ -81,19 +84,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if sender == nil {
 		sender = mailer.NewDev(os.Stdout)
 	}
-	if cfg.PosterIDSaltEphemeral {
-		log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
-	}
-	if cfg.ModKey == "" {
-		log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request")
-	}
-	switch {
-	case cfg.VerifySecret == "":
-		log.Warn("EDUCHAN_VERIFY_SECRET is unset; institutional verification is disabled")
-	case cfg.Sender == nil:
-		log.Warn("EDUCHAN_MAIL_DEV is set; verification codes are printed to stdout with their address")
-	}
-	return &App{
+	a := &App{
 		cfg:           cfg,
 		log:           log,
 		pool:          pool,
@@ -106,7 +97,35 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
 		schemaAhead:   schemaAhead,
-	}, nil
+	}
+	every := cfg.cooldownSweepEvery
+	if every <= 0 {
+		every = cooldownSweepInterval
+	}
+	a.stopCooldownSweep = sweepCooldowns(every,
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+	return a, nil
+}
+
+// WarnServingSettings logs the settings a web server is missing or should not
+// have: the salt that keeps poster IDs stable across restarts, the moderation
+// key, verification, and the development mail sender. It is the serving path's
+// to call, not New's, because the sweeper builds an App too and runs without
+// any of them by design; warnings about a server it is not running would only
+// teach an operator to give it secrets it does not need.
+func (a *App) WarnServingSettings() {
+	if a.cfg.PosterIDSaltEphemeral {
+		a.log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
+	}
+	if a.cfg.ModKey == "" {
+		a.log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request")
+	}
+	switch {
+	case a.cfg.VerifySecret == "":
+		a.log.Warn("EDUCHAN_VERIFY_SECRET is unset; institutional verification is disabled")
+	case a.cfg.Sender == nil:
+		a.log.Warn("EDUCHAN_MAIL_DEV is set; verification codes are printed to stdout with their address")
+	}
 }
 
 // checkMailer refuses to start verification with nowhere safe to send codes.
@@ -143,9 +162,12 @@ func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
 	}
 }
 
-// Close releases database resources and, for a backend that holds a connection
-// of its own, the media store's.
+// Close stops the flood-control sweep and releases database resources and, for
+// a backend that holds a connection of its own, the media store's.
 func (a *App) Close() {
+	if a.stopCooldownSweep != nil {
+		a.stopCooldownSweep()
+	}
 	if a.pool != nil {
 		a.pool.Close()
 	}
@@ -161,6 +183,7 @@ func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
+	mux.HandleFunc("GET /api/site", a.handleSite)
 
 	mux.HandleFunc("GET /api/boards", a.handleListBoards)
 	mux.HandleFunc("GET /api/boards/{slug}", a.handleGetBoard)

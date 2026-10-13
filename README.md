@@ -176,8 +176,14 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- Roughly when a credential was issued — to the *day*, because the stored
-  expiry is rounded up to a UTC day boundary and nothing else is timestamped.
+- When a credential was issued: in the database, only to the *day*, because the
+  stored expiry is rounded up to a UTC day boundary and nothing else in the
+  verification tables is timestamped; in the application's log, for as long as
+  it is kept, to the second, because the request line for
+  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
+  time. Neither line says which institution or address the credential was for
+  (`TestIssuanceIsLoggedWithoutTheInstitution`), so a log time picks out one
+  stored record only on a day when a single credential was issued in all.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -199,9 +205,11 @@ can and cannot work out.
 - Link a credential to a post. The credential carries a label, an expiry, and a
   random identifier — nothing derived from the address. Posts store the badge
   as text and hold no reference to the record it came from.
-- Link a post to a verification record by timing. Verification tables carry no
-  `created_at`, and using a credential updates nothing, so there is no "last
-  used" to line up against a post.
+- Link a post to a verification record by timing, beyond the issuance times
+  above. Verification tables carry no `created_at`, and using a credential
+  updates nothing, so there is no "last used" to line up against a post; the
+  log's issuance times name no institution, so they narrow a record down only
+  on a day with a single issuance.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.
@@ -343,8 +351,16 @@ along with every poster ID.
 
 One image per post, on both thread creation and replies, **when
 `EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
-image is then refused with `403`, because originals are stored and served as
-uploaded: no metadata stripping and no content scanning yet.
+image is then refused with `403` and
+`{"error":"image uploads are switched off on this server"}`, because originals
+are stored and served as uploaded: no metadata stripping and no content scanning
+yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
+be, so the server stops reading an image once the body passes that, and a file
+over the size limit gets the same `403` rather than a `413`; a multipart post
+with no file, or with the empty file part a browser sends for an untouched
+input, posts as usual. `GET /api/site`
+reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
+client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims.
@@ -393,11 +409,11 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending |
 
 ## Front end
 
@@ -591,7 +607,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
-| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403` |
+| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
@@ -669,8 +685,16 @@ limits never compound.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image — does
+request rejected for any other reason — an empty body, an oversized image, a
+reply to a locked or archived thread or an image past a thread's cap — does
 not start a cooldown, so a typo never costs a wait.
+
+The cooldowns are keyed on client addresses, and they are the only place the
+server holds one. A sweep runs once a minute and drops every entry whose
+cooldown has run out, so **an address is held in memory no longer than the
+longest cooldown that applies to it plus one minute**, counted from its last
+post (or code request, for verification's cooldown), whether or not anyone
+else posts in the meantime. It is never written to the database or the logs.
 
 State is held in the process, so each instance of a horizontally scaled
 deployment enforces the cooldowns it sees. Moving to shared storage means
@@ -709,6 +733,7 @@ that overwrites the header with just the peer address are each a single hop.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
+| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes"}`: whether posts may carry an image, and the largest one taken. The same answer for every caller; it reads nothing from the request |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
@@ -755,7 +780,12 @@ the time it was pushed off the board once it is archived. It also carries
 `images`, the posts in the thread with an image, and `at_image_limit`. A reply
 to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
 locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
-at its board's image limit `{"error":"image limit reached"}`.
+at its board's image limit `{"error":"image limit reached"}`. These refusals,
+and a reply to a thread that does not exist, come before flood control and
+before the image is stored, so they start no cooldown: the same text sent again
+without the image posts at once. (Two replies racing for a thread's last image
+slot can both get that far; the loser is refused inside the transaction, after
+its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -964,13 +994,16 @@ It logs one line of counts (threads, posts, attachments, and files removed,
 failed, and missing) and nothing about which boards or threads went, and exits
 non-zero if the database fails or any file could not be removed or was missing;
 the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below).
+run on a database a newer release has migrated (see below). It needs none of
+the web server's secrets — the poster-ID salt, the moderation key, the
+verification secret — and, run without them, it does not warn about them:
+those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
 a request, so a timer inside the server would fire whenever it happened to, and
-a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
-`deploy/` yet.
+a Job leaves no sweep endpoint to protect. [`deploy/README.md`](deploy/README.md)
+section 2.9 sets up that Job and its daily schedule.
 
 ### What is not stateless yet
 

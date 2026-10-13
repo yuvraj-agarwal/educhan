@@ -788,6 +788,63 @@ func TestUploadRejectionDoesNotConsumeThePostCooldown(t *testing.T) {
 	}
 }
 
+// Flood control keys on the client address, and the address is not meant to
+// outlive the cooldowns it is held for. The running app sweeps every limiter
+// on a timer of its own, so an address that posts once and never comes back is
+// forgotten without another request arriving to prompt it.
+func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
+	h := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.ThreadCooldown = time.Minute
+		cfg.PostCooldown = time.Minute
+		cfg.UploadCooldown = time.Minute
+		cfg.VerifyCooldown = time.Minute
+		cfg.cooldownSweepEvery = time.Millisecond
+	})
+	h.addBoard("general")
+
+	const address = "198.51.100.7"
+	var thread createdPost
+	if status := h.uploadWithHeaders(http.Header{"X-Forwarded-For": {address}}, "/api/boards/general/threads",
+		map[string]string{"body": "posted once"}, "once.png", pngBytes(t, 24, 24), &thread); status != http.StatusCreated {
+		t.Fatalf("thread: status %d (%s)", status, thread.Error)
+	}
+	if status := h.postFrom(address, fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo),
+		map[string]any{"body": "and replied"}, &createdPost{}); status != http.StatusCreated {
+		t.Fatalf("reply: status %d", status)
+	}
+	// Verification is off here, so its limiter is fed the way a code
+	// request would feed it.
+	h.app.verifyLimiter.record("ip|" + address)
+
+	limiters := map[string]*cooldownLimiter{
+		"thread": h.app.threadLimiter, "post": h.app.postLimiter,
+		"upload": h.app.uploadLimiter, "verify": h.app.verifyLimiter,
+	}
+	holding := func() []string {
+		var held []string
+		for name, l := range limiters {
+			for _, key := range trackedKeys(l) {
+				if strings.Contains(key, address) {
+					held = append(held, name+": "+key)
+				}
+			}
+		}
+		slices.Sort(held)
+		return held
+	}
+	if got := holding(); len(got) != 4 {
+		t.Fatalf("the limiters hold %v, want the address in all four", got)
+	}
+
+	// A minute on, every cooldown has run out; nothing else is sent.
+	later := time.Now().Add(time.Minute)
+	for _, l := range limiters {
+		setClock(l, func() time.Time { return later })
+	}
+	waitUntil(t, "no limiter holds the address", func() bool { return len(holding()) == 0 })
+}
+
 func TestThreadPruning(t *testing.T) {
 	c := testServer(t, nil)
 	c.addBoard("general")
