@@ -826,8 +826,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     issuance line (`verification issued`) is bare: no label, no institution, nothing
     from the record. The row dates an issuance to the day; a label stamped to the
     second would date it exactly whenever it was its institution's only one that day.
-    `TestIssuanceIsLoggedWithoutTheInstitution` holds it, and the README's privacy
-    section says what the log's times do and do not reveal; keep the two in step.
+    A badged post soon after an issuance still names the institution, so the request
+    log's time for `/api/verify/confirm` can tie that post to its record on such a day;
+    the README says so, and how long that log is kept is what limits it.
+    `TestIssuanceIsLoggedWithoutTheInstitution` holds the line bare, and the README's
+    privacy section says what the log's times do and do not reveal; keep the two in step.
   - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
     column of every table for the address. It has positive controls, so it fails rather
     than passing vacuously if the scan stops working.

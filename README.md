@@ -182,8 +182,12 @@ can and cannot work out.
   it is kept, to the second, because the request line for
   `POST /api/verify/confirm` and a bare `verification issued` line each carry a
   time. Neither line says which institution or address the credential was for
-  (`TestIssuanceIsLoggedWithoutTheInstitution`), so a log time picks out one
-  stored record only on a day when a single credential was issued in all.
+  (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
+  after an issuance does name the institution, and its time is kept to the
+  second too. So an issuance followed by a badged post ties that post to its
+  stored record on any day its institution issued only one credential, however
+  many other institutions issued that day. How long the request log is kept is
+  what limits this.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -192,8 +196,9 @@ can and cannot work out.
   the secret, an operator who suspects a particular address can recompute the
   HMAC and check whether that person is verified. This is inherent to a
   uniqueness key and is the sharpest edge of the design. It answers "is
-  ana@iitb.ac.in verified?" — it does not answer "who is verified?" or "which
-  posts are theirs?".
+  ana@iitb.ac.in verified?" — it does not answer "who is verified?", nor
+  "which posts are theirs?" except for a post tied to its record by the
+  issuance times above.
 
 **What they cannot do**
 
@@ -207,9 +212,10 @@ can and cannot work out.
   as text and hold no reference to the record it came from.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
-  updates nothing, so there is no "last used" to line up against a post; the
-  log's issuance times name no institution, so they narrow a record down only
-  on a day with a single issuance.
+  updates nothing, so there is no "last used" to line up against a post. The
+  log's issuance times name no institution, but a badged post soon after one
+  does, and that ties the post to a single record on a day its institution
+  issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.
