@@ -557,6 +557,13 @@ const HIGHLIGHT_LANGUAGES = [
 // the whole block then highlighted in that one language: detection is the
 // expensive part, and it costs a pass per candidate over whatever it is given.
 const HIGHLIGHT_DETECT_CHARS = 1000;
+// A block longer than this stays plain. One highlight.js call cannot be
+// interrupted, and several of the grammars (java, typescript, c and more) take
+// time that grows with the square of a long run of identifier characters: a
+// post-length block of one took the better part of a second on a desktop and
+// several on a phone, for each such reply in a thread. At this length the worst
+// case is tens of milliseconds, and a code block a student posts is shorter.
+const HIGHLIGHT_MAX_CHARS = 2000;
 // Highlighting yields to the page once a batch has run this long, so a thread
 // full of code never stalls scrolling or typing.
 const HIGHLIGHT_SLICE_MS = 12;
@@ -611,41 +618,98 @@ function compileGrammars(hljs) {
   });
 }
 
+// Like maths, a block is highlighted only once it comes within a screen of the
+// viewport (TYPESET_AHEAD): a thread can hold hundreds of code blocks, and the
+// reader may never scroll to most of them. That is also when highlight.js is
+// first fetched.
+let codeObserver = null;
+// Code blocks being watched that have not yet come near the viewport.
+const watchedCode = new Set();
+// Blocks near the viewport, waiting for a batch.
+const highlightQueue = [];
+let highlightPending = false;
+
 function highlightCode(root) {
-  const blocks = Array.from(root.querySelectorAll("pre.code > code:not([data-highlighted])"));
+  const blocks = root.querySelectorAll("pre.code > code:not([data-highlighted])");
   if (blocks.length === 0) {
     return;
   }
-  loadHighlighter()
-    .then((hljs) => highlightBlocks(hljs, blocks))
-    .catch(() => {
-      // The blocks keep their plain rendering.
-    });
+  if (!codeObserver) {
+    codeObserver = new IntersectionObserver(
+      (entries) => {
+        for (const { target, isIntersecting } of entries) {
+          if (!isIntersecting) {
+            continue;
+          }
+          codeObserver.unobserve(target);
+          watchedCode.delete(target);
+          highlightQueue.push(target);
+        }
+        scheduleHighlight();
+      },
+      { rootMargin: TYPESET_AHEAD }
+    );
+  }
+  // The observer holds on to what it watches, so blocks a re-render replaced
+  // before they came near are let go here.
+  for (const code of watchedCode) {
+    if (!code.isConnected) {
+      codeObserver.unobserve(code);
+      watchedCode.delete(code);
+    }
+  }
+  for (const code of blocks) {
+    if (code.textContent.length > HIGHLIGHT_MAX_CHARS) {
+      code.dataset.highlighted = "skipped";
+    } else if (!watchedCode.has(code)) {
+      watchedCode.add(code);
+      codeObserver.observe(code);
+    }
+  }
 }
 
-function highlightBlocks(hljs, blocks) {
-  const deadline = performance.now() + HIGHLIGHT_SLICE_MS;
-  while (blocks.length > 0) {
-    if (performance.now() > deadline) {
-      setTimeout(() => highlightBlocks(hljs, blocks), 0);
-      return;
+function scheduleHighlight() {
+  if (highlightPending || highlightQueue.length === 0) {
+    return;
+  }
+  highlightPending = true;
+  loadHighlighter().then(
+    (hljs) => setTimeout(() => highlightBatch(hljs), 0),
+    () => {
+      // The blocks keep their plain rendering.
+      highlightQueue.length = 0;
+      highlightPending = false;
     }
-    const code = blocks.shift();
+  );
+}
+
+function highlightBatch(hljs) {
+  const deadline = performance.now() + HIGHLIGHT_SLICE_MS;
+  while (highlightQueue.length > 0 && performance.now() <= deadline) {
+    const code = highlightQueue.shift();
     // A re-render may have replaced the block since it was queued, and an
     // earlier pass may already have done it; highlight.js complains about both.
-    if (!code.isConnected || code.dataset.highlighted) {
-      continue;
+    if (code.isConnected && !code.dataset.highlighted) {
+      highlightBlock(hljs, code);
     }
-    try {
-      const text = code.textContent;
-      if (text.length > HIGHLIGHT_DETECT_CHARS) {
-        const guess = hljs.highlightAuto(text.slice(0, HIGHLIGHT_DETECT_CHARS)).language;
-        code.classList.add(`language-${guess || "plaintext"}`);
-      }
-      hljs.highlightElement(code);
-    } catch {
-      code.dataset.highlighted = "failed";
+  }
+  if (highlightQueue.length > 0) {
+    setTimeout(() => highlightBatch(hljs), 0);
+  } else {
+    highlightPending = false;
+  }
+}
+
+function highlightBlock(hljs, code) {
+  try {
+    const text = code.textContent;
+    if (text.length > HIGHLIGHT_DETECT_CHARS) {
+      const guess = hljs.highlightAuto(text.slice(0, HIGHLIGHT_DETECT_CHARS)).language;
+      code.classList.add(`language-${guess || "plaintext"}`);
     }
+    hljs.highlightElement(code);
+  } catch {
+    code.dataset.highlighted = "failed";
   }
 }
 
