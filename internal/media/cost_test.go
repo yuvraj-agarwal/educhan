@@ -191,10 +191,11 @@ func peakLive(t *testing.T, name string, data []byte) int64 {
 // 16-bit PNGs, transparency, every frame of a GIF, and WebP's three kinds.
 func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 	for name, data := range costFixtures(t) {
-		_, cost, _, err := inspect(data)
+		in, err := inspect(data)
 		if err != nil {
 			t.Fatalf("%s: inspect: %v", name, err)
 		}
+		cost := in.cost
 		live := peakLive(t, name, data)
 		t.Logf("%-28s estimate %6.1f MiB, held %6.1f MiB", name, float64(cost)/(1<<20), float64(live)/(1<<20))
 		if live > cost {

@@ -526,6 +526,58 @@ func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 	}
 }
 
+// loopExtension is an application extension giving a loop count, under the
+// identifier given: NETSCAPE2.0, or ANIMEXTS1.0, which browsers read the same.
+func loopExtension(id string, loop int) []byte {
+	ext := append([]byte{0x21, 0xFF, 0x0B}, id...)
+	return append(ext, 0x03, 0x01, byte(loop), byte(loop>>8), 0x00)
+}
+
+// An animation keeps the loop count a browser would have played it with,
+// whichever of the two loop extensions it came in, the last one winning as in
+// a browser; it is stored as NETSCAPE2.0, the one image/gif writes and reads.
+// An extension that gives no loop count is not one.
+func TestGIFLoopCountIsReadFromEitherLoopExtension(t *testing.T) {
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, animatedGIF(t, -1)); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	if bytes.Contains(buf.Bytes(), []byte("NETSCAPE2.0")) {
+		t.Fatal("the base fixture has a loop extension of its own")
+	}
+	buffering := append(append([]byte{0x21, 0xFF, 0x0B}, "ANIMEXTS1.0"...), 0x05, 0x02, 0, 0, 1, 0, 0x00)
+	for name, tc := range map[string]struct {
+		exts [][]byte
+		want int
+	}{
+		"ANIMEXTS1.0, forever":           {[][]byte{loopExtension("ANIMEXTS1.0", 0)}, 0},
+		"ANIMEXTS1.0, four times":        {[][]byte{loopExtension("ANIMEXTS1.0", 4)}, 4},
+		"NETSCAPE2.0, then ANIMEXTS1.0":  {[][]byte{loopExtension("NETSCAPE2.0", 5), loopExtension("ANIMEXTS1.0", 2)}, 2},
+		"ANIMEXTS1.0, then NETSCAPE2.0":  {[][]byte{loopExtension("ANIMEXTS1.0", 2), loopExtension("NETSCAPE2.0", 5)}, 5},
+		"ANIMEXTS1.0 buffering, no loop": {[][]byte{buffering}, -1},
+		"no loop extension":              {nil, -1},
+	} {
+		upload := buf.Bytes()
+		for i := len(tc.exts) - 1; i >= 0; i-- {
+			upload = spliceAfterHeader(upload, tc.exts[i])
+		}
+		if _, err := gif.DecodeAll(bytes.NewReader(upload)); err != nil {
+			t.Fatalf("%s: the fixture does not decode: %v", name, err)
+		}
+		got := process(t, upload)
+		stored, err := gif.DecodeAll(bytes.NewReader(got.Data))
+		if err != nil {
+			t.Fatalf("%s: decode stored gif: %v", name, err)
+		}
+		if stored.LoopCount != tc.want {
+			t.Errorf("%s: stored loop count = %d, want %d", name, stored.LoopCount, tc.want)
+		}
+		if bytes.Contains(got.Data, []byte("ANIMEXTS1.0")) {
+			t.Errorf("%s: the stored file carries ANIMEXTS1.0; image/gif writes only NETSCAPE2.0", name)
+		}
+	}
+}
+
 // A GIF's first frame need not cover its canvas. The dimensions are the
 // canvas's, and the thumbnail shows the frame where it sits, with the rest of
 // the canvas left transparent.
@@ -594,7 +646,7 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 
 	within := gifOf(4)
-	if got, err := gifFramePixels(within, maxGIFFramePixels); got != (gifFrames{4 * MaxPixels, 4}) || err != nil {
+	if got, err := gifFramePixels(within, maxGIFFramePixels); got != (gifFrames{pixels: 4 * MaxPixels, count: 4}) || err != nil {
 		t.Errorf("gifFramePixels = %+v, %v; want four frames of %d pixels and no error", got, err, 4*MaxPixels)
 	}
 	if _, err := Inspect(within); err != nil {
@@ -643,7 +695,21 @@ var gifExtensions = map[string][]byte{
 	"plain text as specified":           append(append([]byte{0x21, 0x01, 0x0C}, make([]byte, 12)...), 0x03, 'a', 'b', 'c', 0x00),
 	"application as specified":          append(append([]byte{0x21, 0xFF, 0x0B}, "XMP DataXMP"...), 0x01, 'x', 0x00),
 	"comment":                           {0x21, 0xFE, 0x02, 'h', 'i', 0x00},
+	"a loop count as ANIMEXTS1.0":       loopExtension("ANIMEXTS1.0", 7),
 	"graphic control":                   {0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00},
+}
+
+// framesDecoded is what gifFramePixels should make of a GIF image/gif
+// decoded as g: the area and number of its frames, and its loop count.
+func framesDecoded(g *gif.GIF) gifFrames {
+	f := gifFrames{count: int64(len(g.Image)), looped: g.LoopCount != -1}
+	for _, frame := range g.Image {
+		f.pixels += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
+	}
+	if f.looped {
+		f.loop = g.LoopCount
+	}
+	return f
 }
 
 // spliceAfterHeader puts ext into a GIF after its header and global colour
@@ -686,12 +752,8 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: the fixture does not decode: %v", name, err)
 		}
-		var want int64
-		for _, frame := range g.Image {
-			want += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
-		}
-		if got, err := gifFramePixels(data, math.MaxInt64); got != (gifFrames{want, int64(len(g.Image))}) || err != nil {
-			t.Errorf("%s: gifFramePixels = %+v, %v; the decoder decoded %d frames of %d pixels", name, got, err, len(g.Image), want)
+		if got, err := gifFramePixels(data, math.MaxInt64); got != framesDecoded(g) || err != nil {
+			t.Errorf("%s: gifFramePixels = %+v, %v; the decoder read %+v", name, got, err, framesDecoded(g))
 		}
 		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooLarge) {
 			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooLarge", name, err)
@@ -724,7 +786,8 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 
 // FuzzGIFFramePixels holds the count to the decoder: whatever image/gif
 // decodes, the count reaches the trailer and makes the frames exactly as large
-// as the decoder did.
+// as the decoder did, and reads the loop count the decoder read, when there is
+// no ANIMEXTS1.0 loop extension for the walk to read and the decoder not.
 func FuzzGIFFramePixels(f *testing.F) {
 	var buf bytes.Buffer
 	_ = gif.Encode(&buf, image.NewPaletted(image.Rect(0, 0, 4, 4), palette.Plan9), nil)
@@ -753,12 +816,14 @@ func FuzzGIFFramePixels(f *testing.F) {
 		if decErr != nil {
 			return
 		}
-		var want int64
-		for _, frame := range g.Image {
-			want += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
+		want := framesDecoded(g)
+		if bytes.Contains(data, []byte("ANIMEXTS1.0")) {
+			// image/gif does not read this loop extension; the walk does.
+			n.looped, n.loop = false, 0
+			want.looped, want.loop = false, 0
 		}
-		if err != nil || n != (gifFrames{want, int64(len(g.Image))}) {
-			t.Fatalf("gifFramePixels = %+v, %v; the decoder decoded %d frames of %d pixels", n, err, len(g.Image), want)
+		if err != nil || n != want {
+			t.Fatalf("gifFramePixels = %+v, %v; the decoder read %+v", n, err, want)
 		}
 	})
 }
@@ -1111,10 +1176,11 @@ func TestChecksumIsOfTheStoredFile(t *testing.T) {
 // gives up when its context does. Given back, the budget serves the next.
 func TestProcessWaitsForItsShareAndGivesUpWithItsContext(t *testing.T) {
 	upload := encodePNG(t, 32, 32)
-	_, cost, _, err := inspect(upload)
+	in, err := inspect(upload)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}
+	cost := in.cost
 	b := narrowBudget(t, cost)
 
 	release, err := acquireProcessing(context.Background(), 1)

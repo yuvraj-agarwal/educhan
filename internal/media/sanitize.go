@@ -110,17 +110,17 @@ type sanitized struct {
 }
 
 // sanitize rewrites an upload for storage. The rewritten file may not be
-// longer than limit (storedLimit).
-func sanitize(format Format, data []byte, limit int64) (sanitized, error) {
-	switch format.Name {
+// longer than in.limit (storedLimit).
+func sanitize(in inspection, data []byte) (sanitized, error) {
+	switch in.format.Name {
 	case FormatJPEG.Name:
-		return sanitizeJPEG(data, limit)
+		return sanitizeJPEG(data, in.limit)
 	case FormatPNG.Name:
-		return sanitizePNG(data, limit)
+		return sanitizePNG(data, in.limit)
 	case FormatGIF.Name:
-		return sanitizeGIF(data, limit)
+		return sanitizeGIF(data, in.limit, in.frames)
 	case FormatWebP.Name:
-		return sanitizeWebP(data, limit)
+		return sanitizeWebP(data, in.limit)
 	}
 	return sanitized{}, ErrUnsupportedFormat
 }
@@ -202,14 +202,19 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 
 // sanitizeGIF decodes every frame of a GIF and encodes them again. The frames
 // and their pixels, positions, transparency, delays and disposal, and the loop
-// count all survive; comment extensions and every application extension but
-// the NETSCAPE2.0 one carrying the loop count (XMP, for one) do not, because
-// image/gif reads past them and never writes them. The colour tables keep only
-// the colours the pixels use (cleanGIF). The thumbnail is of the first frame.
-func sanitizeGIF(data []byte, limit int64) (sanitized, error) {
+// count all survive; comment extensions and every application extension (XMP,
+// for one) do not, because image/gif reads past them and never writes them,
+// but for the loop count, which it writes as NETSCAPE2.0 whichever of the two
+// loop extensions it came in (gifFramePixels reads it). The colour tables keep
+// only the colours the pixels use (cleanGIF). The thumbnail is of the first
+// frame.
+func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) {
 	g, err := gif.DecodeAll(bytes.NewReader(data))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
+	}
+	if frames.looped {
+		g.LoopCount = frames.loop
 	}
 	cleanGIF(g)
 	buf := newStoredBuffer(len(data), limit)
@@ -543,13 +548,24 @@ func copiesPalette(p, global color.Palette) bool {
 }
 
 // gifFrames is what a GIF's frames come to: their area together, and how
-// many there are.
-type gifFrames struct{ pixels, count int64 }
+// many there are, and how often they are played.
+type gifFrames struct {
+	pixels, count int64
+	looped        bool // a loop extension gave a loop count,
+	loop          int  // which is this, as gif.GIF's LoopCount reads
+}
 
 // gifFramePixels adds up the area of every frame a GIF declares, and counts
 // them, reading only the block structure: image descriptors are read, and
 // everything else, compressed pixels included, is stepped over. It allocates
 // nothing.
+//
+// It also reads the loop count, which image/gif reads only from a NETSCAPE2.0
+// application extension: from its first sub-block, when that is three bytes
+// starting with 1, the last such extension winning. Browsers read an
+// ANIMEXTS1.0 extension exactly the same way, and some encoders write that
+// one instead, so the walk reads both, and an animation that looped in a
+// browser still loops once it is stored.
 //
 // The walk has to read the file exactly as image/gif does, block for block,
 // or a file could steer the two apart: an extension the walk read one way and
@@ -617,7 +633,13 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 				if at >= len(data) {
 					return f, ErrCorruptImage
 				}
-				i = skipBlocks(at + 1 + int(data[at]))
+				size := int(data[at])
+				if j := at + 1 + size; size == 11 && j+4 <= len(data) && data[j] == 3 && data[j+1] == 1 {
+					if id := string(data[at+1 : j]); id == "NETSCAPE2.0" || id == "ANIMEXTS1.0" {
+						f.looped, f.loop = true, int(data[j+2])|int(data[j+3])<<8
+					}
+				}
+				i = skipBlocks(at + 1 + size)
 			case 0xFE: // comment
 				i = skipBlocks(at)
 			default: // image/gif refuses an extension it does not know

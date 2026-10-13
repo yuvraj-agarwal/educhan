@@ -124,27 +124,35 @@ type Processed struct {
 // encoded as well as on its resolution. Inspect cannot tell whether the pixels
 // decode; only Process can, and Process runs it first.
 func Inspect(data []byte) (Format, error) {
-	format, _, _, err := inspect(data)
-	return format, err
+	in, err := inspect(data)
+	return in.format, err
 }
 
-// inspect is Inspect, also returning what Process needs: the upload's
-// estimated processing cost and the most its stored file may take.
-func inspect(data []byte) (Format, int64, int64, error) {
+// inspection is what inspect reads from an upload's header and block
+// structure, which is what Process needs besides the upload itself.
+type inspection struct {
+	format Format
+	cost   int64     // the memory processing it is estimated to hold (processingCost)
+	limit  int64     // the most its stored file may take (storedLimit)
+	frames gifFrames // for a GIF, its frames and its loop count
+}
+
+// inspect is Inspect, also returning what Process needs.
+func inspect(data []byte) (inspection, error) {
 	format, ok := DetectFormat(data)
 	if !ok {
-		return Format{}, 0, 0, ErrUnsupportedFormat
+		return inspection{}, ErrUnsupportedFormat
 	}
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return Format{}, 0, 0, ErrCorruptImage
+		return inspection{}, ErrCorruptImage
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
-		return Format{}, 0, 0, ErrCorruptImage
+		return inspection{}, ErrCorruptImage
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
-		return Format{}, 0, 0, ErrImageTooLarge
+		return inspection{}, ErrImageTooLarge
 	}
 	// Every frame of a GIF is decoded, so their sizes are added up as well.
 	// Skipping over the blocks is cheap enough to do here, and an animation
@@ -153,14 +161,19 @@ func inspect(data []byte) (Format, int64, int64, error) {
 	var frames gifFrames
 	if format == FormatGIF {
 		if frames, err = gifFramePixels(data, maxGIFFramePixels); err != nil {
-			return Format{}, 0, 0, err
+			return inspection{}, err
 		}
 	}
 	cost := processingCost(format, data, cfg, frames)
 	if cost > processingBudget {
-		return Format{}, 0, 0, ErrImageTooLarge
+		return inspection{}, ErrImageTooLarge
 	}
-	return format, cost, storedLimit(len(data), cfg.Width, cfg.Height), nil
+	return inspection{
+		format: format,
+		cost:   cost,
+		limit:  storedLimit(len(data), cfg.Width, cfg.Height),
+		frames: frames,
+	}, nil
 }
 
 // Process validates the raw upload, rewrites it without its metadata, and
@@ -171,18 +184,18 @@ func inspect(data []byte) (Format, int64, int64, error) {
 // the processing budget (acquireProcessing), and the wait ends with the
 // context's error if ctx is done first.
 func Process(ctx context.Context, data []byte) (Processed, error) {
-	format, cost, limit, err := inspect(data)
+	in, err := inspect(data)
 	if err != nil {
 		return Processed{}, err
 	}
 
-	release, err := acquireProcessing(ctx, cost)
+	release, err := acquireProcessing(ctx, in.cost)
 	if err != nil {
 		return Processed{}, err
 	}
 	defer release()
 
-	out, err := sanitize(format, data, limit)
+	out, err := sanitize(in, data)
 	if err != nil {
 		return Processed{}, err
 	}

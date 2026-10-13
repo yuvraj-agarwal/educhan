@@ -512,7 +512,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   decoder went on to decode. It refuses (`ErrCorruptImage`) a file it cannot follow to
   the trailer. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
   hold it to the decoder: whatever `gif.DecodeAll` decodes, the walk must reach the
-  trailer with exactly the decoder's frames and frame area. Change the two together.
+  trailer with exactly the decoder's frames, frame area and, short of an ANIMEXTS1.0
+  extension, loop count. Change the two together.
 - **What is stored is never the upload.** `media.Process` rewrites every image without
   its metadata before `Save` hands it to a backend, so both backends store the same
   file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF
@@ -523,8 +524,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   image); the pixels are what `image/png` decodes them to, so 1-, 2- and 4-bit grey
   comes back at 8 bits and a colour key (tRNS on grey or truecolour) as an alpha
   channel. GIF goes through `gif.DecodeAll` and `EncodeAll`, which keep frames,
-  positions, delays, disposal and loop count and drop comments and every application
-  extension but NETSCAPE2.0. WebP cannot be
+  positions, delays and disposal and drop comments and every application extension.
+  The loop count is written back as NETSCAPE2.0, from whichever loop extension came
+  last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them; `image/gif` reads only the
+  first, so `gifFramePixels` reads both (`TestGIFLoopCountIsReadFromEitherLoopExtension`).
+  WebP cannot be
   encoded in Go, so a WebP upload is stored as another format (`sanitizeWebP`): a JPEG
   at `storedJPEGQuality` when it is lossy and opaque, otherwise a PNG (lossless pixels
   exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's

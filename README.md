@@ -396,8 +396,9 @@ client can leave the image picker off a server that would refuse what it sends.
     alpha channel instead, and a palette keeps only the colours its pixels use. An
     animated PNG keeps its still image.
   - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
-    count, and dropping comments and application data such as XMP. Its colour tables
-    keep only the colours its frames show.
+    count (from either of the two extensions browsers read it from), and dropping
+    comments and application data such as XMP. Its colour tables keep only the colours
+    its frames show.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90, and any other (lossless, or
     with transparency) as a PNG, which keeps a lossless picture exactly. Its `name`,
