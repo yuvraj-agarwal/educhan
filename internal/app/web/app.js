@@ -452,13 +452,16 @@ function renderMarkup(nodes, ctx, { block = false, hidden = false } = {}) {
   nodes.forEach((node, k) => {
     if (node.kind === "code") {
       // Focusable, because a long line scrolls sideways and a keyboard has to
-      // be able to scroll it.
-      out.push(`<pre class="code" tabindex="0"><code>${esc(blockSource(source, node))}</code></pre>`);
+      // be able to scroll it — except inside a hidden spoiler, where, as for a
+      // link, focus would land on something the reader cannot see, and show
+      // it to them through :focus-within without their asking. revealSpoiler
+      // puts it back in the tab order.
+      out.push(`<pre class="code" tabindex="${hidden ? -1 : 0}"><code>${esc(blockSource(source, node))}</code></pre>`);
       ctx.lineStart = true;
       return;
     }
     if (node.kind === "eqn") {
-      out.push(mathHTML(blockSource(source, node), { display: true }));
+      out.push(mathHTML(blockSource(source, node), { display: true, hidden }));
       ctx.lineStart = true;
       return;
     }
@@ -505,10 +508,10 @@ function blockSource(source, { start, end }) {
 // the TeX, escaped, in data-tex for typesetMaths to read, and as the text, so a
 // reader whose KaTeX never arrives still reads the source. Display maths
 // scrolls sideways when it is wider than the post, so, like a code block, it is
-// focusable for a keyboard to scroll it.
-function mathHTML(tex, { display }) {
+// focusable for a keyboard to scroll it, unless a hidden spoiler holds it.
+function mathHTML(tex, { display, hidden = false }) {
   return display
-    ? `<div class="math math-display" tabindex="0" data-tex="${esc(tex)}">${esc(tex)}</div>`
+    ? `<div class="math math-display" tabindex="${hidden ? -1 : 0}" data-tex="${esc(tex)}">${esc(tex)}</div>`
     : `<span class="math" data-tex="${esc(tex)}">${esc(tex)}</span>`;
 }
 
@@ -840,9 +843,10 @@ function fitWideMaths() {
       return;
     }
     block.classList.toggle("math-wide", wide[n]);
-    // Focusable while it scrolls, for a keyboard to scroll it.
+    // Focusable while it scrolls, for a keyboard to scroll it — but not in a
+    // hidden spoiler, until revealSpoiler makes it so.
     if (wide[n]) {
-      block.tabIndex = 0;
+      block.tabIndex = block.closest(".spoiler:not(.revealed)") ? -1 : 0;
     } else {
       block.removeAttribute("tabindex");
     }
@@ -909,8 +913,9 @@ function withStyleAttributesThroughCSSOM(build) {
 /* Spoilers ----------------------------------------------------------------- */
 
 // revealSpoiler shows a spoiler for good: its text joins the accessibility
-// tree, its links rejoin the tab order, and it stops being a button. It stays
-// focusable (tabindex -1) so focus is not dropped when it was the thing focused.
+// tree, its links, code blocks and wide maths rejoin the tab order, and it
+// stops being a button. It stays focusable (tabindex -1) so focus is not
+// dropped when it was the thing focused.
 function revealSpoiler(spoiler) {
   spoiler.classList.add("revealed");
   spoiler.removeAttribute("role");
@@ -921,6 +926,9 @@ function revealSpoiler(spoiler) {
     text.removeAttribute("aria-hidden");
   }
   spoiler.querySelectorAll("a[tabindex]").forEach((link) => link.removeAttribute("tabindex"));
+  spoiler.querySelectorAll("pre.code, .math-display, .math-wide").forEach((block) => {
+    block.tabIndex = 0;
+  });
 }
 
 // The pointer behind the most recent press, so a click can tell a tap — which

@@ -786,6 +786,12 @@ a.quotelink.dead {
   border-color: transparent;
 }
 
+/* Highlighting tints some lines (a diff's additions and deletions), and a tint
+   would show how many lines a hidden diff has and how long each one is. */
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .code * {
+  background-color: transparent;
+}
+
 /* A spoiler holding a code block is a block itself, so it covers the whole box. */
 .post-body .spoiler-block { display: block; padding: 0 6px; }
 
@@ -908,10 +914,13 @@ a.quotelink.dead {
 .post-body .katex { overflow-wrap: normal; }
 
 /* KaTeX gives \color, \colorbox and \fcolorbox styles of the element's own,
-   which outrank the hidden-spoiler rule above, so inside a hidden spoiler maths
-   loses every colour outright. Its lines and SVG strokes follow currentColor,
-   so they go transparent with the text. */
-.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .katex * {
+   and an expression it could not parse — its source, which is exactly what a
+   spoiler hides — the error colour as one, all of which outrank the
+   hidden-spoiler rule above. So inside a hidden spoiler maths loses every
+   colour outright, typeset or not. Its lines and SVG strokes follow
+   currentColor, so they go transparent with the text. */
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .math,
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .math * {
   color: transparent !important;
   background-color: transparent !important;
   border-color: transparent !important;
