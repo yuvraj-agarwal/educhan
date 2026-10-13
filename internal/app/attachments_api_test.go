@@ -71,6 +71,121 @@ func jpegBytes(t *testing.T, w, h int) []byte {
 	return buf.Bytes()
 }
 
+// Strings the camera fixture carries in its metadata, which the stored file
+// must not.
+const (
+	fixtureCamera  = "educhan-test-camera"
+	fixtureDatum   = "WGS-84"
+	fixtureComment = "educhan test comment: taken at 51.5N"
+)
+
+// cameraJPEGBytes is a w×h JPEG as a phone writes one: an Exif APP1 with the
+// camera's make, Orientation 6 (stored on its side), and a GPS IFD with a
+// latitude, a datum and a processing method, then a comment. The TIFF inside
+// is laid out by hand, little-endian, independently of internal/media's own
+// fixtures, so a bug shared between the two cannot hide itself.
+func cameraJPEGBytes(t *testing.T, w, h int) []byte {
+	t.Helper()
+	le := binary.LittleEndian
+	entry := func(b []byte, tag, typ uint16, count, value uint32) []byte {
+		b = le.AppendUint16(b, tag)
+		b = le.AppendUint16(b, typ)
+		b = le.AppendUint32(b, count)
+		return le.AppendUint32(b, value)
+	}
+	camera := fixtureCamera + "\x00"
+	datum := fixtureDatum + "\x00"
+	method := "ASCII\x00\x00\x00GPS"
+
+	// Offsets from the start of the TIFF: the header (8), IFD0 with three
+	// entries (2+36+4), the make, then the GPS IFD with three entries
+	// (2+36+4) and its two long values.
+	makeAt := 8 + 42
+	gpsAt := makeAt + len(camera)
+	datumAt := gpsAt + 42
+	methodAt := datumAt + len(datum) + len(datum)%2
+
+	tiff := []byte("II*\x00")
+	tiff = le.AppendUint32(tiff, 8)
+	tiff = le.AppendUint16(tiff, 3)
+	tiff = entry(tiff, 0x010F, 2, uint32(len(camera)), uint32(makeAt)) // Make
+	tiff = entry(tiff, 0x0112, 3, 1, 6)                                // Orientation
+	tiff = entry(tiff, 0x8825, 4, 1, uint32(gpsAt))                    // GPSInfo
+	tiff = le.AppendUint32(tiff, 0)
+	tiff = append(tiff, camera...)
+	tiff = le.AppendUint16(tiff, 3)
+	tiff = entry(tiff, 0x0001, 2, 2, uint32('N'))                        // GPSLatitudeRef
+	tiff = entry(tiff, 0x0012, 2, uint32(len(datum)), uint32(datumAt))   // GPSMapDatum
+	tiff = entry(tiff, 0x001B, 7, uint32(len(method)), uint32(methodAt)) // GPSProcessingMethod
+	tiff = le.AppendUint32(tiff, 0)
+	tiff = append(tiff, datum...)
+	if len(datum)%2 == 1 {
+		tiff = append(tiff, 0)
+	}
+	tiff = append(tiff, method...)
+	if len(tiff) != methodAt+len(method) {
+		t.Fatalf("TIFF laid out as %d bytes, want %d", len(tiff), methodAt+len(method))
+	}
+
+	segment := func(marker byte, payload []byte) []byte {
+		n := len(payload) + 2
+		return append([]byte{0xFF, marker, byte(n >> 8), byte(n)}, payload...)
+	}
+	plain := jpegBytes(t, w, h)
+	out := append([]byte(nil), plain[:2]...) // SOI
+	out = append(out, segment(0xE1, append([]byte("Exif\x00\x00"), tiff...))...)
+	out = append(out, segment(0xFE, []byte(fixtureComment))...)
+	return append(out, plain[2:]...)
+}
+
+// metadataNeedles are what cameraJPEGBytes carries that a stored file must not.
+var metadataNeedles = []string{"Exif", "GPS", fixtureDatum, fixtureCamera, fixtureComment}
+
+// requireNoMetadata fails if data, a file served or stored, carries any of the
+// camera fixture's metadata, or any APP or COM segment at all if it is a JPEG.
+func requireNoMetadata(t *testing.T, what string, data []byte) {
+	t.Helper()
+	for _, needle := range metadataNeedles {
+		if bytes.Contains(data, []byte(needle)) {
+			t.Errorf("%s carries %q", what, needle)
+		}
+	}
+	if !bytes.HasPrefix(data, []byte{0xFF, 0xD8}) {
+		return
+	}
+	for i := 2; i+4 <= len(data) && data[i] == 0xFF && data[i+1] != 0xDA; {
+		if m := data[i+1]; (m >= 0xE0 && m <= 0xEF) || m == 0xFE {
+			t.Errorf("%s has a JPEG segment with marker %#x", what, m)
+		}
+		i += 2 + (int(data[i+2])<<8 | int(data[i+3]))
+	}
+}
+
+// requireSamePicture fails unless two encoded images decode to the same
+// pixels. The PNG fixtures are lossless, so their stored form, rewritten
+// without metadata, must still be the picture that was uploaded.
+func requireSamePicture(t *testing.T, want, got []byte) {
+	t.Helper()
+	a, _, err := image.Decode(bytes.NewReader(want))
+	if err != nil {
+		t.Fatalf("decode uploaded image: %v", err)
+	}
+	b, _, err := image.Decode(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("decode served image: %v", err)
+	}
+	if a.Bounds() != b.Bounds() {
+		t.Fatalf("served image is %v, want %v", b.Bounds(), a.Bounds())
+	}
+	for y := a.Bounds().Min.Y; y < a.Bounds().Max.Y; y++ {
+		for x := a.Bounds().Min.X; x < a.Bounds().Max.X; x++ {
+			if color.NRGBAModel.Convert(a.At(x, y)) != color.NRGBAModel.Convert(b.At(x, y)) {
+				t.Fatalf("served image differs from the upload at (%d,%d)", x, y)
+			}
+		}
+	}
+}
+
 /* Multipart client --------------------------------------------------------- */
 
 // upload posts a multipart submission, attaching a file when filename is set.
@@ -173,9 +288,6 @@ func TestCreateThreadWithImage(t *testing.T) {
 	if att.ThumbWidth != 250 || att.ThumbHeight != 125 {
 		t.Errorf("thumb = %dx%d, want 250x125", att.ThumbWidth, att.ThumbHeight)
 	}
-	if att.Size != int64(len(original)) {
-		t.Errorf("size = %d, want %d", att.Size, len(original))
-	}
 	if !strings.HasPrefix(att.URL, "/media/original/general/") {
 		t.Errorf("url = %q, want a /media/original/general/ prefix", att.URL)
 	}
@@ -184,12 +296,16 @@ func TestCreateThreadWithImage(t *testing.T) {
 		t.Errorf("url = %q, want a generated filename", att.URL)
 	}
 
+	// The original is served as stored: rewritten without its metadata, so
+	// not the uploaded bytes, but the same picture, and the size the
+	// attachment reports is the stored file's.
 	res, payload := c.fetch(att.URL, nil)
 	if res.StatusCode != http.StatusOK {
 		t.Fatalf("get original: status %d", res.StatusCode)
 	}
-	if !bytes.Equal(payload, original) {
-		t.Error("served original differs from the uploaded bytes")
+	requireSamePicture(t, original, payload)
+	if att.Size != int64(len(payload)) {
+		t.Errorf("size = %d, want %d, the stored file's", att.Size, len(payload))
 	}
 	if got := res.Header.Get("Cache-Control"); got != mediaCacheControl {
 		t.Errorf("cache control = %q, want %q", got, mediaCacheControl)
@@ -713,12 +829,13 @@ func TestMediaSupportsRangeRequests(t *testing.T) {
 	}
 	att := fetchThread(t, c, "general", created.ThreadNo).Posts[0].Attachment
 
+	_, whole := c.fetch(att.URL, nil)
 	res, payload := c.fetch(att.URL, http.Header{"Range": []string{"bytes=0-7"}})
 	if res.StatusCode != http.StatusPartialContent {
 		t.Fatalf("status = %d, want 206", res.StatusCode)
 	}
-	if !bytes.Equal(payload, original[:8]) {
-		t.Errorf("range body = %v, want the first 8 bytes of the original", payload)
+	if !bytes.Equal(payload, whole[:8]) {
+		t.Errorf("range body = %v, want the first 8 bytes of the stored original", payload)
 	}
 }
 

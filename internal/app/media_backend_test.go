@@ -3,6 +3,8 @@ package app
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -75,6 +77,21 @@ func blobKeys(t *testing.T, att *Attachment) (original, thumb string) {
 		media.ThumbKey(strings.TrimPrefix(att.ThumbURL, thumbURLPrefix))
 }
 
+// readBlob reads an object straight from a store, below the HTTP layer.
+func readBlob(t *testing.T, store media.Store, key string) []byte {
+	t.Helper()
+	rc, _, err := store.Get(context.Background(), key)
+	if err != nil {
+		t.Fatalf("get %s: %v", key, err)
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read %s: %v", key, err)
+	}
+	return data
+}
+
 func requireBlob(t *testing.T, store media.Store, key string, want bool) {
 	t.Helper()
 	rc, _, err := store.Get(context.Background(), key)
@@ -130,14 +147,20 @@ func TestAttachmentLifecycleAcrossBackends(t *testing.T) {
 				t.Errorf("url = %q, want a /media/original/general/ prefix", att.URL)
 			}
 
+			// What is stored is the upload rewritten without its metadata:
+			// the same picture, and the same bytes on every backend.
+			originalKey, _ := blobKeys(t, att)
+			stored := readBlob(t, c.app.media, originalKey)
+
 			t.Run("serves the original", func(t *testing.T) {
 				res, payload := c.fetch(att.URL, nil)
 				if res.StatusCode != http.StatusOK {
 					t.Fatalf("status = %d, want 200", res.StatusCode)
 				}
-				if !bytes.Equal(payload, original) {
-					t.Error("served original differs from the uploaded bytes")
+				if !bytes.Equal(payload, stored) {
+					t.Error("served original differs from the stored file")
 				}
+				requireSamePicture(t, original, payload)
 				if got := res.Header.Get("Content-Type"); got != "image/png" {
 					t.Errorf("content type = %q, want image/png", got)
 				}
@@ -174,13 +197,13 @@ func TestAttachmentLifecycleAcrossBackends(t *testing.T) {
 				}{
 					{"bytes=0-7", 0, 8},
 					{"bytes=500-999", 500, 1000},
-					{fmt.Sprintf("bytes=%d-", len(original)-16), len(original) - 16, len(original)},
+					{fmt.Sprintf("bytes=%d-", len(stored)-16), len(stored) - 16, len(stored)},
 				} {
 					res, payload := c.fetch(att.URL, http.Header{"Range": []string{tc.header}})
 					if res.StatusCode != http.StatusPartialContent {
 						t.Fatalf("%s: status = %d, want 206", tc.header, res.StatusCode)
 					}
-					if !bytes.Equal(payload, original[tc.start:tc.end]) {
+					if !bytes.Equal(payload, stored[tc.start:tc.end]) {
 						t.Errorf("%s served the wrong %d bytes", tc.header, len(payload))
 					}
 				}
@@ -199,6 +222,75 @@ func TestAttachmentLifecycleAcrossBackends(t *testing.T) {
 					t.Errorf("status after delete = %d, want 404", res.StatusCode)
 				}
 			})
+		})
+	}
+}
+
+// A phone photo keeps its GPS position, its camera and its comment in its
+// metadata, and anyone who opened the full image could read them. None of it
+// reaches either backend: what is stored, and so what /media/original serves,
+// is the picture rewritten upright with no metadata at all, and the checksum
+// recorded for it is of those bytes.
+func TestUploadedPhotoKeepsNoMetadataOnEveryBackend(t *testing.T) {
+	for _, backend := range mediaBackends {
+		t.Run(backend.name, func(t *testing.T) {
+			c := backendServer(t, backend)
+			c.addBoard("general")
+			upload := cameraJPEGBytes(t, 400, 300)
+			for _, needle := range metadataNeedles {
+				if !bytes.Contains(upload, []byte(needle)) {
+					t.Fatalf("the fixture does not carry %q, so the test would prove nothing", needle)
+				}
+			}
+
+			var created createdPost
+			if status := c.upload("/api/boards/general/threads", map[string]string{"body": "from my phone"},
+				"photo.jpg", upload, &created); status != http.StatusCreated {
+				t.Fatalf("create thread: status %d (%s)", status, created.Error)
+			}
+			att := fetchThread(t, c, "general", created.ThreadNo).Posts[0].Attachment
+			if att == nil {
+				t.Fatal("opening post has no attachment")
+			}
+
+			res, served := c.fetch(att.URL, nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("get original: status %d", res.StatusCode)
+			}
+			requireNoMetadata(t, "served original", served)
+			_, thumb := c.fetch(att.ThumbURL, nil)
+			requireNoMetadata(t, "served thumbnail", thumb)
+
+			originalKey, thumbKey := blobKeys(t, att)
+			if stored := readBlob(t, c.app.media, originalKey); !bytes.Equal(stored, served) {
+				t.Error("the stored original differs from the one served")
+			}
+			requireNoMetadata(t, "stored thumbnail", readBlob(t, c.app.media, thumbKey))
+
+			// Stored on its side with Orientation 6, kept upright.
+			cfg, format, err := image.DecodeConfig(bytes.NewReader(served))
+			if err != nil || format != "jpeg" {
+				t.Fatalf("served original decodes as %q: %v", format, err)
+			}
+			if cfg.Width != 300 || cfg.Height != 400 || att.Width != 300 || att.Height != 400 {
+				t.Errorf("served %dx%d, reported %dx%d; want the upright 300x400",
+					cfg.Width, cfg.Height, att.Width, att.Height)
+			}
+			if att.ThumbWidth != 187 || att.ThumbHeight != 250 {
+				t.Errorf("thumb = %dx%d, want the upright 187x250", att.ThumbWidth, att.ThumbHeight)
+			}
+
+			if att.Size != int64(len(served)) {
+				t.Errorf("size = %d, want %d, the stored file's", att.Size, len(served))
+			}
+			var checksum string
+			if err := c.app.pool.QueryRow(context.Background(),
+				`SELECT checksum FROM attachments`).Scan(&checksum); err != nil {
+				t.Fatalf("read checksum: %v", err)
+			}
+			if sum := sha256.Sum256(served); checksum != hex.EncodeToString(sum[:]) {
+				t.Errorf("checksum = %s, want the SHA-256 of the stored file", checksum)
+			}
 		})
 	}
 }

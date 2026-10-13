@@ -358,10 +358,11 @@ along with every poster ID.
 One image per post, on both thread creation and replies, **when
 `EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
 image is then refused with `403` and
-`{"error":"image uploads are switched off on this server"}`, because originals
-are stored and served as uploaded: no metadata stripping and no content scanning
-yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
-be, so the server stops reading an image once the body passes that, and a file
+`{"error":"image uploads are switched off on this server"}`, because nothing
+checks what an image shows yet: there is no known-image hash matching and no
+content scanning. Metadata is already stripped (below). With uploads off a
+multipart post is held to the 64 KiB a JSON post may be, so the server stops
+reading an image once the body passes that, and a file
 over the size limit gets the same `403` rather than a `413`; a multipart post
 with no file, or with the empty file part a browser sends for an untouched
 input, posts as usual. `GET /api/site`
@@ -369,9 +370,34 @@ reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
 client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
-  or the content type the client claims. Anything else, or an image whose header claims
-  more than 50 megapixels, is refused with `400` from its header alone, before flood
-  control.
+  or the content type the client claims. Anything else, an image whose header claims
+  more than 24 megapixels, or a GIF whose frames add up to more than four times that, is
+  refused with `400` before anything is decoded and before flood control. An animated
+  WebP is refused with `400` (`image could not be decoded`) once it is decoded: nothing
+  in Go can decode one to thumbnail it.
+- **No metadata is stored**: the original kept and served is never the uploaded file but
+  the picture rewritten without what a camera or an editor puts around it — EXIF with
+  its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
+  profiles. Both storage backends get the same rewritten file.
+  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded at quality
+    90, so a phone photo stored on its side is upright everywhere, thumbnail included,
+    and its reported width and height are the upright ones.
+  - *PNG* is decoded and re-encoded with the same pixels at the same bit depth, keeping
+    none of its ancillary chunks. An animated PNG keeps its still image.
+  - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
+    count, and dropping comments and application data such as XMP.
+  - *WebP* is stripped chunk by chunk, since nothing in Go can encode it: EXIF, XMP, ICC
+    and unknown chunks go, the flags announcing them are cleared, and the image data is
+    kept byte for byte.
+
+  Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
+  slightly duller than it did; most photos are sRGB and look the same. A profile can
+  name the device or the editor that made it, and converting colours properly needs a
+  colour engine Go does not have. The checksum recorded for an attachment is of the
+  stored file, so it does not depend on the metadata an upload arrived with, beyond an
+  orientation that turns the picture.
+- **Memory**: decoding and re-encoding run at most two at a time per process; further
+  uploads wait for a turn, and stop waiting if their request is cancelled.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -417,7 +443,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, stored without metadata (JPEGs turned upright first), thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |

@@ -2221,8 +2221,10 @@ const FAQ_SECTIONS = [
         work out that it's you. So:</p>
       <ul>
         <li>Don't post your name, your school, or photos of yourself or anyone else.</li>
-        <li>Remember that photos can carry hidden details, such as where they were taken, and
-          educhan doesn't remove them yet.</li>
+        <li>A photo can show more than you meant it to. educhan removes the hidden details a
+          photo file carries, such as where and when it was taken and on what phone, before
+          it keeps the photo, but it can't remove what's in the picture: a face, a uniform, a
+          street sign or the view from a window.</li>
         <li>A tripcode links every post that carries it, and a badge shows which university
           or college you're at.</li>
         <li>Your internet provider, the network you're on (a school's, say) and anyone who can

@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"image"
@@ -18,8 +19,12 @@ const ThumbMaxDim = 250
 
 // MaxPixels caps the decoded resolution of an upload. Compressed formats can
 // describe enormous canvases in a handful of bytes, so the dimensions are
-// checked before the image is materialised in memory.
-const MaxPixels = 50 << 20 // 50 megapixels
+// checked before the image is materialised in memory. 24 megapixels covers
+// what most phone cameras save by default. Decoding a JPEG that size, turning
+// it upright and re-encoding it allocates about 160 MB along the way, where the
+// 50 megapixels allowed before could need 275 MB live at once, on an instance
+// with 512 MiB in all.
+const MaxPixels = 24_000_000
 
 // thumbJPEGQuality is used when a thumbnail is encoded as JPEG.
 const thumbJPEGQuality = 82
@@ -87,9 +92,14 @@ type Thumbnail struct {
 	Height int
 }
 
-// Processed is the result of validating and thumbnailing an upload.
+// Processed is an upload validated, rewritten for storage, and thumbnailed.
 type Processed struct {
 	Format Format
+	// Data is the original as it is to be stored: re-encoded, or for WebP
+	// stripped chunk by chunk, so that it carries no metadata (sanitize.go).
+	Data []byte
+	// Width and Height are the stored picture's, which for a JPEG is the
+	// picture after its EXIF orientation has been applied.
 	Width  int
 	Height int
 	Thumb  Thumbnail
@@ -117,31 +127,46 @@ func Inspect(data []byte) (Format, error) {
 	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
 		return Format{}, ErrImageTooLarge
 	}
+	// Every frame of a GIF is decoded, so their sizes are added up as well.
+	// Skipping over the blocks is cheap enough to do here, and an animation
+	// too long to decode is refused like an image too large to.
+	if format == FormatGIF && gifFramePixels(data, maxGIFFramePixels) > maxGIFFramePixels {
+		return Format{}, ErrImageTooLarge
+	}
 	return format, nil
 }
 
-// Process validates the raw upload and derives its thumbnail. Animated GIFs are
+// Process validates the raw upload, rewrites it without its metadata, and
+// derives its thumbnail from the rewritten picture. Animated GIFs are
 // thumbnailed from their first frame.
-func Process(data []byte) (Processed, error) {
+//
+// The decoding and encoding wait for a processing slot (processingSlots), and
+// the wait ends with the context's error if ctx is done first.
+func Process(ctx context.Context, data []byte) (Processed, error) {
 	format, err := Inspect(data)
 	if err != nil {
 		return Processed{}, err
 	}
 
-	src, _, err := image.Decode(bytes.NewReader(data))
-	if err != nil {
-		return Processed{}, ErrCorruptImage
-	}
-
-	thumb, err := makeThumbnail(src, format)
+	release, err := acquireProcessing(ctx)
 	if err != nil {
 		return Processed{}, err
 	}
-	bounds := src.Bounds()
+	defer release()
+
+	out, err := sanitize(format, data)
+	if err != nil {
+		return Processed{}, err
+	}
+	thumb, err := makeThumbnail(out.pic, out.canvas, format)
+	if err != nil {
+		return Processed{}, err
+	}
 	return Processed{
 		Format: format,
-		Width:  bounds.Dx(),
-		Height: bounds.Dy(),
+		Data:   out.data,
+		Width:  out.canvas.Dx(),
+		Height: out.canvas.Dy(),
 		Thumb:  thumb,
 	}, nil
 }
@@ -178,14 +203,22 @@ func thumbFormat(src Format) Format {
 	return FormatPNG
 }
 
-func makeThumbnail(src image.Image, format Format) (Thumbnail, error) {
-	bounds := src.Bounds()
-	tw, th := ThumbSize(bounds.Dx(), bounds.Dy(), ThumbMaxDim)
+// makeThumbnail scales the canvas down to a thumbnail. src is drawn where it
+// sits on the canvas: for everything but a GIF it is the whole canvas, and a
+// GIF's first frame may cover only part of it, leaving the rest transparent.
+func makeThumbnail(src image.Image, canvas image.Rectangle, format Format) (Thumbnail, error) {
+	cw, ch := canvas.Dx(), canvas.Dy()
+	tw, th := ThumbSize(cw, ch, ThumbMaxDim)
 
 	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
+	b := src.Bounds()
+	at := image.Rect(
+		(b.Min.X-canvas.Min.X)*tw/cw, (b.Min.Y-canvas.Min.Y)*th/ch,
+		(b.Max.X-canvas.Min.X)*tw/cw, (b.Max.Y-canvas.Min.Y)*th/ch,
+	)
 	// CatmullRom is slower than the nearest-neighbour kernels but keeps small
 	// thumbnails of dense screenshots readable, which is what they are for.
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, bounds, xdraw.Src, nil)
+	xdraw.CatmullRom.Scale(dst, at, src, b, xdraw.Src, nil)
 
 	out := thumbFormat(format)
 	var buf bytes.Buffer

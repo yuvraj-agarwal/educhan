@@ -3,7 +3,7 @@
 educhan is an anonymous imageboard for students, open to anyone aged 13 and over. This
 repository contains the working prototype: a Go HTTP API plus an embedded web UI, backed
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
-attachments, a paginated index, a catalog view, a per-board archive, threads with quote
+attachments stored without their metadata, a paginated index, a catalog view, a per-board archive, threads with quote
 links and post markup (spoilers, highlighted code, maths, cross-board links), per-client
 flood control, key-authenticated moderation and board management, and optional
 institutional verification badges are implemented. Janitor accounts, bans, and reports are
@@ -33,8 +33,9 @@ not.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
-- `internal/media` — image validation, thumbnailing, and the blob-storage interface with
-  its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
+- `internal/media` — image validation, metadata stripping (`sanitize.go`, with the EXIF
+  orientation reader in `orient.go` and the WebP chunk rewrite in `webp.go`),
+  thumbnailing, and the blob-storage interface with its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
   against both. `internal/media/mediatest` starts an in-process Cloud Storage emulator and
   is imported only by tests.
@@ -499,9 +500,55 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
   than by the filename or the client-supplied content type. `media.Inspect` checks the
-  format and the header's dimensions without decoding, and `Process` runs it first, so
-  the early refusal in `parseSubmission` and the full one in `media.Save` cannot
+  format and the header's dimensions without decoding (and for a GIF the frames' total
+  area, `gifFramePixels`, a walk over the block structure), and `Process` runs it first,
+  so the early refusal in `parseSubmission` and the full one in `media.Save` cannot
   disagree about a file's header.
+- **What is stored is never the upload.** `media.Process` rewrites every image without
+  its metadata before `Save` hands it to a backend, so both backends store the same
+  file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF
+  Orientation (`jpegOrientation`, `orient` in `orient.go`), and re-encoded at
+  `storedJPEGQuality` (90); `image/jpeg` writes no APP or COM segment, so EXIF, XMP,
+  APP13 IPTC/Photoshop, the APP2 ICC profile and comments all go. PNG is decoded and
+  re-encoded with the same pixels and bit depth, which keeps only IHDR, PLTE, tRNS, IDAT
+  and IEND (an APNG keeps its still image). GIF goes through `gif.DecodeAll` and
+  `EncodeAll`, which keep frames, positions, delays, disposal, background and loop count
+  and drop comments and every application extension but NETSCAPE2.0. WebP cannot be
+  encoded in Go, so `stripWebP` (`webp.go`) rewrites the RIFF: it keeps VP8X (flags
+  masked to alpha and animation), ALPH, VP8, VP8L, ANIM and ANMF (each frame cut to its
+  picture), drops EXIF, XMP, ICCP and every unknown chunk, recomputes the RIFF size,
+  drops bytes past the RIFF's end, and refuses a file whose canvas and bitstream sizes
+  disagree; the stripped bytes are what is decoded for the thumbnail. An animated WebP
+  is still refused as `ErrCorruptImage`, as before stripping: x/image cannot decode
+  one. `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's,
+  the thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size`
+  are of the stored bytes — the plan's `blocked_media` check on the re-encoded output
+  (2.2) depends on that. Tests build their fixtures in code (`fixtures_test.go`) and
+  check every needle is in the upload before checking it is gone from what is stored:
+  `TestJPEGIsStoredWithoutMetadata`, `TestEveryOrientationIsApplied`,
+  `TestPNGIsStoredWithoutAncillaryChunks`, `TestGIFKeepsItsAnimationAndDropsItsExtensions`,
+  `TestWebPIsStrippedChunkByChunk`, the conformance suite's "save stores no metadata",
+  and `TestUploadedPhotoKeepsNoMetadataOnEveryBackend` end to end over both backends.
+  Never store, hash or serve the upload's own bytes.
+- The EXIF reader is the one place educhan parses a structure an uploader controls,
+  so it reads in place, bounds-checks every offset before use, follows no offset but
+  IFD0's (no IFD chain, so no loop), allocates nothing, and answers 1 for anything it
+  cannot read; whether the file is an image is the decoder's call alone
+  (`TestHostileEXIF`, `FuzzJPEGOrientation`; `FuzzStripWebP` does the same for the
+  RIFF rewrite and checks it is idempotent). No EXIF library is needed and none should
+  be added.
+- Dropping the ICC profile (and PNG's colour chunks) is deliberate: most photos are
+  sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut one
+  (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
+  and converting to sRGB properly needs a colour engine Go does not have.
+- **Memory.** `MaxPixels` is 24 megapixels, and a GIF's frames together may not pass
+  `maxGIFFramePixels` (four times that), because every frame is decoded at once.
+  Decoding and re-encoding take one of `processingSlots` (2) for their duration, so
+  concurrent uploads queue rather than each holding a decoded image at once;
+  `acquireProcessing` honours the request context, and a cancelled wait reaches the
+  handler as `context.Canceled`, which `fail` answers like any request whose client
+  left. Tests narrow the slots with `narrowSlots`. The other half is deploy-side
+  (`GOMEMLIMIT` near 400MiB, or more memory), which this code does not set.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
   as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
@@ -553,7 +600,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   enforcement into the pre-check or drop it from the transaction.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
-  transparency survives.
+  transparency survives. They are made from the rewritten, upright picture; a GIF's is
+  its first frame placed on the canvas.
 - `internal/media.Store` is the only route to blob storage, and `newMediaStore` in
   `app.go` is the only place one is constructed. Both backends are held to
   `testStoreContract` in `conformance_test.go`, and `internal/app/media_backend_test.go`

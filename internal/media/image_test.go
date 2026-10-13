@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"hash/crc32"
@@ -121,7 +122,7 @@ func TestProcessGeneratesThumbnail(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := Process(tc.data)
+			got, err := Process(context.Background(), tc.data)
 			if err != nil {
 				t.Fatalf("Process: %v", err)
 			}
@@ -155,7 +156,7 @@ func TestProcessGeneratesThumbnail(t *testing.T) {
 }
 
 func TestProcessPreservesAspectRatio(t *testing.T) {
-	got, err := Process(encodePNG(t, 1000, 400))
+	got, err := Process(context.Background(), encodePNG(t, 1000, 400))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -170,7 +171,7 @@ func TestProcessPreservesAspectRatio(t *testing.T) {
 }
 
 func TestProcessSmallImageIsNotUpscaled(t *testing.T) {
-	got, err := Process(encodePNG(t, 40, 20))
+	got, err := Process(context.Background(), encodePNG(t, 40, 20))
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -189,7 +190,7 @@ func TestProcessWebP(t *testing.T) {
 	if format, ok := DetectFormat(data); !ok || format != FormatWebP {
 		t.Fatalf("DetectFormat = %+v, %v; want WebP", format, ok)
 	}
-	got, err := Process(data)
+	got, err := Process(context.Background(), data)
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -216,7 +217,7 @@ func TestProcessAnimatedGIFUsesFirstFrame(t *testing.T) {
 	if err := gif.EncodeAll(&buf, frames); err != nil {
 		t.Fatalf("encode animated gif: %v", err)
 	}
-	got, err := Process(buf.Bytes())
+	got, err := Process(context.Background(), buf.Bytes())
 	if err != nil {
 		t.Fatalf("Process: %v", err)
 	}
@@ -229,12 +230,12 @@ func TestProcessAnimatedGIFUsesFirstFrame(t *testing.T) {
 }
 
 func TestProcessRejectsBadInput(t *testing.T) {
-	if _, err := Process([]byte("#!/bin/sh\necho hello\n")); !errors.Is(err, ErrUnsupportedFormat) {
+	if _, err := Process(context.Background(), []byte("#!/bin/sh\necho hello\n")); !errors.Is(err, ErrUnsupportedFormat) {
 		t.Fatalf("Process(script) error = %v, want ErrUnsupportedFormat", err)
 	}
 	// Correct magic bytes, garbage payload.
 	corrupt := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, []byte("nonsense")...)
-	if _, err := Process(corrupt); !errors.Is(err, ErrCorruptImage) {
+	if _, err := Process(context.Background(), corrupt); !errors.Is(err, ErrCorruptImage) {
 		t.Fatalf("Process(corrupt) error = %v, want ErrCorruptImage", err)
 	}
 }
@@ -269,7 +270,7 @@ func TestInspectReadsOnlyTheHeader(t *testing.T) {
 		if _, err := Inspect(tc.data); !errors.Is(err, tc.want) {
 			t.Errorf("Inspect(%s) error = %v, want %v", tc.name, err, tc.want)
 		}
-		if _, err := Process(tc.data); !errors.Is(err, tc.want) {
+		if _, err := Process(context.Background(), tc.data); !errors.Is(err, tc.want) {
 			t.Errorf("Process(%s) error = %v, want %v", tc.name, err, tc.want)
 		}
 	}
@@ -282,7 +283,7 @@ func TestInspectReadsOnlyTheHeader(t *testing.T) {
 	if _, err := Inspect(headerOnly); err != nil {
 		t.Errorf("Inspect(header only) error = %v, want none: the header is sound", err)
 	}
-	if _, err := Process(headerOnly); !errors.Is(err, ErrCorruptImage) {
+	if _, err := Process(context.Background(), headerOnly); !errors.Is(err, ErrCorruptImage) {
 		t.Errorf("Process(header only) error = %v, want ErrCorruptImage", err)
 	}
 }
