@@ -54,6 +54,7 @@ REGION     ?= asia-south1
 AR_REPO    ?= educhan
 IMAGE_NAME ?= educhan
 SERVICE    ?= educhan
+SWEEP_JOB  ?= educhan-sweep
 # The image carries this alongside `latest`, so a revision names the commit it
 # was built from and a rollback has something immutable to point at.
 IMAGE_TAG  ?= $(shell git rev-parse --short HEAD 2>/dev/null)
@@ -87,7 +88,9 @@ cloud-build: cloud-preflight
 # instance, secrets, environment — over from the current revision, so the
 # service's configuration stays in deploy/cloudrun/service.yaml rather than
 # being duplicated here. Creating the service the first time is a longer
-# command; see deploy/README.md section 2.6.
+# command; see deploy/README.md section 2.6. The archive sweeper Job, once it
+# exists (section 2.9), is moved onto the same image so the two never disagree
+# about the schema.
 cloud-deploy: cloud-preflight
 	@gcloud run services describe "$(SERVICE)" --project "$(PROJECT_ID)" --region "$(REGION)" >/dev/null 2>&1 || \
 	  { echo "Cloud Run service '$(SERVICE)' does not exist in $(REGION); create it first — deploy/README.md section 2.6." >&2; exit 1; }
@@ -95,3 +98,8 @@ cloud-deploy: cloud-preflight
 	  --project "$(PROJECT_ID)" \
 	  --region "$(REGION)" \
 	  --image "$(IMAGE)"
+	@if gcloud run jobs describe "$(SWEEP_JOB)" --project "$(PROJECT_ID)" --region "$(REGION)" >/dev/null 2>&1; then \
+	  gcloud run jobs update "$(SWEEP_JOB)" --project "$(PROJECT_ID)" --region "$(REGION)" --image "$(IMAGE)"; \
+	else \
+	  echo "No '$(SWEEP_JOB)' job yet; create it with deploy/README.md section 2.9."; \
+	fi
