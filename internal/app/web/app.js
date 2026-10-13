@@ -18,8 +18,8 @@ const NAME_STORAGE_KEY = "educhan:name";
 // refuses these as board slugs too, so a board cannot take a path out from
 // under a page that is added later. "u" is the institution namespace.
 const RESERVED_PATHS = new Set([
-  "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
-  "terms", "privacy", "dmca", "report", "archive", "safety",
+  "api", "media", "healthz", "lib", "verify", "mod", "u", "rules", "faq",
+  "legal", "terms", "privacy", "dmca", "report", "archive", "safety",
 ]);
 // The reserved words that have a page of their own so far.
 const PAGE_VIEWS = new Set(["verify", "rules", "faq"]);
@@ -542,7 +542,7 @@ function enhancePosts(root) {
   typesetMaths(root);
 }
 
-const HIGHLIGHTER_SRC = "/vendor/highlightjs/highlight.min.js";
+const HIGHLIGHTER_SRC = "/lib/highlightjs/highlight.min.js";
 // Auto-detection tries every candidate language on a block, so the candidates
 // are kept to what students post: fewer passes, and fewer wild guesses.
 const HIGHLIGHT_LANGUAGES = [
@@ -648,8 +648,8 @@ function highlightBlocks(hljs, blocks) {
 
 /* Maths -------------------------------------------------------------------- */
 
-const KATEX_SRC = "/vendor/katex/katex.min.js";
-const KATEX_CSS = "/vendor/katex/katex.min.css";
+const KATEX_SRC = "/lib/katex/katex.min.js";
+const KATEX_CSS = "/lib/katex/katex.min.css";
 
 // TeX commands that are switched off in posts. maxExpand caps how many macro
 // expansions an expression makes, not what each one produces, so a post that

@@ -378,7 +378,8 @@ thread the post is in and replaces itself with that thread, scrolled to the post
 does not land on it twice. Institution boards are stored as `u-{name}` and live at
 `/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
 `mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
-`safety`, and the server's own `api`, `media`, and `healthz` — are never read as boards.
+`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
+boards.
 `/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
 view.
 
@@ -462,9 +463,11 @@ The page runs under the same-origin CSP in `middleware.go`, which has no `unsafe
 exception: no inline `<script>`, no inline `<style>`, and no `style` attributes. A unit
 test (`internal/app/web_test.go`) fails the build if any appear in `index.html`, `app.js`,
 or `app.css`, and the image preview is a `data:` URL because that is what `img-src`
-allows. Third-party code is vendored under `internal/app/web/vendor/` and served from the
+allows. Third-party code is vendored under `internal/app/web/lib/` and served from the
 same origin; each library keeps its licence and a note of its source, and the same test
-file pins every vendored file by SHA-256. KaTeX is the reason maths is typeset with
+file pins every vendored file by SHA-256. The directory is not called `vendor/` because a
+Go module zip leaves out every directory of that name, so a binary built from the module
+proxy would have shipped without the libraries. KaTeX is the reason maths is typeset with
 `katex.render` into the page rather than `renderToString` into `innerHTML`: its HTML
 carries layout in `style` attributes, which this CSP refuses, while `katex.render` sets
 styles through the CSSOM, which it allows.
@@ -765,9 +768,9 @@ Listing boards stays public.
 A slug is the board's address in every URL, so it is lowercase letters and
 digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
 and not a first path segment that already means something else: the server's
-own routes (`api`, `media`, `healthz`), the UI's pages (`verify`, `mod`,
-`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
-`safety`), or `u`. It is normalised before use, so `/CompSci/` and `/compsci/`
+own routes (`api`, `media`, `healthz`, and `lib` for the UI's libraries), the
+UI's pages (`verify`, `mod`, `rules`, `faq`, `legal`, `terms`, `privacy`,
+`dmca`, `report`, `archive`, `safety`), or `u`. It is normalised before use, so `/CompSci/` and `/compsci/`
 cannot both exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
 shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
 slug, the limits to the schema defaults (a bump limit of 300, a thread limit of

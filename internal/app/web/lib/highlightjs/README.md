@@ -16,4 +16,4 @@ chosen to clear WCAG AA on the code block background.
 
 To update, replace both files from the new package's tarball, update this note, and
 update the pinned hashes in `vendoredWebAssets` in `internal/app/web_test.go` — the test
-fails on any file under `vendor/` that it does not list with its exact hash.
+fails on any file under `lib/` that it does not list with its exact hash.

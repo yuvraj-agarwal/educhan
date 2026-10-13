@@ -32,7 +32,7 @@ not.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
-    third-party browser builds under `web/vendor/` (highlight.js, KaTeX).
+    third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -254,12 +254,14 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   markup, not the CSSOM — which is how the quote preview positions itself, and how KaTeX
   lays out maths. `setAttribute("style", …)` is not fine: the browser refuses it like a
   `style="…"` in markup.
-- **Vendored libraries** live in `web/vendor/<name>/`: the published build unmodified, its
-  `LICENSE`, and a `README.md` naming the package, version, and where it came from. They
+- **Vendored libraries** live in `web/lib/<name>/` — never a directory named `vendor`,
+  which a Go module zip drops wherever it sits (`TestNoEmbeddedDirectoryIsNamedVendor`):
+  the published build unmodified, its `LICENSE`, and a `README.md` naming the package,
+  version, and where it came from. They
   are served from `'self'` like everything else — never from a CDN — and are left out of
   the inline-markup scan, a heuristic for markup this project writes that a minified
   library's grammars and templates are not. Instead `vendoredWebAssets` in `web_test.go`
-  pins every file under `vendor/` by SHA-256, so nothing lands there unlisted and nothing
+  pins every file under `lib/` by SHA-256, so nothing lands there unlisted and nothing
   listed changes unnoticed: adding or updating a library means vetting the build and
   updating its hashes. Theme CSS is not vendored; colours stay in `app.css` with the rest
   of the tokens. The one modified file is KaTeX's `katex.min.css`, cut down to WOFF2 font
@@ -291,7 +293,7 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 - `enhancePosts(root)` is the one hook for work on posts after they are in the document
   (code highlighting and maths): `render()` and `showQuotePreview()` each call it once.
   It must stay idempotent and must never throw — a block it cannot finish keeps its
-  plain rendering. highlight.js and KaTeX are loaded from `/vendor/` by script (and, for
+  plain rendering. highlight.js and KaTeX are loaded from `/lib/` by script (and, for
   KaTeX, stylesheet) elements the first time a post that needs them is on screen, never
   up front.
 - Maths: `[math]`/`[eqn]` render as a placeholder carrying the TeX in `data-tex`, and
@@ -601,7 +603,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestArchivedThreadsCannotBeStickiedOrLocked`).
 - **Routes.** The UI reads any first path segment it does not recognise as a board's
   slug, so `reservedBoardSlugs` in `boards.go` holds every first segment that means
-  something else — the server's own routes, the UI's pages, and `u` — and has to agree
+  something else — the server's own routes, `lib` (the vendored libraries), the UI's
+  pages, and `u` — and has to agree
   with `RESERVED_PATHS` in `app.js`, which `parseRoute` reads; a new top-level page means
   adding its name to both. `TestReservedBoardSlugs` covers the list, and
   `TestUIReservesTheSameTopLevelWordsAsTheServer` that the two agree. An institution board is stored as

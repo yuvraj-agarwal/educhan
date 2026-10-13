@@ -54,6 +54,8 @@ var reservedBoardSlugs = map[string]bool{
 	"api":     true,
 	"media":   true,
 	"healthz": true,
+	// The UI's third-party libraries, served from web/lib/.
+	"lib": true,
 	// Pages of the UI.
 	"verify":  true,
 	"mod":     true,

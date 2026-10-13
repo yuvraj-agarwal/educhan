@@ -39,4 +39,4 @@ CSSOM, which the CSP allows. See `typesetMaths` in `app.js` for the options and 
 To update, replace the files from the new package's tarball, reapply the stylesheet
 change above (and check it still leaves only WOFF2 sources), update this note, and update
 the pinned hashes in `vendoredWebAssets` in `internal/app/web_test.go` — the test fails
-on any file under `vendor/` that it does not list with its exact hash.
+on any file under `lib/` that it does not list with its exact hash.
