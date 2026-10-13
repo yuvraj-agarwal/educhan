@@ -58,6 +58,13 @@ func TestFilterBlocks(t *testing.T) {
 	aadhaar := withCheckDigit(t, "23456789012")
 	spacedAadhaar := aadhaar[:4] + " " + aadhaar[4:8] + " " + aadhaar[8:]
 	dashedAadhaar := aadhaar[:4] + "-" + aadhaar[4:8] + "-" + aadhaar[8:]
+	// Keycap digits: each digit, an emoji presentation selector, and the
+	// enclosing keycap. The match ends at the last digit.
+	keycaps, circled := "", ""
+	for _, d := range "9876543210" {
+		keycaps += string(d) + "\ufe0f\u20e3"
+		circled += string(d) + "\u20dd"
+	}
 
 	cases := []struct {
 		name, body, rule, match string
@@ -78,6 +85,33 @@ func TestFilterBlocks(t *testing.T) {
 		{"uk mobile", "07911 123456", ruleContact, "07911 123456"},
 		{"uk international", "+44 7911 123456", ruleContact, "+44 7911 123456"},
 		{"other international", "whatsapp +49 151 23456789", ruleContact, "+49 151 23456789"},
+		{"australian mobile", "text 0412 345 678", ruleContact, "0412 345 678"},
+		{"across a line break", "call me 98765\n43210", ruleContact, "98765\n43210"},
+		{"across a blank line", "98765\n\n43210", ruleContact, "98765\n\n43210"},
+		{"over three lines", "9876\n543\n210", ruleContact, "9876\n543\n210"},
+		{"across a carriage return", "98765\r\n43210", ruleContact, "98765\r\n43210"},
+		{"keycap digits", keycaps, ruleContact, strings.TrimSuffix(keycaps, "\ufe0f\u20e3")},
+		{"circled digits", circled, ruleContact, strings.TrimSuffix(circled, "\u20dd")},
+		{"underscored", "98765_43210", ruleContact, "98765_43210"},
+		{"comma between halves", "98765,43210", ruleContact, "98765,43210"},
+		{"letter O for zero", "my number is 98765 4321O", ruleContact, "98765 4321O"},
+		{"letter l for one", "98765 432l0", ruleContact, "98765 432l0"},
+		{"pairs with dashes", "my number is 98-76-54-32-10", ruleContact, "98-76-54-32-10"},
+
+		// Markup tags read as the reader sees them: a spoiler's run on, a code
+		// block's set apart.
+		{"number split by a spoiler", "98765[spoiler]43210[/spoiler]", ruleContact, "98765[spoiler]43210"},
+		{"number in two spoilers", "[spoiler]98765[/spoiler] [spoiler]43210[/spoiler]", ruleContact,
+			"98765[/spoiler] [spoiler]43210"},
+		{"number after a word in a spoiler", "call me[spoiler]9876543210[/spoiler]", ruleContact, "9876543210"},
+		{"app split by a spoiler", "add me on sn[spoiler]ap[/spoiler]", ruleContact, "add me on sn[spoiler]ap"},
+		{"handle split by a spoiler", "my snap is cool[spoiler]kid_12[/spoiler]", ruleContact,
+			"my snap is cool[spoiler]kid_12"},
+		{"email split by a spoiler", "coolkid12@g[spoiler]mail.com[/spoiler]", ruleContact,
+			"coolkid12@g[spoiler]mail.com"},
+		{"link split by a spoiler", "disc[spoiler]ord.gg/abc123[/spoiler]", ruleContact, "disc[spoiler]ord.gg/abc123"},
+		{"app in a code block", "add me on [code]snap[/code]", ruleContact, "add me on [code]snap"},
+		{"handle in a code block", "my snap is [code]coolkid_12[/code]", ruleContact, "my snap is [code]coolkid_12"},
 
 		// Email addresses.
 		{"email", "mail priya.sharma@gmail.com for notes", ruleContact, "priya.sharma@gmail.com"},
@@ -86,6 +120,12 @@ func TestFilterBlocks(t *testing.T) {
 		{"email bracketed", "priya [at] outlook [dot] com", ruleContact, "priya [at] outlook [dot] com"},
 		{"email at an institution", "priya at iitb dot ac dot in", ruleContact, "priya at iitb dot ac dot in"},
 		{"email in code", "[code]ADMIN = \"rahul.k@yahoo.co.in\"[/code]", ruleContact, "rahul.k@yahoo.co.in"},
+		{"email bracketed dot", "coolkid12@gmail[.]com", ruleContact, "coolkid12@gmail[.]com"},
+		{"email bracketed at", "coolkid12[@]gmail.com", ruleContact, "coolkid12[@]gmail.com"},
+		{"email with no tld", "coolkid12@gmail", ruleContact, "coolkid12@gmail"},
+		{"email with at and dot spelled", "coolkid@gmail dot com", ruleContact, "coolkid@gmail dot com"},
+		{"email spaced at and spelled dot", "mail coolkid12 @ gmail dot com", ruleContact, "coolkid12 @ gmail dot com"},
+		{"email digit in tld", "coolkid12@gmail.c0m", ruleContact, "coolkid12@gmail.c0m"},
 
 		// Links to profiles and invites.
 		{"discord invite", "join discord.gg/abc123", ruleContact, "discord.gg/abc123"},
@@ -94,6 +134,12 @@ func TestFilterBlocks(t *testing.T) {
 		{"telegram", "t.me/someone", ruleContact, "t.me/someone"},
 		{"whatsapp link", "wa.me/919876543210", ruleContact, "wa.me/919876543210"},
 		{"snapchat add", "snapchat.com/add/cool_guy", ruleContact, "snapchat.com/add/cool_guy"},
+		{"bracketed dot in a link", "discord(.)gg/abc123", ruleContact, "discord(.)gg/abc123"},
+		{"spaced short host", "t . me/coolkid", ruleContact, "t . me/coolkid"},
+		{"host spelled letter by letter", "d i s c o r d . g g / abc123", ruleContact, "d i s c o r d . g g / abc123"},
+		{"whatsapp short link", "https://wa.link/abc123", ruleContact, "https://wa.link/abc123"},
+		{"whatsapp web", "https://web.whatsapp.com/send?phone=919876543210", ruleContact,
+			"https://web.whatsapp.com/send"},
 
 		// Asking to talk somewhere else, and handles.
 		{"add me on snap", "add me on snap", ruleContact, "add me on snap"},
@@ -114,6 +160,11 @@ func TestFilterBlocks(t *testing.T) {
 		{"my snap is", "my snap is ana_23", ruleContact, "my snap is ana_23"},
 		{"whatsapp me", "whatsapp me", ruleContact, "whatsapp me"},
 		{"steam", "add me on steam", ruleContact, "add me on steam"},
+		{"dotted app and handle", "s.n.a.p: coolkid_12", ruleContact, "s.n.a.p: coolkid_12"},
+		{"leetspeak app and handle", "sn4pch4t: coolkid_12", ruleContact, "sn4pch4t: coolkid_12"},
+		{"discord discriminator", "discord: coolkid#1234", ruleContact, "discord: coolkid#1234"},
+		{"app id without a colon", "insta id coolkid_12", ruleContact, "insta id coolkid_12"},
+		{"snap me handle", "snap me coolkid_12", ruleContact, "snap me coolkid_12"},
 
 		// ID numbers.
 		{"aadhaar", "aadhaar " + aadhaar, ruleIDNumber, aadhaar},
@@ -152,6 +203,20 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"c = 299792458 m/s",
 		"299792458",
 		"p = 0.9876543210",
+		// A calculator's answer: one point, nothing round it.
+		"the angle is 63.43494882 degrees",
+		"my calculator says 70.71067812",
+		"I got 70.71067812 for part (b)",
+		"sqrt(5000) is 70.71067812 right?",
+		"probability is 66.66666667 percent",
+		"efficiency comes to 86.60254038",
+		"1/0.0123 is 81.30081301",
+		"ans 816.4965809",
+		"the result was 98765.43210",
+		"got 98.76543210 percentile",
+		"coordinates 28.61393890, 77.20902120",
+		"the answer is 9,876,543,210",
+		"9.876.543.210 in European notation",
 		"C6H12O6 + 6O2 -> 6CO2 + 6H2O",
 		"2+919876543210",
 		// Dates, times, years, scores, prices, references.
@@ -169,6 +234,11 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"order 7834567890 never arrived",
 		"JEE app no 240310123456 status pending?",
 		"iCall: 9152987821, or +91 99996 66555",
+		"Trevor Project 1-866-488-7386",
+		"988 or 1-800-273-8255",
+		"+1 800 273 8255",
+		"Childhelp 1-800-422-4453, DV hotline 1-800-799-7233",
+		"seat number 7012345678 in hall B",
 		"marks: 87 91 76 88 92 65 74",
 		"roll 23: 87 91 76 88 92",
 		"1 2 3 4 5 6 7 8 9 10",
@@ -203,6 +273,9 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"[code]git clone git@github.com:owner/repo.git[/code]",
 		"[code]ssh deploy@host.sh[/code]",
 		"[code]const d = {tg: 1}[/code]",
+		"[code]my_snap = snap(x)[/code]",
+		"[code]arr = [9876543210, 1234567890][/code]",
+		"[spoiler]the twist[/spoiler] [code]x = 1[/code]",
 		// Ordinary talk.
 		"this exam is killing me",
 		"I could kill for a coffee",
@@ -213,6 +286,21 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"I'm going to shoot the school play tomorrow",
 		"I will bomb the class presentation tomorrow",
 		"don't come to school tomorrow, it's a holiday",
+		"don't go to school tomorrow trust me it's cancelled",
+		"don't go to class tomorrow, trust me, the teacher is absent",
+		"We're going to shoot in the school auditorium tomorrow for our film project",
+		"we will shoot at the library tomorrow for the yearbook",
+		"I'm shooting everyone's portraits tomorrow for the yearbook",
+		"we're gonna kill them at the match tomorrow",
+		"i'll kill you at chess tomorrow",
+		"Headline: \"Boy, 15, said 'I will shoot up the school', court hears\"",
+		"there was a school shooting today in Texas",
+		"how many snakes are deadly?",
+		"rope yourself into organising the fest, it's fun",
+		"We're shooting at the gym tonight for basketball practice",
+		"please don't kys, things get better",
+		"don't you dare kill yourself",
+		"never ever drink bleach",
 		"Why did the Columbine school shooting happen in 1999?",
 		"News: a 15-year-old was arrested after threatening to shoot up his school in Texas today.",
 		"don't cut yourself on the broken glass in the lab",
@@ -246,6 +334,19 @@ func TestFilterSupport(t *testing.T) {
 		"everyone would be better off without me",
 		"i want to d i e",
 		"i w4nt t0 d1e",
+		// What the rules and the FAQ name: wanting to hurt yourself.
+		"I want to hurt myself",
+		"i want to hurt myself so bad",
+		"I want to cut myself",
+		"i really want to hurt myself tonight",
+		"i feel like hurting myself",
+		"i want to self harm",
+		"I hate myself and want to self harm",
+		"i keep thinking about hurting myself",
+		"thinking about ending it",
+		"I can't do this anymore, I'm done with life",
+		"i just want to disappear",
+		"i want to jump off a bridge",
 	} {
 		v := bodyVerdict(body)
 		if v.Outcome != contentSupport || v.Message != supportMessage || v.Rule != "" || v.Match != "" {
@@ -261,17 +362,36 @@ func TestFilterSupport(t *testing.T) {
 
 func TestFilterHolds(t *testing.T) {
 	cases := []struct{ body, reason string }{
-		// Self-harm encouragement and method.
+		// Self-harm encouragement.
 		{"kys", holdSelfHarm},
 		{"just k y s already", holdSelfHarm},
 		{"go die", holdSelfHarm},
 		{"you should kill yourself", holdSelfHarm},
 		{"cut yourself", holdSelfHarm},
+		{"neck yourself", holdSelfHarm},
+		{"rope yourself", holdSelfHarm},
+		{"end yourself", holdSelfHarm},
+		{"jump off a bridge", holdSelfHarm},
 		{"thinspo pls", holdSelfHarm},
 		{"meanspo thread", holdSelfHarm},
 		{"looking for an ana coach", holdSelfHarm},
+		// A negation further back than the words themselves is about
+		// something else, and "kys" is never advice.
+		{"i don't care, kys", holdSelfHarm},
+		{"don't care + didn't ask, kys", holdSelfHarm},
+		{"never mind, kys", holdSelfHarm},
+		{"careful what you say. kys", holdSelfHarm},
+		{"dont reply. just kill yourself", holdSelfHarm},
+		{"you won't pass anyway, kill yourself", holdSelfHarm},
+		// Self-harm method.
 		{"how many pills would it take to die", holdSelfHarm},
 		{"painless way to die?", holdSelfHarm},
+		{"what's a lethal dose of paracetamol", holdSelfHarm},
+		{"lethal dose of paracetamol?", holdSelfHarm},
+		{"how many sleeping pills are lethal", holdSelfHarm},
+		{"how to tie a noose", holdSelfHarm},
+		{"how many pills would kill me", holdSelfHarm},
+		{"how many paracetamol would be fatal", holdSelfHarm},
 		// Threats with a place or a time.
 		{"I'm going to shoot up the school tomorrow", holdThreat},
 		{"i will bring a gun to school", holdThreat},
@@ -281,22 +401,88 @@ func TestFilterHolds(t *testing.T) {
 		{"there will be a shooting at school on monday", holdThreat},
 		{"don't come to school tomorrow. you've been warned", holdThreat},
 		{"1'm g0nna sh00t up the sch00l", holdThreat},
+		{"I'm bringing a gun to school tomorrow", holdThreat},
+		{"i'm bringing my dad's gun to school on monday", holdThreat},
+		{"im shooting up the school tomorrow", holdThreat},
+		{"gonna shoot up the school tmrw", holdThreat},
+		{"shooting up the school tomorrow, don't come", holdThreat},
+		{"tomorrow I shoot up the school", holdThreat},
+		{"school shooting tomorrow at 10. don't come", holdThreat},
+		{"i'll be shooting everyone at school tomorrow", holdThreat},
+		{"i'm gonna stab my maths teacher tomorrow", holdThreat},
 		// Grooming: an age, school or location question with a private cue.
 		{"how old are you? dm me", holdGrooming},
 		{"asl? we should talk privately", holdGrooming},
 		{"what school do you go to? send me a pic", holdGrooming},
 		{"where do you live? are you home alone", holdGrooming},
+		{"u 14? can we talk privately", holdGrooming},
+		{"age? let's talk in private", holdGrooming},
 	}
 	for _, c := range cases {
-		v := bodyVerdict(c.body)
+		// support_seen, so that a post that would show the support message
+		// first is seen past it to the hold.
+		v := checkContent(contentInput{Body: c.body}, true)
 		if v.Outcome != contentHold || v.Hold != c.reason || v.Message != "" || v.Match != "" {
 			t.Errorf("%q: got %+v, want held for %s", c.body, v, c.reason)
 		}
 	}
 	// Intent with no place or time is not held.
 	for _, body := range []string{"I'm going to kill you", "i will hurt him"} {
-		if v := bodyVerdict(body); v.Outcome != contentPublish {
+		if v := checkContent(contentInput{Body: body}, true); v.Outcome != contentPublish {
 			t.Errorf("%q: got %+v, want it published", body, v)
+		}
+	}
+}
+
+// TestFilterAsksAboutAMethodBeforeHoldingIt pins that a question about how to
+// hurt or kill oneself is answered with the support message first, because
+// the person asking may be asking for themselves, and is held only once the
+// poster has seen it. Encouragement aimed at someone else goes straight to
+// the hold: the support message is not for the person sending it.
+func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
+	for _, body := range []string{
+		"how many pills would kill me",
+		"how many paracetamol would be fatal",
+		"painless way to die?",
+		"what's a lethal dose of paracetamol",
+		"how to tie a noose",
+	} {
+		if v := bodyVerdict(body); v.Outcome != contentSupport || v.Message != supportMessage {
+			t.Errorf("%q: got %+v, want support first", body, v)
+		}
+		if v := checkContent(contentInput{Body: body}, true); v.Outcome != contentHold || v.Hold != holdSelfHarm {
+			t.Errorf("%q with support_seen: got %+v, want it held", body, v)
+		}
+	}
+	for _, body := range []string{"kys", "go die", "neck yourself", "thinspo pls"} {
+		if v := bodyVerdict(body); v.Outcome != contentHold || v.Hold != holdSelfHarm {
+			t.Errorf("%q: got %+v, want it held without the support message", body, v)
+		}
+	}
+}
+
+// TestFilterPairsAThreatAcrossTheSubjectAndTheBody pins that the subject and
+// the body are read as one text for a threat: the subject is the thread's
+// title, shown right above the body.
+func TestFilterPairsAThreatAcrossTheSubjectAndTheBody(t *testing.T) {
+	for _, in := range []contentInput{
+		{Subject: "Don't come to school tomorrow", Body: "You've been warned."},
+		{Subject: "School tomorrow", Body: "I'm going to shoot everyone"},
+		{Subject: "tomorrow", Body: "I will kill everyone"},
+		{Subject: "I will kill everyone", Body: "at school tomorrow"},
+		{Subject: "Don't come to school tomorrow. You've been warned."},
+	} {
+		if v := checkContent(in, true); v.Outcome != contentHold || v.Hold != holdThreat {
+			t.Errorf("%+v: got %+v, want it held as a threat", in, v)
+		}
+	}
+	// Each half alone is ordinary.
+	for _, in := range []contentInput{
+		{Subject: "School tomorrow", Body: "Is anyone else going early?"},
+		{Subject: "I will kill everyone", Body: "at chess, obviously"},
+	} {
+		if v := checkContent(in, true); v.Outcome != contentPublish {
+			t.Errorf("%+v: got %+v, want it published", in, v)
 		}
 	}
 }
@@ -380,10 +566,13 @@ func TestFilterQuotesMatchesAsWrittenAndShort(t *testing.T) {
 func TestFilterPatternsSurviveCanon(t *testing.T) {
 	rules := map[string][]rule{
 		"askRules": askRules, "supportRules": supportRules, "selfHarmRules": selfHarmRules,
-		"threatIntentRules": threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
+		"selfHarmMethodRules": selfHarmMethodRules,
+		"threatIntentRules":   threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
 		"threatWarningRules": threatWarningRules, "threatWarningCues": threatWarningCues,
+		"schoolShootingRules": schoolShootingRules, "futureTimeRules": futureTimeRules,
 		"ageQuestionRules": ageQuestionRules, "privateCueRules": privateCueRules,
-		"myAppRule": {myAppRule},
+		"myAppRule": {myAppRule}, "appColonHandle": {appColonHandle}, "appAtHandle": {appAtHandle},
+		"appLabelHandle": {appLabelHandle}, "spacedInviteRule": {spacedInviteRule},
 	}
 	posix := regexp.MustCompile(`\[:[a-z]+:\]|\\p\{[^}]*l|\(\?[a-z]*l`)
 	for name, rs := range rules {
@@ -425,6 +614,13 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"math":         func(n int) string { return strings.Repeat("[math]1[/math]", n/14) },
 		"wide":         func(n int) string { return strings.Repeat("９", n) },
 		"invisible":    func(n int) string { return strings.Repeat("\u200b", n) },
+		"keycaps":      func(n int) string { return strings.Repeat("9\ufe0f\u20e3", n/3) },
+		"line breaks":  func(n int) string { return strings.Repeat("98765\n", n/6) },
+		"spoilers":     func(n int) string { return strings.Repeat("9[spoiler]8[/spoiler]", n/21) },
+		"expanding":    func(n int) string { return strings.Repeat("\ufdfa1", n/2) },
+		"subject pairs": func(n int) string {
+			return strings.Repeat("shooting up the school. ", n/24)
+		},
 	}
 	cost := func(body string) time.Duration {
 		in := contentInput{Subject: truncateRunes(body, maxSubjectLen), Name: truncateRunes(body, maxNameLen), Body: body}
@@ -439,6 +635,24 @@ func TestFilterCostIsBounded(t *testing.T) {
 		}
 		if full > 10*time.Second {
 			t.Errorf("%s: %v for one post", name, full)
+		}
+	}
+}
+
+// TestFilterReadsNoCharacterAsAPhrase holds the cap on what one character may
+// fold to: the compatibility forms a digit or a letter has still read as what
+// they show, and a character that folds to a whole phrase reads as itself, so a
+// post cannot make the plain view many times longer than what was sent.
+func TestFilterReadsNoCharacterAsAPhrase(t *testing.T) {
+	for src, want := range map[string]string{
+		"⑽":  "(10)",
+		"ﬃ":  "ffi",
+		"９":  "9",
+		"ﷺ":  "ﷺ",
+		"ﷺ1": "ﷺ1",
+	} {
+		if got := plainView(src, nil).text; got != want {
+			t.Errorf("%q reads as %q, want %q", src, got, want)
 		}
 	}
 }
