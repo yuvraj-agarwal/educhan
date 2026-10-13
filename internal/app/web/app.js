@@ -96,6 +96,10 @@ const el = {
   pageLinks: document.querySelectorAll("a[data-page]"),
   notice: document.getElementById("notice"),
   status: document.getElementById("route-status"),
+  // The footer's invitation to verify, hidden until the server says the
+  // feature is switched on here. The header's Verify link stays regardless:
+  // the page also holds Forget this browser.
+  verifyFooter: document.querySelector("[data-verify-footer]"),
 };
 
 /* API ---------------------------------------------------------------------- */
@@ -1887,6 +1891,9 @@ async function loadVerification() {
     enabled = false;
   }
   state.verification = { enabled, badge: enabled ? readBadge() : null };
+  if (el.verifyFooter) {
+    el.verifyFooter.hidden = !enabled;
+  }
   return state.verification;
 }
 
@@ -2218,6 +2225,8 @@ const FAQ_SECTIONS = [
         that the poster has an email address at that university or college. It's for people
         aged 18 and over at universities and colleges, not schools, so please don't use a
         school email address. You don't need it to read or to post.</p>
+      <p>Not every educhan site has the badge switched on. If this one doesn't, the
+        <a href="/verify">Verify</a> page says so.</p>
       <ol>
         <li>On the <a href="/verify">Verify</a> page, enter your university or college email
           address and tick the box to confirm that you're 18 or over. educhan doesn't save

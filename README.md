@@ -440,7 +440,8 @@ view.
   not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
   and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
   Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view.
+  out where the reader is. The footer links to both on every view; its invitation to
+  verify an address shows only on a server with verification switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,

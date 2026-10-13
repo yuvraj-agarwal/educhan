@@ -412,7 +412,12 @@ needs a browser check before the test changes.
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
   external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
-  the age screen, so they must not depend on anything fetched.
+  the age screen, so they must not depend on anything fetched: what a server can switch
+  off — images, the badge — they qualify in words ("Not every educhan site …") rather
+  than by reading a flag. The footer is not one of those pages, so its sentence inviting
+  readers to verify (`data-verify-footer` in `index.html`) stays hidden until
+  `GET /api/verify` says the feature is on. The header's Verify link stays regardless:
+  `/verify` also holds Forget this browser.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
