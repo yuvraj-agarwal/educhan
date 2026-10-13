@@ -409,11 +409,11 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending |
 
 ## Front end
 
@@ -1002,8 +1002,8 @@ those warnings come from the server alone.
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
 a request, so a timer inside the server would fire whenever it happened to, and
-a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
-`deploy/` yet.
+a Job leaves no sweep endpoint to protect. [`deploy/README.md`](deploy/README.md)
+section 2.9 sets up that Job and its daily schedule.
 
 ### What is not stateless yet
 

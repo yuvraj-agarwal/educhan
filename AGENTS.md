@@ -29,7 +29,7 @@ not.
     post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
     pair (`markupBlocks`), which the front end's `parseMarkup` mirrors.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
-  - `ratelimit.go` — per-client flood control.
+  - `ratelimit.go` — per-client flood control, and the sweep that forgets expired entries.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
@@ -577,7 +577,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
   board's `archive_days` have passed. It is a one-shot mode rather than a timer because
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
-  on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
+  on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
   a cutoff fixed when the sweep starts, so a sweep always terminates. Each batch queues
   the storage keys of its files in `media_deletions` (`0007`) in the same transaction
@@ -844,7 +844,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
-  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`) run the whole app
+  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`) run the whole app
   against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
