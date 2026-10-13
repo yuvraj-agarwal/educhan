@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -452,5 +454,146 @@ func TestPageLoadsServeTheShell(t *testing.T) {
 	routes.ServeHTTP(rec, req)
 	if ct := rec.Header().Get("Content-Type"); rec.Code != http.StatusNotFound || !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("GET /api/u/iitb/threads: status %d, %s; want a JSON 404", rec.Code, ct)
+	}
+}
+
+// The assets' URLs carry no version, so a browser has to ask before reusing
+// one, and the ETag is what lets the answer be a bodiless 304. Text goes out
+// gzipped to a client that takes it, as a separate representation with its
+// own ETag; fonts, already compressed, never do.
+func TestWebAssetsRevalidateAndCompress(t *testing.T) {
+	routes := (&App{log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Routes()
+	get := func(path string, header map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		routes.ServeHTTP(rec, req)
+		return rec
+	}
+	file := func(name string) []byte {
+		t.Helper()
+		body, err := fs.ReadFile(webFS(), name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		return body
+	}
+	gunzip := func(body []byte) []byte {
+		t.Helper()
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("not gzip: %v", err)
+		}
+		out, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("gunzip: %v", err)
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		path, file, contentType string
+		compressed              bool
+	}{
+		{"/app.js", "app.js", "text/javascript", true},
+		{"/app.css", "app.css", "text/css", true},
+		{"/lib/katex/katex.min.js", "lib/katex/katex.min.js", "text/javascript", true},
+		{"/lib/highlightjs/highlight.min.js", "lib/highlightjs/highlight.min.js", "text/javascript", true},
+		{"/lib/katex/fonts/KaTeX_Main-Regular.woff2", "lib/katex/fonts/KaTeX_Main-Regular.woff2", "font/woff2", false},
+		// No extension: typed by sniffing, and too rarely read to compress.
+		{"/lib/katex/LICENSE", "lib/katex/LICENSE", "text/plain", false},
+		// A route of the UI is the shell, with the shell's validators.
+		{"/", "index.html", "text/html", true},
+		{"/meta/thread/1", "index.html", "text/html", true},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			want := file(tc.file)
+
+			plain := get(tc.path, nil)
+			if plain.Code != http.StatusOK || !bytes.Equal(plain.Body.Bytes(), want) {
+				t.Fatalf("plain GET: status %d, body matches %v", plain.Code, bytes.Equal(plain.Body.Bytes(), want))
+			}
+			if got := plain.Header().Get("Content-Type"); !strings.HasPrefix(got, tc.contentType) {
+				t.Errorf("Content-Type = %q, want %s", got, tc.contentType)
+			}
+			if got := plain.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("Cache-Control = %q, want no-cache: the URL is not versioned", got)
+			}
+			if got := plain.Header().Get("Content-Encoding"); got != "" {
+				t.Errorf("Content-Encoding = %q to a client that asked for none", got)
+			}
+			if plain.Header().Get("Content-Security-Policy") == "" {
+				t.Error("went out without the CSP")
+			}
+			etag := plain.Header().Get("ETag")
+			if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) || len(etag) < 10 {
+				t.Fatalf("ETag = %q, want a strong validator", etag)
+			}
+
+			again := get(tc.path, map[string]string{"If-None-Match": etag})
+			if again.Code != http.StatusNotModified || again.Body.Len() != 0 {
+				t.Errorf("revalidation: status %d with %d bytes, want an empty 304", again.Code, again.Body.Len())
+			}
+
+			zipped := get(tc.path, map[string]string{"Accept-Encoding": "br, gzip;q=0.8"})
+			if !tc.compressed {
+				if got := zipped.Header().Get("Content-Encoding"); got != "" {
+					t.Errorf("Content-Encoding = %q for a file that is compressed already", got)
+				}
+				if got := zipped.Header().Get("ETag"); got != etag {
+					t.Errorf("ETag = %q for the same bytes, want %q", got, etag)
+				}
+				return
+			}
+			if got := zipped.Header().Get("Content-Encoding"); got != "gzip" {
+				t.Fatalf("Content-Encoding = %q, want gzip", got)
+			}
+			if !bytes.Equal(gunzip(zipped.Body.Bytes()), want) {
+				t.Error("the gzipped body is not the file")
+			}
+			if !strings.Contains(zipped.Header().Get("Vary"), "Accept-Encoding") ||
+				!strings.Contains(plain.Header().Get("Vary"), "Accept-Encoding") {
+				t.Error("a compressible file must say it varies by Accept-Encoding, gzipped or not")
+			}
+			zipETag := zipped.Header().Get("ETag")
+			if zipETag == etag || zipETag == "" {
+				t.Errorf("the gzipped body's ETag = %q, want one of its own", zipETag)
+			}
+			if again := get(tc.path, map[string]string{"Accept-Encoding": "gzip", "If-None-Match": zipETag}); again.Code != http.StatusNotModified {
+				t.Errorf("revalidating the gzipped copy: status %d, want 304", again.Code)
+			}
+
+			refused := get(tc.path, map[string]string{"Accept-Encoding": "gzip;q=0, deflate"})
+			if refused.Header().Get("Content-Encoding") != "" || !bytes.Equal(refused.Body.Bytes(), want) {
+				t.Error("gzip;q=0 still got a gzipped body")
+			}
+		})
+	}
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	for header, want := range map[string]bool{
+		"":                      false,
+		"gzip":                  true,
+		"GZIP":                  true,
+		"gzip, deflate, br":     true,
+		"br;q=1.0, gzip;q=0.5":  true,
+		"gzip;q=0":              false,
+		"gzip; q=0.000":         false,
+		"deflate":               false,
+		"*":                     true,
+		"*;q=0":                 false,
+		"*, gzip;q=0":           false,
+		"x-gzip":                true,
+		"identity":              false,
+		"gzip;q=nonsense":       false,
+		"br, gzip;q=0.1, *;q=0": true,
+	} {
+		if got := acceptsGzip([]string{header}); got != want {
+			t.Errorf("acceptsGzip(%q) = %v, want %v", header, got, want)
+		}
 	}
 }

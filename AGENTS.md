@@ -268,6 +268,12 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   sources because only the WOFF2 fonts are vendored; its README gives the exact `sed`,
   and `TestVendoredStylesheetsReferenceVendoredFiles` fails if any `url()` in a vendored
   stylesheet names a file that is not pinned.
+- **Static caching.** `webHandler` reads every embedded file once (`webAssets`) and
+  serves it with `Cache-Control: no-cache` and a content-hash `ETag`, plus a gzipped
+  copy with its own `ETag` for text types, through `http.ServeContent`
+  (`TestWebAssetsRevalidateAndCompress`). The URLs are unversioned, so never mark an
+  asset `immutable` or give it a `max-age`: a returning reader would keep an old
+  `app.js` after a deploy. Versioned URLs would have to come first.
 - `img-src` is `'self' data:`, so the file picker previews an attachment as a `data:` URL.
   A `blob:` URL would need a CSP change.
 - `app.css` is tokens first (`:root`), then base, layout, and components; colours live in

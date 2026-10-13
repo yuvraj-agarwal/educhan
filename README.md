@@ -472,6 +472,13 @@ proxy would have shipped without the libraries. KaTeX is the reason maths is typ
 carries layout in `style` attributes, which this CSP refuses, while `katex.render` sets
 styles through the CSSOM, which it allows.
 
+None of these files has a version in its URL — `/app.js` is `/app.js` in every release —
+so each goes out with `Cache-Control: no-cache` and a strong `ETag` from a hash of its
+bytes: a browser keeps its copy and revalidates it, and an unchanged file costs a `304`
+with no body. Text files (HTML, JavaScript, CSS) are gzipped once at startup and sent
+compressed to a client that accepts gzip, with their own `ETag` and `Vary:
+Accept-Encoding`; the fonts are compressed already. JSON from the API is not compressed.
+
 ## Tech Stack
 
 - **Backend**: Go 1.22 standard library HTTP server, `pgx` for PostgreSQL
