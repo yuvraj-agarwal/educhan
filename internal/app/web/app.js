@@ -76,6 +76,8 @@ const HAS_HOVER = window.matchMedia("(hover: hover) and (pointer: fine)").matche
 const state = {
   boards: [],
   route: { view: "home" },
+  // The thread on screen, in the thread view.
+  thread: null,
   // enabled comes from the server; badge is read out of the credential this
   // browser holds, which the server is never asked about outside of using it.
   verification: { enabled: false, badge: null },
@@ -93,6 +95,11 @@ const el = {
 
 /* API ---------------------------------------------------------------------- */
 
+// UNREACHABLE is what a request that got no answer at all says: fetch's own
+// error is a browser's wording ("Failed to fetch", "Load failed", "NetworkError
+// when attempting to fetch resource") and says nothing a reader can use.
+const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
+
 async function api(path, options = {}) {
   // The caller's headers are copied rather than used in place: this function
   // adds to them, and a caller passing the same object twice should not
@@ -103,7 +110,15 @@ async function api(path, options = {}) {
     init.headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(path, init);
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch {
+    // No answer at all: offline, a dropped connection, a blocked request.
+    const err = new Error(UNREACHABLE);
+    err.unreachable = true;
+    throw err;
+  }
   const payload = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
@@ -116,7 +131,11 @@ async function api(path, options = {}) {
 
 // errorMessage turns an API failure into something worth reading. The server's
 // own message is kept; only the cases where it needs context are rewritten.
-function errorMessage(err) {
+// What is being sent stays in its form after a refusal, so these say so.
+function errorMessage(err, { hasText = true } = {}) {
+  if (err.unreachable) {
+    return `${UNREACHABLE} What you wrote is still in the box.`;
+  }
   if (err.status === 413) {
     return "That image is too large for this board. Try a smaller file.";
   }
@@ -127,7 +146,9 @@ function errorMessage(err) {
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
   if (err.status === 403 && err.message === "image limit reached") {
-    return "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own.";
+    return hasText
+      ? "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own."
+      : "This thread reached its image limit while you were writing, so it takes no more images. Write a reply to post text instead.";
   }
   if (err.status === 403 && err.message === "thread is archived") {
     return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
@@ -1142,20 +1163,25 @@ function verifiedBadgeHTML(label) {
   return `<span class="badge verified" title="Institutional email verified; not linked to this poster">Verified: ${esc(label)}</span>`;
 }
 
-function badgesHTML(thread) {
+// The image limit badge marks a thread that has filled up. On a board whose
+// limit is 0 every thread is "at" it from the start, and a badge on all of them
+// would say nothing; the reply form says why there is no picker instead.
+function badgesHTML(thread, board = null) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
   if (thread.archived_at) badges.push('<span class="badge archived">archived</span>');
   if (thread.locked) badges.push('<span class="badge locked">locked</span>');
   if (thread.at_bump_limit) badges.push('<span class="badge bumplimit">bump limit</span>');
-  if (thread.at_image_limit) badges.push('<span class="badge imagelimit">image limit</span>');
+  if (thread.at_image_limit && !(board && board.image_limit === 0)) {
+    badges.push('<span class="badge imagelimit">image limit</span>');
+  }
   return badges.join(" ");
 }
 
 // postHTML renders one post. `context` carries the board slug, the thread the
 // post belongs to, and whether the post number should act as a quote button.
 function postHTML(post, context) {
-  const { slug, subject = "", thread = null, quotable = false } = context;
+  const { slug, board = null, subject = "", thread = null, quotable = false } = context;
   const head = [];
 
   // The subject is the opening post's heading, so it gets its own line above
@@ -1174,7 +1200,7 @@ function postHTML(post, context) {
   head.push(timeHTML(post.created_at));
 
   if (post.op && thread) {
-    const badges = badgesHTML(thread);
+    const badges = badgesHTML(thread, board);
     if (badges) head.push(badges);
   }
 
@@ -1333,7 +1359,10 @@ function setFile(field, file) {
 
 // imageLimitReason is why a thread's reply form takes no image.
 function imageLimitReason(board) {
-  const limit = board && board.image_limit;
+  const limit = board ? board.image_limit : undefined;
+  if (limit === 0) {
+    return "Replies on this board can't carry images.";
+  }
   return limit > 0
     ? `This thread has reached its limit of ${plural(limit, "image", "images")}. Text replies still work.`
     : "This thread has reached its image limit. Text replies still work.";
@@ -1483,7 +1512,7 @@ async function renderIndex(route) {
 
   const threads = index.threads
     .map((summary) => {
-      const context = { slug: board.slug, subject: summary.subject, thread: summary };
+      const context = { slug: board.slug, board, subject: summary.subject, thread: summary };
       const replies = summary.last_replies
         .map((post) => postHTML(post, { slug: board.slug }))
         .join("");
@@ -1534,7 +1563,7 @@ async function renderCatalog(route) {
         <div class="stats">
           <span class="replies">${plural(t.replies, "reply", "replies")}</span>
           ${t.images > 0 ? `<span class="images">&middot; ${plural(t.images, "image", "images")}</span>` : ""}
-          ${badgesHTML(t)}
+          ${badgesHTML(t, board)}
         </div>
         ${media}
         ${t.subject ? `<h2 class="subject">${esc(t.subject)}</h2>` : ""}
@@ -1552,11 +1581,15 @@ async function renderCatalog(route) {
 async function renderThread(route) {
   const detail = await api(`/api/boards/${encodeURIComponent(route.slug)}/threads/${route.no}`);
   const { board } = detail;
+  // Kept for what the page learns about the thread after drawing it: a reply
+  // refused at the image limit updates its summary line from here.
+  state.thread = detail;
 
   const posts = detail.posts
     .map((post) =>
       postHTML(post, {
         slug: board.slug,
+        board,
         subject: detail.subject,
         thread: detail,
         quotable: true,
@@ -1578,7 +1611,7 @@ async function renderThread(route) {
     <div class="thread-actions">
       <a href="${boardPath(board.slug)}">&larr; Back to ${esc(boardLabel(board.slug))}</a>
       ${archived ? "" : '<button class="link" data-action="refresh" type="button">Update</button>'}
-      <span class="muted">${threadCounts(detail, board, archived).join(" &middot; ")}</span>
+      <span class="muted" data-thread-counts>${threadCounts(detail, board, archived).join(" &middot; ")}</span>
     </div>
     ${archiveNote}
     <section class="thread detail">${posts}</section>
@@ -1595,7 +1628,9 @@ function threadCounts(thread, board, archived) {
     board.image_limit > 0 ? `${images} of ${plural(board.image_limit, "image", "images")}` : plural(images, "image", "images"),
   ];
   if (!archived && thread.at_bump_limit) counts.push("at bump limit, no longer bumping");
-  if (!archived && thread.at_image_limit) counts.push("image limit reached, text replies only");
+  if (!archived && thread.at_image_limit) {
+    counts.push(board.image_limit === 0 ? "replies can't carry images" : "image limit reached, text replies only");
+  }
   return counts;
 }
 
@@ -2516,6 +2551,7 @@ async function render({ draft = captureDraft() } = {}) {
   const requested = window.location.href;
   const route = parseRoute();
   state.route = route;
+  state.thread = null;
   renderNav(route);
   clearNotice();
   hideQuotePreview();
@@ -2581,16 +2617,24 @@ async function render({ draft = captureDraft() } = {}) {
     }
   } catch (err) {
     // An expired thread and a mistyped board look the same from here, and both
-    // are better served by a way out than by the raw error.
-    let message = `Could not load this page: ${err.message}`;
-    if (err.status === 404) {
-      message =
-        route.view === "post"
-          ? `No. ${route.no} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
-          : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
+    // are better served by a way out than by the raw error. A post number the
+    // server cannot take at all (0, or more digits than a post number has) is
+    // a post that is not there either.
+    const notFound = err.status === 404 || (route.view === "post" && err.status === 400);
+    let message = err.unreachable ? UNREACHABLE : `Could not load this page: ${err.message}`;
+    let board = null;
+    if (notFound) {
+      // The board is named, and linked, only when it is one this site has:
+      // the slug is whatever the address said, and echoing an arbitrary one
+      // would let a crafted link put a sentence of its choosing on the page.
+      const known = route.view === "post" && state.boards.some((b) => b.slug === route.slug);
+      message = known
+        ? `${Number.isSafeInteger(route.no) ? `No. ${route.no}` : "That post"} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
+        : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
+      board = known ? route.slug : null;
     }
-    el.main.innerHTML = emptyStateHTML(message, route.view === "post" ? route.slug : null);
-    announce(err.status === 404 ? "Not found" : "Could not load this page");
+    el.main.innerHTML = emptyStateHTML(message, board);
+    announce(notFound ? "Not found" : "Could not load this page");
     return;
   } finally {
     finish();
@@ -3206,11 +3250,24 @@ el.main.addEventListener("submit", async (event) => {
     // switch the picker off, so the next press posts the text that is left.
     if (err.status === 403 && err.message === "image limit reached") {
       const fileField = form.querySelector("[data-file-field]");
+      const thread = state.thread;
       if (fileField) {
-        blockFileField(fileField, imageLimitReason(null));
+        blockFileField(fileField, imageLimitReason(thread && thread.board));
+      }
+      // The summary line was drawn before the thread filled up; it says so
+      // now, as a fresh render of the thread would.
+      if (thread) {
+        thread.at_image_limit = true;
+        if (thread.board && thread.board.image_limit > 0) {
+          thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit);
+        }
+        const counts = el.main.querySelector("[data-thread-counts]");
+        if (counts) {
+          counts.innerHTML = threadCounts(thread, thread.board, false).join(" &middot; ");
+        }
       }
     }
-    showNotice(errorMessage(err));
+    showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
     button.disabled = false;
     button.textContent = label;
   }
