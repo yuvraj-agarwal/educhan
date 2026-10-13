@@ -725,10 +725,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
   credential it returns is then presented explicitly with `postWithCredential`, because
   nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
-  (`poster_id_test.go`), which sends its poster key on every post and its credential only
-  on a badged one, the way the client does. Tests post to boards they create with
-  `addBoard` (`api_test.go`), never to seeded ones, so they do not depend on which boards
-  the migrations seed; `TestBoardsAreSeeded` is the one test that names the seeded set.
+  (`poster_id_test.go`), which sends what the client sends: the credential alone on a
+  post that asks for a badge, and the poster key on any other. A post carrying both is
+  never sent by the client, and the tests that cover it set the headers explicitly.
+  Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
+  ones, so they do not depend on which boards the migrations seed;
+  `TestBoardsAreSeeded` is the one test that names the seeded set.
   A migration's effect on existing data is tested by stopping a schema at an earlier
   version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
   starting a server on it with `serverOn`, which applies the rest. Sweep tests call
