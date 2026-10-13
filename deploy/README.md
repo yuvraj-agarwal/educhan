@@ -31,7 +31,8 @@ EDUCHAN_MOD_KEY=dev-mod-key go run ./cmd/server   # http://localhost:8080
 ```
 
 `make run` is the second line without the moderation key. Migrations are applied
-at startup; the seeded boards are `placements`, `research`, and `general`.
+at startup; `0006_board_set.sql` seeds twenty boards, the subjects from `math` to
+`lang` and then student life from `adm` to `meta`.
 Attachments go to `./data/uploads`, because `EDUCHAN_MEDIA_BACKEND` defaults to
 `local`.
 
@@ -40,11 +41,11 @@ curl -s localhost:8080/healthz     # {"status":"ok"}
 curl -s localhost:8080/api/boards
 
 # Posting, with an attachment
-curl -s -X POST localhost:8080/api/boards/general/threads \
+curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="lab setup" -F body="finally works" -F image=@photo.jpg
 
 # Moderation, using the key the server was started with
-curl -s -X POST localhost:8080/api/boards/general/threads/1/sticky \
+curl -s -X POST localhost:8080/api/boards/meta/threads/1/sticky \
   -H 'Authorization: Bearer dev-mod-key'
 ```
 
@@ -381,10 +382,10 @@ open "$URL"                # the UI
 # fetch it — then confirm the object is really in Cloud Storage. With
 # EDUCHAN_UPLOADS_ENABLED off, as service.yaml sets it, the post answers 403
 # instead; that is the check to run until uploads are switched on.
-curl -s -X POST "$URL/api/boards/general/threads" \
+curl -s -X POST "$URL/api/boards/meta/threads" \
   -F subject="storage check" -F body="does this survive" -F image=@photo.jpg
-curl -s "$URL/api/boards/general/catalog"     # threads[].attachment.url
-curl -sI "$URL/media/original/general/2026/08/<name>.jpg"   # 200, image/jpeg
+curl -s "$URL/api/boards/meta/catalog"        # threads[].attachment.url
+curl -sI "$URL/media/original/meta/2026/08/<name>.jpg"      # 200, image/jpeg
 gcloud storage ls -r "gs://${MEDIA_BUCKET}/media/originals/**"
 ```
 
@@ -601,7 +602,7 @@ no handler, no query, no column, and no URL.
 
 Keys are the reason the swap is this cheap. They were already slash-separated,
 relative, and validated by `CleanKey`, which is exactly the shape of an object
-name, so `originals/general/2026/08/{random}.jpg` addresses a file on disk and an
+name, so `originals/meta/2026/08/{random}.jpg` addresses a file on disk and an
 object in a bucket without translation. `GCSStore` applies the same validation
 even though a flat namespace could not be escaped by a `..`, so that a key stays
 portable: a bucket can be synced to a directory and back.
