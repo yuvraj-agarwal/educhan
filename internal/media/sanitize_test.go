@@ -1036,8 +1036,11 @@ func sampleBitstream(t *testing.T) riffChunk {
 // 32×32, made with Pillow with exact=True so the colour under transparent
 // pixels is kept (the second lossy, at quality 90): the left half fully
 // transparent over random colours (seed 7), the right half opaque
-// (200, 30, 30). Go cannot encode WebP, so these are files rather than built
-// in code.
+// (200, 30, 30). cutout-alpha.webp is a cut-out photo as a lossy WebP with
+// transparency, made with Pillow at quality 30: 640×480 of a colour ramp with
+// noise (±60, seed 11) softened by a 0.8-pixel blur, inside an opaque ellipse
+// on a transparent ground. Go cannot encode WebP, so these are files rather
+// than built in code.
 func readTestdata(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))

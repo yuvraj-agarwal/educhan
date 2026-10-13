@@ -194,7 +194,8 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 	switch {
 	case errors.Is(err, media.ErrUnsupportedFormat),
 		errors.Is(err, media.ErrCorruptImage),
-		errors.Is(err, media.ErrImageTooLarge):
+		errors.Is(err, media.ErrImageTooLarge),
+		errors.Is(err, media.ErrStoredTooLarge):
 		writeError(w, http.StatusBadRequest, err.Error())
 	default:
 		a.fail(w, r, err, "could not store attachment")

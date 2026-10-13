@@ -385,16 +385,21 @@ client can leave the image picker off a server that would refuse what it sends.
     turned; and lossy and lossless WebPs without transparency.
   - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
     progressive 4:2:2 JPEGs, and interlaced 8-bit colour PNGs, that have to be turned;
-    and 16-bit colour PNGs that are interlaced or have to be turned.
+    16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs with
+    transparency, which are stored as PNGs (below) and so take four bytes a pixel.
   - *either*, by the picture's shape and the upload's size: a 16-bit colour PNG that is
-    neither, and a lossy WebP with transparency.
+    neither interlaced nor turned.
 
   At a quarter of the size, every kind is accepted. A GIF of many thousands of frames is
   refused however small they are. An animated WebP is refused with `400`
   (`image could not be decoded`) once it is decoded: nothing in Go can decode one to
-  thumbnail it. So is an image whose rewritten file would come to more than four times
-  the upload plus half a byte a pixel (`image resolution is too large`), which only a
-  file made to compress unusually well reaches.
+  thumbnail it. So, once it is encoded, is an image whose rewritten file would come to
+  more than four times the upload plus half a byte a pixel
+  (`image would be too large once re-encoded for storage`), which only a file made to
+  compress in a way Go's encoders cannot follow reaches. A lossy WebP with
+  transparency is held instead to what a PNG of its size can come to, because stored
+  losslessly it is meant to be many times the size it came in at; it is refused from
+  its header when that is too large to process.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
@@ -773,13 +778,15 @@ limits never compound.
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
 request rejected for any other reason — an empty body, an oversized image, a
-file that is not an accepted image or whose header claims too many pixels, a
-reply to a missing, locked or archived thread or an image past a thread's cap —
+file that is not an accepted image or whose header shows it too large to
+process, a reply to a missing, locked or archived thread or an image past a
+thread's cap —
 does not start a cooldown, so a typo never costs a wait. Two refusals come only
 after the cooldowns have started: an image whose header reads but whose pixels
-do not decode, which only decoding it can find, and decoding is the cost the
-upload cooldown is there for; and the loser of two replies racing for a
-thread's last image slot (see the HTTP API).
+do not decode, or whose rewritten file would be too large to store, which only
+decoding and encoding it can find, and those are the cost the upload cooldown is
+there for; and the loser of two replies racing for a thread's last image slot
+(see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose

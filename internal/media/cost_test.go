@@ -11,7 +11,9 @@ import (
 	"image/color"
 	"image/color/palette"
 	"image/gif"
+	"image/png"
 	"math"
+	"math/rand"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
@@ -394,6 +396,7 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		kind{"lossy WebP", webpOf("lossy"), 1},
 		kind{"lossless WebP", webpOf("lossless"), 1},
 	)
+	refused = append(refused, kind{"lossy WebP with transparency", webpOf("alpha"), 1})
 	refused = append(refused,
 		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 6},
 		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 6},
@@ -459,8 +462,8 @@ func TestStoredFileCannotOutgrowItsUpload(t *testing.T) {
 	if _, err := Inspect(upload); err != nil {
 		t.Fatalf("Inspect = %v; the header is sound", err)
 	}
-	if _, err := Process(context.Background(), upload); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Process = %v, want ErrImageTooLarge", err)
+	if _, err := Process(context.Background(), upload); !errors.Is(err, ErrStoredTooLarge) {
+		t.Errorf("Process = %v, want ErrStoredTooLarge", err)
 	}
 	if n := processing.held(); n != 0 {
 		t.Errorf("%d bytes of the budget still held after the refusal", n)
@@ -475,11 +478,71 @@ func TestStoredFileCannotOutgrowItsUpload(t *testing.T) {
 	if cap(b.buf) > 10_000 {
 		t.Errorf("the buffer grew to %d, past its limit", cap(b.buf))
 	}
-	if _, err := b.Write(make([]byte, 1001)); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("a write past the limit = %v, want ErrImageTooLarge", err)
+	if _, err := b.Write(make([]byte, 1001)); !errors.Is(err, ErrStoredTooLarge) {
+		t.Errorf("a write past the limit = %v, want ErrStoredTooLarge", err)
 	}
 	if _, err := b.Write(make([]byte, 1000)); err != nil || len(b.buf) != 10_000 {
 		t.Errorf("a write up to the limit = %v with %d bytes, want it taken", err, len(b.buf))
+	}
+}
+
+// A cut-out photo saved as a lossy WebP with transparency is stored as a PNG
+// of its pixels, which is many times the size it came in at: that is what a
+// lossy picture stored losslessly comes to, and it is stored, not refused
+// after decoding as a file made to outgrow its upload. Its limit is what a
+// PNG of its size can come to, which its cost counts from the header.
+func TestCutOutWebPIsStoredAsTheLargerPNGItMakes(t *testing.T) {
+	upload := readTestdata(t, "cutout-alpha.webp")
+	if lossless, alpha := webpPicture(upload); lossless || !alpha {
+		t.Fatalf("the fixture is not a lossy WebP with an alpha plane")
+	}
+	got, err := Process(context.Background(), upload)
+	if err != nil {
+		t.Fatalf("Process = %v, want it stored", err)
+	}
+	if got.Format != FormatPNG {
+		t.Errorf("stored as %s, want png", got.Format.Name)
+	}
+	if ordinary := 4*int64(len(upload)) + int64(got.Width*got.Height)/2 + 64<<10; int64(len(got.Data)) <= ordinary {
+		t.Fatalf("stored %d bytes of a %d-byte upload, within the ordinary limit of %d; the fixture proves nothing", len(got.Data), len(upload), ordinary)
+	}
+	in, err := inspect(upload)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	if in.limit != pngLimit(got.Width, got.Height, 4) {
+		t.Errorf("limit = %d, want a PNG's of its size, %d", in.limit, pngLimit(got.Width, got.Height, 4))
+	}
+	if in.cost < 2*in.limit {
+		t.Errorf("cost = %d, which does not cover a stored buffer growing to %d", in.cost, in.limit)
+	}
+	clearPixels := 0
+	stored := decodeStored(t, got.Data).(*image.NRGBA)
+	for i := 3; i < len(stored.Pix); i += 4 {
+		if stored.Pix[i] == 0 {
+			clearPixels++
+		}
+	}
+	if clearPixels == 0 {
+		t.Error("the stored PNG lost the cut-out's transparency")
+	}
+}
+
+// pngLimit holds for what image/png makes of pictures that do not compress
+// at all, rows of noise, and is not loose by much.
+func TestPNGLimitHoldsForNoise(t *testing.T) {
+	rng := rand.New(rand.NewSource(5))
+	for _, size := range []image.Point{{1, 1}, {257, 129}, {1500, 700}} {
+		m := image.NewNRGBA(image.Rect(0, 0, size.X, size.Y))
+		rng.Read(m.Pix)
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, m); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		rows := int64(size.Y) * (1 + 4*int64(size.X))
+		if n := int64(buf.Len()); n > pngLimit(size.X, size.Y, 4) || n < rows {
+			t.Errorf("%v: %d bytes of PNG, want between its %d bytes of rows and pngLimit %d", size, n, rows, pngLimit(size.X, size.Y, 4))
+		}
 	}
 }
 

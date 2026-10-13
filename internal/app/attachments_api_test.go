@@ -22,6 +22,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
 /* Fixtures ----------------------------------------------------------------- */
@@ -529,8 +531,9 @@ func pngDeepClaiming(t *testing.T, w, h uint32) []byte {
 // memory to decode than the server has for it, is refused before flood
 // control, so the poster
 // can send the text on its own at once. An image whose header is sound but
-// whose pixels do not decode is found only by decoding, after the cooldowns
-// have started, which is the one exception the README names.
+// whose pixels do not decode, or that would be stored many times larger than
+// it came in, is found only by decoding and encoding it, after the cooldowns
+// have started, which are the exceptions the README names.
 func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
@@ -584,6 +587,21 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}
 	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image that failed to decode: %d, want 429: decoding comes after flood control", status)
+	}
+
+	// A file that would be stored many times larger than it came in, which
+	// only encoding it can find, is refused for that, not for its resolution.
+	repeat, err := os.ReadFile(filepath.Join("..", "media", "testdata", "repeat.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	const third = "198.51.100.23"
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {third}}, replies, map[string]string{"body": "look"},
+		"repeat.webp", repeat, &out); status != http.StatusBadRequest || out.Error != media.ErrStoredTooLarge.Error() {
+		t.Fatalf("reply with a file that outgrows its upload: %d %q, want 400 %q", status, out.Error, media.ErrStoredTooLarge.Error())
+	}
+	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after an image too large once re-encoded: %d, want 429: encoding comes after flood control", status)
 	}
 }
 

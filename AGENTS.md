@@ -609,9 +609,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel and 16-bit PNGs to 8;
   `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
   thousands of empty frames is not free), the copy `orient` makes, the encoder's output
-  buffer (`storedBuffer`, which refuses to grow past `storedLimit`: four times the upload
-  plus half a byte a pixel, so a file Go's encoders cannot compress the way it came is
-  refused rather than stored many times larger), and the thumbnail scaler's scratch.
+  buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
+  `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
+  encoders cannot compress the way it came is refused rather than stored many times
+  larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held
+  to `pngLimit` of its size instead, which the header gives, so its cost refuses it up
+  front rather than after decoding), and the thumbnail scaler's scratch.
   `peakOf` takes them phase by phase and counts each phase's first allocation on top of
   the previous phase's peak, because a collection that began before the boundary still
   holds that phase's scratch. An estimate over `processingBudget` (256 MiB) is refused

@@ -43,6 +43,9 @@ var (
 	ErrUnsupportedFormat = errors.New("unsupported image format: use JPEG, PNG, WebP, or GIF")
 	ErrImageTooLarge     = errors.New("image resolution is too large")
 	ErrCorruptImage      = errors.New("image could not be decoded")
+	// ErrStoredTooLarge is a file that would be stored many times larger than
+	// it came in, which only encoding it can find (storedLimit).
+	ErrStoredTooLarge = errors.New("image would be too large once re-encoded for storage")
 )
 
 // Format is one of the image types educhan accepts.
@@ -174,7 +177,7 @@ func inspect(data []byte) (inspection, error) {
 	return inspection{
 		format: format,
 		cost:   cost,
-		limit:  storedLimit(len(data), cfg.Width, cfg.Height),
+		limit:  storedLimit(format, data, cfg.Width, cfg.Height),
 		frames: frames,
 	}, nil
 }

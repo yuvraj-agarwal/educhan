@@ -62,7 +62,7 @@ const storedJPEGQuality = 90
 const maxGIFFramePixels = 4 * MaxPixels
 
 // storedBuffer collects an encoded original and refuses to hold more than
-// limit bytes (storedLimit), with ErrImageTooLarge. It grows by doubling, as a
+// limit bytes (storedLimit), with ErrStoredTooLarge. It grows by doubling, as a
 // bytes.Buffer does, but never past the limit, so it holds at most twice the
 // limit while it grows: what processingCost counts for it.
 type storedBuffer struct {
@@ -77,7 +77,7 @@ func newStoredBuffer(sizeHint int, limit int64) *storedBuffer {
 func (b *storedBuffer) Write(p []byte) (int, error) {
 	need := int64(len(b.buf)) + int64(len(p))
 	if need > b.limit {
-		return 0, ErrImageTooLarge
+		return 0, ErrStoredTooLarge
 	}
 	if need > int64(cap(b.buf)) {
 		grown := make([]byte, len(b.buf), min(max(2*int64(cap(b.buf)), need, 4096), b.limit))
@@ -89,15 +89,15 @@ func (b *storedBuffer) Write(p []byte) (int, error) {
 }
 
 // encoded is the result of encoding into a storedBuffer: its bytes, or
-// ErrImageTooLarge if the limit stopped it (image/jpeg, image/png and
+// ErrStoredTooLarge if the limit stopped it (image/jpeg, image/png and
 // image/gif all hand back their writer's error as it was), or the encoder's
 // own error.
 func (b *storedBuffer) encoded(format Format, err error) ([]byte, error) {
 	switch {
 	case err == nil:
 		return b.buf, nil
-	case errors.Is(err, ErrImageTooLarge):
-		return nil, ErrImageTooLarge
+	case errors.Is(err, ErrStoredTooLarge):
+		return nil, ErrStoredTooLarge
 	}
 	return nil, fmt.Errorf("media: encode %s: %w", format.Name, err)
 }

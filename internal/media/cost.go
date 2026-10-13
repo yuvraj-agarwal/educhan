@@ -111,7 +111,7 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 
 	held := phases[len(phases)-1].after
 	upload := int64(len(data))
-	limit := storedLimit(len(data), cfg.Width, cfg.Height)
+	limit := storedLimit(format, data, cfg.Width, cfg.Height)
 	scratch := thumbScratch(cfg.Width, cfg.Height)
 	phases = append(phases,
 		// The encoder writes into a buffer the size of the upload, which
@@ -131,9 +131,33 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 // WebP of a pattern repeated further apart than deflate's 32 KiB window,
 // say, which as a PNG is raw pixels — and storing that would turn a small
 // upload into a file many times its size. Such a file is refused
-// (ErrImageTooLarge) rather than stored.
-func storedLimit(upload, w, h int) int64 {
-	return 4*int64(upload) + int64(w)*int64(h)/2 + 64<<10
+// (ErrStoredTooLarge) rather than stored.
+//
+// A lossy WebP with transparency is the exception: it is stored as a PNG of
+// its decoded pixels, because nothing else Go writes keeps the transparency,
+// and a lossy photo stored losslessly is many times the size it came in at
+// by design, not by any trick. Its limit is what image/png can take for such
+// a picture at worst (pngLimit), so the size it will be stored at is known
+// from its header, and a picture too large to store that way is refused
+// from it, as too costly to process (processingCost), before any cooldown.
+func storedLimit(format Format, data []byte, w, h int) int64 {
+	limit := 4*int64(len(data)) + int64(w)*int64(h)/2 + 64<<10
+	if format == FormatWebP {
+		if lossless, alpha := webpPicture(data); !lossless && alpha {
+			limit = max(limit, pngLimit(w, h, 4))
+		}
+	}
+	return limit
+}
+
+// pngLimit is the most image/png writes for a w×h picture of bpp bytes a
+// pixel, however badly it compresses: its rows with a filter byte each, which
+// deflate stores with 5 bytes for every block of up to 32 KiB it cannot
+// compress, in IDAT chunks of 12 bytes for every 32 KiB, a 1024th more than
+// the rows in all, and its headers.
+func pngLimit(w, h, bpp int) int64 {
+	rows := int64(h) * (1 + int64(bpp)*int64(w))
+	return rows + rows/1024 + 64<<10
 }
 
 // thumbScratch bounds the scratch buffer golang.org/x/image/draw's kernel
