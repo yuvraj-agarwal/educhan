@@ -31,6 +31,9 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
+	// stopCooldownSweep stops the goroutine that drops the limiters' expired
+	// entries, which are client addresses. Close calls it.
+	stopCooldownSweep func()
 
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
@@ -93,7 +96,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	case cfg.Sender == nil:
 		log.Warn("EDUCHAN_MAIL_DEV is set; verification codes are printed to stdout with their address")
 	}
-	return &App{
+	a := &App{
 		cfg:           cfg,
 		log:           log,
 		pool:          pool,
@@ -106,7 +109,14 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
 		schemaAhead:   schemaAhead,
-	}, nil
+	}
+	every := cfg.cooldownSweepEvery
+	if every <= 0 {
+		every = cooldownSweepInterval
+	}
+	a.stopCooldownSweep = sweepCooldowns(every,
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+	return a, nil
 }
 
 // checkMailer refuses to start verification with nowhere safe to send codes.
@@ -143,9 +153,12 @@ func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
 	}
 }
 
-// Close releases database resources and, for a backend that holds a connection
-// of its own, the media store's.
+// Close stops the flood-control sweep and releases database resources and, for
+// a backend that holds a connection of its own, the media store's.
 func (a *App) Close() {
+	if a.stopCooldownSweep != nil {
+		a.stopCooldownSweep()
+	}
 	if a.pool != nil {
 		a.pool.Close()
 	}

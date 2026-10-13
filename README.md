@@ -677,8 +677,16 @@ limits never compound.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image — does
+request rejected for any other reason — an empty body, an oversized image, a
+reply to a locked or archived thread or an image past a thread's cap — does
 not start a cooldown, so a typo never costs a wait.
+
+The cooldowns are keyed on client addresses, and they are the only place the
+server holds one. A sweep runs once a minute and drops every entry whose
+cooldown has run out, so **an address is held in memory no longer than the
+longest cooldown that applies to it plus one minute**, counted from its last
+post (or code request, for verification's cooldown), whether or not anyone
+else posts in the meantime. It is never written to the database or the logs.
 
 State is held in the process, so each instance of a horizontally scaled
 deployment enforces the cooldowns it sees. Moving to shared storage means
