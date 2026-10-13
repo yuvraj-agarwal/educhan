@@ -140,8 +140,7 @@ type verifyRequestBody struct {
 	Email string `json:"email"`
 	// Adult is the sender's own word that they are 18 or over (build plan
 	// 2.14). It is checked and then dropped: no column, no log field and no
-	// credential claim holds it, so nothing educhan keeps says anything about
-	// anybody's age.
+	// credential claim holds it, so the answer is recorded nowhere.
 	Adult bool `json:"adult"`
 }
 

@@ -71,8 +71,8 @@ parsed, no cooldown starts, nothing is stored and no mail is sent
 (`TestVerificationRequiresTheAdultAttestation`).
 
 The answer is checked and then dropped. It is not a column, a log field, a
-claim in the credential or anything the browser keeps, so nothing educhan holds
-says anything about anybody's age (`TestAdultAttestationIsNeverKept`, and
+claim in the credential or anything the browser keeps: the answer itself is
+recorded nowhere (`TestAdultAttestationIsNeverKept`, and
 `TestBadgeAttestationIsNeverPreselectedOrKept` for the page's unticked box).
 Why adult-only: the badge is the one feature that keeps something tied to a
 person, a keyed hash of an address for up to 180 days. Keeping it to adults

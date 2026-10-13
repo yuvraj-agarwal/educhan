@@ -452,9 +452,9 @@ func TestVerificationRequiresTheAdultAttestation(t *testing.T) {
 }
 
 // The attestation is checked at the door and dropped there. Nothing educhan
-// keeps (a row, a log line, the credential) says whether a poster is 18 or
-// over, so there is no record of anybody's age to leak, to hand over, or to
-// line up against a post (design-recommendations 3.3, 4.4).
+// keeps (a row, a log line, the credential) records the answer, so there is
+// none to leak, to hand over, or to line up against a post
+// (design-recommendations 3.3, 4.4).
 func TestAdultAttestationIsNeverKept(t *testing.T) {
 	var logs syncBuffer
 	h := verifyServerLogging(t, nil, &logs)
