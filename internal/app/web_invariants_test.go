@@ -366,3 +366,15 @@ func TestClientKnowsTheServersImageRefusals(t *testing.T) {
 		t.Errorf("image post with uploads off: %d %q, want 403 %q", status, refused.Error, switchedOff)
 	}
 }
+
+// Forget this browser is the FAQ's advice for a shared computer, and its
+// links land on /verify#forget-browser whatever state the page is in, so
+// every state the page can draw carries the control.
+func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
+	view := withoutComments(jsFunction(t, appScript(t), "verifyViewHTML"))
+	returns := strings.Count(view, "return `")
+	offers := strings.Count(view, "${forgetBrowserHTML()}`;")
+	if returns < 4 || offers != returns {
+		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
+	}
+}

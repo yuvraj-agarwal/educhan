@@ -1992,7 +1992,8 @@ function verifyViewHTML() {
           <button class="btn primary" type="submit">Verify</button>
           <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
         </div>
-      </form>`;
+      </form>
+      ${forgetBrowserHTML()}`;
   }
 
   const lost = badgeLost

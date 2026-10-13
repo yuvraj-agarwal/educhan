@@ -438,7 +438,8 @@ needs a browser check before the test changes.
   institution, which the per-credential IDs exist to prevent. A Name the poster cleared
   stays cleared across re-renders and after posting (`restoreDraft` restores empty
   values; `submit` sets the field after `form.reset()`).
-- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state, removes
+- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
+  code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
   the credential, the poster key and the remembered name, and leaves the age answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
