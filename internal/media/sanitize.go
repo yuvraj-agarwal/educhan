@@ -181,23 +181,42 @@ func sanitizeWebP(data []byte) (sanitized, error) {
 
 // gifFramePixels adds up the area of every frame a GIF declares, reading only
 // the block structure: image descriptors are read, and everything else,
-// compressed pixels included, is skipped by its sub-block lengths. It stops
-// early once the total passes limit. A file that ends or goes wrong part way
-// is counted as far as it goes; whether it decodes is the decoder's question.
-// It allocates nothing.
-func gifFramePixels(data []byte, limit int64) int64 {
+// compressed pixels included, is stepped over. It allocates nothing.
+//
+// The walk has to read the file exactly as image/gif does, block for block,
+// or a file could steer the two apart: an extension the walk read one way and
+// the decoder another would leave the walk lost in the middle of the file,
+// counting none of the frames the decoder goes on to decode. So each
+// extension is stepped over the way readExtension reads it — a graphic
+// control extension is a fixed six bytes, a plain-text one a fixed thirteen
+// and then sub-blocks, an application one a length byte, that many bytes and
+// then sub-blocks, and a comment only sub-blocks — and the walk stops on a
+// block, an extension or a field the decoder would stop on. It does not judge
+// the compressed pixels; where they make the decoder stop with an error, the
+// frames it had allocated by then have already been counted.
+//
+// It returns ErrImageTooLarge as soon as the total passes limit, and
+// ErrCorruptImage when the walk does not end at the trailer: a file the
+// decoder could not read to its end is refused rather than half counted.
+// TestGIFFramePixelsReadsWhatTheDecoderReads and FuzzGIFFramePixels hold it to
+// the decoder.
+func gifFramePixels(data []byte, limit int64) (int64, error) {
 	const (
 		headerLen     = 13 // signature, version, logical screen descriptor
 		descriptorLen = 10 // separator, position, size, flags
+		graphicLen    = 6  // block size (4), flags, delay, transparent index, terminator
+		plainTextLen  = 13 // read whole by image/gif, whatever its block size says
 	)
 	if len(data) < headerLen {
-		return 0
+		return 0, ErrCorruptImage
 	}
 	i := headerLen
 	if flags := data[10]; flags&0x80 != 0 {
 		i += 3 << (1 + flags&0x07)
 	}
-	// skipBlocks steps over a run of data sub-blocks and its terminator.
+	// skipBlocks steps over a run of data sub-blocks and its terminator. It
+	// returns len(data) when the run is cut short, which ends the walk
+	// without a trailer.
 	skipBlocks := func(i int) int {
 		for i < len(data) {
 			n := int(data[i])
@@ -210,30 +229,62 @@ func gifFramePixels(data []byte, limit int64) int64 {
 		return len(data)
 	}
 
-	var total int64
+	var total, frames int64
 	for i < len(data) {
 		switch data[i] {
-		case 0x21: // extension: introducer, label, sub-blocks
-			i = skipBlocks(i + 2)
+		case 0x21: // extension: introducer, label, then as the label says
+			if i+2 > len(data) {
+				return total, ErrCorruptImage
+			}
+			at := i + 2
+			switch data[i+1] {
+			case 0xF9: // graphic control
+				if at+graphicLen > len(data) || data[at] != 4 || data[at+5] != 0 {
+					return total, ErrCorruptImage
+				}
+				i = at + graphicLen
+			case 0x01: // plain text
+				i = skipBlocks(at + plainTextLen)
+			case 0xFF: // application: its own length byte, then sub-blocks
+				if at >= len(data) {
+					return total, ErrCorruptImage
+				}
+				i = skipBlocks(at + 1 + int(data[at]))
+			case 0xFE: // comment
+				i = skipBlocks(at)
+			default: // image/gif refuses an extension it does not know
+				return total, ErrCorruptImage
+			}
 		case 0x2C: // image descriptor
 			if i+descriptorLen > len(data) {
-				return total
+				return total, ErrCorruptImage
 			}
 			w := int64(data[i+5]) | int64(data[i+6])<<8
 			h := int64(data[i+7]) | int64(data[i+8])<<8
 			flags := data[i+9]
+			frames++
 			total += w * h
 			if total > limit {
-				return total
+				return total, ErrImageTooLarge
 			}
 			i += descriptorLen
 			if flags&0x80 != 0 {
 				i += 3 << (1 + flags&0x07)
 			}
-			i = skipBlocks(i + 1) // past the LZW minimum code size
-		default: // the trailer, or something a decoder will refuse
-			return total
+			// The LZW minimum code size, which image/gif holds to 2–8, and
+			// then the compressed pixels.
+			if i >= len(data) || data[i] < 2 || data[i] > 8 {
+				return total, ErrCorruptImage
+			}
+			i = skipBlocks(i + 1)
+		case 0x3B: // the trailer, where the decoder stops reading
+			if frames == 0 { // which it refuses before any frame
+				return total, ErrCorruptImage
+			}
+			return total, nil
+		default: // a block image/gif refuses
+			return total, ErrCorruptImage
 		}
 	}
-	return total
+	return total, ErrCorruptImage
 }

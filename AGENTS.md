@@ -503,7 +503,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   format and the header's dimensions without decoding (and for a GIF the frames' total
   area, `gifFramePixels`, a walk over the block structure), and `Process` runs it first,
   so the early refusal in `parseSubmission` and the full one in `media.Save` cannot
-  disagree about a file's header.
+  disagree about a file's header. The GIF walk reads every block exactly as `image/gif`
+  does — a graphic control extension is a fixed 6 bytes and a plain-text one a fixed 13
+  before its sub-blocks, whatever their size bytes say, and an application one starts
+  with its own length byte — because a walk that read one extension differently from
+  the decoder lost its place there and counted none of the frames after it, which the
+  decoder went on to decode. It refuses (`ErrCorruptImage`) a file it cannot follow to
+  the trailer. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
+  hold it to the decoder: whatever `gif.DecodeAll` decodes, the walk must reach the
+  trailer with exactly the decoder's frame area. Change the two together.
 - **What is stored is never the upload.** `media.Process` rewrites every image without
   its metadata before `Save` hands it to a backend, so both backends store the same
   file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF

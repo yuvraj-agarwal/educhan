@@ -109,8 +109,10 @@ type Processed struct {
 // format, by magic bytes, and its dimensions, from its header. That is cheap
 // enough to run before flood control, so a file that is not an accepted image,
 // or one too large to decode, can be refused without costing its poster a
-// cooldown. It cannot tell whether the pixels decode; only Process can, and
-// Process runs it first.
+// cooldown. For a GIF it also walks the block structure to add up the frames
+// (gifFramePixels), and refuses a file that walk cannot follow to its end. It
+// cannot tell whether the pixels decode; only Process can, and Process runs it
+// first.
 func Inspect(data []byte) (Format, error) {
 	format, ok := DetectFormat(data)
 	if !ok {
@@ -129,9 +131,12 @@ func Inspect(data []byte) (Format, error) {
 	}
 	// Every frame of a GIF is decoded, so their sizes are added up as well.
 	// Skipping over the blocks is cheap enough to do here, and an animation
-	// too long to decode is refused like an image too large to.
-	if format == FormatGIF && gifFramePixels(data, maxGIFFramePixels) > maxGIFFramePixels {
-		return Format{}, ErrImageTooLarge
+	// too long to decode is refused like an image too large to; so is one
+	// whose blocks the decoder could not read to the end.
+	if format == FormatGIF {
+		if _, err := gifFramePixels(data, maxGIFFramePixels); err != nil {
+			return Format{}, err
+		}
 	}
 	return format, nil
 }

@@ -10,6 +10,7 @@ import (
 	"image/color/palette"
 	"image/gif"
 	"image/png"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -547,8 +548,8 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 
 	within := gifOf(4)
-	if got := gifFramePixels(within, maxGIFFramePixels); got != 4*MaxPixels {
-		t.Errorf("gifFramePixels = %d, want %d", got, 4*MaxPixels)
+	if got, err := gifFramePixels(within, maxGIFFramePixels); got != 4*MaxPixels || err != nil {
+		t.Errorf("gifFramePixels = %d, %v; want %d and no error", got, err, 4*MaxPixels)
 	}
 	if _, err := Inspect(within); err != nil {
 		t.Errorf("Inspect(four canvases of frames) = %v, want it within the budget", err)
@@ -567,14 +568,136 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 }
 
+// gifExtensions are extensions image/gif reads past, each spelled the way the
+// decoder reads it rather than the way the specification lays it out where
+// the two differ. A walk that read every extension as a run of sub-blocks
+// lost its place at the first two and counted none of the frames after them.
+var gifExtensions = map[string][]byte{
+	// An application extension whose identifier is zero bytes long: the
+	// decoder reads the zero as that length, then reads sub-blocks after it.
+	"application with an empty identifier": {0x21, 0xFF, 0x00, 0x02, 'x', 'x', 0x00},
+	// A plain-text extension is read as a fixed thirteen bytes, whatever its
+	// block size byte says, then sub-blocks.
+	"plain text with a zero block size": append(append([]byte{0x21, 0x01, 0x00}, make([]byte, 12)...), 0x00),
+	"plain text as specified":           append(append([]byte{0x21, 0x01, 0x0C}, make([]byte, 12)...), 0x03, 'a', 'b', 'c', 0x00),
+	"application as specified":          append(append([]byte{0x21, 0xFF, 0x0B}, "XMP DataXMP"...), 0x01, 'x', 0x00),
+	"comment":                           {0x21, 0xFE, 0x02, 'h', 'i', 0x00},
+	"graphic control":                   {0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00},
+}
+
+// spliceAfterHeader puts ext into a GIF after its header and global colour
+// table, before the first frame.
+func spliceAfterHeader(data, ext []byte) []byte {
+	at := 13
+	if flags := data[10]; flags&0x80 != 0 {
+		at += 3 << (1 + flags&0x07)
+	}
+	out := append([]byte(nil), data[:at]...)
+	out = append(out, ext...)
+	return append(out, data[at:]...)
+}
+
+// The frame count reads a GIF block for block as image/gif does, so no
+// extension can hide the frames after it from the budget, and a file the
+// decoder could not read to its trailer is refused before anything is decoded.
+func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
+	var small bytes.Buffer
+	if err := gif.EncodeAll(&small, animatedGIF(t, 0)); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	// Five canvases of 4000×6000 frames, over the budget, whose pixels the
+	// count never looks at.
+	huge := []byte("GIF89a")
+	huge = binary.LittleEndian.AppendUint16(huge, 4000)
+	huge = binary.LittleEndian.AppendUint16(huge, 6000)
+	huge = append(huge, 0x80, 0, 0, 0, 0, 0, 255, 255, 255)
+	for i := 0; i < 5; i++ {
+		huge = append(huge, 0x2C, 0, 0, 0, 0)
+		huge = binary.LittleEndian.AppendUint16(huge, 4000)
+		huge = binary.LittleEndian.AppendUint16(huge, 6000)
+		huge = append(huge, 0, 2, 1, 0x44, 0)
+	}
+	huge = append(huge, 0x3B)
+
+	for name, ext := range gifExtensions {
+		data := spliceAfterHeader(small.Bytes(), ext)
+		g, err := gif.DecodeAll(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: the fixture does not decode: %v", name, err)
+		}
+		var want int64
+		for _, frame := range g.Image {
+			want += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
+		}
+		if got, err := gifFramePixels(data, math.MaxInt64); got != want || err != nil {
+			t.Errorf("%s: gifFramePixels = %d, %v; the decoder decoded %d pixels", name, got, err, want)
+		}
+		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooLarge) {
+			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooLarge", name, err)
+		}
+	}
+
+	whole := small.Bytes()
+	refused := map[string][]byte{
+		"no trailer":           whole[:len(whole)-1],
+		"cut inside a frame":   whole[:len(whole)/2],
+		"an unknown block":     append(append([]byte(nil), whole[:len(whole)-1]...), 0x00, 0x3B),
+		"an unknown extension": spliceAfterHeader(whole, []byte{0x21, 0x02, 0x00}),
+		"a bad graphic control": spliceAfterHeader(whole,
+			[]byte{0x21, 0xF9, 0x05, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00}),
+		"no frames":         spliceAfterHeader(whole[:13+3*(2<<(whole[10]&7))], []byte{0x3B}),
+		"a bad LZW minimum": spliceAfterHeader(whole, []byte{0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 9, 0}),
+	}
+	for name, data := range refused {
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err == nil {
+			t.Fatalf("%s: the fixture decodes; it should not", name)
+		}
+		if _, err := gifFramePixels(data, math.MaxInt64); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: gifFramePixels error = %v, want ErrCorruptImage", name, err)
+		}
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Inspect = %v, want ErrCorruptImage", name, err)
+		}
+	}
+}
+
+// FuzzGIFFramePixels holds the count to the decoder: whatever image/gif
+// decodes, the count reaches the trailer and makes the frames exactly as large
+// as the decoder did.
 func FuzzGIFFramePixels(f *testing.F) {
 	var buf bytes.Buffer
 	_ = gif.Encode(&buf, image.NewPaletted(image.Rect(0, 0, 4, 4), palette.Plan9), nil)
 	f.Add(buf.Bytes())
+	buf.Reset()
+	_ = gif.EncodeAll(&buf, &gif.GIF{
+		Image:     []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 3, 2), palette.Plan9), image.NewPaletted(image.Rect(1, 1, 2, 2), palette.Plan9)},
+		Delay:     []int{1, 2},
+		LoopCount: 2,
+	})
+	f.Add(buf.Bytes())
+	for _, ext := range gifExtensions {
+		f.Add(spliceAfterHeader(buf.Bytes(), ext))
+	}
 	f.Add([]byte("GIF89a\x01\x00\x01\x00\xff\x00\x00"))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if n := gifFramePixels(data, maxGIFFramePixels); n < 0 {
+		n, err := gifFramePixels(data, math.MaxInt64)
+		if n < 0 {
 			t.Fatalf("gifFramePixels = %d", n)
+		}
+		// Bound what the decoder may allocate here, as Inspect does.
+		if cfg, err := gif.DecodeConfig(bytes.NewReader(data)); err != nil || int64(cfg.Width)*int64(cfg.Height) > 1<<20 || n > 1<<24 {
+			return
+		}
+		g, decErr := gif.DecodeAll(bytes.NewReader(data))
+		if decErr != nil {
+			return
+		}
+		var want int64
+		for _, frame := range g.Image {
+			want += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
+		}
+		if err != nil || n != want {
+			t.Fatalf("gifFramePixels = %d, %v; the decoder decoded %d frames of %d pixels", n, err, len(g.Image), want)
 		}
 	})
 }

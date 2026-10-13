@@ -371,8 +371,9 @@ client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, an image whose header claims
-  more than 24 megapixels, or a GIF whose frames add up to more than four times that, is
-  refused with `400` before anything is decoded and before flood control. An animated
+  more than 24 megapixels, or a GIF whose frames add up to more than four times that or
+  whose blocks cannot be read through to its end, is refused with `400` before anything
+  is decoded and before flood control. An animated
   WebP is refused with `400` (`image could not be decoded`) once it is decoded: nothing
   in Go can decode one to thumbnail it.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
