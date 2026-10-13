@@ -2549,6 +2549,7 @@ async function render({ draft = captureDraft() } = {}) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
   const requested = window.location.href;
+  renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   state.route = route;
   state.thread = null;
@@ -3029,7 +3030,22 @@ document.addEventListener("click", (event) => {
   navigate(anchor.href);
 });
 
-window.addEventListener("popstate", () => render());
+// The address the view on screen was rendered for, less its fragment.
+let renderedPath = null;
+
+// A same-page quote link or backlink only moves the fragment, and the browser
+// reports that as a history change too. Re-rendering for it would fetch the
+// thread again and rebuild it, hiding every spoiler the reader had revealed and
+// collapsing any open image, to show what is already on screen; the jump and
+// its highlight are all it needs. Back and Forward between such entries are the
+// same.
+window.addEventListener("popstate", () => {
+  if (window.location.pathname + window.location.search === renderedPath) {
+    focusHash();
+    return;
+  }
+  render();
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
