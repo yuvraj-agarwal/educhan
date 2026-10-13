@@ -537,6 +537,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestHostileEXIF`, `FuzzJPEGOrientation`; `FuzzStripWebP` does the same for the
   RIFF rewrite and checks it is idempotent). No EXIF library is needed and none should
   be added.
+- **No filename is kept.** A camera's or a phone's filename can name a date and a
+  person, so `parseSubmission` reads only the file's bytes, and an attachment's name
+  is `attachmentName(stored path)`: `image` plus the stored format's extension
+  (`image.jpg`), whatever the client sent, and so whatever extension it claimed. It is
+  stored in `attachments.original_name`, a column that kept its name;
+  `0008_attachment_names.sql` rewrote the rows from before the same way, from
+  `original_path`, and has to stay in step with `attachmentName`
+  (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`). The client
+  shows it as the caption under the thumbnail.
 - Dropping the ICC profile (and PNG's colour chunks) is deliberate: most photos are
   sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut one
   (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,

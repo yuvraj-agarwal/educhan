@@ -227,10 +227,11 @@ func TestAttachmentLifecycleAcrossBackends(t *testing.T) {
 }
 
 // A phone photo keeps its GPS position, its camera and its comment in its
-// metadata, and anyone who opened the full image could read them. None of it
-// reaches either backend: what is stored, and so what /media/original serves,
-// is the picture rewritten upright with no metadata at all, and the checksum
-// recorded for it is of those bytes.
+// metadata, and anyone who opened the full image could read them; its
+// filename can name its owner. None of it reaches either backend: what is
+// stored, and so what /media/original serves, is the picture rewritten upright
+// with no metadata at all, the checksum recorded for it is of those bytes, and
+// its name is image.jpg.
 func TestUploadedPhotoKeepsNoMetadataOnEveryBackend(t *testing.T) {
 	for _, backend := range mediaBackends {
 		t.Run(backend.name, func(t *testing.T) {
@@ -245,12 +246,16 @@ func TestUploadedPhotoKeepsNoMetadataOnEveryBackend(t *testing.T) {
 
 			var created createdPost
 			if status := c.upload("/api/boards/general/threads", map[string]string{"body": "from my phone"},
-				"photo.jpg", upload, &created); status != http.StatusCreated {
+				"IMG_20261013_Priya.jpg", upload, &created); status != http.StatusCreated {
 				t.Fatalf("create thread: status %d (%s)", status, created.Error)
 			}
 			att := fetchThread(t, c, "general", created.ThreadNo).Posts[0].Attachment
 			if att == nil {
 				t.Fatal("opening post has no attachment")
+			}
+			// The phone's filename names its owner; it is not kept either.
+			if att.Name != "image.jpg" {
+				t.Errorf("name = %q, want image.jpg", att.Name)
 			}
 
 			res, served := c.fetch(att.URL, nil)

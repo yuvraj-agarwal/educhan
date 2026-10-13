@@ -276,8 +276,8 @@ func TestCreateThreadWithImage(t *testing.T) {
 	if att == nil {
 		t.Fatal("opening post has no attachment")
 	}
-	if att.Name != "holiday photo.png" {
-		t.Errorf("name = %q, want the uploaded filename", att.Name)
+	if att.Name != "image.png" {
+		t.Errorf("name = %q, want image.png: the uploaded filename is never kept", att.Name)
 	}
 	if att.ContentType != "image/png" {
 		t.Errorf("content type = %q, want image/png", att.ContentType)
@@ -342,6 +342,67 @@ func TestCreateThreadWithImage(t *testing.T) {
 	}
 	if catalog.Threads[0].Attachment.ThumbURL != att.ThumbURL {
 		t.Errorf("catalog thumb = %q, want %q", catalog.Threads[0].Attachment.ThumbURL, att.ThumbURL)
+	}
+}
+
+// A camera's or a phone's filename can name its owner, so whatever the file
+// was called, the image is shown as "image" and the extension of the format it
+// was stored in, and the name sent is written nowhere.
+func TestUploadedFilenameIsNotKept(t *testing.T) {
+	c := testServer(t, nil)
+	c.addBoard("general")
+	const marker = "body-marker-for-the-filename-scan"
+
+	thread := c.createThread("general", "names", "", marker)
+	path := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+	uploads := []struct {
+		filename string
+		file     []byte
+		want     string
+	}{
+		{"IMG_20261013_Priya.jpg", jpegBytes(t, 64, 48), "image.jpg"},
+		// The extension sent is not the format: a PNG called .jpg is a PNG.
+		{"Priya at the fest.jpg", pngBytes(t, 64, 48), "image.png"},
+		{`C:\Users\Priya\Desktop\..\..\Priya.webp`, jpegBytes(t, 64, 48), "image.jpg"},
+		{"Priya ☕ selfie.png", pngBytes(t, 64, 48), "image.png"},
+		{strings.Repeat("Priya", 100) + ".gif", pngBytes(t, 64, 48), "image.png"},
+	}
+	for _, u := range uploads {
+		var out createdPost
+		if status := c.upload(path, map[string]string{"body": ""}, u.filename, u.file, &out); status != http.StatusCreated {
+			t.Fatalf("reply with %q: status %d (%s)", u.filename, status, out.Error)
+		}
+	}
+
+	posts := fetchThread(t, c, "general", thread.ThreadNo).Posts
+	if len(posts) != len(uploads)+1 {
+		t.Fatalf("thread has %d posts, want %d", len(posts), len(uploads)+1)
+	}
+	for i, u := range uploads {
+		att := posts[i+1].Attachment
+		if att == nil {
+			t.Fatalf("reply %d has no attachment", i+1)
+		}
+		if att.Name != u.want {
+			t.Errorf("uploaded as %q: name = %q, want %q", u.filename, att.Name, u.want)
+		}
+		if strings.Contains(att.URL, "Priya") || strings.Contains(att.ThumbURL, "Priya") {
+			t.Errorf("uploaded as %q: URLs %s and %s carry the filename", u.filename, att.URL, att.ThumbURL)
+		}
+	}
+
+	// The scan has to be able to find what is there before its silence about
+	// the filename means anything.
+	if n := c.rowsContaining("posts", []byte(marker)); n != 1 {
+		t.Fatalf("the scan found the body marker in %d posts, want 1; it cannot be trusted", n)
+	}
+	if n := c.rowsContaining("attachments", []byte("image.png")); n != 3 {
+		t.Fatalf("the scan found image.png in %d attachments, want 3; it cannot be trusted", n)
+	}
+	for _, table := range c.tables() {
+		if n := c.rowsContaining(table, []byte("Priya")); n != 0 {
+			t.Errorf("%d rows of %s contain the uploaded filename", n, table)
+		}
 	}
 }
 

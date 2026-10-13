@@ -5,10 +5,9 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"path/filepath"
+	"path"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -24,9 +23,6 @@ const uploadFieldName = "image"
 // switched off. Clients match on it, so it does not change.
 const uploadsSwitchedOff = "image uploads are switched off on this server"
 
-// maxOriginalNameLen bounds the client-supplied filename kept for display.
-const maxOriginalNameLen = 128
-
 // mediaCacheControl is safe to set aggressively: stored names are random and
 // their contents never change.
 const mediaCacheControl = "public, max-age=31536000, immutable"
@@ -40,10 +36,12 @@ const (
 func originalURL(path string) string { return originalURLPrefix + path }
 func thumbURL(path string) string    { return thumbURLPrefix + path }
 
-// upload is an image received with a post, before it has been validated.
+// upload is an image received with a post, before it has been validated. The
+// filename the client sent with it is not kept: a camera's or a phone's names a
+// date and sometimes a person (IMG_20261013_Priya.jpg), and nothing educhan
+// does needs it.
 type upload struct {
-	Filename string
-	Data     []byte
+	Data []byte
 }
 
 // submission is the shared payload of "create thread" and "reply", parsed from
@@ -164,7 +162,7 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 		writeError(w, http.StatusBadRequest, err.Error())
 		return nil, false
 	}
-	sub.Upload = &upload{Filename: sanitizeFilename(header.Filename), Data: data}
+	sub.Upload = &upload{Data: data}
 	return sub, true
 }
 
@@ -204,16 +202,20 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // attachmentInput pairs the stored blob metadata with what the submission said
-// about it: the original filename and whether it is a spoiler.
+// about it, whether it is a spoiler, and the name it is shown under.
 func attachmentInput(sub *submission, img *media.StoredImage) *newAttachment {
 	if img == nil {
 		return nil
 	}
-	name := ""
-	if sub.Upload != nil {
-		name = sub.Upload.Filename
-	}
-	return &newAttachment{OriginalName: name, Image: *img, Spoiler: sub.Spoiler}
+	return &newAttachment{Name: attachmentName(img.Path), Image: *img, Spoiler: sub.Spoiler}
+}
+
+// attachmentName is the name every image is shown under: "image" and the
+// extension of the format it was stored in, whatever the poster's file was
+// called. 0008_attachment_names.sql gave the rows from before the same name,
+// from the same path, and has to agree with this.
+func attachmentName(storedPath string) string {
+	return "image" + path.Ext(storedPath)
 }
 
 // isTruthy reads the checkbox and flag encodings a multipart form may use for a
@@ -255,32 +257,6 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 	w.Header().Set("Cache-Control", mediaCacheControl)
 	w.Header().Set("Content-Disposition", "inline")
 	http.ServeContent(w, r, "", obj.ModTime, rc)
-}
-
-// sanitizeFilename keeps a display-only version of the uploaded filename: the
-// base name, trimmed, stripped of control characters, and valid UTF-8 so it can
-// be stored in a text column. Truncation happens on rune boundaries.
-func sanitizeFilename(name string) string {
-	name = strings.TrimSpace(name)
-	name = name[strings.LastIndexAny(name, `/\`)+1:]
-	name = strings.ToValidUTF8(name, "")
-	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
-			return -1
-		}
-		return r
-	}, name)
-	if name == "" || name == "." || name == ".." {
-		return ""
-	}
-	if utf8.RuneCountInString(name) > maxOriginalNameLen {
-		ext := filepath.Ext(name)
-		if utf8.RuneCountInString(ext) > 16 {
-			ext = ""
-		}
-		name = truncateRunes(name, maxOriginalNameLen-utf8.RuneCountInString(ext)) + ext
-	}
-	return name
 }
 
 func tooLarge(err error) bool {

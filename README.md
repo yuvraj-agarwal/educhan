@@ -396,6 +396,10 @@ client can leave the image picker off a server that would refuse what it sends.
   colour engine Go does not have. The checksum recorded for an attachment is of the
   stored file, so it does not depend on the metadata an upload arrived with, beyond an
   orientation that turns the picture.
+- **No filename is kept**: a camera's or a phone's filename can name a date and a person
+  (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension
+  of the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was
+  called. Migration `0008` renamed the attachments stored before this the same way.
 - **Memory**: decoding and re-encoding run at most two at a time per process; further
   uploads wait for a turn, and stop waiting if their request is cancelled.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
@@ -541,7 +545,7 @@ view.
   to copy. Following a quote link within a thread jumps to the post without reloading
   the thread, so revealed spoilers stay revealed. Clicking a
   post number quotes it into the reply box. With an image attached, **Spoiler image**
-  sends it hidden: readers see a neutral tile, filename included, until they click it or
+  sends it hidden: readers see a neutral tile, caption included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
 - **Image cap**: the index and catalog show how many images a thread has, and on a server
   that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form

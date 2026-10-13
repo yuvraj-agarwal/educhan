@@ -1184,9 +1184,9 @@ function attachmentHTML(att, { expandable = false } = {}) {
     return `<div class="post-file">${caption}${link}</div>`;
   }
   // A spoilered image is a neutral tile until someone asks for it. The
-  // filename waits behind it with the thumbnail — a name can give away as much
-  // as a picture — and the lazy thumbnail is not fetched while it is hidden.
-  // Once shown it is an ordinary attachment and expands like one.
+  // caption waits behind it with the thumbnail, and the lazy thumbnail is not
+  // fetched while it is hidden. Once shown it is an ordinary attachment and
+  // expands like one.
   return `
     <div class="post-file spoiler">
       <button class="spoiler-tile" type="button" data-action="reveal-spoiler">Spoiler image, click to show</button>
@@ -2223,8 +2223,8 @@ const FAQ_SECTIONS = [
         <li>Don't post your name, your school, or photos of yourself or anyone else.</li>
         <li>A photo can show more than you meant it to. educhan removes the hidden details a
           photo file carries, such as where and when it was taken and on what phone, before
-          it keeps the photo, but it can't remove what's in the picture: a face, a uniform, a
-          street sign or the view from a window.</li>
+          it keeps the photo, and doesn't keep the file's name. But it can't remove what's in
+          the picture: a face, a uniform, a street sign or the view from a window.</li>
         <li>A tripcode links every post that carries it, and a badge shows which university
           or college you're at.</li>
         <li>Your internet provider, the network you're on (a school's, say) and anyone who can
