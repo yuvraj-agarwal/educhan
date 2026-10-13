@@ -150,7 +150,10 @@ async function api(path, options = {}) {
 // errorMessage turns an API failure into something worth reading. The server's
 // own message is kept; only the cases where it needs context are rewritten.
 // What is being sent stays in its form after a refusal, so these say so.
-function errorMessage(err, { hasText = true } = {}) {
+// action is what was refused — "post", or "code" for a verification code
+// request — so a cooldown tells the reader to do that again, not something
+// they were not doing.
+function errorMessage(err, { hasText = true, action = "post" } = {}) {
   if (err.unreachable) {
     return `${UNREACHABLE} What you wrote is still in the box.`;
   }
@@ -159,7 +162,13 @@ function errorMessage(err, { hasText = true } = {}) {
   }
   if (err.status === 429) {
     const seconds = err.payload && err.payload.retry_after;
-    return seconds ? `Flood control: wait ${plural(seconds, "second", "seconds")} and post again.` : err.message;
+    if (!seconds) {
+      return err.message;
+    }
+    const wait = plural(seconds, "second", "seconds");
+    return action === "code"
+      ? `Codes can't be requested that often. Wait ${wait}, then request a code again.`
+      : `Flood control: wait ${wait} and post again.`;
   }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
@@ -3522,7 +3531,7 @@ async function submitVerification(form) {
     // The server's refusal of a request without the attestation reads the same
     // as the page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
-    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err));
+    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }));
     button.disabled = false;
     button.textContent = label;
   }

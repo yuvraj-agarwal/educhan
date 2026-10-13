@@ -357,7 +357,9 @@ needs a browser check before the test changes.
   summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
   `image_limit` 0 as a board whose replies never carry images, not a full thread. A
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
-  browser's "Failed to fetch". A not-found page names and links a board only when it is
+  browser's "Failed to fetch". A `429` is worded for what was refused: `/verify` passes
+  `errorMessage` `{ action: "code" }`, so a code request is told to wait and request a
+  code again, never to post again. A not-found page names and links a board only when it is
   in `state.boards`: the slug comes from the address, and echoing any slug would let a
   crafted link write the page's copy. A history change that keeps the rendered path (a
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
