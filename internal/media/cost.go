@@ -7,7 +7,7 @@ import (
 
 // Processing an upload holds a lot more than its pixels, and how much more
 // depends on how the file is encoded rather than on its resolution alone. A
-// 24-megapixel baseline JPEG decodes to 36 MB; the same picture saved
+// 25-megapixel baseline JPEG decodes to 37.5 MB; the same picture saved
 // progressive with full-resolution colour keeps every DCT coefficient of the
 // file, four bytes each, until the last scan is read, and holds over 350 MB;
 // CMYK and 16-bit pictures are larger again. A pixel cap cannot tell these

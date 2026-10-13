@@ -371,14 +371,26 @@ client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, an image whose header claims
-  more than 24 megapixels, a GIF whose frames add up to more than four times that or
-  whose blocks cannot be read through to its end, or an image that would take more
+  more than 25 megapixels (room for the 24-megapixel photos phones and cameras save, an
+  iPhone's 5712×4284 included), a GIF whose frames add up to more than four times that
+  or whose blocks cannot be read through to its end, or an image that would take more
   memory to process than the server sets aside for all of them at once, is refused with
   `400` before anything is decoded and before flood control. The memory depends on the
-  encoding: at 24 megapixels an ordinary photo is accepted, but a progressive JPEG with
-  full-resolution colour or in CMYK, or an interlaced 16-bit colour PNG, is refused,
-  and the same picture at a quarter of the size is not; so is a GIF of many thousands
-  of frames, however small they are. An animated WebP is refused with `400`
+  encoding as well as the size. At the full 25 megapixels, from an upload of up to the
+  default 8 MiB:
+  - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
+    whether or not it has to be turned upright, and progressive 4:2:0 and grey ones;
+    baseline CMYK and RGB JPEGs and progressive 4:2:2 ones that need no turning;
+    palette and grey PNGs; 8-bit colour PNGs, unless they are interlaced and have to be
+    turned; and lossy and lossless WebPs without transparency.
+  - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
+    progressive 4:2:2 JPEGs, and interlaced 8-bit colour PNGs, that have to be turned;
+    and 16-bit colour PNGs that are interlaced or have to be turned.
+  - *either*, by the picture's shape and the upload's size: a 16-bit colour PNG that is
+    neither, and a lossy WebP with transparency.
+
+  At a quarter of the size, every kind is accepted. A GIF of many thousands of frames is
+  refused however small they are. An animated WebP is refused with `400`
   (`image could not be decoded`) once it is decoded: nothing in Go can decode one to
   thumbnail it. So is an image whose rewritten file would come to more than four times
   the upload plus half a byte a pixel (`image resolution is too large`), which only a

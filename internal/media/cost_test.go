@@ -286,30 +286,165 @@ func pngHeader(w, h int, colour, depth byte, interlaced bool) []byte {
 	return binary.BigEndian.AppendUint32(out, crc32.ChecksumIEEE(append([]byte("IHDR"), ihdr...)))
 }
 
-// At the largest resolution allowed, how a file is encoded decides whether
-// it can be processed within the budget, and Inspect says so from the header,
-// before anything is decoded or a cooldown is charged.
-func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
-	const w, h = 6000, 4000 // MaxPixels
-	cases := []struct {
-		name string
-		data []byte
-		want error
-	}{
-		{"baseline 4:2:0 JPEG", jpegHeader(0xC0, w, h, 0x22, 0x11, 0x11), nil},
-		{"baseline 4:4:4 JPEG", jpegHeader(0xC0, w, h, 0x11, 0x11, 0x11), nil},
-		{"progressive 4:2:0 JPEG", jpegHeader(0xC2, w, h, 0x22, 0x11, 0x11), nil},
-		{"progressive 4:4:4 JPEG", jpegHeader(0xC2, w, h, 0x11, 0x11, 0x11), ErrImageTooLarge},
-		{"progressive CMYK JPEG", jpegHeader(0xC2, w, h, 0x11, 0x11, 0x11, 0x11), ErrImageTooLarge},
-		{"progressive 4:4:4 JPEG at 12 MP", jpegHeader(0xC2, 4000, 3000, 0x11, 0x11, 0x11), nil},
-		{"8-bit RGB PNG", pngHeader(w, h, 2, 8, false), nil},
-		{"8-bit RGBA interlaced PNG", pngHeader(w, h, 6, 8, true), nil},
-		{"16-bit RGB interlaced PNG", pngHeader(w, h, 2, 16, true), ErrImageTooLarge},
-		{"16-bit RGB interlaced PNG at 12 MP", pngHeader(4000, 3000, 2, 16, true), nil},
+// headerUpload is a header from jpegHeader, pngHeader or webpHeader turned
+// by EXIF orientation o (none for 1) and made up to an upload of size bytes,
+// which is what the stored file's limit, and so the cost, grows with. Nothing
+// past the header is read before decoding.
+func headerUpload(head []byte, o uint16, size int) []byte {
+	png := head[0] == 0x89
+	switch {
+	case o == 1:
+	case png:
+		head = withPNGChunks(head, pngChunk("eXIf", orientationTIFF(binary.BigEndian, o)))
+	default:
+		head = withSegments(head, exifSegment(orientationTIFF(binary.LittleEndian, o)))
 	}
-	for _, tc := range cases {
-		if _, err := Inspect(tc.data); !errors.Is(err, tc.want) {
-			t.Errorf("Inspect(%s) = %v, want %v", tc.name, err, tc.want)
+	out := append([]byte(nil), head...)
+	if png {
+		if head[25] == 3 { // a palette, which image/png reads for the header
+			out = append(out, pngChunk("PLTE", []byte{0, 0, 0, 255, 255, 255})...)
+		}
+		// A chunk image/png skips, then the pixels: no tRNS for the cost to
+		// assume.
+		out = append(out, pngChunk("zzzz", make([]byte, max(size-len(out)-24, 0)))...)
+		return append(out, pngChunk("IDAT", nil)...)
+	}
+	if head[0] == 0xFF { // the start of a scan, where image/jpeg stops reading a header
+		out = append(out, 0xFF, 0xDA, 0x00, 0x02)
+	}
+	return append(out, make([]byte, max(size-len(out), 0))...)
+}
+
+// webpHeader is a VP8X WebP of the given size with a stub bitstream: lossy,
+// lossy with an alpha plane, or lossless.
+func webpHeader(kind string, w, h int) []byte {
+	switch kind {
+	case "lossy":
+		return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+	case "alpha":
+		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: make([]byte, 10)},
+			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+	}
+	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: make([]byte, 10)})
+}
+
+// At the largest resolution allowed, how a file is encoded decides whether it
+// can be processed within the budget, and Inspect says so from the header,
+// before anything is decoded or a cooldown is charged. These are the lists
+// the README gives. What is accepted is accepted at its dearest: a square
+// picture, whose thumbnail scaler needs the most scratch, from an upload of
+// the default 8 MiB limit, whose stored file may be the largest. What is
+// refused is refused at its cheapest: a wide picture from a small upload. At
+// a quarter of the size, everything is accepted at its dearest.
+func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
+	type kind struct {
+		name string
+		head func(w, h int) []byte
+		o    uint16
+	}
+	jpg := func(marker byte, samplings ...byte) func(w, h int) []byte {
+		return func(w, h int) []byte { return jpegHeader(marker, w, h, samplings...) }
+	}
+	rgbJPEG := func(marker byte) func(w, h int) []byte {
+		return func(w, h int) []byte { // an Adobe segment with transform 0 instead of JFIF
+			j := jpegHeader(marker, w, h, 0x11, 0x11, 0x11)
+			return withSegments(append([]byte{0xFF, 0xD8}, j[2+18:]...), jpegSegment(0xEE, []byte("Adobe\x00\x64\x00\x00\x00\x00\x00")))
+		}
+	}
+	pngOf := func(colour, depth byte, interlaced bool) func(w, h int) []byte {
+		return func(w, h int) []byte { return pngHeader(w, h, colour, depth, interlaced) }
+	}
+	webpOf := func(k string) func(w, h int) []byte {
+		return func(w, h int) []byte { return webpHeader(k, w, h) }
+	}
+	var accepted, refused []kind
+	for _, o := range []uint16{1, 6} {
+		accepted = append(accepted,
+			kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), o},
+			kind{"baseline 4:2:2 JPEG", jpg(0xC0, 0x21, 0x11, 0x11), o},
+			kind{"baseline 4:4:4 JPEG", jpg(0xC0, 0x11, 0x11, 0x11), o},
+			kind{"baseline 4:1:1 JPEG", jpg(0xC0, 0x41, 0x11, 0x11), o},
+			kind{"baseline 4:4:0 JPEG", jpg(0xC0, 0x12, 0x11, 0x11), o},
+			kind{"baseline 4:1:0 JPEG", jpg(0xC0, 0x42, 0x11, 0x11), o},
+			kind{"baseline grey JPEG", jpg(0xC0, 0x11), o},
+			kind{"progressive 4:2:0 JPEG", jpg(0xC2, 0x22, 0x11, 0x11), o},
+			kind{"progressive grey JPEG", jpg(0xC2, 0x11), o},
+			kind{"palette PNG", pngOf(3, 8, false), o},
+			kind{"interlaced palette PNG", pngOf(3, 8, true), o},
+			kind{"8-bit grey PNG", pngOf(0, 8, false), o},
+			kind{"16-bit grey PNG", pngOf(0, 16, false), o},
+			kind{"interlaced 16-bit grey PNG", pngOf(0, 16, true), o},
+			kind{"8-bit RGB PNG", pngOf(2, 8, false), o},
+			kind{"8-bit RGBA PNG", pngOf(6, 8, false), o},
+		)
+		refused = append(refused,
+			kind{"progressive 4:4:4 JPEG", jpg(0xC2, 0x11, 0x11, 0x11), o},
+			kind{"progressive CMYK JPEG", jpg(0xC2, 0x11, 0x11, 0x11, 0x11), o},
+			kind{"progressive RGB JPEG", rgbJPEG(0xC2), o},
+			kind{"interlaced 16-bit RGB PNG", pngOf(2, 16, true), o},
+			kind{"interlaced 16-bit RGBA PNG", pngOf(6, 16, true), o},
+		)
+	}
+	accepted = append(accepted,
+		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 1},
+		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 1},
+		kind{"progressive 4:2:2 JPEG", jpg(0xC2, 0x21, 0x11, 0x11), 1},
+		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 1},
+		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 1},
+		kind{"lossy WebP", webpOf("lossy"), 1},
+		kind{"lossless WebP", webpOf("lossless"), 1},
+	)
+	refused = append(refused,
+		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 6},
+		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 6},
+		kind{"progressive 4:2:2 JPEG", jpg(0xC2, 0x21, 0x11, 0x11), 6},
+		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 6},
+		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 6},
+		kind{"16-bit RGB PNG", pngOf(2, 16, false), 6},
+		kind{"16-bit RGBA PNG", pngOf(6, 16, false), 6},
+	)
+
+	const side = 5000 // a square of MaxPixels
+	if side*side != MaxPixels {
+		t.Fatalf("%d² is not MaxPixels", side)
+	}
+	const small, large = 64 << 10, 8 << 20
+	check := func(k kind, w, h, size int, want error) {
+		t.Helper()
+		data := headerUpload(k.head(w, h), k.o, size)
+		if _, err := Inspect(data); !errors.Is(err, want) {
+			t.Errorf("Inspect(%s, o%d, %dx%d, %d KiB) = %v, want %v", k.name, k.o, w, h, size>>10, err, want)
+		}
+	}
+	for _, k := range accepted {
+		check(k, side, side, large, nil)
+	}
+	for _, k := range refused {
+		check(k, 4*side, side/4, small, ErrImageTooLarge)
+		check(k, side/2, side/2, large, nil)
+	}
+	// One pixel more than the cap is refused whatever it is.
+	check(kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
+}
+
+// The photos phones and cameras save at 24 megapixels are taken at their full
+// size, turned on their side or not, from an upload as large as the default
+// limit: they are not all 24 million pixels.
+func TestTwentyFourMegapixelPhotosAreAccepted(t *testing.T) {
+	for _, size := range []image.Point{
+		{5712, 4284}, // an iPhone 15 Pro's or later's 24-megapixel photo
+		{6048, 4024}, // a 24.5-megapixel full-frame camera's
+		{6000, 4000}, // a 24-megapixel camera's
+	} {
+		for _, wh := range []image.Point{size, {size.Y, size.X}} {
+			for _, o := range []uint16{1, 6} {
+				for _, samplings := range [][]byte{{0x22, 0x11, 0x11}, {0x21, 0x11, 0x11}} {
+					data := headerUpload(jpegHeader(0xC0, wh.X, wh.Y, samplings...), o, 8<<20)
+					if _, err := Inspect(data); err != nil {
+						t.Errorf("Inspect(%dx%d baseline JPEG %#x, o%d) = %v, want it accepted", wh.X, wh.Y, samplings[0], o, err)
+					}
+				}
+			}
 		}
 	}
 }

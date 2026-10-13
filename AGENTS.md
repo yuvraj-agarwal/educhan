@@ -599,7 +599,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut one
   (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
   and converting to sRGB properly needs a colour engine Go does not have.
-- **Memory.** `MaxPixels` is 24 megapixels, and a GIF's frames together may not pass
+- **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
+  cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
+  `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not pass
   `maxGIFFramePixels` (four times that), but neither is the memory bound: what an upload
   holds while it is processed depends on how it is encoded as much as on its size.
   `Inspect` estimates it from the header (`processingCost`, `cost.go`): the decoder's
@@ -613,9 +615,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `peakOf` takes them phase by phase and counts each phase's first allocation on top of
   the previous phase's peak, because a collection that began before the boundary still
   holds that phase's scratch. An estimate over `processingBudget` (256 MiB) is refused
-  from the header as `ErrImageTooLarge`, before any cooldown: at 24 megapixels that is a
-  progressive JPEG in 4:4:4 or CMYK or an interlaced 16-bit colour PNG, all of which
-  pass at a quarter of that size. `Process` then holds its estimate of the budget while
+  from the header as `ErrImageTooLarge`, before any cooldown. Which kinds that refuses
+  at 25 megapixels is listed in the README, and `TestCostlyEncodingsAreRefusedFromTheirHeader`
+  holds the lists to the model: each accepted kind at its dearest (a square, from an
+  8 MiB upload), each refused kind at its cheapest (a wide picture from a small one), and
+  every kind accepted at a quarter of the size. A change to `cost.go` that moves a kind
+  changes the README's lists in the same commit. `Process` then holds its estimate of the budget while
   it decodes and encodes (`acquireProcessing`, a first-come-first-served weighted
   semaphore in `budget.go`, so a large upload is not starved by small ones); the wait
   honours the request context, and a cancelled wait

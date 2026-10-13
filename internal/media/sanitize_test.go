@@ -807,18 +807,22 @@ func tinyFrames(n int) []byte {
 // as each frame's. The count reads only the block structure, before any
 // decoding, and allocates nothing however many frames there are.
 func TestGIFFrameBudget(t *testing.T) {
+	const side = 5000
+	if side*side != MaxPixels {
+		t.Fatalf("%d² is not MaxPixels", side)
+	}
 	gifOf := func(frames int) []byte {
-		// 4000×6000 is exactly MaxPixels; each frame's pixel data is one
-		// sub-block of nonsense the count never looks at.
+		// Each frame is a whole canvas of MaxPixels, whose pixel data is
+		// one sub-block of nonsense the count never looks at.
 		b := []byte("GIF89a")
-		b = binary.LittleEndian.AppendUint16(b, 4000)
-		b = binary.LittleEndian.AppendUint16(b, 6000)
+		b = binary.LittleEndian.AppendUint16(b, side)
+		b = binary.LittleEndian.AppendUint16(b, side)
 		b = append(b, 0x80, 0, 0, 0, 0, 0, 255, 255, 255) // a two-colour global table
 		for i := 0; i < frames; i++ {
 			b = append(b, 0x21, 0xF9, 4, 0, 10, 0, 0, 0) // a graphic control extension
 			b = append(b, 0x2C, 0, 0, 0, 0)
-			b = binary.LittleEndian.AppendUint16(b, 4000)
-			b = binary.LittleEndian.AppendUint16(b, 6000)
+			b = binary.LittleEndian.AppendUint16(b, side)
+			b = binary.LittleEndian.AppendUint16(b, side)
 			b = append(b, 0, 2, 1, 0x44, 0)
 		}
 		return append(b, 0x3B)
