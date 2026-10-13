@@ -2203,8 +2203,11 @@ const FAQ_SECTIONS = [
       <ul>
         <li>There are no accounts, and every post says &ldquo;Anonymous&rdquo; unless you type
           a name.</li>
-        <li>educhan doesn't keep IP addresses, the numbers that identify an internet
-          connection. They aren't written to its logs, and posts aren't stored with one.</li>
+        <li>educhan doesn't save IP addresses, the numbers that identify an internet
+          connection. They aren't written to its logs or its database, and posts aren't
+          stored with one. When you post or ask for a badge code, the server holds your
+          address in its memory for a short while, a few minutes at most with its usual
+          settings, so it can stop anyone doing either too often. Then it forgets it.</li>
         <li>educhan never asks for your email address unless you want a badge, and even then
           it keeps only a scrambled fingerprint of it, never the address itself
           (<a href="#faq-badge">more about the badge</a>).</li>
