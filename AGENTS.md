@@ -252,7 +252,8 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
-box never ticked in advance or kept, KaTeX's options, and the highlighting cap. They are
+box never ticked in advance or kept, `/api/site` fetched only past the age screen,
+KaTeX's options, and the highlighting cap. They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
@@ -359,11 +360,29 @@ needs a browser check before the test changes.
   summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
   `image_limit` 0 as a board whose replies never carry images, not a full thread. A
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
-  browser's "Failed to fetch". A not-found page names and links a board only when it is
+  browser's "Failed to fetch". A `429` is worded for what was refused: `/verify` passes
+  `errorMessage` `{ action: "code" }`, so a code request is told to wait and request a
+  code again, never to post again. A not-found page names and links a board only when it is
   in `state.boards`: the slug comes from the address, and echoing any slug would let a
   crafted link write the page's copy. A history change that keeps the rendered path (a
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
+- **A server that takes no images.** `loadSite` reads `GET /api/site`
+  (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
+  draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
+  dropped on the form goes nowhere and `UPLOADS_OFF_REASON` says why, `threadCounts` and
+  `badgesHTML` say nothing about the cap (a count of images posted before the switch
+  stays), the catalog leaves out its empty "no image" box, and the empty-post notice
+  stops offering an image. Until `/api/site` answers, or if it never does, the forms are
+  drawn as before. Either way the server's `image uploads are switched off on this
+  server` is handled like `image limit reached`: `blockFileField` takes the file off with
+  the reason, the text stays for the next press, and `state.site.uploads` turns false for
+  the rest of the visit. The client knows both refusals by `UPLOADS_SWITCHED_OFF` and
+  `IMAGE_LIMIT_REACHED`, which `TestClientKnowsTheServersImageRefusals` checks against
+  what the server answers, so change their words on both sides together.
+  `max_upload_bytes` is the server-wide limit: a picked file over it is taken off the
+  form at once, and the picker's hint and the `413` notice name it through
+  `uploadLimitText` — never a board, since no board has a limit of its own.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -374,8 +393,9 @@ needs a browser check before the test changes.
   hidden wrapper: a lazy image there is not fetched until it is revealed.
 - **The age screen** (`MIN_AGE` in `app.js`: 13, and 0 switches it off) stands in front
   of every view but `UNGATED_VIEWS` (`/rules`, `/faq`). `render` asks `ageStatus()` before
-  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list
-  and the verification flag once, on the first page past the screen, not at start-up.
+  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list,
+  the verification flag and the site's settings (`GET /api/site`) once, on the first page
+  past the screen, not at start-up (`TestSiteSettingsAreFetchedOnlyPastTheAgeScreen`).
   The screen is a `<dialog>` opened with `showModal()`; Escape is blocked three ways
   (keydown, `cancel`, and reopening on `close`), because Chrome lets a repeated Escape
   through a cancelled `cancel`. Only the outcome is stored, as `educhan:age-ok-v1` or
@@ -397,7 +417,12 @@ needs a browser check before the test changes.
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
   external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
-  the age screen, so they must not depend on anything fetched.
+  the age screen, so they must not depend on anything fetched: what a server can switch
+  off — images, the badge — they qualify in words ("Not every educhan site …") rather
+  than by reading a flag. The footer is not one of those pages, so its sentence inviting
+  readers to verify (`data-verify-footer` in `index.html`) stays hidden until
+  `GET /api/verify` says the feature is on. The header's Verify link stays regardless:
+  `/verify` also holds Forget this browser.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
@@ -418,7 +443,8 @@ needs a browser check before the test changes.
   institution, which the per-credential IDs exist to prevent. A Name the poster cleared
   stays cleared across re-renders and after posting (`restoreDraft` restores empty
   values; `submit` sets the field after `form.reset()`).
-- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state, removes
+- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
+  code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
   the credential, the poster key and the remembered name, and leaves the age answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
@@ -845,8 +871,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
-  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`) run the whole app
-  against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
+  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
+  the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
+  `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a

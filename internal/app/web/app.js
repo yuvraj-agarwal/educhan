@@ -81,6 +81,11 @@ const state = {
   // enabled comes from the server; badge is read out of the credential this
   // browser holds, which the server is never asked about outside of using it.
   verification: { enabled: false, badge: null },
+  // What this server takes, from GET /api/site: whether it accepts images at
+  // all, and the largest it accepts. Until that answers, or if it never does,
+  // the picker is offered as it always was and the size limit is unknown (0);
+  // the server's refusal is the last word either way.
+  site: { uploads: true, maxUploadBytes: 0 },
 };
 
 const el = {
@@ -91,6 +96,10 @@ const el = {
   pageLinks: document.querySelectorAll("a[data-page]"),
   notice: document.getElementById("notice"),
   status: document.getElementById("route-status"),
+  // The footer's invitation to verify, hidden until the server says the
+  // feature is switched on here. The header's Verify link stays regardless:
+  // the page also holds Forget this browser.
+  verifyFooter: document.querySelector("[data-verify-footer]"),
 };
 
 /* API ---------------------------------------------------------------------- */
@@ -99,6 +108,15 @@ const el = {
 // error is a browser's wording ("Failed to fetch", "Load failed", "NetworkError
 // when attempting to fetch resource") and says nothing a reader can use.
 const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
+
+// The server's own words for the two refusals of a post's image that the form
+// recovers from by taking the image off. web_invariants_test.go checks them
+// against what the server answers.
+const IMAGE_LIMIT_REACHED = "image limit reached";
+const UPLOADS_SWITCHED_OFF = "image uploads are switched off on this server";
+// UPLOADS_OFF_REASON is why a form on this site has no image field, or why the
+// one it had was switched off.
+const UPLOADS_OFF_REASON = "This site doesn't take images.";
 
 async function api(path, options = {}) {
   // The caller's headers are copied rather than used in place: this function
@@ -132,23 +150,40 @@ async function api(path, options = {}) {
 // errorMessage turns an API failure into something worth reading. The server's
 // own message is kept; only the cases where it needs context are rewritten.
 // What is being sent stays in its form after a refusal, so these say so.
-function errorMessage(err, { hasText = true } = {}) {
+// action is what was refused — "post", or "code" for a verification code
+// request — so a cooldown tells the reader to do that again, not something
+// they were not doing.
+function errorMessage(err, { hasText = true, action = "post" } = {}) {
   if (err.unreachable) {
     return `${UNREACHABLE} What you wrote is still in the box.`;
   }
   if (err.status === 413) {
-    return "That image is too large for this board. Try a smaller file.";
+    return imageTooLargeMessage();
   }
   if (err.status === 429) {
     const seconds = err.payload && err.payload.retry_after;
-    return seconds ? `Flood control: wait ${plural(seconds, "second", "seconds")} and post again.` : err.message;
+    if (!seconds) {
+      return err.message;
+    }
+    const wait = plural(seconds, "second", "seconds");
+    return action === "code"
+      ? `Codes can't be requested that often. Wait ${wait}, then request a code again.`
+      : `Flood control: wait ${wait} and post again.`;
   }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
-  if (err.status === 403 && err.message === "image limit reached") {
+  if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
     return hasText
       ? "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own."
       : "This thread reached its image limit while you were writing, so it takes no more images. Write a reply to post text instead.";
+  }
+  // A page drawn before it knew, or one whose server changed its mind since:
+  // the refusal comes before anything is counted against the poster, so the
+  // text can go straight away.
+  if (err.status === 403 && err.message === UPLOADS_SWITCHED_OFF) {
+    return hasText
+      ? `${UPLOADS_OFF_REASON} The image has been taken off your post. Post again to send the text on its own.`
+      : `${UPLOADS_OFF_REASON} Write something to post text instead.`;
   }
   if (err.status === 403 && err.message === "thread is archived") {
     return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
@@ -230,6 +265,23 @@ function fileSize(bytes) {
   if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
+}
+
+// uploadLimitText is the largest image this server takes, in words ("8 MB"),
+// or "" while that is unknown. The limit is the server's, the same for every
+// board, so nothing that uses it names a board.
+function uploadLimitText() {
+  const max = state.site.maxUploadBytes;
+  return max > 0 ? fileSize(max).replace(".0 ", " ") : "";
+}
+
+// imageTooLargeMessage is what a file over the limit is told, whether the page
+// caught it when it was picked or the server's 413 did.
+function imageTooLargeMessage() {
+  const limit = uploadLimitText();
+  return limit
+    ? `That image is too large: images can be up to ${limit}. Try a smaller file.`
+    : "That image is too large. Try a smaller file.";
 }
 
 function showNotice(message) {
@@ -1165,14 +1217,15 @@ function verifiedBadgeHTML(label) {
 
 // The image limit badge marks a thread that has filled up. On a board whose
 // limit is 0 every thread is "at" it from the start, and a badge on all of them
-// would say nothing; the reply form says why there is no picker instead.
+// would say nothing; the reply form says why there is no picker instead. On a
+// site that takes no images there is no cap to be at.
 function badgesHTML(thread, board = null) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
   if (thread.archived_at) badges.push('<span class="badge archived">archived</span>');
   if (thread.locked) badges.push('<span class="badge locked">locked</span>');
   if (thread.at_bump_limit) badges.push('<span class="badge bumplimit">bump limit</span>');
-  if (thread.at_image_limit && !(board && board.image_limit === 0)) {
+  if (state.site.uploads && thread.at_image_limit && !(board && board.image_limit === 0)) {
     badges.push('<span class="badge imagelimit">image limit</span>');
   }
   return badges.join(" ");
@@ -1225,13 +1278,14 @@ const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image:
 // used, when there is one; the field then renders exactly as blockFileField
 // leaves a live one, so a refusal mid-draft and a fresh render look the same.
 function fileFieldHTML(blocked = "") {
+  const limit = uploadLimitText();
   return `
     <div class="file-field${blocked ? " blocked" : ""}" data-file-field>
       <input class="file-input" type="file" id="${FIELD_IDS.image}" name="image"
              accept="${ACCEPTED_IMAGES}" aria-labelledby="f-image-label"
              aria-describedby="f-image-blocked"${blocked ? " disabled" : ""} />
       <label class="btn secondary file-button" for="${FIELD_IDS.image}">Choose image</label>
-      <span class="file-hint">or drop one on this form &middot; JPEG, PNG, WebP, GIF</span>
+      <span class="file-hint">or drop one on this form &middot; JPEG, PNG, WebP, GIF${limit ? `, up to ${esc(limit)}` : ""}</span>
       <span class="file-blocked" id="f-image-blocked"${blocked ? "" : " hidden"}>${esc(blocked)}</span>
       <div class="file-preview" aria-live="polite" hidden>
         <img class="file-thumb" alt="" />
@@ -1283,6 +1337,15 @@ function formHTML({ kind, slug, thread = null, open = false }) {
          with the name empty.</span>`
     : "";
 
+  // A site that takes no images gets no image field at all, rather than a
+  // picker that every post using it would be refused for.
+  const image = state.site.uploads
+    ? `<div class="field">
+          <span class="label" id="f-image-label">Image (optional)</span>
+          ${fileFieldHTML(thread && thread.at_image_limit ? imageLimitReason(thread.board) : "")}
+        </div>`
+    : "";
+
   // Under the message, on every form: no contact details, because they are
   // how a conversation leaves the site for a private one, which educhan
   // deliberately does not have.
@@ -1309,10 +1372,7 @@ function formHTML({ kind, slug, thread = null, open = false }) {
             numbers or Snapchat or Discord names. educhan has no private messages, on
             purpose.</p>
         </div>
-        <div class="field">
-          <span class="label" id="f-image-label">Image (optional)</span>
-          ${fileFieldHTML(thread && thread.at_image_limit ? imageLimitReason(thread.board) : "")}
-        </div>
+        ${image}
         <div class="actions">
           <button class="btn primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
           ${sage}
@@ -1357,8 +1417,12 @@ function setFile(field, file) {
   return true;
 }
 
-// imageLimitReason is why a thread's reply form takes no image.
+// imageLimitReason is why a thread's reply form takes no image. On a site that
+// takes none, that is the whole reason: there is no cap to talk about.
 function imageLimitReason(board) {
+  if (!state.site.uploads) {
+    return UPLOADS_OFF_REASON;
+  }
   const limit = board ? board.image_limit : undefined;
   if (limit === 0) {
     return "Replies on this board can't carry images.";
@@ -1412,6 +1476,14 @@ function updateFileField(field) {
 
   if (!isAcceptedImage(file)) {
     showNotice("That file is not an accepted image. Use JPEG, PNG, WebP, or GIF.");
+    clearFileField(field);
+    return;
+  }
+  // Said now, not after the upload: the server would read the whole file
+  // only to refuse it. An unknown limit leaves the call to the server.
+  const max = state.site.maxUploadBytes;
+  if (max > 0 && file.size > max) {
+    showNotice(imageTooLargeMessage());
     clearFileField(field);
     return;
   }
@@ -1564,8 +1636,10 @@ async function renderCatalog(route) {
   const tiles = catalog.threads
     .map((t) => {
       // The tile is one link to the thread, so a spoiler cannot be revealed in
-      // place here; it stays a plain tile and opens in the thread.
-      let media = `<div class="tile-media empty-media">no image</div>`;
+      // place here; it stays a plain tile and opens in the thread. Where the
+      // site takes no images, a thread without one has no empty box saying so:
+      // every tile would carry one.
+      let media = state.site.uploads ? `<div class="tile-media empty-media">no image</div>` : "";
       if (t.attachment && t.attachment.spoiler) {
         media = `<div class="tile-media spoiler-media">Spoiler image</div>`;
       } else if (t.attachment) {
@@ -1634,17 +1708,33 @@ async function renderThread(route) {
 
 // threadCounts is the thread view's summary line. The image count carries the
 // board's cap, because the cap is what a poster with an image needs to know.
+// A site that takes no images has no cap to show, and counts only the images
+// a thread still holds from before they were switched off.
 function threadCounts(thread, board, archived) {
   const images = Number(thread.images) || 0;
-  const counts = [
-    plural(thread.replies, "reply", "replies"),
-    board.image_limit > 0 ? `${images} of ${plural(board.image_limit, "image", "images")}` : plural(images, "image", "images"),
-  ];
+  const counts = [plural(thread.replies, "reply", "replies")];
+  if (!state.site.uploads) {
+    if (images > 0) counts.push(plural(images, "image", "images"));
+  } else {
+    counts.push(
+      board.image_limit > 0 ? `${images} of ${plural(board.image_limit, "image", "images")}` : plural(images, "image", "images")
+    );
+  }
   if (!archived && thread.at_bump_limit) counts.push("at bump limit, no longer bumping");
-  if (!archived && thread.at_image_limit) {
+  if (state.site.uploads && !archived && thread.at_image_limit) {
     counts.push(board.image_limit === 0 ? "replies can't carry images" : "image limit reached, text replies only");
   }
   return counts;
+}
+
+// redrawThreadCounts puts the summary line back in step with state.thread,
+// for when a refusal teaches the page something it was drawn without.
+function redrawThreadCounts() {
+  const thread = state.thread;
+  const counts = el.main.querySelector("[data-thread-counts]");
+  if (thread && counts) {
+    counts.innerHTML = threadCounts(thread, thread.board, false).join(" &middot; ");
+  }
 }
 
 // archiveKeptFor says how long an archived thread stays, when the board says.
@@ -1810,6 +1900,9 @@ async function loadVerification() {
     enabled = false;
   }
   state.verification = { enabled, badge: enabled ? readBadge() : null };
+  if (el.verifyFooter) {
+    el.verifyFooter.hidden = !enabled;
+  }
   return state.verification;
 }
 
@@ -1839,8 +1932,11 @@ const VERIFY_INTRO = `
     Verifying proves you hold an address at a recognised institution and earns
     you an optional badge. The address itself is never stored: what is kept is
     a keyed hash of it, in a table that has no link to any post or thread. The
-    badge you get carries only the institution and an expiry, so no one — this
-    server included — can work back from a post to your address.
+    badge you get carries only the institution, an expiry and a random number,
+    so no one — this server included — can work back from a post to your
+    address. The random number is what keeps your ID the same within a thread
+    on the posts you badge. It is not made from your address, and cannot be
+    traced back to it.
   </p>
   <p class="verify-note muted">
     The badge is off by default on every post, and is sent to the server only
@@ -1905,7 +2001,8 @@ function verifyViewHTML() {
           <button class="btn primary" type="submit">Verify</button>
           <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
         </div>
-      </form>`;
+      </form>
+      ${forgetBrowserHTML()}`;
   }
 
   const lost = badgeLost
@@ -2078,7 +2175,9 @@ const FAQ_SECTIONS = [
       <p>Your answer never leaves your browser. The browser works out from the month and year
         whether you're old enough, then forgets them: they are never saved, and never sent to
         educhan or anyone else. All it keeps is the result, so you aren't asked on every
-        visit, and if the result is no, it doesn't ask again.</p>`,
+        visit. If the result is no, it doesn't ask again, unless you might have become old
+        enough this month: it doesn't know the day you were born, so it can't be sure, and
+        then it keeps nothing and asks again next time.</p>`,
         },
       ]
     : []),
@@ -2104,8 +2203,11 @@ const FAQ_SECTIONS = [
       <ul>
         <li>There are no accounts, and every post says &ldquo;Anonymous&rdquo; unless you type
           a name.</li>
-        <li>educhan doesn't keep IP addresses, the numbers that identify an internet
-          connection. They aren't written to its logs, and posts aren't stored with one.</li>
+        <li>educhan doesn't save IP addresses, the numbers that identify an internet
+          connection. They aren't written to its logs or its database, and posts aren't
+          stored with one. When you post or ask for a badge code, the server holds your
+          address in its memory for a short while, a few minutes at most with its usual
+          settings, so it can stop anyone doing either too often. Then it forgets it.</li>
         <li>educhan never asks for your email address unless you want a badge, and even then
           it keeps only a scrambled fingerprint of it, never the address itself
           (<a href="#faq-badge">more about the badge</a>).</li>
@@ -2138,6 +2240,8 @@ const FAQ_SECTIONS = [
         that the poster has an email address at that university or college. It's for people
         aged 18 and over at universities and colleges, not schools, so please don't use a
         school email address. You don't need it to read or to post.</p>
+      <p>Not every educhan site has the badge switched on. If this one doesn't, the
+        <a href="/verify">Verify</a> page says so.</p>
       <ol>
         <li>On the <a href="/verify">Verify</a> page, enter your university or college email
           address and tick the box to confirm that you're 18 or over. educhan doesn't save
@@ -2212,8 +2316,9 @@ const FAQ_SECTIONS = [
         <dt><code>[eqn]\\sqrt{x^2 + y^2}[/eqn]</code></dt>
         <dd>Maths written in TeX, on a line of its own.</dd>
       </dl>
-      <p>An image can be marked <strong>Spoiler image</strong>, which hides it behind a plain
-        tile until someone clicks it.</p>`,
+      <p>Not every educhan site lets you post images. Where you can, an image can be marked
+        <strong>Spoiler image</strong>, which hides it behind a plain tile until someone clicks
+        it.</p>`,
   },
   {
     id: "faq-threads",
@@ -2225,9 +2330,9 @@ const FAQ_SECTIONS = [
         <li><strong>Bump limit.</strong> Once a thread has as many replies as its board's bump
           limit, replies stop bumping it, so it sinks and makes room for new threads. It
           still takes replies until it's archived.</li>
-        <li><strong>Image limit.</strong> Each board caps how many images one thread can hold.
-          A thread shows its count, such as &ldquo;12 of 150 images&rdquo;, and once it's
-          full, text replies still work.</li>
+        <li><strong>Image limit.</strong> On a site that lets you post images, each board caps
+          how many images one thread can hold. A thread shows its count, such as &ldquo;12 of
+          150 images&rdquo;, and once it's full, text replies still work.</li>
         <li><strong>The archive.</strong> Each board holds a set number of threads. When a new
           thread pushes the least recently bumped one off the board, that thread moves to
           the board's archive, where it can still be read and linked to but takes no
@@ -2793,6 +2898,8 @@ function restoreDraft(draft) {
   const badge = field(form, "badge");
   if (badge) badge.checked = draft.badge;
 
+  // A form with no image field, on a site that takes no images, gets no file
+  // back; a switched-off field refuses it in setFile and says why.
   const fileField = form.querySelector("[data-file-field]");
   if (fileField && draft.file && setFile(fileField, draft.file)) {
     // Only alongside the file it was ticked for.
@@ -3196,6 +3303,12 @@ document.addEventListener("drop", (event) => {
   event.preventDefault();
   const field = dropField(event.target);
   if (!field) {
+    // A form on a site that takes no images has no field to drop into; the
+    // file goes nowhere, and the reader is told why.
+    const form = event.target instanceof Element ? event.target.closest(".post-form") : null;
+    if (form && !state.site.uploads) {
+      showNotice(UPLOADS_OFF_REASON);
+    }
     return;
   }
   field.classList.remove("dragging");
@@ -3254,7 +3367,8 @@ el.main.addEventListener("submit", async (event) => {
   const file = image && !image.disabled && image.files[0];
 
   if (!body.trim() && !file) {
-    showNotice("Write something or attach an image.");
+    // An image is offered as the alternative only where the form can take one.
+    showNotice(image && !image.disabled ? "Write something or attach an image." : "Write something to post.");
     (field(form, "body") || form).focus();
     return;
   }
@@ -3338,7 +3452,7 @@ el.main.addEventListener("submit", async (event) => {
     }
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
-    if (err.status === 403 && err.message === "image limit reached") {
+    if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
       const fileField = form.querySelector("[data-file-field]");
       const thread = state.thread;
       if (fileField) {
@@ -3351,11 +3465,20 @@ el.main.addEventListener("submit", async (event) => {
         if (thread.board && thread.board.image_limit > 0) {
           thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit);
         }
-        const counts = el.main.querySelector("[data-thread-counts]");
-        if (counts) {
-          counts.innerHTML = threadCounts(thread, thread.board, false).join(" &middot; ");
-        }
+        redrawThreadCounts();
       }
+    }
+    // The site takes no images, which this page was drawn without knowing:
+    // /api/site did not answer, or the server has been switched over since.
+    // The image comes off the same way, and the page knows for the rest of
+    // the visit, so the next form it draws has no image field.
+    if (err.status === 403 && err.message === UPLOADS_SWITCHED_OFF) {
+      state.site.uploads = false;
+      const fileField = form.querySelector("[data-file-field]");
+      if (fileField) {
+        blockFileField(fileField, UPLOADS_OFF_REASON);
+      }
+      redrawThreadCounts();
     }
     showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
     button.disabled = false;
@@ -3411,7 +3534,7 @@ async function submitVerification(form) {
     // The server's refusal of a request without the attestation reads the same
     // as the page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
-    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err));
+    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }));
     button.disabled = false;
     button.textContent = label;
   }
@@ -3419,20 +3542,32 @@ async function submitVerification(form) {
 
 /* Bootstrap ---------------------------------------------------------------- */
 
-// The board list, and whether verification exists here, are fetched the first
-// time a page past the age screen needs them, and kept from then on. A failure
-// is not kept: the next navigation tries again.
+// The board list, whether verification exists here, and what the site takes
+// are fetched the first time a page past the age screen needs them, and kept
+// from then on. A board list that fails is not kept: the next navigation tries
+// again.
 let siteLoaded = false;
 
 async function loadSite() {
   if (siteLoaded) {
     return;
   }
-  const { boards } = await api("/api/boards");
+  const [{ boards }] = await Promise.all([
+    api("/api/boards"),
+    // The posting form needs to know whether to offer the badge checkbox, and a
+    // failure here must not stop the board from loading.
+    loadVerification(),
+    // And whether to offer an image at all, and how large. Like the board
+    // list it says nothing about the reader, and nothing about the reader is
+    // sent for it. Without an answer the forms stay as they always were.
+    api("/api/site")
+      .then((site) => {
+        const max = Number(site.max_upload_bytes);
+        state.site = { uploads: site.uploads !== false, maxUploadBytes: max > 0 ? max : 0 };
+      })
+      .catch(() => {}),
+  ]);
   state.boards = boards;
-  // The posting form needs to know whether to offer the badge checkbox, and a
-  // failure here must not stop the board from loading.
-  await loadVerification();
   siteLoaded = true;
 }
 

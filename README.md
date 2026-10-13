@@ -441,7 +441,10 @@ view.
   is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
   outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
   shows a plain page saying who educhan is for, with no way to answer again in that
-  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  browser. The one refusal not kept is an answer in the current month exactly 13 years
+  back, since that reader may have turned 13 this month: it lasts until the page is
+  closed, and the FAQ says a reader who may only just have become old enough is asked
+  again. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
 - **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
@@ -456,7 +459,8 @@ view.
   not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
   and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
   Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view.
+  out where the reader is. The footer links to both on every view; its invitation to
+  verify an address shows only on a server with verification switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -492,7 +496,12 @@ view.
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
-  and size, and drag-and-drop anywhere on the form. A half-written reply survives
+  and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
+  which the page learns from `GET /api/site`, the form has no image field at all and the
+  thread view leaves out the image cap; a page that missed the switch takes the image off
+  when the server refuses it, keeps the text, and the next press posts it. The picker
+  names the server's size limit, and a file over it is turned away when it is picked
+  rather than after the upload. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft; if the
   thread was archived or locked meanwhile, the text stays on the page in a read-only box
   to copy. Following a quote link within a thread jumps to the post without reloading
@@ -500,8 +509,8 @@ view.
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
-- **Image cap**: the index and catalog show how many images a thread has, and the thread
-  view shows the count against its board's cap. A thread at the cap keeps its reply form
+- **Image cap**: the index and catalog show how many images a thread has, and on a server
+  that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
   while a reply is being written, the refusal takes the image off, keeps the text, and
   the next press posts it. On a board whose `image_limit` is 0 the picker says replies
