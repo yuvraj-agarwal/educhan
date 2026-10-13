@@ -1040,8 +1040,11 @@ func sampleBitstream(t *testing.T) riffChunk {
 // transparency, made with Pillow at quality 30: 640×480 of a colour ramp with
 // noise (±60, seed 11) softened by a 0.8-pixel blur, inside an opaque ellipse
 // on a transparent ground. Go cannot encode WebP, so these are files rather
-// than built in code.
-func readTestdata(t *testing.T, name string) []byte {
+// than built in code. photo-q30.jpg is a JPEG as libjpeg saves one for the
+// web, from Pillow at quality 30 with optimize=True (Huffman tables fitted
+// to the picture), 4:2:0: 640×480 of the same ramp and noise as the cut-out,
+// softened the same way, opaque.
+func readTestdata(t testing.TB, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {

@@ -34,11 +34,14 @@ not.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation, metadata stripping (`sanitize.go`, with the EXIF
-  orientation reader in `orient.go` and the WebP chunk check in `webp.go`),
-  thumbnailing, and the blob-storage interface with its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
-  (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
-  against both. `internal/media/mediatest` starts an in-process Cloud Storage emulator and
-  is imported only by tests.
+  orientation reader in `orient.go` and the WebP chunk check in `webp.go`), the
+  header-based cost estimate (`cost.go`), thumbnailing, and the blob-storage interface
+  with its two implementations: the local filesystem (`local.go`) and Google Cloud
+  Storage (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one
+  suite run against both. `internal/media/mediatest` starts an in-process Cloud Storage
+  emulator and is imported only by tests. `internal/media/jpegenc` is Go's own JPEG
+  encoder, copied with its licence and changed to keep a picture's chroma subsampling
+  (its package comment lists every change).
 - `internal/mailer` — the `Sender` interface verification codes go out through, with a
   development implementation that prints them to stdout.
 - `Dockerfile`, `cloudbuild.yaml`, `.gcloudignore`, `deploy/` — the container image, the
@@ -517,9 +520,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **What is stored is never the upload.** `media.Process` rewrites every image without
   its metadata before `Save` hands it to a backend, so both backends store the same
   file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF
-  Orientation (`jpegOrientation`, `orient` in `orient.go`), and re-encoded at
-  `storedJPEGQuality` (90); `image/jpeg` writes no APP or COM segment, so EXIF, XMP,
-  APP13 IPTC/Photoshop, the APP2 ICC profile and comments all go. PNG is decoded,
+  Orientation (`jpegOrientation`, `orient` in `orient.go`), and re-encoded by
+  `jpegenc` at the picture's own chroma subsampling, as `orient` left it, and at
+  `jpegQuality`: the lowest quality whose tables quantise no coefficient more coarsely
+  than the upload's own did, and `storedJPEGQuality` (90) at most. An upload saved with
+  the standard tables at quality 30 is stored at 30, at about its own size and looking
+  as it did, where at 90 it came out at about twice the size
+  (`TestLowQualityJPEGsAreNotStoredLarger`); one saved at 4:4:4 keeps its colour detail,
+  which 4:2:0 averaged away (`TestJPEGKeepsItsChromaSubsampling`,
+  `TestColourDetailIsKept`). The upload's tables are read and never copied: all the
+  stored file takes from them is that one number. `jpegenc` writes no APP or COM
+  segment, so EXIF, XMP, APP13 IPTC/Photoshop, the APP2 ICC profile and comments all
+  go. It is `image/jpeg`'s `writer.go` and `fdct.go` from Go 1.24.7, changed only where
+  marked `educhan:`; `TestFourTwoZeroIsImageJPEGsOwn` holds the paths it did not change
+  to `image/jpeg` byte for byte, so a Go release that changes that encoder fails it
+  rather than leaving the copy quietly behind. Thumbnails still go through
+  `image/jpeg`. PNG is decoded,
   turned upright by the EXIF Orientation of an eXIf chunk before the first IDAT
   (`pngOrientation`; browsers apply it, and read it nowhere else), and re-encoded,
   which keeps only IHDR, PLTE, tRNS, IDAT and IEND (an APNG keeps its still image); the
@@ -536,7 +552,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   first, so `gifFramePixels` reads both (`TestGIFLoopCountIsReadFromEitherLoopExtension`).
   WebP cannot be
   encoded in Go, so a WebP upload is stored as another format (`sanitizeWebP`): a JPEG
-  at `storedJPEGQuality` when it is lossy and opaque, otherwise a PNG (lossless pixels
+  at `storedJPEGQuality` when it is lossy and opaque (its own quality is no guide: a
+  WebP's quality setting is not a JPEG's, and a low-quality WebP can come out at two
+  to four times its size), otherwise a PNG (lossless pixels
   exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's
   extension, the content type, the attachment's `name` and the thumbnail's format all
   follow the stored format, not the upload's. Before decoding, `stripWebP` (`webp.go`)
@@ -578,14 +596,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   first of as opaque black) onto one entry. Visible pixels keep their exact values in
   PNG and GIF, so low-bit steganography survives by design. `hidden_test.go` holds each
   path, with the needles checked present in the upload first.
-- The EXIF reader is the one place educhan parses a structure an uploader controls,
-  so it reads in place, bounds-checks every offset before use, follows no offset but
-  IFD0's (no IFD chain, so no loop), allocates nothing, and answers 1 for anything it
-  cannot read; whether the file is an image is the decoder's call alone
-  (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`, the PNG chunk walk
-  under the same rules; `FuzzStripWebP` does the same for the RIFF rewrite and checks
-  it is idempotent). No EXIF library is needed and none should
-  be added.
+- Besides the decoders, educhan reads structures an uploader controls in a few
+  places of its own: the EXIF reader, the JPEG segment walks (`jpegOrientation`, and
+  `readJPEGFrame` with its frame header and quantisation tables), the PNG chunk walks,
+  the GIF block walk and the WebP RIFF rewrite. Each reads in place, bounds-checks every
+  offset and length before use, and allocates nothing but the RIFF rewrite's output.
+  Each gives a safe answer for what it cannot read — orientation 1, the dearest cost,
+  `storedJPEGQuality` — except the GIF walk and the RIFF rewrite, which refuse the
+  file. The EXIF reader follows no offset but IFD0's (no IFD chain, so no loop).
+  Whether the file is an image is the decoder's call alone (`TestHostileEXIF`,
+  `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`,
+  `FuzzGIFFramePixels`; `FuzzStripWebP` does the same for the RIFF rewrite and checks
+  it is idempotent). No EXIF library is needed and none should be added.
 - **No filename is kept.** A camera's or a phone's filename can name a date and a
   person, so `parseSubmission` reads only the file's bytes, and an attachment's name
   is `attachmentName(stored path)`: `image` plus the stored format's extension

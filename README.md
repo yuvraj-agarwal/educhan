@@ -404,9 +404,17 @@ client can leave the image picker off a server that would refuse what it sends.
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
   profiles. Both storage backends get the same rewritten file.
-  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded at quality
-    90, so a phone photo stored on its side is upright everywhere, thumbnail included,
-    and its reported width and height are the upright ones.
+  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a phone
+    photo stored on its side is upright everywhere, thumbnail included, and its reported
+    width and height are the upright ones. It keeps its chroma subsampling, so colour
+    saved at full resolution (4:4:4, as editors save screenshots and diagrams at high
+    quality) stays sharp. It is re-encoded at the lowest quality that compresses no
+    detail more coarsely than the upload did, and at 90 at most: a photo saved at
+    quality 30 by most software is stored at 30, at about the size it came in at and
+    looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
+    whose encoder fitted its Huffman tables to the picture or saved it progressive, as
+    the "optimise" and "progressive" options of an editor do, comes out up to about 15%
+    larger, because Go writes the standard tables in a single scan.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
     browsers apply too), and re-encoded, keeping none of its ancillary chunks. Every pixel
     keeps the value it decodes to, though not always the form it came in: 1-, 2- and
@@ -419,11 +427,13 @@ client can leave the image picker off a server that would refuse what it sends.
     its frames show.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90, and any other (lossless, or
-    with transparency) as a PNG, which keeps a lossless picture exactly. Its `name`,
-    URL and content type are the stored format's (`image.jpg`, `image.png`). Keeping
-    the WebP with only its metadata chunks removed would not be enough: a decoder
-    ignores anything after the picture inside the chunks that hold it, so a second
-    file could ride through unseen. WebPs stored before this stay WebPs.
+    with transparency) as a PNG, which keeps a lossless picture exactly. A WebP's
+    quality setting does not mean what a JPEG's does, so there is no lower quality to
+    match, and a WebP saved at a low quality can be stored at two to four times its
+    size. Its `name`, URL and content type are the stored format's (`image.jpg`,
+    `image.png`). Keeping the WebP with only its metadata chunks removed would not be
+    enough: a decoder ignores anything after the picture inside the chunks that hold
+    it, so a second file could ride through unseen. WebPs stored before this stay WebPs.
   - Nothing is kept that the picture does not show. A fully transparent pixel is
     stored with no colour, because an editor that erases part of a picture by clearing
     its alpha often leaves the erased part there, and a palette or colour table loses

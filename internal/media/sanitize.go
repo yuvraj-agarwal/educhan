@@ -11,6 +11,8 @@ import (
 	"image/png"
 
 	"golang.org/x/image/webp"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media/jpegenc"
 )
 
 // What is stored as an upload's original is never the file as uploaded. A
@@ -21,7 +23,9 @@ import (
 // read all of it. So every upload is rewritten here, in Process, before either
 // storage backend sees a byte of it:
 //
-//   - JPEG is decoded, turned upright by its EXIF orientation, and re-encoded.
+//   - JPEG is decoded, turned upright by its EXIF orientation, and re-encoded
+//     at its own chroma subsampling, and at its own quality up to
+//     storedJPEGQuality.
 //   - PNG is decoded, turned upright by the EXIF orientation of an eXIf chunk,
 //     and re-encoded, which keeps none of its ancillary chunks.
 //   - GIF is decoded frame by frame and re-encoded with its frames, delays,
@@ -47,10 +51,79 @@ import (
 // bits can still carry data put there on purpose; no rewrite that keeps a
 // picture exactly can take that away.
 
-// storedJPEGQuality is the quality a JPEG original is re-encoded at: high
-// enough that a second generation is hard to tell from the first, which is
-// what a poster sees of their own photo.
+// storedJPEGQuality is the highest quality an original is stored at as a
+// JPEG, and the quality of one made from a lossy WebP. A JPEG upload saved at
+// a higher quality is stored at this one, which keeps its detail while
+// shrinking the file; one saved at a lower quality is stored at its own
+// (jpegQuality). Either way it keeps its chroma subsampling (jpegenc), so
+// colour that was saved at full resolution is stored at it.
 const storedJPEGQuality = 90
+
+// jpegQuality is the quality sanitizeJPEG stores a JPEG at: the lowest at
+// which jpegenc quantises no coefficient of any component more coarsely than
+// the upload's own tables did, and storedJPEGQuality at most. A picture
+// re-encoded at finer steps than it was saved with stores its compression's
+// own blocks and ringing in more detail and shows nothing more, at about
+// twice the size; re-encoded at the same steps, its coefficients
+// mostly come back as they were, and the file at about its own size
+// (TestLowQualityJPEGsAreNotStoredLarger). An upload saved with the standard
+// tables, as most software saves, is stored at exactly its own quality.
+//
+// The tables are read, never copied: all the stored file takes from them is
+// a quality from 1 to 90, the same tables at it that any upload would get,
+// so they cannot carry anything through. A file whose tables are not all
+// there before its first scan, or whose components are not YCbCr or grey
+// (CMYK, RGB), is stored at storedJPEGQuality. A picture turned on its side
+// has its blocks transposed, so it is held to the tables transposed.
+func jpegQuality(f jpegFrame, framed bool, orientation int) int {
+	if !framed || !f.tables || (f.comps != 1 && f.comps != 3) || (f.comps == 3 && f.rgb()) {
+		return storedJPEGQuality
+	}
+	for c := 0; c < f.comps; c++ {
+		if f.tq[c] > 3 || !f.defined[f.tq[c]] {
+			return storedJPEGQuality
+		}
+	}
+	transposed := orientation >= 5
+	for q := 1; q < storedJPEGQuality; q++ {
+		ours := jpegenc.QuantTables(q)
+		fine := true
+		for c := 0; c < f.comps && fine; c++ {
+			theirs, table := &f.quant[f.tq[c]], &ours[min(c, 1)]
+			for k, step := range table {
+				at := k
+				if transposed {
+					at = transposedZig(k)
+				}
+				if uint16(step) > theirs[at] {
+					fine = false
+					break
+				}
+			}
+		}
+		if fine {
+			return q
+		}
+	}
+	return storedJPEGQuality
+}
+
+// transposedZig is the zig-zag position a block's coefficient at zig-zag
+// position k moves to when the block is transposed. Zig-zag order runs along
+// the block's diagonals, the first one holding one coefficient, the next
+// two, and so on to eight and back down to one, and transposing a block
+// keeps each coefficient on its diagonal and runs the diagonal the other way.
+func transposedZig(k int) int {
+	start := 0
+	for d := 0; d < 15; d++ {
+		n := min(d, 14-d) + 1
+		if k < start+n {
+			return 2*start + n - 1 - k
+		}
+		start += n
+	}
+	return k
+}
 
 // maxGIFFramePixels bounds the pixels of all a GIF's frames together. The
 // header check holds each frame to the canvas, and the canvas to MaxPixels,
@@ -127,9 +200,11 @@ func sanitize(in inspection, data []byte) (sanitized, error) {
 }
 
 // sanitizeJPEG decodes a JPEG, applies its EXIF orientation to the pixels, and
-// re-encodes it. image/jpeg writes no APP or COM segments at all, so EXIF,
-// XMP, IPTC and Photoshop data, comments, and the ICC profile are all gone
-// from the result.
+// re-encodes it at its own chroma subsampling (jpegenc) and its own quality
+// up to storedJPEGQuality (jpegQuality). jpegenc, like the image/jpeg encoder
+// it is a copy of, writes no APP or COM segments at all, so EXIF, XMP, IPTC
+// and Photoshop data, comments, and the ICC profile are all gone from the
+// result.
 //
 // Dropping the ICC profile is a trade-off. Most photos are sRGB, which is what
 // a browser assumes of a JPEG with no profile, and they look the same. A
@@ -152,9 +227,11 @@ func sanitizeJPEG(data []byte, limit int64) (sanitized, error) {
 	if cmyk, ok := src.(*image.CMYK); ok {
 		src = rgbaOfCMYK(cmyk)
 	}
-	pic := orient(src, jpegOrientation(data))
+	o := jpegOrientation(data)
+	pic := orient(src, o)
+	f, framed := readJPEGFrame(data)
 	buf := newStoredBuffer(len(data), limit)
-	stored, err := buf.encoded(FormatJPEG, jpeg.Encode(buf, pic, &jpeg.Options{Quality: storedJPEGQuality}))
+	stored, err := buf.encoded(FormatJPEG, jpegenc.Encode(buf, pic, &jpegenc.Options{Quality: jpegQuality(f, framed, o)}))
 	if err != nil {
 		return sanitized{}, err
 	}
@@ -237,7 +314,10 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 // make the picture (stripWebP), decodes what is left, and stores the pixels as
 // a new file: a JPEG when the picture is lossy and opaque, which is what a
 // lossy WebP is closest to, and otherwise a PNG, which keeps a lossless
-// picture exactly and a transparent one's alpha. An animated WebP is refused
+// picture exactly and a transparent one's alpha. The JPEG is at
+// storedJPEGQuality whatever the WebP was saved at: a WebP's quality setting
+// is not a JPEG's, so its own is no guide, and a WebP saved at a low quality
+// can be stored at two to four times its size. An animated WebP is refused
 // as it always has been; x/image decodes still images only.
 //
 // Stripping alone is not enough to store. A decoder stops reading a VP8, VP8L
@@ -269,12 +349,12 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 	switch m := pic.(type) {
 	case *image.YCbCr: // lossy, with no alpha
 		format = FormatJPEG
-		err = jpeg.Encode(buf, m, &jpeg.Options{Quality: storedJPEGQuality})
+		err = jpegenc.Encode(buf, m, &jpegenc.Options{Quality: storedJPEGQuality})
 	case *image.NYCbCrA: // lossy, with an alpha plane
 		if m.Opaque() {
 			format = FormatJPEG
 			pic = &m.YCbCr
-			err = jpeg.Encode(buf, pic, &jpeg.Options{Quality: storedJPEGQuality})
+			err = jpegenc.Encode(buf, pic, &jpegenc.Options{Quality: storedJPEGQuality})
 			break
 		}
 		pic = nrgbaOf(m)

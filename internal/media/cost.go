@@ -125,7 +125,8 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 }
 
 // storedLimit is the most a stored original may take: four times the upload,
-// plus half a byte a pixel. Re-encoding a photo at storedJPEGQuality, or a
+// plus half a byte a pixel. Re-encoding a JPEG at its own quality and
+// subsampling (jpegQuality), a lossy WebP as a JPEG at storedJPEGQuality, or a
 // PNG or a GIF in its own format, comes to well inside that. What reaches it
 // is a file that compresses in a way Go's encoders cannot follow — a lossless
 // WebP of a pattern repeated further apart than deflate's 32 KiB window,
@@ -213,7 +214,8 @@ func jpegPhases(data []byte, w, h int64) []phase {
 }
 
 // jpegFrame is what jpegPhases needs of a JPEG's frame header and the
-// application segments before it.
+// application segments around it, and what jpegQuality needs of its
+// quantisation tables.
 type jpegFrame struct {
 	progressive bool
 	comps       int
@@ -226,6 +228,14 @@ type jpegFrame struct {
 	jfif           bool
 	adobe          bool // an Adobe APP14 segment with a transform
 	transform      byte
+	// tq is the quantisation table each component names.
+	tq [4]byte
+	// quant is the quantisation tables, in zig-zag order, as they stand
+	// when the first scan starts, and defined says which have been; tables
+	// says whether the walk got that far, so they are all there are.
+	quant   [4][64]uint16
+	defined [4]bool
+	tables  bool
 }
 
 // subsampling is the YCbCr subsampling image/jpeg decodes a three-component
@@ -260,21 +270,25 @@ func (f jpegFrame) rgb() bool {
 	return f.ids == [3]byte{'R', 'G', 'B'}
 }
 
-// readJPEGFrame walks a JPEG's segments up to its first frame header, as
+// readJPEGFrame walks a JPEG's segments up to its first scan, as
 // jpegOrientation does: in place, every length checked before it is used,
-// nothing allocated. It counts the blocks image/jpeg will allocate: whole
+// nothing allocated. It reports whether it found a frame header before
+// anything stopped it. It counts the blocks image/jpeg will allocate: whole
 // MCUs of the first component's sampling, each holding h×v blocks of every
 // component, and a single component's samples counted 1×1 whatever it
-// claims, as the decoder does.
+// claims, as the decoder does. It reads the quantisation tables defined
+// before the first scan; a file that redefines one between its scans is the
+// uploader's own oddity, and costs only the quality its picture is stored at.
 func readJPEGFrame(data []byte) (jpegFrame, bool) {
 	var f jpegFrame
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return f, false
 	}
+	framed := false
 	i := 2
 	for i+4 <= len(data) {
 		if data[i] != 0xFF {
-			return f, false
+			return f, framed
 		}
 		marker := data[i+1]
 		switch {
@@ -284,12 +298,15 @@ func readJPEGFrame(data []byte) (jpegFrame, bool) {
 		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
 			i += 2
 			continue
-		case marker == 0xDA || marker == 0xD9:
-			return f, false
+		case marker == 0xDA:
+			f.tables = framed
+			return f, framed
+		case marker == 0xD9:
+			return f, framed
 		}
 		length := int(data[i+2])<<8 | int(data[i+3])
 		if length < 2 || length > len(data)-i-2 {
-			return f, false
+			return f, framed
 		}
 		segment := data[i+4 : i+2+length]
 		switch marker {
@@ -301,12 +318,45 @@ func readJPEGFrame(data []byte) (jpegFrame, bool) {
 			if len(segment) >= 12 && string(segment[:5]) == "Adobe" {
 				f.adobe, f.transform = true, segment[11]
 			}
+		case 0xDB:
+			if !f.readDQT(segment) {
+				return f, framed
+			}
 		case 0xC0, 0xC1, 0xC2:
-			return f, f.read(segment, marker == 0xC2)
+			if framed {
+				// A second frame header, which image/jpeg refuses.
+				return f, framed
+			}
+			if !f.read(segment, marker == 0xC2) {
+				return f, false
+			}
+			framed = true
 		}
 		i += 2 + length
 	}
-	return f, false
+	return f, framed
+}
+
+// readDQT records the tables a DQT segment defines, as image/jpeg reads them:
+// one after another, each a byte holding its precision (8 or 16 bits) and its
+// number (0–3), and then its 64 values in zig-zag order.
+func (f *jpegFrame) readDQT(segment []byte) bool {
+	for len(segment) > 0 {
+		pq, tq := segment[0]>>4, segment[0]&0x0F
+		if pq > 1 || tq > 3 || len(segment) < 1+64<<pq {
+			return false
+		}
+		for k := range f.quant[tq] {
+			if pq == 0 {
+				f.quant[tq][k] = uint16(segment[1+k])
+			} else {
+				f.quant[tq][k] = binary.BigEndian.Uint16(segment[1+2*k:])
+			}
+		}
+		f.defined[tq] = true
+		segment = segment[1+64<<pq:]
+	}
+	return true
 }
 
 // read fills in the frame from a SOF segment's body.
@@ -338,6 +388,7 @@ func (f *jpegFrame) read(sof []byte, progressive bool) bool {
 		if k < 3 {
 			f.ids[k] = c[0]
 		}
+		f.tq[k] = c[2]
 		if k == 1 {
 			f.hRatio, f.vRatio = h0/h, v0/v
 		}
