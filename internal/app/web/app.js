@@ -2205,9 +2205,10 @@ const FAQ_SECTIONS = [
           a name.</li>
         <li>educhan doesn't save IP addresses, the numbers that identify an internet
           connection. They aren't written to its logs or its database, and posts aren't
-          stored with one. When you post or ask for a badge code, the server holds your
-          address in its memory for a short while, a few minutes at most with its usual
-          settings, so it can stop anyone doing either too often. Then it forgets it.</li>
+          stored with one. When you post or ask for a badge code, the server holds your IP
+          address in its memory, and only there, so it can stop anyone doing either too
+          often. Once it no longer needs it for that, it clears it out the next time it
+          tidies up.</li>
         <li>educhan never asks for your email address unless you want a badge, and even then
           it keeps only a scrambled fingerprint of it, never the address itself
           (<a href="#faq-badge">more about the badge</a>).</li>

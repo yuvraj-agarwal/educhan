@@ -701,17 +701,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   thread would refuse (`ReplyRefusal`). State is per process and in memory — a shared
   backend means replacing `cooldownLimiter`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  starts `sweepCooldowns`, which drops every expired entry of all four limiters each
-  `cooldownSweepInterval` (one minute), and `Close` stops it. **An address is held in
-  memory no longer than the longest cooldown that applies to it plus one minute**,
-  counted from its last action that started one, busy server or quiet; the README's
-  Flood control section states that bound, and anything the client says about
-  addresses rests on it. A longer interval, a new limiter left out of the sweep, or a
-  limiter keyed on something that outlives its cooldown breaks it
+  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
+  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
+  **While the process has CPU, an address is held in memory no longer than the
+  longest cooldown that applies to it plus one minute**, counted from its last action
+  that started one, busy server or quiet. A host that gives CPU only during requests,
+  which is Cloud Run's default (request-based billing), holds the timer back on an
+  idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
+  request is handled; until a request arrives or the instance stops, an idle instance
+  still holds what it last saw, and on Cloud Run the one-minute bound needs CPU always
+  allocated (`--no-cpu-throttling`). The README's Flood control section states the
+  bound with that condition, and anything the client says about addresses rests on
+  it, which is why the FAQ promises no time limit. A longer interval, a new limiter
+  left out of the sweep, a limiter keyed on something that outlives its cooldown, or
+  the request-path sweep dropped from `Routes` breaks it
   (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
-  `TestFloodControlForgetsAddressesOnAQuietServer`, which shortens the period through
-  `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold`
-  only bounds a burst between two ticks.
+  `TestCooldownSweepRunsBeforeARequestOnceItIsOverdue`, and
+  `TestFloodControlForgetsAddressesOnAQuietServer` and
+  `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period
+  through `Config.cooldownSweepEvery`). The record-time sweep past
+  `cooldownSweepThreshold` only bounds a burst between two ticks.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the

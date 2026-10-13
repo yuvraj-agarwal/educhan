@@ -210,9 +210,9 @@ func TestSweepExpiredKeepsOnlyLiveCooldowns(t *testing.T) {
 	nilLimiter.sweepExpired()
 }
 
-// sweepCooldowns sweeps every limiter it is given, on its own, with no request
-// arriving to prompt it, and stop leaves nothing running, however often it is
-// called.
+// A started cooldownSweep sweeps every limiter it is given, on its own, with
+// no request arriving to prompt it, and stop leaves nothing running, however
+// often it is called.
 func TestSweepCooldownsRunsUntilStopped(t *testing.T) {
 	var clock atomic.Int64
 	clock.Store(time.Now().UnixNano())
@@ -225,7 +225,7 @@ func TestSweepCooldownsRunsUntilStopped(t *testing.T) {
 		allow(l, "198.51.100.1")
 	}
 
-	stop := sweepCooldowns(time.Millisecond, short, long)
+	stop := newCooldownSweep(time.Millisecond, short, long).start()
 	defer stop()
 
 	clock.Add(int64(2 * time.Second))
@@ -239,4 +239,42 @@ func TestSweepCooldownsRunsUntilStopped(t *testing.T) {
 
 	stop()
 	stop()
+}
+
+// A host that gives the process CPU only while it answers a request holds the
+// timer back while it is idle, so a request runs the sweep first once a whole
+// period has passed since the last one began — and not before, or every
+// request would scan the limiters. Of the requests that find it due, one runs
+// it.
+func TestCooldownSweepRunsBeforeARequestOnceItIsOverdue(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(time.Now().UnixNano())
+	limiter := newCooldownLimiter(time.Second)
+	limiter.now = func() time.Time { return time.Unix(0, clock.Load()) }
+
+	sweep := newCooldownSweep(time.Minute, limiter) // never started: the timer is held back
+	began := time.Unix(0, sweep.last.Load())
+
+	allow(limiter, "198.51.100.1")
+	clock.Add(int64(2 * time.Second)) // the cooldown has run out
+
+	sweep.runIfDue(began.Add(time.Minute - time.Nanosecond))
+	if got := trackedKeys(limiter); len(got) != 1 {
+		t.Fatalf("a request before the sweep fell due: tracked %v, want the entry kept for the timer", got)
+	}
+	sweep.runIfDue(began.Add(time.Minute))
+	if got := trackedKeys(limiter); len(got) != 0 {
+		t.Fatalf("the first request after the sweep fell due: tracked %v, want nothing", got)
+	}
+
+	// That request ran the sweep, so the next one a moment later does not.
+	allow(limiter, "198.51.100.2")
+	clock.Add(int64(2 * time.Second))
+	sweep.runIfDue(began.Add(time.Minute + time.Second))
+	if got := trackedKeys(limiter); len(got) != 1 {
+		t.Errorf("a request just after a sweep: tracked %v, want the entry kept for the next one", got)
+	}
+
+	var none *cooldownSweep
+	none.runIfDue(time.Now())
 }

@@ -31,8 +31,10 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
-	// stopCooldownSweep stops the goroutine that drops the limiters' expired
-	// entries, which are client addresses. Close calls it.
+	// cooldownSweep drops the limiters' expired entries, which are client
+	// addresses: on a timer, and before a request when the timer has fallen
+	// behind. stopCooldownSweep stops the timer; Close calls it.
+	cooldownSweep     *cooldownSweep
 	stopCooldownSweep func()
 
 	// schemaAhead lists the migrations the database has and this binary does
@@ -102,8 +104,9 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if every <= 0 {
 		every = cooldownSweepInterval
 	}
-	a.stopCooldownSweep = sweepCooldowns(every,
+	a.cooldownSweep = newCooldownSweep(every,
 		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }
 
@@ -231,6 +234,7 @@ func (a *App) Routes() http.Handler {
 
 	return chain(mux,
 		recoverPanics(a.log),
+		a.cooldownSweep.beforeEachRequest,
 		requestLogger(a.log),
 		securityHeaders,
 	)

@@ -413,7 +413,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -703,7 +703,21 @@ server holds one. A sweep runs once a minute and drops every entry whose
 cooldown has run out, so **an address is held in memory no longer than the
 longest cooldown that applies to it plus one minute**, counted from its last
 post (or code request, for verification's cooldown), whether or not anyone
-else posts in the meantime. It is never written to the database or the logs.
+else posts in the meantime, **as long as the process has CPU between
+requests**. A host that gives it CPU only while it answers a request, which is
+Cloud Run's default (request-based billing), holds the sweep's timer back while
+an instance is idle. The first request to arrive after a sweep fell due runs
+it before it is handled, but until one arrives, or the instance is shut down,
+an idle instance's memory still holds the addresses it last saw. On Cloud Run
+the one-minute bound needs CPU allocated for the instance's whole life, which
+is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
+the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+
+The address itself is never written to the database or the logs. A post from a
+client that sends no poster key does store a poster ID derived from it (see
+[Poster IDs](#poster-ids)): eight characters of an HMAC keyed by
+`EDUCHAN_POSTER_ID_SALT`, which anyone holding the salt could test candidate
+addresses against, one thread at a time. The web client always sends a key.
 
 State is held in the process, so each instance of a horizontally scaled
 deployment enforces the cooldowns it sees. Moving to shared storage means

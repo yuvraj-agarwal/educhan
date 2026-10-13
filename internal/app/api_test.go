@@ -845,6 +845,45 @@ func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
 	waitUntil(t, "no limiter holds the address", func() bool { return len(holding()) == 0 })
 }
 
+// A host that gives the process CPU only while it answers a request, which is
+// Cloud Run's default, does not run the timer while the instance is idle. The
+// request that wakes it runs the overdue sweep before it is handled, so an
+// address whose cooldowns have run out is gone before anything else happens,
+// whatever that request is for.
+func TestFloodControlForgetsAddressesBeforeTheNextRequest(t *testing.T) {
+	const every = 20 * time.Millisecond
+	h := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.PostCooldown = time.Minute
+		cfg.cooldownSweepEvery = every
+	})
+	h.addBoard("general")
+	thread := h.createThread("general", "", "", "a thread")
+
+	const address = "198.51.100.8"
+	if status := h.postFrom(address, fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo),
+		map[string]any{"body": "posted once"}, &createdPost{}); status != http.StatusCreated {
+		t.Fatalf("reply: status %d", status)
+	}
+
+	// The instance goes idle: its timer stops, the reply's cooldown runs out,
+	// and a sweep falls due with nothing to run it.
+	h.app.stopCooldownSweep()
+	later := time.Now().Add(time.Minute)
+	setClock(h.app.postLimiter, func() time.Time { return later })
+	time.Sleep(every)
+	if got := trackedKeys(h.app.postLimiter); len(got) != 1 || !strings.Contains(got[0], address) {
+		t.Fatalf("while idle the post limiter holds %v, want the address still there for a request to sweep", got)
+	}
+
+	if status := h.do(http.MethodGet, "/healthz", nil, nil); status != http.StatusOK {
+		t.Fatalf("healthz: status %d", status)
+	}
+	if got := trackedKeys(h.app.postLimiter); len(got) != 0 {
+		t.Errorf("after the next request the post limiter holds %v, want nothing", got)
+	}
+}
+
 func TestThreadPruning(t *testing.T) {
 	c := testServer(t, nil)
 	c.addBoard("general")
