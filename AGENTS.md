@@ -480,6 +480,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   caller the same (`TestSiteReportsTheUploadSettings`, and it is on
   `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything about
   the caller belongs nowhere near it.
+- With uploads off, `parseSubmission` holds a multipart body to `maxRequestBytes` (the
+  JSON cap, well above the longest legal post) instead of `MaxUploadBytes` plus
+  overhead, and answers an overflow with the switched-off `403`
+  (`uploadsSwitchedOff`, a string clients match on) rather than `413`: a body that size
+  is carrying a file, and the poster should hear the reason that will not change. A
+  smaller file is refused after the form is parsed, and only a part with bytes in it
+  counts, because an untouched file input still sends an empty one. Both refusals come
+  before flood control and store nothing
+  (`TestUploadsSwitchedOffRefusesALargeFileUnread`, which also counts the bytes read).
 - Files are keyed `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and
   `thumbs/{board}/{YYYY}/{MM}/…`, served from `/media/original/…` and `/media/thumb/…`
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the

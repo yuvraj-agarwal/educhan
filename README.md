@@ -343,8 +343,14 @@ along with every poster ID.
 
 One image per post, on both thread creation and replies, **when
 `EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
-image is then refused with `403`, because originals are stored and served as
-uploaded: no metadata stripping and no content scanning yet. `GET /api/site`
+image is then refused with `403` and
+`{"error":"image uploads are switched off on this server"}`, because originals
+are stored and served as uploaded: no metadata stripping and no content scanning
+yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
+be, so the server stops reading an image once the body passes that, and a file
+over the size limit gets the same `403` rather than a `413`; a multipart post
+with no file, or with the empty file part a browser sends for an untouched
+input, posts as usual. `GET /api/site`
 reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
 client can leave the image picker off a server that would refuse what it sends.
 
@@ -593,7 +599,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
-| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403` |
+| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
