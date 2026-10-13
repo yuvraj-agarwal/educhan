@@ -245,6 +245,25 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// A held post's image is for the moderators until one approves it, so it
+	// is answered as if it did not exist unless the moderation key comes with
+	// the request, and nothing on either answer may be kept by a cache: the
+	// same address serves the public once the post is approved.
+	cacheControl := mediaCacheControl
+	held, err := a.store.MediaHeld(r.Context(), prefix == media.ThumbPrefix, r.PathValue("path"))
+	if err != nil {
+		a.fail(w, r, err, "could not read attachment")
+		return
+	}
+	if held {
+		cacheControl = "no-store"
+		if !a.isModerator(r) {
+			w.Header().Set("Cache-Control", cacheControl)
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+	}
+
 	rc, obj, err := a.media.Get(r.Context(), key)
 	if err != nil {
 		if errors.Is(err, media.ErrNotFound) || errors.Is(err, media.ErrInvalidKey) {
@@ -257,7 +276,7 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 	defer rc.Close()
 
 	w.Header().Set("Content-Type", obj.ContentType)
-	w.Header().Set("Cache-Control", mediaCacheControl)
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Content-Disposition", "inline")
 	http.ServeContent(w, r, "", obj.ModTime, rc)
 }

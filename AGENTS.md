@@ -236,11 +236,13 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 ```
 
 Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOLDOWN=5`,
-`EDUCHAN_UPLOAD_COOLDOWN=15` seconds), so scripted loops will see `429` with a
-`Retry-After` header. Set them to `0` when a test needs to post rapidly:
+`EDUCHAN_UPLOAD_COOLDOWN=15` seconds, and `EDUCHAN_REFUSAL_LIMIT=10` posts the content
+rules send back per minute), so scripted loops will see `429` with a `Retry-After`
+header. Set them to `0` when a test needs to post rapidly, or to probe the content rules
+with many refused posts:
 
 ```bash
-EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
+EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 EDUCHAN_REFUSAL_LIMIT=0 make run
 ```
 
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
@@ -533,13 +535,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 ### Content rules and held posts
 
 Build plan 2.9 (content rules), the hold half of 2.11 (threats) and 2.12 (self-harm).
-`checkContent` in `filter.go` reads the body (minus `[math]`/`[eqn]` blocks, found with
-`markupBlocks`; `[code]` is read), the subject, and the shown part of the name
-(`displayedName`: before the first `#`, so the tripcode secret is never read or quoted
-back). It works on two views of each field, both mapped byte by byte back to the source
-so a match is quoted as written: **plain** (NFKD compatibility folding, lower case,
-combining marks and invisible characters dropped, every script's digits as 0–9, dashes
-as `-`, a short list of Cyrillic and Greek lookalikes) and **loose** (plain with spaced
+`checkContent` in `filter.go` reads the body, the subject, and the shown part of the
+name (`displayedName`: before the first `#`, so the tripcode secret is never read or
+quoted back). The body's markup is read as a reader sees it (`markupReadings`, from
+`markupBlocks`): a `[math]`/`[eqn]` block as one blank, `[code]` tags as line breaks
+around text that is read, and `[spoiler]` tags as nothing, or as a blank between a
+letter and a digit — so a number, address or app name split by tags reads whole, as it
+does on screen once the spoiler is opened. It works on two views of each field, both
+mapped byte by byte back to the source so a match is quoted as written: **plain** (NFKD
+compatibility folding, lower case, combining and enclosing marks (keycaps, circles) and
+invisible characters dropped, every script's digits as 0–9, dashes as `-`, a short list
+of Cyrillic and Greek lookalikes; a character whose compatibility form is more than
+`maxFoldRunes` long, a whole phrase such as U+FDFA, reads as itself) and **loose** (plain with spaced
 or dotted single letters closed up, leetspeak `0 1 3 4 5 7 @ $` read as letters when a
 letter is beside it, and `l` read as `i`). Patterns are tables of Go regexps compiled for
 both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
@@ -548,19 +555,23 @@ anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`
 
 | Outcome | Rule / reason | Built from |
 | --- | --- | --- |
-| block, `422` | `contact` | `firstNumber` (one pass over the plain view; `classifyNumber` with `standsAlone`, `internationalPhone`, `indianMobile`, `nanpPhone`, `ukPhone`, `dramaNumber`, `helplineNumbers`), `emailRule`/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`), `linkRule` + `contactLink`, `askRules`, `myAppRule` + `notAHandle`, `appColonHandle`, `appAtHandle` |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by spaces, line breaks, `-`, `.`, `_` or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber` lets decimals and thousands through; `classifyNumber` with `standsAlone`, `internationalPhone`, `indianMobile`, `nanpPhone`, `ukPhone`, `auMobile`, `dramaNumber`, `helpline` (`helplineNumbers`: three Indian lines and five US ones)), `emailRule`/`providerEmailRule`/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`, bracketed `[.]` and `[@]`), `linkRule` + `contactLink`, `spacedInviteRule`, `askRules`, `myAppRule` + `notAHandle`, `appColonHandle`, `appAtHandle`, `appLabelHandle` (`plausibleHandle`) |
 | block, `422` | `id_number` | `aadhaar` (Verhoeff), `ssn`, `niRule` + `validNIPrefix` |
-| support, `422` | — | `supportRules` (first person only; `notAfterANumber` for "5 kms") |
-| hold, `202` | `threat` | `threatIntentRules` near (`threatWindow`) `threatPlaceOrTimeRules`, filtered by `threatCheck`; `threatWarningRules` near `threatWarningCues` |
-| hold, `202` | `self_harm` | `selfHarmRules`, filtered by `notNegated` |
+| support, `422` | — | `supportRules` (first person only; `notAfterANumber` for "5 kms"), and `asksForAMethod` (`selfHarmMethodRules`) |
+| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` near (`threatWindow`) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (film and sports shoots, games, a quoted report); `threatWarningRules` near `threatWarningCues` |
+| hold, `202` | `self_harm` | `selfHarmRules` and `selfHarmMethodRules`, filtered by `selfHarmCheck` (`notNegated`: a negation ending the same clause, as in "don't you dare kill yourself", not one anywhere before it) |
 | hold, `202` | `grooming` | any `ageQuestionRules` match and any `privateCueRules` match in the same post |
 
 Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
-grooming), then publish. Every regexp is RE2 (linear), the number scanner and the view
-builders are single passes, and the pairing checks walk sorted span lists, so the cost
-is linear in the post (`TestFilterCostIsBounded`, `BenchmarkCheckContent`: about 15 ms
-for a maximum-length post on one core, under 100 ms for the slowest crafted one). The
-plain view is skipped when the loose one is only it with `l` read as `i` (`looseOnly`).
+grooming), then publish. A question about a method ("how many pills would kill me")
+gets the support screen first and is held once the poster goes on, because the person
+asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`). Every
+regexp is RE2 (linear), the number scanner and the view builders are single passes, and
+the pairing checks walk sorted span lists, so the cost is linear in the post
+(`TestFilterCostIsBounded`, `BenchmarkCheckContent`: about 17 ms for a maximum-length
+post on one 2.1 GHz core, 100–150 ms for the slowest crafted one, which is why refusals
+are budgeted; see the API contract). The plain view is skipped when the loose one is
+only it with `l` read as `i` (`looseOnly`).
 **Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
 extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
 or a `plainOnly` rule beside `niRule`, loaded from configuration, with its own
@@ -581,7 +592,12 @@ endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The 
 after the body, subject and badge checks, after `ReplyRefusal` for a reply, and
 **before flood control and before the upload is stored**: a block or a support refusal
 costs no cooldown and stores no file (`TestRefusedPostsCostNoCooldownAndStoreNoFile`); a
-held post takes the cooldown like any other (`TestHeldPostsTakeTheCooldown`). Badged and
+held post takes the cooldown like any other (`TestHeldPostsTakeTheCooldown`). A refusal
+is counted instead, against `refusalBudget` (`ratelimit.go`), keyed on `clientIP` across
+every board: once a client has `EDUCHAN_REFUSAL_LIMIT` (10) in a minute, `refuseContent`
+answers its posts `429` before reading them, clean or not, until the minute is up
+(`TestRefusalsAreBudgetedPerClient`). It is swept with the cooldowns, so it holds an
+address for at most its window plus the sweep interval. Badged and
 unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
 - block: `422 {"error": <one sentence naming what to remove and where>, "outcome":
   "block", "rule": "contact"|"id_number", "field": "body"|"subject"|"name", "match":
@@ -611,11 +627,23 @@ public endpoint with a positive control (published text is found, and the held t
 found once approved); a new public query has to decide whether it means held posts, and
 almost always it does not. `threads_board_public_order_idx` (live and not held) replaces
 `threads_board_live_order_idx`. The migration is numbered `0009` because the
-strip-metadata branch adds `0008_attachment_names.sql`.
+strip-metadata branch adds `0008_attachment_names.sql`. A rollback across `0009` is
+unsafe for the same reason as one across `0005`: older code ignores `held_at`, so every
+held post and thread is public and takes replies. `deploy/README.md`'s rollback warning
+does not say so yet; the README's **Held posts** does.
 
-**Moderator queue**, behind `authorizeMod`: `GET /api/held` (oldest first, at most
-`heldQueueLimit` = 500; board, thread_no, no, is_op, held_reason, created_at, subject for
-an OP, name, tripcode, body, badge, attachment) and `POST
+A held post's image is gated where it is served: `serveMedia` asks `MediaHeld` (the
+`0010` indexes on `attachments.original_path` and `thumb_path` keep that one lookup per
+request) and answers `404` with `Cache-Control: no-store` unless `isModerator(r)` — the
+moderation key, read by the same code as `authorizeMod` — in which case the file is
+served `no-store`, never `immutable`, because the URL turns public on approval
+(`TestHeldImagesAreServedOnlyToModerators`).
+
+**Moderator queue**, behind `authorizeMod`: `GET /api/held` (`{"posts","total"}`: threats
+first, then oldest first, so a backlog of other holds cannot bury one; at most
+`heldQueueLimit` = 500, with `total` counting every held post; board, thread_no, no, is_op,
+held_reason, created_at, subject for an OP, name, tripcode, body, badge, attachment;
+`TestHeldQueuePutsThreatsFirstAndCountsEverything`) and `POST
 /api/boards/{slug}/threads/{no}/posts/{post}/approve`. `ApprovePost` takes the board's
 row before the thread's (`TestApprovalRacingTheArchivingThreadDoesNotDeadlock`), clears
 the held columns, and recounts (`recountThread`): an approved reply is not bumped
@@ -642,9 +670,9 @@ curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
   -H 'X-Mod-Key: dev-mod-key'                                            # or reject it
 ```
 
-**Not built**: a held image stays at its ordinary random key and its URL is never
-published, but the file is served to whoever has the URL; build plan 2.2 moves held
-images under a `quarantine/` prefix. Nothing pages an on-duty moderator when a threat is
+**Not built**: a held image stays at its ordinary random key (served only with the
+moderation key, as above); build plan 2.2 moves held images under a `quarantine/`
+prefix. Nothing pages an on-duty moderator when a threat is
 held (2.11); the queue has to be read. The page handles all three answers in the
 posting form (see **The content rules' answers** under Front end conventions).
 
@@ -842,7 +870,7 @@ posting form (see **The content rules' answers** under Front end conventions).
   (`TestReplyQuotingAPostBeingDeletedStillPosts`).
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
+  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_REFUSAL_LIMIT`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
   `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
@@ -863,14 +891,18 @@ posting form (see **The content rules' answers** under Front end conventions).
   (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
   upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
   after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
+  A post the content rules refuse starts no cooldown and is counted by `refusalBudget`
+  instead (see **API contract** under Content rules).
   State is per process and in memory — a shared backend means replacing
-  `cooldownLimiter`, which nothing else depends on.
+  `cooldownLimiter` and `refusalBudget`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
-  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
+  builds a `cooldownSweep` over all four limiters and the refusal budget (anything
+  `expiring`) and starts its timer, which drops every expired entry each
+  `cooldownSweepInterval` (one minute), and `Close` stops it.
   **While the process has CPU, an address is held in memory no longer than the
   longest cooldown that applies to it plus one minute**, counted from its last action
-  that started one, busy server or quiet. A host that gives CPU only during requests,
+  that started one (for the refusal budget, from the first refusal of its minute),
+  busy server or quiet. A host that gives CPU only during requests,
   which is Cloud Run's default (request-based billing), holds the timer back on an
   idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
   request is handled; until a request arrives or the instance stops, an idle instance

@@ -359,30 +359,37 @@ along with every poster ID.
 
 Every post is read by a small, offline filter (`internal/app/filter.go`) before
 anything about it is stored: its body, its subject, and the part of its name
-that is shown. The tripcode secret after `#` is never read. `[math]` and `[eqn]`
-blocks are skipped, because TeX has a use for every character; `[code]` is
-read like any other text. The text is first normalised — compatibility forms
-folded (so full-width digits and styled letters read as plain ones), lower
-case, accents and zero-width characters dropped, every script's digits read as
-0–9, spaced or dotted-out letters closed up, and leetspeak beside letters read
-as letters — and then checked against tables of patterns with a few small
-validators. Each rule has one outcome:
+that is shown. The tripcode secret after `#` is never read. Markup is read the
+way the page shows it: `[math]` and `[eqn]` blocks are skipped, because TeX has
+a use for every character; `[code]` is read as its own lines; and `[spoiler]`
+tags are read as nothing, so a number or an app name split across them reads
+whole, as it does once the spoiler is opened. The text is first normalised —
+compatibility forms folded (so full-width digits and styled letters read as
+plain ones), lower case, accents, keycaps and zero-width characters dropped,
+every script's digits read as 0–9, spaced or dotted-out letters closed up, and
+leetspeak beside letters read as letters — and then checked against tables of
+patterns with a few small validators. A subject and a body are read together
+for threats, as a reader sees the title above the post. Each rule has one
+outcome:
 
 | Outcome | Rule | What it looks for |
 | --- | --- | --- |
-| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced), email addresses (not the RFC 2606 example domains), invite and profile links for messaging and social apps, and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z"). An app named on its own is fine |
+| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), however the groups are split (spaces, line breaks, dashes, dots, underscores) and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps; and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z"). An app named on its own is fine |
 | Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit), US Social Security numbers written with dashes, UK National Insurance numbers |
-| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "kms"). It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
-| Hold (`202`) | `threat` | An intent to hurt people or attack a place, with a place or a time near it, and school-attack warnings |
-| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", how-many and what-dose questions, thinspo, meanspo, "ana coach" |
+| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "thinking about ending it", "kms"), and a question about a method, which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
+| Hold (`202`) | `threat` | An intent to hurt people or attack a place ("I'm bringing a gun", "gonna shoot up"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game, and a quoted report are not threats |
+| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "neck yourself", how-many and what-dose questions, lethal doses, nooses, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys") |
 | Hold (`202`) | `grooming` | An age, school-year or location question and a private-contact or meet-up cue in the same post |
 
 Blocks come first, then support (unless `support_seen`), then holds. A number
 is a phone number only when it stands on its own: dates, times, years, scores,
-prices, ISBNs, sums, labelled references (an order, roll or application
-number) and digit runs inside longer numbers pass, and so do Ofcom's and the
-NANP's numbers for drama and three crisis lines whose numbers look like
-mobiles (iCall, the Vandrevala Foundation and AASRA).
+prices, ISBNs, sums, decimals, numbers with thousands separators, labelled
+references (an order, roll, seat or application number, a hall ticket) and
+digit runs inside longer numbers pass, and so do Ofcom's and the NANP's numbers
+for drama and the crisis lines whose numbers look like phone numbers (iCall,
+the Vandrevala Foundation and AASRA in India; the old National Suicide
+Prevention Lifeline, the Trevor Project, the National Domestic Violence Hotline
+and Childhelp in the US).
 
 **Be clear about what this is.** These are keyword and number patterns. They
 are easy to get round — a number spelled out in words, a username with no app
@@ -397,11 +404,12 @@ about it makes educhan safe for anyone.
 Nothing the filter reads or matches is logged or stored. A refused post leaves
 no trace at all, and a held post's only addition is `held_reason`, the rule's
 name. It runs in-process, sends nothing anywhere, and takes time linear in the
-length of the post: on one 2.1 GHz server core, about 15 ms for a
-maximum-length ordinary post and under 100 ms for the slowest crafted one.
-Because a refused post costs no cooldown, that time is spent on every refused
-request; if it ever matters, a limit on refusals per client is the place to
-add one.
+length of the post: on one 2.1 GHz server core, about 17 ms for a
+maximum-length ordinary post and 100–150 ms for the slowest crafted one. A
+refused post costs no cooldown, so refusals are counted instead: after
+`EDUCHAN_REFUSAL_LIMIT` of them (10 by default) in a minute, a client's posts
+are answered `429` without being read until the minute is up (see
+[Flood control](#flood-control)).
 
 The web page answers each outcome in the posting form and keeps the draft: a
 block quotes what to remove and selects it in its field, support shows the
@@ -421,8 +429,18 @@ locked, archives nothing when it is created, does not count against the
 board's thread limit, and is never archived or swept. An archived thread with
 a held reply is not swept until the reply has been approved or deleted.
 
-A held image stays at its ordinary storage key. Its URL is never published
-while the post is held, but the file is served to anyone who has it.
+A held image stays at its ordinary storage key, and its URL is never published
+while the post is held. Its file answers `404`, with `Cache-Control: no-store`,
+to any request without the moderation key; with the key it is served, also
+`no-store`, because the same URL serves everyone once the post is approved and
+is then cached for good. The quarantine prefix of build plan 2.2, which would
+keep the file out of the public namespace altogether, is not built.
+
+**Never roll back across migration `0009`.** Code from before it does not know
+`held_at`: every held post and held thread — threats, grooming cues,
+self-harm methods — appears in its thread, the index and the catalog, and can
+be replied to. The rollback warning in `deploy/README.md` names only `0005`
+so far; `0009` belongs beside it.
 
 ## Image attachments
 
@@ -704,6 +722,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_THREAD_COOLDOWN` | `30` (seconds) | Minimum interval between new threads from one client, per board |
 | `EDUCHAN_POST_COOLDOWN` | `5` (seconds) | Minimum interval between replies from one client, per board |
 | `EDUCHAN_UPLOAD_COOLDOWN` | `15` (seconds) | Minimum interval between attachments from one client, across all boards |
+| `EDUCHAN_REFUSAL_LIMIT` | `10` | Posts the content rules may send back to one client in a minute before its posts get `429` unread for the rest of it; `0` switches it off |
 | `EDUCHAN_LOG_FORMAT` | `text` | `text` or `json` structured logs |
 | `EDUCHAN_MEDIA_BACKEND` | `local` | Where attachments are stored: `local` or `gcs`; see [Storage backends](#storage-backends) |
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the `local` backend writes originals and thumbnails to; ignored by `gcs` |
@@ -771,13 +790,14 @@ EDUCHAN_GCS_PREFIX=media               # optional; omit to use the bucket root
 ### Flood control
 
 Posting is rate limited per client address, in memory, per process. Three
-cooldowns apply:
+cooldowns and a refusal budget apply:
 
 | Action | Cooldown | Counted per |
 | --- | --- | --- |
 | Creating a thread | `EDUCHAN_THREAD_COOLDOWN` | client and board |
 | Replying | `EDUCHAN_POST_COOLDOWN` | client and board |
 | Attaching an image | `EDUCHAN_UPLOAD_COOLDOWN` | client, across every board |
+| Being sent back by the content rules | `EDUCHAN_REFUSAL_LIMIT` a minute | client, across every board |
 
 Posting is counted per board so one client can follow a conversation on two
 boards at once. Uploads are counted across the whole server instead, because
@@ -797,11 +817,21 @@ do not decode, which only decoding it can find, and decoding is the cost the
 upload cooldown is there for; and the loser of two replies racing for a
 thread's last image slot (see the HTTP API).
 
+A post the [content rules](#content-rules) send back, with a block or the
+support screen, starts no cooldown either, so a poster told to take a phone
+number out can post again at once. Each one is counted instead, and a client
+sent back `EDUCHAN_REFUSAL_LIMIT` times (10 by default) within a minute of the
+first is answered `429` on every post, clean or not and without it being read,
+until that minute is up. A person correcting a post is sent back once or twice;
+the limit is there because reading a post is the expensive part of refusing
+it. `0` switches it off.
+
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
 cooldown has run out, so **an address is held in memory no longer than the
 longest cooldown that applies to it plus one minute**, counted from its last
-post (or code request, for verification's cooldown), whether or not anyone
+post (or code request, for verification's cooldown; or, for the refusal
+budget, from the first refusal of its minute, so two minutes), whether or not anyone
 else posts in the meantime, **as long as the process has CPU between
 requests**. A host that gives it CPU only while it answers a request, which is
 Cloud Run's default (request-based billing), holds the sweep's timer back while
@@ -971,7 +1001,7 @@ janitor accounts, bans, and reports are still to come.
 | `POST` | `/api/boards/{slug}/threads/{no}/unlock` | Allow replies again |
 | `DELETE` | `/api/boards/{slug}/threads/{no}` | Delete a thread with every post and attachment |
 | `DELETE` | `/api/boards/{slug}/threads/{no}/posts/{post}` | Delete one post and its attachment |
-| `GET` | `/api/held` | The held-post queue, oldest first, at most 500 |
+| `GET` | `/api/held` | The held-post queue, threats first and then oldest first, at most 500, with the total held |
 | `POST` | `/api/boards/{slug}/threads/{no}/posts/{post}/approve` | Publish a held post |
 
 Deleting a post removes its stored image and thumbnail from the media store as
@@ -980,11 +1010,17 @@ response reports as `"thread_deleted": true`. After a deleted reply the thread's
 reply and image counts are recounted from its published posts, so bump-limit
 state stays accurate.
 
-`GET /api/held` answers `{"posts":[…]}`, each with `board`, `thread_no`, `no`,
-`is_op`, `held_reason` (`threat`, `grooming` or `self_harm`), `created_at`,
-`subject` (the thread's, for an opening post; empty for a reply), `name`,
-`tripcode`, `body`, `badge` and `attachment` — everything a reader would see,
-so a moderator can decide from the queue alone. Approving answers
+`GET /api/held` answers `{"posts":[…],"total":N}`, each post with `board`,
+`thread_no`, `no`, `is_op`, `held_reason` (`threat`, `grooming` or
+`self_harm`), `created_at`, `subject` (the thread's, for an opening post; empty
+for a reply), `name`, `tripcode`, `body`, `badge` and `attachment` — everything
+a reader would see, so a moderator can decide from the queue alone. Threats
+come first, oldest first among them, and then every other held post oldest
+first: a threat names a place or a time that may be today, while every other
+held post is already harmless where it is, so a backlog of other holds can
+never push a threat off the first 500. `total` counts every held post, so a
+moderator can see how far behind the queue is. A held post's image is served
+to a request with the moderation key, as in [Held posts](#held-posts). Approving answers
 `{"board","thread_no","post_no","approved":true}`, `409` with
 `{"error":"post is not held"}` for a published post, and `404` for one that is
 not in that thread. An approved reply takes its place in the thread by number

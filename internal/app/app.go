@@ -31,6 +31,8 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
+	// refusals counts the posts the content rules sent back to each client.
+	refusals *refusalBudget
 	// cooldownSweep drops the limiters' expired entries, which are client
 	// addresses: on a timer, and before a request when the timer has fallen
 	// behind. stopCooldownSweep stops the timer; Close calls it.
@@ -98,6 +100,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
+		refusals:      newRefusalBudget(cfg.RefusalLimit, refusalWindow),
 		schemaAhead:   schemaAhead,
 	}
 	every := cfg.cooldownSweepEvery
@@ -105,7 +108,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter, a.refusals)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }

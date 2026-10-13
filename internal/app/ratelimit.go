@@ -17,7 +17,9 @@ const cooldownSweepThreshold = 4096
 // how long the server remembers one while the process has CPU: an address is
 // held in memory no longer than the longest cooldown that applies to it plus
 // one minute, counted from its last action that started a cooldown, however
-// quiet the server is. A host that gives the process CPU only while it answers
+// quiet the server is; the refusal budget holds one for its window plus one
+// minute, counted from the first refusal in it. A host that gives the process
+// CPU only while it answers
 // a request, which is Cloud Run's default, holds the timer back while the
 // instance is idle; there the sweep runs before the instance answers its next
 // request, so an idle instance keeps expired entries until then or until it is
@@ -138,6 +140,103 @@ func (l *cooldownLimiter) sweepExpired() {
 	l.sweep(l.now())
 }
 
+// refusalWindow is the period a refusalBudget counts refusals over.
+const refusalWindow = time.Minute
+
+// refusalBudget counts, per client, the posts the content rules sent back, and
+// stops checking that client's posts once it has had limit of them in one
+// window. A refused post costs no cooldown, so that a poster told to take a
+// phone number out can post again at once; without a budget it would also cost
+// the client nothing, and the rules are the most expensive thing a post does
+// before it is stored. A person correcting a post is refused once or twice; a
+// script is refused as often as it can send.
+//
+// The window is fixed rather than sliding: it starts at a client's first
+// refusal and the count starts again once it has passed. That allows twice the
+// limit across a window's edge, which is still a bound, and keeps one time and
+// one count per client. Its keys are client addresses, swept with the
+// cooldowns once their window has passed.
+type refusalBudget struct {
+	limit  int
+	window time.Duration
+	now    func() time.Time
+
+	mu   sync.Mutex
+	seen map[string]refusalCount
+}
+
+type refusalCount struct {
+	since time.Time
+	n     int
+}
+
+// newRefusalBudget allows limit refusals per client per window; a limit of
+// zero or less turns the budget off.
+func newRefusalBudget(limit int, window time.Duration) *refusalBudget {
+	return &refusalBudget{limit: limit, window: window, now: time.Now, seen: map[string]refusalCount{}}
+}
+
+// peek reports how long key must wait before its posts are checked again,
+// recording nothing.
+func (b *refusalBudget) peek(key string) time.Duration {
+	if b == nil || b.limit <= 0 {
+		return 0
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	c, tracked := b.seen[key]
+	if !tracked || c.n < b.limit {
+		return 0
+	}
+	return max(b.window-b.now().Sub(c.since), 0)
+}
+
+// record counts one refusal against key.
+func (b *refusalBudget) record(key string) {
+	if b == nil || b.limit <= 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	now := b.now()
+	c, tracked := b.seen[key]
+	if !tracked || now.Sub(c.since) >= b.window {
+		if !tracked && len(b.seen) >= cooldownSweepThreshold {
+			b.sweep(now)
+		}
+		b.seen[key] = refusalCount{since: now, n: 1}
+		return
+	}
+	c.n++
+	b.seen[key] = c
+}
+
+// sweep drops entries whose window has passed. Callers must hold the mutex.
+func (b *refusalBudget) sweep(now time.Time) {
+	for key, c := range b.seen {
+		if now.Sub(c.since) >= b.window {
+			delete(b.seen, key)
+		}
+	}
+}
+
+// sweepExpired drops every entry whose window has passed by the budget's
+// clock.
+func (b *refusalBudget) sweepExpired() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sweep(b.now())
+}
+
+// expiring is what a cooldownSweep sweeps: anything that keeps client
+// addresses only until they can no longer refuse anything.
+type expiring interface {
+	sweepExpired()
+}
+
 // cooldownSweep drops the expired entries of a set of limiters once each
 // period. Two things run it. A goroutine of its own does, on a timer, so a
 // quiet server forgets without a request arriving to prompt it. And every
@@ -147,12 +246,12 @@ func (l *cooldownLimiter) sweepExpired() {
 // next request is the first moment the process is sure to run again.
 type cooldownSweep struct {
 	every    time.Duration
-	limiters []*cooldownLimiter
+	limiters []expiring
 	// last is when the most recent sweep began, in Unix nanoseconds.
 	last atomic.Int64
 }
 
-func newCooldownSweep(every time.Duration, limiters ...*cooldownLimiter) *cooldownSweep {
+func newCooldownSweep(every time.Duration, limiters ...expiring) *cooldownSweep {
 	s := &cooldownSweep{every: every, limiters: limiters}
 	s.last.Store(time.Now().UnixNano())
 	return s

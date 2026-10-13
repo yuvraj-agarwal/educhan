@@ -199,6 +199,66 @@ func TestRefusedPostsCostNoCooldownAndStoreNoFile(t *testing.T) {
 	}
 }
 
+// A refusal costs no cooldown, so it is counted instead: a client sent back
+// more often than a person correcting a post would be is answered 429 without
+// its posts being checked, clean or not, until its minute is up. Other clients
+// are not affected, and posts that go through count for nothing.
+func TestRefusalsAreBudgetedPerClient(t *testing.T) {
+	h := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.RefusalLimit = 3
+	})
+	h.addBoard("budget")
+	thread := h.createThread("budget", "", "", "op")
+	const sender, other = "198.51.100.20", "198.51.100.21"
+
+	refused := []map[string]any{
+		{"body": "wa.me/919876543210"},
+		{"body": "i want to die"},
+		{"body": "my snap is ana_23"},
+	}
+	for i, body := range refused {
+		var out map[string]any
+		if status := h.postFrom(sender, threadsPath("budget"), body, &out); status != http.StatusUnprocessableEntity {
+			t.Fatalf("refusal %d: status %d (%v), want 422", i+1, status, out)
+		}
+	}
+	posts := h.postCount()
+	for _, path := range []string{threadsPath("budget"), repliesPath("budget", thread.ThreadNo)} {
+		for _, body := range []map[string]any{{"body": "a clean post"}, {"body": "wa.me/919876543210"}} {
+			var out map[string]any
+			if status := h.postFrom(sender, path, body, &out); status != http.StatusTooManyRequests {
+				t.Fatalf("%s %v past the budget: status %d (%v), want 429", path, body, status, out)
+			}
+			if secs, _ := out["retry_after"].(float64); secs < 1 || secs > 60 {
+				t.Errorf("retry_after = %v, want the rest of the minute", out["retry_after"])
+			}
+		}
+	}
+	if got := h.postCount(); got != posts {
+		t.Fatalf("posts went from %d to %d while the budget was spent", posts, got)
+	}
+
+	// Another client is checked as usual, and posting clean posts spends
+	// nothing.
+	for i := 0; i < 5; i++ {
+		var created createdPost
+		if status := h.postFrom(other, repliesPath("budget", thread.ThreadNo),
+			map[string]any{"body": fmt.Sprintf("clean %d", i)}, &created); status != http.StatusCreated {
+			t.Fatalf("another client's clean reply %d: status %d (%s)", i, status, created.Error)
+		}
+	}
+
+	// A minute on, the sender is checked again.
+	later := time.Now().Add(time.Minute)
+	setBudgetClock(h.app.refusals, func() time.Time { return later })
+	var created createdPost
+	if status := h.postFrom(sender, repliesPath("budget", thread.ThreadNo),
+		map[string]any{"body": "back again"}, &created); status != http.StatusCreated {
+		t.Fatalf("after the minute: status %d (%s), want 201", status, created.Error)
+	}
+}
+
 func TestHeldPostsTakeTheCooldown(t *testing.T) {
 	h := testServer(t, func(cfg *Config) { cfg.PostCooldown = time.Hour })
 	h.addBoard("hc")
@@ -297,6 +357,7 @@ func publicWalk(t *testing.T, h *harness, board string) string {
 
 type heldQueue struct {
 	Posts []HeldPost `json:"posts"`
+	Total int        `json:"total"`
 }
 
 func (h *harness) heldQueue() []HeldPost {
@@ -466,6 +527,72 @@ func TestHeldPostsAppearInNoPublicView(t *testing.T) {
 	}
 }
 
+// A held post's image is in no public view, and its file is not served to
+// the public either: its address answers 404 to anyone without the moderation
+// key, the moderator gets the file, and neither answer may be cached, because
+// the same address serves everyone once the post is approved.
+func TestHeldImagesAreServedOnlyToModerators(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("himg")
+	img := pngBytes(t, 12, 12)
+
+	var published createdPost
+	if status := h.upload(threadsPath("himg"), map[string]string{"body": "a published image"}, "a.png", img, &published); status != http.StatusCreated {
+		t.Fatalf("published thread: status %d (%s)", status, published.Error)
+	}
+	status, out := h.uploadMap(repliesPath("himg", published.ThreadNo), map[string]string{"body": "go die heldimage"}, "b.png", img)
+	requireHeld(t, status, out, "himg", published.ThreadNo)
+	held := heldNumber(t, h.heldQueue(), "heldimage")
+	if held.Attachment == nil {
+		t.Fatal("the held reply has no attachment in the queue")
+	}
+	public := fetchThread(t, h, "himg", published.ThreadNo).Posts[0].Attachment
+	if public == nil {
+		t.Fatal("the published thread has no attachment")
+	}
+
+	get := func(url string, header ...string) (int, string) {
+		t.Helper()
+		var status int
+		if len(header) == 0 {
+			status = h.mod(http.MethodGet, url, "", "", nil)
+		} else {
+			status = h.mod(http.MethodGet, url, header[0], header[1], nil)
+		}
+		return status, h.lastHeader.Get("Cache-Control")
+	}
+	// Positive control: a published post's files are served to anyone, to be
+	// kept for good.
+	for _, url := range []string{public.URL, public.ThumbURL} {
+		if status, cache := get(url); status != http.StatusOK || cache != mediaCacheControl {
+			t.Fatalf("published %s: status %d, Cache-Control %q", url, status, cache)
+		}
+	}
+	for _, url := range []string{held.Attachment.URL, held.Attachment.ThumbURL} {
+		if status, cache := get(url); status != http.StatusNotFound || cache != "no-store" {
+			t.Errorf("held %s without the key: status %d, Cache-Control %q; want 404, no-store", url, status, cache)
+		}
+		if status, cache := get(url, "X-Mod-Key", "not-the-key"); status != http.StatusNotFound || cache != "no-store" {
+			t.Errorf("held %s with a wrong key: status %d, Cache-Control %q; want 404, no-store", url, status, cache)
+		}
+		if status, cache := get(url, "X-Mod-Key", testModKey); status != http.StatusOK || cache != "no-store" {
+			t.Errorf("held %s with the key: status %d, Cache-Control %q; want 200, no-store", url, status, cache)
+		}
+		if status, cache := get(url, "Authorization", "Bearer "+testModKey); status != http.StatusOK || cache != "no-store" {
+			t.Errorf("held %s with the bearer key: status %d, Cache-Control %q; want 200, no-store", url, status, cache)
+		}
+	}
+
+	if status, out := h.approve("himg", published.ThreadNo, held.No); status != http.StatusOK {
+		t.Fatalf("approve: %d %v", status, out)
+	}
+	for _, url := range []string{held.Attachment.URL, held.Attachment.ThumbURL} {
+		if status, cache := get(url); status != http.StatusOK || cache != mediaCacheControl {
+			t.Errorf("approved %s: status %d, Cache-Control %q; want 200 for anyone", url, status, cache)
+		}
+	}
+}
+
 func TestApprovingAReplyRecountsWithoutBumping(t *testing.T) {
 	h := modServer(t)
 	h.addBoard("apr")
@@ -606,10 +733,60 @@ func TestHeldQueueListsOldestFirstWithWhatAReaderWouldSee(t *testing.T) {
 	}
 
 	// The raw shape, field by field.
-	var raw map[string][]map[string]any
+	var raw struct {
+		Posts []map[string]any `json:"posts"`
+		Total *int             `json:"total"`
+	}
 	h.mod(http.MethodGet, "/api/held", "X-Mod-Key", testModKey, &raw)
-	requireKeys(t, raw["posts"][0], "board", "thread_no", "no", "is_op", "held_reason", "created_at", "subject",
+	requireKeys(t, raw.Posts[0], "board", "thread_no", "no", "is_op", "held_reason", "created_at", "subject",
 		"name", "tripcode", "body", "badge", "attachment")
+	if raw.Total == nil || *raw.Total != len(posts) {
+		t.Errorf("total = %v, want %d", raw.Total, len(posts))
+	}
+}
+
+// A threat names a place or a time, which may be today, while every other held
+// post is harmless where it is. So threats lead the queue however many older
+// holds are waiting, and the total says how many are held beyond the page.
+func TestHeldQueuePutsThreatsFirstAndCountsEverything(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("urgent")
+	thread := h.createThread("urgent", "", "", "op")
+
+	bodies := []struct{ body, reason string }{
+		{"thinspo", holdSelfHarm},
+		{"asl? we should talk privately", holdGrooming},
+		{"pro ana tips", holdSelfHarm},
+		{"i will bring a gun to school tomorrow", holdThreat},
+		{"we should talk privately, how old are you?", holdGrooming},
+		{"i'm going to stab the principal at school", holdThreat},
+	}
+	for _, b := range bodies {
+		if status, out := h.postJSON(repliesPath("urgent", thread.ThreadNo), map[string]any{"body": b.body}); status != http.StatusAccepted {
+			t.Fatalf("%q: status %d (%v)", b.body, status, out)
+		}
+	}
+	want := []int{3, 5, 0, 1, 2, 4} // the threats in the order they came, then the rest
+	queue := h.heldQueue()
+	if len(queue) != len(want) {
+		t.Fatalf("queue has %d posts, want %d", len(queue), len(want))
+	}
+	for i, j := range want {
+		if queue[i].Body != bodies[j].body || queue[i].Reason != bodies[j].reason {
+			t.Errorf("queue[%d] = %q (%s), want %q (%s)", i, queue[i].Body, queue[i].Reason, bodies[j].body, bodies[j].reason)
+		}
+	}
+
+	// A page shorter than the queue still leads with the threats, and still
+	// counts the whole queue.
+	page, total, err := h.app.store.HeldPosts(context.Background(), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(page) != 1 || page[0].Body != bodies[3].body || total != len(bodies) {
+		t.Errorf("a page of one: %d posts, first %q, total %d; want the first threat and a total of %d",
+			len(page), page[0].Body, total, len(bodies))
+	}
 }
 
 func TestHeldQueueAndApprovalNeedTheKey(t *testing.T) {

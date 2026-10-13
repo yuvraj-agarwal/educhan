@@ -952,42 +952,71 @@ func recountThread(ctx context.Context, tx pgx.Tx, threadID int64) error {
 
 /* Held posts --------------------------------------------------------------- */
 
+// MediaHeld reports whether the file at path, as an attachment row names it
+// (original_path, or thumb_path when thumb is set), belongs to a held post. A
+// path no attachment names is not held: it is a file whose row is gone or not
+// written yet, and its name is as unguessable as any other.
+func (s *Store) MediaHeld(ctx context.Context, thumb bool, path string) (bool, error) {
+	query := `SELECT EXISTS (SELECT 1 FROM attachments a JOIN posts p ON p.id = a.post_id
+		WHERE a.original_path = $1 AND p.held_at IS NOT NULL)`
+	if thumb {
+		query = `SELECT EXISTS (SELECT 1 FROM attachments a JOIN posts p ON p.id = a.post_id
+		WHERE a.thumb_path = $1 AND p.held_at IS NOT NULL)`
+	}
+	var held bool
+	err := s.pool.QueryRow(ctx, query, path).Scan(&held)
+	return held, err
+}
+
 // heldQueueLimit bounds the moderator queue. A queue longer than this is a
-// backlog to work through oldest first, and the rest appear as it shrinks.
+// backlog to work through, and the rest appear as it shrinks; the total says
+// how far behind the moderators are.
 const heldQueueLimit = 500
 
-// HeldPosts lists held posts, oldest first, for the moderator queue.
-func (s *Store) HeldPosts(ctx context.Context) ([]HeldPost, error) {
+// HeldPosts lists at most limit held posts (limit is at least one) for the
+// moderator queue, with the number held in all. Threats come first, oldest first among them, and then
+// everything else oldest first: a threat names a place or a time, and the
+// time may be today, while every other held post is already harmless where it
+// is, kept from every reader until someone reads it. Without that order a
+// backlog of other holds would push the threat past the end of the list.
+func (s *Store) HeldPosts(ctx context.Context, limit int) (held []HeldPost, total int, err error) {
 	rows, err := s.pool.Query(ctx, `
 		SELECT b.slug, t.no, p.no, p.is_op, p.held_reason, p.created_at,
 		       CASE WHEN p.is_op THEN t.subject ELSE '' END,
-		       p.name, p.tripcode, p.body, p.badge, `+attachmentColumns+`
+		       p.name, p.tripcode, p.body, p.badge, `+attachmentColumns+`,
+		       count(*) OVER ()
 		FROM posts p
 		JOIN threads t ON t.id = p.thread_id
 		JOIN boards b ON b.id = p.board_id
 		LEFT JOIN attachments a ON a.post_id = p.id
 		WHERE p.held_at IS NOT NULL
-		ORDER BY p.held_at, p.id
-		LIMIT $1`, heldQueueLimit)
+		ORDER BY p.held_reason = 'threat' DESC, p.held_at, p.id
+		LIMIT $1`, limit)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	defer rows.Close()
 
-	held := []HeldPost{}
+	held = []HeldPost{}
 	for rows.Next() {
 		var (
 			h   HeldPost
 			att attachmentRow
 		)
-		if err := rows.Scan(append([]any{&h.Board, &h.ThreadNo, &h.No, &h.OP, &h.Reason, &h.CreatedAt,
-			&h.Subject, &h.Name, &h.Tripcode, &h.Body, &h.Badge}, att.dest()...)...); err != nil {
-			return nil, err
+		dest := append([]any{&h.Board, &h.ThreadNo, &h.No, &h.OP, &h.Reason, &h.CreatedAt,
+			&h.Subject, &h.Name, &h.Tripcode, &h.Body, &h.Badge}, att.dest()...)
+		if err := rows.Scan(append(dest, &total)...); err != nil {
+			return nil, 0, err
 		}
 		h.Attachment = att.toAttachment()
 		held = append(held, h)
 	}
-	return held, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// The count is carried on every row, so an empty page (limit is at least
+	// one) is an empty queue and its zero is right.
+	return held, total, nil
 }
 
 // ApprovePost publishes a held post. It returns errNotFound when the board has

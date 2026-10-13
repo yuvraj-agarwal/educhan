@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -203,12 +204,14 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	}
 	// The content rules, after every other check of what was sent and before
 	// flood control and the upload: a post sent back to have something taken
-	// out costs no cooldown and leaves no file behind.
-	verdict, ok := refuseContent(w, contentInput{Subject: subject, Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
+	// out costs no cooldown and leaves no file behind, only a count against
+	// the client's refusal budget.
+	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	verdict, ok := a.refuseContent(w, clientKey,
+		contentInput{Subject: subject, Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
 	if !ok {
 		return
 	}
-	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
@@ -310,11 +313,11 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
-	verdict, ok := refuseContent(w, contentInput{Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
+	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	verdict, ok := a.refuseContent(w, clientKey, contentInput{Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
 	if !ok {
 		return
 	}
-	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
@@ -352,8 +355,21 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 // support refusal is answered here with 422, and nothing about the post is
 // logged: not its text, not what matched. Otherwise it reports the verdict, whose
 // Hold is set when the post is to be stored held.
-func refuseContent(w http.ResponseWriter, in contentInput, supportSeen bool) (contentVerdict, bool) {
+//
+// Each refusal counts against the client's refusal budget, and a client that
+// has spent it is answered 429 without its post being checked, because a
+// refusal costs no cooldown and checking is the expensive part of turning a
+// post away. The budget is keyed on the address for the reason the cooldowns
+// are (postCooldowns), and counts across every board.
+func (a *App) refuseContent(w http.ResponseWriter, clientKey string, in contentInput, supportSeen bool) (contentVerdict, bool) {
+	if wait := a.refusals.peek(clientKey); wait > 0 {
+		tooManyRequests(w, "posting", wait)
+		return contentVerdict{}, false
+	}
 	verdict := checkContent(in, supportSeen)
+	if verdict.Outcome == contentBlock || verdict.Outcome == contentSupport {
+		a.refusals.record(clientKey)
+	}
 	switch verdict.Outcome {
 	case contentBlock:
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
@@ -463,13 +479,18 @@ func (a *App) allowAction(w http.ResponseWriter, action string, cooldowns []cool
 	if ok {
 		return true
 	}
+	tooManyRequests(w, action, wait)
+	return false
+}
+
+// tooManyRequests answers 429, saying how long to wait before trying again.
+func tooManyRequests(w http.ResponseWriter, action string, wait time.Duration) {
 	seconds := int(math.Ceil(wait.Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
 		"error":       action + " too quickly, wait " + strconv.Itoa(seconds) + "s",
 		"retry_after": seconds,
 	})
-	return false
 }
 
 // fail maps a store error onto an HTTP response, logging only the unexpected

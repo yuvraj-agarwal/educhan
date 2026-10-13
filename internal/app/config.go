@@ -39,6 +39,10 @@ type Config struct {
 	ThreadCooldown time.Duration
 	PostCooldown   time.Duration
 	UploadCooldown time.Duration
+	// RefusalLimit is how many posts the content rules may send back to one
+	// client in a minute before its posts are answered 429 without being
+	// checked, until the minute is up. Zero disables the check.
+	RefusalLimit int
 	// LogFormat selects the slog handler: "text" or "json".
 	LogFormat string
 	// ModKey is the shared secret moderators present to the moderation
@@ -100,6 +104,12 @@ type Config struct {
 // with a pool of its own; deploy/README.md section 3 has the budget.
 const defaultDBMaxConns = 3
 
+// defaultRefusalLimit is generous for a person, who is sent back once or twice
+// while taking a phone number out, and bounds what a script can make the
+// content rules cost: each check is milliseconds on an ordinary post, and the
+// slowest post that can be built costs a tenth of a second or more.
+const defaultRefusalLimit = 10
+
 // defaultMaxUploadBytes caps a single attachment. Imageboard posts are small;
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
@@ -150,6 +160,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.UploadCooldown, err = envDuration("EDUCHAN_UPLOAD_COOLDOWN", 15*time.Second); err != nil {
+		return Config{}, err
+	}
+	if cfg.RefusalLimit, err = envCount("EDUCHAN_REFUSAL_LIMIT", defaultRefusalLimit); err != nil {
 		return Config{}, err
 	}
 	if cfg.DBMaxConns, err = envPoolSize("EDUCHAN_DB_MAX_CONNS", defaultDBMaxConns); err != nil {
@@ -245,6 +258,22 @@ func envBytes(key string, fallback int64) (int64, error) {
 	}
 	if n <= 0 {
 		return 0, fmt.Errorf("%s: must be positive", key)
+	}
+	return n, nil
+}
+
+// envCount reads a count that may be zero, which turns its check off.
+func envCount(key string, fallback int) (int, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n < 0 {
+		return 0, fmt.Errorf("%s: must not be negative", key)
 	}
 	return n, nil
 }

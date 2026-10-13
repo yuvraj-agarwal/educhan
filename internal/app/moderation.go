@@ -24,11 +24,18 @@ func (a *App) authorizeMod(w http.ResponseWriter, r *http.Request) bool {
 		writeError(w, http.StatusForbidden, "moderation is not configured")
 		return false
 	}
-	if subtle.ConstantTimeCompare([]byte(presentedModKey(r)), []byte(a.cfg.ModKey)) != 1 {
+	if !a.isModerator(r) {
 		writeError(w, http.StatusForbidden, "invalid moderation key")
 		return false
 	}
 	return true
+}
+
+// isModerator reports whether the request carries the moderation key, and
+// answers nothing: it is for a route that serves everyone and a moderator
+// more, such as a held post's image.
+func (a *App) isModerator(r *http.Request) bool {
+	return a.cfg.ModKey != "" && subtle.ConstantTimeCompare([]byte(presentedModKey(r)), []byte(a.cfg.ModKey)) == 1
 }
 
 func presentedModKey(r *http.Request) string {
@@ -145,18 +152,19 @@ func (a *App) handleDeletePost(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleListHeld is the moderator queue: the posts the content filter kept
-// back, oldest first. Everything a reader would see is here, so that a
-// moderator can decide without opening anything else.
+// back, threats first and then oldest first, and how many are held in all.
+// Everything a reader would see is here, so that a moderator can decide
+// without opening anything else.
 func (a *App) handleListHeld(w http.ResponseWriter, r *http.Request) {
 	if !a.authorizeMod(w, r) {
 		return
 	}
-	held, err := a.store.HeldPosts(r.Context())
+	held, total, err := a.store.HeldPosts(r.Context(), heldQueueLimit)
 	if err != nil {
 		a.fail(w, r, err, "could not list held posts")
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"posts": held})
+	writeJSON(w, http.StatusOK, map[string]any{"posts": held, "total": total})
 }
 
 // handleApprovePost publishes a held post. Rejecting one is deleting it, with
