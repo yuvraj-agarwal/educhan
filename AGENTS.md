@@ -110,7 +110,8 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 ```
 
 Attachments use `multipart/form-data` on the same two endpoints; `image` is the file
-field, and everything else stays the same:
+field, and everything else stays the same. Uploads are off unless
+`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`):
 
 ```bash
 # Thread with an image, then read back the attachment metadata
@@ -159,7 +160,7 @@ configured the code is printed to the server's **stdout**, so read it from the l
 flow sets cookies, so use a jar:
 
 ```bash
-EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_VERIFY_COOLDOWN=0 make run
+EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 EDUCHAN_VERIFY_COOLDOWN=0 make run
 ```
 
 ```bash
@@ -273,7 +274,8 @@ the index, and the thread view each have their own narrow-screen layout.
   `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
-  `EDUCHAN_VERIFY_DOMAINS`. See `.env.example` and the README table.
+  `EDUCHAN_VERIFY_DOMAINS`, `EDUCHAN_UPLOADS_ENABLED`, `EDUCHAN_MAIL_DEV`,
+  `EDUCHAN_DB_MAX_CONNS`. See `.env.example` and the README table.
   `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
   when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.

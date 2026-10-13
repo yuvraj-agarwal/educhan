@@ -170,6 +170,7 @@ gcloud iam service-accounts add-iam-policy-binding "$RUN_SA" \
 ```bash
 gcloud sql instances create educhan-db \
   --database-version=POSTGRES_16 \
+  --edition=ENTERPRISE \
   --tier=db-f1-micro \
   --region="$REGION" \
   --storage-size=10GB
@@ -184,6 +185,11 @@ gcloud sql users create educhan --instance=educhan-db --password="$DB_PASSWORD"
 export CLOUDSQL_INSTANCE="$(gcloud sql instances describe educhan-db \
   --format='value(connectionName)')"
 ```
+
+`--edition=ENTERPRISE` is needed for `db-f1-micro`: for PostgreSQL 16 and later
+Cloud SQL defaults to Enterprise Plus, which has no shared-core tiers, and the
+create fails without it. Shared-core tiers carry no SLA and allow about 25
+connections; section 3 covers how the pool size and `maxScale` add up.
 
 ### 2.3 The media bucket
 
@@ -364,7 +370,9 @@ curl -s "$URL/api/boards"  # the seeded boards, so migrations ran
 open "$URL"                # the UI
 
 # Media round-trips through the bucket. Post an image, read its URL back, and
-# fetch it — then confirm the object is really in Cloud Storage.
+# fetch it — then confirm the object is really in Cloud Storage. With
+# EDUCHAN_UPLOADS_ENABLED off, as service.yaml sets it, the post answers 403
+# instead; that is the check to run until uploads are switched on.
 curl -s -X POST "$URL/api/boards/general/threads" \
   -F subject="storage check" -F body="does this survive" -F image=@photo.jpg
 curl -s "$URL/api/boards/general/catalog"     # threads[].attachment.url
@@ -379,6 +387,35 @@ than serving a site whose images all 404.
 Migrations are applied at startup inside a Postgres advisory lock, so rolling out
 a revision while the old one still serves traffic is safe: whichever container
 gets there first applies them and the rest wait.
+
+### 2.8 Keep client addresses out of Cloud Logging
+
+The application never logs a client address, but Cloud Run writes its own
+request log (`run.googleapis.com/requests`) for every request, and each entry
+carries `httpRequest.remoteIp` and the user agent. A load balancer, once there
+is one, writes another (`resource.type="http_load_balancer"`). Both land in the
+`_Default` bucket and are kept for 30 days, which is a log of who posted when.
+Exclude both from the `_Default` sink before the service takes public traffic.
+In Cloud Shell:
+
+```bash
+gcloud logging sinks update _Default \
+  --add-exclusion='name=no-request-logs,description=Request logs carry client IPs,filter=LOG_ID("run.googleapis.com/requests") OR resource.type="http_load_balancer"'
+```
+
+Check it took: the first command lists the exclusion, and the second, run after
+a few requests to the service, prints nothing.
+
+```bash
+gcloud logging sinks describe _Default --format='yaml(exclusions)'
+gcloud logging read 'LOG_ID("run.googleapis.com/requests")' --freshness=10m --limit=1
+```
+
+An exclusion stops entries from being stored; it does not delete the ones
+already kept, which expire on the bucket's 30-day retention. The `_Required`
+sink only carries audit logs, so it holds no request entries. Application logs
+(stdout and stderr) are unaffected and still reach Cloud Logging, which is why
+the app keeps addresses out of them itself.
 
 ---
 
@@ -412,10 +449,21 @@ cloud-sql-proxy "$CLOUDSQL_INSTANCE" --port 5432 &
 export DATABASE_URL='postgres://educhan:PASSWORD@localhost:5432/educhan?sslmode=disable'
 ```
 
-Each container keeps its own `pgxpool`, sized to at least four connections. Total
-usage is that pool times the number of running instances, so keep `maxScale`
-within what the instance tier allows, or bound it explicitly with
-`&pool_max_conns=4` in the connection string.
+Each container keeps its own `pgxpool`, capped by `EDUCHAN_DB_MAX_CONNS` (default
+`3`; it overrides any `pool_max_conns` in the connection string). Total usage is
+that cap times the number of running instances, and it has to fit what the tier
+allows. The budget for `db-f1-micro`, which allows 25 connections with a few
+reserved for Cloud SQL's own superuser:
+
+| Use | Connections |
+| --- | --- |
+| Service: `maxScale` 4 × `EDUCHAN_DB_MAX_CONNS` 3 | 12 |
+| A rollout's new revision starting while the old one drains | up to 12 more briefly, usually far fewer |
+| One-off Cloud Run Jobs (admin bootstrap, a sweeper), at the same cap | 3 |
+| You in Cloud SQL Studio or `psql` | 1–2 |
+
+Raising either `maxScale` or the pool size means doing this sum again, or
+moving to a dedicated-core tier, which allows far more connections.
 
 ---
 
@@ -440,6 +488,9 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
 | `EDUCHAN_THREAD_COOLDOWN` / `_POST_` / `_UPLOAD_` | `30` / `5` / `15` | same | Seconds; `0` disables one |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` | `8388608` | Cloud Run's own request limit is 32 MiB |
+| `EDUCHAN_DB_MAX_CONNS` | `3` (default) | `3` | Connection pool cap per instance; times `maxScale` it must fit the Cloud SQL tier (section 3) |
+| `EDUCHAN_UPLOADS_ENABLED` | `1` when testing images | **`false`** | Off refuses image posts with `403`. Keep it off until images are stripped of metadata and scanned |
+| `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
 value higher than the real chain lets a client pick its own rate-limit bucket and
@@ -481,6 +532,8 @@ is per instance too.
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay
 that way here until `internal/mailer` grows an SMTP or Google Workspace `Sender`.
+Setting it anyway makes the server refuse to start unless `EDUCHAN_MAIL_DEV=1`
+is also set, which it must not be here.
 The development sender prints the code *and the address it was sent to* to
 stdout, and on Cloud Run stdout is Cloud Logging — which would write into a log
 sink exactly the thing the feature promises never to store. Enabling it is one

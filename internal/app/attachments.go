@@ -106,6 +106,14 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 	}
 	defer file.Close()
 
+	// Checked before the bytes are read, and only for a part that has some:
+	// an untouched file input still sends an empty one, and that post carries
+	// no image.
+	if !a.cfg.UploadsEnabled && header.Size > 0 {
+		writeError(w, http.StatusForbidden, "image uploads are switched off on this server")
+		return nil, false
+	}
+
 	data, err := io.ReadAll(io.LimitReader(file, a.cfg.MaxUploadBytes+1))
 	if err != nil {
 		if tooLarge(err) {

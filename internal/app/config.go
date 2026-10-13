@@ -18,6 +18,10 @@ type Config struct {
 	Addr string
 	// DatabaseURL is a libpq-style PostgreSQL connection string.
 	DatabaseURL string
+	// DBMaxConns caps this process's connection pool. Every instance holds its
+	// own pool, so instances times this is what the database has to allow.
+	// Zero leaves the pool at pgx's default or a pool_max_conns in DatabaseURL.
+	DBMaxConns int32
 	// PosterIDSalt keys the per-thread poster IDs and secure tripcodes. It must
 	// stay secret and stable: rotating it changes every future ID.
 	PosterIDSalt string
@@ -54,6 +58,10 @@ type Config struct {
 	GCSPrefix string
 	// MaxUploadBytes is the largest attachment accepted with a post.
 	MaxUploadBytes int64
+	// UploadsEnabled accepts image attachments. It is off unless set: images
+	// are stored and served exactly as uploaded, with no metadata stripping
+	// and no content scanning yet, so a deployment opts in knowingly.
+	UploadsEnabled bool
 	// VerifySecret keys institutional verification: the HMAC that stands in for
 	// an address, the hash of a pending code, and the signature on an issued
 	// credential. An empty secret switches the feature off, because there is
@@ -70,11 +78,21 @@ type Config struct {
 	VerifyCooldown time.Duration
 	// VerifyDomainsFile is an allowlist file replacing the embedded default.
 	VerifyDomainsFile string
-	// Sender delivers verification codes. Nil selects the development sender,
-	// which prints them to stdout; it is a field rather than an environment
-	// setting because choosing a provider means linking one in.
+	// Sender delivers verification codes. It is a field rather than an
+	// environment setting because choosing a provider means linking one in.
+	// Nil selects the development sender, which prints each code and its
+	// address to stdout, and New refuses that while verification is on unless
+	// MailDev says it was meant.
 	Sender mailer.Sender
+	// MailDev allows the development sender while verification is on. It is
+	// for local work only: in production stdout is the log.
+	MailDev bool
 }
+
+// defaultDBMaxConns keeps one instance's pool small. The smallest Cloud SQL
+// tier allows about 25 connections, and Cloud Run runs several instances, each
+// with a pool of its own; deploy/README.md section 3 has the budget.
+const defaultDBMaxConns = 3
 
 // defaultMaxUploadBytes caps a single attachment. Imageboard posts are small;
 // 8 MiB comfortably covers a phone photo without inviting abuse.
@@ -128,7 +146,16 @@ func ConfigFromEnv() (Config, error) {
 	if cfg.UploadCooldown, err = envDuration("EDUCHAN_UPLOAD_COOLDOWN", 15*time.Second); err != nil {
 		return Config{}, err
 	}
+	if cfg.DBMaxConns, err = envPoolSize("EDUCHAN_DB_MAX_CONNS", defaultDBMaxConns); err != nil {
+		return Config{}, err
+	}
 	if cfg.MaxUploadBytes, err = envBytes("EDUCHAN_MAX_UPLOAD_BYTES", defaultMaxUploadBytes); err != nil {
+		return Config{}, err
+	}
+	if cfg.UploadsEnabled, err = envBool("EDUCHAN_UPLOADS_ENABLED"); err != nil {
+		return Config{}, err
+	}
+	if cfg.MailDev, err = envBool("EDUCHAN_MAIL_DEV"); err != nil {
 		return Config{}, err
 	}
 	if cfg.VerifyCodeTTL, err = envDuration("EDUCHAN_VERIFY_CODE_TTL", defaultVerifyCodeTTL); err != nil {
@@ -214,6 +241,36 @@ func envBytes(key string, fallback int64) (int64, error) {
 		return 0, fmt.Errorf("%s: must be positive", key)
 	}
 	return n, nil
+}
+
+// envPoolSize reads a connection count, which must be at least one.
+func envPoolSize(key string, fallback int32) (int32, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback, nil
+	}
+	n, err := strconv.ParseInt(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("%s: %w", key, err)
+	}
+	if n < 1 {
+		return 0, fmt.Errorf("%s: must be at least 1", key)
+	}
+	return int32(n), nil
+}
+
+// envBool reads an on/off setting that is off unless set. Anything that is not
+// recognisably a boolean is an error rather than "off", so a typo in a switch
+// is heard about at startup.
+func envBool(key string) (bool, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	switch strings.ToLower(raw) {
+	case "", "0", "false", "no", "off":
+		return false, nil
+	case "1", "true", "yes", "on":
+		return true, nil
+	}
+	return false, fmt.Errorf("%s: want a boolean, got %q", key, raw)
 }
 
 // envProxyHops reads the trusted proxy depth. It accepts a hop count, and the

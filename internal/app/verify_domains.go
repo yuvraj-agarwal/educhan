@@ -53,6 +53,10 @@ type domainAllowlist struct {
 	// suffixes are academic namespaces such as "ac.in". An address under one is
 	// accepted and badged with its own domain.
 	suffixes map[string]bool
+	// denied are domains refused outright, with every subdomain, whatever else
+	// matches: school namespaces that sit inside an academic suffix, such as
+	// "nsw.edu.au" inside "edu.au".
+	denied map[string]bool
 }
 
 // loadDomainAllowlist reads the allowlist. An empty path takes the embedded
@@ -77,6 +81,7 @@ func parseDomainAllowlist(source string) (*domainAllowlist, error) {
 	list := &domainAllowlist{
 		institutions: map[string]string{},
 		suffixes:     map[string]bool{},
+		denied:       map[string]bool{},
 	}
 
 	for n, line := range strings.Split(source, "\n") {
@@ -84,6 +89,15 @@ func parseDomainAllowlist(source string) (*domainAllowlist, error) {
 			line = line[:comment]
 		}
 		if strings.TrimSpace(line) == "" {
+			continue
+		}
+
+		if denied, isDeny := strings.CutPrefix(strings.TrimSpace(line), "!"); isDeny {
+			domain := strings.ToLower(strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(denied), ".")))
+			if !domainPattern.MatchString(domain) {
+				return nil, fmt.Errorf("line %d: %q is not a domain to deny", n+1, domain)
+			}
+			list.denied[domain] = true
 			continue
 		}
 
@@ -124,6 +138,13 @@ func (l *domainAllowlist) lookup(domain string) (string, bool) {
 	// get a pass of their own rather than being interleaved. Within a pass the
 	// longest match wins, which is what makes a subdomain follow its parent.
 	parts := strings.Split(domain, ".")
+	// A denial beats everything, so it is checked across the whole domain
+	// before anything is allowed.
+	for i := range parts {
+		if l.denied[strings.Join(parts[i:], ".")] {
+			return "", false
+		}
+	}
 	for i := range parts {
 		if label, ok := l.institutions[strings.Join(parts[i:], ".")]; ok {
 			return label, true

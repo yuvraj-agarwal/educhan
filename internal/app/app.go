@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -35,7 +36,17 @@ type App struct {
 // New connects to Postgres, verifies connectivity, applies pending migrations,
 // and prepares the media store.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
-	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
+	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
+	if err != nil {
+		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
+	}
+	if cfg.DBMaxConns > 0 {
+		poolCfg.MaxConns = cfg.DBMaxConns
+	}
+	pool, err := pgxpool.NewWithConfig(ctx, poolCfg)
 	if err != nil {
 		return nil, fmt.Errorf("connect postgres: %w", err)
 	}
@@ -75,7 +86,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	case cfg.VerifySecret == "":
 		log.Warn("EDUCHAN_VERIFY_SECRET is unset; institutional verification is disabled")
 	case cfg.Sender == nil:
-		log.Warn("no mail sender is configured; verification codes are printed to stdout with their address")
+		log.Warn("EDUCHAN_MAIL_DEV is set; verification codes are printed to stdout with their address")
 	}
 	return &App{
 		cfg:           cfg,
@@ -90,6 +101,19 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
 	}, nil
+}
+
+// checkMailer refuses to start verification with nowhere safe to send codes.
+// The development sender prints every address and code to stdout, which on
+// Cloud Run is the log, so falling back to it silently would turn a missing
+// mail provider into a log of who verified where. It takes EDUCHAN_MAIL_DEV to
+// say that is what was meant.
+func checkMailer(cfg Config) error {
+	if cfg.VerifySecret != "" && cfg.Sender == nil && !cfg.MailDev {
+		return errors.New("EDUCHAN_VERIFY_SECRET is set but no mail sender is configured; " +
+			"set EDUCHAN_MAIL_DEV=1 to print codes to stdout for local development")
+	}
+	return nil
 }
 
 // newMediaStore builds the blob store the configured backend calls for. It is
@@ -176,7 +200,7 @@ func (a *App) Routes() http.Handler {
 
 	return chain(mux,
 		recoverPanics(a.log),
-		requestLogger(a.log, a.cfg.TrustedProxyHops),
+		requestLogger(a.log),
 		securityHeaders,
 	)
 }

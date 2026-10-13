@@ -43,6 +43,13 @@ func (h *harness) exec(query string, args ...any) {
 // reachable.
 func testServer(t *testing.T, tune func(*Config)) *harness {
 	t.Helper()
+	return testServerLogging(t, tune, io.Discard)
+}
+
+// testServerLogging is testServer with the application's log written to logs
+// as JSON, for tests that assert on what the server logs.
+func testServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *harness {
+	t.Helper()
 
 	baseURL := firstEnv("TEST_DATABASE_URL", "DATABASE_URL")
 	if baseURL == "" {
@@ -83,12 +90,13 @@ func testServer(t *testing.T, tune func(*Config)) *harness {
 		LogFormat:      "text",
 		UploadDir:      t.TempDir(),
 		MaxUploadBytes: defaultMaxUploadBytes,
+		UploadsEnabled: true,
 	}
 	if tune != nil {
 		tune(&cfg)
 	}
 
-	app, err := New(ctx, cfg, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	app, err := New(ctx, cfg, slog.New(slog.NewJSONHandler(logs, nil)))
 	if err != nil {
 		t.Fatalf("start app: %v", err)
 	}
@@ -772,4 +780,13 @@ func fetchIndex(t *testing.T, c *harness, board string, page int) BoardIndex {
 	var index BoardIndex
 	c.get(fmt.Sprintf("/api/boards/%s/threads?page=%d", board, page), &index)
 	return index
+}
+
+// TestPoolSizeIsCapped: the configured cap is what the pool actually uses,
+// since instances times this is the database's connection budget.
+func TestPoolSizeIsCapped(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.DBMaxConns = 2 })
+	if got := h.app.pool.Config().MaxConns; got != 2 {
+		t.Errorf("pool MaxConns = %d, want 2", got)
+	}
 }

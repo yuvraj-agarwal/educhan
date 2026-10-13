@@ -19,6 +19,9 @@ spec:
         run.googleapis.com/cloudsql-instances: ${CLOUDSQL_INSTANCE}
         # An imageboard is bursty and the container is cheap to start; cap the
         # fan-out so Cloud SQL is not overwhelmed by connection pools.
+        # maxScale × EDUCHAN_DB_MAX_CONNS (4 × 3 = 12) has to fit the tier's
+        # connection limit (25 on db-f1-micro) with room for a rollout and
+        # jobs; deploy/README.md section 3 has the budget.
         autoscaling.knative.dev/minScale: "0"
         autoscaling.knative.dev/maxScale: "4"
         run.googleapis.com/startup-cpu-boost: "true"
@@ -96,6 +99,14 @@ spec:
               value: "15"
             - name: EDUCHAN_MAX_UPLOAD_BYTES
               value: "8388608"
+            # Image posts are refused until originals are stripped of metadata
+            # and scanned before storage. Off is the default; it is spelled out
+            # so turning it on is a visible change.
+            - name: EDUCHAN_UPLOADS_ENABLED
+              value: "false"
+            # Per-instance pool cap; see the maxScale note above.
+            - name: EDUCHAN_DB_MAX_CONNS
+              value: "3"
           startupProbe:
             httpGet:
               path: /healthz
