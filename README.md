@@ -986,7 +986,10 @@ It logs one line of counts (threads, posts, attachments, and files removed,
 failed, and missing) and nothing about which boards or threads went, and exits
 non-zero if the database fails or any file could not be removed or was missing;
 the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below).
+run on a database a newer release has migrated (see below). It needs none of
+the web server's secrets — the poster-ID salt, the moderation key, the
+verification secret — and, run without them, it does not warn about them:
+those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers

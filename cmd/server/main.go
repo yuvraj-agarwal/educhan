@@ -11,6 +11,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -27,13 +28,15 @@ const (
 )
 
 func main() {
-	if err := run(os.Args[1:]); err != nil {
+	if err := run(os.Args[1:], os.Stderr); err != nil {
 		slog.Error("fatal", "error", err)
 		os.Exit(1)
 	}
 }
 
-func run(args []string) error {
+// run is the whole process: it reads the flags and the environment, logs to
+// logs, and either sweeps once or serves until a signal.
+func run(args []string, logs io.Writer) error {
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
 	sweep := flags.Bool("sweep", false,
 		"delete archived threads past their board's archive_days, with their media, then exit")
@@ -53,7 +56,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	log := newLogger(cfg.LogFormat)
+	log := newLogger(cfg.LogFormat, logs)
 	slog.SetDefault(log)
 
 	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
@@ -84,6 +87,8 @@ func runSweep(application *app.App) error {
 }
 
 func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
+	// Only a server has a use for these; the sweeper runs without them.
+	application.WarnServingSettings()
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),
@@ -116,10 +121,10 @@ func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	return srv.Shutdown(shutdownCtx)
 }
 
-func newLogger(format string) *slog.Logger {
+func newLogger(format string, w io.Writer) *slog.Logger {
 	opts := &slog.HandlerOptions{Level: slog.LevelInfo}
 	if format == "json" {
-		return slog.New(slog.NewJSONHandler(os.Stderr, opts))
+		return slog.New(slog.NewJSONHandler(w, opts))
 	}
-	return slog.New(slog.NewTextHandler(os.Stderr, opts))
+	return slog.New(slog.NewTextHandler(w, opts))
 }

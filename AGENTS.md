@@ -595,9 +595,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   failures included, and the error it returns has the key taken out
   (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
   failure, a file it could not remove or did not find, or a database a newer release
-  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). **Legal holds (build plan
-  2.10) are not built**; when they are, `SweepArchived` must skip held threads, and its
-  comment says so.
+  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
+  like the server, and runs without the salt, the moderation key and the verification
+  secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
