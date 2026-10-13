@@ -282,24 +282,65 @@ var markupTags = func() []string {
 }()
 
 // settledStart shortens the start of a longer body to the part whose tags pair
-// the same way whatever followed it. That part ends before the first opening
-// tag that pairs with nothing in it, because what followed could hold its
-// close, and before a tag cut in half. Shortening can unpair an earlier tag —
-// a spoiler whose close sat after an unclosed [code], which the rest of the
-// body may well have closed — so it repeats until nothing changes.
+// the same way whatever followed it. That part ends before a tag cut in half,
+// and before the first opening tag that pairs with nothing in it, because what
+// followed could hold its close.
 func settledStart(s string) string {
+	settled, _ := settle(s)
+	return settled
+}
+
+// settle is settledStart, also reporting how many cuts it took to settle, so
+// a test can hold the work to a few passes however the start is written.
+//
+// Only the very end of s can hold a tag cut in half: anywhere else, the text
+// after a "[" in s is the text that followed it in the body. So that is
+// trimmed once, up front. Checking it on every pass would cut a run of "["
+// one character at a time — each new last "[" looks like the start of a tag
+// — and rescan the whole start for each, which made a post of nothing but
+// "[" cost milliseconds in every archive listing it appeared in.
+//
+// Shortening for a tag that pairs with nothing can unpair an earlier one — a
+// spoiler whose close sat after an unclosed [code], which the rest of the body
+// may well have closed — so that part repeats until nothing changes. Each cut
+// is at the leftmost unpaired tag, and the only block a cut there can unpair
+// is the one spoiler around it, so it settles within a few passes.
+func settle(s string) (string, int) {
+	cuts := 0
+	if at := cutTagAtEnd(s); at >= 0 {
+		s = s[:at]
+		cuts++
+	}
 	for {
-		at := firstUnsettledTag(s)
+		at := firstUnpairedTag(s)
 		if at < 0 {
-			return s
+			return s, cuts
 		}
 		s = s[:at]
+		cuts++
 	}
 }
 
-// firstUnsettledTag returns where settledStart has to cut s, or -1 when every
-// tag in s pairs as it would in any longer body.
-func firstUnsettledTag(s string) int {
+// cutTagAtEnd returns where a tag cut in half starts at the end of s, or -1.
+// Tags hold a "[" only at their start, so a cut one begins at the last "[".
+func cutTagAtEnd(s string) int {
+	i := strings.LastIndexByte(s, '[')
+	if i < 0 {
+		return -1
+	}
+	rest := s[i:]
+	for _, tag := range markupTags {
+		if len(rest) < len(tag) && strings.HasPrefix(tag, rest) {
+			return i
+		}
+	}
+	return -1
+}
+
+// firstUnpairedTag returns where settledStart has to cut s for an opening tag
+// that pairs with nothing in s, or -1 when every tag in s pairs as it would in
+// any longer body.
+func firstUnpairedTag(s string) int {
 	blocks := markupBlocks(s)
 	inside := func(i int, spoiler bool) bool {
 		for _, blk := range blocks {
@@ -334,11 +375,6 @@ func firstUnsettledTag(s string) int {
 		default:
 			for _, t := range opaqueTags {
 				if strings.HasPrefix(rest, t.open) && !opens(i) {
-					return i
-				}
-			}
-			for _, tag := range markupTags {
-				if len(rest) < len(tag) && strings.HasPrefix(tag, rest) {
 					return i
 				}
 			}

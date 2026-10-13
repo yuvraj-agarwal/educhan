@@ -508,9 +508,13 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			archived   bool
 			replyCount int
 		)
-		// Lock the thread row so concurrent replies serialise on the counters,
-		// and so the thread cannot be archived between this check and the
-		// insert.
+		// Replies to one board already wait for each other on the board row
+		// nextPostNo took, and so do the new threads that archive this one;
+		// that is what keeps two replies from both taking the last image slot.
+		// Locking the thread row as well keeps out what does not go through
+		// the board row — a moderator locking, archiving-by-sweep or deleting
+		// the thread, or a deletion recounting its counters — between these
+		// checks and the insert.
 		err = tx.QueryRow(ctx, `
 			SELECT t.id, t.locked, t.archived_at IS NOT NULL, t.reply_count
 			FROM threads t
@@ -626,11 +630,22 @@ func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
 	}
 	// Only quotes that resolve to an existing post on the same board are
 	// recorded; dangling references stay as plain text.
+	//
+	// FOR KEY SHARE is what keeps a quote of a post that is being deleted —
+	// by the sweeper, or a moderator — from failing the reply. Without it the
+	// SELECT still sees a target whose deletion has not committed, and the
+	// foreign-key check then waits on that row and fails once the delete
+	// commits. With it, the wait happens here, and a target that turns out to
+	// be gone is skipped like any other dangling reference. Taking the locks
+	// in id order keeps two replies, or a reply and a sweep batch, from
+	// deadlocking over several targets.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO post_quotes (from_post_id, to_post_id)
 		SELECT $1, target.id
 		FROM posts target
 		WHERE target.board_id = $2 AND target.no = ANY($3)
+		ORDER BY target.id
+		FOR KEY SHARE
 		ON CONFLICT DO NOTHING`, p.ID, in.BoardID, quoted); err != nil {
 		return Post{}, fmt.Errorf("record quotes: %w", err)
 	}
@@ -683,17 +698,21 @@ const (
 	flagLocked threadFlag = "locked"
 )
 
-// SetThreadFlag pins or locks a thread. It returns errNotFound when the board
-// has no thread with that number.
+// SetThreadFlag pins or locks a live thread. It returns errNotFound when the
+// board has no thread with that number, and errThreadArchived when the thread
+// is in the archive: nothing brings a thread back from there, so a sticky
+// would not keep it on the board or out of the sweep, and a lock would change
+// nothing a reply could notice. Refusing says so, where a quiet success would
+// let a moderator believe an archived thread had been saved.
 func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag threadFlag, value bool) error {
 	// The column is chosen from literal SQL rather than interpolated, so the
 	// flag name never reaches the database as data.
 	var query string
 	switch flag {
 	case flagSticky:
-		query = `UPDATE threads SET sticky = $3 WHERE board_id = $1 AND no = $2`
+		query = `UPDATE threads SET sticky = $3 WHERE board_id = $1 AND no = $2 AND archived_at IS NULL`
 	case flagLocked:
-		query = `UPDATE threads SET locked = $3 WHERE board_id = $1 AND no = $2`
+		query = `UPDATE threads SET locked = $3 WHERE board_id = $1 AND no = $2 AND archived_at IS NULL`
 	default:
 		return fmt.Errorf("unknown thread flag %q", flag)
 	}
@@ -702,10 +721,24 @@ func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag t
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return errNotFound
+	if tag.RowsAffected() > 0 {
+		return nil
 	}
-	return nil
+	var archived bool
+	err = s.pool.QueryRow(ctx,
+		`SELECT archived_at IS NOT NULL FROM threads WHERE board_id = $1 AND no = $2`,
+		board.ID, no).Scan(&archived)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return errNotFound
+	case err != nil:
+		return err
+	case archived:
+		return errThreadArchived
+	}
+	// A live thread here would have matched the update, and nothing takes a
+	// thread back out of the archive, so this is not reached in practice.
+	return errNotFound
 }
 
 // DeletedThread reports what a thread deletion removed. Images are returned so
@@ -825,18 +858,21 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 
 /* Archive sweep ------------------------------------------------------------ */
 
-// SweptThreads reports what one sweep batch deleted. Images are returned so
-// the caller can drop the blobs once the transaction has committed.
+// SweptThreads reports what one sweep batch deleted. The batch's files are not
+// in it: their keys went into media_deletions with the rows, for the caller to
+// remove through NextMediaDeletion once the transaction has committed.
 type SweptThreads struct {
-	Threads int
-	Posts   int
-	Images  []media.StoredImage
+	Threads     int
+	Posts       int
+	Attachments int
 }
 
 // SweepArchived deletes up to limit archived threads whose board's
 // archive_days had run out by asOf, oldest first, along with their posts and
 // attachments. Rows go through ON DELETE CASCADE, exactly as a moderator's
-// deletion does; the blobs are the caller's to remove after the commit.
+// deletion does, and in the same transaction the storage keys of their files
+// are queued in media_deletions: whatever happens to the sweep after the
+// commit, nothing loses track of a file it was meant to remove.
 //
 // asOf is fixed by the caller for a whole sweep, so threads archived while it
 // runs wait for the next one and a sweep always finishes. SKIP LOCKED leaves a
@@ -868,12 +904,23 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 			return nil
 		}
 
-		swept.Images, err = attachedImages(ctx, tx,
+		images, err := attachedImages(ctx, tx,
 			`SELECT a.original_path, a.thumb_path
 			 FROM attachments a JOIN posts p ON p.id = a.post_id
 			 WHERE p.thread_id = ANY($1)`, ids)
 		if err != nil {
 			return err
+		}
+		swept.Attachments = len(images)
+		keys := make([]string, 0, 2*len(images))
+		for _, img := range images {
+			keys = append(keys, media.OriginalKey(img.Path), media.ThumbKey(img.ThumbPath))
+		}
+		if len(keys) > 0 {
+			if _, err := tx.Exec(ctx,
+				`INSERT INTO media_deletions (key) SELECT unnest($1::text[])`, keys); err != nil {
+				return fmt.Errorf("queue media deletions: %w", err)
+			}
 		}
 		if err := tx.QueryRow(ctx,
 			`SELECT count(*) FROM posts WHERE thread_id = ANY($1)`, ids).Scan(&swept.Posts); err != nil {
@@ -890,6 +937,42 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 		return SweptThreads{}, err
 	}
 	return swept, nil
+}
+
+// NextMediaDeletion takes the first key queued in media_deletions after
+// afterID that no other sweep is working on, hands it to remove, and forgets
+// it when remove reports the file gone. It returns the key's id, so the caller
+// can carry on past a key it could not remove, and found false once nothing is
+// left after afterID.
+//
+// One key per transaction keeps the gap between a file going and its key
+// going as short as it can be: a sweep killed in between leaves a key whose
+// file is already gone, which the next sweep reports as missing.
+func (s *Store) NextMediaDeletion(ctx context.Context, afterID int64, remove func(key string) bool) (id int64, found bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		var key string
+		err := tx.QueryRow(ctx, `
+			SELECT id, key FROM media_deletions
+			WHERE id > $1
+			ORDER BY id
+			LIMIT 1
+			FOR UPDATE SKIP LOCKED`, afterID).Scan(&id, &key)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("next media deletion: %w", err)
+		}
+		found = true
+		if !remove(key) {
+			return nil
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM media_deletions WHERE id = $1`, id); err != nil {
+			return fmt.Errorf("forget media deletion: %w", err)
+		}
+		return nil
+	})
+	return id, found, err
 }
 
 /* Verification ------------------------------------------------------------- */

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
@@ -8,7 +10,9 @@ import (
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -26,43 +30,46 @@ var (
 )
 
 // vendorDir holds third-party builds, served exactly as they were published.
-const vendorDir = "vendor/"
+// It is web/lib/ rather than web/vendor/ because a Go module zip leaves out
+// every directory named vendor, so `go install` from the module proxy would
+// build a binary without the libraries.
+const vendorDir = "lib/"
 
-// vendoredWebAssets is every file under web/vendor/, with its SHA-256. The
+// vendoredWebAssets is every file under web/lib/, with its SHA-256. The
 // inline-markup scan is a heuristic for markup this project writes, and a
 // minified library — whose grammars and templates are full of strings like
 // "<style" and "<script" — is not that, so vendored files are vetted here
-// instead: a file reaches vendor/ only by being listed, and a listed file cannot
+// instead: a file reaches lib/ only by being listed, and a listed file cannot
 // change without its hash changing here too. Updating a library means reading
 // the new build, then updating its README.md and its lines below.
 var vendoredWebAssets = map[string]string{
-	"vendor/highlightjs/LICENSE":                         "6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490",
-	"vendor/highlightjs/README.md":                       "7092a29eb5f1990525239889a7b4e152d71679dcff114f28f6d0c505b9a3f9bf",
-	"vendor/highlightjs/highlight.min.js":                "8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53",
-	"vendor/katex/LICENSE":                               "766ccc1f306c885aa45542a9846bbd0a505b27a0374f146778171c2254ce18e3",
-	"vendor/katex/README.md":                             "55d0e20b916ad68f30b754c78d5cd1dfe0fed00dc4ec9418f04d7eee7dd8e1af",
-	"vendor/katex/fonts/KaTeX_AMS-Regular.woff2":         "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308",
-	"vendor/katex/fonts/KaTeX_Caligraphic-Bold.woff2":    "de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c",
-	"vendor/katex/fonts/KaTeX_Caligraphic-Regular.woff2": "5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b",
-	"vendor/katex/fonts/KaTeX_Fraktur-Bold.woff2":        "74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f",
-	"vendor/katex/fonts/KaTeX_Fraktur-Regular.woff2":     "51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc",
-	"vendor/katex/fonts/KaTeX_Main-Bold.woff2":           "0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021",
-	"vendor/katex/fonts/KaTeX_Main-BoldItalic.woff2":     "99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b",
-	"vendor/katex/fonts/KaTeX_Main-Italic.woff2":         "97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267",
-	"vendor/katex/fonts/KaTeX_Main-Regular.woff2":        "c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866",
-	"vendor/katex/fonts/KaTeX_Math-BoldItalic.woff2":     "dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1",
-	"vendor/katex/fonts/KaTeX_Math-Italic.woff2":         "7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264",
-	"vendor/katex/fonts/KaTeX_SansSerif-Bold.woff2":      "e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62",
-	"vendor/katex/fonts/KaTeX_SansSerif-Italic.woff2":    "00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a",
-	"vendor/katex/fonts/KaTeX_SansSerif-Regular.woff2":   "68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342",
-	"vendor/katex/fonts/KaTeX_Script-Regular.woff2":      "036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b",
-	"vendor/katex/fonts/KaTeX_Size1-Regular.woff2":       "6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe",
-	"vendor/katex/fonts/KaTeX_Size2-Regular.woff2":       "d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd",
-	"vendor/katex/fonts/KaTeX_Size3-Regular.woff2":       "73d591271b1604960cb10bb90fee021670af7297017e0e98480b332d11f51995",
-	"vendor/katex/fonts/KaTeX_Size4-Regular.woff2":       "a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0",
-	"vendor/katex/fonts/KaTeX_Typewriter-Regular.woff2":  "71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b",
-	"vendor/katex/katex.min.css":                         "551905675edbd85e78862903bc58724476d63478e0c129b527d8844ebad1c6dd",
-	"vendor/katex/katex.min.js":                          "155f6c2d673c5912e3b48f45d8830eaad18ae1953915939ceb648ea8b9c3e7e2",
+	"lib/highlightjs/LICENSE":                         "6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490",
+	"lib/highlightjs/README.md":                       "0dbbeb0b8768389763c8aafd06edcf9ae2ee7a972b333258aa0053e4c3a5b2b6",
+	"lib/highlightjs/highlight.min.js":                "8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53",
+	"lib/katex/LICENSE":                               "766ccc1f306c885aa45542a9846bbd0a505b27a0374f146778171c2254ce18e3",
+	"lib/katex/README.md":                             "2c89a985fd04b6f23c104a1a60bd791b9dc7dbbfa6ffcb28641d10f8b47260e1",
+	"lib/katex/fonts/KaTeX_AMS-Regular.woff2":         "0cdd387c9590a1a9f9794560022dbb59654a7d86f187aa0c81495ad42d3a7308",
+	"lib/katex/fonts/KaTeX_Caligraphic-Bold.woff2":    "de7701e42cf1f4cf0b766c03fb27977207eee2f4fd5d76fa82188406da43ea4c",
+	"lib/katex/fonts/KaTeX_Caligraphic-Regular.woff2": "5d53e70ad607c2352162dec9e0923fb54ecdafaccbf604cd8dcf7d00facb989b",
+	"lib/katex/fonts/KaTeX_Fraktur-Bold.woff2":        "74444efd593c005e3f4573b44524704c0af0a937fe911cca9e94068d0d140d3f",
+	"lib/katex/fonts/KaTeX_Fraktur-Regular.woff2":     "51814d270d06ff0255dba0799994fa4d8c84d11f09951d47595f4abb1f3602dc",
+	"lib/katex/fonts/KaTeX_Main-Bold.woff2":           "0f60d1b897938ec918c8ce073092411baf9438f6739465693ff18b0f9d20b021",
+	"lib/katex/fonts/KaTeX_Main-BoldItalic.woff2":     "99cd42a3c072d918f2f44984a807cf7aa16e13545fd0875fc07c6c65f99e715b",
+	"lib/katex/fonts/KaTeX_Main-Italic.woff2":         "97479ca6cce906abc961ecac96faa5f9ca2e61b8e7670d475826bcdee9a7c267",
+	"lib/katex/fonts/KaTeX_Main-Regular.woff2":        "c2342cd8b869e01752a9321dc17213fc40d4d04c79688c1d43f2cf316abd7866",
+	"lib/katex/fonts/KaTeX_Math-BoldItalic.woff2":     "dc47344dbb6cb5b655c8460d561f4df5f501b90c804ad3c6cec65fe322351ab1",
+	"lib/katex/fonts/KaTeX_Math-Italic.woff2":         "7af58c5ec8f132a2ddde9027c6d7814decce4d3b822a11192a42a20e2e973264",
+	"lib/katex/fonts/KaTeX_SansSerif-Bold.woff2":      "e99ae51144bf1232efcc1bfe5add36262c6866b0faab24fa75740e1b98577a62",
+	"lib/katex/fonts/KaTeX_SansSerif-Italic.woff2":    "00b26ac825e2095056396e0553b8ac26d3f8ad158c3826e28b4c45b385c4714a",
+	"lib/katex/fonts/KaTeX_SansSerif-Regular.woff2":   "68e8c73ef42afd3ccec58bf0fba302cce448938e7fc020a5e31f8a952eee1342",
+	"lib/katex/fonts/KaTeX_Script-Regular.woff2":      "036d4e95149b69ff9bcc0cd55771efeb25ffa3947293e69acd78d5ac328c684b",
+	"lib/katex/fonts/KaTeX_Size1-Regular.woff2":       "6b47c40166b6dbe21a5dfca7718413f2147fd2399be1ba605d8ad39cedf25dfe",
+	"lib/katex/fonts/KaTeX_Size2-Regular.woff2":       "d04c54219f9eaec6d4d4fd42dfb28785975a4794d6b2fc71e566b9cd6db842dd",
+	"lib/katex/fonts/KaTeX_Size3-Regular.woff2":       "73d591271b1604960cb10bb90fee021670af7297017e0e98480b332d11f51995",
+	"lib/katex/fonts/KaTeX_Size4-Regular.woff2":       "a4af7d414440a1c1790825cfb700cf9cf43b0f2c4b04f0ebc523011ad9853ec0",
+	"lib/katex/fonts/KaTeX_Typewriter-Regular.woff2":  "71d517d67827787cfabdf186914cc3358eda539e37931941f2b2fd4a21f68c0b",
+	"lib/katex/katex.min.css":                         "551905675edbd85e78862903bc58724476d63478e0c129b527d8844ebad1c6dd",
+	"lib/katex/katex.min.js":                          "155f6c2d673c5912e3b48f45d8830eaad18ae1953915939ceb648ea8b9c3e7e2",
 }
 
 func TestWebAssetsHaveNoInlineStylesOrScripts(t *testing.T) {
@@ -156,6 +163,24 @@ func TestVendoredWebAssetsArePinned(t *testing.T) {
 	}
 }
 
+// A module zip, which is what `go install …@version` builds from, leaves out
+// every directory named vendor, wherever it sits; anything embedded from one
+// would be missing from such a build, and //go:embed would fail it.
+func TestNoEmbeddedDirectoryIsNamedVendor(t *testing.T) {
+	err := fs.WalkDir(webFS(), ".", func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if d.IsDir() && d.Name() == "vendor" {
+			t.Errorf("web/%s is named vendor; module zips drop it, so rename it", path)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking web assets: %v", err)
+	}
+}
+
 // app.js loads the highlighter and KaTeX by path at run time, so a moved or
 // renamed file would fail only in a browser; this catches it at build time.
 func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
@@ -163,7 +188,7 @@ func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reading app.js: %v", err)
 	}
-	refs := regexp.MustCompile(`"/(vendor/[^"]+)"`).FindAllStringSubmatch(string(script), -1)
+	refs := regexp.MustCompile(`"/(lib/[^"]+)"`).FindAllStringSubmatch(string(script), -1)
 	var loaded []string
 	for _, ref := range refs {
 		loaded = append(loaded, ref[1])
@@ -172,9 +197,9 @@ func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"vendor/highlightjs/highlight.min.js",
-		"vendor/katex/katex.min.js",
-		"vendor/katex/katex.min.css",
+		"lib/highlightjs/highlight.min.js",
+		"lib/katex/katex.min.js",
+		"lib/katex/katex.min.css",
 	} {
 		if !slices.Contains(loaded, want) {
 			t.Errorf("app.js does not load /%s; found %v", want, loaded)
@@ -185,7 +210,7 @@ func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
 // A vendored stylesheet fetches what its url()s name, relative to itself — the
 // KaTeX fonts — and a name with no file behind it is a 404 in every reader's
 // network log and a fallback font in their maths. Every url() has to resolve to
-// a pinned file under vendor/.
+// a pinned file under lib/.
 func TestVendoredStylesheetsReferenceVendoredFiles(t *testing.T) {
 	cssURL := regexp.MustCompile(`url\(\s*["']?([^"')]+)["']?\s*\)`)
 	checked := 0
@@ -201,7 +226,7 @@ func TestVendoredStylesheetsReferenceVendoredFiles(t *testing.T) {
 			checked++
 			target := path.Join(path.Dir(asset), ref[1])
 			if strings.Contains(ref[1], ":") || !strings.HasPrefix(target, vendorDir) {
-				t.Errorf("%s: url(%s) leaves vendor/; a vendored stylesheet may only name vendored files", asset, ref[1])
+				t.Errorf("%s: url(%s) leaves lib/; a vendored stylesheet may only name vendored files", asset, ref[1])
 				continue
 			}
 			if _, listed := vendoredWebAssets[target]; !listed {
@@ -276,6 +301,96 @@ func TestUIReservesTheSameTopLevelWordsAsTheServer(t *testing.T) {
 	}
 }
 
+// ageCheckWording is what the age screen must never be called. The screen asks
+// a question and takes the answer on trust, and UK law says self-declaration
+// does not count as checking anyone's age at all (Online Safety Act
+// s.230(4)), so a name that says otherwise, in copy, a comment, or the docs,
+// claims a protection educhan does not have. The institution badge's email
+// verification is another thing and keeps its name: these match only the
+// words next to "age".
+var ageCheckWording = regexp.MustCompile(`(?i)\bage[\s_-]*(?:verif|assur)|\b(?:verif|assur)\w*\s+(?:\w+'?s?\s+)?age\b`)
+
+// The files a reader or a later change takes the project's words from: its
+// code, its pages, and its docs. Vendored libraries are not the project's
+// words, and the rest is binary or generated.
+var wordedFile = regexp.MustCompile(`\.(?:go|js|css|html|md|sql|txt|ya?ml|sh)$|(?:^|/)(?:Makefile|Dockerfile|\.env\.example)$`)
+
+func TestAgeScreenIsNeverCalledVerification(t *testing.T) {
+	// The pattern has to catch the wording it exists for. Each phrase is
+	// assembled here so that this file does not trip the scan below.
+	for _, phrase := range []string{
+		"an age " + "verification screen", "Age" + "-verified", "age" + "Verified",
+		"verify your " + "age", "verify " + "age", "age " + "assurance",
+	} {
+		if !ageCheckWording.MatchString(phrase) {
+			t.Fatalf("ageCheckWording does not match %q", phrase)
+		}
+	}
+	for _, fine := range []string{"Verify an institutional address", "message verified", "storage check", "the age screen"} {
+		if ageCheckWording.MatchString(fine) {
+			t.Fatalf("ageCheckWording matches %q, which is not about the age screen", fine)
+		}
+	}
+
+	root, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatal("no go.mod above the test's directory; this test scans the repository from there")
+		}
+		root = parent
+	}
+
+	var scanned []string
+	err = filepath.WalkDir(root, func(file string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(root, file)
+		if err != nil {
+			return err
+		}
+		rel = filepath.ToSlash(rel)
+		if d.IsDir() {
+			// Git's own files, local uploads (/data/, as .gitignore has it),
+			// and third-party builds.
+			if d.Name() == ".git" || rel == "data" || rel == "internal/app/web/"+strings.TrimSuffix(vendorDir, "/") {
+				return fs.SkipDir
+			}
+			return nil
+		}
+		if !d.Type().IsRegular() || !wordedFile.MatchString(rel) {
+			return nil
+		}
+		body, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		scanned = append(scanned, rel)
+		for _, loc := range ageCheckWording.FindAllIndex(body, -1) {
+			line := 1 + strings.Count(string(body[:loc[0]]), "\n")
+			t.Errorf("%s:%d calls the age screen %q; it is a question, not a check", rel, line, body[loc[0]:loc[1]])
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walking %s: %v", root, err)
+	}
+
+	// A walk that stopped short would pass for the wrong reason.
+	for _, want := range []string{"README.md", "AGENTS.md", "internal/app/web/app.js", "internal/app/web/index.html", "internal/app/web_test.go"} {
+		if !slices.Contains(scanned, want) {
+			t.Errorf("%s was not scanned", want)
+		}
+	}
+}
+
 func TestWebShellReferencesItsAssets(t *testing.T) {
 	body, err := fs.ReadFile(webFS(), "index.html")
 	if err != nil {
@@ -308,7 +423,7 @@ func TestPageLoadsServeTheShell(t *testing.T) {
 	for _, path := range []string{
 		"/", "/meta/", "/meta/catalog", "/meta/archive", "/meta/thread/1", "/meta/post/5",
 		"/u/iitb/", "/u/iitb/catalog", "/u/iitb/thread/1", "/u/iitb/post/5",
-		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy",
+		"/verify", "/rules", "/faq", "/legal", "/terms", "/privacy", "/safety",
 	} {
 		t.Run(path, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, path, nil)
@@ -339,5 +454,146 @@ func TestPageLoadsServeTheShell(t *testing.T) {
 	routes.ServeHTTP(rec, req)
 	if ct := rec.Header().Get("Content-Type"); rec.Code != http.StatusNotFound || !strings.HasPrefix(ct, "application/json") {
 		t.Errorf("GET /api/u/iitb/threads: status %d, %s; want a JSON 404", rec.Code, ct)
+	}
+}
+
+// The assets' URLs carry no version, so a browser has to ask before reusing
+// one, and the ETag is what lets the answer be a bodiless 304. Text goes out
+// gzipped to a client that takes it, as a separate representation with its
+// own ETag; fonts, already compressed, never do.
+func TestWebAssetsRevalidateAndCompress(t *testing.T) {
+	routes := (&App{log: slog.New(slog.NewTextHandler(io.Discard, nil))}).Routes()
+	get := func(path string, header map[string]string) *httptest.ResponseRecorder {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, path, nil)
+		for k, v := range header {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		routes.ServeHTTP(rec, req)
+		return rec
+	}
+	file := func(name string) []byte {
+		t.Helper()
+		body, err := fs.ReadFile(webFS(), name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		return body
+	}
+	gunzip := func(body []byte) []byte {
+		t.Helper()
+		zr, err := gzip.NewReader(bytes.NewReader(body))
+		if err != nil {
+			t.Fatalf("not gzip: %v", err)
+		}
+		out, err := io.ReadAll(zr)
+		if err != nil {
+			t.Fatalf("gunzip: %v", err)
+		}
+		return out
+	}
+
+	for _, tc := range []struct {
+		path, file, contentType string
+		compressed              bool
+	}{
+		{"/app.js", "app.js", "text/javascript", true},
+		{"/app.css", "app.css", "text/css", true},
+		{"/lib/katex/katex.min.js", "lib/katex/katex.min.js", "text/javascript", true},
+		{"/lib/highlightjs/highlight.min.js", "lib/highlightjs/highlight.min.js", "text/javascript", true},
+		{"/lib/katex/fonts/KaTeX_Main-Regular.woff2", "lib/katex/fonts/KaTeX_Main-Regular.woff2", "font/woff2", false},
+		// No extension: typed by sniffing, and too rarely read to compress.
+		{"/lib/katex/LICENSE", "lib/katex/LICENSE", "text/plain", false},
+		// A route of the UI is the shell, with the shell's validators.
+		{"/", "index.html", "text/html", true},
+		{"/meta/thread/1", "index.html", "text/html", true},
+	} {
+		t.Run(tc.path, func(t *testing.T) {
+			want := file(tc.file)
+
+			plain := get(tc.path, nil)
+			if plain.Code != http.StatusOK || !bytes.Equal(plain.Body.Bytes(), want) {
+				t.Fatalf("plain GET: status %d, body matches %v", plain.Code, bytes.Equal(plain.Body.Bytes(), want))
+			}
+			if got := plain.Header().Get("Content-Type"); !strings.HasPrefix(got, tc.contentType) {
+				t.Errorf("Content-Type = %q, want %s", got, tc.contentType)
+			}
+			if got := plain.Header().Get("Cache-Control"); got != "no-cache" {
+				t.Errorf("Cache-Control = %q, want no-cache: the URL is not versioned", got)
+			}
+			if got := plain.Header().Get("Content-Encoding"); got != "" {
+				t.Errorf("Content-Encoding = %q to a client that asked for none", got)
+			}
+			if plain.Header().Get("Content-Security-Policy") == "" {
+				t.Error("went out without the CSP")
+			}
+			etag := plain.Header().Get("ETag")
+			if !strings.HasPrefix(etag, `"`) || !strings.HasSuffix(etag, `"`) || len(etag) < 10 {
+				t.Fatalf("ETag = %q, want a strong validator", etag)
+			}
+
+			again := get(tc.path, map[string]string{"If-None-Match": etag})
+			if again.Code != http.StatusNotModified || again.Body.Len() != 0 {
+				t.Errorf("revalidation: status %d with %d bytes, want an empty 304", again.Code, again.Body.Len())
+			}
+
+			zipped := get(tc.path, map[string]string{"Accept-Encoding": "br, gzip;q=0.8"})
+			if !tc.compressed {
+				if got := zipped.Header().Get("Content-Encoding"); got != "" {
+					t.Errorf("Content-Encoding = %q for a file that is compressed already", got)
+				}
+				if got := zipped.Header().Get("ETag"); got != etag {
+					t.Errorf("ETag = %q for the same bytes, want %q", got, etag)
+				}
+				return
+			}
+			if got := zipped.Header().Get("Content-Encoding"); got != "gzip" {
+				t.Fatalf("Content-Encoding = %q, want gzip", got)
+			}
+			if !bytes.Equal(gunzip(zipped.Body.Bytes()), want) {
+				t.Error("the gzipped body is not the file")
+			}
+			if !strings.Contains(zipped.Header().Get("Vary"), "Accept-Encoding") ||
+				!strings.Contains(plain.Header().Get("Vary"), "Accept-Encoding") {
+				t.Error("a compressible file must say it varies by Accept-Encoding, gzipped or not")
+			}
+			zipETag := zipped.Header().Get("ETag")
+			if zipETag == etag || zipETag == "" {
+				t.Errorf("the gzipped body's ETag = %q, want one of its own", zipETag)
+			}
+			if again := get(tc.path, map[string]string{"Accept-Encoding": "gzip", "If-None-Match": zipETag}); again.Code != http.StatusNotModified {
+				t.Errorf("revalidating the gzipped copy: status %d, want 304", again.Code)
+			}
+
+			refused := get(tc.path, map[string]string{"Accept-Encoding": "gzip;q=0, deflate"})
+			if refused.Header().Get("Content-Encoding") != "" || !bytes.Equal(refused.Body.Bytes(), want) {
+				t.Error("gzip;q=0 still got a gzipped body")
+			}
+		})
+	}
+}
+
+func TestAcceptsGzip(t *testing.T) {
+	for header, want := range map[string]bool{
+		"":                      false,
+		"gzip":                  true,
+		"GZIP":                  true,
+		"gzip, deflate, br":     true,
+		"br;q=1.0, gzip;q=0.5":  true,
+		"gzip;q=0":              false,
+		"gzip; q=0.000":         false,
+		"deflate":               false,
+		"*":                     true,
+		"*;q=0":                 false,
+		"*, gzip;q=0":           false,
+		"x-gzip":                true,
+		"identity":              false,
+		"gzip;q=nonsense":       false,
+		"br, gzip;q=0.1, *;q=0": true,
+	} {
+		if got := acceptsGzip([]string{header}); got != want {
+			t.Errorf("acceptsGzip(%q) = %v, want %v", header, got, want)
+		}
 	}
 }

@@ -714,6 +714,74 @@ func TestPostsTableColumnsArePinned(t *testing.T) {
 	}
 }
 
+// The other tables are pinned the same way, because a thread is one row per
+// opening post and an attachment one row per image post: a column on either is
+// stored about a poster just as much as one on posts. A hash of a poster key
+// on attachments, or a poster's source on threads "for moderation", would be
+// a handle on one browser across every thread, and nothing else would notice
+// it arriving. Every table in the schema is listed here or in one of the two
+// tests above, so a new table is a decision too.
+func TestEveryTableHasItsColumnsPinned(t *testing.T) {
+	h := testServer(t, nil)
+
+	want := map[string][]string{
+		"threads": {
+			"archived_at",  // when it left the board; NULL while live
+			"board_id",     // the board it is on
+			"bumped_at",    // the bump order every listing uses
+			"created_at",   // shown with the opening post
+			"id",           // internal primary key
+			"image_count",  // denormalised count of posts with an image
+			"last_post_at", // shown in listings
+			"locked",       // moderator flag
+			"no",           // the opening post's number, the thread's address
+			"reply_count",  // denormalised count of replies
+			"sticky",       // moderator flag
+			"subject",      // the opening post's subject
+		},
+		"attachments": {
+			"byte_size",          // shown on the post
+			"checksum",           // SHA-256 of the file's bytes, not of anything about the poster
+			"content_type",       // of the original
+			"created_at",         // when the file was stored, as the post was
+			"height",             // of the original
+			"id",                 // internal primary key
+			"original_name",      // the filename the poster gave, shown on the post like its body
+			"original_path",      // storage path: board, month, random name
+			"post_id",            // the post it belongs to
+			"spoiler",            // the poster asked for it hidden
+			"thumb_content_type", // of the thumbnail
+			"thumb_height",       // of the thumbnail
+			"thumb_path",         // storage path of the thumbnail
+			"thumb_width",        // of the thumbnail
+			"width",              // of the original
+		},
+		"post_quotes":       {"from_post_id", "to_post_id"},    // a reply and what it quoted, both public in its text
+		"media_deletions":   {"id", "key"},                     // storage keys the sweeper has still to remove
+		"schema_migrations": {"applied_at", "name", "version"}, // which migrations ran
+		// Board settings, nothing about posters.
+		"boards": {"archive_days", "bump_limit", "created_at", "description", "id",
+			"image_limit", "name", "next_post_no", "rules", "slug", "sort_order", "thread_limit"},
+	}
+	for table, columns := range want {
+		if got := h.columns(table); strings.Join(got, ",") != strings.Join(columns, ",") {
+			t.Errorf("%s has columns %v, want exactly %v\n"+
+				"add a column here deliberately, with what it holds and why it cannot identify anyone", table, got, columns)
+		}
+	}
+
+	// Pinned by TestPostsTableColumnsArePinned and
+	// TestVerificationTablesCannotBeJoinedToPosts.
+	for _, table := range []string{"posts", "verification_pending", "verification_credentials"} {
+		want[table] = nil
+	}
+	for _, table := range h.tables() {
+		if _, ok := want[table]; !ok {
+			t.Errorf("table %s has no pinned column list; add one here", table)
+		}
+	}
+}
+
 /* Schema helpers ------------------------------------------------------------ */
 
 func (h *harness) countRows(table string) int {

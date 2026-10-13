@@ -2,14 +2,14 @@
 
 **Anonymous imageboard for students**
 
-educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about placements, research, courses, and campus life.
+educhan is a fast, high-signal imageboard designed for students, researchers, and academic communities. It combines classic anonymous discussion with optional institutional verification, creating a space for authentic conversations about courses, exams, admissions, careers, and student life.
 
 ## Core Features
 
-- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a trusted badge while remaining fully anonymous
+- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
 - **Imageboard-native experience** — Fast, ephemeral, image-first discussion
-- **Technical media support** — Accepts raw camera files and high-bitrate video with automatic web-optimised proxies
-- **Selective permanence** — High-value threads can be automatically archived
+- **One image per post** — JPEG, PNG, WebP or GIF
+- **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
 - **Google Cloud native** — Built for scalability and low operational overhead
 
 ## Current Status
@@ -130,7 +130,10 @@ after the sitting**, available to whoever uses the browser next, until it
 expires or someone clears it. That is why `/verify` gives **Forget this
 credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
-again, so it means verifying from the start.
+again, so it means verifying from the start. Beside it, in every state of the
+page, **Forget this browser** removes the badge together with the poster key and
+the remembered name (see below), which are what would otherwise let the next
+person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -215,10 +218,17 @@ entry names the place instead, and wins over any suffix. An address sitting
 directly on a suffix (`someone@ac.in`) is refused: a namespace is not an
 institution. A denial refuses a domain and everything under it, whatever else
 matches; it exists for school namespaces that share a suffix with universities.
-The badge names a university or college, so for now school addresses do not
-verify; that is a choice about the badge, not an age limit on the site. Suffixes shared with schools are either guarded by
-denials (`edu.au`) or left out in favour of named universities (`edu.sg`,
-`edu.hk`), and `sch.uk` is not listed. `EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
+School addresses are refused on purpose, for child safety: a badge naming a
+school marks its poster as a child at a findable place, and school mailboxes are
+often monitored and closed when a pupil leaves. That limits the badge, not who
+may use the site. The aim is that every badge names a university or college, but
+that is a goal, not a guarantee: `ac.uk` also admits sixth-form colleges, and no
+suffix maps exactly onto higher education. Suffixes shared with schools are
+either guarded by denials (`edu.au`, `kvs.ac.in`) or left out in favour of named
+universities (`edu.in`, `ac.jp`, `ac.th`, `edu.sg`, `edu.hk`), and `sch.uk` is
+not listed. Every suffix in the file is marked reviewed or not checked yet. No
+EU member-state suffixes are listed while the site does not target the EU.
+`EDUCHAN_VERIFY_DOMAINS` points at a file that **replaces** the
 built-in list rather than extending it, so a deployment sees exactly what it
 configured.
 
@@ -377,9 +387,11 @@ button works. `/{slug}/post/{no}` names a post by number alone: it asks the serv
 thread the post is in and replaces itself with that thread, scrolled to the post, so Back
 does not land on it twice. Institution boards are stored as `u-{name}` and live at
 `/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`, and
-the server's own `api`, `media`, and `healthz` — are never read as boards. `/verify`,
-`/rules`, and `/faq` are pages; a word without a page yet shows the not-found view.
+`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
+`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
+boards.
+`/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
+view.
 
 - **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
   13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
@@ -393,11 +405,19 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
   browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
-- **Rules and FAQ**: `/rules` holds the global rules in plain language, written for an
-  audience that includes school students; boards can add their own under the header's
-  **Rules** disclosure. `/faq` covers what educhan is, who can use it, what anonymity here
-  does and does not hide, staying safe, the badge, tripcodes, per-thread IDs, markup, and
-  the bump limit, image cap, and archive. The footer links to both on every view.
+- **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
+  as 13. It lists what is not allowed for anyone, kind by kind (sexual content,
+  encouraging suicide, self-harm or eating disorders, "kys", bullying, hate, threats,
+  violence and gore, dangerous challenges, harmful substances, contact details and moving
+  to other apps, and posts about real people you know), says there are no private
+  messages on purpose, and says what moderators can do today: delete posts and threads,
+  and lock a thread. Boards can add their own rules under the header's **Rules**
+  disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
+  born, why there are no accounts or private messages, what anonymity here does and does
+  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
+  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
+  Australia, and Find A Helpline for everyone else), which is static text: nothing works
+  out where the reader is. The footer links to both on every view.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -414,8 +434,9 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
     hears "hidden spoiler" until the reader activates it, and catalog and archive
     excerpts show the word, not the text.
   - `[code]…[/code]` is a block shown verbatim and syntax-highlighted with the language
-    auto-detected. Nothing inside it is markup, so `x >>2` in code links nothing and
-    creates no backlink.
+    auto-detected, as it comes near the screen; a block over 2,000 characters is shown
+    plain, because highlighting one that long could stall a reader's tab. Nothing inside
+    it is markup, so `x >>2` in code links nothing and creates no backlink.
   - `[math]…[/math]` is inline maths and `[eqn]…[/eqn]` an equation on a line of its own,
     both in TeX and typeset by KaTeX as they come near the screen. Like code, nothing
     inside is markup. Until KaTeX arrives, or if it never does, the TeX shows as written;
@@ -423,14 +444,20 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
     links, images, or HTML of its own (`\href`, `\url`, `\includegraphics` and the
     `\html…` commands show as unsupported), and cannot define macros (`\def`,
     `\newcommand` and the like): a macro is how a short post would expand into millions
-    of symbols in every reader's tab. An equation too wide for a phone scrolls sideways
-    instead of widening the page. Catalog excerpts show maths as its TeX.
+    of symbols in every reader's tab. Equation tags and numbering still work (`\tag{1}`,
+    `\tag*{A}`, `\nonumber`, `\notag`). An equation too wide for a phone scrolls sideways
+    instead of widening the page. Catalog excerpts show maths as its TeX. Inside a hidden
+    spoiler, maths and code show nothing — not a TeX error's red source, nor a diff's line
+    tints — and are out of the tab order until the spoiler is revealed.
   - A tag pairs with the first closing tag of its kind after it; one that never closes,
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
   and size, and drag-and-drop anywhere on the form. A half-written reply survives
-  **Update**, image included, so refreshing a busy thread never costs a draft. Clicking a
+  **Update**, image included, so refreshing a busy thread never costs a draft; if the
+  thread was archived or locked meanwhile, the text stays on the page in a read-only box
+  to copy. Following a quote link within a thread jumps to the post without reloading
+  the thread, so revealed spoilers stay revealed. Clicking a
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
@@ -438,11 +465,15 @@ the server's own `api`, `media`, and `healthz` — are never read as boards. `/v
   view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
   while a reply is being written, the refusal takes the image off, keeps the text, and
-  the next press posts it.
+  the next press posts it. On a board whose `image_limit` is 0 the picker says replies
+  there can't carry images, and no thread is badged as at its limit.
 - **Poster key**: the first post from a browser makes a random key and keeps it in
   `localStorage`; it travels in `X-Educhan-Poster-Key` on new threads and replies only, so
   two people on one campus network get different poster IDs without the key riding on
-  anything else. A badged post sends the credential instead, never both.
+  anything else. A badged post sends the credential instead, never both. The Name field
+  remembers the last unbadged post's name; ticking the badge empties it, because a
+  tripcode on both kinds of post would tie them together. **Forget this browser** on
+  `/verify` drops the key, the name and any badge, for a shared computer.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
@@ -453,12 +484,21 @@ The page runs under the same-origin CSP in `middleware.go`, which has no `unsafe
 exception: no inline `<script>`, no inline `<style>`, and no `style` attributes. A unit
 test (`internal/app/web_test.go`) fails the build if any appear in `index.html`, `app.js`,
 or `app.css`, and the image preview is a `data:` URL because that is what `img-src`
-allows. Third-party code is vendored under `internal/app/web/vendor/` and served from the
+allows. Third-party code is vendored under `internal/app/web/lib/` and served from the
 same origin; each library keeps its licence and a note of its source, and the same test
-file pins every vendored file by SHA-256. KaTeX is the reason maths is typeset with
+file pins every vendored file by SHA-256. The directory is not called `vendor/` because a
+Go module zip leaves out every directory of that name, so a binary built from the module
+proxy would have shipped without the libraries. KaTeX is the reason maths is typeset with
 `katex.render` into the page rather than `renderToString` into `innerHTML`: its HTML
 carries layout in `style` attributes, which this CSP refuses, while `katex.render` sets
 styles through the CSSOM, which it allows.
+
+None of these files has a version in its URL — `/app.js` is `/app.js` in every release —
+so each goes out with `Cache-Control: no-cache` and a strong `ETag` from a hash of its
+bytes: a browser keeps its copy and revalidates it, and an unchanged file costs a `304`
+with no body. Text files (HTML, JavaScript, CSS) are gzipped once at startup and sent
+compressed to a client that accepts gzip, with their own `ETag` and `Vary:
+Accept-Encoding`; the fonts are compressed already. JSON from the API is not compressed.
 
 ## Tech Stack
 
@@ -484,7 +524,13 @@ It is idempotent, so re-running it is how you check the database is up. Point at
 a different server instead by exporting `DATABASE_URL`.
 
 Migrations in `internal/app/migrations/` are applied automatically at startup,
-guarded by a Postgres advisory lock so concurrent instances are safe.
+guarded by a Postgres advisory lock so concurrent instances are safe. There are
+no down migrations. A release started on a database that a newer release has
+migrated still serves, but logs an error naming the versions it does not know,
+and the sweeper refuses to run on it. After the migrations, any board whose slug
+has since become a reserved word (a page such as `/archive/` or `/rules/`) is
+renamed to `<slug>-board`, with a warning in the log, because the UI would read
+its address as the page.
 
 ### The container image
 
@@ -750,10 +796,10 @@ Listing boards stays public.
 A slug is the board's address in every URL, so it is lowercase letters and
 digits in dash-separated groups (`math`, `comp-sci`), at most 24 characters,
 and not a first path segment that already means something else: the server's
-own routes (`api`, `media`, `healthz`), the UI's pages (`verify`, `mod`,
-`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`), or
-`u`. It is normalised before use, so `/CompSci/` and `/compsci/` cannot both
-exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
+own routes (`api`, `media`, `healthz`, and `lib` for the UI's libraries), the
+UI's pages (`verify`, `mod`, `rules`, `faq`, `legal`, `terms`, `privacy`,
+`dmca`, `report`, `archive`, `safety`), or `u`. It is normalised before use, so `/CompSci/` and `/compsci/`
+cannot both exist. An institution board is stored as `u-<name>` — `u-iitb` — and the UI
 shows it at `/u/iitb/`; the API always addresses it by the stored slug. Everything but the slug is optional: the name falls back to the
 slug, the limits to the schema defaults (a bump limit of 300, a thread limit of
 100, an image limit of 150, and 7 days in the archive), and the rules to none. A
@@ -869,11 +915,27 @@ educhan -sweep          # or, from a checkout: make sweep
 It loads the usual configuration, connects, applies any pending migrations,
 deletes every archived thread whose board's `archive_days` have passed — posts,
 attachment rows, and then the images and thumbnails in the media store — and
-exits. It works in batches of 100 threads, one transaction each, removing a
-batch's files only after its transaction has committed, so a failure leaves an
-orphaned file rather than a broken post. It logs one line of counts and nothing
-about which boards or threads went, and exits non-zero if the database fails or
-any file could not be removed.
+exits. It works in batches of 100 threads, one transaction each. Each batch
+records the storage keys of its threads' files in the `media_deletions` table in
+the same transaction as it deletes the rows; once the batches are done the
+sweep removes each queued file and forgets its key. A file the store refuses to
+delete keeps its key, so the next sweep tries it again rather than leaving an
+image public with nothing left to say it exists.
+
+A file the media store does not hold also keeps its key and fails the sweep.
+Every queued key is a file the server stored, so a store without it is almost
+always the wrong store: **the sweeper must run with the server's media
+settings** — `EDUCHAN_MEDIA_BACKEND`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
+`EDUCHAN_UPLOAD_DIR` — or it reports every file missing. Once the settings are
+fixed, the next sweep removes them. A file that really is gone for good (lost
+with a container's disk, or removed by hand) fails every sweep until its row is
+deleted from `media_deletions` by hand.
+
+It logs one line of counts (threads, posts, attachments, and files removed,
+failed, and missing) and nothing about which boards or threads went, and exits
+non-zero if the database fails or any file could not be removed or was missing;
+the error it exits with says why without naming the file. It also refuses to
+run on a database a newer release has migrated (see below).
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers

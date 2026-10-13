@@ -133,6 +133,28 @@ img { max-width: 100%; }
 
 .board-nav::-webkit-scrollbar { display: none; }
 
+/* Beside the brand on a wide screen, taking the room between it and the Verify
+   link, so the boards scroll in that room rather than pushing Verify onto a
+   line of its own. */
+@media (min-width: 701px) {
+  .board-nav { flex: 1 1 0; min-width: 0; }
+}
+
+/* With a mouse, the row's scrollbar shows, thin: a plain wheel scrolls the page,
+   not the row, so without one the boards past the edge — twenty of them do not
+   fit even a wide screen — would be out of reach and out of sight. A finger
+   swipes the row, so on touch it stays hidden. */
+@media (hover: hover) and (pointer: fine) {
+  .board-nav {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+    padding-bottom: 6px;
+  }
+
+  .board-nav::-webkit-scrollbar { display: block; height: 6px; }
+  .board-nav::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+}
+
 .board-nav a {
   display: inline-flex;
   align-items: center;
@@ -602,6 +624,22 @@ button.link:hover { text-decoration: underline; }
 .verify-forget p { margin: 0; line-height: 1.6; }
 .verify-forget .muted { font-size: 13px; }
 
+/* Forgetting the browser is on the Verify page in every state, outside the
+   verification panel, since the poster key and the name belong to everyone. */
+.forget-browser {
+  max-width: 68ch;
+  margin: 18px 0 0;
+  font-size: 14px;
+}
+
+/* A reply whose thread closed while it was being written, kept to be copied. */
+.unsent-draft {
+  max-width: 68ch;
+  margin: 0 0 20px;
+}
+
+.unsent-draft textarea { min-height: 112px; resize: vertical; }
+
 .locked-note,
 .archived-note {
   display: flex;
@@ -786,6 +824,12 @@ a.quotelink.dead {
   border-color: transparent;
 }
 
+/* Highlighting tints some lines (a diff's additions and deletions), and a tint
+   would show how many lines a hidden diff has and how long each one is. */
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .code * {
+  background-color: transparent;
+}
+
 /* A spoiler holding a code block is a block itself, so it covers the whole box. */
 .post-body .spoiler-block { display: block; padding: 0 6px; }
 
@@ -908,10 +952,13 @@ a.quotelink.dead {
 .post-body .katex { overflow-wrap: normal; }
 
 /* KaTeX gives \color, \colorbox and \fcolorbox styles of the element's own,
-   which outrank the hidden-spoiler rule above, so inside a hidden spoiler maths
-   loses every colour outright. Its lines and SVG strokes follow currentColor,
-   so they go transparent with the text. */
-.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .katex * {
+   and an expression it could not parse — its source, which is exactly what a
+   spoiler hides — the error colour as one, all of which outrank the
+   hidden-spoiler rule above. So inside a hidden spoiler maths loses every
+   colour outright, typeset or not. Its lines and SVG strokes follow
+   currentColor, so they go transparent with the text. */
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .math,
+.post-body .spoiler:not(.revealed):not(:hover):not(:focus-within) .math * {
   color: transparent !important;
   background-color: transparent !important;
   border-color: transparent !important;

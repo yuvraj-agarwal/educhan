@@ -32,7 +32,7 @@ not.
   - `ratelimit.go` — per-client flood control.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
-    third-party browser builds under `web/vendor/` (highlight.js, KaTeX).
+    third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -242,7 +242,14 @@ board index at `/meta/`, catalog at `/meta/catalog`, thread at
 the index, and the thread view each have their own narrow-screen layout. A fresh browser
 meets the age screen first: answer it, or, when a check is not about the screen itself,
 set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright's
-`addInitScript`).
+`addInitScript`). Playwright's headless Chromium hides scrollbars unless launched with
+`ignoreDefaultArgs: ["--hide-scrollbars"]`; a check on the board row's scrollbar needs it.
+
+CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
+that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
+`submit`, the age screen storing its outcome alone and sending nothing, KaTeX's options,
+and the highlighting cap. They are a floor, not a proof; a change that trips one has
+changed one of those properties and needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -254,18 +261,26 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   markup, not the CSSOM — which is how the quote preview positions itself, and how KaTeX
   lays out maths. `setAttribute("style", …)` is not fine: the browser refuses it like a
   `style="…"` in markup.
-- **Vendored libraries** live in `web/vendor/<name>/`: the published build unmodified, its
-  `LICENSE`, and a `README.md` naming the package, version, and where it came from. They
+- **Vendored libraries** live in `web/lib/<name>/` — never a directory named `vendor`,
+  which a Go module zip drops wherever it sits (`TestNoEmbeddedDirectoryIsNamedVendor`):
+  the published build unmodified, its `LICENSE`, and a `README.md` naming the package,
+  version, and where it came from. They
   are served from `'self'` like everything else — never from a CDN — and are left out of
   the inline-markup scan, a heuristic for markup this project writes that a minified
   library's grammars and templates are not. Instead `vendoredWebAssets` in `web_test.go`
-  pins every file under `vendor/` by SHA-256, so nothing lands there unlisted and nothing
+  pins every file under `lib/` by SHA-256, so nothing lands there unlisted and nothing
   listed changes unnoticed: adding or updating a library means vetting the build and
   updating its hashes. Theme CSS is not vendored; colours stay in `app.css` with the rest
   of the tokens. The one modified file is KaTeX's `katex.min.css`, cut down to WOFF2 font
   sources because only the WOFF2 fonts are vendored; its README gives the exact `sed`,
   and `TestVendoredStylesheetsReferenceVendoredFiles` fails if any `url()` in a vendored
   stylesheet names a file that is not pinned.
+- **Static caching.** `webHandler` reads every embedded file once (`webAssets`) and
+  serves it with `Cache-Control: no-cache` and a content-hash `ETag`, plus a gzipped
+  copy with its own `ETag` for text types, through `http.ServeContent`
+  (`TestWebAssetsRevalidateAndCompress`). The URLs are unversioned, so never mark an
+  asset `immutable` or give it a `max-age`: a returning reader would keep an old
+  `app.js` after a deploy. Versioned URLs would have to come first.
 - `img-src` is `'self' data:`, so the file picker previews an attachment as a `data:` URL.
   A `blob:` URL would need a CSP change.
 - `app.css` is tokens first (`:root`), then base, layout, and components; colours live in
@@ -291,9 +306,16 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 - `enhancePosts(root)` is the one hook for work on posts after they are in the document
   (code highlighting and maths): `render()` and `showQuotePreview()` each call it once.
   It must stay idempotent and must never throw — a block it cannot finish keeps its
-  plain rendering. highlight.js and KaTeX are loaded from `/vendor/` by script (and, for
+  plain rendering. highlight.js and KaTeX are loaded from `/lib/` by script (and, for
   KaTeX, stylesheet) elements the first time a post that needs them is on screen, never
   up front.
+- Code: a `[code]` block is highlighted only once it comes within a screen of the
+  viewport (an `IntersectionObserver`, as for maths), and a block over
+  `HIGHLIGHT_MAX_CHARS` stays plain (`data-highlighted="skipped"`). One highlight.js call
+  cannot be interrupted, and several grammars are quadratic on a long identifier run, so
+  a crafted thread of post-length blocks froze readers' tabs; raise the cap only with a
+  timing check on a throttled phone (`TestCodeHighlightingIsBoundedAndLazy` holds it at
+  3000 or less).
 - Maths: `[math]`/`[eqn]` render as a placeholder carrying the TeX in `data-tex`, and
   `typesetMaths` fills it with `katex.render` once the block is within a screen of the
   viewport (an `IntersectionObserver`; typesetting a long thread up front froze phones).
@@ -305,7 +327,13 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   `trust: false`, `maxExpand`, `maxSize`, and a fresh `macros` table per expression that
   turns `\def`, `\newcommand` and friends into errors, because `maxExpand` counts
   expansions, not what they produce, and one defined macro used a thousand times is
-  millions of nodes. Don't loosen them without a browser check that repeats the probes.
+  millions of nodes. KaTeX builds `\nonumber`/`\notag` and `\tag`/`\tag*` on `\gdef`, so
+  the table also replaces `\nonumber` and `\tag@literal` with stand-ins that set
+  `\@eqnsw` and `\df@tag` directly; never let one return TeX that reaches `\gdef`.
+  `TestKaTeXIsCalledWithItsSafetyOptions` (`web_invariants_test.go`) pins the options and
+  the list; don't loosen them, or change the test to match, without a browser check that
+  repeats the probes (`\href`, `\url`, `\htmlData`, `\def`, a fraction and a root under
+  the real CSP).
 - Every link to a board, thread, or post is built on `boardPath(slug)` (and
   `threadPath`), and every on-screen board name on `boardLabel(slug)`: an institution
   board's slug is `u-{name}` but its address is `/u/{name}/`, and those two helpers are
@@ -318,9 +346,18 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 - `formHTML` takes the thread it replies to and follows its state: an archived thread
   gets an explanation instead of a form, a locked one a note. A refusal that arrives
   after the form was drawn (`thread is archived`, say) is a notice from `errorMessage`
-  that leaves the draft in place. A thread at its image cap renders the picker through
+  that leaves the draft in place, and a re-render that then finds the thread closed puts
+  the draft's text in a read-only box under the note (`keepUnsentDraft`) rather than
+  dropping it. A thread at its image cap renders the picker through
   `fileFieldHTML(reason)`, switched off with the reason on screen; `blockFileField` puts
-  a live form into the same state when `image limit reached` arrives mid-draft. A
+  a live form into the same state when `image limit reached` arrives mid-draft, and the
+  summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
+  `image_limit` 0 as a board whose replies never carry images, not a full thread. A
+  network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
+  browser's "Failed to fetch". A not-found page names and links a board only when it is
+  in `state.boards`: the slug comes from the address, and echoing any slug would let a
+  crafted link write the page's copy. A history change that keeps the rendered path (a
+  same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
@@ -342,12 +379,20 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   never stored, sent, or logged**: they live in two unnamed selects in a
   `method="dialog"` form and are removed from the page once compared. Keep it that way,
   keep the question neutral (no threshold in the copy, nothing preselected, no "I am old
-  enough" box), and never add a way back from a refusal. Every sentence that names the
-  age is built from `MIN_AGE`.
+  enough" box), and never add a way back from a refusal. Renaming the refusal key would
+  be one, so a changed screen bumps the pass key's version and never the refusal's.
+  With no day to go on, `ageFrom` errs young, so an answer in the current month exactly
+  `MIN_AGE` years back is refused without being stored: that person may have turned
+  `MIN_AGE` this week, and next month the same answer passes.
+  Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
-  poster key, tripcodes, what is logged, the badge. A change to any of those changes the
-  FAQ in the same commit. The rules and FAQ are readable before the age screen, so they
-  must not depend on anything fetched.
+  poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
+  about what a moderator can do to a post (delete it or its thread, lock the thread) and
+  what is not built yet (reports). A change to any of those changes the pages in the
+  same commit, and neither page describes a feature before it exists. Both end with
+  `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
+  external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
+  the age screen, so they must not depend on anything fetched.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
@@ -360,6 +405,63 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   post sends the credential **instead of** the key: the server takes a badged post's ID
   from the credential, and the two travelling together would be the one place a
   browser's key met its credential.
+  `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
+  either header is attached anywhere but that one line.
+- The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
+  empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
+  a tripcode on both kinds of post would publicly tie the unbadged ones to the
+  institution, which the per-credential IDs exist to prevent. A Name the poster cleared
+  stays cleared across re-renders and after posting (`restoreDraft` restores empty
+  values; `submit` sets the field after `form.reset()`).
+- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state, removes
+  the credential, the poster key and the remembered name, and leaves the age answer. It
+  is what the FAQ's shared-computer advice points to: the key left behind would give the
+  next person at the computer the same IDs in the same threads.
+
+### Child safety
+
+educhan is open to anyone aged 13 and over, so some of its readers are children, and
+these rules hold for every user rather than for the young ones only. They sit beside the
+privacy rules above and work the same way: each is something educhan does not have, and
+a change that adds one breaks a promise the rules, the FAQ and the risk assessments are
+written on, not just the code. Section numbers are design-recommendations.md's.
+
+- **No private channels.** No direct messages, private replies, profiles, follows,
+  friend lists, mentions that notify anyone, or display of where a poster is, not even
+  as an opt-in: moving a child from a public thread into a private conversation is how
+  grooming usually starts, and having nowhere private to move to is educhan's biggest
+  safety asset (§3.4 item 1). The rules and the posting form say so in as many words.
+- **The credential gates three things and nothing else**: the badge on a post, skipping
+  the captcha, and posting on `/u/` boards, the last two not built yet. Anything more
+  behind it starts to make the badge an account, and accounts are what Australia's
+  under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
+  `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
+  hold the code to the badge alone today.
+- **Bump order only.** The index and the catalog list stickies, then threads by their
+  last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
+  ranking by views, likes, replies or images, because ranking by popularity is what
+  Ofcom's recommender measures regulate (§4.1). The reply and image counts on a catalog
+  tile are facts about the thread, as on 4chan, and stay; never add view or like counts,
+  or show any count as a score of how others engaged with a post, which is one of the
+  "logged-in features" Australia's under-16 law looks for (§4.5).
+  `TestCatalogOrdersByBumpNotByReplies` and `TestIndexOrdersByBumpAndHonoursSage` pin the
+  order.
+- **The age screen is never called verification**, in copy, code, comments or docs. It
+  asks a question and takes the answer on trust, which UK law says is no check of age at
+  all (OSA s.230(4)), so calling it more claims a protection educhan does not have
+  (§4.1). `TestAgeScreenIsNeverCalledVerification` searches the repository for the
+  wording.
+- **Safe for work, for everyone.** No NSFW board, no adult-content area, and no opt-in
+  to one: the rules ban pornography, self-harm and eating-disorder promotion and the
+  rest for every user, and that ban is what keeps the UK's highly effective age checks
+  out of the plan. 4chan was fined £450,000 for adult boards without them (§3.4 item 2,
+  §4.1). The badge's planned 18+ attestation (build plan 2.14), and with it posting on
+  `/u/` boards, limits who can post there, not what may be posted: the same rules hold
+  on every board, for everyone.
+- **Never market educhan as safe for teenagers.** No "safe space", no claim that a
+  filter catches bullying or anything else, and no feature described to users before it
+  is built. NGL, an anonymous app that did the first two, was banned by the FTC from
+  offering itself to under-18s (§3.4 item 10).
 
 ### Attachments
 
@@ -378,14 +480,17 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 - **Per-thread image cap.** `boards.image_limit` caps the posts with an image in one
   thread, the opening post included; thread creation is not capped (there is no
   conversation yet to cap). `CreateReply` enforces it for a reply bringing an image by
-  counting the thread's posts with attachments while it holds the thread row lock, so
-  concurrent replies cannot both take the last slot
-  (`TestImageLimitHoldsUnderConcurrentReplies`), and refuses with `errImageLimit`
-  (`403 image limit reached`). `threads.image_count` is the denormalised copy the
-  listings read for `images`/`at_image_limit`: set on thread creation, set from that
-  count on every image reply, and recounted when a post is deleted. Nothing enforces
-  the cap against the counter. The upload is stored before the check, as it is before
-  the lock and archive checks, and the handler's `discardUpload` removes it on refusal.
+  counting the thread's posts with attachments inside the transaction that took the
+  board row for its post number (`nextPostNo`). Every reply to the board waits on that
+  row, so concurrent replies cannot both take the last slot
+  (`TestImageLimitHoldsUnderConcurrentReplies`); the thread row lock it also takes keeps
+  out a moderator's lock, delete or recount, which do not touch the board row. It
+  refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
+  the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
+  creation, set from that count on every image reply, and recounted when a post is
+  deleted. Nothing enforces the cap against the counter. The upload is stored before
+  the check, as it is before the lock and archive checks, and the handler's
+  `discardUpload` removes it on refusal.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
@@ -414,6 +519,14 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
   than editing an applied one; `0001_init.sql` is deliberately written with
   `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
+  There are no down migrations, so a rollback runs old code on a newer schema: `migrate`
+  logs an error naming the versions it does not know, and `App.schemaAhead` makes the
+  sweeper refuse to run. A rollback across `0005` is unsafe whatever the code says —
+  phase-0 code shows archived threads as live and its prune deletes them, leaving
+  their files behind (`deploy/README.md`). Under the same lock, after the migrations,
+  `renameReservedBoards` moves any board whose slug has since been reserved to
+  `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
+  word needs no migration of its own.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.
@@ -435,12 +548,25 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
   on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
-  a cutoff fixed when the sweep starts, so a sweep always terminates; each batch's blobs
-  go through `removeBlobs` after its commit, exactly as a moderator's deletion does. It
-  logs one record of counts and nothing that names a board or thread
-  (`TestSweepLogsOnlyCounts`), and returns an error — a non-zero exit — on a database
-  failure or if any blob could not be removed. **Legal holds (build plan 2.10) are not
-  built**; when they are, `SweepArchived` must skip held threads, and its comment says so.
+  a cutoff fixed when the sweep starts, so a sweep always terminates. Each batch queues
+  the storage keys of its files in `media_deletions` (`0007`) in the same transaction
+  as it deletes the rows; afterwards `removeQueuedMedia` takes the queue one key per
+  transaction (`NextMediaDeletion`, `SKIP LOCKED`), removes the file and forgets the
+  key. A file the store refuses to delete keeps its key and is retried by the next
+  sweep (`TestSweepRetriesFilesItCouldNotRemove`). A file the store does not hold keeps
+  its key too and fails the sweep, because every queued key is a file the server
+  stored: a sweeper whose media settings differ from the server's would otherwise
+  delete nothing and report success (`TestSweepAgainstAnotherMediaStoreFails`). That is
+  why the sweep checks with `Get` before `Delete` rather than going through
+  `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's
+  deletion should. A cancelled sweep stops between files, never between a file and
+  its key. It logs one record of counts and nothing that names a board or thread,
+  failures included, and the error it returns has the key taken out
+  (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
+  failure, a file it could not remove or did not find, or a database a newer release
+  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). **Legal holds (build plan
+  2.10) are not built**; when they are, `SweepArchived` must skip held threads, and its
+  comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -487,7 +613,11 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   `CreateThread` allocates and then archives the threads it pushes off, and
   `CreateReply` allocates before it locks the thread it replies to. Locking the other
   way round deadlocks a reply against the new thread archiving it
-  (`TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked`).
+  (`TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked`). A reply's quotes are
+  recorded with `FOR KEY SHARE` on their targets, in id order, so a quote of a post
+  whose thread is being swept or deleted waits for the deletion and is then dropped,
+  rather than failing the foreign key and the reply with it
+  (`TestReplyQuotingAPostBeingDeletedStillPosts`).
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
   `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
@@ -516,10 +646,15 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
-  nothing would come back for the files later.
+  nothing would come back for the files later. Sticky and lock apply to live threads
+  only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
+  archived`), because nothing brings a thread back from the archive and a sticky that
+  answered success would not keep it out of the sweep
+  (`TestArchivedThreadsCannotBeStickiedOrLocked`).
 - **Routes.** The UI reads any first path segment it does not recognise as a board's
   slug, so `reservedBoardSlugs` in `boards.go` holds every first segment that means
-  something else — the server's own routes, the UI's pages, and `u` — and has to agree
+  something else — the server's own routes, `lib` (the vendored libraries), the UI's
+  pages, and `u` — and has to agree
   with `RESERVED_PATHS` in `app.js`, which `parseRoute` reads; a new top-level page means
   adding its name to both. `TestReservedBoardSlugs` covers the list, and
   `TestUIReservesTheSameTopLevelWordsAsTheServer` that the two agree. An institution board is stored as
@@ -588,7 +723,8 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
     own code-request cooldown, which is applied per address hash and per client address
     — the latter shared by everyone behind a campus NAT. The cost accepted in exchange
     is that a badge outlives the sitting on a shared browser, which is why `/verify`
-    gives "Forget this credential" its own block and states that forgetting is final.
+    gives "Forget this credential" its own block and states that forgetting is final,
+    and offers "Forget this browser" for the poster key and name as well.
     Do not "fix" this back to `sessionStorage` without resolving the reissue problem.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
@@ -646,10 +782,12 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
   credential it returns is then presented explicitly with `postWithCredential`, because
   nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
-  (`poster_id_test.go`), which sends its poster key on every post and its credential only
-  on a badged one, the way the client does. Tests post to boards they create with
-  `addBoard` (`api_test.go`), never to seeded ones, so they do not depend on which boards
-  the migrations seed; `TestBoardsAreSeeded` is the one test that names the seeded set.
+  (`poster_id_test.go`), which sends what the client sends: the credential alone on a
+  post that asks for a badge, and the poster key on any other. A post carrying both is
+  never sent by the client, and the tests that cover it set the headers explicitly.
+  Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
+  ones, so they do not depend on which boards the migrations seed;
+  `TestBoardsAreSeeded` is the one test that names the seeded set.
   A migration's effect on existing data is tested by stopping a schema at an earlier
   version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
   starting a server on it with `serverOn`, which applies the rest. Sweep tests call

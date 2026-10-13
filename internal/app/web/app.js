@@ -18,8 +18,8 @@ const NAME_STORAGE_KEY = "educhan:name";
 // refuses these as board slugs too, so a board cannot take a path out from
 // under a page that is added later. "u" is the institution namespace.
 const RESERVED_PATHS = new Set([
-  "api", "media", "healthz", "verify", "mod", "u", "rules", "faq", "legal",
-  "terms", "privacy", "dmca", "report", "archive",
+  "api", "media", "healthz", "lib", "verify", "mod", "u", "rules", "faq",
+  "legal", "terms", "privacy", "dmca", "report", "archive", "safety",
 ]);
 // The reserved words that have a page of their own so far.
 const PAGE_VIEWS = new Set(["verify", "rules", "faq"]);
@@ -32,7 +32,9 @@ const MIN_AGE = 13;
 // All the age screen remembers is its outcome — passed, or refused — and never
 // the answer: the month and year live in the dialog's two selects only until
 // they have been compared. The version suffix lets a changed screen ask again
-// without taking an old outcome for a new one.
+// without taking an old pass for a new one. Only the pass key is ever bumped:
+// a refusal is final, and a new screen is no reason to give a child it has
+// already turned away another go, so the refusal key keeps its name for good.
 const AGE_OK_STORAGE_KEY = "educhan:age-ok-v1";
 const AGE_REFUSED_STORAGE_KEY = "educhan:age-refused-v1";
 // How far back the year list goes.
@@ -74,6 +76,8 @@ const HAS_HOVER = window.matchMedia("(hover: hover) and (pointer: fine)").matche
 const state = {
   boards: [],
   route: { view: "home" },
+  // The thread on screen, in the thread view.
+  thread: null,
   // enabled comes from the server; badge is read out of the credential this
   // browser holds, which the server is never asked about outside of using it.
   verification: { enabled: false, badge: null },
@@ -91,6 +95,11 @@ const el = {
 
 /* API ---------------------------------------------------------------------- */
 
+// UNREACHABLE is what a request that got no answer at all says: fetch's own
+// error is a browser's wording ("Failed to fetch", "Load failed", "NetworkError
+// when attempting to fetch resource") and says nothing a reader can use.
+const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
+
 async function api(path, options = {}) {
   // The caller's headers are copied rather than used in place: this function
   // adds to them, and a caller passing the same object twice should not
@@ -101,7 +110,15 @@ async function api(path, options = {}) {
     init.headers["Content-Type"] = "application/json";
   }
 
-  const res = await fetch(path, init);
+  let res;
+  try {
+    res = await fetch(path, init);
+  } catch {
+    // No answer at all: offline, a dropped connection, a blocked request.
+    const err = new Error(UNREACHABLE);
+    err.unreachable = true;
+    throw err;
+  }
   const payload = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
@@ -114,7 +131,11 @@ async function api(path, options = {}) {
 
 // errorMessage turns an API failure into something worth reading. The server's
 // own message is kept; only the cases where it needs context are rewritten.
-function errorMessage(err) {
+// What is being sent stays in its form after a refusal, so these say so.
+function errorMessage(err, { hasText = true } = {}) {
+  if (err.unreachable) {
+    return `${UNREACHABLE} What you wrote is still in the box.`;
+  }
   if (err.status === 413) {
     return "That image is too large for this board. Try a smaller file.";
   }
@@ -125,7 +146,9 @@ function errorMessage(err) {
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
   if (err.status === 403 && err.message === "image limit reached") {
-    return "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own.";
+    return hasText
+      ? "This thread reached its image limit while you were writing, so the image has been taken off your reply. Post again to send the text on its own."
+      : "This thread reached its image limit while you were writing, so it takes no more images. Write a reply to post text instead.";
   }
   if (err.status === 403 && err.message === "thread is archived") {
     return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
@@ -450,13 +473,16 @@ function renderMarkup(nodes, ctx, { block = false, hidden = false } = {}) {
   nodes.forEach((node, k) => {
     if (node.kind === "code") {
       // Focusable, because a long line scrolls sideways and a keyboard has to
-      // be able to scroll it.
-      out.push(`<pre class="code" tabindex="0"><code>${esc(blockSource(source, node))}</code></pre>`);
+      // be able to scroll it — except inside a hidden spoiler, where, as for a
+      // link, focus would land on something the reader cannot see, and show
+      // it to them through :focus-within without their asking. revealSpoiler
+      // puts it back in the tab order.
+      out.push(`<pre class="code" tabindex="${hidden ? -1 : 0}"><code>${esc(blockSource(source, node))}</code></pre>`);
       ctx.lineStart = true;
       return;
     }
     if (node.kind === "eqn") {
-      out.push(mathHTML(blockSource(source, node), { display: true }));
+      out.push(mathHTML(blockSource(source, node), { display: true, hidden }));
       ctx.lineStart = true;
       return;
     }
@@ -503,10 +529,10 @@ function blockSource(source, { start, end }) {
 // the TeX, escaped, in data-tex for typesetMaths to read, and as the text, so a
 // reader whose KaTeX never arrives still reads the source. Display maths
 // scrolls sideways when it is wider than the post, so, like a code block, it is
-// focusable for a keyboard to scroll it.
-function mathHTML(tex, { display }) {
+// focusable for a keyboard to scroll it, unless a hidden spoiler holds it.
+function mathHTML(tex, { display, hidden = false }) {
   return display
-    ? `<div class="math math-display" tabindex="0" data-tex="${esc(tex)}">${esc(tex)}</div>`
+    ? `<div class="math math-display" tabindex="${hidden ? -1 : 0}" data-tex="${esc(tex)}">${esc(tex)}</div>`
     : `<span class="math" data-tex="${esc(tex)}">${esc(tex)}</span>`;
 }
 
@@ -540,7 +566,7 @@ function enhancePosts(root) {
   typesetMaths(root);
 }
 
-const HIGHLIGHTER_SRC = "/vendor/highlightjs/highlight.min.js";
+const HIGHLIGHTER_SRC = "/lib/highlightjs/highlight.min.js";
 // Auto-detection tries every candidate language on a block, so the candidates
 // are kept to what students post: fewer passes, and fewer wild guesses.
 const HIGHLIGHT_LANGUAGES = [
@@ -552,6 +578,13 @@ const HIGHLIGHT_LANGUAGES = [
 // the whole block then highlighted in that one language: detection is the
 // expensive part, and it costs a pass per candidate over whatever it is given.
 const HIGHLIGHT_DETECT_CHARS = 1000;
+// A block longer than this stays plain. One highlight.js call cannot be
+// interrupted, and several of the grammars (java, typescript, c and more) take
+// time that grows with the square of a long run of identifier characters: a
+// post-length block of one took the better part of a second on a desktop and
+// several on a phone, for each such reply in a thread. At this length the worst
+// case is tens of milliseconds, and a code block a student posts is shorter.
+const HIGHLIGHT_MAX_CHARS = 2000;
 // Highlighting yields to the page once a batch has run this long, so a thread
 // full of code never stalls scrolling or typing.
 const HIGHLIGHT_SLICE_MS = 12;
@@ -606,48 +639,105 @@ function compileGrammars(hljs) {
   });
 }
 
+// Like maths, a block is highlighted only once it comes within a screen of the
+// viewport (TYPESET_AHEAD): a thread can hold hundreds of code blocks, and the
+// reader may never scroll to most of them. That is also when highlight.js is
+// first fetched.
+let codeObserver = null;
+// Code blocks being watched that have not yet come near the viewport.
+const watchedCode = new Set();
+// Blocks near the viewport, waiting for a batch.
+const highlightQueue = [];
+let highlightPending = false;
+
 function highlightCode(root) {
-  const blocks = Array.from(root.querySelectorAll("pre.code > code:not([data-highlighted])"));
+  const blocks = root.querySelectorAll("pre.code > code:not([data-highlighted])");
   if (blocks.length === 0) {
     return;
   }
-  loadHighlighter()
-    .then((hljs) => highlightBlocks(hljs, blocks))
-    .catch(() => {
-      // The blocks keep their plain rendering.
-    });
+  if (!codeObserver) {
+    codeObserver = new IntersectionObserver(
+      (entries) => {
+        for (const { target, isIntersecting } of entries) {
+          if (!isIntersecting) {
+            continue;
+          }
+          codeObserver.unobserve(target);
+          watchedCode.delete(target);
+          highlightQueue.push(target);
+        }
+        scheduleHighlight();
+      },
+      { rootMargin: TYPESET_AHEAD }
+    );
+  }
+  // The observer holds on to what it watches, so blocks a re-render replaced
+  // before they came near are let go here.
+  for (const code of watchedCode) {
+    if (!code.isConnected) {
+      codeObserver.unobserve(code);
+      watchedCode.delete(code);
+    }
+  }
+  for (const code of blocks) {
+    if (code.textContent.length > HIGHLIGHT_MAX_CHARS) {
+      code.dataset.highlighted = "skipped";
+    } else if (!watchedCode.has(code)) {
+      watchedCode.add(code);
+      codeObserver.observe(code);
+    }
+  }
 }
 
-function highlightBlocks(hljs, blocks) {
-  const deadline = performance.now() + HIGHLIGHT_SLICE_MS;
-  while (blocks.length > 0) {
-    if (performance.now() > deadline) {
-      setTimeout(() => highlightBlocks(hljs, blocks), 0);
-      return;
+function scheduleHighlight() {
+  if (highlightPending || highlightQueue.length === 0) {
+    return;
+  }
+  highlightPending = true;
+  loadHighlighter().then(
+    (hljs) => setTimeout(() => highlightBatch(hljs), 0),
+    () => {
+      // The blocks keep their plain rendering.
+      highlightQueue.length = 0;
+      highlightPending = false;
     }
-    const code = blocks.shift();
+  );
+}
+
+function highlightBatch(hljs) {
+  const deadline = performance.now() + HIGHLIGHT_SLICE_MS;
+  while (highlightQueue.length > 0 && performance.now() <= deadline) {
+    const code = highlightQueue.shift();
     // A re-render may have replaced the block since it was queued, and an
     // earlier pass may already have done it; highlight.js complains about both.
-    if (!code.isConnected || code.dataset.highlighted) {
-      continue;
+    if (code.isConnected && !code.dataset.highlighted) {
+      highlightBlock(hljs, code);
     }
-    try {
-      const text = code.textContent;
-      if (text.length > HIGHLIGHT_DETECT_CHARS) {
-        const guess = hljs.highlightAuto(text.slice(0, HIGHLIGHT_DETECT_CHARS)).language;
-        code.classList.add(`language-${guess || "plaintext"}`);
-      }
-      hljs.highlightElement(code);
-    } catch {
-      code.dataset.highlighted = "failed";
+  }
+  if (highlightQueue.length > 0) {
+    setTimeout(() => highlightBatch(hljs), 0);
+  } else {
+    highlightPending = false;
+  }
+}
+
+function highlightBlock(hljs, code) {
+  try {
+    const text = code.textContent;
+    if (text.length > HIGHLIGHT_DETECT_CHARS) {
+      const guess = hljs.highlightAuto(text.slice(0, HIGHLIGHT_DETECT_CHARS)).language;
+      code.classList.add(`language-${guess || "plaintext"}`);
     }
+    hljs.highlightElement(code);
+  } catch {
+    code.dataset.highlighted = "failed";
   }
 }
 
 /* Maths -------------------------------------------------------------------- */
 
-const KATEX_SRC = "/vendor/katex/katex.min.js";
-const KATEX_CSS = "/vendor/katex/katex.min.css";
+const KATEX_SRC = "/lib/katex/katex.min.js";
+const KATEX_CSS = "/lib/katex/katex.min.css";
 
 // TeX commands that are switched off in posts. maxExpand caps how many macro
 // expansions an expression makes, not what each one produces, so a post that
@@ -838,9 +928,10 @@ function fitWideMaths() {
       return;
     }
     block.classList.toggle("math-wide", wide[n]);
-    // Focusable while it scrolls, for a keyboard to scroll it.
+    // Focusable while it scrolls, for a keyboard to scroll it — but not in a
+    // hidden spoiler, until revealSpoiler makes it so.
     if (wide[n]) {
-      block.tabIndex = 0;
+      block.tabIndex = block.closest(".spoiler:not(.revealed)") ? -1 : 0;
     } else {
       block.removeAttribute("tabindex");
     }
@@ -870,6 +961,13 @@ window.addEventListener("resize", () => {
 // commands, so these stand in front of the real ones, and fresh because KaTeX
 // writes \global definitions back into the table it is given: one post's
 // \global\let must never reach another post's maths.
+//
+// KaTeX builds \nonumber (and \notag, which is \nonumber) and \tag, \tag* on
+// \gdef, so with \gdef refused they would fail with an error naming a command
+// the poster never typed. The table replaces the two macros that call it with
+// ones that set the same values directly: \@eqnsw, which says whether a line
+// of an equation or align is numbered, and \df@tag, the tag \tag gives it —
+// taken once, as \gdef\df@tag{\text{#1}} would, so no expansion repeats.
 function disabledCommands(katex) {
   const macros = {};
   for (const name of KATEX_DISABLED) {
@@ -877,6 +975,26 @@ function disabledCommands(katex) {
       throw new katex.ParseError(`${name} is not available in posts`);
     };
   }
+  macros["\\nonumber"] = (context) => {
+    context.macros.set("\\@eqnsw", "0", true);
+    return "";
+  };
+  macros["\\tag@literal"] = (context) => {
+    if (context.macros.get("\\df@tag")) {
+      throw new katex.ParseError("Multiple \\tag");
+    }
+    // The argument's tokens come in stack order, last first, and the start
+    // token is a token like any other, which gives the constructor for the
+    // three around them.
+    const { tokens, start } = context.consumeArg();
+    const Token = start.constructor;
+    context.macros.set(
+      "\\df@tag",
+      { tokens: [new Token("}"), ...tokens, new Token("{"), new Token("\\text")], numArgs: 0 },
+      true
+    );
+    return "";
+  };
   return macros;
 }
 
@@ -907,8 +1025,9 @@ function withStyleAttributesThroughCSSOM(build) {
 /* Spoilers ----------------------------------------------------------------- */
 
 // revealSpoiler shows a spoiler for good: its text joins the accessibility
-// tree, its links rejoin the tab order, and it stops being a button. It stays
-// focusable (tabindex -1) so focus is not dropped when it was the thing focused.
+// tree, its links, code blocks and wide maths rejoin the tab order, and it
+// stops being a button. It stays focusable (tabindex -1) so focus is not
+// dropped when it was the thing focused.
 function revealSpoiler(spoiler) {
   spoiler.classList.add("revealed");
   spoiler.removeAttribute("role");
@@ -919,6 +1038,9 @@ function revealSpoiler(spoiler) {
     text.removeAttribute("aria-hidden");
   }
   spoiler.querySelectorAll("a[tabindex]").forEach((link) => link.removeAttribute("tabindex"));
+  spoiler.querySelectorAll("pre.code, .math-display, .math-wide").forEach((block) => {
+    block.tabIndex = 0;
+  });
 }
 
 // The pointer behind the most recent press, so a click can tell a tap — which
@@ -1041,20 +1163,25 @@ function verifiedBadgeHTML(label) {
   return `<span class="badge verified" title="Institutional email verified; not linked to this poster">Verified: ${esc(label)}</span>`;
 }
 
-function badgesHTML(thread) {
+// The image limit badge marks a thread that has filled up. On a board whose
+// limit is 0 every thread is "at" it from the start, and a badge on all of them
+// would say nothing; the reply form says why there is no picker instead.
+function badgesHTML(thread, board = null) {
   const badges = [];
   if (thread.sticky) badges.push('<span class="badge sticky">sticky</span>');
   if (thread.archived_at) badges.push('<span class="badge archived">archived</span>');
   if (thread.locked) badges.push('<span class="badge locked">locked</span>');
   if (thread.at_bump_limit) badges.push('<span class="badge bumplimit">bump limit</span>');
-  if (thread.at_image_limit) badges.push('<span class="badge imagelimit">image limit</span>');
+  if (thread.at_image_limit && !(board && board.image_limit === 0)) {
+    badges.push('<span class="badge imagelimit">image limit</span>');
+  }
   return badges.join(" ");
 }
 
 // postHTML renders one post. `context` carries the board slug, the thread the
 // post belongs to, and whether the post number should act as a quote button.
 function postHTML(post, context) {
-  const { slug, subject = "", thread = null, quotable = false } = context;
+  const { slug, board = null, subject = "", thread = null, quotable = false } = context;
   const head = [];
 
   // The subject is the opening post's heading, so it gets its own line above
@@ -1073,7 +1200,7 @@ function postHTML(post, context) {
   head.push(timeHTML(post.created_at));
 
   if (post.op && thread) {
-    const badges = badgesHTML(thread);
+    const badges = badgesHTML(thread, board);
     if (badges) head.push(badges);
   }
 
@@ -1121,12 +1248,12 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   // Archived is for good, so the form gives way to where the conversation can
   // go instead rather than to a box that could only fail.
   if (thread && thread.archived_at) {
-    return `<p class="archived-note"><span class="badge archived">archived</span>
+    return `<p class="archived-note" data-replies-closed><span class="badge archived">archived</span>
       <span>Archived threads take no new replies. To carry on the conversation,
         <a href="${boardPath(slug)}">start a new thread on ${esc(boardLabel(slug))}</a>.</span></p>`;
   }
   if (thread && thread.locked) {
-    return `<p class="locked-note"><span class="badge locked">locked</span> This thread is locked; no new replies.</p>`;
+    return `<p class="locked-note" data-replies-closed><span class="badge locked">locked</span> This thread is locked; no new replies.</p>`;
   }
   const threadNo = thread ? thread.no : null;
 
@@ -1146,12 +1273,19 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   // when they do.
   const held = state.verification.badge;
   // A badged post takes its ID from the credential rather than the poster key,
-  // which is worth saying where the choice is made.
+  // which is worth saying where the choice is made — and so is the one thing
+  // that would tie it to the unbadged posts all the same: a name or tripcode
+  // used on both. Ticking the box empties the Name field (badgeToggled).
   const badge = held
     ? `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
-       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread, so it is not tied to your unbadged replies.</span>`
+       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread. A name or
+         tripcode you also use without the badge would tie those posts to it, so the badge starts
+         with the name empty.</span>`
     : "";
 
+  // Under the message, on every form: no contact details, because they are
+  // how a conversation leaves the site for a private one, which educhan
+  // deliberately does not have.
   return `
     <details class="post-form" ${open ? "open" : ""}>
       <summary>${isThread ? "Start a new thread" : "Reply to this thread"}</summary>
@@ -1166,11 +1300,14 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
         <div class="field">
           <label class="label" for="${FIELD_IDS.body}">${isThread ? "Message" : "Reply"}</label>
-          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint"
+          <textarea id="${FIELD_IDS.body}" name="body" maxlength="8000" aria-describedby="f-body-hint f-contact-hint"
                     placeholder="${isThread ? "What's on your mind?" : "Write a reply. Use >>123 to quote a post."}"></textarea>
           <p class="hint body-hint" id="f-body-hint"><code>[spoiler]…[/spoiler]</code> hides text,
             <code>[code]…[/code]</code> shows code, <code>[math]…[/math]</code> typesets maths,
             and <code>&gt;&gt;&gt;/board/</code> links a board.</p>
+          <p class="hint body-hint" id="f-contact-hint">Don't post contact details like phone
+            numbers or Snapchat or Discord names. educhan has no private messages, on
+            purpose.</p>
         </div>
         <div class="field">
           <span class="label" id="f-image-label">Image (optional)</span>
@@ -1222,7 +1359,10 @@ function setFile(field, file) {
 
 // imageLimitReason is why a thread's reply form takes no image.
 function imageLimitReason(board) {
-  const limit = board && board.image_limit;
+  const limit = board ? board.image_limit : undefined;
+  if (limit === 0) {
+    return "Replies on this board can't carry images.";
+  }
   return limit > 0
     ? `This thread has reached its limit of ${plural(limit, "image", "images")}. Text replies still work.`
     : "This thread has reached its image limit. Text replies still work.";
@@ -1299,6 +1439,19 @@ function renderNav(route) {
       return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>${esc(boardLabel(b.slug))}</a>`;
     })
     .join("");
+  // The row scrolls sideways when the boards outrun it, so the board being
+  // shown is brought into it: the highlight is what says where the reader is.
+  // Only the row moves, never the page.
+  const current = el.nav.querySelector('[aria-current="page"]');
+  if (current) {
+    const row = el.nav.getBoundingClientRect();
+    const pill = current.getBoundingClientRect();
+    if (pill.left < row.left) {
+      el.nav.scrollLeft -= row.left - pill.left + 12;
+    } else if (pill.right > row.right) {
+      el.nav.scrollLeft += pill.right - row.right + 12;
+    }
+  }
 
   for (const link of el.pageLinks) {
     if (link.dataset.page === route.view) {
@@ -1372,7 +1525,7 @@ async function renderIndex(route) {
 
   const threads = index.threads
     .map((summary) => {
-      const context = { slug: board.slug, subject: summary.subject, thread: summary };
+      const context = { slug: board.slug, board, subject: summary.subject, thread: summary };
       const replies = summary.last_replies
         .map((post) => postHTML(post, { slug: board.slug }))
         .join("");
@@ -1423,7 +1576,7 @@ async function renderCatalog(route) {
         <div class="stats">
           <span class="replies">${plural(t.replies, "reply", "replies")}</span>
           ${t.images > 0 ? `<span class="images">&middot; ${plural(t.images, "image", "images")}</span>` : ""}
-          ${badgesHTML(t)}
+          ${badgesHTML(t, board)}
         </div>
         ${media}
         ${t.subject ? `<h2 class="subject">${esc(t.subject)}</h2>` : ""}
@@ -1441,11 +1594,15 @@ async function renderCatalog(route) {
 async function renderThread(route) {
   const detail = await api(`/api/boards/${encodeURIComponent(route.slug)}/threads/${route.no}`);
   const { board } = detail;
+  // Kept for what the page learns about the thread after drawing it: a reply
+  // refused at the image limit updates its summary line from here.
+  state.thread = detail;
 
   const posts = detail.posts
     .map((post) =>
       postHTML(post, {
         slug: board.slug,
+        board,
         subject: detail.subject,
         thread: detail,
         quotable: true,
@@ -1467,7 +1624,7 @@ async function renderThread(route) {
     <div class="thread-actions">
       <a href="${boardPath(board.slug)}">&larr; Back to ${esc(boardLabel(board.slug))}</a>
       ${archived ? "" : '<button class="link" data-action="refresh" type="button">Update</button>'}
-      <span class="muted">${threadCounts(detail, board, archived).join(" &middot; ")}</span>
+      <span class="muted" data-thread-counts>${threadCounts(detail, board, archived).join(" &middot; ")}</span>
     </div>
     ${archiveNote}
     <section class="thread detail">${posts}</section>
@@ -1484,7 +1641,9 @@ function threadCounts(thread, board, archived) {
     board.image_limit > 0 ? `${images} of ${plural(board.image_limit, "image", "images")}` : plural(images, "image", "images"),
   ];
   if (!archived && thread.at_bump_limit) counts.push("at bump limit, no longer bumping");
-  if (!archived && thread.at_image_limit) counts.push("image limit reached, text replies only");
+  if (!archived && thread.at_image_limit) {
+    counts.push(board.image_limit === 0 ? "replies can't carry images" : "image limit reached, text replies only");
+  }
   return counts;
 }
 
@@ -1566,6 +1725,41 @@ function forgetCredential() {
   state.verification.badge = null;
 }
 
+// forgetBrowser removes everything this browser keeps that ties posts to it:
+// the badge, the poster key every unbadged post's ID is made from — the next
+// person at a shared computer would otherwise get the same ID in the same
+// threads, and see which posts there were yours — and the remembered name,
+// with its tripcode secret. The age answer stays: it says nothing about any
+// post. Like forgetting the badge, it is entirely local.
+function forgetBrowser() {
+  forgetCredential();
+  for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Nothing was stored, so nothing needs removing.
+    }
+  }
+  pagePosterKey = "";
+}
+
+// forgetBrowserHTML is the control for forgetBrowser, on the Verify page
+// whatever state verification is in, since the key and the name are there
+// for every poster.
+function forgetBrowserHTML() {
+  return `
+    <div class="verify-forget forget-browser" id="forget-browser">
+      <p><strong>Leaving a shared or borrowed computer?</strong> This browser keeps the random
+        key your post IDs are made from and the name you last posted with, tripcode secret
+        included. Whoever uses it next would get your IDs in the threads you posted in, which
+        shows them which posts there are yours, and could post under your tripcode.</p>
+      <p class="muted">Forgetting this browser removes the key, the name and any badge. Your
+        next post starts a new key, and with it new IDs. Posts you have made stay as they
+        are.</p>
+      <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
+    </div>`;
+}
+
 // readBadge decodes the claims out of the credential this browser holds. The
 // signature is not checked here and could not be — the key is the server's.
 // This only decides what to display and whether to offer the checkbox; the
@@ -1641,7 +1835,8 @@ function verifyViewHTML() {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
-      <p class="empty">Verification is not configured on this server.</p>`;
+      <p class="empty">Verification is not configured on this server.</p>
+      ${forgetBrowserHTML()}`;
   }
 
   if (v.badge && !verifyStep.replacing) {
@@ -1661,7 +1856,8 @@ function verifyViewHTML() {
           <p><strong>On a shared or borrowed computer, forget it before you walk away.</strong>
             The badge stays in this browser for whoever sits down next, and it is
             usable by anyone who has the browser &mdash; it is the whole of what
-            proves your institution.</p>
+            proves your institution. Forgetting this browser, below, removes it
+            along with everything else that ties your posts to this browser.</p>
           <p class="muted">Forgetting is final: the server issues a badge once
             and cannot show you this one again, so you would verify from the
             start. It removes the badge from this browser only &mdash; the server
@@ -1671,7 +1867,8 @@ function verifyViewHTML() {
         <div class="actions">
           <button class="btn subtle" type="button" data-action="verify-again">Verify another address</button>
         </div>
-      </div>`;
+      </div>
+      ${forgetBrowserHTML()}`;
   }
 
   if (verifyStep.step === "code") {
@@ -1710,7 +1907,8 @@ function verifyViewHTML() {
       <div class="actions">
         <button class="btn primary" type="submit">Send code</button>
       </div>
-    </form>`;
+    </form>
+    ${forgetBrowserHTML()}`;
 }
 
 async function renderVerify() {
@@ -1731,43 +1929,88 @@ function audienceText() {
   return MIN_AGE > 0 ? `anyone aged ${MIN_AGE} and over` : "anyone";
 }
 
+// HELPLINES_HTML is where to get help, the same on the rules and the FAQ. It is
+// one fixed list for everyone, because educhan never works out where a reader
+// is: it names the countries and lets each reader find their own. The numbers
+// are the build plan's (2.12), and the links leave without a referrer.
+const HELPLINES_HTML = `
+  <p class="callout">If someone is in danger right now, call your local emergency number.</p>
+  <p>If something here upsets or worries you, step away and talk to someone you trust. If
+    you're having a hard time, or you're worried about someone else, you can also call one of
+    these helplines:</p>
+  <ul>
+    <li><strong>US:</strong> call or text <a href="tel:988">988</a></li>
+    <li><strong>UK and Ireland:</strong> Samaritans, <a href="tel:116123">116 123</a></li>
+    <li><strong>UK:</strong> Childline, <a href="tel:08001111">0800 1111</a></li>
+    <li><strong>India:</strong> Tele-MANAS, <a href="tel:14416">14416</a></li>
+    <li><strong>Australia:</strong> Lifeline, <a href="tel:131114">13 11 14</a>, and Kids
+      Helpline, <a href="tel:1800551800">1800 55 1800</a></li>
+    <li><strong>Anywhere else:</strong> find one near you at
+      <a href="https://findahelpline.com" rel="noopener noreferrer">findahelpline.com</a></li>
+  </ul>`;
+
+// The rules name every kind of post that is not allowed, for everyone on every
+// board, and say what happens to one using only what is built: moderators can
+// delete posts and threads and lock a thread, and nothing else yet.
 function renderRules() {
   el.main.innerHTML = `
     <article class="page" aria-labelledby="page-title">
       <h1 id="page-title">Rules</h1>
-      <p class="lede">These rules apply to every post on every board. educhan is open to
+      <p class="lede">These rules are for everyone, on every board. educhan is open to
         ${audienceText()}, school students included, so keep everything you post fit for a
         school student to read.</p>
       <ol class="rules-list">
-        <li><strong>Keep it safe for work, on every board.</strong> No sexual content, nudity,
-          gore or shock images anywhere, not as a joke and not behind a spoiler.</li>
-        <li><strong>Nothing illegal.</strong> Don't post anything, or link to anything, that
-          breaks the law.</li>
-        <li><strong>No personal or contact details, your own included.</strong> Never post
-          phone numbers, home or school addresses, email addresses, social media, Discord,
-          Snapchat or Instagram handles, or timetables, whoever they belong to. Never ask
-          anyone to move to a private chat or another app.</li>
-        <li><strong>No bullying, threats or harassment.</strong> Don't name private people,
-          such as classmates, teachers or staff, or describe them so that they could be
-          identified.</li>
-        <li><strong>No spam or flooding.</strong> No advertising, no posting the same thing
-          again and again, and no filling threads with junk.</li>
-        <li><strong>Don't impersonate.</strong> Don't pretend to speak for a school, university
-          or any other institution, and don't fake the verified badge, in your name or
-          anywhere else.</li>
-        <li><strong>Stay on topic.</strong> Post on the board your post belongs on, and keep
-          to what that board is for.</li>
+        <li><strong>Nothing sexual.</strong> No porn, nudity or sexual posts, and never any
+          sexual talk with or about anyone under 18. Not as a joke, and not behind a
+          spoiler.</li>
+        <li><strong>Nothing that encourages suicide, self-harm or eating disorders,</strong>
+          and nothing that shows how. Saying you're having a hard time is fine, and so is
+          asking for help: see <a href="#help">where to get help</a>.</li>
+        <li><strong>Never tell anyone to kill themselves.</strong> &ldquo;kys&rdquo; is not
+          allowed here, not even as a joke.</li>
+        <li><strong>No bullying.</strong> Don't pick on, insult, mock or gang up on
+          anyone.</li>
+        <li><strong>No hate.</strong> Don't attack people for who they are, such as their
+          race, religion, nationality, sex, gender, sexuality or disability.</li>
+        <li><strong>No threats.</strong> Don't threaten to hurt anyone, or to attack a school
+          or anywhere else, not even as a joke.</li>
+        <li><strong>No violence or gore.</strong> Don't encourage anyone to seriously hurt
+          people, and don't post gory or shocking pictures or descriptions.</li>
+        <li><strong>No dangerous stunts or challenges.</strong> Don't dare anyone, or show them
+          how, to do something that could hurt them or someone else.</li>
+        <li><strong>No pushing drugs or other harmful substances.</strong> Don't encourage
+          anyone to take anything that could harm them.</li>
+        <li><strong>No contact details, and no moving to other apps.</strong> Never post a
+          phone number, an email address, a home or school address, or a Discord, Snapchat,
+          Instagram, Telegram or WhatsApp name or link, yours or anyone else's. Don't ask
+          anyone to talk to you somewhere else.</li>
+        <li><strong>Don't name or point out real people you know.</strong> Never name a
+          classmate, teacher or anyone else from your own life, or describe them so they could
+          be recognised. You can ask for advice about a friend or teacher, as long as nobody
+          could tell who they are.</li>
+        <li><strong>Nothing illegal.</strong> Don't post or link to anything that breaks the
+          law.</li>
+        <li><strong>No spam.</strong> No ads, no posting the same thing again and again, and no
+          filling threads with junk.</li>
+        <li><strong>Don't pretend to be someone you're not.</strong> Don't pretend to speak for
+          a school, a university or anyone else, and don't fake the verified badge.</li>
+        <li><strong>Stay on topic.</strong> Post on the board your post belongs on.</li>
       </ol>
-      <p>Some boards add rules of their own. You'll find them under <strong>Rules</strong> at
+      <p>A board can add rules of its own. You'll find them under <strong>Rules</strong> at
         the top of the board.</p>
+      <h2>No private messages, on purpose</h2>
+      <p>educhan has no private messages, no profiles and no friend lists. Everything here is
+        said in public, where everyone can see it. That's deliberate: someone who wants to get
+        you on your own usually starts by asking to talk somewhere private. If anyone asks you
+        to move to another app, you don't have to reply.</p>
       <h2>When a post breaks the rules</h2>
-      <p>Moderators remove posts that break these rules, and a removed post shows the reason
-        it was removed.</p>
-      <h2>If someone is in danger</h2>
-      <p class="callout">If you think someone is in danger, contact your local emergency
-        services straight away.</p>
-      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymity works here and how
-        to stay safe.</p>
+      <p>Moderators can delete posts and whole threads that break these rules, and can lock a
+        thread so it takes no more replies. There's no report button yet, but one is
+        coming.</p>
+      <h2 id="help" tabindex="-1">Where to get help</h2>
+      ${HELPLINES_HTML}
+      <p class="muted">The <a href="/faq">FAQ</a> explains how anonymous you are
+        here${MIN_AGE > 0 ? ", and why educhan asks when you were born" : ""}.</p>
     </article>`;
   announce("Rules");
 }
@@ -1780,95 +2023,118 @@ const FAQ_SECTIONS = [
     id: "faq-what",
     question: "What is educhan?",
     answer: `
-      <p>educhan is an anonymous imageboard for students. There are boards for school and
-        university subjects and for student life, such as admissions, exams, careers and
-        studying abroad, and anyone can read and post without an account. Institutions can
-        also have boards of their own, at addresses like <code>/u/iitb/</code>.</p>
+      <p>An anonymous imageboard for students: a set of boards where anyone can read and post
+        without an account. There are boards for school and university subjects, and for
+        student life, such as admissions, exams, careers and studying abroad.</p>
       <p>Threads don't last forever. A reply moves its thread to the top of its board, and
-        threads that stop getting replies sink, move to the board's archive, and are
-        deleted after a while.</p>`,
+        threads that stop getting replies sink, move to the board's archive, and are deleted
+        after a while.</p>`,
   },
   {
     id: "faq-who",
-    question: "Who can use it?",
+    question: "Who is educhan for?",
     answer:
       MIN_AGE > 0
         ? `
-      <p>Anyone aged ${MIN_AGE} and over. The first time you visit, educhan asks when
-        you were born. Your answer is checked in your browser and is never stored or sent
-        anywhere, not even to educhan's server. The browser keeps only the result, so you
-        aren't asked on every visit; if it blocks site storage, you're asked each time
-        instead.</p>
+      <p>Students, and anyone else aged ${MIN_AGE} or over. If you're under ${MIN_AGE},
+        educhan isn't for you.</p>
       <p>Everyone who uses educhan agrees to its <a href="/rules">rules</a>.</p>`
         : `
-      <p>Anyone. There is nothing to sign up for. Everyone who uses educhan agrees to its
-        <a href="/rules">rules</a>.</p>`,
+      <p>Students, and anyone else. There is nothing to sign up for. Everyone who uses
+        educhan agrees to its <a href="/rules">rules</a>.</p>`,
+  },
+  // With the age screen switched off there is no question to explain.
+  ...(MIN_AGE > 0
+    ? [
+        {
+          id: "faq-age",
+          question: "Why does educhan ask when I was born?",
+          answer: `
+      <p>Because educhan is only for people aged ${MIN_AGE} and over. Everyone is asked the
+        same question, once, the first time they visit.</p>
+      <p>Your answer never leaves your browser. The browser works out from the month and year
+        whether you're old enough, then forgets them: they are never saved, and never sent to
+        educhan or anyone else. All it keeps is the result, so you aren't asked on every
+        visit, and if the result is no, it doesn't ask again.</p>`,
+        },
+      ]
+    : []),
+  {
+    id: "faq-private",
+    question: "Why are there no accounts or private messages?",
+    answer: `
+      <p>On purpose. With no accounts, there's no profile, no followers or friends, and no list
+        of your posts for anyone to look through. There's nothing to sign up for and no
+        password to lose.</p>
+      <p>With no private messages, everything said on educhan is said in public, where
+        everyone can see it. Someone who wants to get you on their own, away from everyone
+        else, usually starts by asking to talk privately, often on another app. So educhan
+        has no private messages, and its <a href="/rules">rules</a> don't allow contact
+        details or asking people to move to other apps. If anyone asks you to, you don't have
+        to reply.</p>`,
   },
   {
     id: "faq-anonymity",
     question: "How anonymous am I?",
     answer: `
-      <p>There are no accounts, and every post is signed &ldquo;Anonymous&rdquo; unless you
-        type a name. Beyond that:</p>
+      <p>Fairly anonymous, but not completely. Here's what educhan does:</p>
       <ul>
-        <li>Each post carries an ID that is the same for all your posts in one thread and
-          different in every other, so a conversation can be followed without you being
-          followed around the site (<a href="#faq-ids">more about IDs</a>).</li>
-        <li>educhan's server keeps no IP addresses in its logs, and posts are not stored with
-          one.</li>
-        <li>The verified badge proves you have an address at an institution, never who you
-          are. It's optional, except to post on an institution's own board.</li>
+        <li>There are no accounts, and every post says &ldquo;Anonymous&rdquo; unless you type
+          a name.</li>
+        <li>educhan doesn't keep IP addresses, the numbers that identify an internet
+          connection. They aren't written to its logs, and posts aren't stored with one.</li>
+        <li>educhan never asks for your email address unless you want a badge, and even then
+          it keeps only a scrambled fingerprint of it, never the address itself
+          (<a href="#faq-badge">more about the badge</a>).</li>
+        <li>Each post has an ID that's the same for all your posts in one thread and different
+          in every other, so people can follow a conversation without following you around
+          the site (<a href="#faq-ids">more about IDs</a>).</li>
       </ul>
-      <p>Anonymity has limits, and it's worth knowing them:</p>
+      <p>But what you write can still give you away. Details about your class, your school,
+        your town, your timetable or your friends can be enough for someone who knows you to
+        work out that it's you. So:</p>
       <ul>
-        <li>What you write can give you away. Details about your class, school, timetable or
-          friends can be enough for someone who knows you.</li>
-        <li>Photos can carry hidden details, such as where they were taken, and educhan
-          doesn't remove them yet. Post a screenshot of a photo rather than the original.</li>
-        <li>A tripcode links every post that carries it. A badge narrows you down to your
-          institution, which at a small one can say a lot.</li>
-        <li>Your internet provider, the network you're on (a school's, say) and anyone who
-          can use your device can see that you visit educhan.</li>
-      </ul>`,
-  },
-  {
-    id: "faq-safety",
-    question: "How do I stay safe?",
-    answer: `
-      <ul>
-        <li>Never share contact details, yours or anyone else's: phone numbers, home or school
-          addresses, email addresses, or social media, Discord, Snapchat or Instagram
-          handles.</li>
-        <li>educhan has no private messages. Be wary of anyone who asks you to move to a
-          private chat or another app: it's a common way to get someone on their own, away
-          from everyone else. You don't owe anyone a reply.</li>
-        <li>If something here upsets or worries you, step away and talk to someone you
-          trust.</li>
-        <li>If someone is in danger, contact your local emergency services.</li>
+        <li>Don't post your name, your school, or photos of yourself or anyone else.</li>
+        <li>Remember that photos can carry hidden details, such as where they were taken, and
+          educhan doesn't remove them yet.</li>
+        <li>A tripcode links every post that carries it, and a badge shows which university
+          or college you're at.</li>
+        <li>Your internet provider, the network you're on (a school's, say) and anyone who can
+          use your device can see that you visit educhan.</li>
+        <li>Your browser keeps the key your IDs are made from and the name you last posted
+          with. On a shared computer, use <strong>Forget this browser</strong> on the
+          <a href="/verify#forget-browser">Verify</a> page before you leave, or the next person
+          gets your IDs in the threads you posted in, and your tripcode.</li>
       </ul>`,
   },
   {
     id: "faq-badge",
-    question: "How does the verified badge work?",
+    question: "What is the verified badge?",
     answer: `
+      <p>An optional label on a post, such as ${verifiedBadgeHTML("IIT Bombay")}, which shows
+        that the poster has an email address at that university or college. It's meant for
+        universities and colleges, not schools, so please don't use a school email address.
+        You don't need it to read or to post.</p>
       <ol>
-        <li>On the <a href="/verify">Verify</a> page, enter an email address at a recognised
-          institution.</li>
+        <li>On the <a href="/verify">Verify</a> page, enter your university or college email
+          address.</li>
         <li>Type in the six-digit code that's emailed to you.</li>
-        <li>Your browser is given a badge naming the institution, such as
-          ${verifiedBadgeHTML("IIT Bombay")}, and keeps it until it expires. The Verify page
-          shows when that is.</li>
+        <li>Your browser is given a badge naming the university or college, and keeps it until
+          it expires. The Verify page shows when that is.</li>
         <li>To use it, tick <strong>post with</strong> the badge on the posting form. It's off
           by default, and it's sent only with the posts you tick it on.</li>
       </ol>
-      <p>The address itself is never stored. The server keeps only a keyed fingerprint of
+      <p>The address itself is never stored. The server keeps only a scrambled fingerprint of
         it, so that one address holds one badge at a time, in a table with no link to any
-        post. The badge holds the institution's name, an expiry date and a random number,
-        and nothing about you. So a badge proves an institution, never a person, and nothing
-        connects a badged post to your email address or to the posts you make without
-        it.</p>
-      <p>On a shared computer, forget the badge on the Verify page before you leave: it stays
-        in that browser for whoever uses it next.</p>`,
+        post. The badge holds the institution's name, an expiry date and a random number, and
+        nothing about you. So nothing connects a badged post to your email address, or to the
+        posts you make without the badge &mdash; unless you give both the same name or tripcode,
+        which would show they're yours. That's why the Name field empties when you tick the
+        badge.</p>
+      <p>On a shared computer, use <strong>Forget this browser</strong> on the
+        <a href="/verify#forget-browser">Verify</a> page before you leave. The badge stays in
+        that browser for whoever uses it next, and so do the key your IDs are made from and
+        your name.</p>`,
   },
   {
     id: "faq-tripcodes",
@@ -1896,8 +2162,9 @@ const FAQ_SECTIONS = [
         the first time you post. The browser keeps the key and sends it only with your
         posts; the server uses it to make the ID and doesn't store it. A post with the
         verified badge takes its ID from the badge instead, so it never shares an ID with
-        your posts without one. Clearing this site's data starts a new key, and with it new
-        IDs.</p>`,
+        your posts without one. <strong>Forget this browser</strong> on the
+        <a href="/verify#forget-browser">Verify</a> page, or clearing this site's data, starts a
+        new key, and with it new IDs.</p>`,
   },
   {
     id: "faq-markup",
@@ -1943,6 +2210,11 @@ const FAQ_SECTIONS = [
           replies. It's deleted after the number of days the archive page shows.</li>
       </ul>`,
   },
+  {
+    id: "faq-help",
+    question: "Where can I get help?",
+    answer: HELPLINES_HTML,
+  },
 ];
 
 function renderFAQ() {
@@ -1968,7 +2240,7 @@ function renderFAQ() {
 // The age screen is a neutral question asked once, before anything of the site
 // is shown or fetched. Neutral means it gives nothing away: no threshold, no
 // preselected year, no "I am old enough" box to tick, and no second go at the
-// question once it has said no. It is the browser's own check, not proof, and
+// question once it has said no. It is a question taken on trust, not proof, and
 // the answer never leaves the page: not stored, not sent, not put in the URL.
 
 let ageScreen = null;
@@ -2012,8 +2284,8 @@ function ageQuestionHTML() {
   return `
     <form class="age-step fields" method="dialog" novalidate>
       <h2 class="age-title" id="age-title">When were you born?</h2>
-      <p class="age-note" id="age-note">Your answer is checked in this browser and is never
-        stored or sent anywhere.</p>
+      <p class="age-note" id="age-note">Your answer stays in this browser and is never saved
+        or sent anywhere.</p>
       <div class="age-fields" role="group" aria-labelledby="age-title" aria-describedby="age-note">
         <div class="field">
           <label class="label" for="age-month">Month</label>
@@ -2040,8 +2312,8 @@ function ageAgreeHTML() {
     <div class="age-step">
       <h2 class="age-title" id="age-title">Welcome to educhan</h2>
       <p id="age-agree">By continuing you agree to the <a href="/rules">rules</a>.</p>
-      <p class="age-note">The <a href="/faq">FAQ</a> explains how anonymity works here and
-        how to stay safe.</p>
+      <p class="age-note">The <a href="/faq">FAQ</a> explains how anonymous you are here,
+        and where to get help.</p>
       <div class="actions">
         <button class="btn primary" type="button" data-action="age-continue"
                 aria-describedby="age-agree">Continue</button>
@@ -2165,14 +2437,19 @@ function answerAgeQuestion(event) {
     missing[0].focus();
     return;
   }
-  const eligible = ageFrom(Number(month.value), Number(year.value)) >= MIN_AGE;
+  const age = ageFrom(Number(month.value), Number(year.value));
+  // ageFrom errs young, so someone born in this month MIN_AGE years ago may
+  // already be old enough. They are refused for now, but the refusal is not
+  // kept: a final refusal would shut out for good someone who turned MIN_AGE a
+  // few days ago, and by next month the same answer passes.
+  const unsure = age === MIN_AGE - 1 && Number(month.value) === new Date().getMonth() + 1;
   // Either way the question goes, and the month and year with it: from here on
   // they are nowhere on the page, let alone anywhere else.
-  if (eligible) {
+  if (age >= MIN_AGE) {
     ageScreen.innerHTML = ageAgreeHTML();
     focusAgeScreen();
   } else {
-    refuseAgeScreen();
+    refuseAgeScreen({ keep: !unsure });
   }
 }
 
@@ -2184,9 +2461,13 @@ function passAgeScreen() {
 }
 
 // A refusal is final in this browser: the screen is removed rather than reset,
-// and nothing on the page offers to ask again.
-function refuseAgeScreen() {
-  storageSet(AGE_REFUSED_STORAGE_KEY, "1");
+// and nothing on the page offers to ask again. The one refusal not kept is for
+// an answer that may already be old enough (see answerAgeQuestion); it lasts
+// until the page is closed.
+function refuseAgeScreen({ keep = true } = {}) {
+  if (keep) {
+    storageSet(AGE_REFUSED_STORAGE_KEY, "1");
+  }
   ageAnswer = "refused";
   closeAgeScreen({ remove: true });
   render();
@@ -2290,8 +2571,10 @@ async function render({ draft = captureDraft() } = {}) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
   const requested = window.location.href;
+  renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   state.route = route;
+  state.thread = null;
   renderNav(route);
   clearNotice();
   hideQuotePreview();
@@ -2357,16 +2640,24 @@ async function render({ draft = captureDraft() } = {}) {
     }
   } catch (err) {
     // An expired thread and a mistyped board look the same from here, and both
-    // are better served by a way out than by the raw error.
-    let message = `Could not load this page: ${err.message}`;
-    if (err.status === 404) {
-      message =
-        route.view === "post"
-          ? `No. ${route.no} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
-          : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
+    // are better served by a way out than by the raw error. A post number the
+    // server cannot take at all (0, or more digits than a post number has) is
+    // a post that is not there either.
+    const notFound = err.status === 404 || (route.view === "post" && err.status === 400);
+    let message = err.unreachable ? UNREACHABLE : `Could not load this page: ${err.message}`;
+    let board = null;
+    if (notFound) {
+      // The board is named, and linked, only when it is one this site has:
+      // the slug is whatever the address said, and echoing an arbitrary one
+      // would let a crafted link put a sentence of its choosing on the page.
+      const known = route.view === "post" && state.boards.some((b) => b.slug === route.slug);
+      message = known
+        ? `${Number.isSafeInteger(route.no) ? `No. ${route.no}` : "That post"} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
+        : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
+      board = known ? route.slug : null;
     }
-    el.main.innerHTML = emptyStateHTML(message, route.view === "post" ? route.slug : null);
-    announce(err.status === 404 ? "Not found" : "Could not load this page");
+    el.main.innerHTML = emptyStateHTML(message, board);
+    announce(notFound ? "Not found" : "Could not load this page");
     return;
   } finally {
     finish();
@@ -2430,7 +2721,9 @@ function field(form, name) {
 function captureDraft() {
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
-    return null;
+    // A reply the thread closed on is carried as far as its text goes.
+    const unsent = el.main.querySelector("textarea[data-unsent]");
+    return unsent ? { key: routeKey(state.route), open: true, body: unsent.value } : null;
   }
   const image = field(form, "image");
   const details = form.closest("details");
@@ -2460,11 +2753,14 @@ function restoreDraft(draft) {
   }
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
+    keepUnsentDraft(draft);
     return;
   }
+  // An empty field is restored as empty: a Name the poster cleared stays
+  // cleared, rather than the form's remembered name coming back.
   for (const name of ["subject", "name", "body"]) {
     const node = field(form, name);
-    if (node && draft[name]) {
+    if (node && name in draft) {
       node.value = draft[name];
     }
   }
@@ -2483,6 +2779,31 @@ function restoreDraft(draft) {
   if (details && (draft.open || draft.body || draft.file)) {
     details.open = true;
   }
+}
+
+// keepUnsentDraft is for a draft whose thread was archived or locked under it:
+// the re-render has no form to put it back in, and the draft is the only copy
+// of what the poster wrote. Its text goes into a read-only box under the note
+// that says why, to be copied somewhere it can still go.
+function keepUnsentDraft(draft) {
+  const note = el.main.querySelector("[data-replies-closed]");
+  const body = draft.body || "";
+  if (!note || (!body.trim() && !draft.file)) {
+    return;
+  }
+  const box = document.createElement("div");
+  box.className = "fields unsent-draft";
+  if (body.trim()) {
+    box.innerHTML = `
+      <div class="field">
+        <label class="label" for="f-unsent">Your reply was not sent. Copy it from here to keep it.</label>
+        <textarea id="f-unsent" data-unsent readonly rows="6"></textarea>
+      </div>`;
+    box.querySelector("textarea").value = body;
+  } else {
+    box.innerHTML = `<p class="hint">Your reply's image was not sent.</p>`;
+  }
+  note.after(box);
 }
 
 /* Images ------------------------------------------------------------------- */
@@ -2689,6 +3010,16 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  if (event.target.closest('[data-action="forget-browser"]')) {
+    event.preventDefault();
+    forgetBrowser();
+    verifyStep = { step: "email", label: "" };
+    renderVerify().then(() => {
+      showNotice("This browser no longer holds your post key, your name or a badge.");
+    });
+    return;
+  }
+
   // Verifying again from here means starting at the address field, with the
   // badge already held staying valid until the new one replaces it.
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
@@ -2721,7 +3052,22 @@ document.addEventListener("click", (event) => {
   navigate(anchor.href);
 });
 
-window.addEventListener("popstate", () => render());
+// The address the view on screen was rendered for, less its fragment.
+let renderedPath = null;
+
+// A same-page quote link or backlink only moves the fragment, and the browser
+// reports that as a history change too. Re-rendering for it would fetch the
+// thread again and rebuild it, hiding every spoiler the reader had revealed and
+// collapsing any open image, to show what is already on screen; the jump and
+// its highlight are all it needs. Back and Forward between such entries are the
+// same.
+window.addEventListener("popstate", () => {
+  if (window.location.pathname + window.location.search === renderedPath) {
+    focusHash();
+    return;
+  }
+  render();
+});
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
@@ -2739,7 +3085,37 @@ el.main.addEventListener("change", (event) => {
     clearNotice();
     updateFileField(field);
   }
+  if (event.target.matches('input[type="checkbox"][name="badge"]')) {
+    badgeToggled(event.target);
+  }
 });
+
+// The Name each form held when its badge box was ticked, to put back if the
+// box is unticked before posting. It lives with the form, so a re-render
+// forgets it and an unticked box then leaves the field as it is.
+const nameBeforeBadge = new WeakMap();
+
+// badgeToggled empties the Name field when the badge is ticked. The field
+// starts with the name remembered from unbadged posts, and that name — a
+// tripcode especially — on a badged post would show everyone which unbadged
+// posts belong to the badge, which per-badge IDs exist to prevent. A name the
+// poster types after ticking is theirs to choose.
+function badgeToggled(box) {
+  const form = box.form;
+  const name = form && field(form, "name");
+  if (!name) {
+    return;
+  }
+  if (box.checked) {
+    nameBeforeBadge.set(form, name.value);
+    name.value = "";
+  } else if (nameBeforeBadge.has(form)) {
+    if (name.value === "") {
+      name.value = nameBeforeBadge.get(form);
+    }
+    nameBeforeBadge.delete(form);
+  }
+}
 
 if (HAS_HOVER) {
   el.main.addEventListener("mouseover", (event) => {
@@ -2894,10 +3270,21 @@ el.main.addEventListener("submit", async (event) => {
   clearNotice();
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
-    storageSet(NAME_STORAGE_KEY, name);
+    // The remembered name is the one for unbadged posts; a badged post's name
+    // is never offered on the next form, where the badge starts unticked.
+    if (!held) {
+      storageSet(NAME_STORAGE_KEY, name);
+    }
     // Clear before navigating so the draft carried across the re-render is the
-    // empty form rather than the post that just went through.
+    // empty form rather than the post that just went through. reset() puts the
+    // Name back to what the form was drawn with, so it is set again: to the
+    // name just used — empty, if the poster cleared it — or after a badged
+    // post to the remembered one.
     form.reset();
+    const nameField = field(form, "name");
+    if (nameField) {
+      nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+    }
     const fileField = form.querySelector("[data-file-field]");
     if (fileField) {
       clearFileField(fileField);
@@ -2929,11 +3316,24 @@ el.main.addEventListener("submit", async (event) => {
     // switch the picker off, so the next press posts the text that is left.
     if (err.status === 403 && err.message === "image limit reached") {
       const fileField = form.querySelector("[data-file-field]");
+      const thread = state.thread;
       if (fileField) {
-        blockFileField(fileField, imageLimitReason(null));
+        blockFileField(fileField, imageLimitReason(thread && thread.board));
+      }
+      // The summary line was drawn before the thread filled up; it says so
+      // now, as a fresh render of the thread would.
+      if (thread) {
+        thread.at_image_limit = true;
+        if (thread.board && thread.board.image_limit > 0) {
+          thread.images = Math.max(Number(thread.images) || 0, thread.board.image_limit);
+        }
+        const counts = el.main.querySelector("[data-thread-counts]");
+        if (counts) {
+          counts.innerHTML = threadCounts(thread, thread.board, false).join(" &middot; ");
+        }
       }
     }
-    showNotice(errorMessage(err));
+    showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
     button.disabled = false;
     button.textContent = label;
   }

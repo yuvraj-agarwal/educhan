@@ -36,8 +36,10 @@ func newPosterKey(t *testing.T) string {
 	return base64.RawURLEncoding.EncodeToString(buf)
 }
 
-// browser is one client as the front end behaves: it sends its poster key on
-// every post, and its credential only on a post that asks for a badge.
+// browser is one client as the front end behaves: a post that asks for a
+// badge carries its credential and nothing else, and any other post carries
+// its poster key. The server's handling of a post that carries both, which the
+// client never sends, is tested by posting with explicit headers.
 type browser struct {
 	*harness
 	key        string
@@ -49,11 +51,11 @@ type browser struct {
 
 func (b browser) headers(badge bool) http.Header {
 	header := http.Header{}
-	if b.key != "" {
-		header.Set(posterKeyHeader, b.key)
-	}
-	if badge && b.credential != "" {
+	switch {
+	case badge && b.credential != "":
 		header.Set(credentialHeader, b.credential)
+	case b.key != "":
+		header.Set(posterKeyHeader, b.key)
 	}
 	if b.forwardedFor != "" {
 		header.Set("X-Forwarded-For", b.forwardedFor)
@@ -510,6 +512,16 @@ func TestPosterKeyIsNeverStoredOrLogged(t *testing.T) {
 	ana.imageReply("ids", thread, "an image reply")
 	ana.reply("ids", thread, "a badged reply", true)
 	ana.thread("ids", "a badged thread", true)
+	// The client never sends the key with a badged post, but the server must
+	// not keep either value when one arrives with both.
+	var both createdPost
+	if status := h.postWithHeaders(http.Header{
+		posterKeyHeader:  {key},
+		credentialHeader: {issued.Credential},
+	}, fmt.Sprintf("/api/boards/ids/threads/%d/posts", thread),
+		map[string]any{"body": "badged, with the key as well", "badge": true}, &both); status != http.StatusCreated {
+		t.Fatalf("badged reply carrying the key too: status %d (%s)", status, both.Error)
+	}
 
 	// Refusals too: a malformed key, and a key sent to a board that does not
 	// exist, are both turned away without the key being written anywhere.
@@ -545,16 +557,31 @@ func TestPosterKeyIsNeverStoredOrLogged(t *testing.T) {
 		t.Fatalf("the scan found the credential hash in %d rows, want 1; it misses bytea columns", n)
 	}
 
+	// The credential's id is what a badged poster ID is derived from, and
+	// the verification tables keep only its hash; the id itself, the token
+	// that carries it, and the tagged strings the IDs are computed over must
+	// be nowhere, or a badged post could be tied back to its verification.
+	credID := credentialID(t, h, issued.Credential)
+	credRaw, err := base64.RawURLEncoding.DecodeString(credID)
+	if err != nil {
+		t.Fatalf("decode the credential id: %v", err)
+	}
 	for name, needle := range map[string][]byte{
 		"the key":                  []byte(key),
 		"the key's bytes":          raw,
 		"SHA-256 of the key bytes": digest[:],
 		"SHA-256 of the key text":  textDigest[:],
 		"the malformed key":        []byte(malformed),
+		"the key's source string":  []byte(posterKeySource(key)),
+		"the credential":           []byte(issued.Credential),
+		"the credential's id":      []byte(credID),
+		"the credential id bytes":  credRaw,
+		"the credential's source":  []byte(credentialSource(credID)),
+		"the verified address":     []byte("ana@iitb.ac.in"),
 	} {
 		for _, table := range h.tables() {
 			if n := h.rowsContaining(table, needle); n != 0 {
-				t.Errorf("%d rows of %s contain %s; the poster key must never be stored", n, table, name)
+				t.Errorf("%d rows of %s contain %s; it must never be stored", n, table, name)
 			}
 		}
 	}

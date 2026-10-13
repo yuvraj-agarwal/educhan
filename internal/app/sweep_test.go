@@ -91,7 +91,7 @@ func TestSweepDeletesOnlyExpiredArchivedThreadsAndTheirMedia(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	if want := (SweepReport{Threads: 3, Posts: 9, Attachments: 6}); report != want {
+	if want := (SweepReport{Threads: 3, Posts: 9, Attachments: 6, BlobsRemoved: 12}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
 	}
 
@@ -116,6 +116,9 @@ func TestSweepDeletesOnlyExpiredArchivedThreadsAndTheirMedia(t *testing.T) {
 	if archived := fetchArchive(t, h, "brief").Threads; len(archived) != 1 {
 		t.Errorf("/brief/ archive lists %d threads, want the one not yet expired", len(archived))
 	}
+	if queued := h.countRows("media_deletions"); queued != 0 {
+		t.Errorf("%d files are still queued for removal, want none", queued)
+	}
 
 	// Nothing is left to do, and doing nothing is not a failure.
 	again, err := h.app.Sweep(context.Background())
@@ -124,10 +127,12 @@ func TestSweepDeletesOnlyExpiredArchivedThreadsAndTheirMedia(t *testing.T) {
 	}
 }
 
-// Rows and blobs are deleted in that order, so a blob that cannot be removed
-// is an orphaned file rather than a broken post. The sweep carries on with the
-// rest and then reports failure, which is what gives the job a non-zero exit.
-func TestSweepReportsBlobsItCouldNotRemove(t *testing.T) {
+// The rows go first and the files after, so a file the store will not let go
+// of is an orphan rather than a broken post. Its key stays queued, the sweep
+// reports failure — which is what gives the job a non-zero exit — and the next
+// sweep tries again, so a storage outage costs a retry rather than files kept
+// public for good with nothing left to say they exist.
+func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("stuck")
 	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'stuck'`)
@@ -135,20 +140,91 @@ func TestSweepReportsBlobsItCouldNotRemove(t *testing.T) {
 	thread := h.imageThread("stuck", "an image the store will not let go of")
 	h.archiveThread("stuck", thread.ThreadNo, time.Minute)
 	blobs := threadBlobs(t, h, "stuck", thread.ThreadNo)
-	h.app.media = refusingDeletes{h.app.media}
+	store := h.app.media
+	h.app.media = refusingDeletes{store}
 
 	report, err := h.app.Sweep(context.Background())
 	if err == nil {
 		t.Fatal("a sweep that could not remove an attachment reported success")
 	}
-	if report.Threads != 1 || report.Attachments != 1 || report.BlobFailures != 1 {
-		t.Errorf("sweep report = %+v, want one thread and one attachment, its blobs not removed", report)
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
 	}
 	if status := h.threadStatus("stuck", thread.ThreadNo); status != http.StatusNotFound {
 		t.Errorf("the thread's rows should be gone even so, GET answers %d", status)
 	}
 	for _, path := range blobs {
 		requireFile(t, path, true)
+	}
+	if queued := h.countRows("media_deletions"); queued != 2 {
+		t.Fatalf("%d files queued for removal, want the original and its thumbnail", queued)
+	}
+
+	// The store comes back, and the next sweep finishes the job.
+	h.app.media = store
+	report, err = h.app.Sweep(context.Background())
+	if err != nil {
+		t.Fatalf("sweep after the store recovered: %v", err)
+	}
+	if want := (SweepReport{BlobsRemoved: 2}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, false)
+	}
+	if queued := h.countRows("media_deletions"); queued != 0 {
+		t.Errorf("%d files still queued, want none", queued)
+	}
+}
+
+// The sweeper is a separate process, and its media settings have to match the
+// server's. One that does not — a Job left on the local backend, a different
+// bucket, prefix or upload directory — finds every file missing. Deleting a
+// missing file is not an error for a moderator removing a post, but here it
+// means the sweeper is looking at the wrong store, so the sweep fails and
+// keeps the keys, where it used to report success and leave every image
+// public at its URL.
+func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("elsewhere")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'elsewhere'`)
+
+	thread := h.imageThread("elsewhere", "stored where the sweeper is not looking")
+	h.archiveThread("elsewhere", thread.ThreadNo, time.Minute)
+	attachment := fetchThread(t, h, "elsewhere", thread.ThreadNo).Posts[0].Attachment
+	blobs := threadBlobs(t, h, "elsewhere", thread.ThreadNo)
+
+	store := h.app.media
+	wrong, err := media.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("empty store: %v", err)
+	}
+	h.app.media = wrong
+	report, err := h.app.Sweep(context.Background())
+	h.app.media = store
+	if err == nil {
+		t.Fatal("a sweep against a store that holds none of the files reported success")
+	}
+	if !strings.Contains(err.Error(), "EDUCHAN_MEDIA_BACKEND") {
+		t.Errorf("error %q does not point at the media settings", err)
+	}
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, true)
+	}
+
+	// A sweeper with the server's settings removes them, and the URLs stop
+	// answering.
+	if report, err := h.app.Sweep(context.Background()); err != nil || report.BlobsRemoved != 2 {
+		t.Fatalf("sweep with the server's store = %+v, %v; want both files removed", report, err)
+	}
+	for _, url := range []string{attachment.URL, attachment.ThumbURL} {
+		var out map[string]any
+		if status := h.do(http.MethodGet, url, nil, &out); status != http.StatusNotFound {
+			t.Errorf("GET %s after the sweep answers %d, want 404", url, status)
+		}
 	}
 }
 
@@ -171,35 +247,68 @@ func TestSweepStopsWhenCancelled(t *testing.T) {
 	}
 }
 
-// The sweep's log is a count of what went, never which boards or threads.
+// The sweep's log is one record of counts, never which boards or threads
+// went — not even when a file cannot be removed, whose key names its board.
 func TestSweepLogsOnlyCounts(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
-	h.addBoard("quietly")
-	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'quietly'`)
+	h.addBoard("quietly", "noisily")
+	h.exec(`UPDATE boards SET archive_days = 0`)
+
+	sweepLog := func(t *testing.T) ([]map[string]any, error) {
+		t.Helper()
+		before := len(logs.String())
+		_, err := h.app.Sweep(context.Background())
+		var lines []map[string]any
+		for _, line := range strings.Split(strings.TrimSpace(logs.String()[before:]), "\n") {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("log line %q: %v", line, err)
+			}
+			lines = append(lines, entry)
+		}
+		return lines, err
+	}
+
 	thread := h.imageThread("quietly", "gone without a trace in the log")
 	h.archiveThread("quietly", thread.ThreadNo, time.Minute)
-
-	if _, err := h.app.Sweep(context.Background()); err != nil {
+	lines, err := sweepLog(t)
+	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-
-	var record map[string]any
-	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
-		var entry map[string]any
-		if err := json.Unmarshal([]byte(line), &entry); err == nil && entry["msg"] == "sweep" {
-			record = entry
-		}
+	if len(lines) != 1 || lines[0]["msg"] != "sweep" {
+		t.Fatalf("the sweep logged %v, want exactly one sweep record", lines)
 	}
-	if record == nil {
-		t.Fatalf("no sweep record in the log:\n%s", logs.String())
-	}
+	record := lines[0]
 	delete(record, "time")
 	delete(record, "level")
 	delete(record, "msg")
-	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0, "blob_failures": 0.0}
+	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0,
+		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
+	}
+
+	// A file the store refuses to delete is counted, and its key — which
+	// names the board — appears neither in the log nor in the error the job
+	// exits with.
+	thread = h.imageThread("noisily", "an image the store will not let go of")
+	h.archiveThread("noisily", thread.ThreadNo, time.Minute)
+	h.app.media = refusingDeletes{h.app.media}
+	lines, err = sweepLog(t)
+	if err == nil {
+		t.Fatal("a sweep that could not remove its files reported success")
+	}
+	if len(lines) != 1 || lines[0]["msg"] != "sweep" || lines[0]["blob_failures"] != 2.0 {
+		t.Errorf("the failing sweep logged %v, want exactly one sweep record with two failures", lines)
+	}
+	for _, text := range []string{fmt.Sprint(lines), err.Error()} {
+		if strings.Contains(text, "noisily") || strings.Contains(text, "quietly") {
+			t.Errorf("the sweep named a board: %s", text)
+		}
+	}
+	if !strings.Contains(err.Error(), "delete refused") {
+		t.Errorf("error %q does not say why the files were not removed", err)
 	}
 }
 
@@ -207,6 +316,6 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 // a bucket that has stopped cooperating.
 type refusingDeletes struct{ media.Store }
 
-func (refusingDeletes) Delete(context.Context, string) error {
-	return errors.New("delete refused")
+func (refusingDeletes) Delete(_ context.Context, key string) error {
+	return fmt.Errorf("delete %s: %w", key, errors.New("delete refused"))
 }

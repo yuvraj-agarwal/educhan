@@ -101,6 +101,13 @@ func TestDomainAllowlistRefusesSchoolNamespaces(t *testing.T) {
 		"school.vic.edu.au",
 		"moe-dl.edu.my",
 		"school.edu.hk",
+		"liceo.edu.it",
+		"someschool.edu.in",
+		"x.kvs.ac.in",
+		"kvs.ac.in",
+		"someschool.ac.th",
+		"kosen.ac.jp",
+		"univie.ac.at",
 	} {
 		if label, ok := list.lookup(domain); ok {
 			t.Errorf("%s was accepted as %q, want refused", domain, label)
@@ -115,6 +122,11 @@ func TestDomainAllowlistRefusesSchoolNamespaces(t *testing.T) {
 		"connect.hku.hk":         "University of Hong Kong",
 		"link.cuhk.edu.hk":       "Chinese University of Hong Kong",
 		"um.edu.my":              "um.edu.my",
+		"nitk.ac.in":             "nitk.ac.in",
+		"cse.iitb.ac.in":         "IIT Bombay",
+		"ashoka.edu.in":          "Ashoka University",
+		"g.ecc.u-tokyo.ac.jp":    "University of Tokyo",
+		"student.chula.ac.th":    "Chulalongkorn University",
 	} {
 		if label, ok := list.lookup(domain); !ok || label != want {
 			t.Errorf("%s = %q/%v, want %q", domain, label, ok, want)

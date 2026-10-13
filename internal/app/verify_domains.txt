@@ -19,85 +19,92 @@
 #   !nsw.edu.au               A denial. The domain and every subdomain of it
 #                             are refused, whatever else matches. It is for
 #                             school namespaces that sit inside an academic
-#                             suffix: the badge names a university or college,
-#                             so for now school addresses do not verify. This
-#                             limits the badge, not who may use the site.
+#                             suffix.
 #
 # An address sitting directly on a suffix (someone@ac.in) is refused: a suffix
 # is a namespace, not an institution.
 #
+# School addresses are refused on purpose, for child safety, and this is a
+# limit on the badge, not on who may use the site. A badge that names a school
+# marks its poster as a child at a place anyone can find; school mailboxes are
+# often monitored by staff and closed when a pupil leaves; and many school
+# systems forbid pupils using their address to sign up anywhere. So the aim is
+# that every badge names a university or college. That is a goal, not a
+# guarantee: no suffix maps exactly onto higher education. ac.uk, for one,
+# admits further-education and sixth-form colleges, whose students can be 16,
+# and a few US schools kept .edu domains registered before 2001.
+#
 # Reviewing a suffix: a namespace only belongs here when it is reserved for
 # higher education. Where a country puts schools under the same suffix as its
 # universities, either deny the school namespaces below or drop the suffix and
-# list the universities as institutions instead. The edu.* suffixes not
-# mentioned in the review notes below have not been checked this way yet.
+# list the universities as institutions instead. Every suffix is marked:
+# "reviewed" means it was checked this way, "not checked yet" means it was not
+# and may still admit schools. Prefer named institutions to an unchecked
+# suffix.
+#
+# The site does not target the EU for now, so no EU member-state suffixes are
+# listed. If that changes, add EU universities by name rather than by suffix:
+# edu.it, for one, also holds Italian secondary schools (liceo.edu.it).
 
 # --- Academic suffixes ------------------------------------------------------
 
 # North America
-edu
+edu         # reviewed: post-secondary only since 2001; a few older school
+            # registrations survive
 
-# United Kingdom and Ireland
+# United Kingdom
 # (sch.uk is deliberately absent: it is the UK schools namespace.)
-ac.uk
+ac.uk       # reviewed: includes further-education and sixth-form colleges
 
 # South Asia
-ac.in
-edu.in
-ac.bd
-edu.bd
-ac.lk
-edu.pk
-edu.np
+# (edu.in is not a suffix here: it is shared with schools, so its
+# universities are listed as institutions below instead.)
+ac.in       # reviewed: Kendriya Vidyalaya schools are denied below
+ac.bd       # not checked yet
+edu.bd      # not checked yet
+ac.lk       # not checked yet
+edu.pk      # not checked yet
+edu.np      # not checked yet
 
 # East and South-East Asia
-ac.jp
-ac.kr
-edu.cn
-edu.tw
-edu.my
-# edu.hk and edu.sg are not suffixes here: both are shared with schools, so
-# their universities are listed as institutions below instead.
-ac.th
-ac.id
-edu.ph
-edu.vn
+# (ac.jp and ac.th are not suffixes here: Japan's colleges of technology under
+# ac.jp take students from 15, and ac.th has not been checked, so their
+# universities are listed as institutions below. edu.hk and edu.sg are shared
+# with schools and are handled the same way.)
+ac.kr       # not checked yet
+edu.cn      # not checked yet
+edu.tw      # not checked yet
+edu.my      # not checked yet; pupils' Ministry accounts are denied below
+ac.id       # not checked yet
+edu.ph      # not checked yet
+edu.vn      # not checked yet
 
 # Oceania
-edu.au
-ac.nz
+edu.au      # reviewed: the state school namespaces are denied below
+ac.nz       # not checked yet
 
-# Europe
-ac.at
-ac.be
-ac.cy
-ac.rs
-edu.pl
-edu.es
-edu.gr
-edu.it
-edu.ee
-edu.lv
+# Europe, outside the EU
+ac.rs       # not checked yet
 
 # Middle East and Africa
-ac.il
-ac.ae
-edu.sa
-edu.eg
-edu.tr
-ac.za
-ac.ke
-ac.tz
-ac.ug
-ac.ma
+ac.il       # not checked yet
+ac.ae       # not checked yet
+edu.sa      # not checked yet
+edu.eg      # not checked yet
+edu.tr      # not checked yet
+ac.za       # not checked yet
+ac.ke       # not checked yet
+ac.tz       # not checked yet
+ac.ug       # not checked yet
+ac.ma       # not checked yet
 
 # Latin America
-edu.ar
-edu.br
-edu.co
-edu.mx
-edu.pe
-edu.uy
+edu.ar      # not checked yet
+edu.br      # not checked yet
+edu.co      # not checked yet
+edu.mx      # not checked yet
+edu.pe      # not checked yet
+edu.uy      # not checked yet
 
 # --- Denied school namespaces -----------------------------------------------
 
@@ -112,6 +119,9 @@ edu.uy
 !vic.edu.au
 !wa.edu.au
 
+# India: Kendriya Vidyalaya (central government schools) sit under ac.in.
+!kvs.ac.in
+
 # Malaysia: pupils' Ministry of Education accounts.
 !moe-dl.edu.my
 
@@ -124,9 +134,10 @@ edu.uy
 #
 # A handful to start with, and the shape for the rest. Most entries are
 # cosmetic: without one the address still verifies through its suffix, and the
-# badge names the domain rather than the institution. The Hong Kong and
-# Singapore entries are not: their suffixes are not listed, so these are the
-# only addresses there that verify. Polytechnics are not listed yet.
+# badge names the domain rather than the institution. The entries under
+# edu.in, ac.jp, ac.th, edu.hk and edu.sg are not: those suffixes are not
+# listed, so these are the only addresses there that verify. Polytechnics are
+# not listed yet.
 
 iitb.ac.in     = IIT Bombay
 iitd.ac.in     = IIT Delhi
@@ -136,6 +147,8 @@ iitkgp.ac.in   = IIT Kharagpur
 iisc.ac.in     = IISc Bangalore
 iiit.ac.in     = IIIT Hyderabad
 bits-pilani.ac.in = BITS Pilani
+ashoka.edu.in  = Ashoka University
+srmist.edu.in  = SRM Institute of Science and Technology
 
 mit.edu        = MIT
 stanford.edu   = Stanford University
@@ -167,3 +180,22 @@ cityu.edu.hk   = City University of Hong Kong
 hkbu.edu.hk    = Hong Kong Baptist University
 ln.edu.hk      = Lingnan University
 eduhk.hk       = Education University of Hong Kong
+
+u-tokyo.ac.jp  = University of Tokyo
+kyoto-u.ac.jp  = Kyoto University
+osaka-u.ac.jp  = Osaka University
+tohoku.ac.jp   = Tohoku University
+nagoya-u.ac.jp = Nagoya University
+hokudai.ac.jp  = Hokkaido University
+kyushu-u.ac.jp = Kyushu University
+keio.jp        = Keio University  # student addresses are @keio.jp
+keio.ac.jp     = Keio University
+waseda.jp      = Waseda University
+
+chula.ac.th    = Chulalongkorn University
+mahidol.ac.th  = Mahidol University
+tu.ac.th       = Thammasat University
+ku.ac.th       = Kasetsart University
+cmu.ac.th      = Chiang Mai University
+kmutt.ac.th    = KMUTT
+ait.ac.th      = Asian Institute of Technology
