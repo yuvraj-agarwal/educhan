@@ -395,9 +395,12 @@ needs a browser check before the test changes.
   fields need adding there too. The spoiler box lives in the file preview and is
   restored only alongside the file it was ticked for.
 - **The content rules' answers** (see Content rules and held posts below) are shown in
-  the form, never as a page change, and the draft stays put for all three. They go in
-  the form's own notice (`data-form-notice`, above the buttons) rather than the page's
-  `#notice`, because on a long thread the poster is looking at the bottom of the page.
+  the form, never as a page change. The draft stays put for a block and for support; a
+  held post empties the form as a published one does. They go in the form's own notice
+  (`data-form-notice`, above the buttons) rather than the page's `#notice`, because on a
+  long thread the poster is looking at the bottom of the page — and so does every other
+  refusal of a post (flood control, a locked or archived thread, the network), which
+  matters most after **Post anyway**, when the support panel is all that is on screen.
   A `422` block is worded by `blockedMessage` (through `errorMessage`): the rule in
   plain words, the server's `match` quoted, and the field when it is the Name or the
   Subject; `pointAtMatch` focuses that field, selects the match (an exact search, then
@@ -415,7 +418,8 @@ needs a browser check before the test changes.
   the cursor in the message; nothing here traps the reader or blocks the post. A `202`
   held post empties the form as a published one does, stays on the thread or board (the
   answer has no number, and nothing could show the post yet), and says it is waiting
-  for a moderator (`heldNoticeHTML`), linking to the FAQ's `faq-checks`. The outcome
+  for a moderator (`heldNoticeHTML`), linking to the FAQ's `faq-checks` and, on every
+  held post alike, to `faq-help` for where to get help. The outcome
   names, the two block rules, `created.held` and both `support_seen` encodings are
   checked against the server in `TestClientReadsTheContentRulesAnswersTheServerGives`.
   Copy here follows the rules page: plain, kind, no claim that a check keeps anyone safe
@@ -451,7 +455,9 @@ needs a browser check before the test changes.
   yet (reports). A change to any of those changes the pages in the
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
-  external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
+  external links carry `rel="noopener noreferrer"` and open in a new tab
+  (`target="_blank"`, said to screen readers), because the list is also the support
+  panel's and leaving in the same tab would lose the unsent draft. The rules and FAQ are readable before
   the age screen, so they must not depend on anything fetched: what a server can switch
   off — images, the badge — they qualify in words ("Not every educhan site …") rather
   than by reading a flag. The footer is not one of those pages, so its sentence inviting

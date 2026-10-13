@@ -411,11 +411,13 @@ refused post costs no cooldown, so refusals are counted instead: after
 are answered `429` without being read until the minute is up (see
 [Flood control](#flood-control)).
 
-The web page answers each outcome in the posting form and keeps the draft: a
-block quotes what to remove and selects it in its field, support shows the
-helplines with **Post anyway** and **Go back**, and a held post is acknowledged
-as waiting for a moderator without opening anything (see
-[Front end](#front-end)).
+The web page answers each outcome in the posting form: a block quotes what to
+remove and selects it in its field, and support shows the helplines with
+**Post anyway** and **Go back**, both keeping the draft; a held post empties the
+form as a published one does and is acknowledged as waiting for a moderator,
+with a link to where to get help, without opening anything. Any other refusal of
+a post, such as flood control after **Post anyway**, is shown in the form too
+(see [Front end](#front-end)).
 
 ### Held posts
 

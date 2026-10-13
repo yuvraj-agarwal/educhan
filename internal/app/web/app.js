@@ -2087,7 +2087,10 @@ function audienceText() {
 // HELPLINES_HTML is where to get help, the same on the rules and the FAQ. It is
 // one fixed list for everyone, because educhan never works out where a reader
 // is: it names the countries and lets each reader find their own. The numbers
-// are the build plan's (2.12), and the links leave without a referrer.
+// are the build plan's (2.12), and the links leave without a referrer. The one
+// link that leaves the site opens in a new tab: this list is also the support
+// panel's, over a post the poster has not sent yet, and following the link in
+// the same tab would take that draft with it.
 const HELPLINES_HTML = `
   <p class="callout">If someone is in danger right now, call your local emergency number.</p>
   <p>If something here upsets or worries you, step away and talk to someone you trust. If
@@ -2101,7 +2104,8 @@ const HELPLINES_HTML = `
     <li><strong>Australia:</strong> Lifeline, <a href="tel:131114">13 11 14</a>, and Kids
       Helpline, <a href="tel:1800551800">1800 55 1800</a></li>
     <li><strong>Anywhere else:</strong> find one near you at
-      <a href="https://findahelpline.com" rel="noopener noreferrer">findahelpline.com</a></li>
+      <a href="https://findahelpline.com" target="_blank" rel="noopener noreferrer">findahelpline.com<span
+        class="sr-only"> (opens in a new tab)</span></a></li>
   </ul>`;
 
 // The rules name every kind of post that is not allowed, for everyone on every
@@ -3613,12 +3617,16 @@ function closeSupport(form) {
 
 // heldNoticeHTML is what a poster is told when their post is kept for a
 // moderator: that it arrived and will not show yet. Never why — the server
-// does not say — and never a number, since nothing can be linked to yet.
+// does not say — and never a number, since nothing can be linked to yet. It
+// ends with where to get help, on every held post alike, so it says nothing
+// about which rule held this one: a post about hurting yourself can be held,
+// and the person who wrote it is the one the helplines are for.
 function heldNoticeHTML(isThread) {
   const where = isThread ? "on the board" : "in the thread";
   return `Your ${isThread ? "thread" : "reply"} was received, but it won't show up yet: it's waiting
     for a moderator to check it, and it only appears ${where} if they approve it.
-    <a href="/faq#faq-checks">Why some posts wait</a>`;
+    <a href="/faq#faq-checks">Why some posts wait</a>. If you're having a hard time,
+    <a href="/faq#faq-help">here's where to get help</a>.`;
 }
 
 /* Submitting --------------------------------------------------------------- */
@@ -3781,12 +3789,22 @@ el.main.addEventListener("submit", async (event) => {
     // leave the draft as it was: crisis language opens the support panel, and
     // a block says what to take out and selects it.
     const outcome = err.status === 422 && err.payload ? err.payload.outcome : "";
+    const notice = form.querySelector("[data-form-notice]");
     if (outcome === "support") {
       showSupport(form, err.payload.error);
     } else if (outcome === "block") {
       closeSupport(form);
       showFormNotice(form, esc(errorMessage(err)));
       pointAtMatch(form, err.payload);
+    } else if (notice) {
+      // Everything else (flood control, a thread locked or archived under
+      // the draft, the network) is said in the form, beside the button that
+      // was pressed, rather than in the page's notice: that is at the top,
+      // out of sight below a long thread, and after "Post anyway" the support
+      // panel is all the poster is looking at. The panel stays open, so they
+      // can try again.
+      showFormNotice(form, esc(errorMessage(err, { hasText: body.trim() !== "" })));
+      notice.scrollIntoView({ block: "nearest" });
     } else {
       showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
     }
