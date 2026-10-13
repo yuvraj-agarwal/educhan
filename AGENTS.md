@@ -501,7 +501,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
   than by the filename or the client-supplied content type. `media.Inspect` checks the
   format and the header's dimensions without decoding (and for a GIF the frames' total
-  area, `gifFramePixels`, a walk over the block structure), and `Process` runs it first,
+  area and count, `gifFramePixels`, a walk over the block structure), and estimates the
+  memory processing it will take (**Memory** below); `Process` runs it first,
   so the early refusal in `parseSubmission` and the full one in `media.Save` cannot
   disagree about a file's header. The GIF walk reads every block exactly as `image/gif`
   does — a graphic control extension is a fixed 6 bytes and a plain-text one a fixed 13
@@ -511,7 +512,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   decoder went on to decode. It refuses (`ErrCorruptImage`) a file it cannot follow to
   the trailer. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
   hold it to the decoder: whatever `gif.DecodeAll` decodes, the walk must reach the
-  trailer with exactly the decoder's frame area. Change the two together.
+  trailer with exactly the decoder's frames and frame area. Change the two together.
 - **What is stored is never the upload.** `media.Process` rewrites every image without
   its metadata before `Save` hands it to a backend, so both backends store the same
   file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF
@@ -571,13 +572,37 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
   and converting to sRGB properly needs a colour engine Go does not have.
 - **Memory.** `MaxPixels` is 24 megapixels, and a GIF's frames together may not pass
-  `maxGIFFramePixels` (four times that), because every frame is decoded at once.
-  Decoding and re-encoding take one of `processingSlots` (2) for their duration, so
-  concurrent uploads queue rather than each holding a decoded image at once;
-  `acquireProcessing` honours the request context, and a cancelled wait reaches the
-  handler as `context.Canceled`, which `fail` answers like any request whose client
-  left. Tests narrow the slots with `narrowSlots`. The other half is deploy-side
-  (`GOMEMLIMIT` near 400MiB, or more memory), which this code does not set.
+  `maxGIFFramePixels` (four times that), but neither is the memory bound: what an upload
+  holds while it is processed depends on how it is encoded as much as on its size.
+  `Inspect` estimates it from the header (`processingCost`, `cost.go`): the decoder's
+  buffers (a progressive JPEG keeps 256 bytes of coefficients for every 8×8 block until
+  its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel and 16-bit PNGs to 8;
+  `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
+  thousands of empty frames is not free), the copy `orient` makes, the encoder's output
+  buffer (`storedBuffer`, which refuses to grow past `storedLimit`: four times the upload
+  plus half a byte a pixel, so a file Go's encoders cannot compress the way it came is
+  refused rather than stored many times larger), and the thumbnail scaler's scratch.
+  `peakOf` takes them phase by phase and counts each phase's first allocation on top of
+  the previous phase's peak, because a collection that began before the boundary still
+  holds that phase's scratch. An estimate over `processingBudget` (256 MiB) is refused
+  from the header as `ErrImageTooLarge`, before any cooldown: at 24 megapixels that is a
+  progressive JPEG in 4:4:4 or CMYK or an interlaced 16-bit colour PNG, all of which
+  pass at a quarter of that size. `Process` then holds its estimate of the budget while
+  it decodes and encodes (`acquireProcessing`, a first-come-first-served weighted
+  semaphore in `budget.go`, so a large upload is not starved by small ones); the wait
+  honours the request context, and a cancelled wait
+  reaches the handler as `context.Canceled`, which `fail` answers like any request whose
+  client left. `TestProcessingCostCoversWhatIsHeld` processes one file of every kind the
+  model distinguishes with the collector running continually and fails if what it
+  marked live passes the estimate, and `TestGIFFrameOverheadCoversWhatDecodingKeeps`
+  measures what `image/gif` keeps per frame; a change to a decode path, to `orient`, to
+  the stored buffer or to the thumbnail changes `cost.go` in the same commit. A CMYK
+  JPEG is turned into RGBA where it lies (`rgbaOfCMYK`), not into a second picture.
+  Tests narrow the budget with `narrowBudget`. Not modelled: x/image's VP8L decoder
+  allocates its Huffman groups (up to about 175 MB) from a count inside the compressed
+  bitstream, which no header shows; it predates this code and needs an upstream fix or
+  a VP8L parser. The other half is deploy-side (`GOMEMLIMIT` near 400MiB, or more
+  memory), which this code does not set.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
   as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is

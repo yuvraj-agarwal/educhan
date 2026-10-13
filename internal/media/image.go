@@ -20,10 +20,15 @@ const ThumbMaxDim = 250
 // MaxPixels caps the decoded resolution of an upload. Compressed formats can
 // describe enormous canvases in a handful of bytes, so the dimensions are
 // checked before the image is materialised in memory. 24 megapixels covers
-// what most phone cameras save by default. Decoding a JPEG that size, turning
-// it upright and re-encoding it allocates about 160 MB along the way, where the
-// 50 megapixels allowed before could need 275 MB live at once, on an instance
-// with 512 MiB in all.
+// what most phone cameras save by default. It is not the memory bound on its
+// own: what an image holds while it is processed depends on its encoding as
+// much as its size. At 24 megapixels a baseline 4:2:0 JPEG is estimated to
+// hold 130–165 MB while it is decoded, re-encoded and thumbnailed, depending
+// on the size of the upload; a progressive 4:4:4 one 370 MB, a progressive
+// CMYK one nearly 600 MB, and an interlaced 16-bit PNG nearly 400 MB. So each
+// upload's cost is estimated from its header as well (processingCost in
+// cost.go) and held to processingBudget, which refuses those last three at
+// this size and lets them in smaller.
 const MaxPixels = 24_000_000
 
 // thumbJPEGQuality is used when a thumbnail is encoded as JPEG.
@@ -113,56 +118,71 @@ type Processed struct {
 // enough to run before flood control, so a file that is not an accepted image,
 // or one too large to decode, can be refused without costing its poster a
 // cooldown. For a GIF it also walks the block structure to add up the frames
-// (gifFramePixels), and refuses a file that walk cannot follow to its end. It
-// cannot tell whether the pixels decode; only Process can, and Process runs it
-// first.
+// (gifFramePixels), and refuses a file that walk cannot follow to its end. A
+// file whose processing would hold more than the whole processing budget
+// (processingCost) is refused as too large too: that depends on how it is
+// encoded as well as on its resolution. Inspect cannot tell whether the pixels
+// decode; only Process can, and Process runs it first.
 func Inspect(data []byte) (Format, error) {
+	format, _, _, err := inspect(data)
+	return format, err
+}
+
+// inspect is Inspect, also returning what Process needs: the upload's
+// estimated processing cost and the most its stored file may take.
+func inspect(data []byte) (Format, int64, int64, error) {
 	format, ok := DetectFormat(data)
 	if !ok {
-		return Format{}, ErrUnsupportedFormat
+		return Format{}, 0, 0, ErrUnsupportedFormat
 	}
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return Format{}, ErrCorruptImage
+		return Format{}, 0, 0, ErrCorruptImage
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
-		return Format{}, ErrCorruptImage
+		return Format{}, 0, 0, ErrCorruptImage
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
-		return Format{}, ErrImageTooLarge
+		return Format{}, 0, 0, ErrImageTooLarge
 	}
 	// Every frame of a GIF is decoded, so their sizes are added up as well.
 	// Skipping over the blocks is cheap enough to do here, and an animation
 	// too long to decode is refused like an image too large to; so is one
 	// whose blocks the decoder could not read to the end.
+	var frames gifFrames
 	if format == FormatGIF {
-		if _, err := gifFramePixels(data, maxGIFFramePixels); err != nil {
-			return Format{}, err
+		if frames, err = gifFramePixels(data, maxGIFFramePixels); err != nil {
+			return Format{}, 0, 0, err
 		}
 	}
-	return format, nil
+	cost := processingCost(format, data, cfg, frames)
+	if cost > processingBudget {
+		return Format{}, 0, 0, ErrImageTooLarge
+	}
+	return format, cost, storedLimit(len(data), cfg.Width, cfg.Height), nil
 }
 
 // Process validates the raw upload, rewrites it without its metadata, and
 // derives its thumbnail from the rewritten picture. Animated GIFs are
 // thumbnailed from their first frame.
 //
-// The decoding and encoding wait for a processing slot (processingSlots), and
-// the wait ends with the context's error if ctx is done first.
+// The decoding and encoding wait until the upload's estimated cost fits in
+// the processing budget (acquireProcessing), and the wait ends with the
+// context's error if ctx is done first.
 func Process(ctx context.Context, data []byte) (Processed, error) {
-	format, err := Inspect(data)
+	format, cost, limit, err := inspect(data)
 	if err != nil {
 		return Processed{}, err
 	}
 
-	release, err := acquireProcessing(ctx)
+	release, err := acquireProcessing(ctx, cost)
 	if err != nil {
 		return Processed{}, err
 	}
 	defer release()
 
-	out, err := sanitize(format, data)
+	out, err := sanitize(format, data, limit)
 	if err != nil {
 		return Processed{}, err
 	}

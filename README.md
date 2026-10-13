@@ -371,11 +371,18 @@ client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, an image whose header claims
-  more than 24 megapixels, or a GIF whose frames add up to more than four times that or
-  whose blocks cannot be read through to its end, is refused with `400` before anything
-  is decoded and before flood control. An animated
-  WebP is refused with `400` (`image could not be decoded`) once it is decoded: nothing
-  in Go can decode one to thumbnail it.
+  more than 24 megapixels, a GIF whose frames add up to more than four times that or
+  whose blocks cannot be read through to its end, or an image that would take more
+  memory to process than the server sets aside for all of them at once, is refused with
+  `400` before anything is decoded and before flood control. The memory depends on the
+  encoding: at 24 megapixels an ordinary photo is accepted, but a progressive JPEG with
+  full-resolution colour or in CMYK, or an interlaced 16-bit colour PNG, is refused,
+  and the same picture at a quarter of the size is not; so is a GIF of many thousands
+  of frames, however small they are. An animated WebP is refused with `400`
+  (`image could not be decoded`) once it is decoded: nothing in Go can decode one to
+  thumbnail it. So is an image whose rewritten file would come to more than four times
+  the upload plus half a byte a pixel (`image resolution is too large`), which only a
+  file made to compress unusually well reaches.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
@@ -405,8 +412,11 @@ client can leave the image picker off a server that would refuse what it sends.
   (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension
   of the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was
   called. Migration `0008` renamed the attachments stored before this the same way.
-- **Memory**: decoding and re-encoding run at most two at a time per process; further
-  uploads wait for a turn, and stop waiting if their request is cancelled.
+- **Memory**: how much memory an image takes to decode and re-encode depends on how it is
+  encoded as well as on its size, so each upload's share is estimated from its header.
+  The uploads being processed at once share a fixed budget (256 MiB per process); one
+  whose estimate alone is over it is refused (see **Formats**), and the rest wait for
+  room in the order they arrived, and stop waiting if their request is cancelled.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering

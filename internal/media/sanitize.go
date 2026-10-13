@@ -2,9 +2,10 @@ package media
 
 import (
 	"bytes"
-	"context"
+	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/gif"
 	"image/jpeg"
 	"image/png"
@@ -47,27 +48,45 @@ const storedJPEGQuality = 90
 // have 300 frames) and no more memory than the largest JPEG.
 const maxGIFFramePixels = 4 * MaxPixels
 
-// processingSlots is how many uploads are decoded and re-encoded at once.
-// An image at MaxPixels can take a few hundred megabytes while it is turned
-// into its stored form, on an instance with 512 MiB in all and many requests
-// in flight, so uploads queue for a slot instead of each taking that much at
-// the same time. A waiting upload gives up when its request does. It is a
-// variable so tests can narrow it; nothing else changes it.
-var processingSlots = make(chan struct{}, 2)
+// storedBuffer collects an encoded original and refuses to hold more than
+// limit bytes (storedLimit), with ErrImageTooLarge. It grows by doubling, as a
+// bytes.Buffer does, but never past the limit, so it holds at most twice the
+// limit while it grows: what processingCost counts for it.
+type storedBuffer struct {
+	buf   []byte
+	limit int64
+}
 
-// acquireProcessing waits for a processing slot and returns the function that
-// gives it back, or the context's error if the context ends first.
-func acquireProcessing(ctx context.Context) (func(), error) {
-	slots := processingSlots
-	if err := ctx.Err(); err != nil {
-		return nil, err
+func newStoredBuffer(sizeHint int, limit int64) *storedBuffer {
+	return &storedBuffer{buf: make([]byte, 0, min(int64(sizeHint), limit)), limit: limit}
+}
+
+func (b *storedBuffer) Write(p []byte) (int, error) {
+	need := int64(len(b.buf)) + int64(len(p))
+	if need > b.limit {
+		return 0, ErrImageTooLarge
 	}
-	select {
-	case slots <- struct{}{}:
-		return func() { <-slots }, nil
-	case <-ctx.Done():
-		return nil, ctx.Err()
+	if need > int64(cap(b.buf)) {
+		grown := make([]byte, len(b.buf), min(max(2*int64(cap(b.buf)), need, 4096), b.limit))
+		copy(grown, b.buf)
+		b.buf = grown
 	}
+	b.buf = append(b.buf, p...)
+	return len(p), nil
+}
+
+// encoded is the result of encoding into a storedBuffer: its bytes, or
+// ErrImageTooLarge if the limit stopped it (image/jpeg, image/png and
+// image/gif all hand back their writer's error as it was), or the encoder's
+// own error.
+func (b *storedBuffer) encoded(format Format, err error) ([]byte, error) {
+	switch {
+	case err == nil:
+		return b.buf, nil
+	case errors.Is(err, ErrImageTooLarge):
+		return nil, ErrImageTooLarge
+	}
+	return nil, fmt.Errorf("media: encode %s: %w", format.Name, err)
 }
 
 // sanitized is an upload rewritten for storage.
@@ -78,16 +97,18 @@ type sanitized struct {
 	canvas image.Rectangle // the whole picture, which pic may only partly cover
 }
 
-func sanitize(format Format, data []byte) (sanitized, error) {
+// sanitize rewrites an upload for storage. The rewritten file may not be
+// longer than limit (storedLimit).
+func sanitize(format Format, data []byte, limit int64) (sanitized, error) {
 	switch format.Name {
 	case FormatJPEG.Name:
-		return sanitizeJPEG(data)
+		return sanitizeJPEG(data, limit)
 	case FormatPNG.Name:
-		return sanitizePNG(data)
+		return sanitizePNG(data, limit)
 	case FormatGIF.Name:
-		return sanitizeGIF(data)
+		return sanitizeGIF(data, limit)
 	case FormatWebP.Name:
-		return sanitizeWebP(data)
+		return sanitizeWebP(data, limit)
 	}
 	return sanitized{}, ErrUnsupportedFormat
 }
@@ -106,17 +127,40 @@ func sanitize(format Format, data []byte) (sanitized, error) {
 // it. Converting the pixels to sRGB properly would need a colour engine the
 // standard library does not have. The same goes for the colour chunks of a PNG
 // and the ICCP chunk of a WebP.
-func sanitizeJPEG(data []byte) (sanitized, error) {
+//
+// A CMYK JPEG is converted to RGB where it lies as soon as it is decoded,
+// which is what the encoder would do a pixel at a time, through an interface
+// value each, and what turning it upright would do the same way.
+func sanitizeJPEG(data []byte, limit int64) (sanitized, error) {
 	src, err := jpeg.Decode(bytes.NewReader(data))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
-	pic := orient(src, jpegOrientation(data))
-	buf := bytes.NewBuffer(make([]byte, 0, len(data)))
-	if err := jpeg.Encode(buf, pic, &jpeg.Options{Quality: storedJPEGQuality}); err != nil {
-		return sanitized{}, fmt.Errorf("media: encode jpeg: %w", err)
+	if cmyk, ok := src.(*image.CMYK); ok {
+		src = rgbaOfCMYK(cmyk)
 	}
-	return sanitized{format: FormatJPEG, data: buf.Bytes(), pic: pic, canvas: pic.Bounds()}, nil
+	pic := orient(src, jpegOrientation(data))
+	buf := newStoredBuffer(len(data), limit)
+	stored, err := buf.encoded(FormatJPEG, jpeg.Encode(buf, pic, &jpeg.Options{Quality: storedJPEGQuality}))
+	if err != nil {
+		return sanitized{}, err
+	}
+	return sanitized{format: FormatJPEG, data: stored, pic: pic, canvas: pic.Bounds()}, nil
+}
+
+// rgbaOfCMYK converts a CMYK picture to RGBA with color.CMYKToRGB, the
+// conversion color.CMYK's own RGBA method makes. Both are four bytes a pixel,
+// so each pixel is converted where it lies and the CMYK picture is used up.
+func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
+	b := m.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := m.Pix[m.PixOffset(b.Min.X, y):]
+		for i := 0; i < 4*b.Dx(); i += 4 {
+			row[i], row[i+1], row[i+2] = color.CMYKToRGB(row[i], row[i+1], row[i+2], row[i+3])
+			row[i+3] = 0xFF
+		}
+	}
+	return &image.RGBA{Pix: m.Pix, Stride: m.Stride, Rect: m.Rect}
 }
 
 // sanitizePNG decodes and re-encodes a PNG. image/png writes only the chunks
@@ -126,16 +170,17 @@ func sanitizeJPEG(data []byte) (sanitized, error) {
 // left behind. The pixels are kept exactly, at the bit depth they came in. An
 // animated PNG keeps its still image, which is what a viewer without APNG
 // support has always shown.
-func sanitizePNG(data []byte) (sanitized, error) {
+func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	src, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, len(data)))
-	if err := png.Encode(buf, src); err != nil {
-		return sanitized{}, fmt.Errorf("media: encode png: %w", err)
+	buf := newStoredBuffer(len(data), limit)
+	stored, err := buf.encoded(FormatPNG, png.Encode(buf, src))
+	if err != nil {
+		return sanitized{}, err
 	}
-	return sanitized{format: FormatPNG, data: buf.Bytes(), pic: src, canvas: src.Bounds()}, nil
+	return sanitized{format: FormatPNG, data: stored, pic: src, canvas: src.Bounds()}, nil
 }
 
 // sanitizeGIF decodes every frame of a GIF and encodes them again. The frames,
@@ -144,18 +189,19 @@ func sanitizePNG(data []byte) (sanitized, error) {
 // every application extension but the NETSCAPE2.0 one carrying the loop count
 // (XMP, for one) do not, because image/gif reads past them and never writes
 // them. The thumbnail is of the first frame.
-func sanitizeGIF(data []byte) (sanitized, error) {
+func sanitizeGIF(data []byte, limit int64) (sanitized, error) {
 	g, err := gif.DecodeAll(bytes.NewReader(data))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, len(data)))
-	if err := gif.EncodeAll(buf, g); err != nil {
-		return sanitized{}, fmt.Errorf("media: encode gif: %w", err)
+	buf := newStoredBuffer(len(data), limit)
+	stored, err := buf.encoded(FormatGIF, gif.EncodeAll(buf, g))
+	if err != nil {
+		return sanitized{}, err
 	}
 	return sanitized{
 		format: FormatGIF,
-		data:   buf.Bytes(),
+		data:   stored,
 		pic:    g.Image[0],
 		canvas: image.Rect(0, 0, g.Config.Width, g.Config.Height),
 	}, nil
@@ -175,7 +221,7 @@ func sanitizeGIF(data []byte) (sanitized, error) {
 // served byte for byte. Nobody would see it on screen, moderators and image
 // matching included, which is what makes it a hiding place. Encoding the
 // decoded pixels leaves nothing of the upload, as for the other formats.
-func sanitizeWebP(data []byte) (sanitized, error) {
+func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 	stripped, info, err := stripWebP(data)
 	if err != nil {
 		return sanitized{}, err
@@ -192,7 +238,7 @@ func sanitizeWebP(data []byte) (sanitized, error) {
 	}
 
 	format := FormatPNG
-	buf := bytes.NewBuffer(make([]byte, 0, len(data)))
+	buf := newStoredBuffer(len(data), limit)
 	switch m := pic.(type) {
 	case *image.YCbCr: // lossy, with no alpha
 		format = FormatJPEG
@@ -209,10 +255,11 @@ func sanitizeWebP(data []byte) (sanitized, error) {
 	default: // lossless, decoded as *image.NRGBA
 		err = png.Encode(buf, pic)
 	}
+	stored, err := buf.encoded(format, err)
 	if err != nil {
-		return sanitized{}, fmt.Errorf("media: encode webp as %s: %w", format.Name, err)
+		return sanitized{}, err
 	}
-	return sanitized{format: format, data: buf.Bytes(), pic: pic, canvas: pic.Bounds()}, nil
+	return sanitized{format: format, data: stored, pic: pic, canvas: pic.Bounds()}, nil
 }
 
 // nrgbaOf converts a lossy picture with alpha to plain non-premultiplied RGBA,
@@ -237,9 +284,14 @@ func nrgbaOf(m *image.NYCbCrA) *image.NRGBA {
 	return out
 }
 
-// gifFramePixels adds up the area of every frame a GIF declares, reading only
-// the block structure: image descriptors are read, and everything else,
-// compressed pixels included, is stepped over. It allocates nothing.
+// gifFrames is what a GIF's frames come to: their area together, and how
+// many there are.
+type gifFrames struct{ pixels, count int64 }
+
+// gifFramePixels adds up the area of every frame a GIF declares, and counts
+// them, reading only the block structure: image descriptors are read, and
+// everything else, compressed pixels included, is stepped over. It allocates
+// nothing.
 //
 // The walk has to read the file exactly as image/gif does, block for block,
 // or a file could steer the two apart: an extension the walk read one way and
@@ -253,12 +305,12 @@ func nrgbaOf(m *image.NYCbCrA) *image.NRGBA {
 // the compressed pixels; where they make the decoder stop with an error, the
 // frames it had allocated by then have already been counted.
 //
-// It returns ErrImageTooLarge as soon as the total passes limit, and
+// It returns ErrImageTooLarge as soon as the area passes limit, and
 // ErrCorruptImage when the walk does not end at the trailer: a file the
 // decoder could not read to its end is refused rather than half counted.
 // TestGIFFramePixelsReadsWhatTheDecoderReads and FuzzGIFFramePixels hold it to
 // the decoder.
-func gifFramePixels(data []byte, limit int64) (int64, error) {
+func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 	const (
 		headerLen     = 13 // signature, version, logical screen descriptor
 		descriptorLen = 10 // separator, position, size, flags
@@ -266,7 +318,7 @@ func gifFramePixels(data []byte, limit int64) (int64, error) {
 		plainTextLen  = 13 // read whole by image/gif, whatever its block size says
 	)
 	if len(data) < headerLen {
-		return 0, ErrCorruptImage
+		return gifFrames{}, ErrCorruptImage
 	}
 	i := headerLen
 	if flags := data[10]; flags&0x80 != 0 {
@@ -287,43 +339,43 @@ func gifFramePixels(data []byte, limit int64) (int64, error) {
 		return len(data)
 	}
 
-	var total, frames int64
+	var f gifFrames
 	for i < len(data) {
 		switch data[i] {
 		case 0x21: // extension: introducer, label, then as the label says
 			if i+2 > len(data) {
-				return total, ErrCorruptImage
+				return f, ErrCorruptImage
 			}
 			at := i + 2
 			switch data[i+1] {
 			case 0xF9: // graphic control
 				if at+graphicLen > len(data) || data[at] != 4 || data[at+5] != 0 {
-					return total, ErrCorruptImage
+					return f, ErrCorruptImage
 				}
 				i = at + graphicLen
 			case 0x01: // plain text
 				i = skipBlocks(at + plainTextLen)
 			case 0xFF: // application: its own length byte, then sub-blocks
 				if at >= len(data) {
-					return total, ErrCorruptImage
+					return f, ErrCorruptImage
 				}
 				i = skipBlocks(at + 1 + int(data[at]))
 			case 0xFE: // comment
 				i = skipBlocks(at)
 			default: // image/gif refuses an extension it does not know
-				return total, ErrCorruptImage
+				return f, ErrCorruptImage
 			}
 		case 0x2C: // image descriptor
 			if i+descriptorLen > len(data) {
-				return total, ErrCorruptImage
+				return f, ErrCorruptImage
 			}
 			w := int64(data[i+5]) | int64(data[i+6])<<8
 			h := int64(data[i+7]) | int64(data[i+8])<<8
 			flags := data[i+9]
-			frames++
-			total += w * h
-			if total > limit {
-				return total, ErrImageTooLarge
+			f.count++
+			f.pixels += w * h
+			if f.pixels > limit {
+				return f, ErrImageTooLarge
 			}
 			i += descriptorLen
 			if flags&0x80 != 0 {
@@ -332,17 +384,17 @@ func gifFramePixels(data []byte, limit int64) (int64, error) {
 			// The LZW minimum code size, which image/gif holds to 2–8, and
 			// then the compressed pixels.
 			if i >= len(data) || data[i] < 2 || data[i] > 8 {
-				return total, ErrCorruptImage
+				return f, ErrCorruptImage
 			}
 			i = skipBlocks(i + 1)
 		case 0x3B: // the trailer, where the decoder stops reading
-			if frames == 0 { // which it refuses before any frame
-				return total, ErrCorruptImage
+			if f.count == 0 { // which it refuses before any frame
+				return f, ErrCorruptImage
 			}
-			return total, nil
+			return f, nil
 		default: // a block image/gif refuses
-			return total, ErrCorruptImage
+			return f, ErrCorruptImage
 		}
 	}
-	return total, ErrCorruptImage
+	return f, ErrCorruptImage
 }

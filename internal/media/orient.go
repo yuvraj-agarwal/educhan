@@ -154,8 +154,9 @@ func orientedPoint(o, x, y, w, h int) (int, int) {
 // the factors swapped when the picture turns on its side). That costs the
 // decoded size again, 1.5 bytes a pixel for an ordinary 4:2:0 photo, where an
 // RGBA copy would cost 4, and hands the encoder the same planes it would have
-// computed. Grayscale is one plane. Anything else, CMYK say, goes pixel by
-// pixel into RGBA.
+// computed. Grayscale is one plane, and RGBA (what an RGB or a CMYK JPEG is by
+// the time it gets here) is turned four bytes at a time. Anything else goes
+// pixel by pixel into RGBA.
 func orient(src image.Image, o int) image.Image {
 	if o < 2 || o > 8 {
 		return src
@@ -170,6 +171,19 @@ func orient(src image.Image, o int) image.Image {
 			w, h := s.Rect.Dx(), s.Rect.Dy()
 			dst := image.NewGray(orientedRect(w, h, o))
 			orientPlane(dst.Pix, dst.Stride, s.Pix, s.Stride, w, h, o)
+			return dst
+		}
+	case *image.RGBA:
+		if s.Rect.Min == (image.Point{}) {
+			w, h := s.Rect.Dx(), s.Rect.Dy()
+			dst := image.NewRGBA(orientedRect(w, h, o))
+			for y := 0; y < h; y++ {
+				row := s.Pix[y*s.Stride : y*s.Stride+4*w]
+				for x := 0; x < w; x++ {
+					dx, dy := orientedPoint(o, x, y, w, h)
+					copy(dst.Pix[dy*dst.Stride+4*dx:dy*dst.Stride+4*dx+4], row[4*x:4*x+4])
+				}
+			}
 			return dst
 		}
 	}

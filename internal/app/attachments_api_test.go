@@ -513,8 +513,21 @@ func pngClaiming(t *testing.T, w, h uint32) []byte {
 	return data
 }
 
+// pngDeepClaiming is pngClaiming with sixteen bits a channel, which image/png
+// decodes to eight bytes a pixel, and interlaced, which it decodes a pass at a
+// time beside the whole.
+func pngDeepClaiming(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	data := pngClaiming(t, w, h)
+	data[24], data[28] = 16, 1
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
 // A file whose header shows it cannot be used, because it is not an accepted
-// image or has too many pixels, is refused before flood control, so the poster
+// image, has too many pixels, or is encoded in a way that would take more
+// memory to decode than the server has for it, is refused before flood
+// control, so the poster
 // can send the text on its own at once. An image whose header is sound but
 // whose pixels do not decode is found only by decoding, after the cooldowns
 // have started, which is the one exception the README names.
@@ -534,6 +547,7 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}{
 		{"not an image", "notes.png", []byte("#!/bin/sh\necho hello\n"), "unsupported image format"},
 		{"too many pixels", "huge.png", pngClaiming(t, 10000, 10000), "image resolution is too large"},
+		{"too costly to decode", "deep.png", pngDeepClaiming(t, 6000, 4000), "image resolution is too large"},
 	}
 
 	const poster = "198.51.100.21"

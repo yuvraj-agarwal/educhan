@@ -9,6 +9,7 @@ import (
 	"image/color"
 	"image/color/palette"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"math"
 	"math/rand"
@@ -104,11 +105,14 @@ func decodeStored(t *testing.T, data []byte) image.Image {
 	return img
 }
 
-func narrowSlots(t *testing.T, n int) {
+// narrowBudget replaces the processing budget with one of n bytes for the
+// rest of the test.
+func narrowBudget(t *testing.T, n int64) *budget {
 	t.Helper()
-	old := processingSlots
-	processingSlots = make(chan struct{}, n)
-	t.Cleanup(func() { processingSlots = old })
+	old := processing
+	processing = newBudget(n)
+	t.Cleanup(func() { processing = old })
+	return processing
 }
 
 /* JPEG --------------------------------------------------------------------- */
@@ -328,6 +332,33 @@ func FuzzJPEGOrientation(f *testing.F) {
 	})
 }
 
+// A CMYK JPEG is stored as the colours color.CMYK itself reports, converted
+// where the decoder left them rather than into a second picture.
+func TestCMYKIsConvertedAsTheColourModelDoes(t *testing.T) {
+	src, err := jpeg.Decode(bytes.NewReader(readTestdata(t, "cost-cmyk.jpg")))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	cmyk, ok := src.(*image.CMYK)
+	if !ok {
+		t.Fatalf("the fixture decodes as %T, not CMYK", src)
+	}
+	b := cmyk.Bounds()
+	want := image.NewRGBA(b)
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			want.Set(x, y, cmyk.At(x, y))
+		}
+	}
+	got := rgbaOfCMYK(cmyk)
+	if got.Bounds() != b || !bytes.Equal(got.Pix, want.Pix) {
+		t.Error("rgbaOfCMYK differs from color.CMYK's own conversion")
+	}
+	if &got.Pix[0] != &cmyk.Pix[0] {
+		t.Error("rgbaOfCMYK allocated a second picture")
+	}
+}
+
 /* PNG ---------------------------------------------------------------------- */
 
 // A PNG's ancillary chunks are where its text, XMP, EXIF and timestamps live.
@@ -526,6 +557,21 @@ func TestGIFThumbnailPlacesTheFirstFrameOnTheCanvas(t *testing.T) {
 	}
 }
 
+// tinyFrames is a GIF of n one-pixel frames, each marking a colour of its
+// 256-colour global table transparent, which makes image/gif keep a copy of
+// the table for every frame: the most a frame can cost for the fewest bytes
+// of file, 25.
+func tinyFrames(n int) []byte {
+	b := []byte("GIF89a\x01\x00\x01\x00\xF7\x00\x00")
+	b = append(b, make([]byte, 3*256)...)
+	for i := 0; i < n; i++ {
+		b = append(b, 0x21, 0xF9, 4, 1, 0, 0, 0, 0)       // colour 0 is transparent
+		b = append(b, 0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0)    // one pixel at the origin
+		b = append(b, 8, 4, 0x00, 0x01, 0x04, 0x04, 0x00) // LZW: clear, 0, end
+	}
+	return append(b, 0x3B)
+}
+
 // A GIF's frames are all decoded, so their area together is bounded as well
 // as each frame's. The count reads only the block structure, before any
 // decoding, and allocates nothing however many frames there are.
@@ -548,8 +594,8 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 
 	within := gifOf(4)
-	if got, err := gifFramePixels(within, maxGIFFramePixels); got != 4*MaxPixels || err != nil {
-		t.Errorf("gifFramePixels = %d, %v; want %d and no error", got, err, 4*MaxPixels)
+	if got, err := gifFramePixels(within, maxGIFFramePixels); got != (gifFrames{4 * MaxPixels, 4}) || err != nil {
+		t.Errorf("gifFramePixels = %+v, %v; want four frames of %d pixels and no error", got, err, 4*MaxPixels)
 	}
 	if _, err := Inspect(within); err != nil {
 		t.Errorf("Inspect(four canvases of frames) = %v, want it within the budget", err)
@@ -565,6 +611,21 @@ func TestGIFFrameBudget(t *testing.T) {
 	many := gifOf(2000)
 	if allocs := testing.AllocsPerRun(10, func() { gifFramePixels(many, maxGIFFramePixels) }); allocs != 0 {
 		t.Errorf("gifFramePixels allocated %v times, want none", allocs)
+	}
+
+	// A frame of no size to speak of is not free: image/gif keeps a header
+	// and a palette for every one. Twenty thousand of them, half a megabyte
+	// of file, would hold more than the whole processing budget, and are
+	// refused from the count; two thousand are not.
+	g, err := gif.DecodeAll(bytes.NewReader(tinyFrames(3)))
+	if err != nil || len(g.Image) != 3 || &g.Image[0].Palette[0] == &g.Image[1].Palette[0] {
+		t.Fatalf("the fixture does not decode to three frames with palettes of their own (%v)", err)
+	}
+	if _, err := Inspect(tinyFrames(20_000)); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("Inspect(20,000 one-pixel frames) = %v, want ErrImageTooLarge", err)
+	}
+	if _, err := Inspect(tinyFrames(2_000)); err != nil {
+		t.Errorf("Inspect(2,000 one-pixel frames) = %v, want it within the budget", err)
 	}
 }
 
@@ -629,8 +690,8 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 		for _, frame := range g.Image {
 			want += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
 		}
-		if got, err := gifFramePixels(data, math.MaxInt64); got != want || err != nil {
-			t.Errorf("%s: gifFramePixels = %d, %v; the decoder decoded %d pixels", name, got, err, want)
+		if got, err := gifFramePixels(data, math.MaxInt64); got != (gifFrames{want, int64(len(g.Image))}) || err != nil {
+			t.Errorf("%s: gifFramePixels = %+v, %v; the decoder decoded %d frames of %d pixels", name, got, err, len(g.Image), want)
 		}
 		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooLarge) {
 			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooLarge", name, err)
@@ -681,11 +742,11 @@ func FuzzGIFFramePixels(f *testing.F) {
 	f.Add([]byte("GIF89a\x01\x00\x01\x00\xff\x00\x00"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		n, err := gifFramePixels(data, math.MaxInt64)
-		if n < 0 {
-			t.Fatalf("gifFramePixels = %d", n)
+		if n.pixels < 0 || n.count < 0 {
+			t.Fatalf("gifFramePixels = %+v", n)
 		}
 		// Bound what the decoder may allocate here, as Inspect does.
-		if cfg, err := gif.DecodeConfig(bytes.NewReader(data)); err != nil || int64(cfg.Width)*int64(cfg.Height) > 1<<20 || n > 1<<24 {
+		if cfg, err := gif.DecodeConfig(bytes.NewReader(data)); err != nil || int64(cfg.Width)*int64(cfg.Height) > 1<<20 || n.pixels > 1<<24 || n.count > 1<<12 {
 			return
 		}
 		g, decErr := gif.DecodeAll(bytes.NewReader(data))
@@ -696,8 +757,8 @@ func FuzzGIFFramePixels(f *testing.F) {
 		for _, frame := range g.Image {
 			want += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
 		}
-		if err != nil || n != want {
-			t.Fatalf("gifFramePixels = %d, %v; the decoder decoded %d frames of %d pixels", n, err, len(g.Image), want)
+		if err != nil || n != (gifFrames{want, int64(len(g.Image))}) {
+			t.Fatalf("gifFramePixels = %+v, %v; the decoder decoded %d frames of %d pixels", n, err, len(g.Image), want)
 		}
 	})
 }
@@ -706,7 +767,7 @@ func FuzzGIFFramePixels(f *testing.F) {
 
 func sampleWebP(t *testing.T) []byte {
 	t.Helper()
-	return readWebP(t, "sample.webp")
+	return readTestdata(t, "sample.webp")
 }
 
 // sampleBitstream is the lossless VP8L chunk of the 320×200 fixture.
@@ -719,13 +780,13 @@ func sampleBitstream(t *testing.T) riffChunk {
 	return chunks[0]
 }
 
-// readWebP reads a WebP fixture from testdata. sample.webp is lossless
+// readTestdata reads a fixture from testdata. Of the WebPs, sample.webp is lossless
 // (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four flat
 // quadrants (red, green / blue, white) made with Pillow at quality 90, the
 // second with its left 16 columns transparent: a simple-format VP8 file, and
 // VP8X, ALPH and VP8. Go cannot encode WebP, so these are files rather than
 // built in code.
-func readWebP(t *testing.T, name string) []byte {
+func readTestdata(t *testing.T, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))
 	if err != nil {
@@ -811,7 +872,7 @@ func TestWebPIsStoredAsPNGOrJPEG(t *testing.T) {
 		{"lossy-alpha.webp", FormatPNG, FormatPNG},
 	} {
 		t.Run(tc.file, func(t *testing.T) {
-			upload := readWebP(t, tc.file)
+			upload := readTestdata(t, tc.file)
 			src, err := webp.Decode(bytes.NewReader(upload))
 			if err != nil {
 				t.Fatalf("the fixture does not decode: %v", err)
@@ -864,7 +925,7 @@ func TestFilesHiddenInsideWebPChunksAreNotStored(t *testing.T) {
 		t.Helper()
 		var out []riffChunk
 		found := false
-		for _, c := range webpChunks(t, readWebP(t, file)) {
+		for _, c := range webpChunks(t, readTestdata(t, file)) {
 			if c.id == id {
 				c.payload = append(append([]byte(nil), c.payload...), hidden...)
 				found = true
@@ -885,7 +946,7 @@ func TestFilesHiddenInsideWebPChunksAreNotStored(t *testing.T) {
 		t.Run(tc.file+" "+tc.id, func(t *testing.T) {
 			upload := inside(t, tc.file, tc.id)
 			requireCarries(t, upload, needles...)
-			want, err := webp.Decode(bytes.NewReader(readWebP(t, tc.file)))
+			want, err := webp.Decode(bytes.NewReader(readTestdata(t, tc.file)))
 			if err != nil {
 				t.Fatalf("decode the fixture: %v", err)
 			}
@@ -1040,17 +1101,21 @@ func TestChecksumIsOfTheStoredFile(t *testing.T) {
 	}
 }
 
-/* Processing slots --------------------------------------------------------- */
+/* Processing budget -------------------------------------------------------- */
 
-// Uploads queue for a processing slot. One that is still waiting when its
-// request ends gives up with the request's error and takes nothing.
-func TestProcessWaitsForASlotAndGivesUpWithItsContext(t *testing.T) {
-	narrowSlots(t, 1)
+// An upload waits until its estimated cost fits in the processing budget, and
+// gives up when its context does. Given back, the budget serves the next.
+func TestProcessWaitsForItsShareAndGivesUpWithItsContext(t *testing.T) {
 	upload := encodePNG(t, 32, 32)
-
-	release, err := acquireProcessing(context.Background())
+	_, cost, _, err := inspect(upload)
 	if err != nil {
-		t.Fatalf("take the only slot: %v", err)
+		t.Fatalf("inspect: %v", err)
+	}
+	b := narrowBudget(t, cost)
+
+	release, err := acquireProcessing(context.Background(), 1)
+	if err != nil {
+		t.Fatalf("take a byte of the budget: %v", err)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -1061,7 +1126,7 @@ func TestProcessWaitsForASlotAndGivesUpWithItsContext(t *testing.T) {
 	}()
 	select {
 	case err := <-done:
-		t.Fatalf("Process returned (%v) while the only slot was taken", err)
+		t.Fatalf("Process returned (%v) while its cost did not fit", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 	cancel()
@@ -1080,26 +1145,24 @@ func TestProcessWaitsForASlotAndGivesUpWithItsContext(t *testing.T) {
 		t.Errorf("Process error = %v, want context.DeadlineExceeded", err)
 	}
 
-	// Given back, the slot serves the next upload, and that one gives it back
-	// in turn.
 	release()
 	for i := 0; i < 2; i++ {
 		if _, err := Process(context.Background(), upload); err != nil {
-			t.Fatalf("Process with the slot free: %v", err)
+			t.Fatalf("Process with the budget free: %v", err)
 		}
 	}
-	if len(processingSlots) != 0 {
-		t.Errorf("%d slots still taken after every upload finished", len(processingSlots))
+	if n := b.held(); n != 0 {
+		t.Errorf("%d bytes of the budget still held after every upload finished", n)
 	}
 }
 
-// A file refused from its header never waits for a slot: there is nothing to
-// decode.
-func TestHeaderRefusalsDoNotWaitForASlot(t *testing.T) {
-	narrowSlots(t, 1)
-	release, err := acquireProcessing(context.Background())
+// A file refused from its header never waits for the budget: there is
+// nothing to decode.
+func TestHeaderRefusalsDoNotWaitForTheBudget(t *testing.T) {
+	b := narrowBudget(t, 1)
+	release, err := b.acquire(context.Background(), 1)
 	if err != nil {
-		t.Fatalf("take the only slot: %v", err)
+		t.Fatalf("take the whole budget: %v", err)
 	}
 	defer release()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

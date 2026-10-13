@@ -1,0 +1,407 @@
+package media
+
+import (
+	"encoding/binary"
+	"image"
+)
+
+// Processing an upload holds a lot more than its pixels, and how much more
+// depends on how the file is encoded rather than on its resolution alone. A
+// 24-megapixel baseline JPEG decodes to 36 MB; the same picture saved
+// progressive with full-resolution colour keeps every DCT coefficient of the
+// file, four bytes each, until the last scan is read, and holds over 350 MB;
+// CMYK and 16-bit pictures are larger again. A pixel cap cannot tell these
+// apart, so each upload's cost is estimated from its header (processingCost)
+// before anything is decoded, and that estimate is what it takes from the
+// processing budget while it is decoded and re-encoded.
+//
+// The estimate is of live memory, taken phase by phase as the file is
+// decoded, converted, turned upright, re-encoded and thumbnailed (peakOf).
+// Garbage is not counted once the collector can take it back, which a memory
+// limit (GOMEMLIMIT) makes it do before the process grows; what it cannot
+// take back is what the estimate covers, including a phase's scratch for as
+// long as a collection that began during that phase is still running. Small
+// garbage a phase makes and drops as it goes (row buffers, a GIF's LZW
+// tables) is left to the collector's pacing, beyond processingSlack.
+// TestProcessingCostCoversWhatIsHeld holds the estimate to measured peaks for
+// every kind of file it models, and TestGIFFrameOverheadCoversWhatDecodingKeeps
+// holds gifFrameOverhead to what image/gif keeps.
+
+// processingBudget is the memory every upload being decoded and re-encoded at
+// once may hold between them, by their estimates. An upload whose estimate
+// alone is over it is refused from its header (ErrImageTooLarge); the others
+// wait for their share. It is sized for an instance with 512 MiB in all: with
+// the rest of a process (its runtime, the uploads still being read,
+// connections) it fits under a GOMEMLIMIT of about 400 MiB, which is the
+// deployment's to set.
+const processingBudget int64 = 256 << 20
+
+// processingSlack is what each estimate adds for what it does not itemise:
+// decoders' tables and row buffers, compressors' windows, the thumbnail's own
+// pixels and encoding, and what a phase allocates while a collection runs.
+const processingSlack int64 = 4 << 20
+
+// gifFrameOverhead is what image/gif keeps for each frame of a GIF besides
+// its pixels: the frame's header, its palette (a local colour table, or the
+// copy of the global one DecodeAll makes for a frame with a transparent
+// colour: 256 interface values and the colours they hold, 5 KiB), its place
+// in three slices, and the up to 8 KiB the allocator rounds its pixels up
+// by. A frame can be a handful of bytes of file, so without it a GIF of a
+// few megabytes could decode to gigabytes of frames of no pixels at all.
+const gifFrameOverhead int64 = 16 << 10
+
+// phase is one step of processing an upload. It allocates first as it
+// begins, goes on to allocate the rest of alloc (which includes first) on
+// top of what the step before it left held, and leaves after held once it is
+// done.
+type phase struct{ first, alloc, after int64 }
+
+// peakOf is the most a run of phases holds live at once. Within a phase that
+// is what it started with and everything it allocates. Across a boundary it
+// is more: a collection treats everything that was reachable when it began as
+// live until it ends, so a collection that begins during one phase keeps that
+// phase's scratch alive into the next. The next phase's first allocation is
+// counted on top of the earlier phase's peak for that reason; a collection
+// is over long before the rest of a phase has been allocated.
+func peakOf(phases ...phase) int64 {
+	var worst, held, top int64
+	for _, p := range phases {
+		worst = max(worst, top+p.first, held+p.alloc)
+		top, held = held+p.alloc, p.after
+	}
+	return worst
+}
+
+// processingCost estimates the most an upload holds while it is processed,
+// from its header: what the decoder allocates, what converting it and turning
+// it upright copy, the encoder's output (bounded by storedLimit) and the
+// thumbnail scaler's scratch. cfg is the header's, already checked against
+// MaxPixels; frames is a GIF's frames (gifFramePixels).
+func processingCost(format Format, data []byte, cfg image.Config, frames gifFrames) int64 {
+	w, h := int64(cfg.Width), int64(cfg.Height)
+	px := w * h
+	var phases []phase
+	switch format.Name {
+	case FormatJPEG.Name:
+		phases = jpegPhases(data, px)
+	case FormatPNG.Name:
+		d := pngBytesPerPixel(data) * px
+		decode := phase{first: d, alloc: d, after: d}
+		if pngInterlaced(data) {
+			// Each of the seven passes is decoded into a picture of its own
+			// and merged into the whole; the last pass is half of it.
+			decode.alloc = 2 * d
+		}
+		phases = []phase{decode}
+	case FormatGIF.Name:
+		// Every frame is decoded and kept, a byte a pixel and its overhead,
+		// until all of them are encoded again. An interlaced frame is
+		// decoded once more while its rows are put in order.
+		kept := frames.pixels + frames.count*gifFrameOverhead
+		phases = []phase{{alloc: kept + px, after: kept}}
+	case FormatWebP.Name:
+		phases = webpPhases(data, w, h)
+	default:
+		return processingBudget + 1
+	}
+
+	held := phases[len(phases)-1].after
+	upload := int64(len(data))
+	limit := storedLimit(len(data), cfg.Width, cfg.Height)
+	scratch := thumbScratch(cfg.Width, cfg.Height)
+	phases = append(phases,
+		// The encoder writes into a buffer the size of the upload, which
+		// doubles up to limit, holding the old and the new while it grows
+		// (storedBuffer). What it wrote is kept for the thumbnail.
+		phase{first: min(upload, limit), alloc: 2 * limit, after: held + limit},
+		// The scaler allocates its scratch whole as it starts.
+		phase{first: scratch, alloc: scratch},
+	)
+	return peakOf(phases...) + processingSlack
+}
+
+// storedLimit is the most a stored original may take: four times the upload,
+// plus half a byte a pixel. Re-encoding a photo at storedJPEGQuality, or a
+// PNG or a GIF in its own format, comes to well inside that. What reaches it
+// is a file that compresses in a way Go's encoders cannot follow — a lossless
+// WebP of a pattern repeated further apart than deflate's 32 KiB window,
+// say, which as a PNG is raw pixels — and storing that would turn a small
+// upload into a file many times its size. Such a file is refused
+// (ErrImageTooLarge) rather than stored.
+func storedLimit(upload, w, h int) int64 {
+	return 4*int64(upload) + int64(w)*int64(h)/2 + 64<<10
+}
+
+// thumbScratch bounds the scratch buffer golang.org/x/image/draw's kernel
+// scaler allocates to make a thumbnail: four float64s for every pixel of a
+// picture as wide as the thumbnail and as tall as the source. That is at most
+// 32 bytes × ThumbMaxDim × the source's shorter side.
+func thumbScratch(w, h int) int64 {
+	return 32 * ThumbMaxDim * int64(min(w, h))
+}
+
+// jpegPhases models image/jpeg and what sanitizeJPEG does after it. The
+// decoder allocates the picture at its coded size (whole MCUs, 64 bytes a
+// block); a progressive file also keeps every coefficient, 256 bytes a block,
+// until the last scan; and a CMYK or RGB file is converted to a picture of 4
+// bytes a pixel while the coded one is still held. (sanitizeJPEG turns CMYK
+// into RGBA where it lies.) orient copies the picture when its EXIF
+// orientation turns it.
+func jpegPhases(data []byte, px int64) []phase {
+	f, ok := readJPEGFrame(data)
+	if !ok {
+		// image.DecodeConfig read a frame header this did not: assume the
+		// most expensive kind of file there is.
+		f = jpegFrame{progressive: true, comps: 4, blocks: 4 * (px/64 + 1)}
+	}
+	coded := 64 * f.blocks
+	decode := phase{first: coded, alloc: coded, after: coded}
+	if f.progressive {
+		decode.alloc += 256 * f.blocks
+	}
+	if f.comps == 4 || (f.comps == 3 && f.rgb()) {
+		decode.alloc += 4 * px
+		decode.after = 4 * px
+	}
+	phases := []phase{decode}
+	if jpegOrientation(data) >= 2 {
+		// orient keeps YCbCr and grayscale in their planes, at the picture's
+		// size rather than the coded one; anything else becomes RGBA.
+		turn := 4 * px
+		if f.comps == 1 || (f.comps == 3 && !f.rgb() && !f.quarterChroma) {
+			turn = coded
+		}
+		phases = append(phases, phase{first: turn, alloc: turn, after: turn})
+	}
+	return phases
+}
+
+// jpegFrame is what jpegPhases needs of a JPEG's frame header and the
+// application segments before it.
+type jpegFrame struct {
+	progressive bool
+	comps       int
+	blocks      int64 // 8×8 blocks the decoder allocates, all components
+	ids         [3]byte
+	// quarterChroma is a chroma a quarter of the luma's width (4:1:1 or
+	// 4:1:0), which orientYCbCr cannot turn on its side in its planes.
+	quarterChroma bool
+	jfif          bool
+	adobe         bool // an Adobe APP14 segment with a transform
+	transform     byte
+}
+
+// rgb reports whether image/jpeg reads a three-component file as RGB rather
+// than YCbCr, by the same rule it uses (decoder.isRGB).
+func (f jpegFrame) rgb() bool {
+	if f.jfif {
+		return false
+	}
+	if f.adobe && f.transform == 0 {
+		return true
+	}
+	return f.ids == [3]byte{'R', 'G', 'B'}
+}
+
+// readJPEGFrame walks a JPEG's segments up to its first frame header, as
+// jpegOrientation does: in place, every length checked before it is used,
+// nothing allocated. It counts the blocks image/jpeg will allocate: whole
+// MCUs of the first component's sampling, each holding h×v blocks of every
+// component, and a single component's samples counted 1×1 whatever it
+// claims, as the decoder does.
+func readJPEGFrame(data []byte) (jpegFrame, bool) {
+	var f jpegFrame
+	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
+		return f, false
+	}
+	i := 2
+	for i+4 <= len(data) {
+		if data[i] != 0xFF {
+			return f, false
+		}
+		marker := data[i+1]
+		switch {
+		case marker == 0xFF:
+			i++
+			continue
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
+			i += 2
+			continue
+		case marker == 0xDA || marker == 0xD9:
+			return f, false
+		}
+		length := int(data[i+2])<<8 | int(data[i+3])
+		if length < 2 || length > len(data)-i-2 {
+			return f, false
+		}
+		segment := data[i+4 : i+2+length]
+		switch marker {
+		case 0xE0:
+			if len(segment) >= 5 && string(segment[:5]) == "JFIF\x00" {
+				f.jfif = true
+			}
+		case 0xEE:
+			if len(segment) >= 12 && string(segment[:5]) == "Adobe" {
+				f.adobe, f.transform = true, segment[11]
+			}
+		case 0xC0, 0xC1, 0xC2:
+			return f, f.read(segment, marker == 0xC2)
+		}
+		i += 2 + length
+	}
+	return f, false
+}
+
+// read fills in the frame from a SOF segment's body.
+func (f *jpegFrame) read(sof []byte, progressive bool) bool {
+	if len(sof) < 6 {
+		return false
+	}
+	height := int64(binary.BigEndian.Uint16(sof[1:3]))
+	width := int64(binary.BigEndian.Uint16(sof[3:5]))
+	n := int(sof[5])
+	if n != 1 && n != 3 && n != 4 || len(sof) < 6+3*n {
+		return false
+	}
+	f.progressive, f.comps = progressive, n
+	h0, v0 := int64(1), int64(1)
+	var units int64
+	for k := 0; k < n; k++ {
+		c := sof[6+3*k : 9+3*k]
+		h, v := int64(c[1]>>4), int64(c[1]&0x0F)
+		if h < 1 || v < 1 {
+			return false
+		}
+		if n == 1 {
+			h, v = 1, 1
+		}
+		if k == 0 {
+			h0, v0 = h, v
+		}
+		if k < 3 {
+			f.ids[k] = c[0]
+		}
+		if k == 1 && h0 >= 4*h {
+			f.quarterChroma = true
+		}
+		units += h * v
+	}
+	mxx := (width + 8*h0 - 1) / (8 * h0)
+	myy := (height + 8*v0 - 1) / (8 * v0)
+	f.blocks = mxx * myy * units
+	return true
+}
+
+// pngBytesPerPixel is what image/png allocates a pixel for a PNG of the
+// colour type and bit depth its IHDR gives: grey and palette pictures a byte
+// (two at 16 bits), and colour or anything with transparency 4 bytes (8 at 16
+// bits). A tRNS chunk turns grey and truecolour into NRGBA, so the chunks
+// before the first IDAT are read for one.
+func pngBytesPerPixel(data []byte) int64 {
+	if len(data) < 29 {
+		return 8
+	}
+	depth, colour := data[24], data[25]
+	wide := int64(1)
+	if depth == 16 {
+		wide = 2
+	}
+	switch colour {
+	case 3: // palette
+		return 1
+	case 0: // grey
+		if pngHasTRNS(data) {
+			return 4 * wide
+		}
+		return wide
+	}
+	return 4 * wide // truecolour, grey with alpha, truecolour with alpha
+}
+
+// pngHasTRNS reports whether a tRNS chunk comes before the first IDAT, or
+// whether the chunk list cannot be followed that far, in which case it
+// assumes one.
+func pngHasTRNS(data []byte) bool {
+	i := 8
+	for i+8 <= len(data) {
+		n := int64(binary.BigEndian.Uint32(data[i : i+4]))
+		switch string(data[i+4 : i+8]) {
+		case "tRNS":
+			return true
+		case "IDAT":
+			return false
+		}
+		if n > int64(len(data)-i-12) {
+			return true
+		}
+		i += 12 + int(n)
+	}
+	return true
+}
+
+func pngInterlaced(data []byte) bool {
+	return len(data) < 29 || data[28] != 0
+}
+
+// webpPhases models golang.org/x/image/webp and what sanitizeWebP does
+// after it, starting from stripWebP's copy of the file. A lossy picture
+// decodes to YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a
+// pixel, from a copy the decoder makes of its compressed partitions, and is
+// encoded as a JPEG from those planes. An alpha plane, decoded first, is a
+// byte a pixel, but a compressed one is decoded as a lossless picture before
+// that, which can take 8 bytes a pixel while its colour index is expanded;
+// and a picture that keeps its transparency is converted to NRGBA, 4 bytes a
+// pixel, to be encoded as a PNG. A lossless picture decodes to NRGBA, again
+// with up to as much once more for its colour index.
+func webpPhases(data []byte, w, h int64) []phase {
+	px, stripped := w*h, int64(len(data))
+	planes := 384 * ((w + 15) / 16) * ((h + 15) / 16)
+	strip := phase{first: stripped, alloc: stripped, after: stripped}
+	lossy := phase{first: planes + stripped, alloc: planes + stripped, after: planes}
+	lossless, alpha := webpPicture(data)
+	switch {
+	case lossless:
+		return []phase{strip, {first: 8 * px, alloc: 8 * px, after: 4 * px}}
+	case alpha:
+		lossy.after += px
+		return []phase{
+			strip,
+			{first: 9 * px, alloc: 9 * px, after: stripped + px},
+			lossy,
+			{first: 4 * px, alloc: 4 * px, after: 4 * px},
+		}
+	}
+	return []phase{strip, lossy}
+}
+
+// webpPicture reports whether a WebP's picture is lossless, and whether it
+// has an alpha plane, from its top-level chunks. A file it cannot follow is
+// costed as lossless, the dearer kind; the decoder will have the last word.
+func webpPicture(data []byte) (lossless, alpha bool) {
+	if len(data) < 12 {
+		return true, false
+	}
+	b := data[12:]
+	for len(b) >= 8 {
+		n := uint64(binary.LittleEndian.Uint32(b[4:8]))
+		switch string(b[:4]) {
+		case "VP8L":
+			return true, false
+		case "ALPH":
+			alpha = true
+		case "VP8 ":
+			return false, alpha
+		case "ANMF":
+			return true, false
+		}
+		if n > uint64(len(b)-8) {
+			break
+		}
+		next := 8 + int(n) + int(n&1)
+		if next > len(b) {
+			break
+		}
+		b = b[next:]
+	}
+	return true, false
+}
