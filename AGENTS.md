@@ -570,7 +570,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
-  nothing would come back for the files later.
+  nothing would come back for the files later. Sticky and lock apply to live threads
+  only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
+  archived`), because nothing brings a thread back from the archive and a sticky that
+  answered success would not keep it out of the sweep
+  (`TestArchivedThreadsCannotBeStickiedOrLocked`).
 - **Routes.** The UI reads any first path segment it does not recognise as a board's
   slug, so `reservedBoardSlugs` in `boards.go` holds every first segment that means
   something else — the server's own routes, the UI's pages, and `u` — and has to agree

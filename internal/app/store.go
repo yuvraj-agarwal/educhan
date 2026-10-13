@@ -694,17 +694,21 @@ const (
 	flagLocked threadFlag = "locked"
 )
 
-// SetThreadFlag pins or locks a thread. It returns errNotFound when the board
-// has no thread with that number.
+// SetThreadFlag pins or locks a live thread. It returns errNotFound when the
+// board has no thread with that number, and errThreadArchived when the thread
+// is in the archive: nothing brings a thread back from there, so a sticky
+// would not keep it on the board or out of the sweep, and a lock would change
+// nothing a reply could notice. Refusing says so, where a quiet success would
+// let a moderator believe an archived thread had been saved.
 func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag threadFlag, value bool) error {
 	// The column is chosen from literal SQL rather than interpolated, so the
 	// flag name never reaches the database as data.
 	var query string
 	switch flag {
 	case flagSticky:
-		query = `UPDATE threads SET sticky = $3 WHERE board_id = $1 AND no = $2`
+		query = `UPDATE threads SET sticky = $3 WHERE board_id = $1 AND no = $2 AND archived_at IS NULL`
 	case flagLocked:
-		query = `UPDATE threads SET locked = $3 WHERE board_id = $1 AND no = $2`
+		query = `UPDATE threads SET locked = $3 WHERE board_id = $1 AND no = $2 AND archived_at IS NULL`
 	default:
 		return fmt.Errorf("unknown thread flag %q", flag)
 	}
@@ -713,10 +717,24 @@ func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag t
 	if err != nil {
 		return err
 	}
-	if tag.RowsAffected() == 0 {
-		return errNotFound
+	if tag.RowsAffected() > 0 {
+		return nil
 	}
-	return nil
+	var archived bool
+	err = s.pool.QueryRow(ctx,
+		`SELECT archived_at IS NOT NULL FROM threads WHERE board_id = $1 AND no = $2`,
+		board.ID, no).Scan(&archived)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return errNotFound
+	case err != nil:
+		return err
+	case archived:
+		return errThreadArchived
+	}
+	// A live thread here would have matched the update, and nothing takes a
+	// thread back out of the archive, so this is not reached in practice.
+	return errNotFound
 }
 
 // DeletedThread reports what a thread deletion removed. Images are returned so

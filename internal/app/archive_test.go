@@ -400,6 +400,43 @@ func TestReplyQuotingAPostBeingDeletedStillPosts(t *testing.T) {
 	}
 }
 
+// Nothing brings a thread back from the archive, so pinning or locking one
+// would change nothing: a sticky would not keep it on the board or out of the
+// sweep. The API says so rather than answering a success that would let a
+// moderator believe the thread had been saved.
+func TestArchivedThreadsCannotBeStickiedOrLocked(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("closed")
+	h.exec(`UPDATE boards SET thread_limit = 1 WHERE slug = 'closed'`)
+	old := h.createThread("closed", "", "", "pushed into the archive")
+	h.createThread("closed", "", "", "pushes it")
+	if h.archivedAt("closed", old.ThreadNo) == nil {
+		t.Fatal("setup: the first thread was not archived")
+	}
+
+	for _, action := range []string{"sticky", "unsticky", "lock", "unlock"} {
+		var out map[string]any
+		path := fmt.Sprintf("/api/boards/closed/threads/%d/%s", old.ThreadNo, action)
+		status := h.mod(http.MethodPost, path, "Authorization", "Bearer "+testModKey, &out)
+		if status != http.StatusForbidden || out["error"] != "thread is archived" {
+			t.Errorf("%s on an archived thread: status %d %v, want 403 thread is archived", action, status, out)
+		}
+	}
+	detail := fetchThread(t, h, "closed", old.ThreadNo)
+	if detail.Sticky || detail.Locked {
+		t.Errorf("archived thread sticky=%v locked=%v after refused flags, want neither", detail.Sticky, detail.Locked)
+	}
+	if live := liveThreadNos(t, h, "closed"); len(live) != 1 || live[0] == old.ThreadNo {
+		t.Errorf("live threads = %v, want only the newer one", live)
+	}
+
+	var out map[string]any
+	if status := h.mod(http.MethodPost, "/api/boards/closed/threads/999/sticky",
+		"Authorization", "Bearer "+testModKey, &out); status != http.StatusNotFound {
+		t.Errorf("sticky on a missing thread: status %d, want 404", status)
+	}
+}
+
 // The index counts pages over live threads only, or a board with a full
 // archive would advertise pages of nothing.
 func TestIndexPagesCountLiveThreadsOnly(t *testing.T) {
