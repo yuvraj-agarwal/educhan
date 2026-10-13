@@ -22,7 +22,8 @@ import (
 // storage backend sees a byte of it:
 //
 //   - JPEG is decoded, turned upright by its EXIF orientation, and re-encoded.
-//   - PNG is decoded and re-encoded, which keeps none of its ancillary chunks.
+//   - PNG is decoded, turned upright by the EXIF orientation of an eXIf chunk,
+//     and re-encoded, which keeps none of its ancillary chunks.
 //   - GIF is decoded frame by frame and re-encoded with its frames, delays,
 //     disposal and loop count, and none of its comments or other application
 //     data.
@@ -183,21 +184,23 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // grey is stored at 8 bits, and grey or colour with a transparent colour key
 // (tRNS) has an alpha channel instead, while 16-bit pictures stay 16-bit. A
 // palette keeps only the entries its pixels use, so it may be stored at a
-// lower bit depth, and fully transparent pixels hold no colour. An animated
-// PNG keeps its still image, which is what a viewer without APNG support has
-// always shown.
+// lower bit depth, and fully transparent pixels hold no colour. A picture
+// with an EXIF orientation in an eXIf chunk is turned upright first, as for a
+// JPEG, because browsers show it turned. An animated PNG keeps its still
+// image, which is what a viewer without APNG support has always shown.
 func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	src, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
 	clearTransparentColour(src)
+	pic := orient(src, pngOrientation(data))
 	buf := newStoredBuffer(len(data), limit)
-	stored, err := buf.encoded(FormatPNG, png.Encode(buf, src))
+	stored, err := buf.encoded(FormatPNG, png.Encode(buf, pic))
 	if err != nil {
 		return sanitized{}, err
 	}
-	return sanitized{format: FormatPNG, data: stored, pic: src, canvas: src.Bounds()}, nil
+	return sanitized{format: FormatPNG, data: stored, pic: pic, canvas: pic.Bounds()}, nil
 }
 
 // sanitizeGIF decodes every frame of a GIF and encodes them again. The frames

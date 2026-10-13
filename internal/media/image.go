@@ -106,8 +106,8 @@ type Processed struct {
 	// decoded pixels, so that it carries no metadata and nothing else of the
 	// uploaded file (sanitize.go).
 	Data []byte
-	// Width and Height are the stored picture's, which for a JPEG is the
-	// picture after its EXIF orientation has been applied.
+	// Width and Height are the stored picture's, which for a JPEG or a PNG
+	// is the picture after its EXIF orientation has been applied.
 	Width  int
 	Height int
 	Thumb  Thumbnail

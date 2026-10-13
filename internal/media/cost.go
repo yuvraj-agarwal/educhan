@@ -83,7 +83,7 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 	var phases []phase
 	switch format.Name {
 	case FormatJPEG.Name:
-		phases = jpegPhases(data, px)
+		phases = jpegPhases(data, w, h)
 	case FormatPNG.Name:
 		d := pngBytesPerPixel(data) * px
 		decode := phase{first: d, alloc: d, after: d}
@@ -93,6 +93,10 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 			decode.alloc = 2 * d
 		}
 		phases = []phase{decode}
+		if pngOrientation(data) >= 2 {
+			// orient copies the picture into another of the same kind.
+			phases = append(phases, phase{first: d, alloc: d, after: d})
+		}
 	case FormatGIF.Name:
 		// Every frame is decoded and kept, a byte a pixel and its overhead,
 		// until all of them are encoded again. An interlaced frame is
@@ -147,7 +151,8 @@ func thumbScratch(w, h int) int64 {
 // bytes a pixel while the coded one is still held. (sanitizeJPEG turns CMYK
 // into RGBA where it lies.) orient copies the picture when its EXIF
 // orientation turns it.
-func jpegPhases(data []byte, px int64) []phase {
+func jpegPhases(data []byte, w, h int64) []phase {
+	px := w * h
 	f, ok := readJPEGFrame(data)
 	if !ok {
 		// image.DecodeConfig read a frame header this did not: assume the
@@ -164,12 +169,19 @@ func jpegPhases(data []byte, px int64) []phase {
 		decode.after = 4 * px
 	}
 	phases := []phase{decode}
-	if jpegOrientation(data) >= 2 {
-		// orient keeps YCbCr and grayscale in their planes, at the picture's
-		// size rather than the coded one; anything else becomes RGBA.
+	if o := jpegOrientation(data); o >= 2 {
+		// orient copies grayscale and RGBA as they are, and YCbCr in its
+		// planes, at the picture's size rather than the coded one, unless
+		// they cannot be turned exactly that way: then it is 4:4:4.
 		turn := 4 * px
-		if f.comps == 1 || (f.comps == 3 && !f.rgb() && !f.quarterChroma) {
+		switch {
+		case f.comps == 1:
+			turn = px
+		case f.comps == 3 && !f.rgb():
 			turn = coded
+			if _, ok := turnedSubsampling(f.subsampling(), o, int(w), int(h)); !ok {
+				turn = max(coded, 3*px)
+			}
 		}
 		phases = append(phases, phase{first: turn, alloc: turn, after: turn})
 	}
@@ -183,12 +195,33 @@ type jpegFrame struct {
 	comps       int
 	blocks      int64 // 8×8 blocks the decoder allocates, all components
 	ids         [3]byte
-	// quarterChroma is a chroma a quarter of the luma's width (4:1:1 or
-	// 4:1:0), which orientYCbCr cannot turn on its side in its planes.
-	quarterChroma bool
-	jfif          bool
-	adobe         bool // an Adobe APP14 segment with a transform
-	transform     byte
+	// hRatio and vRatio are how many luma samples across and down share a
+	// chroma sample: the first component's sampling factors over the
+	// second's, as image/jpeg works them out.
+	hRatio, vRatio int64
+	jfif           bool
+	adobe          bool // an Adobe APP14 segment with a transform
+	transform      byte
+}
+
+// subsampling is the YCbCr subsampling image/jpeg decodes a three-component
+// frame to, from its sampling factors, or -1 for one it refuses.
+func (f jpegFrame) subsampling() image.YCbCrSubsampleRatio {
+	switch f.hRatio<<4 | f.vRatio {
+	case 0x11:
+		return image.YCbCrSubsampleRatio444
+	case 0x12:
+		return image.YCbCrSubsampleRatio440
+	case 0x21:
+		return image.YCbCrSubsampleRatio422
+	case 0x22:
+		return image.YCbCrSubsampleRatio420
+	case 0x41:
+		return image.YCbCrSubsampleRatio411
+	case 0x42:
+		return image.YCbCrSubsampleRatio410
+	}
+	return -1
 }
 
 // rgb reports whether image/jpeg reads a three-component file as RGB rather
@@ -281,8 +314,8 @@ func (f *jpegFrame) read(sof []byte, progressive bool) bool {
 		if k < 3 {
 			f.ids[k] = c[0]
 		}
-		if k == 1 && h0 >= 4*h {
-			f.quarterChroma = true
+		if k == 1 {
+			f.hRatio, f.vRatio = h0/h, v0/v
 		}
 		units += h * v
 	}

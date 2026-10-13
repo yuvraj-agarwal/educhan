@@ -8,11 +8,11 @@ import (
 // EXIF Orientation, as far as educhan reads it.
 //
 // A phone stores a photo the way its sensor was facing and writes a tag saying
-// how to turn it upright. Browsers obey the tag, so a stored JPEG that lost the
-// tag and kept its pixels would show sideways. Stripping metadata therefore
-// means applying the tag to the pixels first, which is what orient does, and
-// the stored file, its recorded dimensions and its thumbnail are all of the
-// upright picture.
+// how to turn it upright. Browsers obey the tag, in a JPEG's Exif segment and
+// in a PNG's eXIf chunk alike, so a stored file that lost the tag and kept its
+// pixels would show sideways. Stripping metadata therefore means applying the
+// tag to the pixels first, which is what orient does, and the stored file, its
+// recorded dimensions and its thumbnail are all of the upright picture.
 //
 // The values are the TIFF/EXIF ones: which visual side the stored image's
 // first row and first column are.
@@ -78,8 +78,33 @@ func jpegOrientation(data []byte) int {
 	return 1
 }
 
+// pngOrientation reads the Orientation tag from a PNG's eXIf chunk, under the
+// same rules as jpegOrientation, and returns 1 for a file with no such chunk
+// or one it cannot read. Only an eXIf chunk before the first IDAT counts:
+// that is where the PNG specification puts it, and the only place browsers
+// read it from, so one further on never turned the picture on screen. The
+// chunk holds the TIFF structure itself, with no "Exif" prefix.
+func pngOrientation(data []byte) int {
+	i := 8 // the signature
+	for i+8 <= len(data) {
+		n := int64(binary.BigEndian.Uint32(data[i : i+4]))
+		if n > int64(len(data)-i-12) {
+			return 1
+		}
+		switch string(data[i+4 : i+8]) {
+		case "eXIf":
+			return tiffOrientation(data[i+8 : i+8+int(n)])
+		case "IDAT":
+			return 1
+		}
+		i += 12 + int(n)
+	}
+	return 1
+}
+
 // tiffOrientation reads the Orientation entry of IFD0 in a TIFF structure, the
-// body of an Exif segment, under the same rules as jpegOrientation.
+// body of an Exif segment or an eXIf chunk, under the same rules as
+// jpegOrientation.
 func tiffOrientation(tiff []byte) int {
 	if len(tiff) < 8 {
 		return 1
@@ -147,50 +172,55 @@ func orientedPoint(o, x, y, w, h int) (int, int) {
 }
 
 // orient returns src turned upright according to EXIF orientation o, or src
-// itself when o is 1 or unknown.
-//
-// What a JPEG decodes to is almost always a YCbCr image, so that is turned
-// plane by plane into another YCbCr image, keeping its chroma subsampling (with
-// the factors swapped when the picture turns on its side). That costs the
-// decoded size again, 1.5 bytes a pixel for an ordinary 4:2:0 photo, where an
-// RGBA copy would cost 4, and hands the encoder the same planes it would have
-// computed. Grayscale is one plane, and RGBA (what an RGB or a CMYK JPEG is by
-// the time it gets here) is turned four bytes at a time. Anything else goes
-// pixel by pixel into RGBA.
+// itself when o is 1 or unknown. Every pixel keeps its value exactly, in a
+// picture of the same kind: a JPEG's YCbCr (orientYCbCr), grayscale or RGBA
+// (what an RGB or a CMYK JPEG is by the time it gets here), and whatever a
+// PNG decodes to, from a palette to 16-bit colour with alpha, are each turned
+// a pixel's bytes at a time into a copy of the same size. That costs the
+// decoded size again, which is what processingCost counts for it.
 func orient(src image.Image, o int) image.Image {
-	if o < 2 || o > 8 {
-		return src
-	}
-	switch s := src.(type) {
-	case *image.YCbCr:
-		if dst, ok := orientYCbCr(s, o); ok {
-			return dst
-		}
-	case *image.Gray:
-		if s.Rect.Min == (image.Point{}) {
-			w, h := s.Rect.Dx(), s.Rect.Dy()
-			dst := image.NewGray(orientedRect(w, h, o))
-			orientPlane(dst.Pix, dst.Stride, s.Pix, s.Stride, w, h, o)
-			return dst
-		}
-	case *image.RGBA:
-		if s.Rect.Min == (image.Point{}) {
-			w, h := s.Rect.Dx(), s.Rect.Dy()
-			dst := image.NewRGBA(orientedRect(w, h, o))
-			for y := 0; y < h; y++ {
-				row := s.Pix[y*s.Stride : y*s.Stride+4*w]
-				for x := 0; x < w; x++ {
-					dx, dy := orientedPoint(o, x, y, w, h)
-					copy(dst.Pix[dy*dst.Stride+4*dx:dy*dst.Stride+4*dx+4], row[4*x:4*x+4])
-				}
-			}
-			return dst
-		}
-	}
-
 	b := src.Bounds()
 	w, h := b.Dx(), b.Dy()
-	dst := image.NewRGBA(orientedRect(w, h, o))
+	if o < 2 || o > 8 || w <= 0 || h <= 0 {
+		return src
+	}
+	r := orientedRect(w, h, o)
+	switch s := src.(type) {
+	case *image.YCbCr:
+		return orientYCbCr(s, o)
+	case *image.Gray:
+		dst := image.NewGray(r)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 1, o)
+		return dst
+	case *image.Gray16:
+		dst := image.NewGray16(r)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 2, o)
+		return dst
+	case *image.Paletted:
+		dst := image.NewPaletted(r, s.Palette)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 1, o)
+		return dst
+	case *image.RGBA:
+		dst := image.NewRGBA(r)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 4, o)
+		return dst
+	case *image.NRGBA:
+		dst := image.NewNRGBA(r)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 4, o)
+		return dst
+	case *image.RGBA64:
+		dst := image.NewRGBA64(r)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 8, o)
+		return dst
+	case *image.NRGBA64:
+		dst := image.NewNRGBA64(r)
+		orientPixels(dst.Pix, dst.Stride, s.Pix[s.PixOffset(b.Min.X, b.Min.Y):], s.Stride, w, h, 8, o)
+		return dst
+	}
+
+	// No decoder educhan uses makes anything else; were one to, 16 bits a
+	// channel keeps any colour it can report.
+	dst := image.NewRGBA64(r)
 	for y := 0; y < h; y++ {
 		for x := 0; x < w; x++ {
 			dx, dy := orientedPoint(o, x, y, w, h)
@@ -207,55 +237,99 @@ func orientedRect(w, h, o int) image.Rectangle {
 	return image.Rect(0, 0, w, h)
 }
 
-// orientYCbCr turns each plane of src on its own. It declines, leaving the
-// caller to fall back to RGBA, for an image that does not start at the origin
-// and for a subsampling with no counterpart once turned on its side (4:1:1 and
-// 4:1:0 have none in the image package).
-func orientYCbCr(src *image.YCbCr, o int) (*image.YCbCr, bool) {
-	if src.Rect.Min != (image.Point{}) {
-		return nil, false
+// orientYCbCr turns a YCbCr picture. Where its chroma samples line up with the
+// turned picture's, each plane is turned on its own, keeping the subsampling
+// (with its factors swapped when the picture turns on its side): that costs
+// the decoded size again, 1.5 bytes a pixel for an ordinary 4:2:0 photo, and
+// hands the encoder the planes it would have computed.
+//
+// They do not line up when the picture is mirrored along a side that is not a
+// whole number of chroma samples long, an odd width or height at 4:2:0. The
+// last sample then covers fewer pixels than the others, and turned within its
+// plane it would land first, covering the wrong ones: every colour along that
+// side would shift by a pixel. Nor has a quarter-width chroma (4:1:1, 4:1:0)
+// any counterpart in the image package once turned on its side. Either way
+// every pixel takes the chroma it was decoded with into a picture with chroma
+// at full resolution (4:4:4), 3 bytes a pixel, which the encoder subsamples
+// again from the right pixels.
+func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
+	w, h := src.Rect.Dx(), src.Rect.Dy()
+	if ratio, ok := turnedSubsampling(src.SubsampleRatio, o, w, h); ok && src.Rect.Min == (image.Point{}) {
+		cw, ch := chromaSize(src.SubsampleRatio, w, h)
+		dst := image.NewYCbCr(orientedRect(w, h, o), ratio)
+		orientPlane(dst.Y, dst.YStride, src.Y, src.YStride, w, h, o)
+		orientPlane(dst.Cb, dst.CStride, src.Cb, src.CStride, cw, ch, o)
+		orientPlane(dst.Cr, dst.CStride, src.Cr, src.CStride, cw, ch, o)
+		return dst
 	}
-	ratio := src.SubsampleRatio
+	dst := image.NewYCbCr(orientedRect(w, h, o), image.YCbCrSubsampleRatio444)
+	b := src.Rect
+	for y := 0; y < h; y++ {
+		for x := 0; x < w; x++ {
+			yi, ci := src.YOffset(b.Min.X+x, b.Min.Y+y), src.COffset(b.Min.X+x, b.Min.Y+y)
+			dx, dy := orientedPoint(o, x, y, w, h)
+			at := dy*dst.YStride + dx // the same offset in all three planes at 4:4:4
+			dst.Y[at], dst.Cb[at], dst.Cr[at] = src.Y[yi], src.Cb[ci], src.Cr[ci]
+		}
+	}
+	return dst
+}
+
+// subsampling is how many pixels across and down share a chroma sample at a
+// subsampling ratio, or 0, 0 for a ratio it does not know.
+func subsampling(ratio image.YCbCrSubsampleRatio) (int, int) {
+	switch ratio {
+	case image.YCbCrSubsampleRatio444:
+		return 1, 1
+	case image.YCbCrSubsampleRatio422:
+		return 2, 1
+	case image.YCbCrSubsampleRatio420:
+		return 2, 2
+	case image.YCbCrSubsampleRatio440:
+		return 1, 2
+	case image.YCbCrSubsampleRatio411:
+		return 4, 1
+	case image.YCbCrSubsampleRatio410:
+		return 4, 2
+	}
+	return 0, 0
+}
+
+// turnedSubsampling is the subsampling a w×h YCbCr picture at ratio keeps
+// when orientation o turns it plane by plane, and whether its planes can be
+// turned that way exactly (orientYCbCr).
+func turnedSubsampling(ratio image.YCbCrSubsampleRatio, o, w, h int) (image.YCbCrSubsampleRatio, bool) {
+	fx, fy := subsampling(ratio)
+	if fx == 0 {
+		return ratio, false
+	}
+	mirrorsX := o == 2 || o == 3 || o == 7 || o == 8 // which sides orientedPoint reverses
+	mirrorsY := o == 3 || o == 4 || o == 6 || o == 7
+	if mirrorsX && w%fx != 0 || mirrorsY && h%fy != 0 {
+		return ratio, false
+	}
+	if o < 5 {
+		return ratio, true
+	}
 	switch ratio {
 	case image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio420:
+		return ratio, true
 	case image.YCbCrSubsampleRatio422:
-		if o >= 5 {
-			ratio = image.YCbCrSubsampleRatio440
-		}
+		return image.YCbCrSubsampleRatio440, true
 	case image.YCbCrSubsampleRatio440:
-		if o >= 5 {
-			ratio = image.YCbCrSubsampleRatio422
-		}
-	default:
-		if o >= 5 {
-			return nil, false
-		}
+		return image.YCbCrSubsampleRatio422, true
 	}
-	w, h := src.Rect.Dx(), src.Rect.Dy()
-	cw, ch := chromaSize(src.SubsampleRatio, w, h)
-	dst := image.NewYCbCr(orientedRect(w, h, o), ratio)
-	orientPlane(dst.Y, dst.YStride, src.Y, src.YStride, w, h, o)
-	orientPlane(dst.Cb, dst.CStride, src.Cb, src.CStride, cw, ch, o)
-	orientPlane(dst.Cr, dst.CStride, src.Cr, src.CStride, cw, ch, o)
-	return dst, true
+	return ratio, false
 }
 
 // chromaSize is the size of each chroma plane of a w×h YCbCr image at the
 // origin, as image.NewYCbCr lays it out.
 func chromaSize(ratio image.YCbCrSubsampleRatio, w, h int) (int, int) {
-	switch ratio {
-	case image.YCbCrSubsampleRatio422:
-		return (w + 1) / 2, h
-	case image.YCbCrSubsampleRatio420:
-		return (w + 1) / 2, (h + 1) / 2
-	case image.YCbCrSubsampleRatio440:
-		return w, (h + 1) / 2
-	case image.YCbCrSubsampleRatio411:
-		return (w + 3) / 4, h
-	case image.YCbCrSubsampleRatio410:
-		return (w + 3) / 4, (h + 1) / 2
+	fx, fy := subsampling(ratio)
+	if fx == 0 {
+		return w, h
 	}
-	return w, h
+	return (w + fx - 1) / fx, (h + fy - 1) / fy
 }
 
 // orientPlane copies the w×h plane src, with stride srcStride, into dst turned
@@ -266,6 +340,22 @@ func orientPlane(dst []byte, dstStride int, src []byte, srcStride, w, h, o int) 
 		for x, v := range row {
 			dx, dy := orientedPoint(o, x, y, w, h)
 			dst[dy*dstStride+dx] = v
+		}
+	}
+}
+
+// orientPixels is orientPlane for pixels of n bytes each.
+func orientPixels(dst []byte, dstStride int, src []byte, srcStride, w, h, n, o int) {
+	if n == 1 {
+		orientPlane(dst, dstStride, src, srcStride, w, h, o)
+		return
+	}
+	for y := 0; y < h; y++ {
+		row := src[y*srcStride : y*srcStride+n*w]
+		for x := 0; x < w; x++ {
+			dx, dy := orientedPoint(o, x, y, w, h)
+			at := dy*dstStride + n*dx
+			copy(dst[at:at+n], row[n*x:n*x+n])
 		}
 	}
 }

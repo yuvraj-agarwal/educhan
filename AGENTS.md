@@ -519,11 +519,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF
   Orientation (`jpegOrientation`, `orient` in `orient.go`), and re-encoded at
   `storedJPEGQuality` (90); `image/jpeg` writes no APP or COM segment, so EXIF, XMP,
-  APP13 IPTC/Photoshop, the APP2 ICC profile and comments all go. PNG is decoded and
-  re-encoded, which keeps only IHDR, PLTE, tRNS, IDAT and IEND (an APNG keeps its still
-  image); the pixels are what `image/png` decodes them to, so 1-, 2- and 4-bit grey
-  comes back at 8 bits and a colour key (tRNS on grey or truecolour) as an alpha
-  channel. GIF goes through `gif.DecodeAll` and `EncodeAll`, which keep frames,
+  APP13 IPTC/Photoshop, the APP2 ICC profile and comments all go. PNG is decoded,
+  turned upright by the EXIF Orientation of an eXIf chunk before the first IDAT
+  (`pngOrientation`; browsers apply it, and read it nowhere else), and re-encoded,
+  which keeps only IHDR, PLTE, tRNS, IDAT and IEND (an APNG keeps its still image); the
+  pixels are what `image/png` decodes them to, so 1-, 2- and 4-bit grey comes back at 8
+  bits and a colour key (tRNS on grey or truecolour) as an alpha channel. `orient`
+  keeps every pixel exactly, in a picture of the kind it was given: YCbCr in its
+  planes where the chroma samples line up with the turned picture, and otherwise (an
+  odd side mirrored at 4:2:0, 4:1:1 on its side) at 4:4:4 a pixel at a time, because
+  turning a plane whose last sample covers fewer pixels shifts every colour along that
+  side (`TestOrientKeepsEverySubsamplingExact`, `TestOrientKeepsEveryPixelKindExact`). GIF goes through `gif.DecodeAll` and `EncodeAll`, which keep frames,
   positions, delays and disposal and drop comments and every application extension.
   The loop count is written back as NETSCAPE2.0, from whichever loop extension came
   last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them; `image/gif` reads only the
@@ -551,6 +557,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (2.2) depends on that. Tests build their fixtures in code (`fixtures_test.go`) and
   check every needle is in the upload before checking it is gone from what is stored:
   `TestJPEGIsStoredWithoutMetadata`, `TestEveryOrientationIsApplied`,
+  `TestPNGOrientationIsApplied`,
   `TestPNGIsStoredWithoutAncillaryChunks`, `TestGIFKeepsItsAnimationAndDropsItsExtensions`,
   `TestWebPIsStrippedChunkByChunk`, `TestWebPIsStoredAsPNGOrJPEG`, the conformance
   suite's "save stores no metadata", and `TestUploadedPhotoKeepsNoMetadataOnEveryBackend`
@@ -575,8 +582,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   so it reads in place, bounds-checks every offset before use, follows no offset but
   IFD0's (no IFD chain, so no loop), allocates nothing, and answers 1 for anything it
   cannot read; whether the file is an image is the decoder's call alone
-  (`TestHostileEXIF`, `FuzzJPEGOrientation`; `FuzzStripWebP` does the same for the
-  RIFF rewrite and checks it is idempotent). No EXIF library is needed and none should
+  (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`, the PNG chunk walk
+  under the same rules; `FuzzStripWebP` does the same for the RIFF rewrite and checks
+  it is idempotent). No EXIF library is needed and none should
   be added.
 - **No filename is kept.** A camera's or a phone's filename can name a date and a
   person, so `parseSubmission` reads only the file's bytes, and an attachment's name

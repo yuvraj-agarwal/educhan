@@ -15,6 +15,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -214,29 +215,103 @@ func TestEveryOrientationIsApplied(t *testing.T) {
 	}
 }
 
-// orient turns each YCbCr plane by itself. With sides divisible by four the
-// chroma samples line up exactly, so every subsampling has to come out pixel
-// for pixel the same as turning the picture one pixel at a time.
+// Turning a YCbCr picture keeps every pixel's colour exactly, whatever its
+// subsampling and size. Where the chroma samples line up with the turned
+// picture, the planes are turned as they are and keep their subsampling; an
+// odd side mirrored at 4:2:0, a side that is not a multiple of four mirrored
+// at 4:1:1, and 4:1:1 or 4:1:0 on its side do not, and are turned a pixel at
+// a time into 4:4:4, where before the colours along the side shifted a pixel.
 func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
 	ratios := []image.YCbCrSubsampleRatio{
 		image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio422, image.YCbCrSubsampleRatio420,
 		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
 	}
+	turned := map[image.YCbCrSubsampleRatio]image.YCbCrSubsampleRatio{
+		image.YCbCrSubsampleRatio444: image.YCbCrSubsampleRatio444,
+		image.YCbCrSubsampleRatio422: image.YCbCrSubsampleRatio440,
+		image.YCbCrSubsampleRatio420: image.YCbCrSubsampleRatio420,
+		image.YCbCrSubsampleRatio440: image.YCbCrSubsampleRatio422,
+	}
 	rng := rand.New(rand.NewSource(1))
-	const w, h = 8, 12
-	for _, ratio := range ratios {
-		src := image.NewYCbCr(image.Rect(0, 0, w, h), ratio)
-		rng.Read(src.Y)
-		rng.Read(src.Cb)
-		rng.Read(src.Cr)
-		for o := 1; o <= 8; o++ {
-			dst := orient(src, o)
-			for y := 0; y < h; y++ {
-				for x := 0; x < w; x++ {
-					dx, dy := orientedPoint(o, x, y, w, h)
-					want := color.RGBAModel.Convert(src.At(x, y))
-					if got := color.RGBAModel.Convert(dst.At(dx, dy)); got != want {
-						t.Fatalf("%v orientation %d: (%d,%d) landed as %v, want %v", ratio, o, x, y, got, want)
+	for _, size := range []image.Point{{8, 12}, {7, 5}, {5, 7}, {9, 6}, {6, 9}, {10, 13}, {1, 1}, {3, 2}} {
+		w, h := size.X, size.Y
+		for _, ratio := range ratios {
+			src := image.NewYCbCr(image.Rect(0, 0, w, h), ratio)
+			rng.Read(src.Y)
+			rng.Read(src.Cb)
+			rng.Read(src.Cr)
+			fx, fy := subsampling(ratio)
+			for o := 1; o <= 8; o++ {
+				dst, ok := orient(src, o).(*image.YCbCr)
+				if !ok {
+					t.Fatalf("%dx%d %v orientation %d: turned into %T, want YCbCr", w, h, ratio, o, orient(src, o))
+				}
+				for y := 0; y < h; y++ {
+					for x := 0; x < w; x++ {
+						dx, dy := orientedPoint(o, x, y, w, h)
+						if got, want := dst.YCbCrAt(dx, dy), src.YCbCrAt(x, y); got != want {
+							t.Fatalf("%dx%d %v orientation %d: (%d,%d) landed as %v, want %v", w, h, ratio, o, x, y, got, want)
+						}
+					}
+				}
+				mirrorsX := o == 2 || o == 3 || o == 7 || o == 8
+				mirrorsY := o == 3 || o == 4 || o == 6 || o == 7
+				want := ratio
+				switch {
+				case o == 1:
+				case mirrorsX && w%fx != 0, mirrorsY && h%fy != 0:
+					want = image.YCbCrSubsampleRatio444
+				case o >= 5:
+					var kept bool
+					if want, kept = turned[ratio]; !kept {
+						want = image.YCbCrSubsampleRatio444
+					}
+				}
+				if dst.SubsampleRatio != want {
+					t.Errorf("%dx%d %v orientation %d: turned at %v, want %v", w, h, ratio, o, dst.SubsampleRatio, want)
+				}
+			}
+		}
+	}
+}
+
+// Every other kind of picture a JPEG or a PNG decodes to is turned into a
+// picture of the same kind with every pixel's bytes exactly as they were, a
+// palette's included, wherever the picture starts.
+func TestOrientKeepsEveryPixelKindExact(t *testing.T) {
+	rng := rand.New(rand.NewSource(2))
+	r := image.Rect(0, 0, 9, 6)
+	pal := color.Palette{color.NRGBA{1, 2, 3, 4}, color.NRGBA{200, 100, 50, 255}, color.RGBA{}}
+	pictures := map[string]image.Image{
+		"Gray": image.NewGray(r), "Gray16": image.NewGray16(r), "RGBA": image.NewRGBA(r),
+		"NRGBA": image.NewNRGBA(r), "RGBA64": image.NewRGBA64(r), "NRGBA64": image.NewNRGBA64(r),
+		"Paletted": image.NewPaletted(r, pal),
+	}
+	for name, m := range pictures {
+		pix := reflect.ValueOf(m).Elem().FieldByName("Pix").Bytes()
+		rng.Read(pix)
+		if p, ok := m.(*image.Paletted); ok {
+			for i := range p.Pix {
+				p.Pix[i] %= uint8(len(pal))
+			}
+		}
+		sub := m.(interface {
+			SubImage(image.Rectangle) image.Image
+		}).SubImage(image.Rect(2, 1, 9, 6))
+		for _, src := range []image.Image{m, sub} {
+			b := src.Bounds()
+			w, h := b.Dx(), b.Dy()
+			for o := 2; o <= 8; o++ {
+				dst := orient(src, o)
+				if reflect.TypeOf(dst) != reflect.TypeOf(src) {
+					t.Fatalf("%s orientation %d: turned into %T", name, o, dst)
+				}
+				for y := 0; y < h; y++ {
+					for x := 0; x < w; x++ {
+						dx, dy := orientedPoint(o, x, y, w, h)
+						if got, want := dst.At(dx, dy), src.At(b.Min.X+x, b.Min.Y+y); got != want {
+							t.Fatalf("%s %v orientation %d: (%d,%d) landed as %v, want %v", name, b, o, x, y, got, want)
+						}
 					}
 				}
 			}
@@ -407,6 +482,110 @@ func TestPNGKeepsSixteenBitPixels(t *testing.T) {
 		t.Errorf("stored PNG decodes to %T, want 16 bits a channel with alpha", out)
 	}
 	requireSamePixels(t, src, out)
+}
+
+// A PNG's EXIF orientation, in an eXIf chunk before its pixels, is applied
+// as a JPEG's is, because browsers show the picture turned by it: every kind
+// of PNG is stored turned, pixel for pixel, at its own bit depth, and its
+// dimensions are the turned ones. An eXIf chunk after the pixels, which
+// browsers do not read, or one holding anything but a TIFF structure, turns
+// nothing. None of them is stored.
+func TestPNGOrientationIsApplied(t *testing.T) {
+	const w, h = 12, 7
+	rng := rand.New(rand.NewSource(4))
+	nrgba := image.NewNRGBA(image.Rect(0, 0, w, h))
+	gray16 := image.NewGray16(image.Rect(0, 0, w, h))
+	paletted := image.NewPaletted(image.Rect(0, 0, w, h), color.Palette{
+		color.RGBA{255, 0, 0, 255}, color.RGBA{0, 255, 0, 255}, color.RGBA{0, 0, 255, 255}, color.NRGBA{9, 9, 9, 128},
+	})
+	rng.Read(gray16.Pix)
+	for i := range nrgba.Pix {
+		nrgba.Pix[i] = byte(1 + rng.Intn(255)) // no fully transparent pixels, whose colour is cleared
+	}
+	for i := range paletted.Pix {
+		paletted.Pix[i] = uint8(rng.Intn(4))
+	}
+	pictures := map[string]image.Image{"NRGBA": nrgba, "Gray16": gray16, "Paletted": paletted}
+
+	for name, pic := range pictures {
+		clean := pngOf(t, pic)
+		original, err := png.Decode(bytes.NewReader(clean))
+		if err != nil {
+			t.Fatalf("%s: decode: %v", name, err)
+		}
+		for o := 1; o <= 8; o++ {
+			order := tiffOrder(binary.LittleEndian)
+			if o%2 == 0 {
+				order = binary.BigEndian
+			}
+			upload := withPNGChunks(clean, pngChunk("eXIf", orientationTIFF(order, uint16(o))))
+			if got := pngOrientation(upload); got != o {
+				t.Fatalf("%s: pngOrientation = %d, want %d", name, got, o)
+			}
+			got := process(t, upload)
+			requireFree(t, got.Data, "eXIf")
+			stored := decodeStored(t, got.Data)
+			if reflect.TypeOf(stored) != reflect.TypeOf(original) {
+				t.Errorf("%s orientation %d: stored as %T, want %T", name, o, stored, original)
+			}
+			wantW, wantH := w, h
+			if o >= 5 {
+				wantW, wantH = h, w
+			}
+			if got.Width != wantW || got.Height != wantH || stored.Bounds() != image.Rect(0, 0, wantW, wantH) {
+				t.Fatalf("%s orientation %d: dimensions %dx%d, stored %v, want %dx%d", name, o, got.Width, got.Height, stored.Bounds(), wantW, wantH)
+			}
+			for y := 0; y < h; y++ {
+				for x := 0; x < w; x++ {
+					dx, dy := orientedPoint(o, x, y, w, h)
+					r1, g1, b1, a1 := original.At(x, y).RGBA()
+					r2, g2, b2, a2 := stored.At(dx, dy).RGBA()
+					if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
+						t.Fatalf("%s orientation %d: (%d,%d) landed as %v, want %v", name, o, x, y, stored.At(dx, dy), original.At(x, y))
+					}
+				}
+			}
+		}
+	}
+
+	clean := pngOf(t, nrgba)
+	iend := len(clean) - 12
+	notRead := map[string][]byte{
+		"eXIf after the pixels": append(append(append([]byte(nil), clean[:iend]...),
+			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))...), clean[iend:]...),
+		"eXIf with an Exif prefix": withPNGChunks(clean,
+			pngChunk("eXIf", append([]byte("Exif\x00\x00"), orientationTIFF(binary.BigEndian, 6)...))),
+		"eXIf of nonsense": withPNGChunks(clean, pngChunk("eXIf", []byte(needleComment))),
+	}
+	for name, upload := range notRead {
+		if _, err := png.Decode(bytes.NewReader(upload)); err != nil {
+			t.Fatalf("%s: the fixture does not decode: %v", name, err)
+		}
+		if o := pngOrientation(upload); o != 1 {
+			t.Errorf("%s: pngOrientation = %d, want 1", name, o)
+		}
+		got := process(t, upload)
+		requireFree(t, got.Data, "eXIf")
+		requireSamePixels(t, nrgba, decodeStored(t, got.Data))
+	}
+	if allocs := testing.AllocsPerRun(10, func() { pngOrientation(notRead["eXIf after the pixels"]) }); allocs != 0 {
+		t.Errorf("pngOrientation allocated %v times, want none", allocs)
+	}
+}
+
+// Fuzzing the PNG reader as the JPEG one: whatever the bytes, it answers with
+// an orientation and does not panic.
+func FuzzPNGOrientation(f *testing.F) {
+	var buf bytes.Buffer
+	_ = png.Encode(&buf, image.NewGray(image.Rect(0, 0, 3, 2)))
+	f.Add(withPNGChunks(buf.Bytes(), pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))))
+	f.Add(withPNGChunks(buf.Bytes(), pngChunk("eXIf", gpsTIFF(binary.LittleEndian, 8))))
+	f.Add([]byte("\x89PNG\r\n\x1a\n\x00\x00\x00\x08eXIfII*\x00"))
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if o := pngOrientation(data); o < 1 || o > 8 {
+			t.Fatalf("pngOrientation = %d, outside 1–8", o)
+		}
+	})
 }
 
 func requireSamePixels(t *testing.T, want, got image.Image) {

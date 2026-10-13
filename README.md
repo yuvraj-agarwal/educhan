@@ -390,7 +390,8 @@ client can leave the image picker off a server that would refuse what it sends.
   - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded at quality
     90, so a phone photo stored on its side is upright everywhere, thumbnail included,
     and its reported width and height are the upright ones.
-  - *PNG* is decoded and re-encoded, keeping none of its ancillary chunks. Every pixel
+  - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
+    browsers apply too), and re-encoded, keeping none of its ancillary chunks. Every pixel
     keeps the value it decodes to, though not always the form it came in: 1-, 2- and
     4-bit grey is stored at 8 bits, a picture with a transparent colour key gets an
     alpha channel instead, and a palette keeps only the colours its pixels use. An
@@ -474,7 +475,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, stored without metadata (JPEGs turned upright first), thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, stored without metadata (photos turned upright first), thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |

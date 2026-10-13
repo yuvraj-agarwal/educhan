@@ -100,16 +100,21 @@ func gifOfFrames(t *testing.T, w, h, n int) []byte {
 // costFixtures are one file of each kind processingCost models, 1200×900
 // pictures of four flat quadrants unless they say otherwise. The cost-*.jpg
 // and cost-*.webp files in testdata are made with Pillow, because Go encodes
-// neither progressive nor CMYK JPEGs nor any WebP; those marked "o6" carry an
-// EXIF orientation of 6, so they are turned on their side too.
+// neither progressive nor CMYK JPEGs nor any WebP, except cost-411.jpg, which
+// is made with ImageMagick (-sampling-factor 4x1), because Pillow does not
+// write 4:1:1 either. Those marked "o6" carry an EXIF orientation of 6, so
+// they are turned on their side too, and "o3" one of 3, turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
-	sideways := func(jpg []byte) []byte {
-		return withSegments(jpg, exifSegment(orientationTIFF(binary.LittleEndian, 6)))
+	turned := func(jpg []byte, o uint16) []byte {
+		return withSegments(jpg, exifSegment(orientationTIFF(binary.LittleEndian, o)))
 	}
+	sideways := func(jpg []byte) []byte { return turned(jpg, 6) }
 	const w, h = 1200, 900
 	return map[string][]byte{
 		"baseline 4:2:0 o6":          sideways(encodeJPEGImage(t, quadrants(w, h))),
+		"baseline 4:2:0 odd o3":      turned(encodeJPEGImage(t, quadrants(w+1, h+1)), 3),
+		"baseline 4:1:1 o6":          sideways(readTestdata(t, "cost-411.jpg")),
 		"progressive 4:2:0 o6":       readTestdata(t, "cost-prog420.jpg"),
 		"progressive 4:4:4 o6":       readTestdata(t, "cost-prog444.jpg"),
 		"progressive grey o6":        readTestdata(t, "cost-proggray.jpg"),
@@ -122,10 +127,12 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"PNG RGBA interlaced":        rawPNG(t, w, h, 6, 8, true, false),
 		"PNG grey 16-bit interlaced": rawPNG(t, w, h, 0, 16, true, false),
 		"PNG RGB 16-bit interlaced":  rawPNG(t, w, h, 2, 16, true, false),
-		"GIF of four frames":         gifOfFrames(t, w, h, 4),
-		"WebP lossy":                 readTestdata(t, "cost-lossy.webp"),
-		"WebP lossy with alpha":      readTestdata(t, "cost-alpha.webp"),
-		"WebP lossless":              readTestdata(t, "cost-lossless.webp"),
+		"PNG RGBA 16-bit o6": withPNGChunks(rawPNG(t, w, h, 6, 16, false, false),
+			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
+		"GIF of four frames":    gifOfFrames(t, w, h, 4),
+		"WebP lossy":            readTestdata(t, "cost-lossy.webp"),
+		"WebP lossy with alpha": readTestdata(t, "cost-alpha.webp"),
+		"WebP lossless":         readTestdata(t, "cost-lossless.webp"),
 	}
 }
 
