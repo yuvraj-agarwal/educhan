@@ -161,6 +161,7 @@ func (a *App) Routes() http.Handler {
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
+	mux.HandleFunc("GET /api/site", a.handleSite)
 
 	mux.HandleFunc("GET /api/boards", a.handleListBoards)
 	mux.HandleFunc("GET /api/boards/{slug}", a.handleGetBoard)

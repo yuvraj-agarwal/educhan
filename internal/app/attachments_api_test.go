@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -371,6 +372,83 @@ func TestUploadsSwitchedOff(t *testing.T) {
 		if files, _ := os.ReadDir(filepath.Join(c.app.cfg.UploadDir, e.Name())); len(files) > 0 {
 			t.Errorf("upload dir %s has %d files, want none", e.Name(), len(files))
 		}
+	}
+}
+
+// GET /api/site tells a client what the posting form can offer before anyone
+// fills one in: whether images are taken at all, and the size limit behind the
+// 413. It is configuration, so it carries those two fields and nothing about
+// the caller.
+func TestSiteReportsTheUploadSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		uploads bool
+		limit   int64
+	}{
+		{"uploads on", true, 3 << 20},
+		{"uploads off", false, defaultMaxUploadBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testServer(t, func(cfg *Config) {
+				cfg.UploadsEnabled = tc.uploads
+				cfg.MaxUploadBytes = tc.limit
+			})
+
+			res, payload := c.fetch("/api/site", nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("status %d (%s), want 200", res.StatusCode, payload)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &fields); err != nil {
+				t.Fatalf("decode %s: %v", payload, err)
+			}
+			var keys []string
+			for key := range fields {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			if got := strings.Join(keys, ","); got != "max_upload_bytes,uploads" {
+				t.Errorf("fields = %s, want exactly max_upload_bytes,uploads", got)
+			}
+			var site Site
+			if err := json.Unmarshal(payload, &site); err != nil {
+				t.Fatalf("decode %s: %v", payload, err)
+			}
+			if site.Uploads != tc.uploads {
+				t.Errorf("uploads = %v, want %v", site.Uploads, tc.uploads)
+			}
+			if site.MaxUploadBytes != tc.limit {
+				t.Errorf("max_upload_bytes = %d, want the configured %d", site.MaxUploadBytes, tc.limit)
+			}
+			if cookies := res.Header.Values("Set-Cookie"); len(cookies) != 0 {
+				t.Errorf("GET /api/site set cookies %v, want none", cookies)
+			}
+
+			// Whatever a request carries, the answer is the same bytes.
+			_, again := c.fetch("/api/site", http.Header{
+				"X-Forwarded-For":      {"198.51.100.23"},
+				"X-Educhan-Poster-Key": {"AAAAAAAAAAAAAAAAAAAAAA"},
+				"Cookie":               {"educhan_verify=whatever"},
+			})
+			if !bytes.Equal(payload, again) {
+				t.Errorf("answered differently to a request carrying headers:\n without: %s\n with:    %s", payload, again)
+			}
+		})
+	}
+
+	// The limit reported is the limit enforced: one byte over it is a 413.
+	c := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = 1 << 20 })
+	c.addBoard("general")
+	var site Site
+	c.get("/api/site", &site)
+	big := noisyPNGBytes(t, 800, 800)
+	if int64(len(big)) <= site.MaxUploadBytes {
+		t.Fatalf("fixture is %d bytes, expected it to exceed the reported %d", len(big), site.MaxUploadBytes)
+	}
+	var out createdPost
+	if status := c.upload("/api/boards/general/threads", map[string]string{"body": "big"},
+		"big.png", big, &out); status != http.StatusRequestEntityTooLarge {
+		t.Errorf("an image over the reported limit: status %d (%s), want 413", status, out.Error)
 	}
 }
 

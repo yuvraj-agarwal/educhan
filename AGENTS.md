@@ -127,9 +127,12 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 
 Attachments use `multipart/form-data` on the same two endpoints; `image` is the file
 field, and everything else stays the same. Uploads are off unless
-`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`):
+`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`), and
+`GET /api/site` says which, with the size limit:
 
 ```bash
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="with image" -F body="look at this" -F image=@/path/to/photo.png \
@@ -470,6 +473,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
   than by the filename or the client-supplied content type.
+- Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
+  `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
+  as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
+  configuration: it reads nothing from the request, sets no cookie, and answers every
+  caller the same (`TestSiteReportsTheUploadSettings`, and it is on
+  `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything about
+  the caller belongs nowhere near it.
 - Files are keyed `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and
   `thumbs/{board}/{YYYY}/{MM}/…`, served from `/media/original/…` and `/media/thumb/…`
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
