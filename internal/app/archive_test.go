@@ -317,6 +317,89 @@ func TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked(t *testing.T) {
 	}
 }
 
+// A reply that quotes a post whose thread is being deleted — a sweep batch or
+// a moderator, holding the row until it commits — waits for the deletion and
+// then posts without the quote, rather than failing the foreign-key check once
+// the deletion commits and losing the reply to a 500.
+func TestReplyQuotingAPostBeingDeletedStillPosts(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("quoted")
+	doomed := h.createThread("quoted", "", "", "about to be swept")
+	live := h.createThread("quoted", "", "", "still here")
+
+	ctx := context.Background()
+	sweeper, err := pgx.Connect(ctx, h.app.cfg.DatabaseURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer sweeper.Close(ctx)
+	tx, err := sweeper.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	var pid int
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM threads
+		WHERE no = $1 AND board_id = (SELECT id FROM boards WHERE slug = 'quoted')`, doomed.ThreadNo); err != nil {
+		t.Fatalf("delete the thread: %v", err)
+	}
+
+	type outcome struct {
+		status int
+		body   map[string]any
+		err    error
+	}
+	replied := make(chan outcome, 1)
+	go func() {
+		path := fmt.Sprintf("%s/api/boards/quoted/threads/%d/posts", h.base, live.ThreadNo)
+		payload := fmt.Sprintf(`{"body":">>%d what happened to this?"}`, doomed.No)
+		res, err := http.Post(path, "application/json", strings.NewReader(payload))
+		if err != nil {
+			replied <- outcome{err: err}
+			return
+		}
+		defer res.Body.Close()
+		var body map[string]any
+		err = json.NewDecoder(res.Body).Decode(&body)
+		replied <- outcome{status: res.StatusCode, body: body, err: err}
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		if err := h.app.pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid))`, pid).Scan(&waiting); err != nil {
+			t.Fatalf("look for the blocked reply: %v", err)
+		}
+		if waiting > 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the reply never waited on the post being deleted")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the deletion: %v", err)
+	}
+
+	got := <-replied
+	if got.err != nil {
+		t.Fatalf("reply: %v", got.err)
+	}
+	if got.status != http.StatusCreated {
+		t.Fatalf("reply: status %d %v, want 201", got.status, got.body)
+	}
+	detail := fetchThread(t, h, "quoted", live.ThreadNo)
+	reply := detail.Posts[len(detail.Posts)-1]
+	if len(reply.Quotes) != 0 {
+		t.Errorf("the reply records quotes %+v of a post that no longer exists", reply.Quotes)
+	}
+}
+
 // The index counts pages over live threads only, or a board with a full
 // archive would advertise pages of nothing.
 func TestIndexPagesCountLiveThreadsOnly(t *testing.T) {

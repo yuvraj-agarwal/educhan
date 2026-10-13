@@ -537,7 +537,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `CreateThread` allocates and then archives the threads it pushes off, and
   `CreateReply` allocates before it locks the thread it replies to. Locking the other
   way round deadlocks a reply against the new thread archiving it
-  (`TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked`).
+  (`TestReplyRacingTheArchivingThreadIsRefusedNotDeadlocked`). A reply's quotes are
+  recorded with `FOR KEY SHARE` on their targets, in id order, so a quote of a post
+  whose thread is being swept or deleted waits for the deletion and is then dropped,
+  rather than failing the foreign key and the reply with it
+  (`TestReplyQuotingAPostBeingDeletedStillPosts`).
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
   `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,

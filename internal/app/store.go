@@ -626,11 +626,22 @@ func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
 	}
 	// Only quotes that resolve to an existing post on the same board are
 	// recorded; dangling references stay as plain text.
+	//
+	// FOR KEY SHARE is what keeps a quote of a post that is being deleted —
+	// by the sweeper, or a moderator — from failing the reply. Without it the
+	// SELECT still sees a target whose deletion has not committed, and the
+	// foreign-key check then waits on that row and fails once the delete
+	// commits. With it, the wait happens here, and a target that turns out to
+	// be gone is skipped like any other dangling reference. Taking the locks
+	// in id order keeps two replies, or a reply and a sweep batch, from
+	// deadlocking over several targets.
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO post_quotes (from_post_id, to_post_id)
 		SELECT $1, target.id
 		FROM posts target
 		WHERE target.board_id = $2 AND target.no = ANY($3)
+		ORDER BY target.id
+		FOR KEY SHARE
 		ON CONFLICT DO NOTHING`, p.ID, in.BoardID, quoted); err != nil {
 		return Post{}, fmt.Errorf("record quotes: %w", err)
 	}
