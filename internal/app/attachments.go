@@ -59,7 +59,10 @@ type submission struct {
 	// display preference: the thumbnail is made either way, and a submission
 	// without an image ignores it.
 	Spoiler bool
-	Upload  *upload
+	// SupportSeen says the poster has been shown the support screen for this
+	// post and is sending it again; see checkContent.
+	SupportSeen bool
+	Upload      *upload
 }
 
 // submissionForm is a JSON request body that can be reduced to a submission.
@@ -112,6 +115,8 @@ func (a *App) parseSubmission(w http.ResponseWriter, r *http.Request, form submi
 		Sage:    isTruthy(r.FormValue("sage")),
 		Badge:   isTruthy(r.FormValue("badge")),
 		Spoiler: isTruthy(r.FormValue("spoiler")),
+
+		SupportSeen: isTruthy(r.FormValue("support_seen")),
 	}
 
 	file, header, err := r.FormFile(uploadFieldName)

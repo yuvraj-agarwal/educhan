@@ -144,6 +144,48 @@ func (a *App) handleDeletePost(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleListHeld is the moderator queue: the posts the content filter kept
+// back, oldest first. Everything a reader would see is here, so that a
+// moderator can decide without opening anything else.
+func (a *App) handleListHeld(w http.ResponseWriter, r *http.Request) {
+	if !a.authorizeMod(w, r) {
+		return
+	}
+	held, err := a.store.HeldPosts(r.Context())
+	if err != nil {
+		a.fail(w, r, err, "could not list held posts")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"posts": held})
+}
+
+// handleApprovePost publishes a held post. Rejecting one is deleting it, with
+// the DELETE routes, which work on held posts and threads like any other.
+func (a *App) handleApprovePost(w http.ResponseWriter, r *http.Request) {
+	board, no, ok := a.modTarget(w, r)
+	if !ok {
+		return
+	}
+	post, ok := postNo(w, r.PathValue("post"))
+	if !ok {
+		return
+	}
+	isOP, err := a.store.ApprovePost(r.Context(), board, no, post)
+	if err != nil {
+		a.fail(w, r, err, "could not approve post")
+		return
+	}
+	// Where, as every moderation record says, and never what: the reason it
+	// was held and the post's text stay out of the log.
+	a.log.Info("moderation", "action", "approve", "board", board.Slug, "thread", no, "post", post, "op", isOP)
+	writeJSON(w, http.StatusOK, map[string]any{
+		"board":     board.Slug,
+		"thread_no": no,
+		"post_no":   post,
+		"approved":  true,
+	})
+}
+
 // removeBlobs deletes the stored renditions of posts that are already gone from
 // the database, and reports how many could not be removed. A failure here
 // leaves an orphaned file rather than a broken post, so it is logged instead of

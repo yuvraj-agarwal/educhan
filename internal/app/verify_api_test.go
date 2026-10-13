@@ -873,13 +873,19 @@ func TestPostsTableColumnsArePinned(t *testing.T) {
 		"board_id",   // which board's numbering the post belongs to
 		"body",       // the post text
 		"created_at", // shown on the post
-		"id",         // internal primary key
-		"is_op",      // the opening post of its thread
-		"name",       // display name, "Anonymous" by default
-		"no",         // the per-board number posters quote
-		"poster_id",  // the per-thread ID: a keyed hash, never the input it came from
-		"thread_id",  // the thread the post is in
-		"tripcode",   // the salted tripcode, if the poster used one; never the secret
+		// held_at and held_reason: when the content filter kept the post back
+		// for a moderator, and which rule's name — never what matched, which
+		// the post's own body already holds. Both are about the post, not the
+		// poster, and are cleared when the post is approved.
+		"held_at",
+		"held_reason",
+		"id",        // internal primary key
+		"is_op",     // the opening post of its thread
+		"name",      // display name, "Anonymous" by default
+		"no",        // the per-board number posters quote
+		"poster_id", // the per-thread ID: a keyed hash, never the input it came from
+		"thread_id", // the thread the post is in
+		"tripcode",  // the salted tripcode, if the poster used one; never the secret
 	}
 	if got := h.columns("posts"); strings.Join(got, ",") != strings.Join(want, ",") {
 		t.Errorf("posts has columns %v, want exactly %v\n"+
@@ -904,6 +910,7 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 			"board_id",     // the board it is on
 			"bumped_at",    // the bump order every listing uses
 			"created_at",   // shown with the opening post
+			"held_at",      // mirrors the opening post's held_at: the whole thread waits for a moderator
 			"id",           // internal primary key
 			"image_count",  // denormalised count of posts with an image
 			"last_post_at", // shown in listings

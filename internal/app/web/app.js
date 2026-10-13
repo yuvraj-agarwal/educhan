@@ -2070,8 +2070,12 @@ const HELPLINES_HTML = `
   </ul>`;
 
 // The rules name every kind of post that is not allowed, for everyone on every
-// board, and say what happens to one using only what is built: moderators can
-// delete posts and threads and lock a thread, and nothing else yet.
+// board, and say what happens to one using only what is built: the server's
+// checks send some posts back and hold others for a moderator (filter.go), and
+// moderators can approve a held post, delete posts and threads, and lock a
+// thread, and nothing else yet. The checks are described as what they are,
+// pattern matching that misses things, never as something that keeps anyone
+// safe.
 function renderRules() {
   el.main.innerHTML = `
     <article class="page" aria-labelledby="page-title">
@@ -2124,6 +2128,16 @@ function renderRules() {
         you on your own usually starts by asking to talk somewhere private. If anyone asks you
         to move to another app, you don't have to reply.</p>
       <h2>When a post breaks the rules</h2>
+      <p>Some posts are checked before they go up. A post with a phone number, an email
+        address, a username or link for another app, a request to talk on another app, or an
+        ID number such as an Aadhaar number is sent back, so you can take that part out and
+        post again. A post that looks like a threat, like it tells someone to hurt or kill
+        themselves, or like it asks someone's age or where they live and also asks to talk
+        privately, is kept back until a moderator has read it, and only appears if they
+        approve it.</p>
+      <p>These checks only look for certain words and number patterns. They miss plenty, and
+        they sometimes stop a post that was fine, so the rules above still apply to everything
+        they let through.</p>
       <p>Moderators can delete posts and whole threads that break these rules, and can lock a
         thread so it takes no more replies. There's no report button yet, but one is
         coming.</p>

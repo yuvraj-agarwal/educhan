@@ -220,6 +220,8 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/unlock", a.handleUnlock)
 	mux.HandleFunc("DELETE /api/boards/{slug}/threads/{no}", a.handleDeleteThread)
 	mux.HandleFunc("DELETE /api/boards/{slug}/threads/{no}/posts/{post}", a.handleDeletePost)
+	mux.HandleFunc("GET /api/held", a.handleListHeld)
+	mux.HandleFunc("POST /api/boards/{slug}/threads/{no}/posts/{post}/approve", a.handleApprovePost)
 
 	mux.HandleFunc("GET /media/original/{path...}", a.handleMediaOriginal)
 	mux.HandleFunc("GET /media/thumb/{path...}", a.handleMediaThumb)

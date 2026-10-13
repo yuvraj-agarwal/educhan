@@ -22,8 +22,10 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
 a paginated board index, a catalog view, threads with quote links, optional
-institutional verification, and key-authenticated moderation. Janitor accounts,
-bans, and reports are not built yet.
+institutional verification, content rules that send back posts with contact
+details or ID numbers and hold possible threats, self-harm encouragement and
+grooming cues for a moderator, and key-authenticated moderation. Janitor
+accounts, bans, and reports are not built yet.
 
 ## Verified Anonymity
 
@@ -353,6 +355,69 @@ tripcode can only be produced through this server. The salt is also what keeps
 tripcodes stable: rotate `EDUCHAN_POSTER_ID_SALT` and every one of them changes,
 along with every poster ID.
 
+## Content rules
+
+Every post is read by a small, offline filter (`internal/app/filter.go`) before
+anything about it is stored: its body, its subject, and the part of its name
+that is shown. The tripcode secret after `#` is never read. `[math]` and `[eqn]`
+blocks are skipped, because TeX has a use for every character; `[code]` is
+read like any other text. The text is first normalised — compatibility forms
+folded (so full-width digits and styled letters read as plain ones), lower
+case, accents and zero-width characters dropped, every script's digits read as
+0–9, spaced or dotted-out letters closed up, and leetspeak beside letters read
+as letters — and then checked against tables of patterns with a few small
+validators. Each rule has one outcome:
+
+| Outcome | Rule | What it looks for |
+| --- | --- | --- |
+| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced), email addresses (not the RFC 2606 example domains), invite and profile links for messaging and social apps, and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z"). An app named on its own is fine |
+| Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit), US Social Security numbers written with dashes, UK National Insurance numbers |
+| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "kms"). It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
+| Hold (`202`) | `threat` | An intent to hurt people or attack a place, with a place or a time near it, and school-attack warnings |
+| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", how-many and what-dose questions, thinspo, meanspo, "ana coach" |
+| Hold (`202`) | `grooming` | An age, school-year or location question and a private-contact or meet-up cue in the same post |
+
+Blocks come first, then support (unless `support_seen`), then holds. A number
+is a phone number only when it stands on its own: dates, times, years, scores,
+prices, ISBNs, sums, labelled references (an order, roll or application
+number) and digit runs inside longer numbers pass, and so do Ofcom's and the
+NANP's numbers for drama and three crisis lines whose numbers look like
+mobiles (iCall, the Vandrevala Foundation and AASRA).
+
+**Be clear about what this is.** These are keyword and number patterns. They
+are easy to get round — a number spelled out in words, a username with no app
+named beside it, contact details hidden in `[math]` — and they catch posts that
+are fine: gaming trash talk, a countdown written as spaced digits, a question
+about a medicine's dose, a twelve-digit reference number that happens to pass
+the Aadhaar check. That is why a block says exactly what it matched, and why a
+hold waits for a person rather than deleting anything. The filter raises the
+cost of moving a conversation off educhan; it does not prevent it, and nothing
+about it makes educhan safe for anyone.
+
+Nothing the filter reads or matches is logged or stored. A refused post leaves
+no trace at all, and a held post's only addition is `held_reason`, the rule's
+name. It runs in-process, sends nothing anywhere, and takes time linear in the
+length of the post: on one 2.1 GHz server core, about 15 ms for a
+maximum-length ordinary post and under 100 ms for the slowest crafted one.
+Because a refused post costs no cooldown, that time is spent on every refused
+request; if it ever matters, a limit on refusals per client is the place to
+add one.
+
+### Held posts
+
+A held post is stored with `held_at` and `held_reason` set and is in no public
+view until a moderator approves it: not in its thread, the index (its last
+replies or its counts), the catalog, the archive, post resolution, or anyone's
+quotes and backlinks. It leaves its thread's reply and image counts,
+`last_post_at` and bump order as they were. A held opening post holds its whole
+thread: the thread answers `404`, takes no replies, cannot be stickied or
+locked, archives nothing when it is created, does not count against the
+board's thread limit, and is never archived or swept. An archived thread with
+a held reply is not swept until the reply has been approved or deleted.
+
+A held image stays at its ordinary storage key. Its URL is never published
+while the post is held, but the file is served to anyone who has it.
+
 ## Image attachments
 
 One image per post, on both thread creation and replies, **when
@@ -419,7 +484,8 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
-| Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
+| Content rules | Posts with contact details or ID numbers are sent back with what to take out; possible threats, self-harm encouragement and grooming cues are held for a moderator; crisis language is answered once with a support message. Keyword patterns, with the gaps that implies |
+| Moderation | Sticky, lock, and delete a post or a whole thread, approve held posts, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
 | Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
@@ -773,12 +839,12 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler","support_seen"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
 | `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
 | `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler","support_seen"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
@@ -823,9 +889,26 @@ the image limit posts at once when sent again without the image. (Two replies
 racing for a thread's last image slot can both get that far; the loser is
 refused inside the transaction, after its cooldowns have started.)
 
+Both posting endpoints apply the content rules (see Content rules) after the
+body, subject and badge checks — and for a reply after the checks above — and
+before flood control and before the image is stored, so a post sent back costs
+no cooldown and leaves no file. They apply to badged and unbadged posts alike.
+
+- A block answers `422` with `{"error","outcome":"block","rule","field","match"}`:
+  `error` is one plain sentence naming what to take out and from where, `rule`
+  is `"contact"` or `"id_number"`, `field` is `"body"`, `"subject"` or
+  `"name"`, and `match` is the text that tripped it as the poster wrote it,
+  trimmed, at most 80 characters.
+- Support answers `422` with `{"error","outcome":"support"}`. Sending the same
+  post again with `"support_seen": true` takes it past this step and no other.
+- A hold stores the post and answers `202` with `{"held":true,"board"}`, plus
+  `"thread_no"` for a reply. It says nothing of why, and gives no post number.
+  A held post takes the posting cooldown like any other.
+
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
-plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
+plus an `image` file; the flags (`sage`, `badge`, `spoiler`, `support_seen`)
+accept `1`, `true`, `on` or `yes`. Errors are `{"error": "..."}`, and `429` responses add
 `retry_after` plus a `Retry-After` header.
 
 ```bash
@@ -868,11 +951,29 @@ janitor accounts, bans, and reports are still to come.
 | `POST` | `/api/boards/{slug}/threads/{no}/unlock` | Allow replies again |
 | `DELETE` | `/api/boards/{slug}/threads/{no}` | Delete a thread with every post and attachment |
 | `DELETE` | `/api/boards/{slug}/threads/{no}/posts/{post}` | Delete one post and its attachment |
+| `GET` | `/api/held` | The held-post queue, oldest first, at most 500 |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts/{post}/approve` | Publish a held post |
 
 Deleting a post removes its stored image and thumbnail from the media store as
 well as its rows. Deleting a thread's opening post deletes the thread, which the
-response reports as `"thread_deleted": true`. A deleted reply is subtracted from
-the thread's reply count, so bump-limit state stays accurate.
+response reports as `"thread_deleted": true`. After a deleted reply the thread's
+reply and image counts are recounted from its published posts, so bump-limit
+state stays accurate.
+
+`GET /api/held` answers `{"posts":[…]}`, each with `board`, `thread_no`, `no`,
+`is_op`, `held_reason` (`threat`, `grooming` or `self_harm`), `created_at`,
+`subject` (the thread's, for an opening post; empty for a reply), `name`,
+`tripcode`, `body`, `badge` and `attachment` — everything a reader would see,
+so a moderator can decide from the queue alone. Approving answers
+`{"board","thread_no","post_no","approved":true}`, `409` with
+`{"error":"post is not held"}` for a published post, and `404` for one that is
+not in that thread. An approved reply takes its place in the thread by number
+and the thread's counts are recounted to include it, without a bump: approval
+can come hours later, and a late reply should not move a thread nobody else has
+touched. An approved opening post puts its thread on the board as new, and the
+board is pruned back to its thread limit exactly as a new thread prunes it.
+Approval can take a thread past its image limit, which counts published posts
+only. Rejecting a held post is deleting it, with the two `DELETE` routes.
 
 ```bash
 export MOD_KEY=…
@@ -880,7 +981,13 @@ curl -s -X POST localhost:8080/api/boards/meta/threads/1/sticky \
   -H "Authorization: Bearer $MOD_KEY"
 curl -s -X DELETE localhost:8080/api/boards/meta/threads/1/posts/4 \
   -H "X-Mod-Key: $MOD_KEY"
+curl -s localhost:8080/api/held -H "X-Mod-Key: $MOD_KEY"
+curl -s -X POST localhost:8080/api/boards/meta/threads/1/posts/7/approve \
+  -H "X-Mod-Key: $MOD_KEY"
 ```
+
+Nothing pages a moderator when a post is held, threats included (build plan
+2.11); the queue has to be read.
 
 #### Board management
 

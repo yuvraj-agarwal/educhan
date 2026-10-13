@@ -5,7 +5,8 @@ repository contains the working prototype: a Go HTTP API plus an embedded web UI
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
 attachments, a paginated index, a catalog view, a per-board archive, threads with quote
 links and post markup (spoilers, highlighted code, maths, cross-board links), per-client
-flood control, key-authenticated moderation and board management, and optional
+flood control, content rules that send back or hold posts (with a moderator queue for the
+held ones), key-authenticated moderation and board management, and optional
 institutional verification badges are implemented. Janitor accounts, bans, and reports are
 not.
 
@@ -19,7 +20,10 @@ not.
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
-  - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
+  - `moderation.go` — moderation key check, the sticky/lock/delete handlers, and the
+    held-post queue and approval.
+  - `filter.go` — the content filter: normalisation, the rule tables and validators,
+    and `checkContent`, which every post goes through before it is stored.
   - `boards.go` — board creation and settings updates, behind the same key.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
@@ -412,8 +416,9 @@ needs a browser check before the test changes.
   Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
   poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
-  about what a moderator can do to a post (delete it or its thread, lock the thread) and
-  what is not built yet (reports). A change to any of those changes the pages in the
+  about what the content checks send back and hold, what a moderator can do to a post
+  (approve a held one, delete it or its thread, lock the thread) and what is not built
+  yet (reports). A change to any of those changes the pages in the
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
   external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
@@ -493,7 +498,129 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **Never market educhan as safe for teenagers.** No "safe space", no claim that a
   filter catches bullying or anything else, and no feature described to users before it
   is built. NGL, an anonymous app that did the first two, was banned by the FTC from
-  offering itself to under-18s (§3.4 item 10).
+  offering itself to under-18s (§3.4 item 10). The content filter (`filter.go`) is
+  described to readers as what it is — word and number patterns that miss plenty and
+  sometimes stop a fine post — and never as something that keeps anyone safe.
+
+### Content rules and held posts
+
+Build plan 2.9 (content rules), the hold half of 2.11 (threats) and 2.12 (self-harm).
+`checkContent` in `filter.go` reads the body (minus `[math]`/`[eqn]` blocks, found with
+`markupBlocks`; `[code]` is read), the subject, and the shown part of the name
+(`displayedName`: before the first `#`, so the tripcode secret is never read or quoted
+back). It works on two views of each field, both mapped byte by byte back to the source
+so a match is quoted as written: **plain** (NFKD compatibility folding, lower case,
+combining marks and invisible characters dropped, every script's digits as 0–9, dashes
+as `-`, a short list of Cyrillic and Greek lookalikes) and **loose** (plain with spaced
+or dotted single letters closed up, leetspeak `0 1 3 4 5 7 @ $` read as letters when a
+letter is beside it, and `l` read as `i`). Patterns are tables of Go regexps compiled for
+both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
+pattern; `TestFilterPatternsSurviveCanon`) or for the plain view only (`plainOnly`, for
+anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`).
+
+| Outcome | Rule / reason | Built from |
+| --- | --- | --- |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; `classifyNumber` with `standsAlone`, `internationalPhone`, `indianMobile`, `nanpPhone`, `ukPhone`, `dramaNumber`, `helplineNumbers`), `emailRule`/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`), `linkRule` + `contactLink`, `askRules`, `myAppRule` + `notAHandle`, `appColonHandle`, `appAtHandle` |
+| block, `422` | `id_number` | `aadhaar` (Verhoeff), `ssn`, `niRule` + `validNIPrefix` |
+| support, `422` | — | `supportRules` (first person only; `notAfterANumber` for "5 kms") |
+| hold, `202` | `threat` | `threatIntentRules` near (`threatWindow`) `threatPlaceOrTimeRules`, filtered by `threatCheck`; `threatWarningRules` near `threatWarningCues` |
+| hold, `202` | `self_harm` | `selfHarmRules`, filtered by `notNegated` |
+| hold, `202` | `grooming` | any `ageQuestionRules` match and any `privateCueRules` match in the same post |
+
+Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
+grooming), then publish. Every regexp is RE2 (linear), the number scanner and the view
+builders are single passes, and the pairing checks walk sorted span lists, so the cost
+is linear in the post (`TestFilterCostIsBounded`, `BenchmarkCheckContent`: about 15 ms
+for a maximum-length post on one core, under 100 ms for the slowest crafted one). The
+plain view is skipped when the loose one is only it with `l` read as `i` (`looseOnly`).
+**Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
+extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
+or a `plainOnly` rule beside `niRule`, loaded from configuration, with its own
+`findingKind`. A new rule needs true and false positives in `filter_test.go`; the false
+positives are the harder half, and the table there (maths, dates, ISBNs, scores, prices,
+bare app names, "this exam is killing me", history questions, Hinglish and Hindi) is the
+floor.
+
+**Be honest about the limits**, in code, docs and copy. Keyword filters are easy to get
+round (spelled-out digits, a bare username, contact details inside `[math]`, an email
+under a TLD not in `emailTLDs`) and they have false positives (gaming trash talk held as
+self-harm, a countdown blocked as a phone number, a dose question held, a twelve-digit
+reference that passes the Verhoeff check). That is why a block quotes exactly what it
+matched and a hold waits for a person.
+
+**API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
+endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
+after the body, subject and badge checks, after `ReplyRefusal` for a reply, and
+**before flood control and before the upload is stored**: a block or a support refusal
+costs no cooldown and stores no file (`TestRefusedPostsCostNoCooldownAndStoreNoFile`); a
+held post takes the cooldown like any other (`TestHeldPostsTakeTheCooldown`). Badged and
+unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
+- block: `422 {"error": <one sentence naming what to remove and where>, "outcome":
+  "block", "rule": "contact"|"id_number", "field": "body"|"subject"|"name", "match":
+  <the source text, trimmed, at most 80 characters>}`
+- support: `422 {"error": supportMessage, "outcome": "support"}`
+- hold: `202 {"held": true, "board": slug}` plus `"thread_no"` for a reply — never the
+  rule or the post number.
+
+**Nothing the filter reads is logged**: not the text, not the match, not the rule. A
+refused post leaves no trace; a held post's only addition is `held_reason`. There is no
+"post held" log line (`TestTheFilterLogsNothingItRead`).
+
+**Held posts** (`0009_held_posts.sql`). `posts.held_at` and `posts.held_reason` are set
+together (`posts_held_together`; reasons `threat`, `grooming`, `self_harm`), and
+`threads.held_at` mirrors the opening post's, so a held OP holds its thread and every
+listing stays a query of `threads` alone. The invariant: **a held post appears in no
+public view and changes nothing public.** Every public query filters it — the index
+count, list, `opPosts` and `lastReplies`; the catalog; the archive; `Thread()` (thread
+and posts); `ThreadByID`; `PostThreadNo`; both directions of `attachQuotes` — and a held
+reply leaves `reply_count`, `image_count`, `last_post_at` and `bumped_at` alone. A held
+thread is unlisted, `404` to GET, replies (`ReplyRefusal` and `CreateReply`) and
+sticky/lock, prunes nothing when created, does not count against `thread_limit`, and is
+never archived (`threads_held_not_archived`) or swept; `SweepArchived` also skips an
+archived thread with a held reply. The image cap counts published posts only, so
+approval can take a thread past it. `TestHeldPostsAppearInNoPublicView` walks every
+public endpoint with a positive control (published text is found, and the held text is
+found once approved); a new public query has to decide whether it means held posts, and
+almost always it does not. `threads_board_public_order_idx` (live and not held) replaces
+`threads_board_live_order_idx`. The migration is numbered `0009` because the
+strip-metadata branch adds `0008_attachment_names.sql`.
+
+**Moderator queue**, behind `authorizeMod`: `GET /api/held` (oldest first, at most
+`heldQueueLimit` = 500; board, thread_no, no, is_op, held_reason, created_at, subject for
+an OP, name, tripcode, body, badge, attachment) and `POST
+/api/boards/{slug}/threads/{no}/posts/{post}/approve`. `ApprovePost` takes the board's
+row before the thread's (`TestApprovalRacingTheArchivingThreadDoesNotDeadlock`), clears
+the held columns, and recounts (`recountThread`): an approved reply is not bumped
+(approval can come hours late); an approved OP goes live with `bumped_at = now()` and the
+board is pruned in the same transaction, as `CreateThread` prunes. A post that is not
+held is `409 post is not held` (`errNotHeld`). Rejecting is the existing `DELETE` routes,
+which work on held posts and threads; `DeletePost` recounts rather than decrements, since
+a held reply was never counted.
+
+```bash
+EDUCHAN_MOD_KEY=dev-mod-key make run
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"add me on snap"}'      # 422 block
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"kms"}'                 # 422 support
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"kms","support_seen":true}'  # 201
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"how old are you? dm me"}'   # 202 held
+curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key'             # the queue
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO/approve \
+  -H 'X-Mod-Key: dev-mod-key'                                            # publish it
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
+  -H 'X-Mod-Key: dev-mod-key'                                            # or reject it
+```
+
+**Not built**: a held image stays at its ordinary random key and its URL is never
+published, but the file is served to whoever has the URL; build plan 2.2 moves held
+images under a `quarantine/` prefix. Nothing pages an on-duty moderator when a threat is
+held (2.11); the queue has to be read. The client does not yet send `support_seen` or
+show a support screen, and treats a `202` like a `201`: until it does, a post with
+crisis language cannot be made from the UI, and a held post's poster is sent to a page
+that does not have it.
 
 ### Attachments
 
@@ -583,7 +710,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   logs an error naming the versions it does not know, and `App.schemaAhead` makes the
   sweeper refuse to run. A rollback across `0005` is unsafe whatever the code says —
   phase-0 code shows archived threads as live and its prune deletes them, leaving
-  their files behind (`deploy/README.md`). Under the same lock, after the migrations,
+  their files behind (`deploy/README.md`). So is a rollback across `0009`: older code
+  does not know `held_at`, so it shows held posts and held threads publicly. Under the same lock, after the migrations,
   `renameReservedBoards` moves any board whose slug has since been reserved to
   `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
   word needs no migration of its own.
@@ -595,8 +723,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`pruneThreads`). Every live view — the index count and list, the catalog, and the
   prune subquery itself — filters `archived_at IS NULL`, which is what keeps archived
   threads from counting against the limit or being archived a second time
-  (`TestArchivedThreadsDoNotCountAgainstTheLimit`); the partial index
-  `threads_board_live_order_idx` covers exactly that set. `Thread()` still serves an
+  (`TestArchivedThreadsDoNotCountAgainstTheLimit`). Every one of them also filters
+  `held_at IS NULL` (see Content rules and held posts), and the partial index
+  `threads_board_public_order_idx` covers exactly that set: live and not held. `Thread()` still serves an
   archived thread, with `archived_at` set, and `CreateReply` refuses it with
   `errThreadArchived` (`403 thread is archived`), checked before the lock flag so the
   poster is told the reason that will not change. `/api/boards/{slug}/archive` lists at
@@ -629,9 +758,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   secret on purpose, so `New` warns about none of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
-  warning about a server-only setting goes there, not in `New`. **Legal holds (build
-  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
-  its comment says so.
+  warning about a server-only setting goes there, not in `New`. `SweepArchived` skips an
+  archived thread that has a held post in it, however long ago it was archived, so a
+  held threat cannot vanish before a moderator reads it. **Legal holds (build plan 2.10)
+  are not built**; when they are, `SweepArchived` must skip held threads the same way,
+  and its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -740,8 +871,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
   failure there is logged and leaves an orphaned file rather than a broken post.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
-  nothing would come back for the files later. Sticky and lock apply to live threads
-  only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
+  nothing would come back for the files later. Approving a held post goes through the
+  same gate (`handleApprovePost`), and logs where it was, never what. Sticky and lock
+  apply to live threads only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
   archived`), because nothing brings a thread back from the archive and a sticky that
   answered success would not keep it out of the sweep
   (`TestArchivedThreadsCannotBeStickiedOrLocked`).
@@ -891,7 +1023,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
-  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
+  `internal/app/filter_api_test.go`, and
   `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
   the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
   `DATABASE_URL`), so

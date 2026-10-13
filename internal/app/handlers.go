@@ -162,10 +162,14 @@ type createThreadRequest struct {
 	// Spoiler asks for the attached image to be hidden until it is clicked. A
 	// JSON post carries no image, so it is accepted and has nothing to apply to.
 	Spoiler bool `json:"spoiler"`
+	// SupportSeen is the poster sending a post again after the support screen
+	// it was refused with; see checkContent.
+	SupportSeen bool `json:"support_seen"`
 }
 
 func (r *createThreadRequest) submission() submission {
-	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler}
+	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler,
+		SupportSeen: r.SupportSeen}
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
@@ -197,6 +201,13 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The content rules, after every other check of what was sent and before
+	// flood control and the upload: a post sent back to have something taken
+	// out costs no cooldown and leaves no file behind.
+	verdict, ok := refuseContent(w, contentInput{Subject: subject, Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
@@ -216,10 +227,15 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		PosterID:   a.posterIDFunc(posterSourceFor(badge, key, clientKey)),
 		Badge:      badge.Label,
 		Attachment: attachmentInput(sub, img),
+		Hold:       verdict.Hold,
 	})
 	if err != nil {
 		a.discardUpload(img)
 		a.fail(w, r, err, "could not create thread")
+		return
+	}
+	if verdict.Hold != "" {
+		writeJSON(w, http.StatusAccepted, heldResponse(board, 0))
 		return
 	}
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
@@ -234,10 +250,14 @@ type createPostRequest struct {
 	Badge bool `json:"badge"`
 	// Spoiler asks for the attached image to be hidden until it is clicked.
 	Spoiler bool `json:"spoiler"`
+	// SupportSeen is the poster sending a post again after the support screen
+	// it was refused with; see checkContent.
+	SupportSeen bool `json:"support_seen"`
 }
 
 func (r *createPostRequest) submission() submission {
-	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler}
+	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler,
+		SupportSeen: r.SupportSeen}
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -290,6 +310,10 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	verdict, ok := refuseContent(w, contentInput{Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
@@ -310,13 +334,56 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		PosterID:   a.posterIDFunc(posterSourceFor(badge, key, clientKey)),
 		Badge:      badge.Label,
 		Attachment: attachmentInput(sub, img),
+		Hold:       verdict.Hold,
 	})
 	if err != nil {
 		a.discardUpload(img)
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	if verdict.Hold != "" {
+		writeJSON(w, http.StatusAccepted, heldResponse(board, no))
+		return
+	}
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+}
+
+// refuseContent applies the content rules to a post (filter.go). A block or a
+// support refusal is answered here with 422, and nothing about the post is
+// logged: not its text, not what matched. Otherwise it reports the verdict, whose
+// Hold is set when the post is to be stored held.
+func refuseContent(w http.ResponseWriter, in contentInput, supportSeen bool) (contentVerdict, bool) {
+	verdict := checkContent(in, supportSeen)
+	switch verdict.Outcome {
+	case contentBlock:
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":   verdict.Message,
+			"outcome": "block",
+			"rule":    verdict.Rule,
+			"field":   verdict.Field,
+			"match":   verdict.Match,
+		})
+		return verdict, false
+	case contentSupport:
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":   verdict.Message,
+			"outcome": "support",
+		})
+		return verdict, false
+	}
+	return verdict, true
+}
+
+// heldResponse is the acknowledgement for a held post: that it was received
+// and is waiting, and where. It says nothing of why, and gives no post number,
+// because the post is not anywhere a number could lead to until it is
+// approved. threadNo is the thread a reply was for, and 0 for a new thread.
+func heldResponse(board Board, threadNo int64) map[string]any {
+	resp := map[string]any{"held": true, "board": board.Slug}
+	if threadNo != 0 {
+		resp["thread_no"] = threadNo
+	}
+	return resp
 }
 
 // newPostResponse is the acknowledgement for a created post. It carries the
@@ -417,6 +484,8 @@ func (a *App) fail(w http.ResponseWriter, r *http.Request, err error, msg string
 		writeError(w, http.StatusForbidden, "thread is archived")
 	case errors.Is(err, errImageLimit):
 		writeError(w, http.StatusForbidden, "image limit reached")
+	case errors.Is(err, errNotHeld):
+		writeError(w, http.StatusConflict, "post is not held")
 	case errors.Is(err, context.Canceled), errors.Is(r.Context().Err(), context.Canceled):
 		// The client went away; there is nobody left to answer.
 	default:
