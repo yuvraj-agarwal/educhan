@@ -1247,10 +1247,14 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   // when they do.
   const held = state.verification.badge;
   // A badged post takes its ID from the credential rather than the poster key,
-  // which is worth saying where the choice is made.
+  // which is worth saying where the choice is made — and so is the one thing
+  // that would tie it to the unbadged posts all the same: a name or tripcode
+  // used on both. Ticking the box empties the Name field (badgeToggled).
   const badge = held
     ? `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
-       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread, so it is not tied to your unbadged replies.</span>`
+       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread. A name or
+         tripcode you also use without the badge would tie those posts to it, so the badge starts
+         with the name empty.</span>`
     : "";
 
   // Under the message, on every form: no contact details, because they are
@@ -2634,9 +2638,11 @@ function restoreDraft(draft) {
   if (!form) {
     return;
   }
+  // An empty field is restored as empty: a Name the poster cleared stays
+  // cleared, rather than the form's remembered name coming back.
   for (const name of ["subject", "name", "body"]) {
     const node = field(form, name);
-    if (node && draft[name]) {
+    if (node && name in draft) {
       node.value = draft[name];
     }
   }
@@ -2911,7 +2917,37 @@ el.main.addEventListener("change", (event) => {
     clearNotice();
     updateFileField(field);
   }
+  if (event.target.matches('input[type="checkbox"][name="badge"]')) {
+    badgeToggled(event.target);
+  }
 });
+
+// The Name each form held when its badge box was ticked, to put back if the
+// box is unticked before posting. It lives with the form, so a re-render
+// forgets it and an unticked box then leaves the field as it is.
+const nameBeforeBadge = new WeakMap();
+
+// badgeToggled empties the Name field when the badge is ticked. The field
+// starts with the name remembered from unbadged posts, and that name — a
+// tripcode especially — on a badged post would show everyone which unbadged
+// posts belong to the badge, which per-badge IDs exist to prevent. A name the
+// poster types after ticking is theirs to choose.
+function badgeToggled(box) {
+  const form = box.form;
+  const name = form && field(form, "name");
+  if (!name) {
+    return;
+  }
+  if (box.checked) {
+    nameBeforeBadge.set(form, name.value);
+    name.value = "";
+  } else if (nameBeforeBadge.has(form)) {
+    if (name.value === "") {
+      name.value = nameBeforeBadge.get(form);
+    }
+    nameBeforeBadge.delete(form);
+  }
+}
 
 if (HAS_HOVER) {
   el.main.addEventListener("mouseover", (event) => {
@@ -3066,10 +3102,21 @@ el.main.addEventListener("submit", async (event) => {
   clearNotice();
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
-    storageSet(NAME_STORAGE_KEY, name);
+    // The remembered name is the one for unbadged posts; a badged post's name
+    // is never offered on the next form, where the badge starts unticked.
+    if (!held) {
+      storageSet(NAME_STORAGE_KEY, name);
+    }
     // Clear before navigating so the draft carried across the re-render is the
-    // empty form rather than the post that just went through.
+    // empty form rather than the post that just went through. reset() puts the
+    // Name back to what the form was drawn with, so it is set again: to the
+    // name just used — empty, if the poster cleared it — or after a badged
+    // post to the remembered one.
     form.reset();
+    const nameField = field(form, "name");
+    if (nameField) {
+      nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+    }
     const fileField = form.querySelector("[data-file-field]");
     if (fileField) {
       clearFileField(fileField);
