@@ -133,6 +133,28 @@ img { max-width: 100%; }
 
 .board-nav::-webkit-scrollbar { display: none; }
 
+/* Beside the brand on a wide screen, taking the room between it and the Verify
+   link, so the boards scroll in that room rather than pushing Verify onto a
+   line of its own. */
+@media (min-width: 701px) {
+  .board-nav { flex: 1 1 0; min-width: 0; }
+}
+
+/* With a mouse, the row's scrollbar shows, thin: a plain wheel scrolls the page,
+   not the row, so without one the boards past the edge — twenty of them do not
+   fit even a wide screen — would be out of reach and out of sight. A finger
+   swipes the row, so on touch it stays hidden. */
+@media (hover: hover) and (pointer: fine) {
+  .board-nav {
+    scrollbar-width: thin;
+    scrollbar-color: var(--border-strong) transparent;
+    padding-bottom: 6px;
+  }
+
+  .board-nav::-webkit-scrollbar { display: block; height: 6px; }
+  .board-nav::-webkit-scrollbar-thumb { background: var(--border-strong); border-radius: 3px; }
+}
+
 .board-nav a {
   display: inline-flex;
   align-items: center;

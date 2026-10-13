@@ -1439,6 +1439,19 @@ function renderNav(route) {
       return `<a href="${boardPath(b.slug)}" title="${esc(b.description)}"${current}>${esc(boardLabel(b.slug))}</a>`;
     })
     .join("");
+  // The row scrolls sideways when the boards outrun it, so the board being
+  // shown is brought into it: the highlight is what says where the reader is.
+  // Only the row moves, never the page.
+  const current = el.nav.querySelector('[aria-current="page"]');
+  if (current) {
+    const row = el.nav.getBoundingClientRect();
+    const pill = current.getBoundingClientRect();
+    if (pill.left < row.left) {
+      el.nav.scrollLeft -= row.left - pill.left + 12;
+    } else if (pill.right > row.right) {
+      el.nav.scrollLeft += pill.right - row.right + 12;
+    }
+  }
 
   for (const link of el.pageLinks) {
     if (link.dataset.page === route.view) {
