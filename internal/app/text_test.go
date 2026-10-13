@@ -257,7 +257,10 @@ func TestSettledStartPairsAsTheWholeBody(t *testing.T) {
 		body := b.String()
 		whole := markupBlocks(body)
 		for cut := 0; cut <= len(body); cut++ {
-			start := settledStart(body[:cut])
+			start, cuts := settle(body[:cut])
+			if cuts > 3 {
+				t.Fatalf("body %q cut at %d took %d cuts to settle, want at most 3", body, cut, cuts)
+			}
 			var want []markupBlock
 			for _, blk := range whole {
 				if blk.start < len(start) {
@@ -270,6 +273,28 @@ func TestSettledStartPairsAsTheWholeBody(t *testing.T) {
 					body, cut, start, got, want)
 			}
 		}
+	}
+}
+
+// A start the archive reads settles in a few passes however it is written.
+// Runs of what look like tags cut in half used to settle one character per
+// pass, rescanning the whole start each time: quadratic in the window, and so
+// milliseconds of CPU per such thread on every anonymous archive listing.
+func TestSettlingTakesAFewPassesWhateverTheStart(t *testing.T) {
+	for _, run := range []string{
+		"[", "[s", "[sp", "[spoiler", "[/spoiler", "[math", "[/c", "[e",
+		"[spoiler]", "[code]", "[spoiler][code]", "[spoiler]x[/spoiler][code]", "[[spoiler]",
+	} {
+		start := strings.Repeat(run, archiveBodyWindow/len(run)+1)[:archiveBodyWindow]
+		if _, cuts := settle(start); cuts > 3 {
+			t.Errorf("a run of %q took %d cuts to settle, want at most 3", run, cuts)
+		}
+	}
+	// What precedes the last "[" was followed by another "[" in the body, so
+	// it is text, and the excerpt shows it.
+	if got, want := excerptOfStart(strings.Repeat("[", archiveBodyWindow), true, archiveExcerptLen),
+		strings.Repeat("[", archiveExcerptLen)+"\u2026"; got != want {
+		t.Errorf("a run of brackets excerpts to %q, want %q", got, want)
 	}
 }
 
