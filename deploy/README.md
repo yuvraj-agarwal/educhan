@@ -68,6 +68,22 @@ by submitting a build (section 2.5), not by building locally.
 
 ## 2. Cloud Run
 
+**The short way.** In [Cloud Shell](https://shell.cloud.google.com), with a
+project that has billing linked, one script does every step in this section:
+APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
+the build, the deploy, and the request-log exclusion. It leaves image uploads
+and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
+the environment turns that off), prints the service URL, and is safe to re-run.
+
+```bash
+git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
+bash deploy/first-deploy.sh YOUR_PROJECT_ID            # region defaults to asia-south1
+```
+
+It runs builds as a service account of its own (`educhan-build`) rather than
+the project's default build account, so the build grants below are the same in
+every project. The rest of this section is what the script does, step by step.
+
 ### 2.1 One-time project setup
 
 ```bash
