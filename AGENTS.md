@@ -201,8 +201,9 @@ EDUCHAN_VERIFY_SECRET=dev-verify-secret EDUCHAN_MAIL_DEV=1 EDUCHAN_VERIFY_COOLDO
 
 ```bash
 curl -s -c jar -X POST localhost:8080/api/verify/request \
-  -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in"}'
+  -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in","adult":true}'
 # -> {"status":"sent","label":"IIT Bombay","expires_in":900}; the code is on stdout
+# without "adult":true -> 400, and no code, no row, no cooldown
 CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
   -H 'Content-Type: application/json' -d '{"code":"481920"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')
@@ -247,9 +248,10 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
-`submit`, the age screen storing its outcome alone and sending nothing, KaTeX's options,
-and the highlighting cap. They are a floor, not a proof; a change that trips one has
-changed one of those properties and needs a browser check before the test changes.
+`submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
+box never ticked in advance or kept, KaTeX's options, and the highlighting cap. They are
+a floor, not a proof; a change that trips one has changed one of those properties and
+needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -455,9 +457,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   to one: the rules ban pornography, self-harm and eating-disorder promotion and the
   rest for every user, and that ban is what keeps the UK's highly effective age checks
   out of the plan. 4chan was fined £450,000 for adult boards without them (§3.4 item 2,
-  §4.1). The badge's planned 18+ attestation (build plan 2.14), and with it posting on
-  `/u/` boards, limits who can post there, not what may be posted: the same rules hold
-  on every board, for everyone.
+  §4.1). The badge is 18+ by attestation (build plan 2.14,
+  `TestVerificationRequiresTheAdultAttestation`). That limits who can carry a badge, and
+  later who can post on `/u/` boards (not built yet), never what may be posted: the same
+  rules hold on every board, for everyone.
 - **Never market educhan as safe for teenagers.** No "safe space", no claim that a
   filter catches bullying or anything else, and no feature described to users before it
   is built. NGL, an anonymous app that did the first two, was banned by the FTC from
@@ -732,6 +735,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
     column of every table for the address. It has positive controls, so it fails rather
     than passing vacuously if the scan stops working.
+  - **The badge is 18+ by attestation, and the attestation is checked, never stored.**
+    `POST /api/verify/request` refuses a body without `"adult": true` with `400`
+    (`adultRequired`) straight after decoding, before the address is parsed, a cooldown
+    starts, a row is written or mail is sent
+    (`TestVerificationRequiresTheAdultAttestation`); `/api/verify/confirm` does not ask
+    again. Why 18+: the badge is the one feature that keeps something tied to a person,
+    an email HMAC for up to 180 days, and keeping it adult-only keeps that record out of
+    India's parental-consent rule for under-18s from 13 May 2027 (design-recommendations
+    §3.3, §4.4). Why never stored: a kept answer would be a record of age about every
+    badge holder, the very data those rules attach to, and a tick-box proves nothing
+    worth keeping. So no column, no log field, no credential claim, no cookie and no
+    client storage key holds it (`TestAdultAttestationIsNeverKept`,
+    `TestBadgeAttestationIsNeverPreselectedOrKept`), and the `/verify` box starts
+    unticked on every render.
 - Verification lives in `verify.go` (handlers, credential signing, cookies) and
   `verify_domains.go` (allowlist, address normalisation); its SQL is in `store.go` with
   everything else. The allowlist is a **file** — embedded `verify_domains.txt`, replaced

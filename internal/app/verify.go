@@ -130,8 +130,18 @@ func (a *App) handleVerifyStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"enabled": a.verifyEnabled()})
 }
 
+// adultRequired refuses a code request that does not say its sender is 18 or
+// over. It is worded for the person reading it, because the page shows it to
+// them, and it says what they can still do: the limit is the badge's, not the
+// site's.
+const adultRequired = "the badge is for students aged 18 and over; you can still read and post anonymously"
+
 type verifyRequestBody struct {
 	Email string `json:"email"`
+	// Adult is the sender's own word that they are 18 or over (build plan
+	// 2.14). It is checked and then dropped: no column, no log field and no
+	// credential claim holds it, so the answer is recorded nowhere.
+	Adult bool `json:"adult"`
 }
 
 // handleVerifyRequest checks a submitted address against the allowlist and
@@ -144,6 +154,13 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	}
 	var req verifyRequestBody
 	if !decodeJSON(w, r, &req) {
+		return
+	}
+	// The badge is for students aged 18 and over, on their own word. Without
+	// it the request goes no further: the address is not parsed, no cooldown
+	// starts, nothing is stored and nothing is sent.
+	if !req.Adult {
+		writeError(w, http.StatusBadRequest, adultRequired)
 		return
 	}
 

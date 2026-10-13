@@ -6,7 +6,7 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 
 ## Core Features
 
-- **Verified Anonymity** — Optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
+- **Verified Anonymity** — Students aged 18 and over can optionally verify institutional email domains (`.ac.in`, `.edu`, etc.) to receive a badge naming the institution, never the person
 - **Imageboard-native experience** — Fast, ephemeral, image-first discussion
 - **One image per post** — JPEG, PNG, WebP or GIF
 - **Archive** — Threads that fall off a board stay readable in its archive for a while, then are deleted
@@ -33,8 +33,8 @@ else. It is entirely optional, off by default on every individual post, and
 switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
 
 ```
-  you@iitb.ac.in
-       │   checked against the domain allowlist
+  you@iitb.ac.in   + "I confirm I am 18 or over"
+       │   refused unless ticked; then checked against the domain allowlist
        ▼
   six-digit code, emailed — stored hashed, expires in 15 minutes
        │   confirmed
@@ -49,7 +49,9 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   expiry rounded up to the day — in a table with no path to any post.
 ```
 
-1. Submit an institutional address on `/verify`.
+1. Submit an institutional address on `/verify`, ticking the box that confirms
+   you are 18 or over. Without it the page sends nothing, and the server
+   refuses any request that does not carry `"adult": true`.
 2. The domain is checked against the allowlist, which decides both whether it
    counts as academic and what the badge will say.
 3. A six-digit code is emailed. It is stored hashed and expires in 15 minutes.
@@ -58,6 +60,27 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
 5. The posting form grows a **post with [Verified: …]** checkbox. Tick it per
    post; leave it alone and the post is indistinguishable from any other — the
    credential is not sent at all.
+
+### The badge is 18+, by attestation
+
+The badge is for students aged 18 and over, on their own word. Everyone the
+site is open to, 13 and over, can read and post anonymously without one; only
+the badge has an age limit. `POST /api/verify/request` refuses a body without
+`"adult": true` with `400` straight after decoding it: the address is not
+parsed, no cooldown starts, nothing is stored and no mail is sent
+(`TestVerificationRequiresTheAdultAttestation`).
+
+The answer is checked and then dropped. It is not a column, a log field, a
+claim in the credential or anything the browser keeps: the answer itself is
+recorded nowhere (`TestAdultAttestationIsNeverKept`, and
+`TestBadgeAttestationIsNeverPreselectedOrKept` for the page's unticked box).
+Why adult-only: the badge is the one feature that keeps something tied to a
+person, a keyed hash of an address for up to 180 days. Keeping it to adults
+keeps that record out of the rules for under-18s' data, such as India's
+parental-consent requirement from 13 May 2027 (build plan 2.14,
+design-recommendations §3.3 and §4.4). It is a tick-box and nothing more: a
+17-year-old who ticks it gets a badge, which is one more reason the badge says
+so little — an institution, an expiry, and a random number.
 
 ### The credential travels only when it is used
 
@@ -698,7 +721,7 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
-| `POST` | `/api/verify/request` | Email a code — `{"email"}` |
+| `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
@@ -717,6 +740,11 @@ base64url characters, no padding) and no other endpoint reads it. Without the
 header the poster ID comes from the client address; with a malformed one the
 post is refused with `400` and `{"error":"invalid poster key"}` before its body
 is read, so the refusal costs no cooldown.
+
+`/api/verify/request` without `"adult": true` answers `400` with
+`{"error":"the badge is for students aged 18 and over; you can still read and post anonymously"}`
+and does nothing else: no code, no row, no cooldown. `"adult"` is the
+requester's own word that they are 18 or over, and it is never stored.
 
 `/api/verify/confirm` sets no credential cookie, but the two-step exchange does
 use a short-lived one scoped to `/api/verify`, so an HTTP client still needs a
@@ -740,11 +768,12 @@ curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
   -d '{"subject":"placement season","name":"ana#trip","body":"how did yours go?"}'
 
-# Verification, end to end. With no mail provider configured the code is
+# Verification, end to end. "adult": true says you are 18 or over; without
+# it the request is refused. With no mail provider configured the code is
 # printed to the server's stdout. Confirming returns the credential; hold on
 # to it, because the server will not show it again.
 curl -s -c jar -X POST localhost:8080/api/verify/request \
-  -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in"}'
+  -H 'Content-Type: application/json' -d '{"email":"you@iitb.ac.in","adult":true}'
 CRED=$(curl -s -b jar -c jar -X POST localhost:8080/api/verify/confirm \
   -H 'Content-Type: application/json' -d '{"code":"481920"}' \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["credential"])')

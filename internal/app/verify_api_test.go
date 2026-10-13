@@ -3,10 +3,14 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -58,8 +62,15 @@ type verifyHarness struct {
 
 func verifyServer(t *testing.T, tune func(*Config)) *verifyHarness {
 	t.Helper()
+	return verifyServerLogging(t, tune, io.Discard)
+}
+
+// verifyServerLogging is verifyServer with the application's log written to
+// logs as JSON, for tests that assert on what verification writes down.
+func verifyServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *verifyHarness {
+	t.Helper()
 	mail := &captureSender{}
-	h := testServer(t, func(cfg *Config) {
+	h := testServerLogging(t, func(cfg *Config) {
 		cfg.VerifySecret = "test-verification-secret"
 		cfg.VerifyCodeTTL = 15 * time.Minute
 		cfg.VerifyCredentialTTL = 180 * 24 * time.Hour
@@ -67,7 +78,7 @@ func verifyServer(t *testing.T, tune func(*Config)) *verifyHarness {
 		if tune != nil {
 			tune(cfg)
 		}
-	})
+	}, logs)
 	return &verifyHarness{harness: h, mail: mail}
 }
 
@@ -81,10 +92,13 @@ type verifyResponse struct {
 	Error      string `json:"error"`
 }
 
+// requestCode asks for a code the way the page does once its box is ticked,
+// with the 18+ attestation alongside the address.
+// TestVerificationRequiresTheAdultAttestation covers the requests without it.
 func (h *verifyHarness) requestCode(email string) (int, verifyResponse) {
 	h.t.Helper()
 	var out verifyResponse
-	return h.post("/api/verify/request", map[string]any{"email": email}, &out), out
+	return h.post("/api/verify/request", map[string]any{"email": email, "adult": true}, &out), out
 }
 
 func (h *verifyHarness) confirmCode(code string) (int, verifyResponse) {
@@ -373,6 +387,143 @@ func TestVerificationRejectsNonAcademicDomains(t *testing.T) {
 	}
 }
 
+// The badge is for students aged 18 and over, on their own word (build plan
+// 2.14). A code request that does not say so is turned away before anything
+// else happens to it: no code is mailed, no row is written, and neither
+// cooldown starts, so asking again properly is not held up by having asked
+// without it.
+func TestVerificationRequiresTheAdultAttestation(t *testing.T) {
+	h := verifyServer(t, func(cfg *Config) {
+		cfg.VerifyCooldown = defaultVerifyCooldown
+		cfg.TrustedProxyHops = 1
+	})
+	const client, email = "203.0.113.9", "ana@iitb.ac.in"
+
+	for _, tc := range []struct {
+		name string
+		body map[string]any
+		want string
+	}{
+		{"missing", map[string]any{"email": email}, adultRequired},
+		{"false", map[string]any{"email": email, "adult": false}, adultRequired},
+		{"null", map[string]any{"email": email, "adult": nil}, adultRequired},
+		// Not a boolean at all, which the decoder refuses before the handler
+		// gets to look.
+		{"a string", map[string]any{"email": email, "adult": "yes"}, "invalid JSON body"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out verifyResponse
+			if status := h.postFrom(client, "/api/verify/request", tc.body, &out); status != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400", status)
+			}
+			if out.Error != tc.want {
+				t.Errorf("error = %q, want %q", out.Error, tc.want)
+			}
+		})
+	}
+	if n := h.mail.count(); n != 0 {
+		t.Errorf("%d codes were sent without the attestation, want 0", n)
+	}
+	if n := h.countRows("verification_pending"); n != 0 {
+		t.Errorf("requests without the attestation wrote %d pending rows, want 0", n)
+	}
+
+	// The same client and the same address, with the cooldown on: had any
+	// refusal above started either cooldown, this would be a 429.
+	var out verifyResponse
+	if status := h.postFrom(client, "/api/verify/request",
+		map[string]any{"email": email, "adult": true}, &out); status != http.StatusAccepted {
+		t.Fatalf("with the attestation: status %d (%s), want 202", status, out.Error)
+	}
+	if n := h.mail.count(); n != 1 {
+		t.Fatalf("%d codes sent, want 1", n)
+	}
+	// And the cooldown really is on, so the request above proves something.
+	if status := h.postFrom(client, "/api/verify/request",
+		map[string]any{"email": email, "adult": true}, &out); status != http.StatusTooManyRequests {
+		t.Errorf("asking again at once: status %d, want 429", status)
+	}
+
+	// The rest of the flow is untouched by the attestation.
+	status, confirmed := h.confirmCode(h.mail.last(t).Code)
+	if status != http.StatusOK || confirmed.Credential == "" {
+		t.Fatalf("confirm: status %d (%s), want a credential", status, confirmed.Error)
+	}
+}
+
+// The attestation is checked at the door and dropped there. Nothing educhan
+// keeps (a row, a log line, the credential) records the answer, so there is
+// none to leak, to hand over, or to line up against a post
+// (design-recommendations 3.3, 4.4).
+func TestAdultAttestationIsNeverKept(t *testing.T) {
+	var logs syncBuffer
+	h := verifyServerLogging(t, nil, &logs)
+
+	// Both outcomes, so either has had the chance to leave something behind,
+	// and a verification left in flight so the pending table holds a row.
+	var refused verifyResponse
+	if status := h.post("/api/verify/request",
+		map[string]any{"email": "bo@iitb.ac.in", "adult": false}, &refused); status != http.StatusBadRequest {
+		t.Fatalf("without the attestation: status %d, want 400", status)
+	}
+	issued := h.verify("ana@iitb.ac.in")
+	if status, out := h.requestCode("cy@iitb.ac.in"); status != http.StatusAccepted {
+		t.Fatalf("second request: status %d (%s)", status, out.Error)
+	}
+
+	// The credential carries the three claims it always has, and no fourth.
+	parts := strings.Split(issued.Credential, ".")
+	if len(parts) != 3 {
+		t.Fatalf("credential %q is not version.claims.mac", issued.Credential)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(parts[1])
+	if err != nil {
+		t.Fatalf("decode the claims: %v", err)
+	}
+	var claims map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &claims); err != nil {
+		t.Fatalf("decode the claims: %v", err)
+	}
+	var names []string
+	for name := range claims {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	if got := strings.Join(names, ","); got != "exp,id,label" {
+		t.Errorf("credential claims = %s, want exactly exp,id,label", got)
+	}
+
+	// The log, once it is shown to hold the handlers' own lines.
+	written := logs.String()
+	if !strings.Contains(written, `"msg":"verification issued"`) {
+		t.Fatalf("the log has no verification lines, so it cannot show what is missing:\n%s", written)
+	}
+	if strings.Contains(strings.ToLower(written), "adult") {
+		t.Errorf("the log mentions the attestation:\n%s", written)
+	}
+
+	// The database. A column for it would hold a boolean, which no text scan
+	// can find, so the column names are what is checked here; every table's
+	// columns are also pinned exactly by TestEveryTableHasItsColumnsPinned and
+	// the two tests beside it.
+	ageShaped := regexp.MustCompile(`adult|birth|(^|_)age($|_)`)
+	for _, table := range h.tables() {
+		for _, column := range h.columns(table) {
+			if ageShaped.MatchString(column) {
+				t.Errorf("%s.%s looks like a record of age", table, column)
+			}
+		}
+	}
+	if n := h.rowsContaining("verification_pending", []byte("IIT Bombay")); n == 0 {
+		t.Fatal("the scan found no label in verification_pending, so it cannot be trusted")
+	}
+	for _, table := range h.tables() {
+		if n := h.rowsContaining(table, []byte("adult")); n != 0 {
+			t.Errorf("%d rows of %s mention the attestation", n, table)
+		}
+	}
+}
+
 // One address holds one badge. Verifying again is how a badge is renewed or
 // moved to another browser, and it takes the previous credential with it.
 func TestReverificationRevokesThePreviousCredential(t *testing.T) {
@@ -446,13 +597,13 @@ func TestVerificationRateLimits(t *testing.T) {
 
 	var out verifyResponse
 	if status := h.postFrom("203.0.113.1", "/api/verify/request",
-		map[string]any{"email": "ana@iitb.ac.in"}, &out); status != http.StatusAccepted {
+		map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
 		t.Fatalf("first request: status %d (%s)", status, out.Error)
 	}
 
 	// Same client, a different address: refused on the client's cooldown.
 	if status := h.postFrom("203.0.113.1", "/api/verify/request",
-		map[string]any{"email": "bo@iitb.ac.in"}, &out); status != http.StatusTooManyRequests {
+		map[string]any{"email": "bo@iitb.ac.in", "adult": true}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("second address from the same client: status %d, want 429", status)
 	}
 	if got := h.lastHeader.Get("Retry-After"); got != "60" {
@@ -465,13 +616,13 @@ func TestVerificationRateLimits(t *testing.T) {
 	// Different client, the same address: refused on the address's cooldown, so
 	// a mailbox cannot be flooded from a pool of hosts.
 	if status := h.postFrom("203.0.113.2", "/api/verify/request",
-		map[string]any{"email": "ana@iitb.ac.in"}, &out); status != http.StatusTooManyRequests {
+		map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("same address from another client: status %d, want 429", status)
 	}
 
 	// Different client, different address: unaffected.
 	if status := h.postFrom("203.0.113.2", "/api/verify/request",
-		map[string]any{"email": "cy@iitb.ac.in"}, &out); status != http.StatusAccepted {
+		map[string]any{"email": "cy@iitb.ac.in", "adult": true}, &out); status != http.StatusAccepted {
 		t.Errorf("unrelated request: status %d (%s), want 202", status, out.Error)
 	}
 	if h.mail.count() != 2 {
@@ -575,7 +726,7 @@ func TestVerificationIsOffWithoutASecret(t *testing.T) {
 	}
 
 	var out verifyResponse
-	if code := c.post("/api/verify/request", map[string]any{"email": "ana@iitb.ac.in"}, &out); code != http.StatusForbidden {
+	if code := c.post("/api/verify/request", map[string]any{"email": "ana@iitb.ac.in", "adult": true}, &out); code != http.StatusForbidden {
 		t.Errorf("request without a secret: status %d, want 403", code)
 	}
 	if code := c.post("/api/verify/confirm", map[string]any{"code": "123456"}, &out); code != http.StatusForbidden {
