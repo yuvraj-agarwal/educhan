@@ -425,7 +425,10 @@ view.
   is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
   outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
   shows a plain page saying who educhan is for, with no way to answer again in that
-  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  browser. The one refusal not kept is an answer in the current month exactly 13 years
+  back, since that reader may have turned 13 this month: it lasts until the page is
+  closed, and the FAQ says a reader who may only just have become old enough is asked
+  again. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
 - **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young

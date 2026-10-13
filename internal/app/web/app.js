@@ -2165,7 +2165,9 @@ const FAQ_SECTIONS = [
       <p>Your answer never leaves your browser. The browser works out from the month and year
         whether you're old enough, then forgets them: they are never saved, and never sent to
         educhan or anyone else. All it keeps is the result, so you aren't asked on every
-        visit, and if the result is no, it doesn't ask again.</p>`,
+        visit. If the result is no, it doesn't ask again, unless you might have become old
+        enough this month: it doesn't know the day you were born, so it can't be sure, and
+        then it keeps nothing and asks again next time.</p>`,
         },
       ]
     : []),
