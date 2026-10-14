@@ -444,7 +444,8 @@ type NewThread struct {
 //
 // A held thread (in.Hold set) is stored with its opening post held and
 // threads.held_at set, and prunes nothing: it is not on the board, so it takes
-// no other thread's place there until a moderator approves it.
+// no other thread's place there until a moderator approves it. Its number is
+// used up all the same, as a held reply's is.
 func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 	var created Post
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -558,7 +559,8 @@ func (s *Store) ReplyRefusal(ctx context.Context, board Board, threadNo int64, w
 //
 // A held reply (in.Hold set) goes through the same checks and is stored held,
 // and changes nothing else: the thread's counters, last_post_at and bump stay
-// as they were, so nothing public shows that it was sent. The image cap counts
+// as they were, so nothing public shows that it was sent but the post number
+// it uses up, whose gap reads as a deleted post's. The image cap counts
 // published posts only, for the same reason: a cap that counted a held image
 // would refuse the next one while the thread showed a free slot.
 func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {

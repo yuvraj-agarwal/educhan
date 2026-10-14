@@ -18,7 +18,8 @@ import (
 
 // Integration tests for the content filter's API: the 422 refusals, the 202
 // for a held post, and the held-post invariant — a held post appears in no
-// public view and changes nothing public until a moderator approves it.
+// public view and changes nothing public until a moderator approves it, but
+// for the post number it uses up, whose gap reads as a deleted post's.
 
 func threadsPath(board string) string { return "/api/boards/" + board + "/threads" }
 
@@ -475,10 +476,19 @@ func TestHeldPostsAppearInNoPublicView(t *testing.T) {
 		}
 	}
 
-	// The held numbers are nowhere a reader can reach.
+	// The held numbers are nowhere a reader can reach. A held post does use
+	// up its number, so the board's numbering shows a gap there; resolving it
+	// answers exactly as resolving a post a moderator deleted does.
+	deleted := h.reply("hold", newer.ThreadNo, "", "publicmarkerdeleted", true)
+	h.modAction(http.MethodDelete, fmt.Sprintf("/api/boards/hold/threads/%d/posts/%d", newer.ThreadNo, deleted.No))
+	goneStatus, goneBody := h.rawGet(fmt.Sprintf("/api/boards/hold/posts/%d", deleted.No))
+	if goneStatus != http.StatusNotFound {
+		t.Fatalf("resolving a deleted post: status %d, want 404", goneStatus)
+	}
 	for _, no := range []int64{alpha.No, bravo.No, charlie.No} {
-		if status, _ := h.rawGet(fmt.Sprintf("/api/boards/hold/posts/%d", no)); status != http.StatusNotFound {
-			t.Errorf("resolving held post %d: status %d, want 404", no, status)
+		if status, body := h.rawGet(fmt.Sprintf("/api/boards/hold/posts/%d", no)); status != goneStatus || body != goneBody {
+			t.Errorf("resolving held post %d: %d %q, want what a deleted post answers, %d %q", no, status, body,
+				goneStatus, goneBody)
 		}
 	}
 	if status := h.threadStatus("hold", bravo.ThreadNo); status != http.StatusNotFound {

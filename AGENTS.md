@@ -589,8 +589,8 @@ gets the support screen first and is held once the poster goes on, because the p
 asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`). Every
 regexp is RE2 (linear), the number scanner and the view builders are single passes, and
 the pairing checks walk sorted span lists, so the cost is linear in the post
-(`TestFilterCostIsBounded`, `BenchmarkCheckContent`: about 17 ms for a maximum-length
-post on one 2.1 GHz core, 100–150 ms for the slowest crafted one, which is why refusals
+(`TestFilterCostIsBounded`, `BenchmarkCheckContent`: about 30–40 ms for a maximum-length
+post on one 2.1 GHz core, 140–175 ms for the slowest crafted one, which is why refusals
 are budgeted; see the API contract). The plain view is skipped when the loose one is
 only it with `l` read as `i` (`looseOnly`).
 **Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
@@ -648,7 +648,12 @@ field on either is a decision; the README says the same, and has to change with 
 together (`posts_held_together`; reasons `threat`, `grooming`, `self_harm`), and
 `threads.held_at` mirrors the opening post's, so a held OP holds its thread and every
 listing stays a query of `threads` alone. The invariant: **a held post appears in no
-public view and changes nothing public.** Every public query filters it — the index
+public view and changes nothing public but its post number.** The number is taken when
+the post is stored (`nextPostNo`, which is also what orders posting before any thread's
+lock), so the next published post skips it, and `/posts/{no}` answers it exactly as it
+answers a post a moderator deleted (`TestHeldPostsAppearInNoPublicView`); only the
+timing differs, a gap that appears at once and is filled if the post is approved. Every
+public query filters it — the index
 count, list, `opPosts` and `lastReplies`; the catalog; the archive; `Thread()` (thread
 and posts); `ThreadByID`; `PostThreadNo`; both directions of `attachQuotes` — and a held
 reply leaves `reply_count`, `image_count`, `last_post_at` and `bumped_at` alone. A held

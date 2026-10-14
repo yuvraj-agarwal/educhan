@@ -423,8 +423,8 @@ within a minute of its window ending. A held post's only addition to the
 database is `held_reason`, the rule's name, and a moderator's approval is
 logged with the board, thread and post number, as every moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
-length of the post: on one 2.1 GHz server core, about 17 ms for a
-maximum-length ordinary post and 100–150 ms for the slowest crafted one. A
+length of the post: on one 2.1 GHz server core, about 30–40 ms for a
+maximum-length ordinary post and 140–175 ms for the slowest crafted one. A
 refused post costs no cooldown, so refusals are counted instead: after
 `EDUCHAN_REFUSAL_LIMIT` of them (10 by default) in a minute, a client's posts
 are answered `429` without being read until the minute is up (see
@@ -444,7 +444,10 @@ A held post is stored with `held_at` and `held_reason` set and is in no public
 view until a moderator approves it: not in its thread, the index (its last
 replies or its counts), the catalog, the archive, post resolution, or anyone's
 quotes and backlinks. It leaves its thread's reply and image counts,
-`last_post_at` and bump order as they were. A held opening post holds its whole
+`last_post_at` and bump order as they were. It does use up its post number,
+which is taken when the post is stored: the next post on the board skips it,
+and the gap answers `404` exactly as a post a moderator deleted does, until
+an approval fills it. A held opening post holds its whole
 thread: the thread answers `404`, takes no replies, cannot be stickied or
 locked, archives nothing when it is created, does not count against the
 board's thread limit, and is never archived or swept. An archived thread with
@@ -541,7 +544,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Content rules | Posts with contact details or ID numbers are sent back with what to take out; possible threats, self-harm encouragement and grooming cues are held for a moderator; crisis language is answered once with a support message. Keyword patterns, with the gaps that implies |
 | Moderation | Sticky, lock, and delete a post or a whole thread, approve held posts, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed — except one with a held reply, which leaves public view then and is deleted by the first sweep after the reply is decided; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -924,8 +927,8 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler","support_seen"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
-| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
-| `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
+| `GET` | `/api/boards/{slug}/threads/{no}` | One thread with its published posts, live or archived; `404` for a held thread, and for an archived one kept past its board's archive period by a held reply |
+| `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a published post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such published post (a held post's number answers as a deleted post's does) |
 | `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler","support_seen"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
@@ -973,8 +976,9 @@ refused inside the transaction, after its cooldowns have started.)
 
 Both posting endpoints apply the content rules (see Content rules) after the
 body, subject and badge checks — and for a reply after the checks above — and
-before flood control and before the image is stored, so a post sent back costs
-no cooldown and leaves no file. They apply to badged and unbadged posts alike.
+between the two halves of flood control, before the image is stored: a post
+from a client still in a cooldown is answered `429` without being read, and
+one the rules send back starts no cooldown and leaves no file. They apply to badged and unbadged posts alike.
 
 - A block answers `422` with `{"error","outcome":"block","rule","field","match"}`:
   `error` is one plain sentence naming what to take out and from where, `rule`
