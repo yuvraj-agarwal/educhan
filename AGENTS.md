@@ -543,7 +543,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 Build plan 2.9 (content rules), the hold half of 2.11 (threats) and 2.12 (self-harm).
 `checkContent` in `filter.go` reads the body, the subject, and the shown part of the
 name (`displayedName`: before the first `#`, so the tripcode secret is never read or
-quoted back). The body's markup is read as a reader sees it (`markupReadings`, from
+quoted back). Every one of those fields has already lost its bidirectional controls
+(`collapseControl`, through `bidiControl`), which are never stored either: an override
+would show a reader text in an order the filter never read (`TestBidiControlsAreNotStored`).
+The body's markup is read as a reader sees it (`markupReadings`, from
 `markupBlocks`): a `[math]`/`[eqn]` block as one blank, `[code]` tags as line breaks
 around text that is read, and `[spoiler]` tags as nothing, or as a blank between a
 letter and a digit — so a number, address or app name split by tags reads whole, as it
@@ -561,7 +564,7 @@ anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`
 
 | Outcome | Rule / reason | Built from |
 | --- | --- | --- |
-| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by spaces, line breaks, `-`, `.`, `_` or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber` lets decimals and thousands through; `classifyNumber` with `standsAlone`, `internationalPhone`, `indianMobile`, `nanpPhone`, `ukPhone`, `auMobile`, `dramaNumber`, `helpline` (`helplineNumbers`: three Indian lines and five US ones)), `emailRule`/`providerEmailRule`/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`, bracketed `[.]` and `[@]`), `linkRule` + `contactLink`, `spacedInviteRule`, `askRules`, `myAppRule` + `notAHandle`, `appColonHandle`, `appAtHandle`, `appLabelHandle` (`plausibleHandle`) |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by spaces, line breaks, `-`, `.`, `_` or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber` lets decimals and thousands through; `classifyNumber` with `standsAlone`, `internationalPhone`, `indianMobile`, `nanpPhone`, `ukPhone`, `auMobile`, `dramaNumber`, `helpline` (`helplineNumbers`: three Indian lines and four US ones)), `emailRule`/`providerEmailRule`/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`, bracketed `[.]` and `[@]`), `linkRule` + `contactLink`, `spacedInviteRule`, `askRules`, `myAppRule` + `notAHandle`, `appColonHandle`, `appAtHandle`, `appLabelHandle` (`plausibleHandle`) |
 | block, `422` | `id_number` | `aadhaar` (Verhoeff), `ssn`, `niRule` + `validNIPrefix` |
 | support, `422` | — | `supportRules` (first person only; `notAfterANumber` for "5 kms"), and `asksForAMethod` (`selfHarmMethodRules`) |
 | hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` near (`threatWindow`) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (film and sports shoots, games, a quoted report); `threatWarningRules` near `threatWarningCues` |
@@ -596,9 +599,13 @@ matched and a hold waits for a person.
 **API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
 endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
 after the body, subject and badge checks, after `ReplyRefusal` for a reply, and
-**before flood control and before the upload is stored**: a block or a support refusal
-costs no cooldown and stores no file (`TestRefusedPostsCostNoCooldownAndStoreNoFile`); a
-held post takes the cooldown like any other (`TestHeldPostsTakeTheCooldown`). A refusal
+**between the two halves of flood control, and before the upload is stored**:
+`notCoolingDown` first answers `429` for a post that a cooldown would refuse, without
+reading it or starting anything, so a client in a cooldown cannot use the rules to test
+text; then a block or a support refusal starts no cooldown and stores no file
+(`TestRefusedPostsCostNoCooldownAndStoreNoFile`); then `allow` checks again and starts
+the cooldowns for a post that is to be stored, so a held post takes the cooldown like
+any other (`TestHeldPostsTakeTheCooldown`). A refusal
 is counted instead, against `refusalBudget` (`ratelimit.go`), keyed on `clientIP` across
 every board: once a client has `EDUCHAN_REFUSAL_LIMIT` (10) in a minute, `refuseContent`
 answers its posts `429` before reading them, clean or not, until the minute is up
@@ -612,9 +619,14 @@ unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
 - hold: `202 {"held": true, "board": slug}` plus `"thread_no"` for a reply — never the
   rule or the post number.
 
-**Nothing the filter reads is logged**: not the text, not the match, not the rule. A
-refused post leaves no trace; a held post's only addition is `held_reason`. There is no
-"post held" log line (`TestTheFilterLogsNothingItRead`).
+**Nothing the filter reads is logged**: not the text, not the match, not the rule. There
+is no "post held" or "post refused" log line, but `requestLogger`'s line (method, path,
+status, duration) is written for these requests as for every other, so a `422` or `202`
+on a posting route does show that a post there was refused or held; a refusal also
+counts against the address in `refusalBudget`, in memory. A held post's only addition to
+the database is `held_reason`, and approval is logged like every moderation action.
+`TestTheFilterLogsNothingItRead` pins exactly those records and their keys, so a new
+field on either is a decision; the README says the same, and has to change with it.
 
 **Held posts** (`0009_held_posts.sql`). `posts.held_at` and `posts.held_reason` are set
 together (`posts_held_together`; reasons `threat`, `grooming`, `self_harm`), and
@@ -627,7 +639,14 @@ reply leaves `reply_count`, `image_count`, `last_post_at` and `bumped_at` alone.
 thread is unlisted, `404` to GET, replies (`ReplyRefusal` and `CreateReply`) and
 sticky/lock, prunes nothing when created, does not count against `thread_limit`, and is
 never archived (`threads_held_not_archived`) or swept; `SweepArchived` also skips an
-archived thread with a held reply. The image cap counts published posts only, so
+archived thread with a held reply. Such a thread must not outlive the threads archived
+with it in public, or its lasting would say a held post was in it: the sweep first calls
+`ExpireHeld`, which sets `threads.expired_at` (`0011`) on exactly the expired threads it
+is about to skip, and every public read filters `expired_at IS NULL` as it filters
+`held_at` — `Archive`, `Thread`, `ThreadByID`, `PostThreadNo`, `ReplyRefusal`,
+`CreateReply` (both `404`), both directions of `attachQuotes`, and `MediaWithheld`.
+Approval does not bring it back; the next sweep deletes it
+(`TestHeldReplyKeepsItsThreadFromTheSweep`). The image cap counts published posts only, so
 approval can take a thread past it. `TestHeldPostsAppearInNoPublicView` walks every
 public endpoint with a positive control (published text is found, and the held text is
 found once approved); a new public query has to decide whether it means held posts, and
@@ -636,11 +655,12 @@ almost always it does not. `threads_board_public_order_idx` (live and not held) 
 strip-metadata branch adds `0008_attachment_names.sql`. A rollback across `0009` is
 unsafe for the same reason as one across `0005`: older code ignores `held_at`, so every
 held post and thread is public and takes replies. `deploy/README.md`'s rollback warning
-does not say so yet; the README's **Held posts** does.
+does not say so yet; the README's **Held posts** does. The same goes for `0011`: older
+code shows the expired threads again.
 
-A held post's image is gated where it is served: `serveMedia` asks `MediaHeld` (the
+A held post's image is gated where it is served: `serveMedia` asks `MediaWithheld` (the
 `0010` indexes on `attachments.original_path` and `thumb_path` keep that one lookup per
-request) and answers `404` with `Cache-Control: no-store` unless `isModerator(r)` — the
+request; an image in an expired thread, below, is withheld the same way) and answers `404` with `Cache-Control: no-store` unless `isModerator(r)` — the
 moderation key, read by the same code as `authorizeMod` — in which case the file is
 served `no-store`, never `immutable`, because the URL turns public on approval
 (`TestHeldImagesAreServedOnlyToModerators`).
@@ -648,7 +668,8 @@ served `no-store`, never `immutable`, because the URL turns public on approval
 **Moderator queue**, behind `authorizeMod`: `GET /api/held` (`{"posts","total"}`: threats
 first, then oldest first, so a backlog of other holds cannot bury one; at most
 `heldQueueLimit` = 500, with `total` counting every held post; board, thread_no, no, is_op,
-held_reason, created_at, subject for an OP, name, tripcode, body, badge, attachment;
+held_reason, created_at, subject for an OP, name, tripcode, poster_id, body, badge,
+attachment;
 `TestHeldQueuePutsThreatsFirstAndCountsEverything`) and `POST
 /api/boards/{slug}/threads/{no}/posts/{post}/approve`. `ApprovePost` takes the board's
 row before the thread's (`TestApprovalRacingTheArchivingThreadDoesNotDeadlock`), clears
@@ -660,7 +681,7 @@ which work on held posts and threads; `DeletePost` recounts rather than decremen
 a held reply was never counted.
 
 ```bash
-EDUCHAN_MOD_KEY=dev-mod-key make run
+EDUCHAN_MOD_KEY=dev-mod-key EDUCHAN_POST_COOLDOWN=0 make run
 curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
   -H 'Content-Type: application/json' -d '{"body":"add me on snap"}'      # 422 block
 curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
@@ -670,6 +691,8 @@ curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
 curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
   -H 'Content-Type: application/json' -d '{"body":"how old are you? dm me"}'   # 202 held
 curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key'             # the queue
+PNO=$(curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key' | TNO=$TNO python3 -c \
+  'import os,sys,json;print(next(p["no"] for p in json.load(sys.stdin)["posts"] if p["board"]=="meta" and p["thread_no"]==int(os.environ["TNO"])))')
 curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO/approve \
   -H 'X-Mod-Key: dev-mod-key'                                            # publish it
 curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
@@ -725,12 +748,14 @@ posting form (see **The content rules' answers** under Front end conventions).
   out a moderator's lock, delete or recount, which do not touch the board row. It
   refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
   the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
-  creation, set from that count on every image reply, and recounted when a post is
-  deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
-  parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
-  makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
-  image the cap, counted from the posts like the real check) — then flood control,
-  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  creation, set from that count on every published image reply (a held one changes
+  nothing), and recounted from the published posts when a post is deleted or a held
+  one approved (`recountThread`). Nothing enforces the cap against the counter. The
+  order in `createPost` is: parse the body, resolve the badge, then `ReplyRefusal` — a
+  lock-free read that makes `CreateReply`'s checks in its order (missing, archived,
+  locked, and for an image the cap, counted from the posts like the real check) — then
+  `notCoolingDown`, then the content rules (`refuseContent`), then flood control
+  (`allow`), then the upload is stored, then `CreateReply`. So the common refusal costs no
   cooldown and stores nothing, and the client's "send the text on its own" goes
   through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
   nothing: replies racing for the last slot both pass it, and the check inside
@@ -898,7 +923,9 @@ posting form (see **The content rules' answers** under Front end conventions).
   upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
   after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
   A post the content rules refuse starts no cooldown and is counted by `refusalBudget`
-  instead (see **API contract** under Content rules).
+  instead, and a post a cooldown would refuse is answered by `notCoolingDown` (the same
+  check, recording nothing) before the rules read it (see **API contract** under
+  Content rules).
   State is per process and in memory — a shared backend means replacing
   `cooldownLimiter` and `refusalBudget`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`

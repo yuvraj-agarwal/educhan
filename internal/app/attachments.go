@@ -248,14 +248,15 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 	// A held post's image is for the moderators until one approves it, so it
 	// is answered as if it did not exist unless the moderation key comes with
 	// the request, and nothing on either answer may be kept by a cache: the
-	// same address serves the public once the post is approved.
+	// same address serves the public once the post is approved. An image in
+	// an expired thread is answered the same way, as its thread is.
 	cacheControl := mediaCacheControl
-	held, err := a.store.MediaHeld(r.Context(), prefix == media.ThumbPrefix, r.PathValue("path"))
+	withheld, err := a.store.MediaWithheld(r.Context(), prefix == media.ThumbPrefix, r.PathValue("path"))
 	if err != nil {
 		a.fail(w, r, err, "could not read attachment")
 		return
 	}
-	if held {
+	if withheld {
 		cacheControl = "no-store"
 		if !a.isModerator(r) {
 			w.Header().Set("Cache-Control", cacheControl)
@@ -282,14 +283,16 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 }
 
 // sanitizeFilename keeps a display-only version of the uploaded filename: the
-// base name, trimmed, stripped of control characters, and valid UTF-8 so it can
-// be stored in a text column. Truncation happens on rune boundaries.
+// base name, trimmed, stripped of control characters and of the bidirectional
+// controls (which could make "gnp.exe" read as "exe.png"; see collapseControl),
+// and valid UTF-8 so it can be stored in a text column. Truncation happens on
+// rune boundaries.
 func sanitizeFilename(name string) string {
 	name = strings.TrimSpace(name)
 	name = name[strings.LastIndexAny(name, `/\`)+1:]
 	name = strings.ToValidUTF8(name, "")
 	name = strings.Map(func(r rune) rune {
-		if r < 0x20 || r == 0x7f {
+		if r < 0x20 || r == 0x7f || bidiControl(r) {
 			return -1
 		}
 		return r

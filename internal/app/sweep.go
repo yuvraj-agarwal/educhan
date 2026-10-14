@@ -61,6 +61,12 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
 			"run the sweeper from the same release as the server", a.schemaAhead)
 	}
+	// Threads the batches below will skip for a held reply leave public view
+	// first, at the moment the rest are deleted.
+	if _, err := a.store.ExpireHeld(ctx, asOf); err != nil {
+		a.logSweep(report)
+		return report, fmt.Errorf("sweep archived threads: %w", err)
+	}
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)
 		if err != nil {

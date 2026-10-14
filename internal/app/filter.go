@@ -16,8 +16,9 @@ import (
 // Every post is read here before anything about it is stored: its body, its
 // subject, and the part of its name that is shown — never the tripcode secret
 // after "#", which the caller does not pass in. It runs in-process and offline.
-// Nothing is sent anywhere, and nothing it reads or matches is logged or kept;
-// the only trace of a decision is held_reason on a held post.
+// Nothing is sent anywhere, and nothing it reads or matches is logged or kept:
+// what a decision leaves is the status on the request's log line (422, 202),
+// a count in the refusal budget for a refusal, and held_reason on a held post.
 //
 // Every rule has exactly one outcome:
 //
@@ -489,10 +490,13 @@ func foldRune(r rune, emit func(rune)) {
 // "(10)", "ﬃ" is "ffi".
 const maxFoldRunes = 4
 
-// invisibleRune reports characters that render as nothing: format characters
-// (zero-width spaces and joiners, the soft hyphen, direction marks, tags),
-// the other default-ignorable code points (Hangul fillers and the like) and
-// variation selectors.
+// invisibleRune reports characters that render as nothing themselves: format
+// characters (zero-width spaces and joiners, the soft hyphen, tags), the
+// other default-ignorable code points (Hangul fillers and the like) and
+// variation selectors. The bidirectional controls are format characters too,
+// but they reorder what is around them on screen, so they never get this far:
+// collapseControl takes them out of every field before anything reads it or
+// stores it.
 func invisibleRune(r rune) bool {
 	return unicode.In(r, unicode.Cf, unicode.Other_Default_Ignorable_Code_Point, unicode.Variation_Selector)
 }

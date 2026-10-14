@@ -910,6 +910,7 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 			"board_id",     // the board it is on
 			"bumped_at",    // the bump order every listing uses
 			"created_at",   // shown with the opening post
+			"expired_at",   // its archive period ran out while a held reply kept it from the sweep
 			"held_at",      // mirrors the opening post's held_at: the whole thread waits for a moderator
 			"id",           // internal primary key
 			"image_count",  // denormalised count of posts with an image

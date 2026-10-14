@@ -42,18 +42,33 @@ func normalizeBody(body string) string {
 }
 
 // collapseControl removes control characters that have no business in a post,
-// keeping newlines and tabs.
+// keeping newlines and tabs, and the explicit bidirectional controls.
+//
+// The bidi controls go because they make a reader see the text in a different
+// order from the one it is stored in: "\u202emoc.liamg@ana" reads on screen as
+// an email address the content rules, which read the stored order, never saw.
+// Right-to-left scripts do not need them, since their letters carry their own
+// direction; what is lost is fine control over where punctuation and numbers
+// sit beside them.
 func collapseControl(s string) string {
 	return strings.Map(func(r rune) rune {
 		switch r {
 		case '\n', '\t':
 			return r
 		}
-		if r == utf8.RuneError || unicode.IsControl(r) {
+		if r == utf8.RuneError || unicode.IsControl(r) || bidiControl(r) {
 			return -1
 		}
 		return r
 	}, s)
+}
+
+// bidiControl reports the characters that set the direction of the text
+// around them: the Arabic letter mark, the left-to-right and right-to-left
+// marks, and the embeddings, overrides and isolates with their terminators
+// (Unicode's Bidi_Control property).
+func bidiControl(r rune) bool {
+	return unicode.Is(unicode.Bidi_Control, r)
 }
 
 // Post markup tags. Rendering is the front end's (parseMarkup in web/app.js);

@@ -73,19 +73,26 @@ type cooldown struct {
 // control is a much better trade than the lock ordering an atomic version
 // would need between limiters that are not always applied together.
 func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {
+	if wait := longestWait(cooldowns...); wait > 0 {
+		return wait, false
+	}
+	for _, c := range cooldowns {
+		c.limiter.record(c.key)
+	}
+	return 0, true
+}
+
+// longestWait is the longest of the waits the cooldowns still impose, recording
+// nothing: what allowAll would refuse with, for a caller that wants to know
+// before it does anything else with a request.
+func longestWait(cooldowns ...cooldown) time.Duration {
 	var longest time.Duration
 	for _, c := range cooldowns {
 		if wait := c.limiter.peek(c.key); wait > longest {
 			longest = wait
 		}
 	}
-	if longest > 0 {
-		return longest, false
-	}
-	for _, c := range cooldowns {
-		c.limiter.record(c.key)
-	}
-	return 0, true
+	return longest
 }
 
 // peek reports how long key must wait, recording nothing.

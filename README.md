@@ -359,7 +359,10 @@ along with every poster ID.
 
 Every post is read by a small, offline filter (`internal/app/filter.go`) before
 anything about it is stored: its body, its subject, and the part of its name
-that is shown. The tripcode secret after `#` is never read. Markup is read the
+that is shown. The tripcode secret after `#` is never read. Direction controls
+(the Unicode characters that make text show in a different order from the one
+it is stored in) are taken out of every field first, and are never stored, so a
+reader sees the text in the order the filter read it. Markup is read the
 way the page shows it: `[math]` and `[eqn]` blocks are skipped, because TeX has
 a use for every character; `[code]` is read as its own lines; and `[spoiler]`
 tags are read as nothing, so a number or an app name split across them reads
@@ -401,9 +404,16 @@ hold waits for a person rather than deleting anything. The filter raises the
 cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
-Nothing the filter reads or matches is logged or stored. A refused post leaves
-no trace at all, and a held post's only addition is `held_reason`, the rule's
-name. It runs in-process, sends nothing anywhere, and takes time linear in the
+Nothing the filter reads or matches is logged or stored: not the text, not
+what matched, and not which rule. A refused post leaves what any request
+leaves: the request log's line of method, path, status and duration, so a
+`422` or `202` on a posting route shows that a post to that board or thread
+was refused or held, though not what it said or why; and a count against the
+client's address in the refusal budget, kept in memory only and forgotten
+within a minute of its window ending. A held post's only addition to the
+database is `held_reason`, the rule's name, and a moderator's approval is
+logged with the board, thread and post number, as every moderation action is.
+It runs in-process, sends nothing anywhere, and takes time linear in the
 length of the post: on one 2.1 GHz server core, about 17 ms for a
 maximum-length ordinary post and 100–150 ms for the slowest crafted one. A
 refused post costs no cooldown, so refusals are counted instead: after
@@ -429,7 +439,14 @@ quotes and backlinks. It leaves its thread's reply and image counts,
 thread: the thread answers `404`, takes no replies, cannot be stickied or
 locked, archives nothing when it is created, does not count against the
 board's thread limit, and is never archived or swept. An archived thread with
-a held reply is not swept until the reply has been approved or deleted.
+a held reply is not deleted by the sweep until the reply has been approved or
+deleted, but it leaves public view when it would have been deleted: the sweep
+that deletes the threads archived alongside it sets the thread's `expired_at`
+instead, and from then on it answers `404`, is gone from the archive, post
+resolution and every quote and backlink, and its images answer as a held
+post's do. How long a thread stays readable therefore says nothing about a
+held post in it. The first sweep after its last held reply is decided deletes
+it.
 
 A held image stays at its ordinary storage key, and its URL is never published
 while the post is held. Its file answers `404`, with `Cache-Control: no-store`,
@@ -441,8 +458,10 @@ keep the file out of the public namespace altogether, is not built.
 **Never roll back across migration `0009`.** Code from before it does not know
 `held_at`: every held post and held thread — threats, grooming cues,
 self-harm methods — appears in its thread, the index and the catalog, and can
-be replied to. The rollback warning in `deploy/README.md` names only `0005`
-so far; `0009` belongs beside it.
+be replied to. Code from before `0011` does not know `expired_at` either, and
+shows again every archived thread a held reply kept. The rollback warning in
+`deploy/README.md` names only `0005` so far; `0009` and `0011` belong beside
+it.
 
 ## Image attachments
 
@@ -821,15 +840,17 @@ thread's last image slot (see the HTTP API).
 
 A post the [content rules](#content-rules) send back, with a block or the
 support screen, starts no cooldown either, so a poster told to take a phone
-number out can post again at once. Each one is counted instead, and a client
+number out can post again at once. A post that a cooldown would turn away is
+answered `429` before the rules read it, so a client cannot use the wait to
+learn what they would have said. Each one is counted instead, and a client
 sent back `EDUCHAN_REFUSAL_LIMIT` times (10 by default) within a minute of the
 first is answered `429` on every post, clean or not and without it being read,
 until that minute is up. A person correcting a post is sent back once or twice;
 the limit is there because reading a post is the expensive part of refusing
 it. `0` switches it off.
 
-The cooldowns are keyed on client addresses, and they are the only place the
-server holds one. A sweep runs once a minute and drops every entry whose
+The cooldowns and the refusal budget are keyed on client addresses, and they
+are the only places the server holds one. A sweep runs once a minute and drops every entry whose
 cooldown has run out, so **an address is held in memory no longer than the
 longest cooldown that applies to it plus one minute**, counted from its last
 post (or code request, for verification's cooldown; or, for the refusal
@@ -851,9 +872,9 @@ client that sends no poster key does store a poster ID derived from it (see
 addresses against, one thread at a time. The web client always sends a key.
 
 State is held in the process, so each instance of a horizontally scaled
-deployment enforces the cooldowns it sees. Moving to shared storage means
-replacing `cooldownLimiter` in `internal/app/ratelimit.go`, which nothing else
-depends on.
+deployment enforces the cooldowns and the refusal budget it sees. Moving to
+shared storage means replacing `cooldownLimiter` and `refusalBudget` in
+`internal/app/ratelimit.go`, which nothing else depends on.
 
 ### Running behind a proxy
 
@@ -1015,8 +1036,9 @@ state stays accurate.
 `GET /api/held` answers `{"posts":[…],"total":N}`, each post with `board`,
 `thread_no`, `no`, `is_op`, `held_reason` (`threat`, `grooming` or
 `self_harm`), `created_at`, `subject` (the thread's, for an opening post; empty
-for a reply), `name`, `tripcode`, `body`, `badge` and `attachment` — everything
-a reader would see, so a moderator can decide from the queue alone. Threats
+for a reply), `name`, `tripcode`, `poster_id`, `body`, `badge` and `attachment`
+— everything a reader would see, so a moderator can decide from the queue alone
+and tell which of a thread's posters sent it. Threats
 come first, oldest first among them, and then every other held post oldest
 first: a threat names a place or a time that may be today, while every other
 held post is already harmless where it is, so a backlog of other holds can

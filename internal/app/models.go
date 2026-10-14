@@ -103,6 +103,7 @@ type HeldPost struct {
 	Subject    string      `json:"subject"`
 	Name       string      `json:"name"`
 	Tripcode   string      `json:"tripcode"`
+	PosterID   string      `json:"poster_id"`
 	Body       string      `json:"body"`
 	Badge      string      `json:"badge"`
 	Attachment *Attachment `json:"attachment"`

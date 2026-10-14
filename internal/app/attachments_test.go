@@ -18,6 +18,7 @@ func TestSanitizeFilename(t *testing.T) {
 		"..":                           "",
 		"/":                            "",
 		"café ☕.png":                   "café ☕.png",
+		"photo\u202egnp.exe":           "photognp.exe",
 	}
 	for in, want := range cases {
 		if got := sanitizeFilename(in); got != want {

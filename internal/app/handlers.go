@@ -202,17 +202,22 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// The content rules, after every other check of what was sent and before
-	// flood control and the upload: a post sent back to have something taken
-	// out costs no cooldown and leaves no file behind, only a count against
-	// the client's refusal budget.
+	// The content rules, after every other check of what was sent and between
+	// the two halves of flood control: a post that would wait out a cooldown
+	// anyway is told so before it is read, and a post sent back to have
+	// something taken out starts no cooldown and leaves no file behind, only a
+	// count against the client's refusal budget.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	cooldowns := a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)
+	if !a.notCoolingDown(w, cooldowns) {
+		return
+	}
 	verdict, ok := a.refuseContent(w, clientKey,
 		contentInput{Subject: subject, Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
 	if !ok {
 		return
 	}
-	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
+	if !a.allow(w, cooldowns) {
 		return
 	}
 
@@ -313,12 +318,18 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	// The content rules between the two halves of flood control, as for a
+	// new thread.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
+	cooldowns := a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)
+	if !a.notCoolingDown(w, cooldowns) {
+		return
+	}
 	verdict, ok := a.refuseContent(w, clientKey, contentInput{Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
 	if !ok {
 		return
 	}
-	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
+	if !a.allow(w, cooldowns) {
 		return
 	}
 
@@ -464,6 +475,19 @@ func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey str
 		cooldowns = append(cooldowns, cooldown{limiter: a.uploadLimiter, key: clientKey})
 	}
 	return cooldowns
+}
+
+// notCoolingDown answers 429 for a post that flood control would refuse,
+// starting nothing. It runs before the content rules read the post, so a
+// client in a cooldown learns that and nothing else: its post is not checked,
+// and cannot be refused or held, until the cooldown has passed. allow then
+// checks again and starts the cooldowns for a post that is to be stored.
+func (a *App) notCoolingDown(w http.ResponseWriter, cooldowns []cooldown) bool {
+	if wait := longestWait(cooldowns...); wait > 0 {
+		tooManyRequests(w, "posting", wait)
+		return false
+	}
+	return true
 }
 
 // allow applies posting flood control, answering 429 with a Retry-After when

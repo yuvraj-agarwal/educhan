@@ -2,10 +2,12 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -161,6 +163,7 @@ func TestRefusedPostsCostNoCooldownAndStoreNoFile(t *testing.T) {
 		cfg.ThreadCooldown = time.Hour
 		cfg.PostCooldown = time.Hour
 		cfg.UploadCooldown = time.Hour
+		cfg.RefusalLimit = 100
 	})
 	h.addBoard("cool")
 	img := pngBytes(t, 16, 16)
@@ -187,6 +190,20 @@ func TestRefusedPostsCostNoCooldownAndStoreNoFile(t *testing.T) {
 	if status, _ := h.postJSON(threadsPath("cool"), map[string]any{"body": "again"}); status != http.StatusTooManyRequests {
 		t.Fatalf("second clean thread: status %d, want 429", status)
 	}
+	// A post in a cooldown is told so before it is read: what it would have
+	// been refused for is not checked, quoted back, or counted against the
+	// refusal budget.
+	refusals := refusalsCounted(h.app.refusals)
+	for _, body := range []string{"call 9876543210", "i want to die", "go die"} {
+		if status, out := h.postJSON(threadsPath("cool"), map[string]any{"body": body}); status != http.StatusTooManyRequests {
+			t.Fatalf("%q in a cooldown: status %d (%v), want 429", body, status, out)
+		} else if _, quoted := out["match"]; quoted || out["outcome"] != nil {
+			t.Fatalf("%q in a cooldown was read: %v", body, out)
+		}
+	}
+	if got := refusalsCounted(h.app.refusals); got != refusals {
+		t.Fatalf("posts turned away by a cooldown counted %d refusals", got-refusals)
+	}
 
 	// The same holds for replies.
 	status, out = h.uploadMap(repliesPath("cool", created.ThreadNo), map[string]string{"body": "my snap is ana_23"}, "", nil)
@@ -197,6 +214,24 @@ func TestRefusedPostsCostNoCooldownAndStoreNoFile(t *testing.T) {
 	if status, _ := h.postJSON(repliesPath("cool", created.ThreadNo), map[string]any{"body": "again"}); status != http.StatusTooManyRequests {
 		t.Fatalf("second clean reply: status %d, want 429", status)
 	}
+	if status, out := h.postJSON(repliesPath("cool", created.ThreadNo), map[string]any{"body": "call 9876543210"}); status != http.StatusTooManyRequests {
+		t.Fatalf("a contact detail in a reply cooldown: status %d (%v), want 429", status, out)
+	}
+	if got := refusalsCounted(h.app.refusals); got != refusals+1 {
+		t.Fatalf("refusals counted went from %d to %d, want the one reply refusal", refusals, got)
+	}
+}
+
+// refusalsCounted is the number of refusals a budget is holding, across every
+// client.
+func refusalsCounted(b *refusalBudget) int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	n := 0
+	for _, c := range b.seen {
+		n += c.n
+	}
+	return n
 }
 
 // A refusal costs no cooldown, so it is counted instead: a client sent back
@@ -593,6 +628,33 @@ func TestHeldImagesAreServedOnlyToModerators(t *testing.T) {
 	}
 }
 
+// With moderation switched off (no EDUCHAN_MOD_KEY) a held image is served to
+// nobody: an empty key, or an empty bearer token, must not match the empty
+// key the server has.
+func TestHeldImagesWithModerationOffAreServedToNobody(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("nomod")
+	thread := h.createThread("nomod", "", "", "op")
+	status, out := h.uploadMap(repliesPath("nomod", thread.ThreadNo), map[string]string{"body": "go die"}, "h.png", pngBytes(t, 12, 12))
+	requireHeld(t, status, out, "nomod", thread.ThreadNo)
+	var row struct{ original, thumb string }
+	if err := h.app.pool.QueryRow(context.Background(), `
+		SELECT a.original_path, a.thumb_path FROM attachments a JOIN posts p ON p.id = a.post_id
+		WHERE p.held_at IS NOT NULL`).Scan(&row.original, &row.thumb); err != nil {
+		t.Fatal(err)
+	}
+	for _, url := range []string{"/media/original/" + row.original, "/media/thumb/" + row.thumb} {
+		for _, header := range [][2]string{
+			{"", ""}, {"X-Mod-Key", ""}, {"Authorization", "Bearer "}, {"Authorization", "Bearer"}, {"Authorization", ""},
+		} {
+			status := h.mod(http.MethodGet, url, header[0], header[1], nil)
+			if cache := h.lastHeader.Get("Cache-Control"); status != http.StatusNotFound || cache != "no-store" {
+				t.Errorf("%s with %q: %q: status %d, Cache-Control %q; want 404, no-store", url, header[0], header[1], status, cache)
+			}
+		}
+	}
+}
+
 func TestApprovingAReplyRecountsWithoutBumping(t *testing.T) {
 	h := modServer(t)
 	h.addBoard("apr")
@@ -638,6 +700,62 @@ func TestApprovingAReplyRecountsWithoutBumping(t *testing.T) {
 	}
 	if status, _ := h.approve("apr", newer.ThreadNo, held.No); status != http.StatusNotFound {
 		t.Errorf("approving a post through the wrong thread: status %d, want 404", status)
+	}
+}
+
+// A held post counts for nothing a reader can see: not the index's page
+// count, not a thread's image cap, and not the counters a deletion or an
+// approval recounts.
+func TestHeldPostsLeaveCountsAndCapsAlone(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("cnt", "cap")
+
+	// A board of exactly one page of published threads stays one page with a
+	// held thread on it.
+	for i := 0; i < indexPageSize; i++ {
+		h.createThread("cnt", "", "", fmt.Sprintf("thread %d", i))
+	}
+	status, out := h.postJSON(threadsPath("cnt"), map[string]any{"body": "go die"})
+	requireHeld(t, status, out, "cnt", 0)
+	if index := fetchIndex(t, h, "cnt", 1); index.Pages != 1 || len(index.Threads) != indexPageSize {
+		t.Fatalf("index with a held thread: %d pages, %d threads; want 1 and %d", index.Pages, len(index.Threads), indexPageSize)
+	}
+
+	// A held image reply takes no slot under the cap...
+	h.exec(`UPDATE boards SET image_limit = 2 WHERE slug = 'cap'`)
+	thread := h.imageThread("cap", "opening post with an image")
+	img := pngBytes(t, 12, 12)
+	status, out = h.uploadMap(repliesPath("cap", thread.ThreadNo), map[string]string{"body": "go die heldimage"}, "h.png", img)
+	requireHeld(t, status, out, "cap", thread.ThreadNo)
+	held := heldNumber(t, h.heldQueue(), "heldimage")
+	var published createdPost
+	if status := h.upload(repliesPath("cap", thread.ThreadNo), map[string]string{"body": "a published image"}, "p.png", img, &published); status != http.StatusCreated {
+		t.Fatalf("a published image after a held one at image_limit 2: status %d (%s), want 201", status, published.Error)
+	}
+	// ...and the cap still holds at the published count.
+	if status, msg := h.imageReply("cap", thread.ThreadNo, "one too many"); status != http.StatusForbidden || msg != "image limit reached" {
+		t.Fatalf("a third published image: status %d (%s), want 403 image limit reached", status, msg)
+	}
+	counts := func() (int, int) {
+		th := fetchThread(t, h, "cap", thread.ThreadNo).Thread
+		return th.Replies, th.Images
+	}
+	if replies, images := counts(); replies != 1 || images != 2 {
+		t.Fatalf("counts with a held image reply: %d replies, %d images; want 1 and 2", replies, images)
+	}
+
+	// Deleting the published image recounts from the published posts only,
+	// so the held one is not counted in its place.
+	h.modAction(http.MethodDelete, fmt.Sprintf("/api/boards/cap/threads/%d/posts/%d", thread.ThreadNo, published.No))
+	if replies, images := counts(); replies != 0 || images != 1 {
+		t.Fatalf("counts after deleting the published image: %d replies, %d images; want 0 and 1", replies, images)
+	}
+	// Approving the held one counts it.
+	if status, out := h.approve("cap", thread.ThreadNo, held.No); status != http.StatusOK {
+		t.Fatalf("approve: %d %v", status, out)
+	}
+	if replies, images := counts(); replies != 1 || images != 2 {
+		t.Fatalf("counts after approval: %d replies, %d images; want 1 and 2", replies, images)
 	}
 }
 
@@ -739,9 +857,24 @@ func TestHeldQueueListsOldestFirstWithWhatAReaderWouldSee(t *testing.T) {
 	}
 	h.mod(http.MethodGet, "/api/held", "X-Mod-Key", testModKey, &raw)
 	requireKeys(t, raw.Posts[0], "board", "thread_no", "no", "is_op", "held_reason", "created_at", "subject",
-		"name", "tripcode", "body", "badge", "attachment")
+		"name", "tripcode", "poster_id", "body", "badge", "attachment")
 	if raw.Total == nil || *raw.Total != len(posts) {
 		t.Errorf("total = %v, want %d", raw.Total, len(posts))
+	}
+
+	// The poster ID is the one the post shows once approved, so a moderator
+	// can tell which of a thread's posters sent it.
+	reply := queue[1]
+	if reply.PosterID == "" {
+		t.Fatalf("held reply has no poster ID: %+v", reply)
+	}
+	if status, out := h.approve("q1", reply.ThreadNo, reply.No); status != http.StatusOK {
+		t.Fatalf("approve: %d %v", status, out)
+	}
+	for _, p := range fetchThread(t, h, "q1", reply.ThreadNo).Posts {
+		if p.No == reply.No && p.PosterID != reply.PosterID {
+			t.Fatalf("approved reply shows poster ID %q, the queue said %q", p.PosterID, reply.PosterID)
+		}
 	}
 }
 
@@ -848,32 +981,136 @@ func TestDeletingHeldPostsRejectsThem(t *testing.T) {
 	}
 }
 
+// A thread with a held reply is not deleted by the sweep while the reply is
+// unread, but to a reader it goes when it would have gone: the sweep that
+// deletes the threads archived alongside it takes it out of every public view,
+// image and links included, so how long it lasts says nothing about a held
+// post. The moderators still have the reply, and once it is decided the next
+// sweep deletes the thread.
 func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	h := modServer(t)
 	h.addBoard("swp")
 	h.exec(`UPDATE boards SET archive_days = 1 WHERE slug = 'swp'`)
-	thread := h.createThread("swp", "", "", "op")
+	img := pngBytes(t, 12, 12)
+	var thread createdPost
+	if status := h.upload(threadsPath("swp"), map[string]string{"body": "op with an image"}, "a.png", img, &thread); status != http.StatusCreated {
+		t.Fatalf("thread: status %d (%s)", status, thread.Error)
+	}
+	plain := h.createThread("swp", "", "", "archived alongside it")
 	if status, _ := h.postJSON(repliesPath("swp", thread.ThreadNo), map[string]any{"body": "go die"}); status != http.StatusAccepted {
 		t.Fatalf("held reply: status %d", status)
 	}
 	held := h.heldQueue()[0]
+	opImage := fetchThread(t, h, "swp", thread.ThreadNo).Posts[0].Attachment
+	// A thread elsewhere quotes the opening post, so a backlink would show it.
+	other := h.createThread("swp", "", "", "elsewhere")
+	quoting := h.reply("swp", other.ThreadNo, "", fmt.Sprintf(">>%d", thread.No), false)
 	h.archiveThread("swp", thread.ThreadNo, 30*24*time.Hour)
+	h.archiveThread("swp", plain.ThreadNo, 30*24*time.Hour)
 
-	if _, err := h.app.Sweep(context.Background()); err != nil {
+	// Before the sweep both are in the archive and the quote links, as
+	// positive controls.
+	if got := archivedNos(fetchArchive(t, h, "swp")); !slices.Contains(got, thread.ThreadNo) || !slices.Contains(got, plain.ThreadNo) {
+		t.Fatalf("archive before the sweep: %v", got)
+	}
+	quoteLinks := func() bool {
+		for _, p := range fetchThread(t, h, "swp", other.ThreadNo).Posts {
+			if p.No == quoting.No {
+				return len(p.Quotes) != 0
+			}
+		}
+		t.Fatal("the quoting reply is missing")
+		return false
+	}
+	if !quoteLinks() {
+		t.Fatal("the quote did not link before the sweep")
+	}
+
+	report, err := h.app.Sweep(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if status := h.threadStatus("swp", thread.ThreadNo); status != http.StatusOK {
-		t.Fatalf("the sweep took a thread with a held reply: status %d", status)
+	if report.Threads != 1 {
+		t.Fatalf("the sweep deleted %d threads, want the plain one", report.Threads)
 	}
+	for _, no := range []int64{thread.ThreadNo, plain.ThreadNo} {
+		if status := h.threadStatus("swp", no); status != http.StatusNotFound {
+			t.Fatalf("thread %d after the sweep: status %d, want 404", no, status)
+		}
+	}
+	if got := archivedNos(fetchArchive(t, h, "swp")); len(got) != 0 {
+		t.Fatalf("archive after the sweep: %v, want empty", got)
+	}
+	var where map[string]any
+	if status := h.do(http.MethodGet, fmt.Sprintf("/api/boards/swp/posts/%d", thread.No), nil, &where); status != http.StatusNotFound {
+		t.Fatalf("resolving the expired thread's post: status %d (%v), want 404", status, where)
+	}
+	if status, out := h.postJSON(repliesPath("swp", thread.ThreadNo), map[string]any{"body": "hello?"}); status != http.StatusNotFound {
+		t.Fatalf("replying to the expired thread: status %d (%v), want 404", status, out)
+	}
+	if quoteLinks() {
+		t.Fatal("the quote of the expired thread still links")
+	}
+	for _, url := range []string{opImage.URL, opImage.ThumbURL} {
+		if status := h.mod(http.MethodGet, url, "", "", nil); status != http.StatusNotFound ||
+			h.lastHeader.Get("Cache-Control") != "no-store" {
+			t.Fatalf("the expired thread's %s: status %d, Cache-Control %q; want 404, no-store",
+				url, status, h.lastHeader.Get("Cache-Control"))
+		}
+		if status := h.mod(http.MethodGet, url, "X-Mod-Key", testModKey, nil); status != http.StatusOK {
+			t.Fatalf("the expired thread's %s for a moderator: status %d", url, status)
+		}
+	}
+	if queue := h.heldQueue(); len(queue) != 1 || queue[0].No != held.No {
+		t.Fatalf("the held reply should still be queued: %+v", queue)
+	}
+
 	// Once a moderator has decided, the thread goes with the next sweep.
 	if status, out := h.approve("swp", thread.ThreadNo, held.No); status != http.StatusOK {
 		t.Fatalf("approve: %d %v", status, out)
 	}
-	if _, err := h.app.Sweep(context.Background()); err != nil {
+	if status := h.threadStatus("swp", thread.ThreadNo); status != http.StatusNotFound {
+		t.Fatalf("approving the reply brought the expired thread back: status %d", status)
+	}
+	report, err = h.app.Sweep(context.Background())
+	if err != nil {
 		t.Fatal(err)
 	}
-	if status := h.threadStatus("swp", thread.ThreadNo); status != http.StatusNotFound {
-		t.Fatalf("after approval the sweep should take the thread: status %d", status)
+	if report.Threads != 1 || report.Attachments != 1 {
+		t.Fatalf("after approval the sweep should take the thread and its image: %+v", report)
+	}
+}
+
+func archivedNos(a Archive) []int64 {
+	nos := []int64{}
+	for _, t := range a.Threads {
+		nos = append(nos, t.No)
+	}
+	return nos
+}
+
+// The direction controls are taken out of everything a post shows before the
+// content rules read it, so what a reader sees is in the order the rules read:
+// an override cannot turn a reversed address the rules passed into a working
+// one on screen.
+func TestBidiControlsAreNotStored(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("bidi")
+	var created createdPost
+	if status := h.post(threadsPath("bidi"), map[string]any{
+		"subject": "\u202eti daer", "name": "\u2067ana\u2069", "body": "\u202emoc.liamg@ana\u202c and \u200fmore",
+	}, &created); status != http.StatusCreated {
+		t.Fatalf("status %d (%s)", status, created.Error)
+	}
+	detail := fetchThread(t, h, "bidi", created.ThreadNo)
+	op := detail.Posts[0]
+	for field, got := range map[string]string{"subject": detail.Thread.Subject, "name": op.Name, "body": op.Body} {
+		if strings.IndexFunc(got, bidiControl) >= 0 {
+			t.Errorf("%s stored with a direction control: %q", field, got)
+		}
+	}
+	if detail.Thread.Subject != "ti daer" || op.Name != "ana" || op.Body != "moc.liamg@ana and more" {
+		t.Fatalf("stored %q / %q / %q", detail.Thread.Subject, op.Name, op.Body)
 	}
 }
 
@@ -896,6 +1133,7 @@ func TestTheFilterLogsNothingItRead(t *testing.T) {
 	h := testServerLogging(t, func(cfg *Config) { cfg.ModKey = testModKey }, &logs)
 	h.addBoard("log")
 	thread := h.createThread("log", "", "", "op")
+	startup := len(logs.String())
 
 	posts := []map[string]any{
 		{"body": "call 9876543210"},
@@ -903,6 +1141,7 @@ func TestTheFilterLogsNothingItRead(t *testing.T) {
 		{"body": "i want to die quietmarkerone"},
 		{"body": "how old are you? dm me quietmarkertwo"},
 		{"body": "go die quietmarkerthree"},
+		{"body": "a clean reply"},
 	}
 	for _, p := range posts {
 		h.postJSON(repliesPath("log", thread.ThreadNo), p)
@@ -922,6 +1161,40 @@ func TestTheFilterLogsNothingItRead(t *testing.T) {
 		"how old", "self_harm", "grooming", "contact", "support"} {
 		if strings.Contains(text, secret) {
 			t.Errorf("the log contains %q", secret)
+		}
+	}
+
+	// What the log does say, exactly: one line per request, with its method,
+	// path, status and duration, so a 422 or a 202 on a posting route shows
+	// that a post there was refused or held, and nothing more; and the
+	// moderator's approval. The documentation promises exactly this much.
+	allowed := map[string][]string{
+		"request":    {"duration_ms", "level", "method", "msg", "path", "status", "time"},
+		"moderation": {"action", "board", "level", "msg", "op", "post", "thread", "time"},
+	}
+	statuses := map[float64]bool{}
+	for _, line := range strings.Split(strings.TrimSpace(text[startup:]), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		msg, _ := record["msg"].(string)
+		want, ok := allowed[msg]
+		if !ok {
+			t.Errorf("unexpected log record %v", record)
+			continue
+		}
+		requireKeys(t, record, want...)
+		if msg == "request" && strings.HasPrefix(record["path"].(string), "/api/boards/log/") {
+			statuses[record["status"].(float64)] = true
+		}
+		if msg == "moderation" && record["action"] != "approve" {
+			t.Errorf("unexpected moderation record %v", record)
+		}
+	}
+	for _, status := range []float64{http.StatusCreated, http.StatusUnprocessableEntity, http.StatusAccepted} {
+		if !statuses[status] {
+			t.Errorf("no posting request logged with status %v: %s", status, text)
 		}
 	}
 }

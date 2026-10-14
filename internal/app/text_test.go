@@ -22,6 +22,10 @@ func TestNormalizeBody(t *testing.T) {
 		{name: "keeps a single blank line", in: "a\n\nb", want: "a\n\nb"},
 		{name: "drops control characters", in: "a\x00\x07b", want: "ab"},
 		{name: "keeps tabs", in: "a\tb", want: "a\tb"},
+		{name: "drops bidi controls", in: "\u202emoc.liamg@ana\u202c \u2067x\u2069\u200e\u200f\u061c\u202a\u202b\u202d\u2066\u2068",
+			want: "moc.liamg@ana x"},
+		{name: "keeps right-to-left letters", in: "שלום مرحبا", want: "שלום مرحبا"},
+		{name: "keeps zero-width joiners", in: "क्\u200dष", want: "क्\u200dष"},
 		{name: "whitespace only becomes empty", in: " \n\t\n ", want: ""},
 	}
 
