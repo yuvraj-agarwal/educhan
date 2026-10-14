@@ -83,6 +83,9 @@ func TestFilterBlocks(t *testing.T) {
 		{"us number dashed", "415-867-5309", ruleContact, "415-867-5309"},
 		{"us international", "+1 415 867 5309", ruleContact, "+1 415 867 5309"},
 		{"uk mobile", "07911 123456", ruleContact, "07911 123456"},
+		// Grouped so that the Indian reading leaves a group of one after the
+		// trunk zero, which only the UK rule reads.
+		{"uk mobile in threes", "07 911 123 456", ruleContact, "07 911 123 456"},
 		{"uk international", "+44 7911 123456", ruleContact, "+44 7911 123456"},
 		{"other international", "whatsapp +49 151 23456789", ruleContact, "+49 151 23456789"},
 		{"australian mobile", "text 0412 345 678", ruleContact, "0412 345 678"},
@@ -841,12 +844,35 @@ func TestFilterHolds(t *testing.T) {
 		{"how old are you? pic?", holdGrooming},
 		{"which class are you in? share your location", holdGrooming},
 	}
+	// The method questions show the support message first, because the
+	// person asking may be asking for themselves. Every other hold comes
+	// straight away: encouragement aimed at someone else is not answered
+	// with the support message, which is not for the person sending it.
+	supportFirst := map[string]bool{
+		"how many pills would it take to die": true,
+		"painless way to die?":                true,
+		"what's a lethal dose of paracetamol": true,
+		"lethal dose of paracetamol?":         true,
+		"how many sleeping pills are lethal":  true,
+		"how to tie a noose":                  true,
+		"how many pills would kill me":        true,
+		"how many paracetamol would be fatal": true,
+	}
 	for _, c := range cases {
 		// support_seen, so that a post that would show the support message
 		// first is seen past it to the hold.
 		v := checkContent(contentInput{Body: c.body}, true)
 		if v.Outcome != contentHold || v.Hold != c.reason || v.Message != "" || v.Match != "" {
 			t.Errorf("%q: got %+v, want held for %s", c.body, v, c.reason)
+		}
+		unseen := bodyVerdict(c.body)
+		switch {
+		case supportFirst[c.body]:
+			if unseen.Outcome != contentSupport {
+				t.Errorf("%q without support_seen: got %+v, want the support message first", c.body, unseen)
+			}
+		case unseen != v:
+			t.Errorf("%q without support_seen: got %+v, want held straight away as %+v", c.body, unseen, v)
 		}
 	}
 	// Intent with no place or time is not held.

@@ -750,6 +750,14 @@ func TestHeldPostsLeaveCountsAndCapsAlone(t *testing.T) {
 	if replies, images := counts(); replies != 0 || images != 1 {
 		t.Fatalf("counts after deleting the published image: %d replies, %d images; want 0 and 1", replies, images)
 	}
+	// last_post_at is recounted from the published posts too: the opening
+	// post is the latest a reader can see, and the held reply, sent after it,
+	// would give its time away.
+	if detail := fetchThread(t, h, "cap", thread.ThreadNo); len(detail.Posts) != 1 ||
+		!detail.LastPostAt.Equal(detail.Posts[0].CreatedAt) {
+		t.Fatalf("last_post_at after deleting the published image: %v, want the opening post's %v",
+			detail.LastPostAt, detail.Posts[0].CreatedAt)
+	}
 	// Approving the held one counts it.
 	if status, out := h.approve("cap", thread.ThreadNo, held.No); status != http.StatusOK {
 		t.Fatalf("approve: %d %v", status, out)
@@ -1005,6 +1013,12 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	// A thread elsewhere quotes the opening post, so a backlink would show it.
 	other := h.createThread("swp", "", "", "elsewhere")
 	quoting := h.reply("swp", other.ThreadNo, "", fmt.Sprintf(">>%d", thread.No), false)
+	// And the other way: a published reply in each archived thread quotes
+	// that live opening post, which shows a backlink from each. The plain
+	// thread's goes with its rows; the expiring thread's has to go too, or
+	// the one backlink left would say which thread was kept, and why.
+	fromHeld := h.reply("swp", thread.ThreadNo, "", fmt.Sprintf(">>%d", other.No), false)
+	fromPlain := h.reply("swp", plain.ThreadNo, "", fmt.Sprintf(">>%d", other.No), false)
 	h.archiveThread("swp", thread.ThreadNo, 30*24*time.Hour)
 	h.archiveThread("swp", plain.ThreadNo, 30*24*time.Hour)
 
@@ -1024,6 +1038,16 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	}
 	if !quoteLinks() {
 		t.Fatal("the quote did not link before the sweep")
+	}
+	backlinks := func() []int64 {
+		nos := []int64{}
+		for _, ref := range fetchThread(t, h, "swp", other.ThreadNo).Posts[0].Backlinks {
+			nos = append(nos, ref.No)
+		}
+		return nos
+	}
+	if got := backlinks(); !slices.Contains(got, fromHeld.No) || !slices.Contains(got, fromPlain.No) {
+		t.Fatalf("backlinks before the sweep: %v, want %d and %d", got, fromHeld.No, fromPlain.No)
 	}
 
 	report, err := h.app.Sweep(context.Background())
@@ -1050,6 +1074,9 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	}
 	if quoteLinks() {
 		t.Fatal("the quote of the expired thread still links")
+	}
+	if got := backlinks(); len(got) != 0 {
+		t.Fatalf("backlinks after the sweep: %v, want none from either thread", got)
 	}
 	for _, url := range []string{opImage.URL, opImage.ThumbURL} {
 		if status := h.mod(http.MethodGet, url, "", "", nil); status != http.StatusNotFound ||
@@ -1078,6 +1105,83 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	}
 	if report.Threads != 1 || report.Attachments != 1 {
 		t.Fatalf("after approval the sweep should take the thread and its image: %+v", report)
+	}
+}
+
+// The other half of the same promise: a thread with a held reply leaves the
+// archive no sooner than the plain thread archived with it. Expiring it as
+// soon as a sweep saw the held reply, inside its board's archive period, would
+// tell a reader watching the archive which thread a held post was in.
+func TestAHeldReplyLeavesItsThreadInTheArchiveForItsPeriod(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("wait")
+	h.exec(`UPDATE boards SET archive_days = 7 WHERE slug = 'wait'`)
+	withHeld := h.createThread("wait", "", "", "a reply to this is held")
+	plain := h.createThread("wait", "", "", "archived alongside it")
+	status, out := h.postJSON(repliesPath("wait", withHeld.ThreadNo), map[string]any{"body": "go die"})
+	requireHeld(t, status, out, "wait", withHeld.ThreadNo)
+	h.archiveThread("wait", withHeld.ThreadNo, 24*time.Hour)
+	h.archiveThread("wait", plain.ThreadNo, 24*time.Hour)
+
+	report, err := h.app.Sweep(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if report.Threads != 0 {
+		t.Fatalf("a sweep inside the archive period deleted %d threads", report.Threads)
+	}
+	if got := archivedNos(fetchArchive(t, h, "wait")); !slices.Contains(got, withHeld.ThreadNo) || !slices.Contains(got, plain.ThreadNo) {
+		t.Fatalf("archive after a sweep inside the period: %v, want both %d and %d", got, withHeld.ThreadNo, plain.ThreadNo)
+	}
+	for _, no := range []int64{withHeld.ThreadNo, plain.ThreadNo} {
+		if status := h.threadStatus("wait", no); status != http.StatusOK {
+			t.Fatalf("thread %d after a sweep inside the period: status %d, want 200", no, status)
+		}
+	}
+
+	// Past the period, both leave public view in the same sweep, as a
+	// positive control.
+	h.archiveThread("wait", withHeld.ThreadNo, 8*24*time.Hour)
+	h.archiveThread("wait", plain.ThreadNo, 8*24*time.Hour)
+	if report, err = h.app.Sweep(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if report.Threads != 1 {
+		t.Fatalf("a sweep past the period deleted %d threads, want the plain one", report.Threads)
+	}
+	if got := archivedNos(fetchArchive(t, h, "wait")); len(got) != 0 {
+		t.Fatalf("archive after a sweep past the period: %v, want empty", got)
+	}
+}
+
+// A reply to a held thread is answered as one to a thread that does not exist,
+// before flood control as well as after it. A reply that got as far as the
+// cooldown would start one, and the 429 on the poster's next reply would tell
+// the held thread from a number nobody posted.
+func TestRepliesToAHeldThreadStartNoCooldown(t *testing.T) {
+	h := testServer(t, func(cfg *Config) {
+		cfg.ModKey = testModKey
+		cfg.PostCooldown = time.Minute
+	})
+	h.addBoard("hcd")
+	open := h.createThread("hcd", "", "", "an open thread")
+	status, out := h.postJSON(threadsPath("hcd"), map[string]any{"body": "go die heldthread"})
+	requireHeld(t, status, out, "hcd", 0)
+	held := heldNumber(t, h.heldQueue(), "heldthread")
+
+	for _, no := range []int64{held.ThreadNo + 100, held.ThreadNo} {
+		if status, out := h.postJSON(repliesPath("hcd", no), map[string]any{"body": "hello?"}); status != http.StatusNotFound {
+			t.Fatalf("a reply to thread %d: status %d (%v), want 404", no, status, out)
+		}
+	}
+	var created createdPost
+	if status := h.post(repliesPath("hcd", open.ThreadNo), map[string]any{"body": "first reply"}, &created); status != http.StatusCreated {
+		t.Fatalf("the next reply, to an open thread: status %d (%s), want 201: a refused reply started the cooldown",
+			status, created.Error)
+	}
+	// The cooldown is on, as a positive control.
+	if status, _ := h.postJSON(repliesPath("hcd", open.ThreadNo), map[string]any{"body": "second reply"}); status != http.StatusTooManyRequests {
+		t.Fatalf("a second reply straight after: status %d, want 429", status)
 	}
 }
 
