@@ -341,6 +341,31 @@ func TestRefusalBudget(t *testing.T) {
 	}
 }
 
+// TestRefusalBudgetSweeps is TestCooldownLimiterSweeps for the refusal
+// budget: a burst of refused addresses between two ticks of the periodic sweep
+// is swept when the next new address is recorded, so the map holds no address
+// past its window however many arrive at once. An address still inside its
+// window is kept.
+func TestRefusalBudgetSweeps(t *testing.T) {
+	now := time.Now()
+	budget := newRefusalBudget(3, time.Minute)
+	budget.now = func() time.Time { return now }
+
+	for i := 0; i < cooldownSweepThreshold; i++ {
+		budget.record(string(rune(i)))
+	}
+	now = now.Add(2 * time.Minute)
+	budget.record("recent")
+	if got := len(budgetKeys(budget)); got != 1 {
+		t.Fatalf("tracked keys = %d, want 1 after the sweep", got)
+	}
+	// One that comes in while "recent" is inside its window leaves it alone.
+	budget.record("fresh")
+	if got := budgetKeys(budget); len(got) != 2 || got[0] != "fresh" || got[1] != "recent" {
+		t.Errorf("tracked %v, want the two addresses inside their window", got)
+	}
+}
+
 func budgetKeys(b *refusalBudget) []string {
 	b.mu.Lock()
 	defer b.mu.Unlock()

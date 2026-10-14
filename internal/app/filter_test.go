@@ -183,6 +183,9 @@ func TestFilterBlocks(t *testing.T) {
 		{"ssn", "ssn 123-45-6789", ruleIDNumber, "123-45-6789"},
 		{"national insurance", "NI number AB 12 34 56 C", ruleIDNumber, "AB 12 34 56 C"},
 		{"national insurance unspaced", "AB123456C", ruleIDNumber, "AB123456C"},
+		// Full-width and styled capitals read as plain ones.
+		{"national insurance full width", "NI ＡＢ １２ ３４ ５６ Ｃ", ruleIDNumber, "ＡＢ １２ ３４ ５６ Ｃ"},
+		{"national insurance bold", "𝐀𝐁123456𝐂", ruleIDNumber, "𝐀𝐁123456𝐂"},
 
 		// Every branch of the number rules, each with the shape that reaches it.
 		{"uk landline in london", "ring 020 7123 4567", ruleContact, "020 7123 4567"},
@@ -1459,8 +1462,8 @@ func TestFilterQuotesMatchesAsWrittenAndShort(t *testing.T) {
 		t.Fatalf("short match: %+v", v)
 	}
 	v = bodyVerdict("  ＡＢ１２３４５６Ｃ  ")
-	if v.Outcome == contentBlock && v.Match != "ＡＢ１２３４５６Ｃ" {
-		t.Fatalf("a match should be quoted as written: %q", v.Match)
+	if v.Outcome != contentBlock || v.Rule != ruleIDNumber || v.Match != "ＡＢ１２３４５６Ｃ" {
+		t.Fatalf("a full-width match should be blocked and quoted as written: %+v", v)
 	}
 }
 

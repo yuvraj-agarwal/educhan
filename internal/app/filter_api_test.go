@@ -138,23 +138,26 @@ func TestBlockedPostsAreRefusedWithWhatToRemove(t *testing.T) {
 	// The subject and the shown part of the name are read too.
 	status, out = h.postJSON(threadsPath("blk"), map[string]any{"subject": "mail me ana.k@gmail.com", "body": "hi"})
 	requireBlock(t, status, out, ruleContact, fieldSubject, "ana.k@gmail.com")
-	status, out = h.postJSON(repliesPath("blk", thread.ThreadNo), map[string]any{"name": "insta: x_y_z", "body": "hi"})
-	requireBlock(t, status, out, ruleContact, fieldName, "insta: x_y_z")
+	// Both ways in: a new thread's opening post and a reply each pass the
+	// name through displayedName on their own.
+	for _, path := range []string{threadsPath("blk"), repliesPath("blk", thread.ThreadNo)} {
+		status, out = h.postJSON(path, map[string]any{"name": "insta: x_y_z", "body": "hi"})
+		requireBlock(t, status, out, ruleContact, fieldName, "insta: x_y_z")
 
-	// The tripcode secret is not: it is never shown, so it is nobody's
-	// contact detail, and it is never quoted back.
-	var created createdPost
-	if status := h.post(repliesPath("blk", thread.ThreadNo),
-		map[string]any{"name": "ana#9876543210", "body": "hi"}, &created); status != http.StatusCreated {
-		t.Fatalf("a tripcode secret shaped like a phone number: status %d (%s)", status, created.Error)
-	}
-	detail := fetchThread(t, h, "blk", thread.ThreadNo)
-	last := detail.Posts[len(detail.Posts)-1]
-	if last.Name != "ana" || last.Tripcode == "" {
-		t.Fatalf("the tripcode post: %+v", last)
+		// The tripcode secret is not: it is never shown, so it is nobody's
+		// contact detail, and it is never quoted back.
+		var created createdPost
+		if status := h.post(path, map[string]any{"name": "ana#9876543210", "body": "hi"}, &created); status != http.StatusCreated {
+			t.Fatalf("%s: a tripcode secret shaped like a phone number: status %d (%s)", path, status, created.Error)
+		}
+		detail := fetchThread(t, h, "blk", created.ThreadNo)
+		last := detail.Posts[len(detail.Posts)-1]
+		if last.No != created.No || last.Name != "ana" || last.Tripcode == "" {
+			t.Fatalf("%s: the tripcode post: %+v", path, last)
+		}
 	}
 
-	if got := h.postCount(); got != before+1 {
+	if got := h.postCount(); got != before+2 {
 		t.Fatalf("posts went from %d to %d; refused posts must store nothing", before, got)
 	}
 }
@@ -1081,6 +1084,19 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	}
 	if status, out := h.postJSON(repliesPath("swp", thread.ThreadNo), map[string]any{"body": "hello?"}); status != http.StatusNotFound {
 		t.Fatalf("replying to the expired thread: status %d (%v), want 404", status, out)
+	}
+	// CreateReply holds the line on its own, for a reply that passed the
+	// handler's early check before the sweep expired the thread: "thread is
+	// archived" would say the thread is still there.
+	board, err := h.app.store.Board(context.Background(), "swp")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.app.store.CreateReply(context.Background(), NewReply{
+		Board: board, ThreadNo: thread.ThreadNo, Identity: identity{Name: anonymousName}, Body: "x",
+		PosterID: func(int64) string { return "id" },
+	}); !errors.Is(err, errNotFound) {
+		t.Fatalf("CreateReply to the expired thread: %v, want errNotFound", err)
 	}
 	if quoteLinks() {
 		t.Fatal("the quote of the expired thread still links")
