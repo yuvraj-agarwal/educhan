@@ -447,17 +447,22 @@ client can leave the image picker off a server that would refuse what it sends.
     `image.png`). Keeping the WebP with only its metadata chunks removed would not be
     enough: a decoder ignores anything after the picture inside the chunks that hold
     it, so a second file could ride through unseen. WebPs stored before this stay WebPs.
-  - Besides metadata, two channels a picture can carry without showing them are
-    cleared. A fully transparent pixel is stored with no colour, because an editor that
-    erases part of a picture by clearing its alpha often leaves the erased part there,
-    and a palette or colour table loses the entries no pixel uses, which could hold a
-    second file, EXIF and all. What is left is the picture itself, kept exactly in a
-    lossless format — and kept exactly means more than what the eye picks out: a pixel
-    at alpha 1 keeps its full colour, a 16-bit channel keeps its low byte, and which
-    palette entry a pixel points at is kept even where two entries are the same colour.
-    So data put into the pixels on purpose, as low-bit steganography does, survives;
-    removing it would change the picture, and the aim is to drop the metadata, not to
-    launder the pixels.
+  - Besides metadata, a picture can carry a whole second file in channels it never
+    shows, and those are dropped too. A fully transparent pixel is stored with no
+    colour, because an editor that erases part of a picture by clearing its alpha often
+    leaves the erased part behind. A pixel that is only slightly transparent shows
+    almost none of its colour, yet keeps every bit of it, so each pixel's colour is cut
+    to the precision its alpha can actually show — a photo laid under an alpha of 1
+    composites to one faint tint and is stored as that tint, not as the photo. A palette
+    or colour table is rebuilt from the colours its pixels show, which drops the entries
+    no pixel uses, the duplicate entries of one colour, the order of the palette, and
+    which of several equal entries each pixel points at — any of which can hold a second
+    file, EXIF and all, in the pixel bytes of a flat picture. What is left is the
+    picture: a fully opaque pixel keeps its exact value, including the low byte of a
+    16-bit channel, because that is the picture and a lossless format stores it exactly.
+    So data hidden in the low bits of a visible picture, as classic steganography does,
+    survives — the aim is to strip the metadata and the channels that do not show, not
+    to alter the picture a reader sees.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can

@@ -466,7 +466,9 @@ func TestPNGIsStoredWithoutAncillaryChunks(t *testing.T) {
 	requireSamePixels(t, decodeStored(t, clean), decodeStored(t, got.Data))
 }
 
-// Re-encoding keeps a 16-bit PNG at 16 bits, transparency and all.
+// Re-encoding keeps a 16-bit PNG at 16 bits, transparency and all, and shows
+// the same picture — a partly transparent pixel to the precision its alpha can
+// show (reduceHiddenColour), an opaque one to the bit.
 func TestPNGKeepsSixteenBitPixels(t *testing.T) {
 	src := image.NewNRGBA64(image.Rect(0, 0, 20, 10))
 	for y := 0; y < 10; y++ {
@@ -482,7 +484,7 @@ func TestPNGKeepsSixteenBitPixels(t *testing.T) {
 	if _, ok := out.(*image.NRGBA64); !ok {
 		t.Errorf("stored PNG decodes to %T, want 16 bits a channel with alpha", out)
 	}
-	requireSamePixels(t, src, out)
+	requireSameAppearance(t, src, out)
 }
 
 // A PNG is stored in the form image/png decodes it to, as sanitizePNG and the
@@ -613,8 +615,11 @@ func TestPNGOrientationIsApplied(t *testing.T) {
 					dx, dy := orientedPoint(o, x, y, w, h)
 					r1, g1, b1, a1 := original.At(x, y).RGBA()
 					r2, g2, b2, a2 := stored.At(dx, dy).RGBA()
-					if r1 != r2 || g1 != g2 || b1 != b2 || a1 != a2 {
-						t.Fatalf("%s orientation %d: (%d,%d) landed as %v, want %v", name, o, x, y, stored.At(dx, dy), original.At(x, y))
+					// A partly transparent pixel's colour is cut to what its
+					// alpha shows (reduceHiddenColour), so the look lands, to a
+					// step, where the orientation puts it, and the alpha exactly.
+					if !nearPremul(r1, r2) || !nearPremul(g1, g2) || !nearPremul(b1, b2) || a1 != a2 {
+						t.Fatalf("%s orientation %d: (%d,%d) landed as %v, want about %v", name, o, x, y, stored.At(dx, dy), original.At(x, y))
 					}
 				}
 			}
@@ -639,7 +644,7 @@ func TestPNGOrientationIsApplied(t *testing.T) {
 		}
 		got := process(t, upload)
 		requireFree(t, got.Data, "eXIf")
-		requireSamePixels(t, nrgba, decodeStored(t, got.Data))
+		requireSameAppearance(t, nrgba, decodeStored(t, got.Data))
 	}
 	if allocs := testing.AllocsPerRun(10, func() { pngOrientation(notRead["eXIf after the pixels"]) }); allocs != 0 {
 		t.Errorf("pngOrientation allocated %v times, want none", allocs)
@@ -676,6 +681,35 @@ func requireSamePixels(t *testing.T, want, got image.Image) {
 			}
 		}
 	}
+}
+
+// requireSameAppearance is requireSamePixels relaxed to what a picture
+// composites to. Cutting a partly transparent pixel's colour to the precision
+// its alpha can show (reduceHiddenColour) leaves what shows unchanged but for
+// rounding: the premultiplied RGBA that At reports moves by at most one 8-bit
+// step, while the alpha is kept exactly. So an opaque picture still has to
+// match to the bit, and a partly transparent one keeps its look.
+func requireSameAppearance(t *testing.T, want, got image.Image) {
+	t.Helper()
+	if want.Bounds() != got.Bounds() {
+		t.Fatalf("bounds = %v, want %v", got.Bounds(), want.Bounds())
+	}
+	b := want.Bounds()
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for x := b.Min.X; x < b.Max.X; x++ {
+			r1, g1, b1, a1 := want.At(x, y).RGBA()
+			r2, g2, b2, a2 := got.At(x, y).RGBA()
+			if !nearPremul(r1, r2) || !nearPremul(g1, g2) || !nearPremul(b1, b2) || a1 != a2 {
+				t.Fatalf("pixel (%d,%d) = %v, want about %v (same colour to the alpha's precision)", x, y, got.At(x, y), want.At(x, y))
+			}
+		}
+	}
+}
+
+// nearPremul reports whether two premultiplied 16-bit channel values are the
+// same 8-bit value give or take one step.
+func nearPremul(u, v uint32) bool {
+	return (u>>8) <= (v>>8)+1 && (v>>8) <= (u>>8)+1
 }
 
 /* GIF ---------------------------------------------------------------------- */

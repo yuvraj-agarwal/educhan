@@ -39,21 +39,25 @@ import (
 // nothing of the upload's own bytes. It is the one decoded for the thumbnail
 // and hashed for the checksum, so all three describe the same picture.
 //
-// A decoded picture can still hold what nobody sees: the colour of a fully
-// transparent pixel, which an editor that erases part of a picture by
-// clearing its alpha often leaves behind, and palette entries no pixel uses.
-// Either could carry the erased part of a photo, or a whole second file, EXIF
-// and all, through to the stored original. So the colour of every fully
-// transparent pixel is cleared (clearTransparentColour), and a palette keeps
-// only the entries its pixels use, with one transparent entry at most
-// (cleanPaletted, cleanGIF). What is left is the picture, kept exactly in a
-// lossless format -- which is not the same as keeping only what the eye picks
-// out. A pixel at alpha 1 keeps its full colour, a 16-bit channel keeps its
-// low byte, and which palette entry a pixel points at is kept even where two
-// entries are the same colour; so data put into the pixels on purpose, as
-// low-bit steganography does, survives. Removing it would alter the picture,
-// which no rewrite that keeps the picture exact can do: the job here is to
-// drop metadata, not to launder the pixels.
+// A decoded picture can still hold what nobody sees, in channels a re-encode
+// would carry through untouched: the colour of a fully transparent pixel,
+// which an editor that erases part of a picture by clearing its alpha often
+// leaves behind; the colour a barely-visible pixel holds beyond what its alpha
+// can show (a photo stored under an alpha of 1 shows almost nothing yet keeps
+// every bit of its colour); and, in a paletted picture, entries no pixel uses,
+// duplicate entries of one colour, the order of the palette, and the
+// particular entry a pixel points at among equal ones — any of which can carry
+// a whole second file, EXIF and all, in the pixel bytes of a flat picture. So
+// reduceHiddenColour cuts each pixel's colour to the precision its alpha can
+// show (reduce8/reduce16), zero under a fully transparent one, and rebuilds a
+// palette from the colours its pixels show, in first-use order, folding every
+// transparent entry onto one and remapping the pixels (cleanPaletted,
+// cleanGIF). What is left is the picture: a fully opaque pixel keeps its exact
+// value, including the low byte of a 16-bit channel, because that is the
+// picture and no rewrite that keeps the picture exact can drop it, so data in
+// the low bits of a visible picture (classic steganography) still survives —
+// the job here is to strip metadata and the channels that do not show, not to
+// alter the picture.
 
 // storedJPEGQuality is the highest quality an original is stored at as a
 // JPEG, and the quality of one made from a lossy WebP. A JPEG upload saved at
@@ -260,14 +264,15 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // sanitizePNG decodes and re-encodes a PNG. image/png writes only IHDR, PLTE
 // and tRNS for a palette, IDAT and IEND, so text of every kind (tEXt, zTXt,
 // and iTXt, which is where XMP goes), eXIf, tIME, colour chunks and anything
-// private are left behind. The pixel values are kept exactly as image/png
-// decodes them, which is not always the form they came in: 1-, 2- and 4-bit
-// grey is stored at 8 bits, and grey or colour with a transparent colour key
-// (tRNS) is stored as colour with an alpha channel, or with none when no pixel
-// has the key's colour, while 16-bit pictures stay 16-bit
-// (TestPNGIsStoredInTheFormItDecodesTo). A palette keeps only the entries its
-// pixels use, so it may be stored at a lower bit depth, and fully transparent
-// pixels hold no colour. A picture with an EXIF orientation in an eXIf chunk
+// private are left behind. An opaque pixel is kept exactly as image/png
+// decodes it, which is not always the form it came in: 1-, 2- and 4-bit grey
+// is stored at 8 bits, and grey or colour with a transparent colour key (tRNS)
+// is stored as colour with an alpha channel, or with none when no pixel has the
+// key's colour, while 16-bit pictures stay 16-bit
+// (TestPNGIsStoredInTheFormItDecodesTo). A pixel's colour is first cut to what
+// its alpha shows and a palette rebuilt to one entry per colour its pixels show
+// (reduceHiddenColour), so a palette may be stored at a lower bit depth. A
+// picture with an EXIF orientation in an eXIf chunk
 // is turned upright first, as for a JPEG, because browsers show it turned.
 // An animated PNG keeps its still image, which is what a viewer without APNG
 // support has always shown.
@@ -276,7 +281,7 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
-	clearTransparentColour(src)
+	reduceHiddenColour(src)
 	pic := orient(src, pngOrientation(data))
 	buf := newStoredBuffer(len(data), limit)
 	stored, err := buf.encoded(FormatPNG, png.Encode(buf, pic))
@@ -366,7 +371,7 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 			err = png.Encode(buf, rgb)
 		}
 	default: // lossless, decoded as *image.NRGBA
-		clearTransparentColour(pic)
+		reduceHiddenColour(pic)
 		err = png.Encode(buf, pic)
 	}
 	stored, err := buf.encoded(format, err)
@@ -439,6 +444,7 @@ func lossyWebPToNRGBA(m image.Image) (out *image.NRGBA, opaque bool) {
 					continue // NewNRGBA is all zero: no colour under a clear pixel
 				}
 				r, g, bl := bt601LimitedToRGB(p.Y[p.YOffset(x, y)], p.Cb[p.COffset(x, y)], p.Cr[p.COffset(x, y)])
+				r, g, bl = reduce8(r, g, bl, a) // keep only the colour this alpha shows
 				i := (x - b.Min.X) * 4
 				row[i+0], row[i+1], row[i+2], row[i+3] = r, g, bl, a
 			}
@@ -450,30 +456,74 @@ func lossyWebPToNRGBA(m image.Image) (out *image.NRGBA, opaque bool) {
 /* What nobody sees --------------------------------------------------------- */
 
 // The entries a cleaned palette gives what it does not show: opaque black for
-// an entry no pixel uses, transparent black for the one transparent entry.
-// They are values of the color.Color interface made once, so filling a
-// palette with them allocates nothing.
+// a pixel that names an entry past its palette's end (image/png and
+// image/gif), transparent black for the one transparent entry. They are
+// values of the color.Color interface made once.
 var (
 	unusedEntry      color.Color = color.RGBA{A: 0xFF}
 	transparentEntry color.Color = color.RGBA{}
 )
 
-// clearTransparentColour sets the colour of every fully transparent pixel of
-// a decoded picture to zero, in place, and cleans a paletted one
-// (cleanPaletted). These are the kinds image/png and x/image/webp decode
-// anything with transparency to; the others (*image.RGBA and *image.RGBA64,
-// which are premultiplied, grey, YCbCr) cannot hold colour under a
-// transparent pixel.
-func clearTransparentColour(m image.Image) {
+// unpremul8 reduces one 8-bit colour channel to the precision its alpha can
+// show: it premultiplies (rounding) and then unpremultiplies (rounding). At a
+// full alpha it returns the channel unchanged; at a low alpha it returns one
+// of the few values that alpha can represent, so a colour held at full
+// precision under a near-zero alpha — which barely shows, or does not show at
+// all — does not survive the round trip. a must not be zero.
+func unpremul8(c, a uint8) uint8 {
+	p := (int(c)*int(a) + 127) / 255
+	return uint8((p*255 + int(a)/2) / int(a))
+}
+
+// unpremul16 is unpremul8 for a 16-bit channel.
+func unpremul16(c, a uint16) uint16 {
+	p := (uint32(c)*uint32(a) + 0x7FFF) / 0xFFFF
+	return uint16((p*0xFFFF + uint32(a)/2) / uint32(a))
+}
+
+// reduce8 reduces an 8-bit non-premultiplied colour to what its alpha shows:
+// an opaque pixel is unchanged, a fully transparent one keeps no colour, and a
+// partly transparent one keeps only the colour its alpha can carry (unpremul8).
+func reduce8(r, g, b, a uint8) (uint8, uint8, uint8) {
+	switch a {
+	case 0xFF:
+		return r, g, b
+	case 0:
+		return 0, 0, 0
+	}
+	return unpremul8(r, a), unpremul8(g, a), unpremul8(b, a)
+}
+
+// visibleNRGBA is a palette entry reduced to what it shows: transparent black
+// for a fully transparent entry, otherwise its colour to the precision its
+// alpha can show (reduce8). It is the canonical form two entries that show the
+// same thing share, so folding a palette by it drops duplicates.
+func visibleNRGBA(c color.Color) color.NRGBA {
+	nc := color.NRGBAModel.Convert(c).(color.NRGBA)
+	if nc.A == 0 {
+		return color.NRGBA{}
+	}
+	nc.R, nc.G, nc.B = reduce8(nc.R, nc.G, nc.B, nc.A)
+	return nc
+}
+
+// reduceHiddenColour drops from a decoded picture, in place, every value it
+// holds that it does not show: the colour under a fully transparent pixel
+// (which an editor that erases by clearing alpha often leaves behind), the
+// colour a partly transparent pixel holds beyond what its alpha can show
+// (reduce8/reduce16), and, for a paletted picture, its duplicate and unused
+// palette entries and the order of its palette (cleanPaletted). These are the
+// kinds image/png and x/image/webp decode anything with transparency to; the
+// others (*image.RGBA and *image.RGBA64, which are premultiplied, grey, YCbCr)
+// cannot hold colour a pixel does not show.
+func reduceHiddenColour(m image.Image) {
 	switch p := m.(type) {
 	case *image.NRGBA:
 		b := p.Rect
 		for y := b.Min.Y; y < b.Max.Y; y++ {
 			row := p.Pix[p.PixOffset(b.Min.X, y):p.PixOffset(b.Max.X, y)]
 			for i := 0; i < len(row); i += 4 {
-				if row[i+3] == 0 {
-					row[i], row[i+1], row[i+2] = 0, 0, 0
-				}
+				row[i], row[i+1], row[i+2] = reduce8(row[i], row[i+1], row[i+2], row[i+3])
 			}
 		}
 	case *image.NRGBA64:
@@ -481,8 +531,16 @@ func clearTransparentColour(m image.Image) {
 		for y := b.Min.Y; y < b.Max.Y; y++ {
 			row := p.Pix[p.PixOffset(b.Min.X, y):p.PixOffset(b.Max.X, y)]
 			for i := 0; i < len(row); i += 8 {
-				if row[i+6] == 0 && row[i+7] == 0 {
+				a := uint16(row[i+6])<<8 | uint16(row[i+7])
+				switch a {
+				case 0xFFFF:
+				case 0:
 					clear(row[i : i+6])
+				default:
+					for c := 0; c < 6; c += 2 {
+						v := unpremul16(uint16(row[i+c])<<8|uint16(row[i+c+1]), a)
+						row[i+c], row[i+c+1] = uint8(v>>8), uint8(v)
+					}
 				}
 			}
 		}
@@ -497,132 +555,113 @@ func isTransparent(c color.Color) bool {
 	return a == 0
 }
 
-// paletteUse is what a paletted picture's pixels use of its palette, once
-// every pixel on a fully transparent entry has been moved onto the first such
-// entry any pixel is on (remapTransparent).
-type paletteUse struct {
-	used  [256]bool
-	last  int // the highest entry used, or -1 for a picture of no pixels
-	clear int // the one transparent entry used, or -1
+// colourFolder assigns a new, compact palette index to each distinct colour a
+// picture shows, in the order its pixels first name one, folding every fully
+// transparent entry onto one slot (visibleNRGBA). Rebuilding a palette through
+// it drops the three things a flat or near-flat picture can carry that it does
+// not show: duplicate entries of one colour, the order of the palette, and the
+// particular index a pixel points at among equal entries — each of which can
+// hold a whole second file in the pixel bytes. One folder serves a GIF's
+// frames that share a table, so they keep sharing one.
+type colourFolder struct {
+	palette color.Palette
+	index   map[color.NRGBA]int
 }
 
-// remapTransparent moves every pixel of m on a fully transparent palette
-// entry onto the first such entry a pixel is on, so a picture shows the same
-// with one transparent entry where it had several, and reports which entries
-// the pixels then use. image/gif gives a frame several transparent entries
-// when its transparent index lies past the end of its colour table, and
-// image/gif's encoder marks only the first of them transparent, which left
-// pixels on the others opaque black.
-func remapTransparent(m *image.Paletted) paletteUse {
-	u := paletteUse{last: -1, clear: -1}
-	b := m.Rect
-	pixelRows := func(visit func(row []uint8)) {
-		for y := b.Min.Y; y < b.Max.Y; y++ {
-			visit(m.Pix[m.PixOffset(b.Min.X, y):m.PixOffset(b.Max.X, y)])
-		}
-	}
-	pixelRows(func(row []uint8) {
-		for _, v := range row {
-			u.used[v] = true
-		}
-	})
-	// The decoders keep every pixel inside its palette; a palette shorter
-	// than a pixel's entry is lengthened as image/png does for one that is
-	// not, with opaque black.
-	for i := len(m.Palette); i < 256; i++ {
-		if u.used[i] {
-			for len(m.Palette) <= i {
-				m.Palette = append(m.Palette, unusedEntry)
-			}
-		}
-	}
-	var transparent [256]bool
-	extra := false
-	for i, c := range m.Palette {
-		if !u.used[i] || !isTransparent(c) {
-			continue
-		}
-		if u.clear < 0 {
-			u.clear = i
-		} else {
-			transparent[i], extra = true, true
-			u.used[i] = false
-		}
-	}
-	if extra {
-		clearAt := uint8(u.clear)
-		pixelRows(func(row []uint8) {
-			for j, v := range row {
-				if transparent[v] {
-					row[j] = clearAt
-				}
-			}
-		})
-	}
-	for i := 255; i >= 0; i-- {
-		if u.used[i] {
-			u.last = i
-			break
-		}
-	}
-	return u
+func newColourFolder() *colourFolder {
+	return &colourFolder{index: map[color.NRGBA]int{}}
 }
 
-// cleanPaletted rewrites m's palette in place to what its pixels show: one
-// transparent entry at most (remapTransparent), holding transparent black,
-// every entry no pixel uses opaque black, and nothing after the last entry
-// used. A partly transparent entry keeps its colour, which shows.
+// fold returns the new index of a palette entry's visible colour, adding it to
+// the rebuilt palette if it is the first pixel to show it. ok is false once
+// 256 colours are used and a new one cannot be added, which only a crafted
+// picture reaches.
+func (f *colourFolder) fold(c color.Color) (idx int, ok bool) {
+	vc := visibleNRGBA(c)
+	if i, seen := f.index[vc]; seen {
+		return i, true
+	}
+	if len(f.palette) >= 256 {
+		return 0, false
+	}
+	i := len(f.palette)
+	var entry color.Color = vc
+	if vc.A == 0 {
+		entry = transparentEntry
+	}
+	f.palette = append(f.palette, entry)
+	f.index[vc] = i
+	return i, true
+}
+
+// paletteEntryAt is the colour a pixel of value v shows, treating an index
+// past the palette's end as opaque black, as image/png and image/gif pad a
+// short table.
+func paletteEntryAt(pal color.Palette, v uint8) color.Color {
+	if int(v) < len(pal) {
+		return pal[v]
+	}
+	return unusedEntry
+}
+
+// cleanPaletted rebuilds m's palette in place from the colours its pixels
+// show, through a colourFolder, and remaps the pixels to match: one entry per
+// distinct colour in first-use order, a single transparent entry, and nothing
+// else. So a flat picture whose 256 identical entries, palette order, or pixel
+// indices hid a second file keeps one entry and pixels that all point at it.
 func cleanPaletted(m *image.Paletted) {
-	u := remapTransparent(m)
-	for i := range m.Palette {
-		switch {
-		case !u.used[i]:
-			m.Palette[i] = unusedEntry
-		case i == u.clear:
-			m.Palette[i] = transparentEntry
+	f := newColourFolder()
+	b := m.Rect
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := m.Pix[m.PixOffset(b.Min.X, y):m.PixOffset(b.Max.X, y)]
+		for j, v := range row {
+			i, _ := f.fold(paletteEntryAt(m.Palette, v)) // a lone picture never overflows
+			row[j] = uint8(i)
 		}
 	}
-	m.Palette = m.Palette[:max(u.last+1, 1)]
+	if len(f.palette) == 0 {
+		f.palette = color.Palette{transparentEntry} // a picture of no pixels
+	}
+	m.Palette = f.palette
 }
 
 // cleanGIF cleans the colour tables of a decoded GIF as cleanPaletted cleans
 // one palette, and keeps the frames that shared the global table sharing it.
 //
 // image/gif gives a frame with a colour table of its own that table, and a
-// frame without one the global table itself, or a copy of it with the
-// frame's transparent entry made transparent (and lengthened with transparent
-// entries when that lies past its end). Its encoder writes the global table
-// from Config.ColorModel and lets a frame use it whenever the frame's palette
-// matches it but for the transparent entry. So the frames are sorted the same
-// way: a palette that is the global table, entry for entry, but for
-// transparent entries is cleaned into a new global table holding every colour
-// any of those frames shows, and given that table, with its own transparent
-// entry where it has one; any other palette is the frame's own and is cleaned
-// by itself. A GIF none of whose frames uses its global table is stored
-// without one. The background colour, which browsers do not draw, keeps its
-// index when that is still in the table, and is otherwise the first entry.
+// frame without one the global table itself, or a copy of it with the frame's
+// transparent entry made transparent (and lengthened with transparent entries
+// when that lies past its end). Its encoder writes the global table from
+// Config.ColorModel and lets a frame use it whenever the frame's palette is
+// that same slice, or a copy differing only at the transparent index. So the
+// frames that copy the global table are rebuilt together through one
+// colourFolder into a single union table — one entry per distinct colour any
+// of them shows, in first-use order, with every transparent entry folded onto
+// one — and each is given that table and has its pixels remapped to it, so
+// image/gif writes it once as the global table and nothing of a flat frame's
+// duplicate entries, palette order or pixel indices survives. Any other frame
+// carries its own table and is cleaned by itself (cleanPaletted). A GIF none
+// of whose frames copies the global table, or whose shared colours do not fit
+// one 256-entry table, is stored with every frame's table its own. The
+// background colour, which browsers do not draw, is remapped to its colour's
+// new index, or the first entry.
 func cleanGIF(g *gif.GIF) {
 	global, _ := g.Config.ColorModel.(color.Palette)
-	var (
-		shows      [256]bool // the global table's entries a frame shows
-		globalLen  int       // how much of it the frames use
-		sharers    []int     // the frames that use it, by index
-		sharerUses []paletteUse
-	)
+	background := int(g.BackgroundIndex)
+	var sharers []int
 	for k, frame := range g.Image {
-		if !copiesPalette(frame.Palette, global) {
+		if copiesPalette(frame.Palette, global) {
+			sharers = append(sharers, k)
+		} else {
 			cleanPaletted(frame)
-			continue
 		}
-		u := remapTransparent(frame)
-		for i := 0; i <= u.last; i++ {
-			if u.used[i] && i != u.clear {
-				shows[i] = true
-			}
+	}
+	noGlobalTable := func() {
+		for _, k := range sharers {
+			cleanPaletted(g.Image[k])
 		}
-		globalLen = max(globalLen, u.last+1, 1)
-		sharers = append(sharers, k)
-		sharerUses = append(sharerUses, u)
+		g.Config.ColorModel = nil
+		g.BackgroundIndex = 0
 	}
 	if len(sharers) == 0 {
 		g.Config.ColorModel = nil
@@ -630,33 +669,50 @@ func cleanGIF(g *gif.GIF) {
 		return
 	}
 
-	// An entry past the global table's end that a frame shows can only be
-	// one remapTransparent lengthened its palette with, which is opaque black.
-	table := make(color.Palette, globalLen)
-	for i := range table {
-		table[i] = unusedEntry
-		if shows[i] && i < len(global) {
-			table[i] = global[i]
+	// Fold every sharer frame's colours into one table first, so an overflow
+	// (more distinct colours than one table holds, which only a crafted GIF
+	// reaches) is found before any frame's pixels are touched.
+	f := newColourFolder()
+	framePixels := func(k int, visit func(off int)) {
+		m := g.Image[k]
+		b := m.Rect
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			off := m.PixOffset(b.Min.X, y)
+			for x := b.Min.X; x < b.Max.X; x++ {
+				visit(off)
+				off++
+			}
 		}
 	}
-	withClear := map[int]color.Palette{}
-	for j, k := range sharers {
-		ti := sharerUses[j].clear
-		if ti < 0 {
-			g.Image[k].Palette = table
-			continue
+	for _, k := range sharers {
+		frame := g.Image[k]
+		overflow := false
+		framePixels(k, func(off int) {
+			if _, ok := f.fold(paletteEntryAt(frame.Palette, frame.Pix[off])); !ok {
+				overflow = true
+			}
+		})
+		if overflow {
+			noGlobalTable()
+			return
 		}
-		p, ok := withClear[ti]
-		if !ok {
-			p = append(color.Palette(nil), table...)
-			p[ti] = transparentEntry
-			withClear[ti] = p
-		}
-		g.Image[k].Palette = p
 	}
-	g.Config.ColorModel = table
-	if int(g.BackgroundIndex) >= len(table) {
-		g.BackgroundIndex = 0
+	for _, k := range sharers {
+		frame := g.Image[k]
+		framePixels(k, func(off int) {
+			i, _ := f.fold(paletteEntryAt(frame.Palette, frame.Pix[off]))
+			frame.Pix[off] = uint8(i)
+		})
+	}
+	for _, k := range sharers {
+		g.Image[k].Palette = f.palette
+	}
+	g.Config.ColorModel = f.palette
+	g.BackgroundIndex = 0
+	if background < len(global) {
+		if i, ok := f.index[visibleNRGBA(global[background])]; ok {
+			g.BackgroundIndex = uint8(i)
+		}
 	}
 }
 

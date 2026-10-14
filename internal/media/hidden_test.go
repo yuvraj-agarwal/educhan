@@ -122,8 +122,175 @@ func TestColourUnderTransparentPixelsIsNotStored(t *testing.T) {
 				t.Errorf("%d of the stored file's %d transparent pixels still hold a colour", coloured, transparent)
 			}
 			if tc.lossless {
-				requireSamePixels(t, src, stored)
+				requireSameAppearance(t, src, stored)
 			}
+		})
+	}
+}
+
+// A partly transparent pixel barely shows, yet a re-encode that keeps the
+// picture exact carries its full colour through untouched: a photo laid under
+// an alpha of 1 composites to one faint tint but keeps every bit of its three
+// channels, there to read for anyone who drops the alpha. So each pixel's
+// colour is cut to the precision its alpha can show before it is stored
+// (reduceHiddenColour): what composites to the screen stays the same, but the
+// colour hidden beneath it does not survive.
+func TestPartlyTransparentColourIsReducedToItsAlpha(t *testing.T) {
+	// All a re-encode shows of a pixel is its premultiplied colour, so
+	// premultiplying and reading back at the same alpha is exactly what
+	// survives; a low alpha reads back only a few of the 256 (or 65536) values.
+	keptAt8 := func(c, a uint8) uint8 {
+		if a == 0 {
+			return 0
+		}
+		p := (int(c)*int(a) + 127) / 255
+		return uint8((p*255 + int(a)/2) / int(a))
+	}
+	keptAt16 := func(c, a uint16) uint16 {
+		if a == 0 {
+			return 0
+		}
+		p := (uint32(c)*uint32(a) + 0x7FFF) / 0xFFFF
+		return uint16((p*0xFFFF + uint32(a)/2) / uint32(a))
+	}
+
+	rng := rand.New(rand.NewSource(7))
+	alphas := []uint8{1, 3, 7, 64, 200, 255}
+	eight := image.NewNRGBA(image.Rect(0, 0, len(alphas), 1))
+	origEight := make([]color.NRGBA, len(alphas))
+	for x, a := range alphas {
+		c := color.NRGBA{uint8(1 + rng.Intn(255)), uint8(1 + rng.Intn(255)), uint8(1 + rng.Intn(255)), a}
+		origEight[x] = c
+		eight.SetNRGBA(x, 0, c)
+	}
+	origSixteen := color.NRGBA64{40000, 55000, 12345, 3}
+	sixteen := image.NewNRGBA64(image.Rect(0, 0, 1, 1))
+	sixteen.SetNRGBA64(0, 0, origSixteen)
+	uploadEight, uploadSixteen := pngOf(t, eight), pngOf(t, sixteen)
+
+	// Positive control: the fixtures really keep the full colour under each
+	// alpha, so a stored colour that differs proves the reduction happened.
+	up8, ok := decodeStored(t, uploadEight).(*image.NRGBA)
+	if !ok {
+		t.Fatal("the 8-bit fixture does not decode to NRGBA")
+	}
+	for x := range alphas {
+		if up8.NRGBAAt(x, 0) != origEight[x] {
+			t.Fatalf("the 8-bit fixture lost colour at x=%d before storing; the test would prove nothing", x)
+		}
+	}
+	up16, ok := decodeStored(t, uploadSixteen).(*image.NRGBA64)
+	if !ok {
+		t.Fatal("the 16-bit fixture does not decode to NRGBA64")
+	}
+	if up16.NRGBA64At(0, 0) != origSixteen {
+		t.Fatal("the 16-bit fixture lost colour before storing; the test would prove nothing")
+	}
+
+	stored8, ok := decodeStored(t, process(t, uploadEight).Data).(*image.NRGBA)
+	if !ok {
+		t.Fatal("the stored 8-bit file is not NRGBA")
+	}
+	reduced := false
+	for x, a := range alphas {
+		want := color.NRGBA{keptAt8(origEight[x].R, a), keptAt8(origEight[x].G, a), keptAt8(origEight[x].B, a), a}
+		if got := stored8.NRGBAAt(x, 0); got != want {
+			t.Errorf("stored 8-bit pixel at alpha %d = %v, want %v (colour cut to what the alpha shows)", a, got, want)
+		}
+		if a != 0xFF && want != origEight[x] {
+			reduced = true
+		}
+	}
+	if !reduced {
+		t.Fatal("no partly transparent pixel's colour was reduced; the fixture proves nothing")
+	}
+
+	stored16, ok := decodeStored(t, process(t, uploadSixteen).Data).(*image.NRGBA64)
+	if !ok {
+		t.Fatal("the stored 16-bit file is not NRGBA64")
+	}
+	want16 := color.NRGBA64{keptAt16(origSixteen.R, 3), keptAt16(origSixteen.G, 3), keptAt16(origSixteen.B, 3), 3}
+	if want16 == origSixteen {
+		t.Fatal("the 16-bit fixture was not reduced; it proves nothing")
+	}
+	if got := stored16.NRGBA64At(0, 0); got != want16 {
+		t.Errorf("stored 16-bit pixel = %v, want %v (colour cut to what the alpha shows)", got, want16)
+	}
+}
+
+// A paletted picture can hide a file not in its palette but in its pixels: with
+// 256 identical entries the palette shows one flat colour and gives nothing
+// away, yet which of the 256 equal entries each pixel points at is a free byte
+// a reader recovers by looking at the indices alone. Rebuilding the palette
+// from the colours the pixels show collapses the equal entries to one and
+// points every pixel at it, so the indices carry nothing (cleanPaletted,
+// cleanGIF).
+func TestFlatPaletteCannotHideAFileInItsPixels(t *testing.T) {
+	hidden := cameraJPEG(t, 16, 16) // a whole JPEG, EXIF and GPS and all
+	side := 1
+	for side*side < len(hidden) {
+		side++
+	}
+	pal := make(color.Palette, 256)
+	for i := range pal {
+		pal[i] = color.RGBA{0x80, 0x80, 0x80, 0xFF} // every entry the same grey
+	}
+	base := image.NewPaletted(image.Rect(0, 0, side, side), pal)
+	copy(base.Pix, hidden) // the pixel indices are the file's bytes
+
+	distinctIndices := func(m *image.Paletted) int {
+		var seen [256]bool
+		n := 0
+		for _, v := range m.Pix {
+			if !seen[v] {
+				seen[v], n = true, n+1
+			}
+		}
+		return n
+	}
+	needles := []string{"Exif", needleCamera, needleGPS, needleDatum}
+
+	for _, tc := range []struct {
+		name   string
+		encode func() []byte
+		decode func([]byte) *image.Paletted
+	}{
+		{"PNG", func() []byte { return pngOf(t, base) }, func(b []byte) *image.Paletted {
+			p, ok := decodeStored(t, b).(*image.Paletted)
+			if !ok {
+				t.Fatal("stored PNG is not paletted")
+			}
+			return p
+		}},
+		{"GIF", func() []byte {
+			var buf bytes.Buffer
+			if err := gif.Encode(&buf, base, nil); err != nil {
+				t.Fatalf("encode gif: %v", err)
+			}
+			return buf.Bytes()
+		}, func(b []byte) *image.Paletted {
+			g, err := gif.DecodeAll(bytes.NewReader(b))
+			if err != nil {
+				t.Fatalf("decode stored gif: %v", err)
+			}
+			return g.Image[0]
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			upload := tc.encode()
+			// Positive control: the file is recoverable from the upload's
+			// pixel indices, read as bytes.
+			up := tc.decode(upload)
+			if !bytes.Equal(up.Pix[:len(hidden)], hidden) {
+				t.Fatal("the upload's indices are not the hidden file; the test would prove nothing")
+			}
+			requireCarries(t, up.Pix, needles...)
+
+			stored := tc.decode(process(t, upload).Data)
+			if n := distinctIndices(stored); n != 1 {
+				t.Errorf("stored picture uses %d distinct palette indices, want 1", n)
+			}
+			requireFree(t, stored.Pix, needles...)
 		})
 	}
 }
@@ -164,7 +331,7 @@ func TestPNGPaletteKeepsOnlyWhatIsShown(t *testing.T) {
 	if coloured, transparent := hiddenUnderAlpha(t, stored); transparent == 0 || coloured != 0 {
 		t.Errorf("%d of %d transparent pixels hold a colour", coloured, transparent)
 	}
-	requireSamePixels(t, m, stored)
+	requireSameAppearance(t, m, stored)
 }
 
 // gifTables reads back a GIF that image/gif wrote: its global colour table,
