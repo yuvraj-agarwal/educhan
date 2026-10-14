@@ -445,13 +445,17 @@ client can leave the image picker off a server that would refuse what it sends.
     `image.png`). Keeping the WebP with only its metadata chunks removed would not be
     enough: a decoder ignores anything after the picture inside the chunks that hold
     it, so a second file could ride through unseen. WebPs stored before this stay WebPs.
-  - Nothing is kept that the picture does not show. A fully transparent pixel is
-    stored with no colour, because an editor that erases part of a picture by clearing
-    its alpha often leaves the erased part there, and a palette or colour table loses
-    the entries no pixel uses, which could hold a second file, EXIF and all. The pixels
-    that show keep their exact values in a lossless format, so anything hidden on
-    purpose in their lowest bits stays; no rewrite that keeps a picture exact can
-    remove that.
+  - Besides metadata, two channels a picture can carry without showing them are
+    cleared. A fully transparent pixel is stored with no colour, because an editor that
+    erases part of a picture by clearing its alpha often leaves the erased part there,
+    and a palette or colour table loses the entries no pixel uses, which could hold a
+    second file, EXIF and all. What is left is the picture itself, kept exactly in a
+    lossless format — and kept exactly means more than what the eye picks out: a pixel
+    at alpha 1 keeps its full colour, a 16-bit channel keeps its low byte, and which
+    palette entry a pixel points at is kept even where two entries are the same colour.
+    So data put into the pixels on purpose, as low-bit steganography does, survives;
+    removing it would change the picture, and the aim is to drop the metadata, not to
+    launder the pixels.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can

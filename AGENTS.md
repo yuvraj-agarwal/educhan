@@ -591,19 +591,24 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   end to end over both backends. Every stored original is a file Go encoded from
   decoded pixels; never store, hash or serve the upload's own bytes, or any run of
   them, such as a chunk copied across.
-- **Nothing is stored that the picture does not show.** A decoded picture still holds
-  the colour of a fully transparent pixel and every palette entry, used or not, and
-  either carries data through a re-encode: the erased part of a photo under cleared
-  alpha, or a whole second file in a GIF's unused table entries. So after decoding,
-  `clearTransparentColour` zeroes the colour under alpha 0 (`NRGBA`, `NRGBA64`, and
-  `nrgbaOf` for a lossy WebP with alpha), and `cleanPaletted` (PNG) and `cleanGIF` cut a
-  palette to the entries its pixels use: one transparent entry at most, transparent
-  black, every unused entry before the last used one opaque black. `cleanGIF` keeps the
-  frames that used the global table on the rebuilt one rather than giving each its own,
-  and moves pixels on a transparent index past the end of a frame's table (which
-  `image/gif` decodes as several transparent entries and its encoder writes all but the
-  first of as opaque black) onto one entry. Visible pixels keep their exact values in
-  PNG and GIF, so low-bit steganography survives by design. `hidden_test.go` holds each
+- **Metadata aside, what is stored is the picture, not two channels a picture can carry
+  unseen.** A decoded picture still holds the colour of a fully transparent pixel and
+  every palette entry, used or not, and either carries data through a re-encode: the
+  erased part of a photo under cleared alpha, or a whole second file in a GIF's unused
+  table entries. So after decoding, `clearTransparentColour` zeroes the colour under
+  alpha 0 (`NRGBA`, `NRGBA64`, and `nrgbaOf` for a lossy WebP with alpha), and
+  `cleanPaletted` (PNG) and `cleanGIF` cut a palette to the entries its pixels use: one
+  transparent entry at most, transparent black, every unused entry before the last used
+  one opaque black. `cleanGIF` keeps the frames that used the global table on the
+  rebuilt one rather than giving each its own, and moves pixels on a transparent index
+  past the end of a frame's table (which `image/gif` decodes as several transparent
+  entries and its encoder writes all but the first of as opaque black) onto one entry.
+  What is left is the picture, kept exactly, and that is the whole guarantee: it is not
+  that nothing unseen survives. A pixel at alpha 1 keeps its full colour, a 16-bit
+  channel keeps its low byte (`TestPNGKeepsSixteenBitPixels`), and which entry a pixel
+  points at stays even where two entries are the same colour — `cleanPaletted` drops
+  only unused entries, not duplicate used ones. So low-bit steganography survives by
+  design; removing it would change the picture. `hidden_test.go` holds each clearing
   path, with the needles checked present in the upload first.
 - Besides the decoders, educhan reads structures an uploader controls in a few
   places of its own: the EXIF reader, the JPEG segment walks (`jpegOrientation`, and

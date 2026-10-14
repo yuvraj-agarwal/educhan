@@ -46,10 +46,14 @@ import (
 // and all, through to the stored original. So the colour of every fully
 // transparent pixel is cleared (clearTransparentColour), and a palette keeps
 // only the entries its pixels use, with one transparent entry at most
-// (cleanPaletted, cleanGIF). What is left is what is shown. The values of
-// pixels that can be seen are kept exactly in a lossless format, so their low
-// bits can still carry data put there on purpose; no rewrite that keeps a
-// picture exactly can take that away.
+// (cleanPaletted, cleanGIF). What is left is the picture, kept exactly in a
+// lossless format -- which is not the same as keeping only what the eye picks
+// out. A pixel at alpha 1 keeps its full colour, a 16-bit channel keeps its
+// low byte, and which palette entry a pixel points at is kept even where two
+// entries are the same colour; so data put into the pixels on purpose, as
+// low-bit steganography does, survives. Removing it would alter the picture,
+// which no rewrite that keeps the picture exact can do: the job here is to
+// drop metadata, not to launder the pixels.
 
 // storedJPEGQuality is the highest quality an original is stored at as a
 // JPEG, and the quality of one made from a lossy WebP. A JPEG upload saved at
