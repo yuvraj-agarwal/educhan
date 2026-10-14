@@ -506,4 +506,38 @@ func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
 			t.Errorf("pointAtMatch no longer reads a cut match: missing %s", want)
 		}
 	}
+	// The least scroll leaves a field that is on screen but under the sticky
+	// header where it is; on a phone the header is three rows deep, and the
+	// Name field is right under it.
+	reveal := withoutComments(jsFunction(t, script, "revealBelowHeader"))
+	if !strings.Contains(point, "revealBelowHeader(input)") || !strings.Contains(reveal, `scrollIntoView({ block: "start" })`) ||
+		!strings.Contains(reveal, ".site-header") {
+		t.Error("pointAtMatch no longer brings the field out from under the sticky header")
+	}
+}
+
+// A post's answer can arrive after the page was drawn again — "Update" on the
+// thread while the reply was on its way — and then the form it was sent from
+// is out of the document, with the draft in the form that replaced it. An
+// answer written into the old form is seen by nobody: a held reply looks
+// unsent and is posted twice, and a block or the support panel never shows.
+// After the request, everything is done to liveForm's form.
+func TestPostAnswersGoToTheFormOnScreen(t *testing.T) {
+	handler := withoutComments(submitHandler(t, appScript(t)))
+	i := strings.Index(handler, "await api(")
+	if i < 0 {
+		t.Fatal("the submit handler no longer awaits api(); this test reads what follows it")
+	}
+	after := handler[i:]
+	if n := strings.Count(after, "liveForm(form, draftKey)"); n != 2 {
+		t.Errorf("liveForm(form, draftKey) is called %d times after the request, want once for an answer and once for a refusal", n)
+	}
+	for _, stale := range []string{
+		"showFormNotice(form", "showSupport(form", "pointAtMatch(form", "closeSupport(form",
+		"form.reset(", "field(form", "form.querySelector(", "form.contains(",
+	} {
+		if strings.Contains(after, stale) {
+			t.Errorf("the submit handler uses the submitted form after the request (%s), which a re-render may have taken out of the page", stale)
+		}
+	}
 }

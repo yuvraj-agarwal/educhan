@@ -407,7 +407,13 @@ needs a browser check before the test changes.
   one that lets whitespace runs differ, since the server quotes its normalised text; a
   match the server cut and ended in "…" is looked for without it and selected to the end
   of its run of non-space text), marks it `aria-invalid` and describes it by the notice
-  until the poster edits it, and scrolls the field and the notice into view together. A `422` support answer opens
+  until the poster edits it, and scrolls the field and the notice into view together,
+  the field clear of the sticky header (`revealBelowHeader`: the least scroll leaves a
+  field under the header where it is, so one still covered goes to its scroll margin).
+  Every answer is shown in `liveForm`: a re-render while the post was out ("Update")
+  replaces the form it was sent from and puts the draft in the new one, so the answer,
+  and a held or published post's emptying of the form, goes to that one; with no form
+  left on the same route, the page's `#notice` says it. A `422` support answer opens
   `showSupport`'s panel above the buttons — the server's sentence, `HELPLINES_HTML`, and
   **Post anyway** / **Go back** — and hides the form's own buttons while it is open.
   Post anyway is an unnamed submit button of the form, so the resubmission goes through

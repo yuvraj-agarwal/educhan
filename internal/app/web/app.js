@@ -313,11 +313,18 @@ function imageTooLargeMessage() {
     : "That image is too large. Try a smaller file.";
 }
 
-function showNotice(message) {
+// showNotice puts a message in the page's notice, as text; with html, the
+// message is markup the caller has built with esc().
+function showNotice(message, { html = false } = {}) {
   el.notice.innerHTML =
     '<span class="notice-text"></span>' +
     '<button class="notice-dismiss" type="button" data-action="dismiss-notice" aria-label="Dismiss">&times;</button>';
-  el.notice.querySelector(".notice-text").textContent = message;
+  const text = el.notice.querySelector(".notice-text");
+  if (html) {
+    text.innerHTML = message;
+  } else {
+    text.textContent = message;
+  }
   el.notice.hidden = false;
 }
 
@@ -3517,6 +3524,18 @@ function clearInvalid(input) {
   }
 }
 
+// revealBelowHeader scrolls an element into view the least it can, and then,
+// if the sticky header still lies over it, down to its scroll margin. The
+// least scroll leaves an element that is already in the viewport where it
+// is, even when it is under the header, which on a phone is three rows deep.
+function revealBelowHeader(element) {
+  element.scrollIntoView({ block: "nearest" });
+  const header = document.querySelector(".site-header");
+  if (header && element.getBoundingClientRect().top < header.getBoundingClientRect().bottom) {
+    element.scrollIntoView({ block: "start" });
+  }
+}
+
 // pointAtMatch takes the poster to what a block quoted: the field it is in,
 // focused, with the text selected so it can be deleted in one go. The server
 // quotes the post as it kept it, trimmed and with its line ends tidied, so
@@ -3540,7 +3559,7 @@ function pointAtMatch(form, { field: where, match }) {
   // they do not, the field wins.
   input.focus({ preventScroll: true });
   form.querySelector("[data-form-notice]")?.scrollIntoView({ block: "nearest" });
-  input.scrollIntoView({ block: "nearest" });
+  revealBelowHeader(input);
   let quoted = typeof match === "string" ? match.trim() : "";
   const cut = quoted.endsWith("…") && !input.value.includes(quoted);
   if (cut) {
@@ -3686,6 +3705,7 @@ el.main.addEventListener("submit", async (event) => {
   const headers = held ? { [CREDENTIAL_HEADER]: held.token } : { [POSTER_KEY_HEADER]: posterKey() };
 
   const isThread = form.dataset.kind === "thread";
+  const draftKey = routeKey(state.route);
   const payload = { name, body, badge: wantsBadge };
   let path;
   if (isThread) {
@@ -3715,37 +3735,47 @@ el.main.addEventListener("submit", async (event) => {
     if (!held) {
       storageSet(NAME_STORAGE_KEY, name);
     }
+    const live = liveForm(form, draftKey);
     // Clear before navigating so the draft carried across the re-render is the
     // empty form rather than the post that just went through. reset() puts the
     // Name back to what the form was drawn with, so it is set again: to the
     // name just used — empty, if the poster cleared it — or after a badged
     // post to the remembered one.
-    form.reset();
-    const nameField = field(form, "name");
-    if (nameField) {
-      nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
-    }
-    const fileField = form.querySelector("[data-file-field]");
-    if (fileField) {
-      clearFileField(fileField);
+    if (live) {
+      live.reset();
+      const nameField = field(live, "name");
+      if (nameField) {
+        nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+      }
+      const fileField = live.querySelector("[data-file-field]");
+      if (fileField) {
+        clearFileField(fileField);
+      }
     }
     // A held post was kept but is not shown: there is no number to go to, and
     // a thread or board drawn again would not have it. The poster stays where
     // they are, with the form emptied as after any post, and is told it is
     // waiting for a moderator.
     if (created && created.held) {
-      closeSupport(form);
-      showFormNotice(form, heldNoticeHTML(isThread), { info: true });
       button.disabled = false;
       button.textContent = label;
+      if (!live) {
+        showNotice(heldNoticeHTML(isThread), { html: true });
+        return;
+      }
+      closeSupport(live);
+      showFormNotice(live, heldNoticeHTML(isThread), { info: true });
       // "Post anyway" went with the panel; the form's own button takes over.
-      if (!form.contains(document.activeElement)) {
-        form.querySelector('.actions button[type="submit"]')?.focus();
+      if (!live.contains(document.activeElement)) {
+        live.querySelector('.actions button[type="submit"]')?.focus();
       }
       return;
     }
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {
+    button.disabled = false;
+    button.textContent = label;
+    const live = liveForm(form, draftKey);
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
     // option goes with it — taking the checkbox out of this form rather than
@@ -3758,11 +3788,11 @@ el.main.addEventListener("submit", async (event) => {
         reason === "expired"
           ? "Your badge has expired."
           : "That badge was replaced by a newer verification.";
-      const box = field(form, "badge");
+      const box = live && field(live, "badge");
       const option = box && box.closest("label");
       if (option) {
         option.remove();
-        form.querySelector("#f-badge-hint")?.remove();
+        live.querySelector("#f-badge-hint")?.remove();
       } else if (box) {
         box.checked = false;
       }
@@ -3770,7 +3800,7 @@ el.main.addEventListener("submit", async (event) => {
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
     if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
-      const fileField = form.querySelector("[data-file-field]");
+      const fileField = live && live.querySelector("[data-file-field]");
       const thread = state.thread;
       if (fileField) {
         blockFileField(fileField, imageLimitReason(thread && thread.board));
@@ -3791,7 +3821,7 @@ el.main.addEventListener("submit", async (event) => {
     // the visit, so the next form it draws has no image field.
     if (err.status === 403 && err.message === UPLOADS_SWITCHED_OFF) {
       state.site.uploads = false;
-      const fileField = form.querySelector("[data-file-field]");
+      const fileField = live && live.querySelector("[data-file-field]");
       if (fileField) {
         blockFileField(fileField, UPLOADS_OFF_REASON);
       }
@@ -3799,15 +3829,18 @@ el.main.addEventListener("submit", async (event) => {
     }
     // The content rules answer in the form, where the poster is looking, and
     // leave the draft as it was: crisis language opens the support panel, and
-    // a block says what to take out and selects it.
+    // a block says what to take out and selects it. With no form left to
+    // answer in, the page's notice says it, and where to get help.
     const outcome = err.status === 422 && err.payload ? err.payload.outcome : "";
-    const notice = form.querySelector("[data-form-notice]");
-    if (outcome === "support") {
-      showSupport(form, err.payload.error);
-    } else if (outcome === "block") {
-      closeSupport(form);
-      showFormNotice(form, esc(errorMessage(err)));
-      pointAtMatch(form, err.payload);
+    const notice = live && live.querySelector("[data-form-notice]");
+    if (outcome === "support" && !live) {
+      showNotice(`${esc(errorMessage(err))} <a href="/faq#faq-help">Here's where to get help</a>.`, { html: true });
+    } else if (outcome === "support") {
+      showSupport(live, err.payload.error);
+    } else if (outcome === "block" && live) {
+      closeSupport(live);
+      showFormNotice(live, esc(errorMessage(err)));
+      pointAtMatch(live, err.payload);
     } else if (notice) {
       // Everything else (flood control, a thread locked or archived under
       // the draft, the network) is said in the form, beside the button that
@@ -3815,15 +3848,29 @@ el.main.addEventListener("submit", async (event) => {
       // out of sight below a long thread, and after "Post anyway" the support
       // panel is all the poster is looking at. The panel stays open, so they
       // can try again.
-      showFormNotice(form, esc(errorMessage(err, { hasText: body.trim() !== "" })));
+      showFormNotice(live, esc(errorMessage(err, { hasText: body.trim() !== "" })));
       notice.scrollIntoView({ block: "nearest" });
     } else {
       showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
     }
-    button.disabled = false;
-    button.textContent = label;
   }
 });
+
+// liveForm is the form an answer to a post is shown in. The page can be drawn
+// again while the post is on its way — "Update" on the thread, or a reply
+// arriving — and then the form it was sent from is gone, and the draft is in
+// the one that replaced it (restoreDraft), which is where the poster is
+// looking. null when the page now shows another route, or no form, so the
+// answer goes to the page's notice rather than nowhere.
+function liveForm(form, draftKey) {
+  if (form.isConnected) {
+    return form;
+  }
+  if (routeKey(state.route) !== draftKey) {
+    return null;
+  }
+  return el.main.querySelector(`form[data-kind="${form.dataset.kind}"]`);
+}
 
 // submitVerification drives both halves of the verification form. Nothing is
 // remembered between them but the badge on offer: the code is confirmed against
