@@ -224,8 +224,9 @@ func greyQuadrants(w, h int) *image.Gray {
 // costFixtures are one file of each kind processingCost models, pictures of
 // four flat quadrants unless they say otherwise. They are large enough for
 // each term the model charges for decoding to come to megabytes more than
-// processingSlack in one of them at least, so that a term left out or cut
-// short is seen: 2400×1800, four times a phone screenshot's pixels, for a
+// processingSlack in one of them at least, so that a term left out is seen (a
+// partial cut smaller than the slack it hides instead): 2400×1800, four times
+// a phone screenshot's pixels, for a
 // term of a byte and a half a pixel; 3200×2400 for the three kinds that turn
 // on a term of a byte a pixel; and 1200×900 for the 16-bit colour PNGs,
 // whose least term is eight bytes a pixel, and which take the longest to
@@ -603,6 +604,15 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	pngOf := func(colour, depth byte, interlaced bool) func(w, h int) []byte {
 		return func(w, h int) []byte { return pngHeader(w, h, colour, depth, interlaced) }
 	}
+	// A grey (0) or truecolour (2) PNG with a tRNS chunk before its pixels
+	// decodes to NRGBA(64), four or eight bytes a pixel, which pngBytesPerPixel
+	// reads from the chunk. headerUpload does not add one, so it goes on here.
+	pngTRNS := func(colour, depth byte, interlaced bool) func(w, h int) []byte {
+		return func(w, h int) []byte {
+			return append(pngHeader(w, h, colour, depth, interlaced),
+				pngChunk("tRNS", make([]byte, map[byte]int{0: 2, 2: 6}[colour]))...)
+		}
+	}
 	webpOf := func(k string) func(w, h int) []byte {
 		return func(w, h int) []byte { return webpHeader(k, w, h) }
 	}
@@ -617,6 +627,8 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 			kind{"baseline 4:1:0 JPEG", jpg(0xC0, 0x42, 0x11, 0x11), o},
 			kind{"baseline grey JPEG", jpg(0xC0, 0x11), o},
 			kind{"progressive 4:2:0 JPEG", jpg(0xC2, 0x22, 0x11, 0x11), o},
+			kind{"progressive 4:1:1 JPEG", jpg(0xC2, 0x41, 0x11, 0x11), o},
+			kind{"progressive 4:1:0 JPEG", jpg(0xC2, 0x42, 0x11, 0x11), o},
 			kind{"progressive grey JPEG", jpg(0xC2, 0x11), o},
 			kind{"palette PNG", pngOf(3, 8, false), o},
 			kind{"interlaced palette PNG", pngOf(3, 8, true), o},
@@ -625,6 +637,7 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 			kind{"interlaced 16-bit grey PNG", pngOf(0, 16, true), o},
 			kind{"8-bit RGB PNG", pngOf(2, 8, false), o},
 			kind{"8-bit RGBA PNG", pngOf(6, 8, false), o},
+			kind{"8-bit grey+alpha PNG", pngOf(4, 8, false), o},
 		)
 		refused = append(refused,
 			kind{"progressive 4:4:4 JPEG", jpg(0xC2, 0x11, 0x11, 0x11), o},
@@ -632,14 +645,17 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 			kind{"progressive RGB JPEG", rgbJPEG(0xC2), o},
 			kind{"interlaced 16-bit RGB PNG", pngOf(2, 16, true), o},
 			kind{"interlaced 16-bit RGBA PNG", pngOf(6, 16, true), o},
+			kind{"interlaced 16-bit grey+tRNS PNG", pngTRNS(0, 16, true), o},
 		)
 	}
 	accepted = append(accepted,
 		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 1},
 		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 1},
 		kind{"progressive 4:2:2 JPEG", jpg(0xC2, 0x21, 0x11, 0x11), 1},
+		kind{"progressive 4:4:0 JPEG", jpg(0xC2, 0x12, 0x11, 0x11), 1},
 		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 1},
 		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 1},
+		kind{"interlaced 8-bit grey+alpha PNG", pngOf(4, 8, true), 1},
 		kind{"lossy WebP", webpOf("lossy"), 1},
 	)
 	refused = append(refused, kind{"lossy WebP with transparency", webpOf("alpha"), 1})
@@ -647,10 +663,13 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 6},
 		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 6},
 		kind{"progressive 4:2:2 JPEG", jpg(0xC2, 0x21, 0x11, 0x11), 6},
+		kind{"progressive 4:4:0 JPEG", jpg(0xC2, 0x12, 0x11, 0x11), 6},
 		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 6},
 		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 6},
+		kind{"interlaced 8-bit grey+alpha PNG", pngOf(4, 8, true), 6},
 		kind{"16-bit RGB PNG", pngOf(2, 16, false), 6},
 		kind{"16-bit RGBA PNG", pngOf(6, 16, false), 6},
+		kind{"16-bit grey+tRNS PNG", pngTRNS(0, 16, false), 6},
 	)
 
 	const side = 5000 // a square of MaxPixels
@@ -671,6 +690,18 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	for _, k := range refused {
 		check(k, 4*side, side/4, small, ErrImageTooLarge)
 		check(k, side/2, side/2, large, nil)
+	}
+	// The "either" kinds: a 16-bit colour PNG that is neither interlaced nor
+	// turned (eight bytes a pixel) is refused at a square, its dearest shape,
+	// but stored when wide. A grey PNG with a transparent colour counts as a
+	// colour PNG here: with the key applied it decodes to NRGBA64 the same way.
+	for _, k := range []kind{
+		{"16-bit RGB PNG", pngOf(2, 16, false), 1},
+		{"16-bit RGBA PNG", pngOf(6, 16, false), 1},
+		{"16-bit grey+tRNS PNG", pngTRNS(0, 16, false), 1},
+	} {
+		check(k, side, side, large, ErrImageTooLarge)
+		check(k, 4*side, side/4, small, nil)
 	}
 	// One pixel more than the cap is refused whatever it is.
 	check(kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)

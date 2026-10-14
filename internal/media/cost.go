@@ -30,10 +30,14 @@ import (
 // term charged for decoding comes to megabytes; TestThumbScratchCoversTheScaler
 // measures the thumbnail's scratch, and
 // TestGIFFrameOverheadCoversWhatDecodingKeeps what image/gif keeps of each
-// frame. A term left out or cut short fails one of them, unless another term
-// charged for the same moment is at least as large in every file they
-// measure; a few are, the alpha plane and the NRGBA copy of a transparent
-// lossy WebP among them.
+// frame. A term dropped is caught when it is larger than processingSlack — as
+// each is in some file — but a partial under-charge smaller than the slack it
+// absorbs and does not: the turn term, only a couple of megabytes above the
+// slack in the largest file that turns, can be cut by more than half unseen.
+// So the tests guard against a term left out, not against every under-estimate.
+// Even a term left out goes unnoticed where another term charged for the same
+// moment is at least as large in every file they measure; a few are, the alpha
+// plane and the NRGBA copy of a transparent lossy WebP among them.
 
 // processingBudget is the memory every upload being processed at once may
 // hold between them, by their estimates, from when it starts to be decoded

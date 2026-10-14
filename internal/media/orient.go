@@ -250,8 +250,9 @@ func orientedRect(w, h, o int) image.Rectangle {
 // side would shift by a pixel. Nor has a quarter-width chroma (4:1:1, 4:1:0)
 // any counterpart in the image package once turned on its side. Either way
 // every pixel takes the chroma it was decoded with into a picture with chroma
-// at full resolution (4:4:4), 3 bytes a pixel, which the encoder subsamples
-// again from the right pixels.
+// at full resolution (4:4:4), 3 bytes a pixel, and jpegenc stores it at 4:4:4:
+// finer chroma than the upload carried and a larger file, but no colour lost,
+// not the subsampling it came in at.
 func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
 	w, h := src.Rect.Dx(), src.Rect.Dy()
 	if ratio, ok := turnedSubsampling(src.SubsampleRatio, o, w, h); ok && src.Rect.Min == (image.Point{}) {

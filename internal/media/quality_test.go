@@ -369,15 +369,13 @@ func TestJPEGKeepsItsChromaSubsampling(t *testing.T) {
 		w, h  int
 	}
 	var uploads []upload
-	ratios := []image.YCbCrSubsampleRatio{
-		image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio422, image.YCbCrSubsampleRatio420,
-		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
-	}
-	pic := photo(64, 48)
-	for _, ratio := range ratios {
+	// ycbcrJPEG encodes photo(w, h) at ratio with jpegenc, the subsampling
+	// kept exactly.
+	ycbcrJPEG := func(w, h int, ratio image.YCbCrSubsampleRatio) []byte {
+		pic := photo(w, h)
 		m := image.NewYCbCr(pic.Rect, ratio)
-		for y := 0; y < 48; y++ {
-			for x := 0; x < 64; x++ {
+		for y := 0; y < h; y++ {
+			for x := 0; x < w; x++ {
 				c := pic.RGBAAt(x, y)
 				yy, cb, cr := color.RGBToYCbCr(c.R, c.G, c.B)
 				m.Y[m.YOffset(x, y)] = yy
@@ -388,11 +386,27 @@ func TestJPEGKeepsItsChromaSubsampling(t *testing.T) {
 		if err := jpegenc.Encode(&buf, m, &jpegenc.Options{Quality: 95}); err != nil {
 			t.Fatal(err)
 		}
-		uploads = append(uploads, upload{ratio.String(), buf.Bytes(), ratio, 64, 48})
+		return buf.Bytes()
 	}
+	ratios := []image.YCbCrSubsampleRatio{
+		image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio422, image.YCbCrSubsampleRatio420,
+		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
+	}
+	for _, ratio := range ratios {
+		uploads = append(uploads, upload{ratio.String(), ycbcrJPEG(64, 48, ratio), ratio, 64, 48})
+	}
+	// An odd-sided 4:2:0 cannot keep its chroma grid through a turn that mirrors
+	// the odd side: its short last chroma sample would land first and shift the
+	// colour along that side, so the turned picture is stored at 4:4:4 instead
+	// (turnedSubsampling, orientYCbCr). Odd height, so the 180° and 90° turns
+	// here both promote it, while upright it stays 4:2:0.
+	uploads = append(uploads, upload{"4:2:0 odd side", ycbcrJPEG(64, 49, image.YCbCrSubsampleRatio420), image.YCbCrSubsampleRatio420, 64, 49})
+	// cost-prog444.jpg is 2400×1800 and already carries an EXIF orientation 6;
+	// at 4:4:4 a turn keeps the subsampling, so that baked-in turn is harmless
+	// here. cost-411.jpg is 2400×1800 with no orientation.
 	uploads = append(uploads,
-		upload{"progressive 4:4:4 from libjpeg", readTestdata(t, "cost-prog444.jpg"), image.YCbCrSubsampleRatio444, 1200, 900},
-		upload{"4:1:1 from libjpeg", readTestdata(t, "cost-411.jpg"), image.YCbCrSubsampleRatio411, 1200, 900},
+		upload{"progressive 4:4:4 from libjpeg", readTestdata(t, "cost-prog444.jpg"), image.YCbCrSubsampleRatio444, 2400, 1800},
+		upload{"4:1:1 from libjpeg", readTestdata(t, "cost-411.jpg"), image.YCbCrSubsampleRatio411, 2400, 1800},
 	)
 	for _, u := range uploads {
 		for _, o := range []int{1, 3, 6} {

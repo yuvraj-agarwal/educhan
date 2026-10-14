@@ -379,14 +379,17 @@ client can leave the image picker off a server that would refuse what it sends.
   encoding as well as the size. At the full 25 megapixels, from an upload of up to the
   default 8 MiB:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
-    whether or not it has to be turned upright, and progressive 4:2:0 and grey ones;
-    baseline CMYK and RGB JPEGs and progressive 4:2:2 ones that need no turning;
-    palette and grey PNGs; 8-bit colour PNGs, unless they are interlaced and have to be
-    turned; and opaque lossy WebPs, stored as JPEGs.
+    whether or not it has to be turned upright, and progressive ones whose colour is at
+    a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey; baseline CMYK and RGB
+    JPEGs, and progressive 4:2:2 and 4:4:0 ones, that need no turning; palette PNGs and
+    grey PNGs with no transparency; 8-bit colour PNGs, unless they are interlaced and
+    have to be turned; and opaque lossy WebPs, stored as JPEGs. A grey PNG with a
+    transparent colour or an alpha channel counts as a colour PNG throughout here, since
+    it decodes the same way — four bytes a pixel at 8 bits, eight at 16.
   - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
-    progressive 4:2:2 JPEGs, and interlaced 8-bit colour PNGs, that have to be turned;
-    16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs with
-    transparency, which are stored as PNGs (below) and so take four bytes a pixel.
+    progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
+    turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
+    with transparency, which are stored as PNGs (below) and so take four bytes a pixel.
   - *either*, by the picture's shape and the upload's size: a 16-bit colour PNG that is
     neither interlaced nor turned.
 
@@ -418,13 +421,19 @@ client can leave the image picker off a server that would refuse what it sends.
     photo stored on its side is upright everywhere, thumbnail included, and its reported
     width and height are the upright ones. It keeps its chroma subsampling, so colour
     saved at full resolution (4:4:4, as editors save screenshots and diagrams at high
-    quality) stays sharp. It is re-encoded at the lowest quality that compresses no
+    quality) stays sharp; the exception is a picture whose sampling grid a turn cannot
+    line up — an odd-sided 4:2:0, or any 4:1:1 or 4:1:0 turned on its side — which is
+    stored at finer 4:4:4 instead, a larger file with its colour kept rather than lost.
+    It is re-encoded at the lowest quality that compresses no
     detail more coarsely than the upload did, and at 90 at most: a photo saved at
     quality 30 by most software is stored at 30, at about the size it came in at and
     looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
     whose encoder fitted its Huffman tables to the picture or saved it progressive, as
-    the "optimise" and "progressive" options of an editor do, comes out up to about 15%
-    larger, because Go writes the standard tables in a single scan.
+    the "optimise" and "progressive" options of an editor do, comes out larger, because
+    Go writes the standard Huffman tables in a single scan: a little larger for a
+    high-quality save (around a tenth at quality 90), but as much as twice the size for
+    a heavily compressed one, where those fixed tables outweigh the picture's own coded
+    data.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
     browsers apply too), and re-encoded, keeping none of its ancillary chunks. Every pixel
     keeps the value it decodes to, though not always the form it came in: 1-, 2- and

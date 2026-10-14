@@ -957,10 +957,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   exception, so every refusal that can be known up front comes before `allow`: a malformed poster
   key, the body, a badge the poster cannot have, uploads switched off, a file its header
   shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format,
-  or more than `media.MaxPixels`), and a reply the thread would refuse
-  (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
-  upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
-  after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
+  more than `media.MaxPixels`, a GIF whose frames come to too many pixels or whose
+  blocks do not reach the end, or one whose processing would hold more than the whole
+  budget — which turns on how it is encoded, not its size alone), and a reply the thread
+  would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it is the
+  cost the upload cooldown limits, so an image that fails to decode, or whose re-encoded
+  file would pass `storedLimit` (`ErrStoredTooLarge`), is refused by `storeUpload` after
+  `allow`, its cooldown kept (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both
+  sides, `ErrStoredTooLarge` among them).
   The exception is a post the server turns away as busy after `allow` (`tooBusy`: no
   room to process its image in time, or its deadline passing before the image is
   stored): `allow` hands back the refund `chargeAll` makes, which takes back the
