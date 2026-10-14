@@ -261,8 +261,18 @@ func liveHeap() int64 {
 // tens of kilobytes of LZW tables for each frame and keeps a few. What it
 // keeps is measured exactly instead, by
 // TestGIFFrameOverheadCoversWhatDecodingKeeps.
+//
+// The sampler goroutine has to run alongside work to read every collection as
+// it ends; on a single core it cannot, because work is CPU-bound and does not
+// yield to it often enough, so it misses collections and the measurement never
+// settles. peakLive therefore runs on at least two cores, raising GOMAXPROCS
+// for its own length when it has to (a plain `go test` already has more, so
+// only `-cpu=1`, GOMAXPROCS=1, or one allotted core needs this).
 func peakLive(t *testing.T, name string, work func() error) int64 {
 	t.Helper()
+	if runtime.GOMAXPROCS(0) < 2 {
+		defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
+	}
 	defer debug.SetGCPercent(debug.SetGCPercent(1))
 	for attempt := 0; attempt < 3; attempt++ {
 		runtime.GC()
