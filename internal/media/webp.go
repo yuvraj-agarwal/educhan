@@ -63,20 +63,26 @@ func stripWebP(data []byte) ([]byte, webpInfo, error) {
 	if size < 4 || size > uint64(len(data)-8) {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
-	chunks, ok := readChunks(data[12 : 8+size])
-	if !ok || len(chunks) == 0 {
+	region := data[12 : 8+size]
+
+	// The chunks are walked in place rather than read into a list, so a file of
+	// a million empty chunks costs one chunk's memory, not a million structs
+	// (what is kept is bounded by the picture). The first chunk chooses the
+	// format; the strip functions walk the whole region and keep only what makes
+	// the picture.
+	first, rest, ok := nextChunk(region)
+	if !ok {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
-
 	var (
 		kept []riffChunk
 		info webpInfo
 		err  error
 	)
-	if chunks[0].id == "VP8X" {
-		kept, info, err = stripExtended(chunks)
+	if first.id == "VP8X" {
+		kept, info, err = stripExtended(first, rest)
 	} else {
-		kept, info, err = stripSimple(chunks)
+		kept, info, err = stripSimple(region)
 	}
 	if err != nil {
 		return nil, webpInfo{}, err
@@ -94,30 +100,49 @@ func stripWebP(data []byte) ([]byte, webpInfo, error) {
 // stripSimple handles the simple format: one lossy or lossless bitstream and,
 // by the specification, nothing else. As a decoder does, it takes the first
 // bitstream and drops what surrounds it; an ALPH chunk, which only the
-// extended format may carry, makes the file corrupt.
-func stripSimple(chunks []riffChunk) ([]riffChunk, webpInfo, error) {
-	for _, c := range chunks {
+// extended format may carry, makes the file corrupt. It walks the whole region
+// so a malformed chunk anywhere is caught, as reading a list of them was.
+func stripSimple(region []byte) ([]riffChunk, webpInfo, error) {
+	var (
+		kept []riffChunk
+		info webpInfo
+		fail error
+	)
+	if !walkChunks(region, func(c riffChunk) {
+		if fail != nil || kept != nil {
+			return // decided; keep walking only to validate the structure
+		}
 		switch c.id {
 		case "ALPH":
-			return nil, webpInfo{}, ErrCorruptImage
+			fail = ErrCorruptImage
 		case "VP8 ", "VP8L":
 			w, h, ok := bitstreamSize(c)
 			if !ok {
-				return nil, webpInfo{}, ErrCorruptImage
+				fail = ErrCorruptImage
+				return
 			}
 			if int64(w)*int64(h) > MaxPixels {
-				return nil, webpInfo{}, ErrImageTooLarge
+				fail = ErrImageTooLarge
+				return
 			}
-			return []riffChunk{c}, webpInfo{Width: w, Height: h}, nil
+			kept, info = []riffChunk{c}, webpInfo{Width: w, Height: h}
 		}
+	}) {
+		return nil, webpInfo{}, ErrCorruptImage
 	}
-	return nil, webpInfo{}, ErrCorruptImage
+	if fail != nil {
+		return nil, webpInfo{}, fail
+	}
+	if kept == nil {
+		return nil, webpInfo{}, ErrCorruptImage
+	}
+	return kept, info, nil
 }
 
 // stripExtended handles the extended format, which starts with a VP8X chunk
-// carrying the canvas size and the feature flags.
-func stripExtended(chunks []riffChunk) ([]riffChunk, webpInfo, error) {
-	head := chunks[0]
+// (head) carrying the canvas size and the feature flags, with the rest of the
+// region (rest) after it.
+func stripExtended(head riffChunk, rest []byte) ([]riffChunk, webpInfo, error) {
 	if len(head.payload) != 10 {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
@@ -140,28 +165,41 @@ func stripExtended(chunks []riffChunk) ([]riffChunk, webpInfo, error) {
 	kept := []riffChunk{{id: "VP8X", payload: vp8x}}
 
 	if info.Animated {
-		var anim, frames int
-		for _, c := range chunks[1:] {
+		var (
+			anim, frames int
+			fail         error
+		)
+		if !walkChunks(rest, func(c riffChunk) {
+			if fail != nil {
+				return
+			}
 			switch c.id {
 			case "ANIM":
 				if len(c.payload) != 6 {
-					return nil, webpInfo{}, ErrCorruptImage
+					fail = ErrCorruptImage
+					return
 				}
 				anim++
 				kept = append(kept, c)
 			case "ANMF":
 				frame, ok := stripFrame(c.payload, info)
 				if !ok {
-					return nil, webpInfo{}, ErrCorruptImage
+					fail = ErrCorruptImage
+					return
 				}
 				frames++
 				kept = append(kept, riffChunk{id: "ANMF", payload: frame})
 			case "VP8X":
-				return nil, webpInfo{}, ErrCorruptImage
+				fail = ErrCorruptImage
 			}
 			// Everything else, including a stray still bitstream that a
 			// still-image decoder would show instead of the animation, is
 			// dropped.
+		}) {
+			return nil, webpInfo{}, ErrCorruptImage
+		}
+		if fail != nil {
+			return nil, webpInfo{}, fail
 		}
 		if anim != 1 || frames == 0 {
 			return nil, webpInfo{}, ErrCorruptImage
@@ -169,47 +207,54 @@ func stripExtended(chunks []riffChunk) ([]riffChunk, webpInfo, error) {
 		return kept, info, nil
 	}
 
-	picture, ok := stillImage(chunks[1:], info.Width, info.Height)
+	picture, ok := stillImage(rest, info.Width, info.Height)
 	if !ok {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
 	return append(kept, picture...), info, nil
 }
 
-// stillImage picks the chunks of one picture out of a list — an optional ALPH
-// before a lossy bitstream, then the bitstream — checking that the bitstream
-// is the size it is meant to be. Anything else in the list is dropped. A
-// decoder sizes its buffers from the bitstream and the canvas separately, so a
-// file where the two disagree is refused here rather than trusted to either.
-func stillImage(chunks []riffChunk, w, h int) ([]riffChunk, bool) {
-	var alpha, bitstream *riffChunk
-	for i := range chunks {
-		c := &chunks[i]
+// stillImage picks the chunks of one picture out of a region — an optional
+// ALPH before a lossy bitstream, then the bitstream — checking that the
+// bitstream is the size it is meant to be. Anything else is dropped. A decoder
+// sizes its buffers from the bitstream and the canvas separately, so a file
+// where the two disagree is refused here rather than trusted to either. It
+// walks in place, holding no list of the region's chunks.
+func stillImage(region []byte, w, h int) ([]riffChunk, bool) {
+	var (
+		alpha, bitstream              riffChunk
+		haveAlpha, haveBitstream, bad bool
+	)
+	if !walkChunks(region, func(c riffChunk) {
 		switch c.id {
 		case "ALPH":
-			if alpha != nil || bitstream != nil {
-				return nil, false
+			if haveAlpha || haveBitstream {
+				bad = true
+				return
 			}
-			alpha = c
+			alpha, haveAlpha = c, true
 		case "VP8 ", "VP8L":
-			if bitstream != nil {
-				return nil, false
+			if haveBitstream {
+				bad = true
+				return
 			}
-			bitstream = c
+			bitstream, haveBitstream = c, true
 		case "VP8X", "ANIM", "ANMF":
-			return nil, false
+			bad = true
 		}
-	}
-	if bitstream == nil || (alpha != nil && bitstream.id != "VP8 ") {
+	}) {
 		return nil, false
 	}
-	if bw, bh, ok := bitstreamSize(*bitstream); !ok || bw != w || bh != h {
+	if bad || !haveBitstream || (haveAlpha && bitstream.id != "VP8 ") {
 		return nil, false
 	}
-	if alpha != nil {
-		return []riffChunk{*alpha, *bitstream}, true
+	if bw, bh, ok := bitstreamSize(bitstream); !ok || bw != w || bh != h {
+		return nil, false
 	}
-	return []riffChunk{*bitstream}, true
+	if haveAlpha {
+		return []riffChunk{alpha, bitstream}, true
+	}
+	return []riffChunk{bitstream}, true
 }
 
 // stripFrame rewrites the payload of one ANMF chunk: its 16-byte header, then
@@ -226,11 +271,7 @@ func stripFrame(payload []byte, canvas webpInfo) ([]byte, bool) {
 	if x+w > canvas.Width || y+h > canvas.Height {
 		return nil, false
 	}
-	chunks, ok := readChunks(payload[anmfHeaderLen:])
-	if !ok {
-		return nil, false
-	}
-	picture, ok := stillImage(chunks, w, h)
+	picture, ok := stillImage(payload[anmfHeaderLen:], w, h)
 	if !ok {
 		return nil, false
 	}
@@ -241,29 +282,42 @@ func stripFrame(payload []byte, canvas webpInfo) ([]byte, bool) {
 	return out, true
 }
 
-// readChunks splits a run of RIFF chunks. Each is a four-character code, a
-// little-endian length, the payload, and a pad byte when the length is odd; a
-// missing final pad byte is tolerated, a length running past the end is not.
-// The payloads alias b.
-func readChunks(b []byte) ([]riffChunk, bool) {
-	var chunks []riffChunk
-	for len(b) > 0 {
-		if len(b) < 8 {
-			return nil, false
-		}
-		size := uint64(binary.LittleEndian.Uint32(b[4:8]))
-		if size > uint64(len(b)-8) {
-			return nil, false
-		}
-		n := int(size)
-		chunks = append(chunks, riffChunk{id: string(b[:4]), payload: b[8 : 8+n]})
-		next := 8 + n + n&1
-		if next > len(b) {
-			next = len(b)
-		}
-		b = b[next:]
+// nextChunk reads the first RIFF chunk of b: a four-character code, a
+// little-endian length, the payload, and a pad byte when the length is odd. It
+// returns the chunk, the bytes after it, and whether b began with a well-formed
+// chunk; a missing final pad byte is tolerated, a length running past the end
+// is not. The payload aliases b.
+func nextChunk(b []byte) (riffChunk, []byte, bool) {
+	if len(b) < 8 {
+		return riffChunk{}, nil, false
 	}
-	return chunks, true
+	size := uint64(binary.LittleEndian.Uint32(b[4:8]))
+	if size > uint64(len(b)-8) {
+		return riffChunk{}, nil, false
+	}
+	n := int(size)
+	next := 8 + n + n&1
+	if next > len(b) {
+		next = len(b)
+	}
+	return riffChunk{id: string(b[:4]), payload: b[8 : 8+n]}, b[next:], true
+}
+
+// walkChunks visits the RIFF chunks in b in order and reports whether the whole
+// run is well-formed. It walks in place and builds no list, so a file of a
+// million empty chunks costs it one chunk's memory, not a million structs: only
+// what the caller keeps is held. The chunk passed to visit aliases b and must
+// be copied, not retained, to outlive the walk.
+func walkChunks(b []byte, visit func(riffChunk)) bool {
+	for len(b) > 0 {
+		c, rest, ok := nextChunk(b)
+		if !ok {
+			return false
+		}
+		visit(c)
+		b = rest
+	}
+	return true
 }
 
 func appendChunk(out []byte, c riffChunk) []byte {

@@ -330,8 +330,8 @@ func webpChunks(t *testing.T, data []byte) []riffChunk {
 	if got := binary.LittleEndian.Uint32(data[4:8]); int(got) != len(data)-8 {
 		t.Fatalf("RIFF size = %d, want %d (the file's length less 8)", got, len(data)-8)
 	}
-	chunks, ok := readChunks(data[12:])
-	if !ok {
+	var chunks []riffChunk
+	if !walkChunks(data[12:], func(c riffChunk) { chunks = append(chunks, c) }) {
 		t.Fatal("chunks do not parse")
 	}
 	return chunks

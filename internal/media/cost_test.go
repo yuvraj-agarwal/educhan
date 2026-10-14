@@ -165,6 +165,55 @@ func paddedBitstream(t *testing.T, data []byte, n int) []byte {
 	return webpFile(chunks...)
 }
 
+// manyChunkWebP is a simple lossy WebP with n empty unknown chunks after its
+// bitstream. The picture is unchanged and stripping drops the empties, but a
+// walker that built a struct for every chunk would hold n of them, far more
+// than the file's size the cost model charges the strip phase. The base is
+// small, so the slice, not the picture, is what the model has to cover.
+func manyChunkWebP(t *testing.T, data []byte, n int) []byte {
+	t.Helper()
+	chunks := webpChunks(t, data)
+	if len(chunks) != 1 || chunks[0].id != "VP8 " {
+		t.Fatalf("chunks %v, want a simple lossy WebP", chunkIDs(chunks))
+	}
+	all := make([]riffChunk, 1, 1+n)
+	all[0] = chunks[0]
+	for i := 0; i < n; i++ {
+		all = append(all, riffChunk{id: "JUNK"})
+	}
+	return webpFile(all...)
+}
+
+// The chunk walk reads one chunk at a time instead of collecting them into a
+// list, so a WebP of a great many empty chunks costs the walk a bounded amount
+// of memory rather than one riffChunk struct for every chunk in the file. What
+// is kept is the picture; the chunks around its bytes are walked and dropped.
+// The file here is under two megabytes, so a walker holding a struct per chunk
+// would stand out at once.
+func TestWebPChunkWalkDoesNotHoldAStructPerChunk(t *testing.T) {
+	const chunks = 200000
+	data := manyChunkWebP(t, readTestdata(t, "webp-swatches.webp"), chunks)
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	out, _, err := stripWebP(data)
+	if err != nil {
+		t.Fatalf("stripWebP: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+	runtime.KeepAlive(out)
+
+	got := int64(after.TotalAlloc - before.TotalAlloc)
+	// A riffChunk is two headers wide, so one per chunk is chunks*40 bytes of
+	// slice before any growth doubling. The bound sits well under that and well
+	// over the file plus the short id string the walk makes for each chunk.
+	limit := int64(len(data)) + chunks*16
+	if got > limit {
+		t.Errorf("stripWebP of a %d-chunk file allocated %d bytes, over %d: it is holding a struct per chunk", chunks, got, limit)
+	}
+}
+
 // greyQuadrants is quadrants as a grey picture.
 func greyQuadrants(w, h int) *image.Gray {
 	m := image.NewGray(image.Rect(0, 0, w, h))
@@ -229,6 +278,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"WebP lossy":                   paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
 		"WebP lossy with alpha":        readTestdata(t, "cost-alpha.webp"),
 		"WebP lossless":                readTestdata(t, "cost-lossless.webp"),
+		"WebP of many chunks":          manyChunkWebP(t, readTestdata(t, "webp-swatches.webp"), 200000),
 	}
 }
 

@@ -620,8 +620,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - Besides the decoders, educhan reads structures an uploader controls in a few
   places of its own: the EXIF reader, the JPEG segment walks (`jpegOrientation`, and
   `readJPEGFrame` with its frame header and quantisation tables), the PNG chunk walks,
-  the GIF block walk and the WebP RIFF rewrite. Each reads in place, bounds-checks every
-  offset and length before use, and allocates nothing but the RIFF rewrite's output.
+  the GIF block walk and the WebP RIFF rewrite. Each reads in place and bounds-checks
+  every offset and length before use. None collects what it walks into a list: the WebP
+  rewrite reads its chunks one at a time (`nextChunk`/`walkChunks`) and keeps only the
+  ones that make the picture, so a file of a million empty chunks costs it the picture it
+  keeps and a short id string per chunk as it goes, not a struct for each chunk in the
+  file (`manyChunkWebP`, `TestWebPChunkWalkDoesNotHoldAStructPerChunk`); the rewritten
+  file is the only sizable thing any of them allocates.
   Each gives a safe answer for what it cannot read — orientation 1, the dearest cost,
   `storedJPEGQuality` — except the GIF walk and the RIFF rewrite, which refuse the
   file. The EXIF reader follows no offset but IFD0's (no IFD chain, so no loop).
