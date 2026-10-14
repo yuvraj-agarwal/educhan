@@ -188,9 +188,6 @@ func checkContent(in contentInput, supportSeen bool) contentVerdict {
 	if in.Body != "" {
 		fields = append(fields, scanField(fieldBody, in.Body, markupReadings(in.Body)))
 	}
-	for i := 1; i < len(fields); i++ {
-		fields[i].offset = fields[i-1].offset + len(fields[i-1].src) + 1
-	}
 
 	for _, f := range fields {
 		if found, ok := f.firstBlock(); ok {
@@ -361,8 +358,11 @@ type scannedField struct {
 	// pattern treats alike — so the plain view is not searched again.
 	looseOnly bool
 	// offset is where the field starts when the post's fields are read as one
-	// text: the lengths of the fields before it, plus one for each.
+	// text, in readingPositions: the lengths of the fields before it, plus
+	// one for the gap after each. threatens sets it.
 	offset int
+	// reading caches readingPositions.
+	reading []int32
 	// method caches asksForAMethod, which both the support step and the
 	// holds ask: 0 not yet known, 1 no, 2 yes.
 	method int8
@@ -382,7 +382,7 @@ func (f *scannedField) asksForAMethod() bool {
 func scanField(field, src string, readings []reading) *scannedField {
 	f := &scannedField{field: field, src: src}
 	f.plain = plainView(src, readings)
-	f.loose = looseView(&f.plain)
+	f.loose = looseView(&f.plain, src)
 	f.looseOnly = f.loose.text == canon(f.plain.text)
 	return f
 }
@@ -584,7 +584,7 @@ type sourceRune struct {
 	from, to int
 }
 
-func looseView(p *view) view {
+func looseView(p *view, src string) view {
 	runes := make([]sourceRune, 0, len(p.text))
 	for i, r := range p.text {
 		runes = append(runes, sourceRune{r: r, from: p.start[i], to: p.end[i]})
@@ -600,17 +600,42 @@ func looseView(p *view) view {
 		}
 		return i >= 0 && i < len(runes) && unicode.IsLetter(runes[i].r)
 	}
+	// written is a letter as the triple-letter rule compares it: the plain
+	// view's, in which case is gone, except that a capital I stays apart from
+	// a small i, because a capital I stands for an l as often as for an i and
+	// looks like one: "kiII" is "kill", not "kiii" read twice.
+	written := func(sr sourceRune) rune {
+		if sr.r == 'i' {
+			if c, _ := utf8.DecodeRuneInString(src[sr.from:sr.to]); unicode.IsUpper(c) {
+				return 'I'
+			}
+		}
+		return sr.r
+	}
+	// A leetspeak character is read as a letter beside a letter, or beside
+	// another that is, so that a run of them reads whole: "ki11", "k1ll".
+	leet := make([]bool, len(runes))
+	isLeet := func(i int) bool { _, ok := leetLetters[runes[i].r]; return ok }
+	for i := range runes {
+		leet[i] = isLeet(i) && (letterAt(i-1, -1) || letterAt(i+1, 1))
+	}
+	for i := 1; i < len(runes); i++ {
+		leet[i] = leet[i] || leet[i-1] && isLeet(i)
+	}
+	for i := len(runes) - 2; i >= 0; i-- {
+		leet[i] = leet[i] || leet[i+1] && isLeet(i)
+	}
 	for i, sr := range runes {
 		r := sr.r
 		// A letter written three or more times running is read twice:
 		// "shooot", "schoool", "killll". Twice, not once, because the words
 		// looked for have double letters of their own. The rune compared is
 		// the one written, before l is read as i, so "kill" stays "kiii".
-		if unicode.IsLetter(r) && i >= 2 && runes[i-1].r == r && runes[i-2].r == r {
+		if unicode.IsLetter(r) && i >= 2 && written(runes[i-1]) == written(sr) && written(runes[i-2]) == written(sr) {
 			continue
 		}
-		if letter, ok := leetLetters[r]; ok && (letterAt(i-1, -1) || letterAt(i+1, 1)) {
-			r = letter
+		if leet[i] {
+			r = leetLetters[r]
 		}
 		// "!" for i only between two letters ("k!ll"): beside one it ends a
 		// sentence.
@@ -1342,9 +1367,11 @@ var methods = words(
 // intent to attack a school always does, since it names one; the warning
 // "don't come to school tomorrow" with a cue that it is one ("you've been
 // warned"); and "school shooting" with a time still to come. Only the first
-// person and the future count: a history question, or news that reports an
+// person and the future count, and a call for someone to do it ("someone
+// should shoot up the school"): a history question, or news that reports an
 // attack ("he threatened to shoot up his school"), names no intent of the
-// poster's, so it passes. Some Hinglish is read too ("sabko goli maar dunga").
+// poster's, so it passes. Some Hinglish is read too ("sabko goli maar dunga",
+// "tujhe kal maar dunga", "kal school uda dunga").
 var (
 	threatPeople = words(`everyone`, `everybody`, `every~one`, `people`, `you~all`, `y'?all`, `yall`,
 		`all~of~`+words(`you`, `u`, `them`), `you`, `u`, `them~all`, `them`, `him`, `her`,
@@ -1376,8 +1403,13 @@ var (
 
 	threatModals = words(`will`, `'?ll`, `wil`, `shall`, `wanna`, `want~to`, `gonna`, `gunna`, `going~to`,
 		`planning~to`, `planning~on`, `plan~to`, `plan~on`, `intend~to`, `about~to`, `ready~to`, `finna`, `gotta`,
-		`bout~to`)
-	threatAdverbs  = `(?:(?:really|totally|seriously|definitely|actually|literally|just|finally)~)?`
+		`bout~to`, `might`, `may`, `should`, `could`)
+	// threatAdverbs are up to two words that may come before the act: an
+	// adverb, a swear word, or "go": "i'm going to fucking shoot", "gonna go
+	// shoot up the school".
+	threatAdverbs = `(?:` + words(`really`, `totally`, `seriously`, `definitely`, `actually`, `literally`, `just`,
+		`finally`, `fucking`, `fuckin`, `fking`, `fkin`, `fkn`, `fcking`, `fckin`, `freaking`, `freakin`,
+		`fricking`, `frickin`, `effing`, `bloody`, `go`, `go~and`, `come~and`) + `~){0,2}`
 	firstPersonOn  = words(`(?:i|we)~(?:(?:'?m|am|are|'?re|r)~)?`+threatAdverbs+threatModals, `imma`, `ima`, `i~'?ma`)
 	firstPersonIng = `(?:i|we)~` + words(`'?m`, `am`, `are`, `'?re`, `r`, words(`'?ll`, `will`, `wil`)+`~be`)
 
@@ -1401,10 +1433,22 @@ var (
 			// "there's a bomb in the school"
 			`there~`+words(`'?s`, `is`, `are`)+`~(?:`+words(`a`, `an`)+`~)?`+
 				words(`bombs?`, `guns?`, `shooter`, `active~shooter`)+`~`+words(`in`, `at`, `inside`, `on`),
-			// Hinglish: "sabko goli maar dunga", "tujhe maar dalunga".
+			// "someone should shoot up the school": a call for it.
+			words(`someone`, `somebody`, `some~one`)+`~`+words(`should`, `needs~to`, `has~to`, `ought~to`, `gotta`)+
+				`~`+threatAdverbs+threatActs(false),
+			// "i planted a bomb in the school": done already.
+			`(?:i|we)~(?:`+words(`'?ve`, `have`, `just`, `already`)+`~){0,2}`+
+				words(`planted`, `placed`, `hid`, `hidden`, `put`, `left`)+`~(?:`+words(`a`, `the`, `my`, `some`)+`~)?`+
+				words(`bombs?`, `explosives?`, `device`),
+			// Hinglish: "sabko goli maar dunga", "tujhe maar dalunga", with up
+			// to four words between, where Hindi puts a time or a place:
+			// "tujhe kal maar dunga", "tujhe kal school ke baad maar dunga".
 			words(`sabko`, `sab~ko`, `sabhi~ko`, `tujhe`, `tumhe`, `tumko`, `usko`, `unko`, `isko`, `tereko`)+
-				`~(?:goli~)?maar~`+words(`dunga`, `dungi`, `denge`, `daalunga`, `dalunga`, `daalungi`, `dalungi`),
+				`~(?:\pL+~){0,4}?(?:goli~)?maar~`+words(`dunga`, `dungi`, `denge`, `daalunga`, `dalunga`, `daalungi`,
+				`dalungi`),
 			`goli~maar~`+words(`dunga`, `dungi`, `denge`),
+			// "kal school uda dunga": blow a place up.
+			threatPlaces+`~(?:ko~)?(?:bomb~se~)?uda~`+words(`dunga`, `dungi`, `denge`, `doonga`),
 		) + `\b`),
 		// With no subject, at the start of a sentence or line: "gonna shoot up
 		// the school tmrw", "shooting up the school tomorrow, don't come".
@@ -1414,12 +1458,15 @@ var (
 		) + `\b`),
 	}
 	// namedTargetRules threaten someone by name: "I'm going to shoot Rahul
-	// tomorrow". namedTargetCheck takes the name only when it is written
-	// with a capital and is not a day, a subject or a game.
+	// tomorrow", "i'm going to shoot mr sharma tomorrow". namedTargetCheck
+	// takes the name only when it is written with a capital or after a title,
+	// and is not a day, a subject or a game. The groups are the title and the
+	// name.
 	namedTargetRules = []rule{bothViews(`\b` + words(
 		firstPersonOn+`~`+threatAdverbs+words(`shoot`, `stab`, `kill`, `murder`),
 		firstPersonIng+`~`+threatAdverbs+words(`shooting`, `stabbing`, `killing`, `murdering`),
-	) + `[^\pL\pN]+(\pL{2,20})\b`)}
+	) + `[^\pL\pN]+(?:(` + words(`mr`, `mrs`, `ms`, `miss`, `dr`, `sir`, `madam`, `ma'?am`, `mam`) +
+		`)\.?[^\pL\pN]+)?(\pL{2,20})\b`)}
 	threatPlaceOrTimeRules = []rule{bothViews(`\b` + words(threatPlaces, threatTimes) + `\b`)}
 
 	// "school shooting tomorrow at 10", with only a time still to come, close.
@@ -1463,13 +1510,16 @@ func threatActs(ing bool) string {
 			v(`murder`, `murdering`), v(`massacre`, `massacring`), v(`slaughter`, `slaughtering`),
 			v(`gun~down`, `gunning~down`), v(`knife`, `knifing`), v(`attack`, `attacking`), v(`hurt`, `hurting`),
 			v(`beat~up`, `beating~up`), v(`behead`, `beheading`), v(`shank`, `shanking`))+`~`+threatPeople,
+		// "beat you up"
+		v(`beat`, `beating`)+`~`+threatPeople+`~up`,
 		words(v(`shoot~up`, `shooting~up`), v(`shoot~(?:at|in|inside)`, `shooting~(?:at|in|inside)`),
 			v(`bomb`, `bombing`), v(`blow~up`, `blowing~up`), v(`burn~down`, `burning~down`), v(`torch`, `torching`),
 			v(`set~fire~to`, `setting~fire~to`), v(`attack`, `attacking`))+`~`+det+threatPlaces,
 		v(`set`, `setting`)+`~`+det+threatPlaces+`~on~fire`,
 		v(`burn`, `burning`)+`~`+det+threatPlaces+`~down`,
 		v(`shoot`, `shooting`)+`~(?:the~)?`+words(`place`, `school`, `it`)+`~up`, v(`shoot~up`, `shooting~up`),
-		v(`bring`, `bringing`)+`~`+weapon+`~`+words(`to`, `into`, `in`)+`~(?:`+words(`the`, `my`, `our`)+`~)?`+threatPlaces,
+		words(v(`bring`, `bringing`), v(`take`, `taking`))+`~`+weapon+`~`+words(`to`, `into`, `in`)+
+			`~(?:`+words(`the`, `my`, `our`)+`~)?`+threatPlaces,
 		// "I'm bringing a gun": a firearm or a bomb needs no place after it.
 		v(`bring`, `bringing`)+`~`+firearm,
 		v(`come`, `coming`)+`~`+words(`to`, `into`)+`~(?:`+words(`the`, `my`, `our`)+`~)?`+threatPlaces+`~with~`+weapon,
@@ -1502,7 +1552,9 @@ var (
 	// threatStrongProgressive are the acts read with no subject at all.
 	threatStrongProgressive = words(
 		`shooting~up~(?:`+words(`the`, `my`, `our`, `this`, `that`)+`~)?`+threatPlaces,
-		`bringing~`+weapon+`~`+words(`to`, `into`)+`~(?:`+words(`the`, `my`, `our`)+`~)?`+threatPlaces,
+		words(`bringing`, `taking`)+`~`+weapon+`~`+words(`to`, `into`)+`~(?:`+words(`the`, `my`, `our`)+`~)?`+
+			threatPlaces,
+		`pulling~(?:a~)?columbine`,
 	)
 )
 
@@ -1559,10 +1611,13 @@ var (
 // an event straight after it ("bomb the class presentation"), unless the act
 // is one no event excuses; a message after "shoot" ("shoot you the notes"); a
 // shoot that is for a film, the yearbook or photography club; a game named
-// after "at", "in" or "on" ("we're gonna kill them at the match"); "a
-// shooting star" and "a bloodbath in the maths exam"; "you're dead to me";
-// "you will die" in a game, someday, or on a condition that is not being
-// somewhere; and a threat quoted in a report of one ("'I will shoot up the
+// after "at", "in" or "on" ("we're gonna kill them at the match"), though not
+// after "there will be a shooting" or "a bomb"; "a shooting star" and "a
+// bloodbath in the maths exam"; "hurt her feelings" and "kill them with
+// kindness"; "you're dead to me"; "you will die" in a game, in an exam, of
+// shock, someday, when the results come out, or on a condition that is
+// neither being somewhere nor a demand ("if you tell anyone", "unless you
+// pay"); and a threat quoted in a report of one ("'I will shoot up the
 // school', court hears").
 func (f *scannedField) threatCheck(v *view, m []int) bool {
 	text := v.text
@@ -1578,25 +1633,32 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	sentence := sentenceAround(text, m[0], m[1])
 	switch {
 	case threatThere.MatchString(cm):
-		if len(next) > 0 && thereNotThreat[next[0]] || gameAfterAPreposition(next) {
+		// No game excuses a shooting or a bomb: "there will be a shooting at
+		// the football game" is how a threat to a school's match is written.
+		if len(next) > 0 && thereNotThreat[next[0]] {
 			return false
 		}
 		if len(next) > 1 && is(next[0], "on") && is(next[1], "titan") {
 			return false // "there will be attack on titan marathon tonight"
 		}
-		if metaphorAttack.MatchString(cm) && (anyIn(wordsIn(sentence), eventWords) || anyIn(wordsIn(sentence), marketWords)) {
+		if ws := wordsIn(sentence); metaphorAttack.MatchString(cm) &&
+			(anyIn(ws, eventWords) || anyIn(ws, gameWords) || anyIn(ws, marketWords)) {
 			return false
 		}
 	case is(last, "dead") || is(last, "meat"):
 		return !(len(next) > 0 && deadNotThreat[next[0]])
 	case is(last, "die"):
 		if gameDeath(next) || anyIn(next, dieNotThreat) || strings.Contains(canon(after), canon("one day")) ||
-			dieIdiom(next) || whenYouSee(next) {
+			dieIdiom(next) || whenYouSee(next) || whenResults(next) || eventAfterPreposition(next) {
 			return false
 		}
-		if conditional(sentence) && !conditionalPlace.MatchString(sentence) && !conditionalPlaceLoose.MatchString(sentence) {
+		if harmlessCondition(sentence) && !conditionalPlace.MatchString(sentence) &&
+			!conditionalPlaceLoose.MatchString(sentence) {
 			return false
 		}
+	}
+	if harmlessObject(next) {
+		return false
 	}
 	if !noEventExcuse.MatchString(cm) {
 		for _, w := range nextWords(after, 3) {
@@ -1634,6 +1696,60 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	return !reportedThreat(text, m)
 }
 
+// harmlessObject reports what makes hurting or killing someone harmless,
+// straight after the match: their feelings ("hurt her feelings"), or kindness
+// as the weapon ("kill them with kindness", "kill you with my puns").
+func harmlessObject(next []string) bool {
+	switch {
+	case len(next) > 0 && hurtNotThreat[next[0]]:
+		return true
+	case len(next) > 1 && is(next[0], "with"):
+		w := next[1]
+		if len(next) > 2 && (is(w, "my") || is(w, "our") || is(w, "his") || is(w, "her")) {
+			w = next[2]
+		}
+		return killWithKindness[w]
+	}
+	return false
+}
+
+var (
+	hurtNotThreat    = canonSetOf(`feelings feeling ego pride sentiments chances vibe vibes mood`)
+	killWithKindness = canonSetOf(`kindness love compliments compliment jokes joke puns pun cuteness questions facts
+		logic laughter memes sarcasm smiles smile hugs sweetness niceness`)
+)
+
+// eventAfterPreposition reports an event after "in", "at", "on" or "during",
+// a word or two of determiner between: "you're going to die in the chemistry
+// exam tomorrow".
+func eventAfterPreposition(next []string) bool {
+	if len(next) < 2 || !is(next[0], "in") && !is(next[0], "at") && !is(next[0], "on") && !is(next[0], "during") {
+		return false
+	}
+	for _, w := range next[1:min(len(next), 4)] {
+		if eventWords[w] {
+			return true
+		}
+		if is(w, "school") || is(w, "class") {
+			return false
+		}
+	}
+	return false
+}
+
+// whenResults reports the hyperbole "you're gonna die when the results come
+// out": "when" and a result within the three words after it, with no "me",
+// "I" or "we" in what follows.
+func whenResults(next []string) bool {
+	if len(next) < 2 || !is(next[0], "when") {
+		return false
+	}
+	return anyIn(next[1:min(len(next), 4)], resultWords) && !anyIn(next[1:], firstPerson)
+}
+
+var resultWords = canonSetOf(`result results marks mark score scores grades grade rank ranks cutoff cutoffs
+	percentile percentiles paper papers answer report card`)
+
 // whenYouSee reports the hyperbole "you're gonna die when you see the
 // results", "when you hear what happened": "when you" and a verb of finding
 // out, with no "me", "I" or "we" after it ("when you see me at school" is a
@@ -1659,6 +1775,9 @@ func gameAfterAPreposition(next []string) bool {
 			continue
 		}
 		for _, g := range next[i+1 : min(len(next), i+4)] {
+			if is(g, "school") || is(g, "class") {
+				return false // "at the school football game"
+			}
 			if gameWords[g] {
 				return true
 			}
@@ -1667,15 +1786,32 @@ func gameAfterAPreposition(next []string) bool {
 	return false
 }
 
-// conditional reports an "if" or "unless" in a sentence.
-func conditional(sentence string) bool {
-	for _, w := range wordsIn(sentence) {
-		if w == "if" || w == "unless" || w == canon("unless") {
-			return true
+// harmlessCondition reports an "if" in a sentence whose condition is not a
+// demand: "you will die if you eat that canteen food" warns, but "you will
+// die tomorrow if you tell anyone" and "unless you pay" coerce, and so does
+// any "unless".
+func harmlessCondition(sentence string) bool {
+	ws := wordsIn(sentence)
+	harmless := false
+	for i, w := range ws {
+		switch {
+		case w == "unless" || w == canon("unless"):
+			return false
+		case w == "if":
+			if anyIn(ws[i+1:min(len(ws), i+7)], coercedActs) {
+				return false
+			}
+			harmless = true
 		}
 	}
-	return false
+	return harmless
 }
+
+// coercedActs, in a condition, make a threat a demand: telling, reporting,
+// paying, sending.
+var coercedActs = canonSetOf(`tell tells telling told snitch snitches snitching report reports reporting rat
+	pay pays paying send sends sending show complain complains complaining inform leak talk talks say says
+	call delete expose`)
 
 // peopleTarget reports a shoot aimed at people rather than at a place.
 func peopleTarget(cm string) bool { return !shootAtPlace.MatchString(cm) && !shootUp.MatchString(cm) }
@@ -1697,10 +1833,12 @@ func filmShoot(rest string, people bool) bool {
 }
 
 // reportedThreat reports a threat quoted inside a report of it: the match
-// starts inside quotation marks that close after it, a report word stands
-// outside the quotation, and nothing outside it is in the first person.
-// "\"I will shoot up the school tomorrow\" and the police can't stop me" is
-// the poster's own.
+// starts inside quotation marks that close after it, a verb of saying stands
+// next to the quotation, within four words of it on either side ("he said",
+// "court hears", "the student wrote"), and nothing outside it is in the first
+// person. A report word alone does not make a report ("\"…\" news", "\"…\"
+// reportedly"), and "\"I will shoot up the school tomorrow\" and the police
+// can't stop me" is the poster's own.
 func reportedThreat(text string, m []int) bool {
 	if !quoted(text, m[0]) {
 		return false
@@ -1712,31 +1850,36 @@ func reportedThreat(text string, m []int) bool {
 		return false
 	}
 	start := strings.LastIndex(text[:m[0]], string(open))
+	before := wordsIn(canon(text[max(0, start-100):start]))
+	_, size := utf8.DecodeRuneInString(text[m[1]+end:])
+	after := wordsIn(canon(text[m[1]+end+size : min(len(text), m[1]+end+size+100)]))
+	saying := anyIn(before[max(0, len(before)-4):], sayingWords) || anyIn(after[:min(len(after), 4)], sayingWords)
 	outside := text[max(0, start-100):start] + " " + text[m[1]+end:min(len(text), m[1]+end+100)]
-	ws := wordsIn(canon(outside))
-	return anyIn(ws, reportWords) && !hasFirstPerson(wordsIn(outside))
+	return saying && !hasFirstPerson(wordsIn(outside))
 }
 
 // namedTargetCheck takes "shoot Rahul" when the name is written with a
-// capital in the source and is not a day, a month, an exam, a subject, a team,
-// a country or a game, and then reads it as threatCheck reads any threat. A
-// word of up to four capitals in a sentence that is not all capitals is an
-// acronym — "kill JEE", "kill CSK" — and "Rahul's" followed by an occasion
-// makes the occasion the target: "kill Rahul's wedding".
+// capital in the source, or comes after a title ("mr sharma", "sir"), and is
+// not a day, a month, an exam, a subject, a team, a country or a game, and then
+// reads it as threatCheck reads any threat. A word of up to four capitals in a
+// sentence that is not all capitals is an acronym — "kill JEE", "kill CSK" —
+// and "Rahul's" followed by an occasion makes the occasion the target: "kill
+// Rahul's wedding".
 func (f *scannedField) namedTargetCheck(v *view, m []int) bool {
-	a, b := v.span(m[2], m[3])
+	titled := m[2] >= 0 && m[3] > m[2]
+	a, b := v.span(m[4], m[5])
 	name := f.src[a:b]
 	r, _ := utf8.DecodeRuneInString(name)
 	lower := strings.ToLower(name)
-	if !unicode.IsUpper(r) || notANameTarget[lower] || gameWords[lower] {
+	if !titled && !unicode.IsUpper(r) || notANameTarget[lower] || gameWords[lower] {
 		return false
 	}
-	if utf8.RuneCountInString(name) <= 4 && strings.ToUpper(name) == name {
-		if lead, _ := v.span(m[0], m[2]); strings.ToUpper(f.src[lead:a]) != f.src[lead:a] {
+	if !titled && utf8.RuneCountInString(name) <= 4 && strings.ToUpper(name) == name {
+		if lead, _ := v.span(m[0], m[4]); strings.ToUpper(f.src[lead:a]) != f.src[lead:a] {
 			return false
 		}
 	}
-	if rest, ok := possessive(v.text[m[3]:]); ok {
+	if rest, ok := possessive(v.text[m[5]:]); ok {
 		if next := nextWords(rest, 1); len(next) == 1 && (eventWords[next[0]] || possessedOccasions[next[0]]) {
 			return false
 		}
@@ -1817,9 +1960,11 @@ var (
 		tennis badminton kabaddi tournament finals final semis semifinal semifinals quiz debate competition race
 		fifa fortnite valorant pubg bgmi minecraft roblox cod league olympiad hackathon contest sports carrom
 		ludo uno mock battle bands`)
-	// reportWords, round a quoted threat, say it is reported rather than made.
-	reportWords = canonSetOf(`headline headlines news court police arrested charged accused reportedly allegedly
-		reported reports hears heard trial jury sentenced convicted article according journalist`)
+	// sayingWords, next to a quoted threat, say it is reported rather than
+	// made: someone said it, wrote it or posted it.
+	sayingWords = canonSetOf(`said says saying told tells wrote writes written posted posts tweeted texted
+		messaged threatened threatens warned warns claimed claims stated states hears heard reads quoted
+		shouted yelled screamed`)
 )
 
 // quoted reports that the match at i starts just inside a quotation mark.
@@ -1845,8 +1990,10 @@ func sentenceAfter(text string, i int) string {
 	return after
 }
 
-// threatWindow is how close, in bytes of the post, a place or a time has to
-// be to an intent to count as part of the same threat.
+// threatWindow is how close, in readingPositions (letters and digits, and one
+// for each gap between words: about two hundred characters of ordinary
+// text), a place or a time has to be to an intent to count as part of the
+// same threat.
 const threatWindow = 200
 
 // Grooming cues: a question about age, school year or where someone lives or
@@ -2157,6 +2304,10 @@ func (f *scannedField) spans(rules []rule, check matchCheck) [][2]int {
 // the body: "School tomorrow" over "I'm going to shoot everyone" is one
 // threat.
 func threatens(fields []*scannedField) bool {
+	for i := 1; i < len(fields); i++ {
+		prev := fields[i-1]
+		fields[i].offset = prev.offset + int(prev.readingPositions()[len(prev.src)]) + 1
+	}
 	pair := func(first, second []rule, check func(f *scannedField) matchCheck, w int) bool {
 		var a, b [][2]int
 		for _, f := range fields {
@@ -2179,23 +2330,59 @@ func threatens(fields []*scannedField) bool {
 		pair(schoolShootingRules, futureTimeRules, byField(schoolShootingCheck), schoolShootingWindow)
 }
 
-// schoolShootingWindow is how close a time to come has to be to "school
-// shooting" for the two to be one statement.
+// schoolShootingWindow is how close, in readingPositions, a time to come has
+// to be to "school shooting" for the two to be one statement.
 const schoolShootingWindow = 40
 
-// spansFrom is spans placed in the post as a whole: offset by where the
-// field starts when the fields are read one after another, in form order,
-// each a line apart, as the page shows them.
+// spansFrom is spans placed in the post as a whole, in readingPositions:
+// offset by where the field starts when the fields are read one after
+// another, in form order, each a line apart, as the page shows them.
 func (f *scannedField) spansFrom(rules []rule, check matchCheck) [][2]int {
 	spans := f.spans(rules, check)
+	pos := f.readingPositions()
 	for i := range spans {
-		spans[i][0] += f.offset
-		spans[i][1] += f.offset
+		spans[i][0] = int(pos[spans[i][0]]) + f.offset
+		spans[i][1] = int(pos[spans[i][1]]) + f.offset
 	}
 	return spans
 }
 
-// near reports whether some span of b lies within w bytes of some span of a.
+// readingPositions says, for every byte offset of the source and its end,
+// how far into the field a reader is there: one for each letter or digit the
+// plain view reads before it, and one for each run of anything else, so that a
+// gap counts once whatever fills it. Padding a threat out with spaces,
+// invisible characters or emoji does not move its time further from it.
+func (f *scannedField) readingPositions() []int32 {
+	if f.reading != nil {
+		return f.reading
+	}
+	pos := make([]int32, len(f.src)+1)
+	var n int32
+	at, gap := 0, false
+	text := f.plain.text
+	for k := 0; k < len(text); {
+		r, size := utf8.DecodeRuneInString(text[k:])
+		for s := f.plain.start[k]; at <= s && at < len(pos); at++ {
+			pos[at] = n
+		}
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			n++
+			gap = false
+		case !gap:
+			n++
+			gap = true
+		}
+		k += size
+	}
+	for ; at < len(pos); at++ {
+		pos[at] = n
+	}
+	f.reading = pos
+	return pos
+}
+
+// near reports whether some span of b lies within w of some span of a.
 // Both are sorted by start; the scan is linear in their lengths.
 func near(a, b [][2]int, w int) bool {
 	j := 0
@@ -2402,7 +2589,7 @@ var (
 	cutIdioms     = canonSetOf(`off a an some slack short loose out free`)
 	simplePast    = canonSetOf(`cut burned burnt`)
 	accidents     = canonSetOf(`on while shaving cooking ironing accidentally by during making opening chopping slicing playing when trying`)
-	dieIdioms     = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand`)
+	dieIdioms     = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand shock fright cold heatstroke stress exhaustion tiredness dehydration hypothermia tension`)
 	endItTimes    = canonSetOf(`tonight today now soon all tomorrow already finally forever here this`)
 	dyeObjects    = canonSetOf(`my her his their our your the hair it them clothes shirt`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)

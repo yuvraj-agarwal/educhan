@@ -631,6 +631,23 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"I'm going to shoot Monday's lab report tomorrow",
 		"i'm going to kill physics tomorrow",
 		"there is a bomb in the game at level 3",
+		// Hyperbole about exams and results, feelings and kindness.
+		"you're going to die in the chemistry exam tomorrow",
+		"you're gonna die at the exam tomorrow",
+		"you will die in the physics test tomorrow lol",
+		"you're gonna die of shock when the results come out tomorrow",
+		"you're going to die of heatstroke at the assembly tomorrow, carry water",
+		"you'll die of cold in the hostel tonight without a blanket",
+		"you're gonna die when the results come out tomorrow",
+		"I'm going to hurt her feelings tomorrow if I tell her the truth",
+		"i will hurt her feelings at school tomorrow",
+		"I'm gonna kill you with kindness at school tomorrow",
+		"we will kill them with kindness tomorrow",
+		"there will be a massacre at the cricket match tomorrow",
+		"\"i will shoot up the school tomorrow\" he said",
+		"kal patang uda dunga",
+		"main mar jaunga",
+		"i'm gonna beat you at chess tomorrow",
 		// Spelled-out addresses that are not.
 		"I study at iitb.ac.in",
 		"python 3.12 docs at docs.python.org/3/",
@@ -911,6 +928,8 @@ func TestFilterSupport(t *testing.T) {
 		"everyone would be better off without me",
 		"i want to d i e",
 		"i w4nt t0 d1e",
+		"i want to kiII myself",
+		"everyone wiII be better off without me",
 		// What the rules and the FAQ name: wanting to hurt yourself.
 		"I want to hurt myself",
 		"i want to hurt myself so bad",
@@ -1085,6 +1104,45 @@ func TestFilterHolds(t *testing.T) {
 		{"there's a bomb in the library", holdThreat},
 		{"i'm bringing my dad's rifle on friday", holdThreat},
 		{"school shooting this friday", holdThreat},
+		// A capital I for an l, and a run of digits for letters.
+		{"kiII yourself", holdSelfHarm},
+		{"you should kiII yourself", holdSelfHarm},
+		{"ki11 yourself", holdSelfHarm},
+		{"i wiII kiII everyone tomorrow", holdThreat},
+		{"i'll kiII you tomorrow", holdThreat},
+		// Swearing, "go", tentative and group frames, other word orders.
+		{"i'm going to fucking shoot everyone tomorrow", holdThreat},
+		{"gonna go shoot up the school", holdThreat},
+		{"i'm going to go stab my teacher tomorrow", holdThreat},
+		{"i might shoot up the school", holdThreat},
+		{"i should shoot up the school", holdThreat},
+		{"someone should shoot up the school", holdThreat},
+		{"i'll beat you up after school", holdThreat},
+		{"taking a gun to school tomorrow", holdThreat},
+		{"i'm taking a gun to school tomorrow", holdThreat},
+		{"i planted a bomb in the school", holdThreat},
+		{"i'm going to shoot mr sharma tomorrow", holdThreat},
+		{"pulling a columbine tomorrow", holdThreat},
+		// No game excuses a shooting or a bomb.
+		{"there will be a shooting at the football game friday", holdThreat},
+		{"there will be a bombing at the cricket match tomorrow", holdThreat},
+		{"There's going to be a shooting at the basketball game tonight", holdThreat},
+		{"there will be a bomb at the football game tomorrow", holdThreat},
+		// A quotation with a report word but no one saying it.
+		{"\"i will shoot up the school tomorrow\" news", holdThreat},
+		{"\"i will shoot up the school tomorrow\" - police", holdThreat},
+		{"\"i will shoot up the school tomorrow\" reportedly", holdThreat},
+		{"\"i will shoot up the school tomorrow\" according to the police", holdThreat},
+		{"news: \"i will shoot up the school tomorrow\"", holdThreat},
+		// A condition that is a demand.
+		{"you will die tomorrow if you tell anyone", holdThreat},
+		{"you will die tomorrow unless you pay", holdThreat},
+		{"if you tell anyone you will die tomorrow", holdThreat},
+		{"you're gonna die at school tomorrow if you tell anyone", holdThreat},
+		// Hinglish with a time between, and a place blown up.
+		{"tujhe kal maar dunga", holdThreat},
+		{"main tujhe kal school ke baad maar dunga", holdThreat},
+		{"kal school uda dunga", holdThreat},
 		// More grooming.
 		{"which area do you live in? dm me", holdGrooming},
 		{"what college are you from? message me", holdGrooming},
@@ -1212,6 +1270,8 @@ func TestFilterPairsAThreatAcrossTheSubjectAndTheBody(t *testing.T) {
 		{Subject: "tomorrow", Body: "I will kill everyone"},
 		{Subject: "I will kill everyone", Body: "at school tomorrow"},
 		{Subject: "Don't come to school tomorrow. You've been warned."},
+		// Invisible characters fill no space between the halves.
+		{Subject: "School tomorrow", Body: strings.Repeat("\u200b", 70) + "I'm going to shoot everyone"},
 	} {
 		if v := checkContent(in, true); v.Outcome != contentHold || v.Hold != holdThreat {
 			t.Errorf("%+v: got %+v, want it held as a threat", in, v)
@@ -1225,6 +1285,37 @@ func TestFilterPairsAThreatAcrossTheSubjectAndTheBody(t *testing.T) {
 		if v := checkContent(in, true); v.Outcome != contentPublish {
 			t.Errorf("%+v: got %+v, want it published", in, v)
 		}
+	}
+}
+
+// TestFilterThreatWindowCountsWhatIsRead pads the space between a threat and
+// its time with what a reader does not see, or sees as one gap: invisible
+// characters, soft hyphens, combining marks and emoji. The window counts
+// letters and digits, and one for each gap, so none of them moves the time
+// further away. Two hundred characters of words still do.
+func TestFilterThreatWindowCountsWhatIsRead(t *testing.T) {
+	for name, pad := range map[string]string{
+		"zero-width spaces": strings.Repeat("\u200b", 70),
+		"soft hyphens":      strings.Repeat("\u00ad", 101),
+		"word joiners":      strings.Repeat("\u2060", 70),
+		"combining marks":   strings.Repeat("\u0301", 101),
+		"emoji":             strings.Repeat("\U0001F52B", 51),
+		"spaces":            strings.Repeat(" ", 150),
+	} {
+		for _, body := range []string{
+			"I'm going to shoot everyone " + pad + " tomorrow",
+			"I will kill you " + pad + "tomorrow",
+			"school shooting " + pad + " tomorrow",
+			"don't come to school tomorrow." + pad + " you've been warned",
+		} {
+			if v := checkContent(contentInput{Body: body}, true); v.Outcome != contentHold || v.Hold != holdThreat {
+				t.Errorf("%s: %q: got %+v, want it held as a threat", name, body, v)
+			}
+		}
+	}
+	far := "I'm going to shoot everyone. " + strings.Repeat("blah ", 45) + "tomorrow"
+	if v := checkContent(contentInput{Body: far}, true); v.Outcome != contentPublish {
+		t.Errorf("a time two hundred characters of words away: got %+v, want it published", v)
 	}
 }
 
