@@ -400,7 +400,9 @@ needs a browser check before the test changes.
   (`data-form-notice`, above the buttons) rather than the page's `#notice`, because on a
   long thread the poster is looking at the bottom of the page — and so does every other
   refusal of a post (flood control, a locked or archived thread, the network), which
-  matters most after **Post anyway**, when the support panel is all that is on screen.
+  matters most after **Post anyway**, when the support panel is all that is on screen;
+  focus goes back to the button that was pressed (switched off while the post was out,
+  it had sent focus to the page), or to the form's own if the form was drawn again.
   A `422` block is worded by `blockedMessage` (through `errorMessage`): the rule in
   plain words, the server's `match` quoted, and the field when it is the Name or the
   Subject; `pointAtMatch` focuses that field, selects the match (an exact search, then
@@ -409,7 +411,9 @@ needs a browser check before the test changes.
   of its run of non-space text), marks it `aria-invalid` and describes it by the notice
   until the poster edits it, and scrolls the field and the notice into view together,
   the field clear of the sticky header (`revealBelowHeader`: the least scroll leaves a
-  field under the header where it is, so one still covered goes to its scroll margin).
+  field under the header where it is, so one still covered goes to its scroll margin,
+  which is taller wherever the header wraps to three rows, the `max-width: 700px`
+  block; `TestNarrowScrollMarginsMatchTheHeaderWrap`).
   Every answer is shown in `liveForm`: a re-render while the post was out ("Update")
   replaces the form it was sent from and puts the draft in the new one, so the answer,
   and a held or published post's emptying of the form, goes to that one; with no form

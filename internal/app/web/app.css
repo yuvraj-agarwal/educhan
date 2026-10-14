@@ -1491,6 +1491,14 @@ a.thumb-link.loading::before {
 @media (max-width: 700px) {
   .tagline { display: none; }
   .board-nav { margin-left: auto; }
+
+  /* The header wraps to three rows here, so whatever is scrolled to — a
+     heading jumped to, the field a block names, the support panel — has
+     further to stop short of it. */
+  .page h2,
+  .support-panel,
+  .post-form .fields input[type="text"],
+  .post-form .fields textarea { scroll-margin-top: 150px; }
 }
 
 @media (max-width: 640px) {
@@ -1520,14 +1528,8 @@ a.thumb-link.loading::before {
 
   .post-form .actions .hint { flex: 1 0 100%; }
   .btn.primary { flex: 1 1 auto; }
-  .support-panel { padding: 12px; scroll-margin-top: 150px; }
-  .post-form .fields input[type="text"],
-  .post-form .fields textarea { scroll-margin-top: 150px; }
+  .support-panel { padding: 12px; }
   .support-actions .btn { flex: 1 1 auto; }
-
-  /* The header wraps to three rows here, so a heading jumped to has further
-     to stop short of it. */
-  .page h2 { scroll-margin-top: 150px; }
   .markup-list { grid-template-columns: minmax(0, 1fr); gap: 2px; }
   .markup-list dd { margin-bottom: 10px; }
   .age-step { padding: 18px 16px 16px; }

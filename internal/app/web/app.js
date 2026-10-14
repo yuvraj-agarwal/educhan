@@ -3850,6 +3850,12 @@ el.main.addEventListener("submit", async (event) => {
       // can try again.
       showFormNotice(live, esc(errorMessage(err, { hasText: body.trim() !== "" })));
       notice.scrollIntoView({ block: "nearest" });
+      // The pressed button was switched off while the post was on its way,
+      // which sends focus to the page; it goes back to that button, or to the
+      // form's own if the form was drawn again, so Tab carries on from there.
+      if (!live.contains(document.activeElement)) {
+        (live.contains(button) ? button : live.querySelector('.actions button[type="submit"]'))?.focus();
+      }
     } else {
       showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
     }
