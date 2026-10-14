@@ -13,7 +13,9 @@ import (
 )
 
 // The sweeper deletes archived threads once their board's archive_days have
-// passed, media included. It runs as `educhan -sweep`, a one-shot mode Cloud
+// passed, media included. A thread with a held reply is the exception: it
+// leaves public view then (ExpireHeld sets expired_at) and is deleted by the
+// first sweep after the reply is decided. It runs as `educhan -sweep`, a one-shot mode Cloud
 // Scheduler starts as a Cloud Run Job: Cloud Run gives a service CPU only
 // while it answers a request, so an in-process timer would fire whenever it
 // happened to, and a Job leaves no sweep endpoint to protect.
@@ -49,7 +51,9 @@ type SweepReport struct {
 
 // Sweep deletes every archived thread that has outlived its board's
 // archive_days, in batches of sweepBatchSize, and then removes the files those
-// threads had, along with any an earlier sweep could not.
+// threads had, along with any an earlier sweep could not. A thread with a held
+// reply is not deleted but expired, which takes it out of every public view,
+// until a sweep finds the reply decided.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }

@@ -418,15 +418,18 @@ hold waits for a person rather than deleting anything. The filter raises the
 cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
-Nothing the filter reads or matches is logged or stored: not the text, not
-what matched, and not which rule. A refused post leaves what any request
-leaves: the request log's line of method, path, status and duration, so a
+Nothing the filter reads or matches is logged, and nothing of a post it sends
+back is stored: not the text, not what matched, and not which rule. A refused
+post leaves what any request leaves: the request log's line of method, path, status and duration, so a
 `422` or `202` on a posting route shows that a post to that board or thread
 was refused or held, though not what it said or why; and a count against the
 client's address in the refusal budget, kept in memory only and forgotten
-within a minute of its window ending. A held post's only addition to the
-database is `held_reason`, the rule's name, and a moderator's approval is
-logged with the board, thread and post number, as every moderation action is.
+within a minute of its window ending. A held post is stored as any post is,
+with two additions: `held_at`, when it was held, and `held_reason`, which names
+the rule (`threat`, `grooming` or `self_harm`); a held opening post also sets
+its thread's `held_at`. Nothing else the filter matched is kept. A moderator's
+approval is logged with the board, thread and post number, as every
+moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
 length of the post: on one 2.1 GHz server core, about 30–40 ms for a
 maximum-length ordinary post and up to about 400 ms for the slowest crafted
@@ -1226,7 +1229,9 @@ educhan -sweep          # or, from a checkout: make sweep
 It loads the usual configuration, connects, applies any pending migrations,
 deletes every archived thread whose board's `archive_days` have passed — posts,
 attachment rows, and then the images and thumbnails in the media store — and
-exits. It works in batches of 100 threads, one transaction each. Each batch
+exits. The exception is a thread with a held reply: that one leaves public view
+instead (`expired_at`; see [Held posts](#held-posts)) and is deleted by the
+first sweep after the reply is approved or deleted. It works in batches of 100 threads, one transaction each. Each batch
 records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to
@@ -1269,18 +1274,19 @@ old caveat still applies — `/tmp` is per-instance and in-memory, so an image
 uploaded to one instance answers `404` from another and is lost when the
 container stops.
 
-One thing remains per instance:
+One kind of state remains per instance:
 
-- **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
-  instances enforce the cooldowns N times over. Moving it to shared storage means
-  replacing that one type, which nothing else depends on.
+- **Flood control.** `cooldownLimiter` (the cooldowns) and `refusalBudget`
+  (`EDUCHAN_REFUSAL_LIMIT`) keep their state in process memory, so N instances
+  enforce each of them N times over. Moving them to shared storage means
+  replacing those two types, which nothing else depends on.
 
 ## Development
 
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
-make sweep   # go run ./cmd/server -sweep: delete expired archived threads once
+make sweep   # go run ./cmd/server -sweep: delete archived threads past their archive period once
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
