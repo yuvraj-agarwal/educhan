@@ -98,6 +98,22 @@ func testStoreContract(t *testing.T, factory newStore) {
 		}
 	})
 
+	// A write whose context has ended is not made: Save relies on it to
+	// store nothing once a post's deadline has passed, on every backend.
+	t.Run("put with an ended context writes nothing", func(t *testing.T) {
+		store := factory(t)
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		key := "originals/general/2026/08/late.png"
+
+		if err := store.Put(ctx, key, "image/png", strings.NewReader("late")); !errors.Is(err, context.Canceled) {
+			t.Errorf("Put error = %v, want context.Canceled", err)
+		}
+		if _, _, err := store.Get(context.Background(), key); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Get(%q) error = %v, want nothing written", key, err)
+		}
+	})
+
 	t.Run("missing key is ErrNotFound", func(t *testing.T) {
 		store := factory(t)
 		if _, _, err := store.Get(context.Background(), "originals/general/2026/08/absent.png"); !errors.Is(err, ErrNotFound) {
@@ -281,6 +297,26 @@ func testStoreContract(t *testing.T, factory newStore) {
 		}
 	})
 
+	// A deadline that ends the thumbnail's write ends the save, and the
+	// original written before it is removed all the same: the removal does
+	// not run on the context that has just run out.
+	t.Run("a save cut off by its deadline removes what it already wrote", func(t *testing.T) {
+		store := factory(t)
+		stalling := &stallThumbStore{Store: store}
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if _, err := Save(ctx, stalling, "general", encodePNG(t, 400, 400), time.Now()); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Save error = %v, want context.DeadlineExceeded", err)
+		}
+		if stalling.original == "" {
+			t.Fatal("the original was never written, so the test proves nothing")
+		}
+		if _, _, err := store.Get(context.Background(), stalling.original); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("Get(%q) error = %v, want the original to have been cleaned up", stalling.original, err)
+		}
+	})
+
 	// http.ServeContent drives the reader the way the /media handlers do: it
 	// seeks to the end for the size, back to the start, and then over whatever
 	// range was asked for. A backend whose reader cannot seek passes every test
@@ -458,5 +494,25 @@ func (f *failThumbStore) Put(ctx context.Context, key, contentType string, r io.
 		return err
 	}
 	f.original = key
+	return nil
+}
+
+// stallThumbStore writes originals to the real backend and holds a
+// thumbnail's write until its context ends, which is a write a deadline cut
+// off.
+type stallThumbStore struct {
+	Store
+	original string
+}
+
+func (s *stallThumbStore) Put(ctx context.Context, key, contentType string, r io.Reader) error {
+	if strings.HasPrefix(key, ThumbPrefix+"/") {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	if err := s.Store.Put(ctx, key, contentType, r); err != nil {
+		return err
+	}
+	s.original = key
 	return nil
 }

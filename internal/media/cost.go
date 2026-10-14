@@ -27,13 +27,18 @@ import (
 // every kind of file it models, and TestGIFFrameOverheadCoversWhatDecodingKeeps
 // holds gifFrameOverhead to what image/gif keeps.
 
-// processingBudget is the memory every upload being decoded and re-encoded at
-// once may hold between them, by their estimates. An upload whose estimate
-// alone is over it is refused from its header (ErrImageTooLarge); the others
-// wait for their share. It is sized for an instance with 512 MiB in all: with
-// the rest of a process (its runtime, the uploads still being read,
-// connections) it fits under a GOMEMLIMIT of about 400 MiB, which is the
-// deployment's to set.
+// processingBudget is the memory every upload being processed at once may
+// hold between them, by their estimates, from when it starts to be decoded
+// until both its renditions are stored (Save). An upload whose estimate alone
+// is over it is refused from its header (ErrImageTooLarge); the others wait
+// for their share, for as long as their post's deadline allows
+// (processingAllowance). The uploads' own bytes are not in the estimates:
+// uploadBudget (budget.go) counts them, from before they are read. Between
+// them the two budgets hold at most 320 MiB, whatever number of requests an
+// instance is let take at once. The rest of a process is not budgeted: idle,
+// about 40 MiB. Eighty 8 MiB uploads sent at once to a server run with a
+// GOMEMLIMIT of 400 MiB peaked at 330 MiB resident, which fits an instance of
+// 512 MiB with that limit; the limit is the deployment's to set.
 const processingBudget int64 = 256 << 20
 
 // processingSlack is what each estimate adds for what it does not itemise:
@@ -118,8 +123,12 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 		// doubles up to limit, holding the old and the new while it grows
 		// (storedBuffer). What it wrote is kept for the thumbnail.
 		phase{first: min(upload, limit), alloc: 2 * limit, after: held + limit},
-		// The scaler allocates its scratch whole as it starts.
-		phase{first: scratch, alloc: scratch},
+		// The scaler allocates its scratch whole as it starts. What the
+		// encoder wrote is kept after it, until it has been stored (Save
+		// holds the budget until then), but nothing larger is made for
+		// that: the local store writes the file from it as it is, and the
+		// Cloud Storage writer is given no buffer of its own (GCSStore.Put).
+		phase{first: scratch, alloc: scratch, after: limit},
 	)
 	return peakOf(phases...) + processingSlack
 }

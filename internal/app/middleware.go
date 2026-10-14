@@ -60,7 +60,13 @@ func requestLogger(log *slog.Logger) middleware {
 			next.ServeHTTP(rec, r)
 
 			level := slog.LevelInfo
-			if rec.status >= http.StatusInternalServerError {
+			switch {
+			case rec.status == http.StatusServiceUnavailable:
+				// Turned away by design, a post the server had no room
+				// for in time (answerBusy), or the database out of reach,
+				// which the health check reports as an error of its own.
+				level = slog.LevelWarn
+			case rec.status >= http.StatusInternalServerError:
 				level = slog.LevelError
 			}
 			log.Log(r.Context(), level, "request",

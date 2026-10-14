@@ -33,9 +33,21 @@ type StoredImage struct {
 // and writes both renditions. The upload's own bytes are never written. On a
 // partial failure it removes whatever it already wrote so the store is not left
 // holding orphans.
+//
+// It waits for room to process the upload as Process does, and holds it until
+// both renditions are stored, because until then it holds them (processingCost
+// counts them). ctx bounds the writes as well as the wait: once it has ended
+// nothing more is written, a write it cuts off fails the save, and what was
+// already written is removed all the same.
 func Save(ctx context.Context, s Store, board string, data []byte, now time.Time) (StoredImage, error) {
-	processed, err := Process(ctx, data)
+	processed, release, err := processHeld(ctx, data)
 	if err != nil {
+		return StoredImage{}, err
+	}
+	defer release()
+	// Processing takes what it takes; a deadline it ran past stops the save
+	// here, on every backend, rather than in whichever write notices.
+	if err := ctx.Err(); err != nil {
 		return StoredImage{}, err
 	}
 
@@ -49,7 +61,9 @@ func Save(ctx context.Context, s Store, board string, data []byte, now time.Time
 		return StoredImage{}, err
 	}
 	if err := s.Put(ctx, ThumbKey(thumbPath), processed.Thumb.Format.ContentType, bytes.NewReader(processed.Thumb.Data)); err != nil {
-		_ = s.Delete(ctx, OriginalKey(origPath))
+		// The context may be what failed the write; the original is removed
+		// whether or not it is still running, or nothing would remove it.
+		_ = s.Delete(context.WithoutCancel(ctx), OriginalKey(origPath))
 		return StoredImage{}, err
 	}
 

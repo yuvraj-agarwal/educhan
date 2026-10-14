@@ -660,18 +660,6 @@ func TestUploadsSwitchedOff(t *testing.T) {
 	}
 }
 
-// countingReader counts what the server reads of a request body.
-type countingReader struct {
-	r io.Reader
-	n int64
-}
-
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.r.Read(p)
-	c.n += int64(n)
-	return n, err
-}
-
 // With uploads switched off an image post is refused for that reason however
 // large its file: a file over the size limit is a 403 that names the switch,
 // not a 413 that sends the poster off to find a smaller one, and the server

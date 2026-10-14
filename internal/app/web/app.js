@@ -170,6 +170,13 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
       ? `Codes can't be requested that often. Wait ${wait}, then request a code again.`
       : `Flood control: wait ${wait} and post again.`;
   }
+  // Too many images arriving at once for the server to take this one in time.
+  // Nothing was posted and no flood-control wait was started, so the same
+  // post, image and all, can go again once the wait is over.
+  if (err.status === 503 && err.payload && err.payload.retry_after) {
+    const wait = plural(err.payload.retry_after, "second", "seconds");
+    return `Too many images are being posted right now, so yours wasn't. Wait ${wait} and post again: your post is still in the form.`;
+  }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
   if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {

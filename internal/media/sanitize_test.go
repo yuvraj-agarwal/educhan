@@ -1362,7 +1362,8 @@ func TestChecksumIsOfTheStoredFile(t *testing.T) {
 /* Processing budget -------------------------------------------------------- */
 
 // An upload waits until its estimated cost fits in the processing budget, and
-// gives up when its context does. Given back, the budget serves the next.
+// gives up when its context does, or at once when its deadline leaves no time
+// to wait. Given back, the budget serves the next.
 func TestProcessWaitsForItsShareAndGivesUpWithItsContext(t *testing.T) {
 	upload := encodePNG(t, 32, 32)
 	in, err := inspect(upload)
@@ -1398,10 +1399,11 @@ func TestProcessWaitsForItsShareAndGivesUpWithItsContext(t *testing.T) {
 		t.Fatal("Process kept waiting after its context was cancelled")
 	}
 
-	short, stop := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	// A deadline too near to leave time for the work is not waited out.
+	short, stop := context.WithTimeout(context.Background(), processingAllowance/2)
 	defer stop()
-	if _, err := Process(short, upload); !errors.Is(err, context.DeadlineExceeded) {
-		t.Errorf("Process error = %v, want context.DeadlineExceeded", err)
+	if _, err := Process(short, upload); !errors.Is(err, ErrBusy) {
+		t.Errorf("Process error = %v, want ErrBusy", err)
 	}
 
 	release()

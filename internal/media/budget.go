@@ -3,15 +3,41 @@ package media
 import (
 	"container/list"
 	"context"
+	"errors"
 	"sync"
+	"time"
 )
 
-// budget shares out processingBudget among the uploads being decoded and
-// re-encoded at once, each taking its estimated cost (processingCost) for as
-// long as it runs. Uploads are served in the order they asked: a large one at
-// the head of the queue waits for room and smaller ones queue behind it rather
-// than slipping past, so it cannot be starved. It is a weighted semaphore;
-// golang.org/x/sync/semaphore is the same idea, but not a dependency here.
+// ErrBusy is an upload that found no room in a budget, for its bytes
+// (ReserveUpload) or for processing them (Process), in the time it had to
+// wait. Nothing has been stored for it. It is the server's state, not the
+// upload's fault: the same upload may go through a few seconds later.
+var ErrBusy = errors.New("media: no room to take the image in time")
+
+// uploadBudget is the memory the uploads themselves may take between them,
+// from before their bytes are read until their post has been answered
+// (ReserveUpload): the request bodies, which processingBudget does not count.
+// It holds about eight bodies carrying an image at the default size limit
+// (8 MiB), and more of smaller ones. Without it nothing bounded how many were
+// held at once: every request a host lets an instance take at once (Cloud
+// Run's containerConcurrency) could be holding one.
+const uploadBudget int64 = 64 << 20
+
+// processingAllowance is how long before its deadline an upload stops waiting
+// for room, in either budget, so that what is left is time to decode,
+// re-encode and thumbnail it and to store both renditions. The dearest
+// uploads processingBudget admits take up to about ten seconds on one core (a
+// 25-megapixel PNG of noise), and longer with others beside them, so the
+// deadline still has the last word: Save stores nothing once it has passed.
+// A context without a deadline waits for as long as it lasts.
+const processingAllowance = 15 * time.Second
+
+// budget shares out memory among the uploads using it at once, each taking
+// its share for as long as it runs. Uploads are served in the order they
+// asked: a large one at the head of the queue waits for room and smaller ones
+// queue behind it rather than slipping past, so it cannot be starved. It is a
+// weighted semaphore; golang.org/x/sync/semaphore is the same idea, but not a
+// dependency here.
 type budget struct {
 	mu      sync.Mutex
 	size    int64
@@ -26,19 +52,37 @@ type budgetWaiter struct {
 
 func newBudget(size int64) *budget { return &budget{size: size} }
 
-// processing is the budget Process takes from. It is a variable so tests can
-// narrow it; nothing else changes it.
-var processing = newBudget(processingBudget)
+// processing and uploads are the budgets Process and ReserveUpload take
+// from. They are variables so tests can narrow them; nothing else changes
+// them.
+var (
+	processing = newBudget(processingBudget)
+	uploads    = newBudget(uploadBudget)
+)
+
+// ReserveUpload waits until n bytes fit in the upload budget, for a request
+// body of at most n bytes that is about to be read, and returns the function
+// that gives them back once nothing holds the upload any more. It waits as
+// acquire does, so a context with a deadline gets ErrBusy once too little of
+// it is left to process the upload after it has been read. An n over the
+// whole budget waits for all of it.
+func ReserveUpload(ctx context.Context, n int64) (release func(), err error) {
+	return uploads.acquire(ctx, n)
+}
 
 // acquireProcessing waits until cost fits in the processing budget and returns
-// the function that gives it back, or the context's error if the context ends
-// first. A cost over the whole budget is refused by Inspect before this is
-// reached; here it is capped at the budget, so it waits for the budget to be
-// empty rather than forever.
+// the function that gives it back, as acquire does. A cost over the whole
+// budget is refused by Inspect before this is reached; here it is capped at
+// the budget, so it waits for the budget to be empty rather than forever.
 func acquireProcessing(ctx context.Context, cost int64) (func(), error) {
 	return processing.acquire(ctx, cost)
 }
 
+// acquire takes n from the budget and returns the function that gives it
+// back. With no room it waits in line: until it is served, until the context
+// ends (the context's error), or, for a context with a deadline, until only
+// processingAllowance of it is left (ErrBusy). Room that is there when it
+// asks is taken whatever the time: only waiting is cut short.
 func (b *budget) acquire(ctx context.Context, n int64) (func(), error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -52,31 +96,46 @@ func (b *budget) acquire(ctx context.Context, n int64) (func(), error) {
 		b.mu.Unlock()
 		return release, nil
 	}
+	var giveUp <-chan time.Time
+	if deadline, ok := ctx.Deadline(); ok {
+		wait := time.Until(deadline) - processingAllowance
+		if wait <= 0 {
+			b.mu.Unlock()
+			return nil, ErrBusy
+		}
+		timer := time.NewTimer(wait)
+		defer timer.Stop()
+		giveUp = timer.C
+	}
 	w := &budgetWaiter{n: n, ready: make(chan struct{})}
 	elem := b.waiters.PushBack(w)
 	b.mu.Unlock()
 
+	var err error
 	select {
 	case <-w.ready:
 		return release, nil
 	case <-ctx.Done():
-		b.mu.Lock()
-		select {
-		case <-w.ready:
-			// Granted as the context ended: give it straight back.
-			b.mu.Unlock()
-			b.release(n)
-		default:
-			head := b.waiters.Front() == elem
-			b.waiters.Remove(elem)
-			if head {
-				// Whoever was queued behind may fit now.
-				b.grant()
-			}
-			b.mu.Unlock()
-		}
-		return nil, ctx.Err()
+		err = ctx.Err()
+	case <-giveUp:
+		err = ErrBusy
 	}
+	b.mu.Lock()
+	select {
+	case <-w.ready:
+		// Granted as the wait ended: give it straight back.
+		b.mu.Unlock()
+		b.release(n)
+	default:
+		head := b.waiters.Front() == elem
+		b.waiters.Remove(elem)
+		if head {
+			// Whoever was queued behind may fit now.
+			b.grant()
+		}
+		b.mu.Unlock()
+	}
+	return nil, err
 }
 
 func (b *budget) release(n int64) {
@@ -84,7 +143,7 @@ func (b *budget) release(n int64) {
 	b.used -= n
 	if b.used < 0 {
 		b.mu.Unlock()
-		panic("media: processing budget released more than it held")
+		panic("media: budget released more than it held")
 	}
 	b.grant()
 	b.mu.Unlock()

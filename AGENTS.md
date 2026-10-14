@@ -35,7 +35,8 @@ not.
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation, metadata stripping (`sanitize.go`, with the EXIF
   orientation reader in `orient.go` and the WebP chunk check in `webp.go`), the
-  header-based cost estimate (`cost.go`), thumbnailing, and the blob-storage interface
+  header-based cost estimate (`cost.go`) and the two memory budgets it is held to
+  (`budget.go`), thumbnailing, and the blob-storage interface
   with its two implementations: the local filesystem (`local.go`) and Google Cloud
   Storage (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one
   suite run against both. `internal/media/mediatest` starts an in-process Cloud Storage
@@ -366,7 +367,9 @@ needs a browser check before the test changes.
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
   browser's "Failed to fetch". A `429` is worded for what was refused: `/verify` passes
   `errorMessage` `{ action: "code" }`, so a code request is told to wait and request a
-  code again, never to post again. A not-found page names and links a board only when it is
+  code again, never to post again. A `503` with `retry_after` is a post the server was
+  too busy to take, worded as that and not as flood control; the form keeps the post,
+  image included, and nothing was charged for it. A not-found page names and links a board only when it is
   in `state.boards`: the slug comes from the address, and echoing any slug would let a
   crafted link write the page's copy. A history change that keeps the rendered path (a
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
@@ -645,12 +648,50 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   holds the lists to the model: each accepted kind at its dearest (a square, from an
   8 MiB upload), each refused kind at its cheapest (a wide picture from a small one), and
   every kind accepted at a quarter of the size. A change to `cost.go` that moves a kind
-  changes the README's lists in the same commit. `Process` then holds its estimate of the budget while
-  it decodes and encodes (`acquireProcessing`, a first-come-first-served weighted
-  semaphore in `budget.go`, so a large upload is not starved by small ones); the wait
-  honours the request context, and a cancelled wait
-  reaches the handler as `context.Canceled`, which `fail` answers like any request whose
-  client left. `TestProcessingCostCoversWhatIsHeld` processes one file of every kind the
+  changes the README's lists in the same commit. `Save` then holds its estimate of the
+  budget from the start of decoding until both renditions are stored, because until
+  then it holds what it made (`acquireProcessing`, a first-come-first-served weighted
+  semaphore in `budget.go`, so a large upload is not starved by small ones;
+  `TestSaveHoldsItsShareUntilItIsStored`). Nothing it writes is copied again on the way
+  out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because the library's default
+  is a 16 MiB buffer for every object, kept only for retries a write without
+  preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`).
+  The uploads' own bytes have a budget of their own, `uploadBudget` (64 MiB), which
+  `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
+  as much as the request's `Content-Length` or the most the body may be, and which the
+  handler gives back when the post is answered (`submission.release`). For that to be
+  what the body costs, `readMultipart` reads the body itself rather than through
+  `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
+  (memory again on Cloud Run) and then hands it over to be copied: the image is read
+  once into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`).
+  Its text fields may come to `maxRequestBytes` between them, as a JSON post may, the
+  first value of each name is the one read, and parts past `maxFormParts` refuse the
+  form (`TestMultipartPostsAreReadAsTheFormSendsThem`). Between them the two budgets
+  hold 320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process
+  is about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
+  `GOMEMLIMIT=400MiB` peaked at 330 MiB resident (786 MiB before the upload budget),
+  so a 512 MiB instance needs that limit, which this code does not set.
+  **Every wait is bounded.** A post has `postDeadline` (25 s, `postContext`) from when
+  its handler starts to get its image stored, inside the server's `WriteTimeout` (30 s,
+  `app.WriteTimeout`, which `cmd/server` uses), which runs from the same moment. A wait
+  for room in either budget gives up `processingAllowance` (15 s, about what the dearest
+  upload takes on one core, with margin) before that deadline, with `media.ErrBusy`;
+  room that is there is taken however near the deadline, so a slow body on an idle
+  server is not refused; and `Save` writes nothing once the deadline has passed, on
+  either backend (`LocalStore.Put` honours an ended context as Cloud Storage does,
+  pinned in `testStoreContract`), and removes a written original on a context that has
+  not ended (`context.WithoutCancel`). The database commit runs on the request's own
+  context, never the deadline: a deadline passing mid-commit could otherwise leave a
+  post made and its image removed. `tooBusy` sends all of it to `answerBusy`: `503`
+  with a `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the
+  request log as a warning, not an error; the body of a post turned away before it was
+  read is still read to its end and dropped, so the browser gets the answer rather than
+  a connection closed under its upload. Before the bound, a queued upload was stored
+  and its post made after its answer could no longer be sent, and the poster, told the
+  network had failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
+  `TestPostPastItsDeadlineIsNotMadeAndNotCharged`, `TestWaitingForRoomEndsInTimeForTheWork`).
+  A cancelled wait reaches the handler as `context.Canceled`, which `fail` answers like
+  any request whose client left. `TestProcessingCostCoversWhatIsHeld` processes one file of every kind the
   model distinguishes with the collector running continually and fails if what it
   marked live passes the estimate, and `TestGIFFrameOverheadCoversWhatDecodingKeeps`
   measures what `image/gif` keeps per frame; a change to a decode path, to `orient`, to
@@ -659,8 +700,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Tests narrow the budget with `narrowBudget`. Not modelled: x/image's VP8L decoder
   allocates its Huffman groups (up to about 175 MB) from a count inside the compressed
   bitstream, which no header shows; it predates this code and needs an upstream fix or
-  a VP8L parser. The other half is deploy-side (`GOMEMLIMIT` near 400MiB, or more
-  memory), which this code does not set.
+  a VP8L parser.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
   as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
@@ -858,14 +898,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
   cooldown per client across the whole server. A submission clears every cooldown that
   applies to it or none is started, so a post refused by one limit is not charged for the
-  other; `allowAll` is what enforces that. Nothing is refunded once a cooldown starts,
-  so every refusal that can be known up front comes before `allow`: a malformed poster
+  other; `allowAll` is what enforces that. A cooldown once started is kept, with one
+  exception, so every refusal that can be known up front comes before `allow`: a malformed poster
   key, the body, a badge the poster cannot have, uploads switched off, a file its header
   shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format,
   or more than `media.MaxPixels`), and a reply the thread would refuse
   (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
   upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
   after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
+  The exception is a post the server turns away as busy after `allow` (`tooBusy`: no
+  room to process its image in time, or its deadline passing before the image is
+  stored): `allow` hands back the refund `chargeAll` makes, which takes back the
+  cooldowns that post started and leaves alone any another post has started since
+  (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of room to read it
+  is turned away before `allow`, so it has nothing to refund.
   State is per process and in memory — a shared backend means replacing
   `cooldownLimiter`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
@@ -1051,7 +1097,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
-  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
+  `internal/app/busy_test.go`, and
   `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
   the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
   `DATABASE_URL`), so

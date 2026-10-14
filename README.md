@@ -454,9 +454,18 @@ client can leave the image picker off a server that would refuse what it sends.
   called. Migration `0008` renamed the attachments stored before this the same way.
 - **Memory**: how much memory an image takes to decode and re-encode depends on how it is
   encoded as well as on its size, so each upload's share is estimated from its header.
-  The uploads being processed at once share a fixed budget (256 MiB per process); one
-  whose estimate alone is over it is refused (see **Formats**), and the rest wait for
-  room in the order they arrived, and stop waiting if their request is cancelled.
+  The uploads being processed at once share a fixed budget (256 MiB per process), each
+  holding its share until its files are stored; one whose estimate alone is over it is
+  refused (see **Formats**), and the rest wait for room in the order they arrived. The
+  uploads' own bytes have a budget of their own (64 MiB), taken before a request body is
+  read, so how many requests an instance is let take at once does not decide how many
+  images it holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at
+  once to a server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an
+  instance of 512 MiB has room with that limit set. A post waits for room in either
+  budget for about ten seconds at most, and one that cannot be taken in time, or whose
+  image is not stored within 25 seconds of its arrival, answers `503` (see
+  [Flood control](#flood-control)) with nothing stored, rather than being made after
+  its answer could no longer be sent.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -786,7 +795,14 @@ upload cooldown; when it is refused, neither cooldown is started, so the two
 limits never compound.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
-`retry_after` field in the body. Set a cooldown to `0` to switch it off. A
+`retry_after` field in the body. Set a cooldown to `0` to switch it off.
+
+A post with an image the server is too busy to take in time — no room to read or
+process it within about ten seconds, or its image not stored within 25 seconds of
+the post's arrival (see **Memory** under [Image attachments](#image-attachments)) —
+answers `503` the same way, with a `Retry-After` and `retry_after` of 10 seconds.
+Nothing is stored for it, and a cooldown it started is given back, so it can be sent
+again as soon as the wait is over. A
 request rejected for any other reason — an empty body, an oversized image, a
 file that is not an accepted image or whose header shows it too large to
 process, a reply to a missing, locked or archived thread or an image past a
@@ -912,8 +928,8 @@ refused inside the transaction, after its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
-plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
-`retry_after` plus a `Retry-After` header.
+plus an `image` file. Errors are `{"error": "..."}`, and `429` and `503` responses
+add `retry_after` plus a `Retry-After` header.
 
 ```bash
 curl -s localhost:8080/api/boards

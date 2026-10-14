@@ -8,10 +8,21 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/mailer"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
+)
+
+// The timeouts cmd/server gives its http.Server. WriteTimeout runs from the
+// end of a request's headers, and a post has postDeadline of it to get its
+// image stored, which leaves the rest for its commit and its answer.
+const (
+	ReadHeaderTimeout = 10 * time.Second
+	ReadTimeout       = 30 * time.Second
+	WriteTimeout      = 30 * time.Second
+	IdleTimeout       = 2 * time.Minute
 )
 
 // App wires together configuration, the store, the media store, and the HTTP
@@ -40,6 +51,9 @@ type App struct {
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
+
+	// postDeadline is postDeadline, which tests shorten.
+	postDeadline time.Duration
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
@@ -99,6 +113,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
 		schemaAhead:   schemaAhead,
+		postDeadline:  postDeadline,
 	}
 	every := cfg.cooldownSweepEvery
 	if every <= 0 {

@@ -187,27 +187,40 @@ func inspect(data []byte) (inspection, error) {
 // thumbnailed from their first frame.
 //
 // The decoding and encoding wait until the upload's estimated cost fits in
-// the processing budget (acquireProcessing), and the wait ends with the
-// context's error if ctx is done first.
+// the processing budget (acquireProcessing): if ctx ends first the wait ends
+// with its error, and if ctx has a deadline it ends with ErrBusy once too
+// little of it is left to do the work (processingAllowance).
 func Process(ctx context.Context, data []byte) (Processed, error) {
+	out, release, err := processHeld(ctx, data)
+	if err != nil {
+		return Processed{}, err
+	}
+	release()
+	return out, nil
+}
+
+// processHeld is Process, leaving its share of the budget held: the caller
+// gives it back with release once it no longer holds what was made, which
+// processingCost counts until then.
+func processHeld(ctx context.Context, data []byte) (_ Processed, release func(), _ error) {
 	in, err := inspect(data)
 	if err != nil {
-		return Processed{}, err
+		return Processed{}, nil, err
 	}
 
-	release, err := acquireProcessing(ctx, in.cost)
+	release, err = acquireProcessing(ctx, in.cost)
 	if err != nil {
-		return Processed{}, err
+		return Processed{}, nil, err
 	}
-	defer release()
-
 	out, err := sanitize(in, data)
 	if err != nil {
-		return Processed{}, err
+		release()
+		return Processed{}, nil, err
 	}
 	thumb, err := makeThumbnail(out.pic, out.canvas, out.format)
 	if err != nil {
-		return Processed{}, err
+		release()
+		return Processed{}, nil, err
 	}
 	return Processed{
 		Format: out.format,
@@ -215,7 +228,7 @@ func Process(ctx context.Context, data []byte) (Processed, error) {
 		Width:  out.canvas.Dx(),
 		Height: out.canvas.Dy(),
 		Thumb:  thumb,
-	}, nil
+	}, release, nil
 }
 
 // ThumbSize scales w×h to fit within max on the longest side, preserving the
