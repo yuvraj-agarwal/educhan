@@ -320,7 +320,10 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 // make the picture (stripWebP), decodes what is left, and stores the pixels as
 // a new file: a JPEG when the picture is lossy and opaque, which is what a
 // lossy WebP is closest to, and otherwise a PNG, which keeps a lossless
-// picture exactly and a transparent one's alpha. The JPEG is at
+// picture exactly and a transparent one's alpha. A lossy picture's colours are
+// taken from the limited-range YCbCr x/image decodes to back to full-range RGB
+// first (lossyWebPToNRGBA), or black and white would be stored as grey. The
+// JPEG is at
 // storedJPEGQuality whatever the WebP was saved at: a WebP's quality setting
 // is not a JPEG's, so its own is no guide, and a WebP saved at a low quality
 // can be stored at two to four times its size. An animated WebP is refused
@@ -352,19 +355,16 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 
 	format := FormatPNG
 	buf := newStoredBuffer(len(data), limit)
-	switch m := pic.(type) {
-	case *image.YCbCr: // lossy, with no alpha
-		format = FormatJPEG
-		err = jpegenc.Encode(buf, m, &jpegenc.Options{Quality: storedJPEGQuality})
-	case *image.NYCbCrA: // lossy, with an alpha plane
-		if m.Opaque() {
+	switch pic.(type) {
+	case *image.YCbCr, *image.NYCbCrA: // lossy: YCbCr, with an alpha plane or not
+		rgb, opaque := lossyWebPToNRGBA(pic)
+		pic = rgb
+		if opaque {
 			format = FormatJPEG
-			pic = &m.YCbCr
-			err = jpegenc.Encode(buf, pic, &jpegenc.Options{Quality: storedJPEGQuality})
-			break
+			err = jpegenc.Encode(buf, rgb, &jpegenc.Options{Quality: storedJPEGQuality})
+		} else {
+			err = png.Encode(buf, rgb)
 		}
-		pic = nrgbaOf(m)
-		err = png.Encode(buf, pic)
 	default: // lossless, decoded as *image.NRGBA
 		clearTransparentColour(pic)
 		err = png.Encode(buf, pic)
@@ -376,30 +376,75 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 	return sanitized{format: format, data: stored, pic: pic, canvas: pic.Bounds()}, nil
 }
 
-// nrgbaOf converts a lossy picture with alpha to plain non-premultiplied RGBA,
-// which image/png encodes directly rather than a pixel at a time through the
-// colour interfaces. Each pixel's colour is converted exactly as
-// color.YCbCr does, and its alpha is copied; a fully transparent pixel keeps
-// no colour.
-func nrgbaOf(m *image.NYCbCrA) *image.NRGBA {
+// clip8 clamps an integer to a uint8.
+func clip8(v int) uint8 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint8(v)
+}
+
+// bt601LimitedToRGB converts one limited-range ("studio swing") BT.601 Y'CbCr
+// sample to full-range 8-bit RGB. golang.org/x/image/webp decodes a lossy
+// WebP to an image.YCbCr whose samples libwebp wrote with the limited-range
+// matrix — black is Y=16, white Y=235, and the chroma span is 224, not 255 —
+// and image.YCbCr reads them back with the JFIF full-range formula, which
+// leaves black at (16,16,16) and white at (235,235,235) and washes out every
+// colour. These are the standard BT.601 limited-range coefficients (298/256 ≈
+// 1.164, 409 ≈ 1.596, 100 ≈ 0.391, 208 ≈ 0.813, 516 ≈ 2.017), so black
+// returns to 0, white to 255 and a primary to its full value.
+func bt601LimitedToRGB(y, cb, cr uint8) (r, g, b uint8) {
+	yy := (int(y) - 16) * 298
+	u := int(cb) - 128
+	v := int(cr) - 128
+	return clip8((yy + 409*v + 128) >> 8),
+		clip8((yy - 100*u - 208*v + 128) >> 8),
+		clip8((yy + 516*u + 128) >> 8)
+}
+
+// lossyWebPToNRGBA converts a lossy WebP — decoded as image.YCbCr when it is
+// opaque, image.NYCbCrA when it carries an alpha plane — to non-premultiplied
+// RGBA, which image/png and jpegenc encode directly. Its limited-range YCbCr
+// is taken to full-range RGB (bt601LimitedToRGB) so the stored picture keeps
+// the colours the WebP showed rather than the washed-out ones color.YCbCr
+// would give. A fully transparent pixel keeps no colour. It reports whether
+// every pixel is opaque, so an opaque picture is stored as a JPEG and one with
+// transparency as a PNG, which keeps the alpha.
+func lossyWebPToNRGBA(m image.Image) (out *image.NRGBA, opaque bool) {
 	b := m.Bounds()
-	out := image.NewNRGBA(b)
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		row := out.Pix[(y-b.Min.Y)*out.Stride:]
-		for x := b.Min.X; x < b.Max.X; x++ {
-			c := m.NYCbCrAAt(x, y)
-			if c.A == 0 {
-				continue // NewNRGBA is all zero
+	out = image.NewNRGBA(b)
+	opaque = true
+	switch p := m.(type) {
+	case *image.YCbCr:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			row := out.Pix[(y-b.Min.Y)*out.Stride:]
+			for x := b.Min.X; x < b.Max.X; x++ {
+				r, g, bl := bt601LimitedToRGB(p.Y[p.YOffset(x, y)], p.Cb[p.COffset(x, y)], p.Cr[p.COffset(x, y)])
+				i := (x - b.Min.X) * 4
+				row[i+0], row[i+1], row[i+2], row[i+3] = r, g, bl, 0xFF
 			}
-			r, g, bl, _ := c.YCbCr.RGBA()
-			i := (x - b.Min.X) * 4
-			row[i+0] = uint8(r >> 8)
-			row[i+1] = uint8(g >> 8)
-			row[i+2] = uint8(bl >> 8)
-			row[i+3] = c.A
+		}
+	case *image.NYCbCrA:
+		for y := b.Min.Y; y < b.Max.Y; y++ {
+			row := out.Pix[(y-b.Min.Y)*out.Stride:]
+			for x := b.Min.X; x < b.Max.X; x++ {
+				a := p.A[p.AOffset(x, y)]
+				if a != 0xFF {
+					opaque = false
+				}
+				if a == 0 {
+					continue // NewNRGBA is all zero: no colour under a clear pixel
+				}
+				r, g, bl := bt601LimitedToRGB(p.Y[p.YOffset(x, y)], p.Cb[p.COffset(x, y)], p.Cr[p.COffset(x, y)])
+				i := (x - b.Min.X) * 4
+				row[i+0], row[i+1], row[i+2], row[i+3] = r, g, bl, a
+			}
 		}
 	}
-	return out
+	return out, opaque
 }
 
 /* What nobody sees --------------------------------------------------------- */

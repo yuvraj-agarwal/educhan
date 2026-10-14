@@ -441,7 +441,9 @@ client can leave the image picker off a server that would refuse what it sends.
     with transparency) as a PNG, which keeps a lossless picture exactly. A WebP's
     quality setting does not mean what a JPEG's does, so there is no lower quality to
     match, and a WebP saved at a low quality can be stored at two to four times its
-    size. Its `name`, URL and content type are the stored format's (`image.jpg`,
+    size. A lossy WebP's colours come back from the decoder in a narrower range than
+    they were saved in, so they are expanded again before storing, or black would be
+    kept as dark grey and white as light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
     `image.png`). Keeping the WebP with only its metadata chunks removed would not be
     enough: a decoder ignores anything after the picture inside the chunks that hold
     it, so a second file could ride through unseen. WebPs stored before this stay WebPs.

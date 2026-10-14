@@ -1244,6 +1244,51 @@ func TestWebPIsStoredAsPNGOrJPEG(t *testing.T) {
 	}
 }
 
+// A lossy WebP is stored with the colours it showed, not the washed-out ones
+// golang.org/x/image/webp's limited-range YCbCr gives when it is read as full
+// range. webp-swatches.webp is three flat 48×48 swatches — black, white and
+// pure red — libwebp wrote from RGB (0,0,0), (255,255,255) and (255,0,0); the
+// decoder hands those back as Y=16/235/82, which color.YCbCr would store as
+// (16,16,16), (235,235,235) and a muddy red. The stored JPEG, and the
+// thumbnail drawn from the same pixels, must instead show the true colours,
+// well inside the ±24 that re-encoding a flat colour at quality 90 can shift.
+func TestLossyWebPKeepsItsColours(t *testing.T) {
+	want := []struct {
+		x int
+		c color.RGBA
+	}{
+		{24, color.RGBA{0, 0, 0, 255}},
+		{72, color.RGBA{255, 255, 255, 255}},
+		{120, color.RGBA{255, 0, 0, 255}},
+	}
+	near12 := func(a color.Color, b color.RGBA) bool {
+		r, g, bl, _ := a.RGBA()
+		d := func(x uint32, y uint8) bool { v := int(x >> 8); return v-int(y) <= 12 && int(y)-v <= 12 }
+		return d(r, b.R) && d(g, b.G) && d(bl, b.B)
+	}
+	got := process(t, readTestdata(t, "webp-swatches.webp"))
+	if got.Format != FormatJPEG {
+		t.Fatalf("stored as %s, want a JPEG", got.Format.Name)
+	}
+	stored := decodeStored(t, got.Data)
+	for _, w := range want {
+		if c := stored.At(w.x, 24); !near12(c, w.c) {
+			t.Errorf("stored swatch at x=%d = %v, want about %v (washed-out range not expanded)", w.x, c, w.c)
+		}
+	}
+	thumb, err := jpeg.Decode(bytes.NewReader(got.Thumb.Data))
+	if err != nil {
+		t.Fatalf("decode thumbnail: %v", err)
+	}
+	tb := thumb.Bounds()
+	for _, w := range want {
+		tx := tb.Min.X + w.x*tb.Dx()/144
+		if c := thumb.At(tx, tb.Min.Y+tb.Dy()/2); !near12(c, w.c) {
+			t.Errorf("thumbnail swatch near x=%d = %v, want about %v", w.x, c, w.c)
+		}
+	}
+}
+
 // A decoder stops reading a picture chunk once it has its picture, so a whole
 // second file can ride inside one: here a JPEG carrying a camera's EXIF and GPS
 // position, inside a lossless bitstream, a lossy one, and an alpha plane. The

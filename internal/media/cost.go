@@ -483,15 +483,15 @@ func pngInterlaced(data []byte) bool {
 // after it, starting from stripWebP's copy of the file. A lossy picture
 // decodes to YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a
 // pixel, from a copy the decoder makes of its compressed partitions, and is
-// encoded as a JPEG from those planes. A lossless picture decodes to NRGBA, 4
+// then converted to NRGBA, 4 bytes a pixel, to take its limited-range colours
+// back to full range (lossyWebPToNRGBA) before it is encoded as a JPEG or,
+// with transparency, a PNG. A lossless picture decodes to NRGBA, 4
 // bytes a pixel, but one written with a colour index of 16 colours or fewer
 // is decoded packed first, at least two pixels to every four bytes, and
 // unpacked into a second picture: 6 bytes a pixel at most (vp8l's
 // inverseColorIndexing). An alpha plane, decoded first, is a byte a pixel,
 // but a compressed one is decoded as a lossless picture first and copied out
-// of it, which is no more than the lossless picture's own peak; and a picture
-// that keeps its transparency is converted to NRGBA, 4 bytes a pixel, to be
-// encoded as a PNG.
+// of it, which is no more than the lossless picture's own peak.
 //
 // A lossless bitstream, and a VP8L-compressed alpha plane, also make the
 // decoder hold its Huffman groups (vp8lMemory), alive while the pixels are
@@ -501,6 +501,10 @@ func webpPhases(data []byte, w, h int64) []phase {
 	planes := 384 * ((w + 15) / 16) * ((h + 15) / 16)
 	strip := phase{first: stripped, alloc: stripped, after: stripped}
 	lossy := phase{first: planes + stripped, alloc: planes + stripped, after: planes}
+	// The lossy picture is converted from its YCbCr planes to an NRGBA copy
+	// (4 bytes a pixel), which is held while it is encoded; the planes are let
+	// go once it is made.
+	toNRGBA := phase{first: 4 * px, alloc: 4 * px, after: 4 * px}
 	lossless, alpha := webpPicture(data)
 	switch {
 	case lossless:
@@ -516,10 +520,10 @@ func webpPhases(data []byte, w, h int64) []phase {
 			strip,
 			{first: v + 6*px, alloc: v + 6*px, after: stripped + px},
 			lossy,
-			{first: 4 * px, alloc: 4 * px, after: 4 * px},
+			toNRGBA,
 		}
 	}
-	return []phase{strip, lossy}
+	return []phase{strip, lossy, toNRGBA}
 }
 
 // vp8lGroupBacking is the largest backing array golang.org/x/image's vp8l
