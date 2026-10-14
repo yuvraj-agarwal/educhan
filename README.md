@@ -377,12 +377,16 @@ outcome:
 
 | Outcome | Rule | What it looks for |
 | --- | --- | --- |
-| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), however the groups are split (spaces, line breaks, dashes, dots, underscores) and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps; and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z"). An app named on its own is fine |
+| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps; and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z", "insta pe add karo", "apna number do"). An app named on its own is fine |
 | Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit), US Social Security numbers written with dashes, UK National Insurance numbers |
-| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "thinking about ending it", "kms"), and a question about a method, which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
+| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "thinking about ending it", "kms", "mujhe marna hai"), and a question about a method, which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
 | Hold (`202`) | `threat` | An intent to hurt people or attack a place ("I'm bringing a gun", "gonna shoot up"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game, and a quoted report are not threats |
-| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "neck yourself", how-many and what-dose questions, lethal doses, nooses, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys") |
+| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "neck yourself", how-many and what-dose questions, lethal doses, how to tie or make a noose, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys") |
 | Hold (`202`) | `grooming` | An age, school-year or location question and a private-contact or meet-up cue in the same post |
+
+The patterns are written for English and for some Hinglish (Hindi written in
+Latin letters, as in the examples above). Hindi in Devanagari, and every other
+language, is not read at all.
 
 Blocks come first, then support (unless `support_seen`), then holds. A number
 is a phone number only when it stands on its own: dates, times, years, scores,
@@ -395,8 +399,11 @@ Prevention Lifeline, the Trevor Project, the National Domestic Violence Hotline
 and Childhelp in the US).
 
 **Be clear about what this is.** These are keyword and number patterns. They
-are easy to get round — a number spelled out in words, a username with no app
-named beside it, contact details hidden in `[math]` — and they catch posts that
+are easy to get round — a number spelled out in words or split some other way
+(a `·` or `|` between the groups, a wider gap, a one-digit group, or a run of
+pairs set off by spaces), a username
+with no app named beside it, contact details hidden in `[math]`, the same
+request in Devanagari or another language — and they catch posts that
 are fine: gaming trash talk, a countdown written as spaced digits, a question
 about a medicine's dose, a twelve-digit reference number that happens to pass
 the Aadhaar check. That is why a block says exactly what it matched, and why a
@@ -971,7 +978,8 @@ no cooldown and leaves no file. They apply to badged and unbadged posts alike.
   `error` is one plain sentence naming what to take out and from where, `rule`
   is `"contact"` or `"id_number"`, `field` is `"body"`, `"subject"` or
   `"name"`, and `match` is the text that tripped it as the poster wrote it,
-  trimmed, at most 80 characters.
+  trimmed and at most 80 characters; a longer one is cut short and ends in
+  `…`.
 - Support answers `422` with `{"error","outcome":"support"}`. Sending the same
   post again with `"support_seen": true` takes it past this step and no other.
 - A hold stores the post and answers `202` with `{"held":true,"board"}`, plus

@@ -404,9 +404,10 @@ needs a browser check before the test changes.
   A `422` block is worded by `blockedMessage` (through `errorMessage`): the rule in
   plain words, the server's `match` quoted, and the field when it is the Name or the
   Subject; `pointAtMatch` focuses that field, selects the match (an exact search, then
-  one that lets whitespace runs differ, since the server quotes its normalised text),
-  marks it `aria-invalid` and describes it by the notice until the poster edits it, and
-  scrolls the field and the notice into view together. A `422` support answer opens
+  one that lets whitespace runs differ, since the server quotes its normalised text; a
+  match the server cut and ended in "…" is looked for without it and selected to the end
+  of its run of non-space text), marks it `aria-invalid` and describes it by the notice
+  until the poster edits it, and scrolls the field and the notice into view together. A `422` support answer opens
   `showSupport`'s panel above the buttons — the server's sentence, `HELPLINES_HTML`, and
   **Post anyway** / **Go back** — and hides the form's own buttons while it is open.
   Post anyway is an unnamed submit button of the form, so the resubmission goes through
@@ -556,20 +557,21 @@ compatibility folding, lower case, combining and enclosing marks (keycaps, circl
 invisible characters dropped, every script's digits as 0–9, dashes as `-`, a short list
 of Cyrillic and Greek lookalikes; a character whose compatibility form is more than
 `maxFoldRunes` long, a whole phrase such as U+FDFA, reads as itself) and **loose** (plain with spaced
-or dotted single letters closed up, leetspeak `0 1 3 4 5 7 @ $` read as letters when a
-letter is beside it, and `l` read as `i`). Patterns are tables of Go regexps compiled for
+or dotted single letters closed up, a letter written three or more times running read
+twice, leetspeak `0 1 3 4 5 7 @ $` read as letters when a letter is beside it, `!`
+between two letters read as `i`, and `l` read as `i`). Patterns are tables of Go regexps compiled for
 both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
 pattern; `TestFilterPatternsSurviveCanon`) or for the plain view only (`plainOnly`, for
 anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`).
 
 | Outcome | Rule / reason | Built from |
 | --- | --- | --- |
-| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by spaces, line breaks, `-`, `.`, `_` or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber` lets decimals and thousands through; `classifyNumber` with `standsAlone`, `internationalPhone`, `indianMobile`, `nanpPhone`, `ukPhone`, `auMobile`, `dramaNumber`, `helpline` (`helplineNumbers`: three Indian lines and four US ones)), `emailRule`/`providerEmailRule`/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`, bracketed `[.]` and `[@]`), `linkRule` + `contactLink`, `spacedInviteRule`, `askRules`, `myAppRule` + `notAHandle`, `appColonHandle`, `appAtHandle`, `appLabelHandle` (`plausibleHandle`) |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by up to three spaces, line breaks, `-`, `.` or `_`, or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber`, `dataSet` and `roundRange` let decimals, thousands, lists and ranges through; `classifyNumber` with `standsAlone` (maths on either side through `operandBefore`/`operandAfter`, a label or quantity word, currency, a bracket glued to a name), `internationalPhone`, `indianMobile` (`mobileGrouping`), `nanpPhone` (`nanpSeparators`, or a `phoneCue` before spaced groups), `ukPhone`, `auMobile`, `dramaNumber`, `helpline` (`helplineNumbers`: three Indian lines and four US ones)), `emailRule`/`providerEmailRule` (`providerEmail`)/`spelledEmailRule` (`emailTLDs`, `exampleDomain`, `spelledEmail`, bracketed `[.]` and `[@]`), `myMailRule`, `mailColonHandle`, `linkRule` + `contactLink`, `spacedInviteRule`, `askRules` + `askCheck`, `atAskRule`, `myAppRule` + `myAppCheck` (`notAHandle`), and `handleRules` (`appColonHandle`, `appAtHandle`, `appLabelHandle`, `hindiHandle`, `handleBeforeApp`) + `handleCheck` (`plausibleHandle`) |
 | block, `422` | `id_number` | `aadhaar` (Verhoeff), `ssn`, `niRule` + `validNIPrefix` |
-| support, `422` | — | `supportRules` (first person only; `notAfterANumber` for "5 kms"), and `asksForAMethod` (`selfHarmMethodRules`) |
-| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` near (`threatWindow`) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (film and sports shoots, games, a quoted report); `threatWarningRules` near `threatWarningCues` |
-| hold, `202` | `self_harm` | `selfHarmRules` and `selfHarmMethodRules`, filtered by `selfHarmCheck` (`notNegated`: a negation ending the same clause, as in "don't you dare kill yourself", not one anywhere before it) |
-| hold, `202` | `grooming` | any `ageQuestionRules` match and any `privateCueRules` match in the same post |
+| support, `422` | — | `supportRules` (first person only) filtered by `supportCheck` (idioms such as "die of embarrassment", "cut off", "end it with her", "live in the hostel", through `livingCheck`; `kmsCheck` for "5 kms" and AWS KMS), and `asksForAMethod` (`selfHarmMethodRules` + `methodCheck`) |
+| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` near (`threatWindow`) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (film and sports shoots, games, a quoted report, a conditional, a metaphor); `namedTargetRules` with `namedTargetCheck`; `schoolShootingCheck` (a drill, an essay, a debate); `threatWarningRules` near `threatWarningCues` |
+| hold, `202` | `self_harm` | `selfHarmRules` filtered by `selfHarmCheck` (`notNegated`: a negation ending the same clause, as in "don't you dare kill yourself", not one anywhere before it; idioms, games and "self-" compounds) and `selfHarmMethodRules` filtered by `methodCheck` |
+| hold, `202` | `grooming` | any `ageQuestionRules` match that `ageCheck` keeps and any `privateCueRules` match in the same post |
 
 Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
 grooming), then publish. A question about a method ("how many pills would kill me")
@@ -587,11 +589,14 @@ or a `plainOnly` rule beside `niRule`, loaded from configuration, with its own
 `findingKind`. A new rule needs true and false positives in `filter_test.go`; the false
 positives are the harder half, and the table there (maths, dates, ISBNs, scores, prices,
 bare app names, "this exam is killing me", history questions, Hinglish and Hindi) is the
-floor.
+floor. The rules read English and some Hinglish (Hindi in Latin letters: "insta pe add
+karo", "mujhe marna hai", "goli maar dunga"); Devanagari and other languages are not
+read, and the README says so.
 
 **Be honest about the limits**, in code, docs and copy. Keyword filters are easy to get
-round (spelled-out digits, a bare username, contact details inside `[math]`, an email
-under a TLD not in `emailTLDs`) and they have false positives (gaming trash talk held as
+round (spelled-out digits, a separator `groupSeparator` does not know, a bare username,
+contact details inside `[math]`, an email under a TLD not in `emailTLDs`, any language
+the tables are not written in) and they have false positives (gaming trash talk held as
 self-harm, a countdown blocked as a phone number, a dose question held, a twelve-digit
 reference that passes the Verhoeff check). That is why a block quotes exactly what it
 matched and a hold waits for a person.
@@ -614,7 +619,8 @@ address for at most its window plus the sweep interval. Badged and
 unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
 - block: `422 {"error": <one sentence naming what to remove and where>, "outcome":
   "block", "rule": "contact"|"id_number", "field": "body"|"subject"|"name", "match":
-  <the source text, trimmed, at most 80 characters>}`
+  <the source text, trimmed, at most 80 characters (`quoteSource`): a longer one is cut
+  and ends in "…", and the client's `pointAtMatch` then selects to the end of the run>}`
 - support: `422 {"error": supportMessage, "outcome": "support"}`
 - hold: `202 {"held": true, "board": slug}` plus `"thread_no"` for a reply — never the
   rule or the post number.

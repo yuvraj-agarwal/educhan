@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The client keeps promises the server cannot check: that the poster key and
@@ -487,5 +488,22 @@ func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
 	status, out = h.postJSON(threadsPath("words"), map[string]any{"name": "", "body": "how old are you? dm me", "badge": false, "subject": ""})
 	if status != http.StatusAccepted || out["held"] != true || out["no"] != nil {
 		t.Errorf("a held thread: %d %v, want 202 held with no number", status, out)
+	}
+
+	// A match too long to quote whole ends in an ellipsis, which pointAtMatch
+	// takes off before it looks for the text and then selects to the end of
+	// the run, so the whole of a long link is selected rather than its start.
+	link := "https://discord.gg/" + strings.Repeat("abcdefghij", 10)
+	status, out = h.postJSON(replies, map[string]any{"name": "", "body": "come chat " + link + " now", "badge": false, "sage": false})
+	match, _ := out["match"].(string)
+	if status != http.StatusUnprocessableEntity || !strings.HasSuffix(match, "…") ||
+		!strings.HasPrefix(link, strings.TrimSuffix(match, "…")) || utf8.RuneCountInString(match) > maxMatchLen {
+		t.Errorf("a long link: %d %v, want 422 with the link's start and an ellipsis, at most %d characters", status, out, maxMatchLen)
+	}
+	point := withoutComments(jsFunction(t, script, "pointAtMatch"))
+	for _, want := range []string{`endsWith("…")`, `slice(0, -1)`, `/^\S*/.exec(input.value.slice(end))`} {
+		if !strings.Contains(point, want) {
+			t.Errorf("pointAtMatch no longer reads a cut match: missing %s", want)
+		}
 	}
 }

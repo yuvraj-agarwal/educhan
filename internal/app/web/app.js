@@ -2275,8 +2275,10 @@ const FAQ_SECTIONS = [
           hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
           it goes up. You can still post it.</li>
       </ul>
-      <p>These checks are simple: they only look for certain words and number patterns. They
-        miss plenty, and they sometimes stop a post that was fine. So the
+      <p>These checks are simple: they only look for certain words and number patterns, in
+        English and some Hinglish (Hindi typed in English letters). They don't read Hindi
+        in Devanagari or any other language. They miss plenty, and they sometimes stop a
+        post that was fine. So the
         <a href="/rules">rules</a> apply to everything, whether a check catches it or not, and
         moderators can still delete posts that break them. The checks don't keep a copy of
         what they read, and a post that's sent back isn't saved.</p>`,
@@ -3519,8 +3521,11 @@ function clearInvalid(input) {
 // focused, with the text selected so it can be deleted in one go. The server
 // quotes the post as it kept it, trimmed and with its line ends tidied, so
 // when the exact text is not in the field the search lets any run of spaces
-// and line breaks stand for another. A field it cannot find the text in still
-// gets the focus.
+// and line breaks stand for another. A match too long to quote whole comes
+// with its start and "…": the start is looked for, and the selection runs on
+// to the end of the run of text it is in, so deleting it takes the whole of
+// a long link rather than its first 80 characters. A field it cannot find
+// the text in still gets the focus.
 function pointAtMatch(form, { field: where, match }) {
   if (!["subject", "name", "body"].includes(where)) {
     return;
@@ -3536,7 +3541,11 @@ function pointAtMatch(form, { field: where, match }) {
   input.focus({ preventScroll: true });
   form.querySelector("[data-form-notice]")?.scrollIntoView({ block: "nearest" });
   input.scrollIntoView({ block: "nearest" });
-  const quoted = typeof match === "string" ? match.trim() : "";
+  let quoted = typeof match === "string" ? match.trim() : "";
+  const cut = quoted.endsWith("…") && !input.value.includes(quoted);
+  if (cut) {
+    quoted = quoted.slice(0, -1).trimEnd();
+  }
   if (!quoted) {
     return;
   }
@@ -3550,6 +3559,9 @@ function pointAtMatch(form, { field: where, match }) {
     }
     start = found.index;
     end = start + found[0].length;
+  }
+  if (cut) {
+    end += /^\S*/.exec(input.value.slice(end))[0].length;
   }
   try {
     input.setSelectionRange(start, end);
