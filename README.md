@@ -382,7 +382,7 @@ client can leave the image picker off a server that would refuse what it sends.
     whether or not it has to be turned upright, and progressive 4:2:0 and grey ones;
     baseline CMYK and RGB JPEGs and progressive 4:2:2 ones that need no turning;
     palette and grey PNGs; 8-bit colour PNGs, unless they are interlaced and have to be
-    turned; and lossy and lossless WebPs without transparency.
+    turned; and opaque lossy WebPs, stored as JPEGs.
   - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
     progressive 4:2:2 JPEGs, and interlaced 8-bit colour PNGs, that have to be turned;
     16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs with
@@ -400,6 +400,15 @@ client can leave the image picker off a server that would refuse what it sends.
   transparency is held instead to what a PNG of its size can come to, because stored
   losslessly it is meant to be many times the size it came in at; it is refused from
   its header when that is too large to process.
+
+  A lossless WebP, and a WebP whose transparency is stored compressed, are the one case
+  refused by the *size* of the upload rather than its resolution: Go's WebP decoder
+  sizes its internal tables from the compressed bitstream, not from any header field, so
+  a crafted file of a few hundred kilobytes can make it hold more than a gigabyte. There
+  is no way to tell a benign file from a crafted one without decoding it, so a lossless
+  or compressed-transparency WebP over about a third of a megabyte is refused from its
+  header; a small one (an icon or a sticker) is still stored. Opaque lossy WebPs, and
+  those whose transparency is uncompressed, are not affected.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour

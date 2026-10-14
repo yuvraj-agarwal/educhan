@@ -492,6 +492,10 @@ func pngInterlaced(data []byte) bool {
 // of it, which is no more than the lossless picture's own peak; and a picture
 // that keeps its transparency is converted to NRGBA, 4 bytes a pixel, to be
 // encoded as a PNG.
+//
+// A lossless bitstream, and a VP8L-compressed alpha plane, also make the
+// decoder hold its Huffman groups (vp8lMemory), alive while the pixels are
+// decoded, which the pixel terms alone do not cover.
 func webpPhases(data []byte, w, h int64) []phase {
 	px, stripped := w*h, int64(len(data))
 	planes := 384 * ((w + 15) / 16) * ((h + 15) / 16)
@@ -500,17 +504,92 @@ func webpPhases(data []byte, w, h int64) []phase {
 	lossless, alpha := webpPicture(data)
 	switch {
 	case lossless:
-		return []phase{strip, {first: 6 * px, alloc: 6 * px, after: 4 * px}}
+		v := vp8lMemory(stripped)
+		return []phase{strip, {first: v + 6*px, alloc: v + 6*px, after: 4 * px}}
 	case alpha:
+		var v int64
+		if compressedAlpha(data) {
+			v = vp8lMemory(stripped)
+		}
 		lossy.after += px
 		return []phase{
 			strip,
-			{first: 6 * px, alloc: 6 * px, after: stripped + px},
+			{first: v + 6*px, alloc: v + 6*px, after: stripped + px},
 			lossy,
 			{first: 4 * px, alloc: 4 * px, after: 4 * px},
 		}
 	}
 	return []phase{strip, lossy}
+}
+
+// vp8lGroupBacking is the largest backing array golang.org/x/image's vp8l
+// decoder allocates for its Huffman groups. A lossless (VP8L) bitstream, and
+// a VP8L-compressed alpha plane, may carry a meta-image that maps tiles to a
+// group index, and the decoder makes one hGroup for every index up to the
+// largest the meta-image holds (decodeHuffmanGroups). The index is two bytes,
+// so it reaches 65535; an hGroup is five Huffman trees, each a 24-byte slice
+// header and a 512-byte look-up table. None of this is in the file's header
+// or its resolution: a 1×1 lossless WebP of a few hundred kilobytes forces
+// the full allocation, and the only bound the file gives is its own size.
+const vp8lGroupBacking int64 = 65536 * 5 * (24 + 512) // 167.5 MiB
+
+// vp8lBackingPerByte and vp8lNodesPerByte bound, per byte of the bitstream,
+// the two allocations the vp8l decoder makes that the header cannot predict:
+// the hGroup backing array (vp8lGroupBacking, capped), and the trees' node
+// slices (make([]hNode, 1, 2*symbols-1), 8 bytes each). The cheapest hGroup
+// is five one-symbol trees, about 2.5 bytes of bitstream for 2680 bytes of
+// backing, so 1072. The most node memory a bitstream byte can force is
+// bounded by the decoder's alphabets (256, plus up to a 2048-entry colour
+// cache for the first tree) and the cheapest encoding of their code lengths
+// (about half a bit a symbol through repeat codes, eight node bytes a
+// symbol): about 256 node bytes a byte, so 384 leaves a margin. A crafted
+// 4.6 MiB file holds just over 1 GiB this way and measures well inside the
+// estimate these give (TestVP8LHuffmanMemoryIsCharged).
+const (
+	vp8lBackingPerByte int64 = 1072
+	vp8lNodesPerByte   int64 = 384
+)
+
+// vp8lMemory bounds the memory the vp8l decoder holds for a bitstream of n
+// bytes beyond its decoded pixels: the hGroup backing (capped at the 16-bit
+// index ceiling) and the trees' node slices. A file splits its bytes between
+// forcing more groups and fuller trees, so charging the maximum of each on
+// the whole size over-counts, which is safe. A lossless WebP or a
+// VP8L-compressed alpha plane larger than about a third of a megabyte is
+// refused by this from its header, before any cooldown (processingCost,
+// Inspect): x/image's decoder cannot be held to less, and no header field
+// says a given file is benign.
+func vp8lMemory(n int64) int64 {
+	return min(vp8lGroupBacking, vp8lBackingPerByte*n) + vp8lNodesPerByte*n
+}
+
+// compressedAlpha reports whether a WebP carries an alpha plane that
+// golang.org/x/image decodes through the vp8l decoder (compression method 1),
+// and so with its Huffman-group allocation. The low two bits of the first
+// byte of an ALPH chunk's payload hold the method; method 0 is uncompressed
+// and allocates only the plane. A file whose ALPH chunk cannot be read here
+// is treated as compressed, the dearer kind, as webpPicture costs an
+// unreadable file as lossless.
+func compressedAlpha(data []byte) bool {
+	if len(data) < 12 {
+		return false
+	}
+	b := data[12:]
+	for len(b) >= 8 {
+		n := uint64(binary.LittleEndian.Uint32(b[4:8]))
+		if string(b[:4]) == "ALPH" {
+			return len(b) < 9 || b[8]&0x03 != 0
+		}
+		if n > uint64(len(b)-8) {
+			break
+		}
+		next := 8 + int(n) + int(n&1)
+		if next > len(b) {
+			break
+		}
+		b = b[next:]
+	}
+	return false
 }
 
 // webpPicture reports whether a WebP's picture is lossless, and whether it

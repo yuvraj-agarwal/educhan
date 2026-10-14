@@ -713,10 +713,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   tests, over two minutes under `-race`. A change to a decode path, to `orient`, to the
   stored buffer or to the thumbnail changes `cost.go` in the same commit. A CMYK
   JPEG is turned into RGBA where it lies (`rgbaOfCMYK`), not into a second picture.
-  Tests narrow the budget with `narrowBudget`. Not modelled: x/image's VP8L decoder
-  allocates its Huffman groups (up to about 175 MB) from a count inside the compressed
-  bitstream, which no header shows; it predates this code and needs an upstream fix or
-  a VP8L parser.
+  Tests narrow the budget with `narrowBudget`. x/image's VP8L decoder allocates its
+  Huffman groups — a 167.5 MiB backing array at most (one `hGroup` per meta-image index,
+  `vp8lGroupBacking`), plus a node slice per tree — from counts deep inside the
+  compressed bitstream that no header or resolution shows. The only bound the file gives
+  is its own size, so `vp8lMemory` charges a lossless WebP and a VP8L-compressed alpha
+  plane that backing (capped by the bitstream size) plus a per-byte bound on the node
+  slices (`vp8lNodesPerByte`, with margin over the worst encoding). A crafted 4.6 MiB
+  lossless WebP that makes the decoder hold just over 1 GiB measures well inside this,
+  and anything over about a third of a megabyte is refused from its header as
+  `ErrImageTooLarge`, before any cooldown (`TestVP8LHuffmanMemoryIsCharged`,
+  `TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). So the 320 MiB bound above holds for
+  these files too; the cost of that bound is that large lossless and transparent
+  (VP8L-compressed-alpha) WebPs are refused, small ones still stored. An uncompressed
+  alpha plane is not decoded through VP8L and carries no such charge.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
   as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is

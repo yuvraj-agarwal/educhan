@@ -501,13 +501,17 @@ func headerUpload(head []byte, o uint16, size int) []byte {
 }
 
 // webpHeader is a VP8X WebP of the given size with a stub bitstream: lossy,
-// lossy with an alpha plane, or lossless.
+// lossy with an alpha plane (uncompressed, or VP8L-compressed with "calpha"),
+// or lossless.
 func webpHeader(kind string, w, h int) []byte {
 	switch kind {
 	case "lossy":
 		return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8 ", payload: make([]byte, 10)})
 	case "alpha":
 		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: make([]byte, 10)},
+			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+	case "calpha": // an alpha plane compressed with VP8L (method 1 in the low bits)
+		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
 			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
 	}
 	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: make([]byte, 10)})
@@ -577,7 +581,6 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 1},
 		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 1},
 		kind{"lossy WebP", webpOf("lossy"), 1},
-		kind{"lossless WebP", webpOf("lossless"), 1},
 	)
 	refused = append(refused, kind{"lossy WebP with transparency", webpOf("alpha"), 1})
 	refused = append(refused,
@@ -611,6 +614,19 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	}
 	// One pixel more than the cap is refused whatever it is.
 	check(kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
+
+	// Lossless WebP and a VP8L-compressed alpha plane are the one case refused
+	// by the size of the upload rather than its resolution: golang.org/x/image's
+	// vp8l decoder sizes its Huffman groups and tree nodes from the bitstream,
+	// not from any header field, so a file over about a third of a megabyte is
+	// refused whatever its resolution, and a small one accepted (vp8lMemory).
+	for _, k := range []string{"lossless", "calpha"} {
+		check(kind{k + " WebP", webpOf(k), 1}, 256, 256, small, nil)
+		check(kind{k + " WebP, large upload", webpOf(k), 1}, 256, 256, large, ErrImageTooLarge)
+	}
+	// An uncompressed alpha plane needs no such limit: it is not decoded
+	// through vp8l, so a large upload of one is accepted at a small size.
+	check(kind{"lossy WebP, uncompressed alpha", webpOf("alpha"), 1}, 256, 256, large, nil)
 }
 
 // The photos phones and cameras save at 24 megapixels are taken at their full
