@@ -404,7 +404,10 @@ and Childhelp in the US).
 are easy to get round — a number spelled out in words or split some other way
 (a `·` or `|` between the groups, a wider gap, a one-digit group, or a run of
 pairs set off by spaces), a username
-with no app named beside it, contact details hidden in `[math]`, the same
+with no app named beside it, contact details hidden in `[math]`, an email
+address under a top-level domain the filter does not list (it knows the common
+generic ones and about fifty countries', India's, the UK's and the US's among
+them, plus any university's `edu` or `ac` domain under a country's), the same
 request in Devanagari or another language — and they catch posts that
 are fine: gaming trash talk, a countdown written as spaced digits, a question
 about a medicine's dose, a twelve-digit reference number that happens to pass

@@ -743,7 +743,7 @@ var (
 		`tg`, whatsApp, `kik`, `wechat`, `skype`, `viber`, `tik~tok`, `twitter`, `facebook`, `fb`, `reddit`,
 		`roblox`, `yubo`, `wizz`)
 	otherApps = words(`messenger`, `bereal`, `hangouts`, `gmail`, `e~?mail`, `xbox`, `psn`, `playstation`,
-		`fortnite`, `valorant`, `minecraft`, `omegle`)
+		`fortnite`, `valorant`, `minecraft`, `omegle`, `the~gram`)
 	ambiguousApps = words(`signal`, `sc`, `dc`, `wa`, `wp`, `steam`, `epic`, `monkey`)
 	placeApps     = words(contactApps, otherApps)
 	anyApps       = words(placeApps, ambiguousApps)
@@ -757,8 +757,11 @@ var (
 var (
 	yours     = words(`your`, `ur`, `yo`, `ya`, `u'?r`)
 	whatsYour = words(`what'?s`, `whats`, `wats`, `wat'?s`, `wht'?s`, `what~is`, `wuts?`, `send`, `give`, `drop`,
-		`share`, `post`, `tell`, `dm`)
+		`share`, `post`, `tell`, `dm`, `gimme`, `lemme~`+words(`get`, `have`, `add`, `see`))
 	asksTo = words(`on`, `at`, `in`, `via`, `thru`, `through`, `over`, `@`)
+	// hindiGive is "give" or "send" or "tell", in Hinglish.
+	hindiGive = words(`do`, `de`, `dedo`, `de~do`, `dena`, `bhejo`, `bhej`, `bhej~do`, `batao`, `bata`, `bta`,
+		`share~`+karo)
 	// karo and its spellings: "do it", in Hinglish.
 	karo = words(`karo`, `kar`, `kr`, `kro`, `karna`, `krna`, `karlo`, `kar~lo`, `kr~lo`, `kar~do`, `kardo`,
 		`krdo`, `kr~do`)
@@ -773,8 +776,9 @@ var askRules = []rule{bothViews(`\b` + words(
 		`hit`)+`~(?:me|us)~(?:up~)?`+asksTo+`~(?:my~)?`+anyApps,
 	// "call me on whatsapp", "find me on insta": not "find me in dc"
 	words(`call`, `ring`, `follow`, `contact`, `reach`, `find`)+`~(?:me|us)~(?:up~)?`+asksTo+`~(?:my~)?`+placeApps,
-	// "hmu on snap"
+	// "hmu on snap", "hmu snap"
 	`hmu~`+words(`on`, `at`, `in`, `via`, `over`, `@`)+`~(?:my~)?`+anyApps,
+	`hmu[ \t]+(?:my~)?`+contactApps,
 	// "add my snap", "follow my insta"
 	words(`add`, `follow`, `dm`, `message`, `msg`, `text`, `check~out`, `sub~to`, `subscribe~to`)+`~my~`+contactApps,
 	// "what's your snap", "drop your insta"
@@ -798,22 +802,27 @@ var askRules = []rule{bothViews(`\b` + words(
 	words(`let'?s`, `lets`, `we~can`, `can~we`, `wanna`, `want~to`)+`~`+
 		words(`move`, `go`, `continue`)+`~`+words(`to`, `over~to`, `on~to`, `onto`)+`~`+placeApps,
 	`continue~(?:this~)?`+words(`on`, `over~on`, `in`)+`~`+placeApps,
-	// "are you on snap?"
-	words(`are`, `r`)+`~`+words(`you`, `u`, `ya`)+`~on~`+placeApps,
+	// "are you on snap?": an app to talk on, not a game or a console ("are you
+	// on xbox or ps5?"), and with only a space after "on", so that "what
+	// version are you on? minecraft 1.20" is two sentences.
+	words(`are`, `r`)+`~`+words(`you`, `u`, `ya`)+`~on[ \t]+`+contactApps,
 	// Hinglish: "insta pe add karo", "whatsapp pe baat karte hain"
 	placeApps+`~`+words(`pe`, `par`, `pr`)+`~(?:mujhe~)?`+words(`add`, `follow`, `message`, `msg`, `dm`, `text`, `ping`)+
 		`~`+karo,
 	placeApps+`~`+words(`pe`, `par`, `pr`)+`~baat~`+words(karo, `karte`, `krte`, `karenge`, `krenge`, `karein`, `karen`),
-	// "apna number do", "tera number de"
+	// "apna number do", "tera number de", "apni insta id bhejo", "tera snap kya hai"
 	words(`apna`, `apni`, `tera`, `teri`, `tumhara`, `tumhari`, `aapka`, `aapki`, `apka`, `apki`)+`~`+
-		words(`number`, `no`, `num`, `nmbr`, `id`, contactApps)+`~`+
-		words(`do`, `de`, `dedo`, `de~do`, `dena`, `bhejo`, `bhej`, `bhej~do`, `batao`, `bata`, `bta`, `share~`+karo),
+		`(?:`+contactApps+`~)?`+words(`number`, `no`, `num`, `nmbr`, `id`, contactApps)+`~`+
+		words(hindiGive, `kya~`+words(`hai`, `h`, `he`, `hain`)),
+	// "insta id do"
+	contactApps+`~id~`+hindiGive,
 ) + `\b(?:[ \t]*@[ \t]*[\pL\pN._]+)?`),
 	// "whatsapp me", "kik me": only a space between, so "WhatsApp, me and my
 	// friends" is a list.
 	bothViews(`\b` + words(whatsApp, `kik`, `telegram`, `snapchat`) + `[ \t]+me\b`),
-	// "ur snap?"
+	// "ur snap?", "u on snap?"
 	bothViews(`\b` + words(`your`, `ur`) + `~` + contactApps + `[ \t]*\?`),
+	bothViews(`\b` + words(`you`, `u`, `ya`) + `[ \t]+on[ \t]+` + contactApps + `[ \t]*\?`),
 }
 
 // atAskRule asks for a handle by its "@" alone: "drop ur @", "what's your @".
@@ -823,12 +832,16 @@ var atAskRule = bothViews(`\b` + whatsYour + `~(?:me~)?` + yours + `[ \t]*@`)
 // topicWords, straight after an app's name, make it the app's score, game,
 // look or posts that are being talked about, not a place to talk ("check out
 // my reddit post"). The exams are Telangana's, whose "TG" is also Telegram's:
-// "what's your TG EAPCET rank?".
+// "what's your TG EAPCET rank?"; the results are an exam's, SNAP's among them,
+// which is Symbiosis's MBA entrance as well as Snapchat: "what's your SNAP
+// percentile?".
 var topicWords = canonSetOf(`score scores karma avatar streak streaks level levels rank elo rating bio pfp
 	aesthetic filter filters theme wallpaper game games build builds map maps obby clip clips song songs edit
 	edits skin skins outfit emoji emojis stats playlist screen bot bots story stories feed algorithm
 	post posts reel reels video videos comment comments
-	eapcet eamcet icet ecet pgecet polycet lawcet edcet`)
+	eapcet eamcet icet ecet pgecet polycet lawcet edcet
+	percentile percentiles result results cutoff cutoffs marks mark exam exams slot slots attempt attempts
+	paper papers prep mock mocks`)
 
 func askCheck(v *view, m []int) bool {
 	if numberAsks[lastWord(v.text[m[0]:m[1]])] && rankedNumber(v.text[m[1]:]) {
@@ -893,13 +906,20 @@ var notAHandle = func() map[string]bool {
 }()
 
 // myMailRule and mailColonHandle name an address by its provider and the
-// part before the "@": "my gmail is coolkid12", "gmail: coolkid12". They
-// need the same evidence as a handle.
+// part before the "@": "my gmail is coolkid12", "gmail: coolkid12", "email ->
+// coolkid12". They need the same evidence as a handle. Without "my", "=",
+// "=>" and ">" are code ("email = user.email", "email => email.length",
+// "echo $email >> emails.txt"), not a separator.
 var (
 	myMailRule = bothViews(`\b` + words(`my`, `mera`, `meri`) + `[^\pL\pN_]*` + mailApps + `\b\s*(?:` +
-		words(`is`, `hai`) + `\b|[=:])\s*(@?)([\pL\pN._]{2,30})()`)
-	mailColonHandle = bothViews(`\b` + mailApps + `\s*:\s*(@?)([\pL\pN._]{2,30})()`)
+		words(`is`, `hai`) + `\b|` + handleSeparator + `)\s*(@?)([\pL\pN._]{2,30})()`)
+	mailColonHandle = bothViews(`\b` + mailApps + `\s*(?:-+>|→|:|-\s)\s*(@?)([\pL\pN._]{2,30})()`)
 )
+
+// handleSeparator is what is written between an app and a handle: a colon,
+// an "=", a dash with a space after it, or an arrow ("->", "=>", "→", ">",
+// ">>"), or a bar.
+const handleSeparator = `(?:-+>|=>|→|>{1,2}|\||[:=]|-\s)`
 
 // handleRules name an account on an app directly: "insta: x_y_z", "snap
 // @ my_name", "insta id x_y_z", "discord: name#1234", "snap -> x_y_z",
@@ -910,12 +930,13 @@ var (
 var (
 	appColonHandle = bothViews(`\b` + handleApps + `\b(?:~` +
 		words(`id`, `username`, `user~name`, `handle`, `acc`, `account`, `tag`) +
-		`)?\s*(?:-+>|=>|→|[:=]|-\s)\s*(@?)([\pL\pN._]{2,30})(#\d{4})?`)
+		`)?\s*` + handleSeparator + `\s*(@?)([\pL\pN._]{2,30})(#\d{4})?`)
 	appAtHandle = bothViews(`\b` + handleApps + `\s*(?:is\s*)?(@)\s*([\pL\pN._]{2,30})(#\d{4})?`)
-	// "insta id x_y_z", "snap me x_y_z", "snap x_y_z", "insta id hai x_y_z":
-	// a label, "me" or a copula, or nothing, and no colon.
+	// "insta id x_y_z", "snap me x_y_z", "snap x_y_z", "insta id hai x_y_z",
+	// "discord tag name#1234": a label, "me" or a copula, or nothing, and no
+	// colon.
 	appLabelHandle = bothViews(`\b` + handleApps + `(?:~` +
-		words(`id`, `username`, `user~name`, `handle`, `me`) + `)?(?:[ \t]+` + words(`is`, `hai`, `h`) +
+		words(`id`, `username`, `user~name`, `handle`, `tag`, `me`) + `)?(?:[ \t]+` + words(`is`, `hai`, `h`) +
 		`)?\s+(@?)([\pL\pN._]{2,30})(#\d{4})?`)
 	// "mera insta coolkid_12 hai": the handle before the copula.
 	hindiHandle = bothViews(`\b` + words(`mera`, `meri`, `mere`, `apna`, `apni`) + `~` + handleApps +
@@ -930,15 +951,37 @@ var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandl
 
 // toolNames, with a version or a number after them, name a thing talked about
 // on an app before it, not an account: "python3 on discord", "ps5 on reddit",
-// "cs50 on discord", "jee2025 on reddit". Only handleBeforeApp reads them,
-// where "x on <app>" is as often a topic as an account; after "insta:" a
-// handle is a handle.
+// "cs50 on discord", "jee2025 on reddit", "python3.12 on discord", "cs50x on
+// reddit". handleBeforeApp reads them, where "x on <app>" is as often a topic
+// as an account, and so does appLabelHandle when nothing but a space comes
+// between the app and the word, where "ig" is as often "I guess" and "TG"
+// Telangana ("ig python3 is better"); after "insta:" or "insta id" a handle is
+// a handle. A spelledEmail reads them too: "Python3.12 at python.org".
 var toolNames = regexp.MustCompile(`^(?:` + words(`python`, `py`, `java`, `node`, `php`, `perl`, `ruby`, `html`, `css`,
 	`es`, `web`, `gpt`, `llama`, `ios`, `android`, `windows`, `win`, `macos`, `ubuntu`, `debian`, `fedora`, `ps`,
 	`xbox`, `gta`, `fifa`, `fc`, `cod`, `mw`, `mp`, `cs`, `jee`, `neet`, `cuet`, `gate`, `cbse`, `icse`, `ipl`,
 	`iphone`, `pixel`, `galaxy`, `redmi`, `vue`, `angular`, `react`, `dotnet`, `cpp`, `swift`, `kotlin`, `ue`,
 	`unreal`, `excel`, `office`, `photoshop`, `overwatch`, `tekken`) +
-	`)[-.]?\d{1,4}$`)
+	`)[-.]?\d{1,4}(?:\.\d{1,3})*[a-z]?$`)
+
+// dottedAbbreviation reports a degree written with its points ("B.Tech",
+// "M.Sc", "Ph.D", "LL.B"), or a numbered part of a text ("vol.1", "no.1",
+// "ch.3", "Q.5"): words with a dot in them that are not someone's name.
+func dottedAbbreviation(word string) bool {
+	w := strings.ToLower(word)
+	return strings.Contains(w, ".") && degreeNames[strings.ReplaceAll(strings.TrimSuffix(w, "."), ".", "")] ||
+		numberedPart.MatchString(w)
+}
+
+var (
+	degreeNames = setOf(`btech mtech be me bsc msc phd bed med bcom mcom ba ma bba mba bca mca barch march bpharm
+		mpharm pharmd mbbs bds mds bams bhms llb llm mphil dphil bdes mdes bfa mfa bvoc beng meng bs ms bpt mpt
+		psyd edd scd dsc`)
+	numberedPart = regexp.MustCompile(`^(?:vol|no|nos|ch|chap|sec|q|ques|pg|p|pp|fig|eq|ex|art|para|pt|unit|lec|ed)` +
+		`\.\d{1,4}[a-z]?$`)
+	// ordinalWord is an ordinal and what it counts: "2nd-year", "3rd_sem".
+	ordinalWord = regexp.MustCompile(`^\d{1,2}(?:st|nd|rd|th)(?:[-._][a-z]*)?$`)
+)
 
 // notHandles are words written with an "@" that address a group, not a
 // person: "@everyone on discord".
@@ -993,12 +1036,30 @@ func readTLD(tld string) string {
 	return tld
 }
 
-// emailTLDs are the top-level domains an address is recognised under. An
-// address anywhere else gets through, a deliberate gap: code is scanned, and
-// "x@self.weight" or "user@host.sh" in a code block is not an email address.
+// emailTLDs are the top-level domains an address is recognised under, with
+// academicSecondLevel's. An address anywhere else gets through, a deliberate
+// gap: code is scanned, and "x@self.weight", "x @ w.to(dev)" or "user@host.sh"
+// in a code block is not an email address.
 var emailTLDs = setOf(`com net org edu gov mil int info biz co io ai me app dev xyz online site
 	tech live email mail cloud in uk us ca au nz de fr es it nl be ch at se no dk fi ie pt ru ua cn jp
 	kr sg my id ph th vn pk bd lk np ae sa qa za ng ke br mx ar cl tv cc ac ly gg fm`)
+
+// academicSecondLevel reports a university's or a school's domain under a
+// country's ("ogrenci.edu.tr", "mail.tau.ac.il"), which is recognised whatever
+// the country.
+func academicSecondLevel(domain, tld string) bool {
+	if len(tld) != 2 || strings.IndexFunc(tld, func(r rune) bool { return r < 'a' || r > 'z' }) >= 0 {
+		return false
+	}
+	_, sld, ok := strings.Cut(domain, ".")
+	for ok {
+		if !strings.Contains(sld, ".") {
+			break
+		}
+		_, sld, ok = strings.Cut(sld, ".")
+	}
+	return ok && (sld == "edu" || sld == "ac" || sld == "sch" || sld == "k12")
+}
 
 // exampleDomain reports the domains RFC 2606 reserves for documentation and
 // testing, which are no one's address.
@@ -2695,8 +2756,11 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 	// underscores, dots and digits are as the poster wrote them.
 	for _, r := range handleRules {
 		check := f.handleCheck
-		if r == handleBeforeApp {
+		switch r {
+		case handleBeforeApp:
 			check = f.handleFirstCheck
+		case appLabelHandle:
+			check = f.labelHandleCheck
 		}
 		from, to, ok = f.first(r, check)
 		consider(from, to, ok, kindHandle)
@@ -2747,6 +2811,23 @@ func (f *scannedField) handleFirstCheck(v *view, m []int) bool {
 	}
 	return f.handleCheck(v, m)
 }
+
+// labelHandleCheck is handleCheck for a word straight after an app's name,
+// with nothing but a space between: a tool with its version or a degree
+// written with its points is the topic, not a handle ("ig python3 is better",
+// "TG B.Tech counselling", "ok ig M.Sc is the better option"). After a label
+// ("insta id python3") or an "@" it is a handle.
+func (f *scannedField) labelHandleCheck(v *view, m []int) bool {
+	at := m[2] >= 0 && m[3] > m[2]
+	a, b := v.span(m[4], m[5])
+	word := strings.ToLower(f.src[a:b])
+	if !at && !handleLabels[lastWord(v.text[m[0]:m[4]])] && (toolNames.MatchString(word) || dottedAbbreviation(word)) {
+		return false
+	}
+	return f.handleCheck(v, m)
+}
+
+var handleLabels = canonSetOf(`id username name handle tag me is hai h`)
 
 // myAppCheck judges "my snap is <word>" by the word: an "@" before it or a
 // username's marks make it a handle, notAHandle words do not, and a plain
@@ -2802,7 +2883,7 @@ var measureShape = regexp.MustCompile(`^(?:v\d+(?:\.\d+)*[a-z]?|(?:\d+(?:[.,]\d+
 // top-level domain had a space beside it, which is allowed only for ".com",
 // where it is a known dodge; anywhere else it is a sentence ending.
 func emailAddress(local, domain, tld string, spaced bool) bool {
-	if !emailTLDs[tld] || (spaced && tld != "com") {
+	if !emailTLDs[tld] && !academicSecondLevel(domain, tld) || (spaced && tld != "com") {
 		return false
 	}
 	if local == "git" { // git@github.com:owner/repo is an SSH remote, not a mailbox
@@ -2820,7 +2901,10 @@ func emailAddress(local, domain, tld string, spaced bool) bool {
 // dot ac dot in"). A site followed by a path is a link: "docs at
 // docs.python.org/3/". A problem, a level or a job title ("Q3 at
 // leetcode.com", "SDE2 at amazon.com", "Div2 at codeforces.com") is shaped
-// like a name but is not one, except at a mail provider or a university.
+// like a name but is not one, except at a mail provider or a university; and
+// a degree, a numbered part of a text, an ordinal or a tool's version ("B.Tech
+// at josaa.nic.in", "vol.1 at jstor.org", "2nd-year at iitb.ac.in",
+// "Python3.12 at python.org") is not one anywhere but at a mail provider.
 func spelledEmail(local, at, domain, tld string, plainDots bool, next string) bool {
 	if strings.HasPrefix(next, "/") || !emailAddress(local, domain, tld, false) {
 		return false
@@ -2831,8 +2915,13 @@ func spelledEmail(local, at, domain, tld string, plainDots bool, next string) bo
 	label, _, _ := strings.Cut(domain, ".")
 	academic := tld == "edu" || strings.HasSuffix(domain, ".ac") || strings.HasSuffix(domain, ".edu")
 	switch {
+	case nameLike(local) && mailProviders[label]:
+		return true
 	case nameLike(local):
-		return !codeShape.MatchString(local) || mailProviders[label] || academic
+		if dottedAbbreviation(local) || ordinalWord.MatchString(local) || toolNames.MatchString(local) {
+			return false
+		}
+		return !codeShape.MatchString(local) || academic
 	case mailProviders[label]:
 		return !notALocalPart[local]
 	case plainDots:
