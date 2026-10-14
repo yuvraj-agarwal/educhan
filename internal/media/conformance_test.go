@@ -297,17 +297,22 @@ func testStoreContract(t *testing.T, factory newStore) {
 		}
 	})
 
-	// A deadline that ends the thumbnail's write ends the save, and the
+	// A context that ends during the thumbnail's write ends the save, and the
 	// original written before it is removed all the same: the removal does
-	// not run on the context that has just run out.
-	t.Run("a save cut off by its deadline removes what it already wrote", func(t *testing.T) {
+	// not run on the context that has just run out. stallThumbStore ends the
+	// context from inside that write, once the original is surely stored, so
+	// the save is cut off at exactly that point on every run — there is no
+	// wall-clock deadline that slow processing or a slow original write could
+	// outrun, which once made this flake.
+	t.Run("a save cut off while writing the thumbnail removes what it already wrote", func(t *testing.T) {
 		store := factory(t)
-		stalling := &stallThumbStore{Store: store}
+		png := encodePNG(t, 400, 400) // built before the context, not timed against it
 
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		if _, err := Save(ctx, stalling, "general", encodePNG(t, 400, 400), time.Now()); !errors.Is(err, context.DeadlineExceeded) {
-			t.Fatalf("Save error = %v, want context.DeadlineExceeded", err)
+		stalling := &stallThumbStore{Store: store, cutOff: cancel}
+		if _, err := Save(ctx, stalling, "general", png, time.Now()); !errors.Is(err, context.Canceled) {
+			t.Fatalf("Save error = %v, want context.Canceled", err)
 		}
 		if stalling.original == "" {
 			t.Fatal("the original was never written, so the test proves nothing")
@@ -497,16 +502,21 @@ func (f *failThumbStore) Put(ctx context.Context, key, contentType string, r io.
 	return nil
 }
 
-// stallThumbStore writes originals to the real backend and holds a
-// thumbnail's write until its context ends, which is a write a deadline cut
-// off.
+// stallThumbStore writes originals to the real backend and, when the
+// thumbnail's write begins, ends the save's context through cutOff and then
+// blocks on it — standing in for a context that runs out during that write,
+// deterministically and the moment the original is safely stored.
 type stallThumbStore struct {
 	Store
+	cutOff   context.CancelFunc
 	original string
 }
 
 func (s *stallThumbStore) Put(ctx context.Context, key, contentType string, r io.Reader) error {
 	if strings.HasPrefix(key, ThumbPrefix+"/") {
+		if s.cutOff != nil {
+			s.cutOff()
+		}
 		<-ctx.Done()
 		return ctx.Err()
 	}
