@@ -380,8 +380,8 @@ outcome:
 | Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps; and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z", "insta pe add karo", "apna number do"). An app named on its own is fine |
 | Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit), US Social Security numbers written with dashes, UK National Insurance numbers |
 | Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "thinking about ending it", "kms", "mujhe marna hai"), and a question about a method, which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
-| Hold (`202`) | `threat` | An intent to hurt people or attack a place ("I'm bringing a gun", "gonna shoot up"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game, and a quoted report are not threats |
-| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "neck yourself", how-many and what-dose questions, lethal doses, how to tie or make a noose, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys") |
+| Hold (`202`) | `threat` | An intent to hurt people or attack a place ("I'm bringing a gun", "gonna shoot up"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game, a quoted report, an exam, a team or a market ("kill JEE tomorrow", "a bloodbath on Dalal Street"), a drill, and hyperbole ("you'll die when you see the results") are not threats |
+| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "neck yourself", how-many and what-dose questions, lethal doses, how to tie or make a noose, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys", "a bad rank doesn't end your life") or warns ("be careful with the scalpel, you could cut yourself"), and not "die your hair" or "a hill to die on" |
 | Hold (`202`) | `grooming` | An age, school-year or location question and a private-contact or meet-up cue in the same post |
 
 The patterns are written for English and for some Hinglish (Hindi written in
@@ -390,9 +390,11 @@ language, is not read at all.
 
 Blocks come first, then support (unless `support_seen`), then holds. A number
 is a phone number only when it stands on its own: dates, times, years, scores,
-prices, ISBNs, sums, decimals, numbers with thousands separators, labelled
-references (an order, roll, seat or application number, a hall ticket) and
-digit runs inside longer numbers pass, and so do Ofcom's and the NANP's numbers
+prices, ISBNs, sums, decimals and ranges of them, numbers with thousands
+separators, IPv4 addresses, a program's output ("Output: …", "it returns …"),
+labelled references (an order, roll, seat or application number, a hall
+ticket, "ISBN-10:", "PNR status for …") and digit runs inside longer numbers
+pass, and so do Ofcom's and the NANP's numbers
 for drama and the crisis lines whose numbers look like phone numbers (iCall,
 the Vandrevala Foundation and AASRA in India; the old National Suicide
 Prevention Lifeline, the Trevor Project, the National Domestic Violence Hotline
