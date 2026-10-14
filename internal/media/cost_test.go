@@ -205,10 +205,13 @@ func TestWebPChunkWalkDoesNotHoldAStructPerChunk(t *testing.T) {
 	runtime.KeepAlive(out)
 
 	got := int64(after.TotalAlloc - before.TotalAlloc)
-	// A riffChunk is two headers wide, so one per chunk is chunks*40 bytes of
-	// slice before any growth doubling. The bound sits well under that and well
-	// over the file plus the short id string the walk makes for each chunk.
-	limit := int64(len(data)) + chunks*16
+	// A riffChunk is forty bytes, so a slice of one per chunk is chunks*40
+	// before the doubling append does as it grows, which lands it at several
+	// times this; the walk instead holds the picture and a short id string per
+	// chunk as it goes. The bound is the file plus one struct's width a chunk:
+	// well over what the walk takes (about 2.4 MiB, or 4.8 under the race
+	// detector's own allocation) and well under the slice.
+	limit := int64(len(data)) + chunks*40
 	if got > limit {
 		t.Errorf("stripWebP of a %d-chunk file allocated %d bytes, over %d: it is holding a struct per chunk", chunks, got, limit)
 	}
