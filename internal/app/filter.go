@@ -1272,7 +1272,8 @@ var supportRules = []rule{bothViews(`\b` + words(
 	`mujhe~`+words(`marna`, `mar~jana`, `mar~jaana`)+`~(?:hai|h)`,
 	words(`mar~jana`, `mar~jaana`, `marna`)+`~(?:hai|h)~mujhe`,
 	words(`main`, `mai`, `me`)+`~`+words(`marna`, `mar~jana`)+`~`+words(`chahta`, `chahti`),
-	`suicide~`+words(`karna`, `krna`, `kar~lunga`, `kar~lungi`, `karunga`, `karungi`)+
+	words(`suicide`, `khud~?kushi`, `khud~?khushi`)+`~`+words(`karna`, `krna`, `kar~lunga`, `kar~lungi`,
+		`karunga`, `karungi`)+
 		`(?:~`+words(`chahta`, `chahti`, `hai`, `h`)+`)?`,
 	words(`jeena`, `jina`)+`~`+words(`nahi`, `nhi`)+`~`+words(`chahta`, `chahti`, `hai`),
 	`marne~ka~(?:mann|man)~`+words(`hai`, `h`, `karta`, `karti`, `kar~raha`, `kar~rha`),
@@ -1283,19 +1284,24 @@ var supportRules = []rule{bothViews(`\b` + words(
 // selfHarmCheck.
 var selfHarmRules = []rule{bothViews(`\b` + words(
 	`k+y+s+`,
-	`kill~`+words(`your`, `ur`, `yo`)+`~sel(?:f|ves)`, `kill~urself`, `kill~yourselves`,
+	// "kill", and "kil" with one l, which the loose view reads as "kii".
+	`kil+~`+words(`your`, `ur`, `yo`)+`~sel(?:f|ves)`, `kil+~urself`, `kil+~yourselves`,
 	`unalive~`+words(`your`, `ur`)+`~self`,
 	words(`go`, `pls`, `please`, `plz`, `why~don'?t~you`, `why~dont~you`, `you~should`, `u~should`,
 		`you~shud`, `u~shud`, `you~need~to`, `u~need~to`, `you~deserve~to`, `u~deserve~to`, `you~can~go`,
 		`u~can~go`, `you~ought~to`, `you~must`)+`~(?:just~)?`+
-		words(`die`, `kill~(?:your|ur)~self`, `hang~(?:your|ur)~self`, `cut~(?:your|ur)~self`,
-			`end~your~life`, `starve~(?:your|ur)~self`, jumpOff, `cut~deeper`, `drink~bleach`),
+		words(`die`, `kil+~(?:your|ur)~self`, `hang~(?:your|ur)~self`, `cut~(?:your|ur)~self`,
+			`end~your~life`, `starve~(?:your|ur)~self`, jumpOff, `cut~deeper`, `drink~bleach`, `commit~suicide`,
+			`an~hero`, `off~(?:your|ur)~self`, `delete~(?:your|ur)~self`),
 	words(`cut`, `hang`, `starve`, `neck`, `rope`, `end`)+`~`+words(`your`, `ur`)+`~sel(?:f|ves)`,
 	`end~`+words(`your`, `ur`)+`~life`,
-	`slit~`+words(`your`, `ur`)+`~wrists?`,
+	words(`slit`, `cut`)+`~`+words(`your`, `ur`)+`~wrists?`,
+	`why~`+words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`still`, `even`)+`~alive`,
 	// Imperatives with no "you" before them, which selfHarmCheck takes only
-	// at the start of what is said: "just die", not "i just die every time".
-	jumpOff, `drink~bleach`, `just~die`, `cut~deeper`,
+	// at the start of what is said: "just die", not "i just die every time";
+	// "off yourself", not "take the pressure off yourself".
+	jumpOff, `drink~bleach`, `just~die`, `cut~deeper`, `an~hero`,
+	words(`off`, `delete`)+`~`+words(`your`, `ur`)+`~sel(?:f|ves)`,
 	words(`you`, `u`)+`~`+words(`don'?t`, `dont`, `do~not`)+`~deserve~to~`+words(`live`, `be~alive`, `exist`),
 	words(`nobody`, `no~one`, `noone`)+`~`+words(`would`, `will`, `'?d`, `is~gonna`, `is~going~to`)+
 		`~(?:even~)?`+words(`miss`, `care~if`)+`~`+words(`you`, `u`),
@@ -1303,7 +1309,8 @@ var selfHarmRules = []rule{bothViews(`\b` + words(
 	// Hinglish: "tu mar ja", "suicide kar le".
 	words(`tu`, `tum`, `aap`)+`~(?:`+words(`jaake`, `ja~ke`)+`~)?mar~`+words(`ja`, `jaa`, `jao`, `jaiye`),
 	`mar~`+words(`ja`, `jaa`, `jao`),
-	`suicide~`+words(`kar~le`, `kar~lo`, `karle`, `karlo`, `kr~le`, `kr~lo`, `krle`, `krlo`),
+	words(`suicide`, `khud~?kushi`, `khud~?khushi`)+`~`+words(`kar~le`, `kar~lo`, `karle`, `karlo`, `kr~le`,
+		`kr~lo`, `krle`, `krlo`),
 	words(`jaake`, `ja~ke`)+`~mar`,
 	// Pro-eating-disorder content.
 	`thinspo`, `thinspiration`, `meanspo`, `bonespo`, `skinnyspo`, `pro~?ana`, `pro~?mia`,
@@ -1321,16 +1328,24 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		words(`i`, `you`, `u`, `one`, `someone`, `a~person`, `people`)+`~`+methods,
 	`how~to~`+words(methods, `cut~without~`+words(`anyone`, `people`, `parents`)+`~`+
 		words(`knowing`, `noticing`, `seeing`), `hide~(?:my~)?`+words(`cuts`, `scars`, `self~harm`)),
-	`how~`+words(`many`, `much`)+`~[^.?!\n]{0,60}?~`+words(`to~die`, `to~kill~`+words(`my`, `your`)+`~self`,
+	`how~`+words(`many`, `much`)+`~[^.?!\n]{0,100}?~`+words(`to~die`, `to~kill~`+words(`my`, `your`)+`~self`,
+		`to~kill~`+words(`me`, `you`, `someone`, `a~person`),
 		`to~overdose`, `to~od`, `overdose`, `be~fatal`, `be~lethal`, `be~deadly`, `is~fatal`, `is~lethal`,
 		`is~deadly`, `would~kill~`+words(`me`, `you`, `someone`, `a~person`), `to~end~it`, `to~end~my~life`),
 	// "how many sleeping pills are lethal": "are" only with a medicine named,
 	// since "how many snakes are deadly" is a biology question.
-	`how~many~[^.?!\n]{0,40}?`+medicines+`[^.?!\n]{0,20}?~are~`+
+	`how~many~[^.?!\n]{0,60}?`+medicines+`[^.?!\n]{0,60}?~are~`+
 		words(`lethal`, `fatal`, `deadly`, `enough~to~`+words(`die`, `kill~`+words(`me`, `you`, `someone`), `od`, `overdose`)),
 	// "will 20 pills kill me"
 	words(`will`, `would`, `could`, `can`, `does`, `do`)+`~(?:\d+~)?`+medicines+`~`+
 		words(`kill~me`, `kill~you`, `kill~someone`, `be~fatal`, `be~lethal`, `be~enough`),
+	// "is 20 paracetamol enough to die", "are 20 pills enough to kill me"
+	`(?:\d+~)?`+medicines+`~(?:`+words(`be`, `is`, `are`)+`~)?enough~to~`+
+		words(`die`, `kill~`+words(`me`, `you`, `someone`), `kill~`+words(`my`, `your`)+`~self`, `od`, `overdose`,
+			`end~it`),
+	// "can i die from 20 paracetamol", "will i die if i take all my pills"
+	words(`can`, `will`, `would`, `could`)+`~i~die~`+words(`from`, `of`, `if~i~`+words(`take`, `took`, `eat`,
+		`swallow`, `have`))+`~(?:`+words(`\d+`, `a~few`, `all~(?:my|the)`, `too~many`, `some`)+`~)?`+medicines,
 	`what~`+words(`dose`, `amount`, `quantity`, `dosage`)+`~[^.?!\n]{0,40}?~`+
 		words(`lethal`, `fatal`, `deadly`, `kill~`+words(`me`, `you`, `myself`, `yourself`), `to~die`,
 			`overdose`, `od`),
@@ -1349,8 +1364,12 @@ var medicines = words(`pills?`, `tablets?`, `capsules?`, `paracetamol`, `tylenol
 	`aspirin`, `advil`, `panadol`, `crocin`, `dolo`, `meds`, `medicines?`, `medications?`, `antidepressants?`,
 	`sleeping~pills`, `insulin`, `xanax`, `benadryl`, `melatonin`)
 
-// methods are the ways of hurting or killing oneself a how-question asks for.
+// methods are the ways of hurting or killing oneself a how-question asks for,
+// purging among them: "how to end it all", "how to make myself throw up".
 var methods = words(
+	`end~it~all`,
+	`make~`+words(`my`, `your`)+`~self~`+words(`throw~up`, `vomit`, `puke`),
+	`purge~(?:after~)?`+words(`eating`, `meals?`, `food`, `dinner`, `lunch`, `breakfast`),
 	`kill~`+words(`my`, `your`, `ur`, `them`, `one`)+`~sel(?:f|ves)`,
 	`commit~suicide`,
 	`end~`+words(`my`, `your`, `their`, `a`, `one'?s`)+`~life`,
@@ -2011,8 +2030,15 @@ var (
 			`\d{1,2}(?:st|nd|rd|th)~`+words(`grade`, `class`, `standard`, `std`)),
 		words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`under`, `over`, `below`, `above`)+`~1\d`,
 		words(`are`, `r`)+`~`+words(`you`, `u`)+`~1\d`,
-		`where~`+words(`do`, `d`)+`~`+words(`you`, `u`)+`~`+words(`live`, `stay`, `go~to~school`, `study`),
-		`where~`+words(`are`, `r`)+`~`+words(`you`, `u`)+`~from`,
+		`where~(?:`+words(`do`, `d`)+`~)?`+words(`you`, `u`)+`~`+words(`live`, `stay`, `go~to~school`, `study`),
+		`where~(?:`+words(`are`, `r`)+`~)?`+words(`you`, `u`)+`~from`,
+		// Looking for someone of an age: "any 14yo girls here?", "13-15 yo
+		// girls", "any 14 yr olds?", "any girls in class 9?".
+		ageNumber+ageUnit+`~`+youthNoun,
+		words(`any`, `looking~for`, `want`, `need`, `searching~for`)+`~(?:`+words(`a`, `an`, `some`)+`~)?`+
+			ageNumber+ageUnit,
+		`any~`+youthNoun+`~(?:here~)?`+words(`in`, `from`)+`~(?:`+words(`class`, `grade`, `std`, `standard`,
+			`year`)+`~\d{1,2}|\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?)`,
 		`where~`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+words(`school`, `house`, `home`),
 		// "which college do you go to", "what area are you in": the verb has
 		// to be about being there, so "which college do you suggest" is
@@ -2050,6 +2076,12 @@ var (
 				words(`school`, `college`, `class`, `grade`, `year`))+`[^\pL\pN?]*\?`,
 		)),
 	}
+	// ageNumber, ageUnit and youthNoun make up an age someone is looked for
+	// at: "14yo girls", "13-15 year old boys".
+	ageNumber = `\d{1,2}(?:~?(?:-|to)~?\d{1,2})?~?`
+	ageUnit   = words(`yo`, `y~o`, `y/o`, `yos`, `yrs?~old`, `years?~old`, `yrs?~olds`, `years?~olds`)
+	youthNoun = words(`girls?`, `boys?`, `guys?`, `kids?`, `gf`, `bf`, `girlfriend`, `boyfriend`, `females?`,
+		`males?`, `teens?`, `students?`)
 	// "asl" (age, sex, location) is asked at the start of what is said:
 	// "asl?", "hey asl pls". After a word it is the slang intensifier ("bored
 	// asl") or the sign language ("learning ASL"), and so it is before
@@ -2078,8 +2110,17 @@ var (
 		`send~(?:me~)?`+words(`your`, `ur`)+`~(?:live~)?`+words(`location`, `loc`, `address`, `pin`, `pincode`),
 		`share~`+words(`your`, `ur`)+`~(?:live~)?`+words(`location`, `loc`, `address`),
 		`hmu`, `come~over`,
-		// Hinglish: "dm karo", "insta pe aao", "akele ho", "milte hain".
+		// A call or a camera, or meeting: "facetime me", "video call", "vc
+		// me", "on cam", "hang out", "pick you up", "show me your face".
+		words(`facetime`, `face~time`)+`(?:~`+words(`me`, `us`)+`)?`, `video~?`+words(`call`, `chat`), `vc~me`,
+		`on~cam`, `cam~`+words(`me`, `chat`, `show`), `webcam`, `hang~out`, `hangout`,
+		`pick~`+words(`you`, `u`)+`~up`,
+		`show~me~`+words(`yourself`, `urself`, words(`your`, `ur`)+`~`+words(`face`, `body`, `room`, `pics?`, `photos?`)),
+		// Hinglish: "dm karo", "insta pe aao", "akele ho", "milte hain",
+		// "photo bhejo".
 		words(`dm`, `pm`, `msg`, `message`, `text`, `call`, `baat`)+`~`+karo,
+		words(`photo`, `photos`, `pic`, `pics`, `selfie`, `video`)+`~`+words(`bhejo`, `bhej`, `bhejna`, `bhej~do`,
+			`dikhao`, `dikha`),
 		words(`pe`, `par`, `pr`)+`~`+words(`aao`, `aaja`, `aajao`, `aa~jao`, `milo`),
 		words(`akele`, `akeli`, `akela`)+`~`+words(`ho`, `hai`, `h`),
 		words(`milte`, `milna`)+`~`+words(`hain`, `hai`, `h`),
@@ -2789,8 +2830,12 @@ func selfHarmCheck(v *view, m []int) bool {
 			return false // "you'll kill yourself studying like that"
 		}
 	}
+	if is(first, "delete") && nextIn(0, setOf(`from`)) {
+		return false // "delete yourself from the group"
+	}
 	bare := is(first, "jump") || is(first, "drink") || is(first, "just") && is(last, "die") ||
-		is(first, "cut") && is(last, "deeper") || is(first, "mar") || is(first, "ja") || is(first, "jaake")
+		is(first, "cut") && is(last, "deeper") || is(first, "mar") || is(first, "ja") || is(first, "jaake") ||
+		is(first, "an") || is(first, "off") || is(first, "delete")
 	if bare {
 		for _, w := range wordsIn(clauseBefore(text, m[0])) {
 			if !imperativeFillers[w] {
@@ -2849,7 +2894,9 @@ func methodCheck(v *view, m []int) bool {
 	}
 	switch first := ws[0]; {
 	case is(first, "how") && (is(ws[1], "many") || is(ws[1], "much")), is(first, "what"):
-		return namesAMedicine(matched) || hasFirstPerson(ws)
+		// The medicine may be named before the question: "paracetamol, how
+		// many to die?".
+		return namesAMedicine(sentenceAround(text, m[0], m[1])) || hasFirstPerson(ws)
 	case is(first, "lethal") || is(first, "fatal") || is(first, "deadly"):
 		return namesAMedicine(text[m[1]:min(len(text), m[1]+48)]) || hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1])))
 	case is(first, "how") && is(ws[1], "deep"):

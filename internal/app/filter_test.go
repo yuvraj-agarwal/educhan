@@ -907,6 +907,22 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"kaunsa college best hai CSE ke liye? fest pe milte hain",
 		"kaunsa school accha hai Delhi mein? milte hain PTM pe",
 		"kaunsa college best hai? HC Verma ki books library mein milte hain",
+		// Beside the new self-harm phrasings: a physics question, the other
+		// "off yourself" and "delete yourself", and the old slang as praise.
+		"how many volts would it take to kill you",
+		"how to end it with my girlfriend",
+		"how to make myself sick to skip school",
+		"how to purge the cache in nginx",
+		"take the pressure off yourself",
+		"get off yourself and help",
+		"delete yourself from the group chat",
+		"you are an hero",
+		// Ages and years said about oneself or others, with nothing private.
+		"I'm 14yo and confused about JEE prep, any advice?",
+		"our 15 year old students are doing well",
+		"the 9th grade girls won the debate",
+		"any 2nd year students here? we hang out at the canteen",
+		"where u from? I'm from Pune and the hostel is great",
 	}
 	for _, body := range posts {
 		if v := bodyVerdict(body); v.Outcome != contentPublish {
@@ -982,6 +998,7 @@ func TestFilterSupport(t *testing.T) {
 		"no reason to go on anymore",
 		// "live to see" can be crisis language whatever follows.
 		"i don't want to live to see tomorrow",
+		"main khudkushi kar lunga",
 	} {
 		v := bodyVerdict(body)
 		if v.Outcome != contentSupport || v.Message != supportMessage || v.Rule != "" || v.Match != "" {
@@ -1186,6 +1203,39 @@ func TestFilterHolds(t *testing.T) {
 		{"where do you live? somewhere private?", holdGrooming},
 		{"kaunse college mein padhte ho? milte hain", holdGrooming},
 		{"kahan rehte ho? mujhse baat karo", holdGrooming},
+		// Encouragement in the forms the rules missed: the old slang, the
+		// bare imperatives, wrists cut rather than slit, one l, and Hinglish.
+		{"an hero", holdSelfHarm},
+		{"just an hero already", holdSelfHarm},
+		{"go an hero", holdSelfHarm},
+		{"off yourself", holdSelfHarm},
+		{"just off yourself", holdSelfHarm},
+		{"go off yourself", holdSelfHarm},
+		{"delete yourself", holdSelfHarm},
+		{"just delete yourself", holdSelfHarm},
+		{"cut your wrists", holdSelfHarm},
+		{"go cut your wrists", holdSelfHarm},
+		{"why are you still alive", holdSelfHarm},
+		{"why are you still alive lol", holdSelfHarm},
+		{"kil yourself", holdSelfHarm},
+		{"kil urself", holdSelfHarm},
+		{"go commit suicide", holdSelfHarm},
+		{"you should commit suicide", holdSelfHarm},
+		{"khudkushi kar le", holdSelfHarm},
+		{"khudkushi kar lo", holdSelfHarm},
+		// An age asked for, or offered as a number, beside a way to talk in
+		// private; and a video call, a photo or where someone lives.
+		{"any 14yo girls here? dm me", holdGrooming},
+		{"13-15 yo girls hmu", holdGrooming},
+		{"any 14 year old girls here? dm me", holdGrooming},
+		{"looking for a 14 year old gf, dm me", holdGrooming},
+		{"any 14 yr olds? hmu", holdGrooming},
+		{"any girls in class 9? dm me", holdGrooming},
+		{"how old are you? facetime me", holdGrooming},
+		{"how old are you? lets video call", holdGrooming},
+		{"where u live? dm me", holdGrooming},
+		{"where u from? dm me", holdGrooming},
+		{"kitne saal ki ho? photo bhejo", holdGrooming},
 	}
 	// The method questions show the support message first, because the
 	// person asking may be asking for themselves. Every other hold comes
@@ -1245,6 +1295,20 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 		"lethal dose of paracetamol?",
 		"careful, how many pills would kill me",
 		"what dose of insulin would kill me",
+		// Either order, more words between, "enough", and purging.
+		"how many pills would it take to kill me",
+		"how many of my mums sleeping pills from the bathroom cupboard would i have to swallow to die",
+		"how many of the sleeping pills in the bathroom cupboard upstairs are lethal",
+		"paracetamol, how many to die?",
+		"is 20 paracetamol enough to die",
+		"is 20 paracetamol enough to kill me",
+		"are 20 pills enough to die",
+		"20 paracetamol enough to die?",
+		"can i die from 20 paracetamol",
+		"how to end it all",
+		"how can i end it all",
+		"how to make myself throw up",
+		"how to purge after eating",
 	} {
 		if v := bodyVerdict(body); v.Outcome != contentSupport || v.Message != supportMessage {
 			t.Errorf("%q: got %+v, want support first", body, v)
@@ -1460,6 +1524,13 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"line breaks":  func(n int) string { return strings.Repeat("98765\n", n/6) },
 		"spoilers":     func(n int) string { return strings.Repeat("9[spoiler]8[/spoiler]", n/21) },
 		"expanding":    func(n int) string { return strings.Repeat("\ufdfa1", n/2) },
+		// One character that folds to as many as a character may, letters and
+		// dots both, alone and round the signs an address is read from.
+		"folds to four": func(n int) string { return strings.Repeat("\u33c2", n) },
+		"folds round a sign": func(n int) string {
+			return strings.Repeat("\u33c2@\u33d8", n/3)
+		},
+		"two scripts": func(n int) string { return strings.Repeat("1\u044f", n/2) },
 		"subject pairs": func(n int) string {
 			return strings.Repeat("shooting up the school. ", n/24)
 		},
