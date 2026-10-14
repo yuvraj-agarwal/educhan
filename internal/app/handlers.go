@@ -170,7 +170,7 @@ func (r *createThreadRequest) submission() submission {
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := a.postContext(r)
+	reserveCtx, cancel := a.reserveContext(r)
 	defer cancel()
 	board, ok := a.board(w, r)
 	if !ok {
@@ -182,7 +182,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sub, ok := a.parseSubmission(ctx, w, r, &createThreadRequest{})
+	sub, ok := a.parseSubmission(reserveCtx, w, r, &createThreadRequest{})
 	if !ok {
 		return
 	}
@@ -207,7 +207,9 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	img, err := a.storeUpload(ctx, board.Slug, sub.Upload)
+	procCtx, cancelProc := a.processContext(w, r, sub.Upload != nil)
+	defer cancelProc()
+	img, err := a.storeUpload(procCtx, board.Slug, sub.Upload)
 	if err != nil {
 		if tooBusy(err) {
 			refund()
@@ -249,7 +251,7 @@ func (r *createPostRequest) submission() submission {
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := a.postContext(r)
+	reserveCtx, cancel := a.reserveContext(r)
 	defer cancel()
 	board, ok := a.board(w, r)
 	if !ok {
@@ -259,29 +261,31 @@ func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.createPost(ctx, w, r, board, no)
+	a.createPost(reserveCtx, w, r, board, no)
 }
 
 // handleCreatePostByThreadID serves the primary-key reply route, which predates
 // per-board thread numbers.
 func (a *App) handleCreatePostByThreadID(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := a.postContext(r)
+	reserveCtx, cancel := a.reserveContext(r)
 	defer cancel()
 	board, no, ok := a.resolveThreadID(w, r)
 	if !ok {
 		return
 	}
-	a.createPost(ctx, w, r, board, no)
+	a.createPost(reserveCtx, w, r, board, no)
 }
 
-// createPost adds a reply. ctx is the post's (postContext).
-func (a *App) createPost(ctx context.Context, w http.ResponseWriter, r *http.Request, board Board, no int64) {
+// createPost adds a reply. reserveCtx is the post's context while its body is
+// read (reserveContext); its image is then processed under a fresh one
+// (processContext).
+func (a *App) createPost(reserveCtx context.Context, w http.ResponseWriter, r *http.Request, board Board, no int64) {
 	// A header, so a malformed one is refused before the body is read.
 	key, ok := posterKey(w, r)
 	if !ok {
 		return
 	}
-	sub, ok := a.parseSubmission(ctx, w, r, &createPostRequest{})
+	sub, ok := a.parseSubmission(reserveCtx, w, r, &createPostRequest{})
 	if !ok {
 		return
 	}
@@ -310,7 +314,9 @@ func (a *App) createPost(ctx context.Context, w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	img, err := a.storeUpload(ctx, board.Slug, sub.Upload)
+	procCtx, cancelProc := a.processContext(w, r, sub.Upload != nil)
+	defer cancelProc()
+	img, err := a.storeUpload(procCtx, board.Slug, sub.Upload)
 	if err != nil {
 		if tooBusy(err) {
 			refund()
@@ -337,22 +343,45 @@ func (a *App) createPost(ctx context.Context, w http.ResponseWriter, r *http.Req
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
 }
 
-// postDeadline is how long after a post arrives everything up to its
-// commit has to be done: the waits for room to read and process its image,
-// the processing, and the writes of both renditions. Past it the post is
-// answered 503 (answerBusy) with nothing stored. It is set inside the
-// server's WriteTimeout, which runs from about the same moment, the end of
-// the request's headers, and leaves the rest of it to the commit and the
-// answer, so that a post is not made after its answer can no longer be sent,
-// as one that waited in an unbounded queue was. App.postDeadline is this,
-// except in tests.
+// postDeadline is how long a post's image has, once its body has arrived, to
+// be processed and have both its renditions stored: the wait for room to
+// process it (media.Process), the processing, and the two writes. Past it the
+// post is answered 503 (answerBusy) with nothing stored, because the server had
+// no room for it in time. It is measured from after the body is read
+// (processContext), not from the start of the handler, so a slow body — which
+// is the client's doing, answered 408, not the server's load — does not eat the
+// time the image has to be processed. App.postDeadline is this, except in tests.
 const postDeadline = 25 * time.Second
 
-// postContext is a post's context: the request's, ending postDeadline after
-// the handler began. It governs the upload, not the database: the commit
-// runs on the request's own context, so a deadline that passed during it
-// could not leave a post made and its image removed.
-func (a *App) postContext(r *http.Request) (context.Context, context.CancelFunc) {
+// uploadReadTimeout is how long a multipart post's body has to arrive once
+// there is room to read it. A body slower than this is the client's to answer,
+// 408 (upload too slow), with nothing stored, not the 503 a server with no room
+// gives. App.uploadReadTimeout is this, except in tests.
+const uploadReadTimeout = 30 * time.Second
+
+// answerAllowance is the time left, on top of a post's read and processing
+// windows, to commit it and write the answer.
+const answerAllowance = 5 * time.Second
+
+// reserveContext is a post's context while it waits for upload-budget room and
+// its body is read and validated: the request's, ending postDeadline after the
+// handler began, so a wait for a full budget (ReserveUpload) gives up and the
+// post is answered 503 rather than waiting forever.
+func (a *App) reserveContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), a.postDeadline)
+}
+
+// processContext is a post's context for processing and storing its image: the
+// request's, ending postDeadline from now, which is after the body has been
+// read (the caller has it). It governs the upload, not the database: the commit
+// runs on the request's own context, so a deadline that passed during it could
+// not leave a post made and its image removed. For a post that carries an image
+// it also resets the response's write deadline to cover the processing and the
+// answer, the body read having spent the connection's first write window.
+func (a *App) processContext(w http.ResponseWriter, r *http.Request, hasUpload bool) (context.Context, context.CancelFunc) {
+	if hasUpload {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.postDeadline + answerAllowance))
+	}
 	return context.WithTimeout(r.Context(), a.postDeadline)
 }
 

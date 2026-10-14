@@ -15,9 +15,12 @@ import (
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
-// The timeouts cmd/server gives its http.Server. WriteTimeout runs from the
-// end of a request's headers, and a post has postDeadline of it to get its
-// image stored, which leaves the rest for its commit and its answer.
+// The timeouts cmd/server gives its http.Server. They govern a GET and a text
+// post; an image post sets its own read and write deadlines through an
+// http.ResponseController once it knows it is reading a body (parseSubmission,
+// processContext), because its body may legitimately take uploadReadTimeout to
+// arrive and its image then postDeadline to process, more than one WriteTimeout
+// from the end of its headers covers.
 const (
 	ReadHeaderTimeout = 10 * time.Second
 	ReadTimeout       = 30 * time.Second
@@ -52,8 +55,10 @@ type App struct {
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
 
-	// postDeadline is postDeadline, which tests shorten.
-	postDeadline time.Duration
+	// postDeadline is postDeadline and uploadReadTimeout is uploadReadTimeout,
+	// which tests shorten.
+	postDeadline      time.Duration
+	uploadReadTimeout time.Duration
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
@@ -101,19 +106,20 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		sender = mailer.NewDev(os.Stdout)
 	}
 	a := &App{
-		cfg:           cfg,
-		log:           log,
-		pool:          pool,
-		store:         NewStore(pool),
-		media:         blobs,
-		domains:       domains,
-		sender:        sender,
-		threadLimiter: newCooldownLimiter(cfg.ThreadCooldown),
-		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
-		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
-		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
-		schemaAhead:   schemaAhead,
-		postDeadline:  postDeadline,
+		cfg:               cfg,
+		log:               log,
+		pool:              pool,
+		store:             NewStore(pool),
+		media:             blobs,
+		domains:           domains,
+		sender:            sender,
+		threadLimiter:     newCooldownLimiter(cfg.ThreadCooldown),
+		postLimiter:       newCooldownLimiter(cfg.PostCooldown),
+		uploadLimiter:     newCooldownLimiter(cfg.UploadCooldown),
+		verifyLimiter:     newCooldownLimiter(cfg.VerifyCooldown),
+		schemaAhead:       schemaAhead,
+		postDeadline:      postDeadline,
+		uploadReadTimeout: uploadReadTimeout,
 	}
 	every := cfg.cooldownSweepEvery
 	if every <= 0 {

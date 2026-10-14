@@ -689,22 +689,34 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   is about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
   `GOMEMLIMIT=400MiB` peaked at 330 MiB resident (786 MiB before the upload budget),
   so a 512 MiB instance needs that limit, which this code does not set.
-  **Every wait is bounded.** A post has `postDeadline` (25 s, `postContext`) from when
-  its handler starts to get its image stored, inside the server's `WriteTimeout` (30 s,
-  `app.WriteTimeout`, which `cmd/server` uses), which runs from the same moment. A wait
-  for room in either budget gives up `processingAllowance` (15 s, about what the dearest
-  upload takes on one core, with margin) before that deadline, with `media.ErrBusy`;
-  room that is there is taken however near the deadline, so a slow body on an idle
-  server is not refused; and `Save` writes nothing once the deadline has passed, on
-  either backend (`LocalStore.Put` honours an ended context as Cloud Storage does,
-  pinned in `testStoreContract`), and removes a written original on a context that has
-  not ended (`context.WithoutCancel`). The database commit runs on the request's own
-  context, never the deadline: a deadline passing mid-commit could otherwise leave a
-  post made and its image removed. `tooBusy` sends all of it to `answerBusy`: `503`
-  with a `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the
-  request log as a warning, not an error; the body of a post turned away before it was
-  read is still read to its end and dropped, so the browser gets the answer rather than
-  a connection closed under its upload. Before the bound, a queued upload was stored
+  **Every wait is bounded, and a slow client is told apart from a busy server.** A
+  post waits for room in the upload budget under `reserveContext` (`postDeadline`, 25 s,
+  from when its handler starts); a wait that does not get room gives up
+  `processingAllowance` (15 s, about what the dearest upload takes on one core, with
+  margin) before that deadline, with `media.ErrBusy`, and room that is there is taken
+  however near the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive,
+  a read deadline set on the connection through an `http.ResponseController` (the
+  logging middleware's `statusRecorder` carries an `Unwrap` so the controller reaches
+  the connection underneath); a body slower than that is the client's doing, answered
+  `408` (`upload too slow`, `isReadTimeout`), not the `503` a server with no room gives.
+  Once the body is read, the image has a fresh `postDeadline` (25 s, `processContext`)
+  to be processed and both renditions stored — measured from after the body, not from
+  the start of the handler, so a slow body no longer spends the time the image has and
+  is no longer mistaken for a busy server
+  (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
+  response's write deadline to cover that processing and the answer, the body read
+  having possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which
+  `cmd/server` uses) from the end of the headers. `Save` writes nothing once that
+  processing deadline has passed, on either backend (`LocalStore.Put` honours an ended
+  context as Cloud Storage does, pinned in `testStoreContract`), and removes a written
+  original on a context that has not ended (`context.WithoutCancel`). The database
+  commit runs on the request's own context, never a deadline: a deadline passing
+  mid-commit could otherwise leave a post made and its image removed. A budget wait or a
+  processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503` with a
+  `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request log
+  as a warning, not an error; the body of a post turned away for a full budget before it
+  was read is still read to its end and dropped, so the browser gets the answer rather
+  than a connection closed under its upload. Before the bound, a queued upload was stored
   and its post made after its answer could no longer be sent, and the poster, told the
   network had failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
   `TestPostPastItsDeadlineIsNotMadeAndNotCharged`, `TestWaitingForRoomEndsInTimeForTheWork`).

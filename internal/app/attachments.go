@@ -6,7 +6,9 @@ import (
 	"io"
 	"mime"
 	"mime/multipart"
+	"net"
 	"net/http"
+	"os"
 	"path"
 	"strconv"
 	"strings"
@@ -94,9 +96,16 @@ type submissionForm interface {
 // A multipart body, with uploads on, is read only once there is room for it
 // in the upload budget (media.ReserveUpload), which counts the bodies being
 // read and held until their posts are answered: as much as the request says
-// it is, or the most it may be. ctx is the post's (postContext): with no room
+// it is, or the most it may be. ctx is the post's reserveContext: with no room
 // in time the body is read to its end unkept and the post is answered 503
 // (busy), before flood control has charged it anything.
+//
+// A multipart body sets its own connection deadlines, because it may take
+// longer than one WriteTimeout from the end of its headers allows: the body
+// has uploadReadTimeout to arrive, and a body slower than that is answered 408
+// (upload too slow), not the 503 a server with no room gives; the write
+// deadline covers that read and the answer to it, and processContext resets it
+// for the processing that follows.
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -105,6 +114,11 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 		sub := form.submission()
 		return &sub, true
 	}
+
+	rc := http.NewResponseController(w)
+	now := time.Now()
+	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
+	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
 
 	// With uploads switched off a post can carry nothing but its text fields,
 	// so its body is held to what a JSON post may be (maxRequestBytes, well
@@ -162,6 +176,10 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, string) {
 	refuse := func(err error) (*submission, int, string) {
 		switch {
+		case isReadTimeout(err):
+			// The body did not arrive inside uploadReadTimeout: the client's
+			// doing, not the server's load, so 408 rather than the 503 busy.
+			return nil, http.StatusRequestTimeout, "upload too slow"
 		case tooLarge(err) && !a.cfg.UploadsEnabled:
 			return nil, http.StatusForbidden, uploadsSwitchedOff
 		case tooLarge(err), errors.Is(err, errPartTooLarge):
@@ -355,9 +373,25 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 
 // tooBusy reports whether err is a post's upload that could not be taken in
 // the time the post had (postDeadline): no room in a budget in time
-// (media.ErrBusy), or the deadline itself running out.
+// (media.ErrBusy), or the processing deadline itself running out. A slow body
+// is not this — it ends in a read-deadline error (isReadTimeout), answered 408
+// — because the processing deadline starts only after the body is read
+// (processContext).
 func tooBusy(err error) bool {
 	return errors.Is(err, media.ErrBusy) || errors.Is(err, context.DeadlineExceeded)
+}
+
+// isReadTimeout reports whether err is a request body that stopped arriving
+// until its read deadline (uploadReadTimeout) ran out. The net poller surfaces
+// that as os.ErrDeadlineExceeded, wrapped on its way up through the multipart
+// reader and http.MaxBytesReader; a net.Error that reports a timeout is the
+// same thing by another route.
+func isReadTimeout(err error) bool {
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) && ne.Timeout()
 }
 
 // busyRetryAfter is how long a post turned away as busy is told to wait. The

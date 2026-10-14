@@ -45,6 +45,14 @@ func (r *statusRecorder) Write(b []byte) (int, error) {
 	return r.ResponseWriter.Write(b)
 }
 
+// Unwrap returns the wrapped writer so http.NewResponseController can reach the
+// connection underneath to set read and write deadlines: an upload post governs
+// its own (parseSubmission, processContext), and without this the controller
+// would stop at this recorder and silently do nothing.
+func (r *statusRecorder) Unwrap() http.ResponseWriter {
+	return r.ResponseWriter
+}
+
 // requestLogger emits one structured line per request.
 //
 // The line deliberately carries no client address. In production these lines

@@ -1,12 +1,14 @@
 package app
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"io"
 	"math"
 	"mime/multipart"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -342,4 +344,135 @@ func TestPostDeadlineLeavesTimeToAnswer(t *testing.T) {
 		t.Errorf("postDeadline %v leaves %v of WriteTimeout %v for the commit and the answer; want 5s at least",
 			postDeadline, WriteTimeout-postDeadline, WriteTimeout)
 	}
+}
+
+// throttledReader hands out its data a chunk at a time with a pause between, so
+// a request body streams slowly as from a poor connection.
+type throttledReader struct {
+	data  []byte
+	pos   int
+	chunk int
+	pause time.Duration
+}
+
+func (r *throttledReader) Read(p []byte) (int, error) {
+	if r.pos >= len(r.data) {
+		return 0, io.EOF
+	}
+	time.Sleep(r.pause)
+	n := copy(p[:min(len(p), r.chunk)], r.data[r.pos:])
+	r.pos += n
+	return n, nil
+}
+
+// multipartImage builds a one-image, one-field multipart body and the
+// Content-Type header that describes it.
+func multipartImage(t *testing.T, body string, image []byte) ([]byte, string) {
+	t.Helper()
+	var buf bytes.Buffer
+	form := multipart.NewWriter(&buf)
+	if err := form.WriteField("body", body); err != nil {
+		t.Fatal(err)
+	}
+	part, err := form.CreateFormFile(uploadFieldName, "photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(image); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes(), form.FormDataContentType()
+}
+
+// A post whose body trickles in over longer than the time its image has to be
+// processed is still made on an idle server: the processing deadline starts
+// after the body is read (processContext), so a slow connection no longer
+// spends the image's budget and is no longer mistaken for a busy server and
+// turned away 503. A body slower than the read timeout is the client's doing
+// and is answered 408, with nothing stored either way.
+func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
+	t.Run("a body slower than the processing deadline still posts", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.postDeadline = 1500 * time.Millisecond // less than the body takes
+		h.app.uploadReadTimeout = 20 * time.Second
+
+		body, contentType := multipartImage(t, "slow but whole", pngBytes(t, 32, 32))
+		req, err := http.NewRequest(http.MethodPost, h.client.base+"/api/boards/general/threads",
+			&throttledReader{data: body, chunk: len(body)/10 + 1, pause: 250 * time.Millisecond})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.ContentLength = int64(len(body))
+
+		start := time.Now()
+		var out createdPost
+		status := h.client.send(req, &out)
+		if took := time.Since(start); took < h.app.postDeadline {
+			t.Fatalf("body arrived in %v, not past the %v processing deadline; the test proves nothing", took, h.app.postDeadline)
+		}
+		if status != http.StatusCreated {
+			t.Fatalf("slow upload: status %d (%s), want 201", status, out.Error)
+		}
+		if n := h.countRows("posts"); n != 1 {
+			t.Errorf("%d posts stored, want the slow upload made", n)
+		}
+	})
+
+	t.Run("a body slower than the read timeout is answered 408", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadReadTimeout = 400 * time.Millisecond
+
+		status, bodyText := stalledUpload(t, h.client.base)
+		if status != http.StatusRequestTimeout {
+			t.Fatalf("stalled upload: status %d (%s), want 408", status, bodyText)
+		}
+		if !strings.Contains(bodyText, "slow") {
+			t.Errorf("408 body = %q, want it to name the slow upload", bodyText)
+		}
+		if n := h.countRows("posts"); n != 0 {
+			t.Errorf("%d posts stored for a stalled upload, want none", n)
+		}
+	})
+}
+
+// stalledUpload opens a raw connection, sends an image post's headers and the
+// first bytes of its body, then stalls without sending the rest, and reads the
+// status and body the server answers. It is a raw socket, not net/http's
+// client, so the test reads the server's early answer itself rather than
+// racing the client's own request-body write loop against it.
+func stalledUpload(t *testing.T, base string) (int, string) {
+	t.Helper()
+	addr := strings.TrimPrefix(base, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.Close()
+
+	preamble := "--BOUND\r\n" +
+		"Content-Disposition: form-data; name=\"image\"; filename=\"a.png\"\r\n" +
+		"Content-Type: image/png\r\n\r\n\x89PNG"
+	req := "POST /api/boards/general/threads HTTP/1.1\r\n" +
+		"Host: " + addr + "\r\n" +
+		"Content-Type: multipart/form-data; boundary=BOUND\r\n" +
+		"Content-Length: 100000\r\n" + // the rest never comes
+		"Connection: close\r\n\r\n" + preamble
+	if _, err := io.WriteString(conn, req); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+
+	_ = conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(out)
 }
