@@ -365,8 +365,8 @@ it is stored in) are taken out of every field first, and are never stored, so a
 reader sees the text in the order the filter read it. Markup is read the
 way the page shows it: `[math]` and `[eqn]` blocks are skipped, because TeX has
 a use for every character; `[code]` is read as its own lines; and `[spoiler]`
-tags are read as nothing, so a number or an app name split across them reads
-whole, as it does once the spoiler is opened. The text is first normalised —
+tags are read as nothing, so a number, a username or an app name split across
+them reads whole, as it does once the spoiler is opened. The text is first normalised —
 compatibility forms folded (so full-width digits and styled letters read as
 plain ones), lower case, accents, keycaps and zero-width characters dropped,
 every script's digits read as 0–9, spaced or dotted-out letters closed up, and
@@ -377,7 +377,7 @@ outcome:
 
 | Outcome | Rule | What it looks for |
 | --- | --- | --- |
-| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps; and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z", "insta pe add karo", "apna number do"). An app named on its own is fine |
+| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps, Signal's included, also with "slash" spelled out and, on hosts too long to turn up inside other words, "dot" ("discord dot gg slash …"); and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z", "insta pe add karo", "apna number do"). An app named on its own is fine |
 | Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit), US Social Security numbers written with dashes, UK National Insurance numbers |
 | Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "thinking about ending it", "kms", "mujhe marna hai"), and a question about a method, which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
 | Hold (`202`) | `threat` | An intent to hurt people or attack a place ("I'm bringing a gun", "gonna shoot up"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game, a quoted report, an exam, a team or a market ("kill JEE tomorrow", "a bloodbath on Dalal Street"), a drill, and hyperbole ("you'll die when you see the results") are not threats |

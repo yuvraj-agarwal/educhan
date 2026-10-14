@@ -270,10 +270,10 @@ type reading struct {
 // it; the code itself is read like any other text. A [spoiler] tag reads as
 // nothing, because a spoiler is drawn inline and the reader who opens it sees
 // the text on either side run on: "98765[spoiler]43210[/spoiler]" is one
-// number, and "sn[spoiler]ap[/spoiler]" is "snap". The exception is a tag
-// between a letter and a digit, which reads as a blank, so that a number hidden
-// in a spoiler straight after a word ("call me[spoiler]98765…") still stands on
-// its own.
+// number, "sn[spoiler]ap[/spoiler]" is "snap", and "coolkid[spoiler]2009[/spoiler]"
+// is "coolkid2009". A number hidden in a spoiler straight after a word ("call
+// me[spoiler]98765…") still stands on its own, because firstNumber reads the
+// place where a tag was as the edge of a word.
 func markupReadings(body string) []reading {
 	var out []reading
 	tag := func(from, to int, as string) {
@@ -294,40 +294,7 @@ func markupReadings(body string) []reading {
 		}
 	}
 	slices.SortFunc(out, func(a, b reading) int { return a.from - b.from })
-	// A spoiler tag's reading depends on what is either side of it once the
-	// tags next to it have been read too, so it is settled in a second pass.
-	for i := range out {
-		if out[i].as != "" {
-			continue
-		}
-		before, after := runeBefore(body, out, i), runeAfter(body, out, i)
-		if unicode.IsLetter(before) && unicode.IsDigit(after) || unicode.IsDigit(before) && unicode.IsLetter(after) {
-			out[i].as = " "
-		}
-	}
 	return out
-}
-
-// runeBefore is the source character just before reading i, looking through
-// the zero-width readings before it; 0 at the start.
-func runeBefore(body string, rs []reading, i int) rune {
-	at := rs[i].from
-	for j := i - 1; j >= 0 && rs[j].to == at && rs[j].as == ""; j-- {
-		at = rs[j].from
-	}
-	r, _ := utf8.DecodeLastRuneInString(body[:at])
-	return r
-}
-
-// runeAfter is the source character just after reading i, looking through
-// the zero-width readings after it; 0 at the end.
-func runeAfter(body string, rs []reading, i int) rune {
-	at := rs[i].to
-	for j := i + 1; j < len(rs) && rs[j].from == at && rs[j].as == ""; j++ {
-		at = rs[j].to
-	}
-	r, _ := utf8.DecodeRuneInString(body[at:])
-	return r
 }
 
 /* Normalising ---------------------------------------------------------------- */
@@ -343,6 +310,11 @@ type view struct {
 
 // span maps text[a:b] back to the source.
 func (v *view) span(a, b int) (int, int) { return v.start[a], v.end[b-1] }
+
+// apart reports that the view left something of the source out between
+// text[i-1] and text[i]: a markup tag that reads as nothing, or an invisible
+// character.
+func (v *view) apart(i int) bool { return i > 0 && i < len(v.text) && v.end[i-1] < v.start[i] }
 
 type viewBuilder struct {
 	buf        []byte
@@ -1047,7 +1019,9 @@ func exampleDomain(domain string) bool {
 // linkRule finds links to the hosts in contactLink. A dot may be bracketed
 // ("discord(.)gg") or have a space either side of it. Hosts long enough not to
 // turn up inside other words may also be written with "dot" ("discord dot
-// gg/abc").
+// gg/abc"), and on any host a slash may be written as a word ("t.me slash
+// abc", "discord dot gg forward slash abc"). The path may start with a "#",
+// as every link Signal hands out does ("signal.me/#eu/…", "signal.group/#…").
 var linkRule = func() rule {
 	short := func(host string) string {
 		return strings.ReplaceAll(regexp.QuoteMeta(host), `\.`, `\s?(?:\.|[(\[]\.[)\]])\s?`)
@@ -1066,15 +1040,24 @@ var linkRule = func() rule {
 		long("join.skype.com"), long("linktr.ee"))
 	// Compiled as written: a path may contain "~", which phrase would read
 	// as a separator.
-	return rule{plain: regexp.MustCompile(`\b(?:https?\W{0,3})?(?:www\s?\.\s?)?(` + hosts + `)\s?/\s?` +
-		`([\pL\pN_@~%+.\-]+(?:/[\pL\pN_@~%+.\-]*)*)`)}
+	return rule{plain: regexp.MustCompile(`\b(?:https?\W{0,3})?(?:www\s?\.\s?)?(` + hosts + `)` + linkSlash +
+		`(#?[\pL\pN_@~%+.\-]+(?:` + linkSlash + `[\pL\pN_@~%+.\-]*)*)`)}
 }()
+
+// linkSlash is a slash in a link, written or spelled: "/", " / ", " slash ",
+// " forward slash ", "(/)".
+const linkSlash = `(?:\s?/\s?|\s+(?:forward\s?)?slash\s+|\s?[(\[]\s?(?:/|slash)\s?[)\]]\s?)`
+
+// linkPath reads a path found by linkRule with its slashes written as "/".
+func linkPath(path string) string { return linkSlashPattern.ReplaceAllString(path, "/") }
+
+var linkSlashPattern = regexp.MustCompile(linkSlash)
 
 // spacedInviteRule is a Discord invite with its host spelled out letter by
 // letter ("d i s c o r d . g g / abc"), which only the loose view closes up.
 // Every Discord invite is a way to talk somewhere else, so it needs no
 // contactLink check.
-var spacedInviteRule = bothViews(`\bdiscord~(?:dot~)?gg[^\pL\pN/]*/[^\pL\pN]*[\pL\pN]{2,}`)
+var spacedInviteRule = bothViews(`\bdiscord~(?:dot~)?gg[^\pL\pN/]*(?:/|(?:forward~?)?slash)[^\pL\pN]*[\pL\pN]{2,}`)
 
 var (
 	instagramPages = setOf(`p reel reels tv explore accounts about developer legal web`)
@@ -1084,10 +1067,16 @@ var (
 )
 
 // contactLink decides whether a link opens a profile or an invite. A link to
-// a post, a video or a page of the app's own is content, and passes.
+// a post, a video or a page of the app's own is content, and passes, and so
+// does a link to a page's anchor ("instagram.com/#about"), except on Signal,
+// whose every link is an anchor.
 func contactLink(host, path string) bool {
 	host = strings.NewReplacer(" ", "", "(", "", ")", "", "[", "", "]", "", "dot", ".").Replace(host)
 	host = strings.TrimPrefix(host, "www.")
+	path = linkPath(path)
+	if strings.HasPrefix(path, "#") {
+		return host == "signal.me" || host == "signal.group"
+	}
 	var segs []string
 	for _, s := range strings.Split(path, "/") {
 		if s != "" {
@@ -2907,6 +2896,9 @@ type digitRun struct {
 	seps     []string
 	plus     bool
 	paren    bool // the first group is in brackets: "(415) 867-5309"
+	// apartAfter says that something the plain view leaves out comes straight
+	// after the run, so a letter there does not glue the run to a word.
+	apartAfter bool
 }
 
 // firstNumber scans the plain view for the first number that is a phone
@@ -2925,13 +2917,17 @@ func (f *scannedField) firstNumber() (digitRun, findingKind, bool) {
 		}
 		if i > 0 {
 			// Glued to a word or a longer number: part of something else,
-			// such as C6H12O6, a hex string or the tail of an ISBN.
-			if r, _ := utf8.DecodeLastRuneInString(t[:i]); unicode.IsLetter(r) || unicode.IsDigit(r) {
+			// such as C6H12O6, a hex string or the tail of an ISBN. Where
+			// something the plain view leaves out came between, a spoiler tag
+			// or an invisible character, the word ends there: "call
+			// me[spoiler]98765…".
+			if r, _ := utf8.DecodeLastRuneInString(t[:i]); unicode.IsDigit(r) || unicode.IsLetter(r) && !f.plain.apart(i) {
 				i++
 				continue
 			}
 		}
 		run := scanDigitRun(t, i)
+		run.apartAfter = run.to < len(t) && f.plain.apart(run.to)
 		if kind, ok := classifyNumber(t, run); ok {
 			return run, kind, true
 		}
@@ -3108,10 +3104,30 @@ var (
 	dataWords = regexp.MustCompile(`\b(?:` + words(`mode`, `mean`, `median`, `average`, `avg`, `range`, `data`,
 		`dataset`, `values`, `sequence`, `series`, `list`, `array`, `numbers`, `set`, `digits`, `dice`,
 		`rolls`, `scores`, `marks`, `readings`, `samples`, `observations`, `sizes`, `dims`, `dimensions`,
-		`shape`, `resolution`, `prices`, `fees`, `salaries`, `cutoffs?`, `percentiles?`) + `)\b`)
+		`shape`, `resolution`, `prices`, `fees`, `salaries`, `cutoffs?`, `percentiles?`, `ranks`, `rankings?`,
+		`mocks`, `sgpas?`, `cgpas?`, `gpas?`, `pointers?`, `grades`, `sections`, `exercises?`, `chapters?`,
+		`questions`, `problems`, `pages`, `percentages`) + `)\b`)
 	// phoneCue, shortly before a number, says it is one to call.
 	phoneCue = regexp.MustCompile(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `phone`, `ph`, `mob`, `mobile`,
 		`cell`, `number`, `num`, `no`, `whatsapp`, `dial`, `contact`, `tel`, `sms`) + `)\b`)
+	// contactCue, with nothing but punctuation between it and a number, asks
+	// for the number to be called or says whose it is: "call me on", "text
+	// me", "wa:", "my number is". "The number" is not one: "is the number
+	// 9999999967 prime?".
+	contactCue = regexp.MustCompile(`\b` + phrase(words(
+		words(`call`, `text`, `txt`, `ring`, `dial`, `sms`, `contact`, `msg`, `message`, `ping`, `dm`, `reach`, `hmu`,
+			whatsApp, `wa`, `telegram`, `signal`)+`(?:~`+words(`me`, `us`)+`)?(?:~`+words(`on`, `at`, `via`, `@`)+`)?`,
+		words(`my`, `mera`, `meri`)+`~(?:`+words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`)+`~)?`+
+			words(`number`, `no`, `num`, `nmbr`)+`(?:~`+words(`is`, `hai`)+`)?`,
+	)) + `[^\pL\pN]*$`)
+	// accountApp is an app whose account is a phone number: the messaging
+	// apps, and the payment apps an Indian account is opened with a number on.
+	// Before "acc" or "account", it makes the number after them that phone
+	// number: "my whatsapp acc 9876543210".
+	accountApp = regexp.MustCompile(`^` + phrase(words(contactApps, `signal`, `wa`, `gpay`, `phone~?pe`, `paytm`,
+		`upi`, `bhim`, `mobikwik`, `freecharge`, `imo`)) + `$`)
+	accountLabels = setOf(`account acc acct a/c app`)
+	payBrands     = setOf(`google amazon samsung phone`)
 )
 
 // classifyNumber decides what a run is, in the context it sits in.
@@ -3245,7 +3261,7 @@ func formattedNumber(run digitRun) bool {
 // reference.
 func standsAlone(t string, run digitRun) bool {
 	after := t[run.to:]
-	if r, _ := utf8.DecodeRuneInString(after); unicode.IsLetter(r) || unicode.IsDigit(r) {
+	if r, _ := utf8.DecodeRuneInString(after); unicode.IsDigit(r) || unicode.IsLetter(r) && !run.apartAfter {
 		return false
 	}
 	if operandAfter(after) {
@@ -3259,7 +3275,11 @@ func standsAlone(t string, run digitRun) bool {
 		return false
 	}
 	before := t[:run.from]
-	if operandBefore(before) {
+	// A request to call or text, straight before the number, says what it is
+	// whatever else is near it: "call me = 9876543210", "wa/9876543210", "text
+	// me 9876543210 if you can do the integers question".
+	cued := contactCue.MatchString(windowBefore(t, run.from, 32))
+	if !cued && operandBefore(before) {
 		return false
 	}
 	// A sign glued to an operand is arithmetic: "2+9876543210", "x-9876543210".
@@ -3300,7 +3320,7 @@ func standsAlone(t string, run digitRun) bool {
 		return false
 	}
 	near := windowBefore(t, run.from, 32)
-	if mathsResult.MatchString(near) || mathsContext.MatchString(near+" "+windowAfter(t, run.to, 32)) {
+	if !cued && (mathsResult.MatchString(near) || mathsContext.MatchString(near+" "+windowAfter(t, run.to, 32))) {
 		return false
 	}
 	return true
@@ -3386,6 +3406,8 @@ func labelled(t string, from int) bool {
 		switch {
 		case numberFillers[w]:
 			continue
+		case accountLabels[w] && accountAppBefore(ws[k+1:]):
+			return false // "my whatsapp acc 9876543210", "gpay account no 9876543210"
 		case numberLabels[w] || w == "card" && k+1 < len(ws) && ws[k+1] == "admit":
 			return true
 		case w == "got" && slices.Contains(ws[k+1:], "expected"):
@@ -3401,6 +3423,18 @@ func labelled(t string, from int) bool {
 		return false
 	}
 	return false
+}
+
+// accountAppBefore reports an accountApp as the words before an account label,
+// nearest first: "whatsapp", or "google pay".
+func accountAppBefore(ws []string) bool {
+	switch {
+	case len(ws) == 0:
+		return false
+	case accountApp.MatchString(ws[0]):
+		return true
+	}
+	return ws[0] == "pay" && len(ws) > 1 && payBrands[ws[1]]
 }
 
 // wordRune is a character of a word for labelled and its helpers: letters,
@@ -3557,9 +3591,12 @@ func dropLeading(groups []int, n int) []int {
 // be dialled: all together, in groups of two or more with at most two pairs
 // among them (98765 43210, 987-654-3210, 98 7654 3210, 98765 432 10, 987 654
 // 32 10), in pairs or longer set off by dashes or by points alone
-// (98-76-54-32-10, 98.76.54.32.10), or every digit spaced out. It turns down
-// runs of three or more pairs set off by spaces or line breaks, which is how a
-// list of marks or scores reads (87 91 76 88 92).
+// (98-76-54-32-10, 98.76.54.32.10), or every digit spaced out the same way
+// (9 8 7 6 5 4 3 2 1 0, 9.8.7.6.5.4.3.2.1.0). It turns down runs of three or
+// more pairs set off by spaces or line breaks, which is how a list of marks or
+// scores reads (87 91 76 88 92), and single digits set off by points and
+// spaces in turn, which is a list of one-decimal values (SGPAs 8.1 8.4 8.7 9.0
+// 9.2, exercises 6.1 6.2 6.3 7.1 7.2).
 func mobileGrouping(g []int, seps []string) bool {
 	if len(g) == 0 {
 		return false
@@ -3569,7 +3606,7 @@ func mobileGrouping(g []int, seps []string) bool {
 		ones = ones && n == 1
 	}
 	if ones {
-		return len(g) >= 9
+		return len(g) >= 9 && oneSeparatorKind(seps)
 	}
 	if dashed(seps) {
 		if len(g) > 5 {
@@ -3595,6 +3632,24 @@ func mobileGrouping(g []int, seps []string) bool {
 		}
 	}
 	return pairs <= 2
+}
+
+// oneSeparatorKind reports that every separator in a run is of one kind:
+// whitespace alone, or the same one of "-", "." and "_" with any whitespace
+// round it.
+func oneSeparatorKind(seps []string) bool {
+	kind := func(s string) string {
+		if t := strings.Trim(s, " \n"); t != "" {
+			return t[:1]
+		}
+		return " "
+	}
+	for _, s := range seps {
+		if kind(s) != kind(seps[0]) {
+			return false
+		}
+	}
+	return true
 }
 
 // dashed reports that every separator in a run is a dash, spaces allowed
