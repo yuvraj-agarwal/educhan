@@ -249,14 +249,15 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 	// is answered as if it did not exist unless the moderation key comes with
 	// the request, and nothing on either answer may be kept by a cache: the
 	// same address serves the public once the post is approved. An image in
-	// an expired thread is answered the same way, as its thread is.
+	// an expired thread is answered the same way, as its thread is, and so is
+	// a file whose rows are gone (MediaPublic).
 	cacheControl := mediaCacheControl
-	withheld, err := a.store.MediaWithheld(r.Context(), prefix == media.ThumbPrefix, r.PathValue("path"))
+	public, err := a.store.MediaPublic(r.Context(), prefix == media.ThumbPrefix, r.PathValue("path"))
 	if err != nil {
 		a.fail(w, r, err, "could not read attachment")
 		return
 	}
-	if withheld {
+	if !public {
 		cacheControl = "no-store"
 		if !a.isModerator(r) {
 			w.Header().Set("Cache-Control", cacheControl)

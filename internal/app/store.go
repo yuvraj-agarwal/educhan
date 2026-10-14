@@ -961,23 +961,27 @@ func recountThread(ctx context.Context, tx pgx.Tx, threadID int64) error {
 
 /* Held posts --------------------------------------------------------------- */
 
-// MediaWithheld reports whether the file at path, as an attachment row names
-// it (original_path, or thumb_path when thumb is set), is kept from readers:
-// it belongs to a held post, or to a post in an expired thread (Archive). A
-// path no attachment names is not withheld: it is a file whose row is gone or
-// not written yet, and its name is as unguessable as any other.
-func (s *Store) MediaWithheld(ctx context.Context, thumb bool, path string) (bool, error) {
+// MediaPublic reports whether readers may see the file at path: an attachment
+// row names it (original_path, or thumb_path when thumb is set), its post is
+// published, and its thread has not expired (Archive). Everything else is for
+// the moderators alone: a held post's image, an expired thread's, and a file
+// no row names. That last is a file whose rows a sweep or a moderator has
+// deleted, between the commit and the file's removal or for good when the
+// store refused it; a file whose row is not written yet has no published URL.
+// Serving it would let a swept thread's images answer while an expired
+// thread's do not, and so say which thread a held reply kept.
+func (s *Store) MediaPublic(ctx context.Context, thumb bool, path string) (bool, error) {
 	query := `SELECT EXISTS (SELECT 1 FROM attachments a
 		JOIN posts p ON p.id = a.post_id JOIN threads t ON t.id = p.thread_id
-		WHERE a.original_path = $1 AND (p.held_at IS NOT NULL OR t.expired_at IS NOT NULL))`
+		WHERE a.original_path = $1 AND p.held_at IS NULL AND t.expired_at IS NULL)`
 	if thumb {
 		query = `SELECT EXISTS (SELECT 1 FROM attachments a
 		JOIN posts p ON p.id = a.post_id JOIN threads t ON t.id = p.thread_id
-		WHERE a.thumb_path = $1 AND (p.held_at IS NOT NULL OR t.expired_at IS NOT NULL))`
+		WHERE a.thumb_path = $1 AND p.held_at IS NULL AND t.expired_at IS NULL)`
 	}
-	var held bool
-	err := s.pool.QueryRow(ctx, query, path).Scan(&held)
-	return held, err
+	var public bool
+	err := s.pool.QueryRow(ctx, query, path).Scan(&public)
+	return public, err
 }
 
 // heldQueueLimit bounds the moderator queue. A queue longer than this is a

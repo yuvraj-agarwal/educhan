@@ -1118,6 +1118,86 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	}
 }
 
+// A file whose rows are gone is served to nobody but a moderator. A sweep
+// deletes a swept thread's rows and removes its files afterwards, and a store
+// that refuses a removal leaves the file until the next sweep; served all that
+// time, a swept thread's images would answer while an expired thread's answer
+// 404, and the difference would say which thread a held reply kept. A file a
+// moderator's deletion could not remove is the same.
+func TestFilesWhoseRowsAreGoneAreNotServed(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("rowless")
+	h.exec(`UPDATE boards SET archive_days = 1 WHERE slug = 'rowless'`)
+	img := pngBytes(t, 12, 12)
+	withImage := func(path, body string) createdPost {
+		t.Helper()
+		var out createdPost
+		if status := h.upload(path, map[string]string{"body": body}, "a.png", img, &out); status != http.StatusCreated {
+			t.Fatalf("%s: status %d (%s)", path, status, out.Error)
+		}
+		return out
+	}
+	kept := withImage(threadsPath("rowless"), "kept by a held reply")
+	swept := withImage(threadsPath("rowless"), "swept")
+	if status, _ := h.postJSON(repliesPath("rowless", kept.ThreadNo), map[string]any{"body": "go die"}); status != http.StatusAccepted {
+		t.Fatalf("held reply: status %d", status)
+	}
+	live := h.createThread("rowless", "", "", "live")
+	deleted := withImage(repliesPath("rowless", live.ThreadNo), "deleted by a moderator")
+	images := map[string]*Attachment{
+		"the expired thread's": fetchThread(t, h, "rowless", kept.ThreadNo).Posts[0].Attachment,
+		"the swept thread's":   fetchThread(t, h, "rowless", swept.ThreadNo).Posts[0].Attachment,
+	}
+	for _, p := range fetchThread(t, h, "rowless", live.ThreadNo).Posts {
+		if p.No == deleted.No {
+			images["the deleted reply's"] = p.Attachment
+		}
+	}
+	get := func(url string, moderator bool) (int, string) {
+		t.Helper()
+		var status int
+		if moderator {
+			status = h.mod(http.MethodGet, url, "X-Mod-Key", testModKey, nil)
+		} else {
+			status = h.mod(http.MethodGet, url, "", "", nil)
+		}
+		return status, h.lastHeader.Get("Cache-Control")
+	}
+	// Positive control: every one of them is public to begin with.
+	for name, att := range images {
+		if att == nil {
+			t.Fatalf("%s image is missing", name)
+		}
+		for _, url := range []string{att.URL, att.ThumbURL} {
+			if status, cache := get(url, false); status != http.StatusOK || cache != mediaCacheControl {
+				t.Fatalf("%s %s before: status %d, Cache-Control %q", name, url, status, cache)
+			}
+		}
+	}
+
+	store := h.app.media
+	h.app.media = refusingDeletes{store}
+	h.archiveThread("rowless", kept.ThreadNo, 30*24*time.Hour)
+	h.archiveThread("rowless", swept.ThreadNo, 30*24*time.Hour)
+	if report, err := h.app.Sweep(context.Background()); err == nil || report.Threads != 1 || report.BlobFailures != 2 {
+		t.Fatalf("sweep with removals refused: %+v, %v; want the swept thread's rows gone and its files left", report, err)
+	}
+	h.modAction(http.MethodDelete, fmt.Sprintf("/api/boards/rowless/threads/%d/posts/%d", live.ThreadNo, deleted.No))
+
+	for name, att := range images {
+		for _, url := range []string{att.URL, att.ThumbURL} {
+			if status, cache := get(url, false); status != http.StatusNotFound || cache != "no-store" {
+				t.Errorf("%s %s: status %d, Cache-Control %q; want 404, no-store", name, url, status, cache)
+			}
+			// The file is still stored, which is the case this is about.
+			if status, cache := get(url, true); status != http.StatusOK || cache != "no-store" {
+				t.Errorf("%s %s for a moderator: status %d, Cache-Control %q; want 200, no-store", name, url, status, cache)
+			}
+		}
+	}
+	h.app.media = store
+}
+
 // The other half of the same promise: a thread with a held reply leaves the
 // archive no sooner than the plain thread archived with it. Expiring it as
 // soon as a sweep saw the held reply, inside its board's archive period, would

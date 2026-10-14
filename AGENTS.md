@@ -670,7 +670,7 @@ with it in public, or its lasting would say a held post was in it: the sweep fir
 `ExpireHeld`, which sets `threads.expired_at` (`0011`) on exactly the expired threads it
 is about to skip, and every public read filters `expired_at IS NULL` as it filters
 `held_at` — `Archive`, `Thread`, `ThreadByID`, `PostThreadNo`, `ReplyRefusal`,
-`CreateReply` (both `404`), both directions of `attachQuotes`, and `MediaWithheld`.
+`CreateReply` (both `404`), both directions of `attachQuotes`, and `MediaPublic`.
 Approval does not bring it back; the next sweep deletes it
 (`TestHeldReplyKeepsItsThreadFromTheSweep`). The image cap counts published posts only, so
 approval can take a thread past it. `TestHeldPostsAppearInNoPublicView` walks every
@@ -684,12 +684,16 @@ held post and thread is public and takes replies. `deploy/README.md`'s rollback 
 does not say so yet; the README's **Held posts** does. The same goes for `0011`: older
 code shows the expired threads again.
 
-A held post's image is gated where it is served: `serveMedia` asks `MediaWithheld` (the
+A held post's image is gated where it is served: `serveMedia` asks `MediaPublic` (the
 `0010` indexes on `attachments.original_path` and `thumb_path` keep that one lookup per
-request; an image in an expired thread, below, is withheld the same way) and answers `404` with `Cache-Control: no-store` unless `isModerator(r)` — the
-moderation key, read by the same code as `authorizeMod` — in which case the file is
-served `no-store`, never `immutable`, because the URL turns public on approval
-(`TestHeldImagesAreServedOnlyToModerators`).
+request), which is true only for a file an attachment row names whose post is published
+and whose thread has not expired, and otherwise answers `404` with `Cache-Control:
+no-store` unless `isModerator(r)` — the moderation key, read by the same code as
+`authorizeMod` — in which case the file is served `no-store`, never `immutable`, because
+the URL turns public on approval (`TestHeldImagesAreServedOnlyToModerators`). A file no
+row names is withheld too: between a sweep deleting a thread's rows and removing its
+files, or after a removal the store refused, a swept thread's images must answer as an
+expired thread's do (`TestFilesWhoseRowsAreGoneAreNotServed`).
 
 **Moderator queue**, behind `authorizeMod`: `GET /api/held` (`{"posts","total"}`: threats
 first, then oldest first, so a backlog of other holds cannot bury one; at most
@@ -986,7 +990,8 @@ posting form (see **The content rules' answers** under Front end conventions).
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
-  failure there is logged and leaves an orphaned file rather than a broken post.
+  failure there is logged and leaves an orphaned file rather than a broken post, which
+  `serveMedia` answers `404` to all but a moderator because no row names it.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
   nothing would come back for the files later. Approving a held post goes through the
   same gate (`handleApprovePost`), and logs where it was, never what. Sticky and lock

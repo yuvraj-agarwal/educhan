@@ -197,7 +197,8 @@ func (a *App) handleApprovePost(w http.ResponseWriter, r *http.Request) {
 // removeBlobs deletes the stored renditions of posts that are already gone from
 // the database, and reports how many could not be removed. A failure here
 // leaves an orphaned file rather than a broken post, so it is logged instead of
-// failing whatever deleted the rows.
+// failing whatever deleted the rows; with no row naming it, the file is served
+// to nobody but a moderator (MediaPublic).
 //
 // The rows are gone whether or not the caller is still waiting — a moderator
 // who closed the tab, a sweep told to stop — and nothing will come back for

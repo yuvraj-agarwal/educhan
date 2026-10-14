@@ -470,7 +470,10 @@ A held image stays at its ordinary storage key, and its URL is never published
 while the post is held. Its file answers `404`, with `Cache-Control: no-store`,
 to any request without the moderation key; with the key it is served, also
 `no-store`, because the same URL serves everyone once the post is approved and
-is then cached for good. The quarantine prefix of build plan 2.2, which would
+is then cached for good. A file whose post or thread has been deleted answers
+the same way for as long as it is still stored — while a sweep is removing a
+swept thread's files, or after the store refused a removal — so a swept
+thread's images and an expired thread's look alike. The quarantine prefix of build plan 2.2, which would
 keep the file out of the public namespace altogether, is not built.
 
 **Never roll back across migration `0009`.** Code from before it does not know
@@ -1222,7 +1225,9 @@ records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to
 delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists.
+image stored with nothing left to say it exists. From the moment its rows are
+deleted until it is removed, the file answers `404` to everyone but a
+moderator, as an expired thread's images do.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost

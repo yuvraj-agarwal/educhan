@@ -21,8 +21,9 @@ import (
 // Rows go first, and the storage keys of their files are queued in
 // media_deletions in the same transaction; the files go after, each key
 // forgotten only once its file is. So a file that cannot be removed now is
-// tried again by the next sweep rather than left public with nothing pointing
-// at it, and a sweeper that is not looking at the server's media store — a Job
+// tried again by the next sweep rather than left stored with nothing pointing
+// at it (until then, with no row naming it, it is served to nobody but a
+// moderator: MediaPublic), and a sweeper that is not looking at the server's media store — a Job
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
 
