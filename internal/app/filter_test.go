@@ -297,6 +297,7 @@ func TestFilterBlocks(t *testing.T) {
 		{"code-shaped name at a university", "ana23 at iitb.ac.in", ruleContact, "ana23 at iitb.ac.in"},
 		{"tg on its own", "what's your tg?", ruleContact, "what's your tg"},
 		{"check out my app", "check out my insta", ruleContact, "check out my insta"},
+		{"got without expected", "u got 9876543210 saved?", ruleContact, "9876543210"},
 
 		// Some Hinglish.
 		{"insta pe add karo", "insta pe add karo", ruleContact, "insta pe add karo"},

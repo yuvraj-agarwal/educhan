@@ -3035,12 +3035,13 @@ const (
 // numberLabels, as the word just before a number (numberFillers aside), say
 // what kind of number it is: a reference, a rank, an amount of money, or what
 // a program printed or should print ("Output: 8589934592", "it returns
-// 9876543210", "expected 9876543210 got 9876543211").
+// 9876543210", and "got" after "expected": "expected 9876543210 got
+// 9876543211").
 var numberLabels = setOf(`isbn issn doi arxiv pnr utr roll order invoice transaction txn ticket serial
 	application app form registration reg enrol enroll enrolment enrollment account acc acct a/c policy
 	jee neet cuet seat rank imei tracking awb reference ref
 	rs inr usd eur gbp salary stipend fee fees price cost costs budget revenue profit turnover population
-	output outputs print prints printed return returns returned stdout expected got result`)
+	output outputs print prints printed return returns returned stdout expected result`)
 
 // labelLinks may stand between a reference's label and its number, up to
 // three of them: "PNR status for 8177091875", "order id for 7834567890",
@@ -3387,6 +3388,8 @@ func labelled(t string, from int) bool {
 			continue
 		case numberLabels[w] || w == "card" && k+1 < len(ws) && ws[k+1] == "admit":
 			return true
+		case w == "got" && slices.Contains(ws[k+1:], "expected"):
+			return true // "expected 9876543210 got 9876543211"
 		case numberLabels[strings.TrimRight(w, "0123456789")]:
 			return true // "isbn10"
 		case len(w) <= 2 && strings.Trim(w, "0123456789") == "" && k+1 < len(ws) && numberLabels[ws[k+1]]:
