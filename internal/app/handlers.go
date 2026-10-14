@@ -384,11 +384,12 @@ func (a *App) refuseContent(w http.ResponseWriter, clientKey string, in contentI
 	switch verdict.Outcome {
 	case contentBlock:
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
-			"error":   verdict.Message,
-			"outcome": "block",
-			"rule":    verdict.Rule,
-			"field":   verdict.Field,
-			"match":   verdict.Match,
+			"error":      verdict.Message,
+			"outcome":    "block",
+			"rule":       verdict.Rule,
+			"field":      verdict.Field,
+			"match":      verdict.Match,
+			"occurrence": verdict.Occurrence,
 		})
 		return verdict, false
 	case contentSupport:

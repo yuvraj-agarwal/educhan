@@ -436,8 +436,8 @@ refused post costs no cooldown, so refusals are counted instead: after
 are answered `429` without being read until the minute is up (see
 [Flood control](#flood-control)).
 
-The web page answers each outcome in the posting form: a block quotes what to
-remove and selects it in its field, and support shows the helplines with
+The web page answers each outcome in the posting form: a block gives the
+server's sentence, quotes what to remove and selects that copy in its field, and support shows the helplines with
 **Post anyway** and **Go back**, both keeping the draft; a held post empties the
 form as a published one does and is acknowledged as waiting for a moderator,
 with a link to where to get help, without opening anything. Any other refusal of
@@ -989,12 +989,18 @@ between the two halves of flood control, before the image is stored: a post
 from a client still in a cooldown is answered `429` without being read, and
 one the rules send back starts no cooldown and leaves no file. They apply to badged and unbadged posts alike.
 
-- A block answers `422` with `{"error","outcome":"block","rule","field","match"}`:
-  `error` is one plain sentence naming what to take out and from where, `rule`
-  is `"contact"` or `"id_number"`, `field` is `"body"`, `"subject"` or
-  `"name"`, and `match` is the text that tripped it as the poster wrote it,
-  trimmed and at most 80 characters; a longer one is cut short and ends in
-  `…`.
+- A block answers `422` with
+  `{"error","outcome":"block","rule","field","match","occurrence"}`: `error` is
+  one plain sentence naming what to take out and from where, `rule` is
+  `"contact"` or `"id_number"`, `field` is `"body"`, `"subject"` or `"name"`,
+  and `match` is the text that tripped it as the poster wrote it, trimmed and
+  at most 80 characters; a longer one is cut short and ends in `…`. The same
+  text can be in the field more than once with only one copy refused (a number
+  in `[math]`, then the same number after "call"), so `occurrence` says which:
+  how many times `match` (without a closing `…`) is found earlier in the field,
+  its words in order with any run of whitespace between them, each search
+  starting one character on from the last place found. It is `0` for the
+  first.
 - Support answers `422` with `{"error","outcome":"support"}`. Sending the same
   post again with `"support_seen": true` takes it past this step and no other.
 - A hold stores the post and answers `202` with `{"held":true,"board"}`, plus

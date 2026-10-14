@@ -1467,6 +1467,51 @@ func TestFilterQuotesMatchesAsWrittenAndShort(t *testing.T) {
 	}
 }
 
+// TestFilterSaysWhichCopyItRefused pins the occurrence a block carries: how
+// many places the page's search (pointAtMatch) finds the quoted text before
+// the copy the block is about, so the page selects the refused copy and not
+// an earlier one the rules allowed.
+func TestFilterSaysWhichCopyItRefused(t *testing.T) {
+	for _, c := range []struct {
+		body, match string
+		occurrence  int
+	}{
+		{"call 98765 43210", "98765 43210", 0},
+		{"[math]98765 43210[/math] is a nice number. call 98765 43210", "98765 43210", 1},
+		{"order 9876543210 arrived. dm me at 9876543210", "9876543210", 1},
+		{"isbn 9876543210 and call 9876543210 or 9876543210", "9876543210", 1},
+		// The page lets any run of whitespace stand for another, and so does
+		// the count.
+		{"[code]x = 98765 43210[/code]\ncall 98765\n43210", "98765\n43210", 1},
+		{"  [math]98765 43210[/math] then call  98765   43210", "98765   43210", 1},
+	} {
+		v := bodyVerdict(c.body)
+		if v.Outcome != contentBlock || v.Match != c.match || v.Occurrence != c.occurrence {
+			t.Errorf("%q: got %+v, want %q blocked as copy %d", c.body, v, c.match, c.occurrence)
+		}
+	}
+	// The search starts one character on from the last place it found, so
+	// copies that overlap each count; whitespace is JavaScript's \s, wider
+	// than Go's; and a cut quote is looked for without its "…".
+	for _, c := range []struct {
+		src      string
+		from     int
+		searched string
+		want     int
+	}{
+		{"aaaa aaa", 5, "aaa", 2},
+		{"ab\u00a0cd ab cd", 7, "ab cd", 1},
+		{"ab\u3000cd ab cd", 8, "ab cd", 1},
+		{"x  https://t.me/abc https://t.me/abcdef", 20, "https://t.me/abc", 1},
+		{"no copy before", 3, "copy", 0},
+		{"   ", 0, "", 0},
+	} {
+		if got := matchOccurrence(c.src, c.from, c.searched); got != c.want {
+			t.Errorf("matchOccurrence(%q, %d, %q) = %d, want %d", c.src, c.from, c.searched, got, c.want)
+		}
+	}
+}
+
 // TestFilterPatternsSurviveCanon pins what canon relies on: the only lower-
 // case l in any pattern source is a literal letter, so turning it into an i
 // changes the words matched and never the syntax.

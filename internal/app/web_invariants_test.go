@@ -506,6 +506,31 @@ func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
 			t.Errorf("pointAtMatch no longer reads a cut match: missing %s", want)
 		}
 	}
+	// The copy it selects is the one the server counted (matchOccurrence):
+	// the quote's words with any whitespace between, every search one
+	// character on from the last place found, and the occurrence'th.
+	for _, want := range []string{
+		`{ field: where, match, occurrence }`, `words.join("\\s+"), "g")`, `search.lastIndex = next.index + 1;`,
+		`occurrence + 1`,
+	} {
+		if !strings.Contains(point, want) {
+			t.Errorf("pointAtMatch no longer selects the copy the server refused: missing %s", want)
+		}
+	}
+	if strings.Contains(point, "indexOf(") {
+		t.Error("pointAtMatch searches with indexOf, which finds the first copy whichever the server refused")
+	}
+	// The sentence is the server's, which says what it found: a request to
+	// talk on another app is not a contact detail.
+	blocked := withoutComments(jsFunction(t, script, "blockedMessage"))
+	if !strings.Contains(blocked, "{ error, rule, field: where, match }") || !strings.Contains(blocked, "${error.trim()}") {
+		t.Error("blockedMessage no longer shows the server's sentence for what it found")
+	}
+	status, out = h.postJSON(replies, map[string]any{"name": "", "body": "what's your insta?", "badge": false, "sage": false})
+	if msg, _ := out["error"].(string); status != http.StatusUnprocessableEntity || out["rule"] != ruleContact ||
+		!strings.Contains(msg, "asks people to talk on another app") {
+		t.Errorf("an ask: %d %v, want a contact block whose sentence says it is an ask", status, out)
+	}
 	// The least scroll leaves a field that is on screen but under the sticky
 	// header where it is; on a phone the header is three rows deep, and the
 	// Name field is right under it.
@@ -513,6 +538,19 @@ func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
 	if !strings.Contains(point, "revealBelowHeader(input)") || !strings.Contains(reveal, `scrollIntoView({ block: "start" })`) ||
 		!strings.Contains(reveal, ".site-header") {
 		t.Error("pointAtMatch no longer brings the field out from under the sticky header")
+	}
+	// So does Go back on the support panel: closing the panel shortens the
+	// page, which can leave the message under the header, where a plain
+	// focus() does not scroll.
+	opener := `const supportBack = event.target.closest('[data-action="support-back"]');`
+	i := strings.Index(script, opener)
+	if i < 0 {
+		t.Fatal("app.js has no Go back handler for the support panel; this test reads it")
+	}
+	back := withoutComments(script[i:])
+	back = back[:strings.Index(back, "return;")]
+	if !strings.Contains(back, "message.focus({ preventScroll: true });") || !strings.Contains(back, "revealBelowHeader(message);") {
+		t.Error("Go back on the support panel no longer brings the message out from under the sticky header")
 	}
 }
 

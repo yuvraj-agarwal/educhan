@@ -403,10 +403,14 @@ needs a browser check before the test changes.
   matters most after **Post anyway**, when the support panel is all that is on screen;
   focus goes back to the button that was pressed (switched off while the post was out,
   it had sent focus to the page), or to the form's own if the form was drawn again.
-  A `422` block is worded by `blockedMessage` (through `errorMessage`): the rule in
-  plain words, the server's `match` quoted, and the field when it is the Name or the
-  Subject; `pointAtMatch` focuses that field, selects the match (an exact search, then
-  one that lets whitespace runs differ, since the server quotes its normalised text; a
+  A `422` block is worded by `blockedMessage` (through `errorMessage`): the server's
+  sentence, which names what it found (a request to talk on another app is not a contact
+  detail) and the field, then the server's `match` quoted; a refusal without the
+  sentence gets the rule in plain words and the field when it is the Name or the
+  Subject. `pointAtMatch` focuses that field, selects the copy of the match the server
+  named by `occurrence` (a search that lets whitespace runs differ, since the server
+  quotes its normalised text, each search one character on from the last place found,
+  as `matchOccurrence` counts on the server; the last copy found if there are fewer; a
   match the server cut and ended in "…" is looked for without it and selected to the end
   of its run of non-space text), marks it `aria-invalid` and describes it by the notice
   until the poster edits it, and scrolls the field and the notice into view together,
@@ -426,7 +430,10 @@ needs a browser check before the test changes.
   `"1"` in multipart. It is never stored, put in the draft, or left on the form, so the
   next post with the same words is asked again
   (`TestSupportSeenIsSentOnlyFromSubmitAndNeverKept`). Go back closes the panel and puts
-  the cursor in the message; nothing here traps the reader or blocks the post. A `202`
+  the cursor in the message, clear of the sticky header (`revealBelowHeader`: closing
+  the panel shortens the page, which can leave the message on screen but under the
+  header, where a plain `focus()` does not scroll); nothing here traps the reader or
+  blocks the post. A `202`
   held post empties the form as a published one does, stays on the thread or board (the
   answer has no number, and nothing could show the post yet), and says it is waiting
   for a moderator (`heldNoticeHTML`), linking to the FAQ's `faq-checks` and, on every
@@ -635,7 +642,9 @@ unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
 - block: `422 {"error": <one sentence naming what to remove and where>, "outcome":
   "block", "rule": "contact"|"id_number", "field": "body"|"subject"|"name", "match":
   <the source text, trimmed, at most 80 characters (`quoteSource`): a longer one is cut
-  and ends in "…", and the client's `pointAtMatch` then selects to the end of the run>}`
+  and ends in "…", and the client's `pointAtMatch` then selects to the end of the run>,
+  "occurrence": <how many times the page's search finds the match earlier in the field
+  (`matchOccurrence`), so it selects the copy refused and not an allowed one before it>}`
 - support: `422 {"error": supportMessage, "outcome": "support"}`
 - hold: `202 {"held": true, "board": slug}` plus `"thread_no"` for a reply — never the
   rule or the post number.

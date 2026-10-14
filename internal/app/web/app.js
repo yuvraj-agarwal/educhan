@@ -200,13 +200,19 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
 }
 
 // blockedMessage says why the content rules sent a post back and what to take
-// out: the text the server matched, quoted as the poster wrote it, and the
-// field it is in when that is not the message. "" when the refusal does not
-// say what matched, or names a rule this page has no words for.
-function blockedMessage({ rule, field: where, match }) {
+// out: the server's own sentence, which names what it found (a phone number,
+// a request to talk on another app) and the field it is in, followed by the
+// text it matched, quoted as the poster wrote it. A refusal without the
+// sentence gets this page's words for its rule, with the field when that is
+// not the message. "" when the refusal does not say what matched, or names a
+// rule this page has no words for.
+function blockedMessage({ error, rule, field: where, match }) {
   const quoted = typeof match === "string" ? match.trim() : "";
   if (!quoted) {
     return "";
+  }
+  if (typeof error === "string" && error.trim()) {
+    return `${error.trim()} The part to take out is “${quoted}”.`;
   }
   let why;
   switch (rule) {
@@ -1780,8 +1786,11 @@ function redrawThreadCounts() {
 }
 
 // archiveKeptFor says how long an archived thread stays, when the board says.
+// "Removed", not "deleted": a thread with a post still waiting for a moderator
+// leaves view on time but is deleted only once the post is decided (the FAQ's
+// archive answer says so).
 function archiveKeptFor(board) {
-  return board.archive_days > 0 ? `, and is deleted after ${plural(board.archive_days, "day", "days")} in the archive` : "";
+  return board.archive_days > 0 ? `, and is removed after ${plural(board.archive_days, "day", "days")} in the archive` : "";
 }
 
 async function renderArchive(route) {
@@ -1808,7 +1817,7 @@ async function renderArchive(route) {
     })
     .join("");
 
-  const kept = board.archive_days > 0 ? ` for ${plural(board.archive_days, "day", "days")}, then deleted` : "";
+  const kept = board.archive_days > 0 ? ` for ${plural(board.archive_days, "day", "days")}, then removed` : "";
   el.main.innerHTML = `
     ${boardHeadHTML(board, "archive")}
     <p class="archive-intro">Threads that have left ${esc(label)} are kept here, read-only${kept}.
@@ -2214,7 +2223,7 @@ const FAQ_SECTIONS = [
         without an account. There are boards for school and university subjects, and for
         student life, such as admissions, exams, careers and studying abroad.</p>
       <p>Threads don't last forever. A reply moves its thread to the top of its board, and
-        threads that stop getting replies sink, move to the board's archive, and are deleted
+        threads that stop getting replies sink, move to the board's archive, and are removed
         after a while.</p>`,
   },
   {
@@ -2276,8 +2285,8 @@ const FAQ_SECTIONS = [
         <li><strong>Posts that wait for a moderator.</strong> A post that might be a threat,
           that might hurt someone who is struggling (by telling them to hurt or kill
           themselves, say, or by talking about ways to do it), or that asks someone's age or
-          where they live and also asks to talk privately, is kept back until a moderator has
-          checked it. It only appears if they approve it.</li>
+          where they live, or looks for someone of a certain age, and also asks to talk
+          privately or meet, is kept back until a moderator has checked it. It only appears if they approve it.</li>
         <li><strong>If you're having a hard time.</strong> If your post talks about wanting to
           hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
           it goes up. You can still post it.</li>
@@ -2432,7 +2441,9 @@ const FAQ_SECTIONS = [
         <li><strong>The archive.</strong> Each board holds a set number of threads. When a new
           thread pushes the least recently bumped one off the board, that thread moves to
           the board's archive, where it can still be read and linked to but takes no
-          replies. It's deleted after the number of days the archive page shows.</li>
+          replies. After the number of days the archive page shows, it's removed and
+          deleted. A thread with a post still waiting for a moderator is removed on time
+          too, but kept out of sight until they've decided, and deleted after that.</li>
       </ul>`,
   },
   {
@@ -3192,14 +3203,20 @@ document.addEventListener("click", (event) => {
   }
 
   // Go back on the support panel closes it and leaves the draft as it is,
-  // with the cursor in the message.
+  // with the cursor in the message. Closing the panel shortens the page, which
+  // can leave the message on screen but under the sticky header (three rows
+  // deep on a phone), where a plain focus() would not scroll; so it is brought
+  // out from under it, as a block's field is.
   const supportBack = event.target.closest('[data-action="support-back"]');
   if (supportBack) {
     event.preventDefault();
     const form = supportBack.closest("form");
     closeSupport(form);
     const message = form && field(form, "body");
-    if (message) message.focus();
+    if (message) {
+      message.focus({ preventScroll: true });
+      revealBelowHeader(message);
+    }
     return;
   }
 
@@ -3539,13 +3556,18 @@ function revealBelowHeader(element) {
 // pointAtMatch takes the poster to what a block quoted: the field it is in,
 // focused, with the text selected so it can be deleted in one go. The server
 // quotes the post as it kept it, trimmed and with its line ends tidied, so
-// when the exact text is not in the field the search lets any run of spaces
-// and line breaks stand for another. A match too long to quote whole comes
-// with its start and "…": the start is looked for, and the selection runs on
-// to the end of the run of text it is in, so deleting it takes the whole of
-// a long link rather than its first 80 characters. A field it cannot find
-// the text in still gets the focus.
-function pointAtMatch(form, { field: where, match }) {
+// the search lets any run of spaces and line breaks stand for another. The
+// same text can be in the field more than once, and only one copy refused —
+// a number in [math] is allowed, the same number after "call" is not — so the
+// server says which copy it means (occurrence: how many places the search
+// finds it before that one, each search starting one character on from the
+// last), and that one is selected; the last copy found stands in if there
+// are fewer. A match too long to quote whole comes with its start and "…":
+// the start is looked for, and the selection runs on to the end of the run of
+// text it is in, so deleting it takes the whole of a long link rather than
+// its first 80 characters. A field it cannot find the text in still gets the
+// focus.
+function pointAtMatch(form, { field: where, match, occurrence }) {
   if (!["subject", "name", "body"].includes(where)) {
     return;
   }
@@ -3568,17 +3590,23 @@ function pointAtMatch(form, { field: where, match }) {
   if (!quoted) {
     return;
   }
-  let start = input.value.indexOf(quoted);
-  let end = start + quoted.length;
-  if (start < 0) {
-    const words = quoted.split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
-    const found = new RegExp(words.join("\\s+")).exec(input.value);
-    if (!found) {
-      return;
+  const words = quoted.split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const search = new RegExp(words.join("\\s+"), "g");
+  const copies = Number.isInteger(occurrence) && occurrence > 0 ? occurrence + 1 : 1;
+  let found = null;
+  for (let i = 0; i < copies; i++) {
+    const next = search.exec(input.value);
+    if (!next) {
+      break;
     }
-    start = found.index;
-    end = start + found[0].length;
+    found = next;
+    search.lastIndex = next.index + 1;
   }
+  if (!found) {
+    return;
+  }
+  const start = found.index;
+  let end = start + found[0].length;
   if (cut) {
     end += /^\S*/.exec(input.value.slice(end))[0].length;
   }

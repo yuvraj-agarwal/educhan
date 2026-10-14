@@ -83,9 +83,12 @@ func requireBlock(t *testing.T, status int, out map[string]any, rule, field, mat
 	if status != http.StatusUnprocessableEntity {
 		t.Fatalf("status %d (%v), want 422", status, out)
 	}
-	requireKeys(t, out, "error", "outcome", "rule", "field", "match")
+	requireKeys(t, out, "error", "outcome", "rule", "field", "match", "occurrence")
 	if out["outcome"] != "block" || out["rule"] != rule || out["field"] != field || out["match"] != match {
 		t.Fatalf("refusal %v, want a %s block of %q in %s", out, rule, match, field)
+	}
+	if n, ok := out["occurrence"].(float64); !ok || n < 0 || n != float64(int(n)) {
+		t.Fatalf("occurrence %v, want a whole number of earlier copies", out["occurrence"])
 	}
 	msg, _ := out["error"].(string)
 	if msg == "" || !strings.HasSuffix(msg, ".") || strings.Count(msg, ". ") > 0 {
@@ -138,6 +141,15 @@ func TestBlockedPostsAreRefusedWithWhatToRemove(t *testing.T) {
 	// The subject and the shown part of the name are read too.
 	status, out = h.postJSON(threadsPath("blk"), map[string]any{"subject": "mail me ana.k@gmail.com", "body": "hi"})
 	requireBlock(t, status, out, ruleContact, fieldSubject, "ana.k@gmail.com")
+	// An earlier copy the rules allow comes before the refused one, and the
+	// refusal says which copy it means.
+	status, out = h.postJSON(repliesPath("blk", thread.ThreadNo),
+		map[string]any{"body": "[math]98765 43210[/math] is a nice number. call 98765 43210"})
+	requireBlock(t, status, out, ruleContact, fieldBody, "98765 43210")
+	if out["occurrence"] != 1.0 {
+		t.Fatalf("occurrence %v, want 1: the copy in [math] is allowed", out["occurrence"])
+	}
+
 	// Both ways in: a new thread's opening post and a reply each pass the
 	// name through displayedName on their own.
 	for _, path := range []string{threadsPath("blk"), repliesPath("blk", thread.ThreadNo)} {

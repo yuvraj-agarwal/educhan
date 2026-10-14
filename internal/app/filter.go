@@ -106,9 +106,11 @@ type contentVerdict struct {
 	// Rule is the block rule (ruleContact or ruleIDNumber).
 	Rule string
 	// Field and Match say where a block was found and what it was, as the
-	// poster wrote it.
-	Field string
-	Match string
+	// poster wrote it. Occurrence says which copy of Match in the field the
+	// block is about (matchOccurrence).
+	Field      string
+	Match      string
+	Occurrence int
 	// Message is the sentence the poster reads, for a block or support.
 	Message string
 	// Hold is the reason a held post is stored with.
@@ -191,12 +193,14 @@ func checkContent(in contentInput, supportSeen bool) contentVerdict {
 
 	for _, f := range fields {
 		if found, ok := f.firstBlock(); ok {
+			match, searched := quoteSource(f.src, found.from, found.to)
 			return contentVerdict{
-				Outcome: contentBlock,
-				Rule:    found.kind.rule(),
-				Field:   f.field,
-				Match:   quoteSource(f.src, found.from, found.to),
-				Message: blockMessage(found.kind, f.field),
+				Outcome:    contentBlock,
+				Rule:       found.kind.rule(),
+				Field:      f.field,
+				Match:      match,
+				Occurrence: matchOccurrence(f.src, found.from, searched),
+				Message:    blockMessage(found.kind, f.field),
 			}
 		}
 	}
@@ -240,13 +244,63 @@ func holdReason(fields []*scannedField) string {
 // quoteSource is the text a block quotes back: the poster's own, from the
 // source string, trimmed, and cut to maxMatchLen characters. A cut quote ends
 // in "…", so the page knows to select from where it starts to the end of the
-// run it finds, not just the characters quoted.
-func quoteSource(src string, from, to int) string {
+// run it finds, not just the characters quoted. searched is the text the page
+// looks for: the quote, without the "…" when it was cut.
+func quoteSource(src string, from, to int) (quote, searched string) {
 	q := strings.TrimSpace(src[from:to])
 	if utf8.RuneCountInString(q) <= maxMatchLen {
-		return q
+		return q, q
 	}
-	return strings.TrimRight(truncateRunes(q, maxMatchLen-1), " \t\r\n") + "…"
+	cut := strings.TrimRight(truncateRunes(q, maxMatchLen-1), " \t\r\n")
+	return cut + "…", cut
+}
+
+// jsSpaceRun is a run of what \s matches in the page's JavaScript, which is
+// more than Go's \s matches; isJSSpace is the same set.
+const jsSpaceRun = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+`
+
+func isJSSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', ' ', 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
+		return true
+	}
+	return r >= 0x2000 && r <= 0x200a
+}
+
+// matchOccurrence says which copy of a block's quote the block is about, so
+// the page selects that one (pointAtMatch) and not an earlier copy the rules
+// allowed: a number in [math], say, before the same number after "call". It
+// counts the places the page's own search finds searched before the copy at
+// from: the text's words in order with any run of whitespace between them,
+// each search starting one character on from the last. The page's field
+// differs from src only in what normalizeBody tidies, which is whitespace at
+// the ends of lines and of the post, and in a name's tripcode secret, which
+// comes after the displayed part; neither adds or takes away a copy before
+// the one the block is about.
+func matchOccurrence(src string, from int, searched string) int {
+	words := strings.FieldsFunc(searched, isJSSpace)
+	if len(words) == 0 {
+		return 0
+	}
+	for i, word := range words {
+		words[i] = regexp.QuoteMeta(word)
+	}
+	search, err := regexp.Compile(strings.Join(words, jsSpaceRun))
+	if err != nil {
+		return 0
+	}
+	start := len(src) - len(strings.TrimLeftFunc(src[from:], unicode.IsSpace))
+	n := 0
+	for at := 0; at < start; {
+		loc := search.FindStringIndex(src[at:])
+		if loc == nil || at+loc[0] >= start {
+			break
+		}
+		n++
+		_, size := utf8.DecodeRuneInString(src[at+loc[0]:])
+		at += loc[0] + size
+	}
+	return n
 }
 
 // reading says what a stretch of the source reads as in the plain view, in
