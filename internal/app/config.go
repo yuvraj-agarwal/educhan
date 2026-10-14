@@ -58,9 +58,10 @@ type Config struct {
 	GCSPrefix string
 	// MaxUploadBytes is the largest attachment accepted with a post.
 	MaxUploadBytes int64
-	// UploadsEnabled accepts image attachments. It is off unless set: images
-	// are stored and served exactly as uploaded, with no metadata stripping
-	// and no content scanning yet, so a deployment opts in knowingly.
+	// UploadsEnabled accepts image attachments. It is off unless set: every
+	// image is rewritten without its metadata before it is stored, but nothing
+	// checks what an image shows yet (no known-image matching, no content
+	// scanning), so a deployment opts in knowingly.
 	UploadsEnabled bool
 	// VerifySecret keys institutional verification: the HMAC that stands in for
 	// an address, the hash of a pending code, and the signature on an issued

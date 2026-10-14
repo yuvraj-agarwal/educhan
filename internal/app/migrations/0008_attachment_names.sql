@@ -9,5 +9,10 @@
 -- The column keeps its name, and holds only that from now on. Rewriting a row
 -- does not scrub its old version from the database's files at once, nor from
 -- any backup taken before this ran.
+--
+-- Nor does it touch the files. An image stored before this release was kept
+-- as it was uploaded, metadata and all, and is served that way until its post
+-- is deleted; this migration's applied_at in schema_migrations is the cutoff
+-- the README's query for them uses.
 UPDATE attachments
 SET original_name = 'image' || COALESCE(substring(original_path FROM '\.[^./]*$'), '');

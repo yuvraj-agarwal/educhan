@@ -259,12 +259,14 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // private are left behind. The pixel values are kept exactly as image/png
 // decodes them, which is not always the form they came in: 1-, 2- and 4-bit
 // grey is stored at 8 bits, and grey or colour with a transparent colour key
-// (tRNS) has an alpha channel instead, while 16-bit pictures stay 16-bit. A
-// palette keeps only the entries its pixels use, so it may be stored at a
-// lower bit depth, and fully transparent pixels hold no colour. A picture
-// with an EXIF orientation in an eXIf chunk is turned upright first, as for a
-// JPEG, because browsers show it turned. An animated PNG keeps its still
-// image, which is what a viewer without APNG support has always shown.
+// (tRNS) is stored as colour with an alpha channel, or with none when no pixel
+// has the key's colour, while 16-bit pictures stay 16-bit
+// (TestPNGIsStoredInTheFormItDecodesTo). A palette keeps only the entries its
+// pixels use, so it may be stored at a lower bit depth, and fully transparent
+// pixels hold no colour. A picture with an EXIF orientation in an eXIf chunk
+// is turned upright first, as for a JPEG, because browsers show it turned.
+// An animated PNG keeps its still image, which is what a viewer without APNG
+// support has always shown.
 func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	src, err := png.Decode(bytes.NewReader(data))
 	if err != nil {

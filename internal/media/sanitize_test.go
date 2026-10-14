@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -465,7 +466,7 @@ func TestPNGIsStoredWithoutAncillaryChunks(t *testing.T) {
 	requireSamePixels(t, decodeStored(t, clean), decodeStored(t, got.Data))
 }
 
-// Re-encoding keeps a PNG's bit depth and its transparency.
+// Re-encoding keeps a 16-bit PNG at 16 bits, transparency and all.
 func TestPNGKeepsSixteenBitPixels(t *testing.T) {
 	src := image.NewNRGBA64(image.Rect(0, 0, 20, 10))
 	for y := 0; y < 10; y++ {
@@ -484,10 +485,82 @@ func TestPNGKeepsSixteenBitPixels(t *testing.T) {
 	requireSamePixels(t, src, out)
 }
 
+// A PNG is stored in the form image/png decodes it to, as sanitizePNG and the
+// README say, not always the one it came in: grey of 1, 2 or 4 bits comes
+// back at 8, and grey or colour with a transparent colour key (tRNS) comes
+// back as colour with an alpha channel, or with none when no pixel matches
+// the key, and without the tRNS chunk. 16 bits stay 16. Every pixel keeps
+// its value.
+func TestPNGIsStoredInTheFormItDecodesTo(t *testing.T) {
+	const w, h = 16, 8
+	// lowBitGrey packs pixels of value (x+y) mod 2^depth, with a tRNS chunk
+	// making 0 transparent if asked: image/png writes no grey below 8 bits.
+	lowBitGrey := func(depth byte, key bool) []byte {
+		var raw bytes.Buffer
+		zw := zlib.NewWriter(&raw)
+		perByte := 8 / int(depth)
+		for y := 0; y < h; y++ {
+			row := make([]byte, 1+(w+perByte-1)/perByte)
+			for x := 0; x < w; x++ {
+				v := byte((x + y) % (1 << depth))
+				row[1+x/perByte] |= v << (8 - int(depth)*(x%perByte+1))
+			}
+			if _, err := zw.Write(row); err != nil {
+				t.Fatalf("compress: %v", err)
+			}
+		}
+		if err := zw.Close(); err != nil {
+			t.Fatalf("compress: %v", err)
+		}
+		ihdr := binary.BigEndian.AppendUint32(nil, w)
+		ihdr = binary.BigEndian.AppendUint32(ihdr, h)
+		out := append([]byte("\x89PNG\r\n\x1a\n"), pngChunk("IHDR", append(ihdr, depth, 0, 0, 0, 0))...)
+		if key {
+			out = append(out, pngChunk("tRNS", []byte{0, 0})...)
+		}
+		out = append(out, pngChunk("IDAT", raw.Bytes())...)
+		return append(out, pngChunk("IEND", nil)...)
+	}
+	// unmatchedKey makes a colour no pixel of rawPNG's has transparent.
+	unmatchedKey := func(p []byte, key []byte) []byte {
+		return withPNGChunks(p, pngChunk("tRNS", key))
+	}
+	for _, c := range []struct {
+		name          string
+		upload        []byte
+		colour, depth byte
+	}{
+		{"1-bit grey", lowBitGrey(1, false), 0, 8},
+		{"2-bit grey", lowBitGrey(2, false), 0, 8},
+		{"4-bit grey", lowBitGrey(4, false), 0, 8},
+		{"8-bit grey", rawPNG(t, w, h, 0, 8, false, false), 0, 8},
+		{"16-bit grey", rawPNG(t, w, h, 0, 16, false, false), 0, 16},
+		{"1-bit grey with a colour key", lowBitGrey(1, true), 6, 8},
+		{"4-bit grey with a colour key", lowBitGrey(4, true), 6, 8},
+		{"8-bit grey with a colour key", rawPNG(t, w, h, 0, 8, false, true), 6, 8},
+		{"8-bit RGB with a colour key", rawPNG(t, w, h, 2, 8, false, true), 6, 8},
+		{"16-bit grey with a colour key", rawPNG(t, w, h, 0, 16, false, true), 6, 16},
+		{"16-bit RGB with a colour key", rawPNG(t, w, h, 2, 16, false, true), 6, 16},
+		{"8-bit grey with a key no pixel has", unmatchedKey(rawPNG(t, w, h, 0, 8, false, false), []byte{0, 0x99}), 2, 8},
+		{"16-bit grey with a key no pixel has", unmatchedKey(rawPNG(t, w, h, 0, 16, false, false), []byte{0x99, 0x99}), 2, 16},
+	} {
+		got := process(t, c.upload)
+		if colour, depth := got.Data[25], got.Data[24]; colour != c.colour || depth != c.depth {
+			t.Errorf("%s: stored as colour type %d at %d bits, want %d at %d", c.name, colour, depth, c.colour, c.depth)
+		}
+		for _, typ := range pngChunkTypes(t, got.Data) {
+			if typ == "tRNS" {
+				t.Errorf("%s: stored with a tRNS chunk", c.name)
+			}
+		}
+		requireSamePixels(t, decodeStored(t, c.upload), decodeStored(t, got.Data))
+	}
+}
+
 // A PNG's EXIF orientation, in an eXIf chunk before its pixels, is applied
 // as a JPEG's is, because browsers show the picture turned by it: every kind
-// of PNG is stored turned, pixel for pixel, at its own bit depth, and its
-// dimensions are the turned ones. An eXIf chunk after the pixels, which
+// of PNG is stored turned, pixel for pixel, in the form image/png decodes it
+// to, and its dimensions are the turned ones. An eXIf chunk after the pixels, which
 // browsers do not read, or one holding anything but a TIFF structure, turns
 // nothing. None of them is stored.
 func TestPNGOrientationIsApplied(t *testing.T) {

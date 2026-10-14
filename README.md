@@ -403,7 +403,8 @@ client can leave the image picker off a server that would refuse what it sends.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
-  profiles. Both storage backends get the same rewritten file.
+  profiles. Both storage backends get the same rewritten file. Files stored before this
+  are the exception (below).
   - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a phone
     photo stored on its side is upright everywhere, thumbnail included, and its reported
     width and height are the upright ones. It keeps its chroma subsampling, so colour
@@ -418,9 +419,10 @@ client can leave the image picker off a server that would refuse what it sends.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
     browsers apply too), and re-encoded, keeping none of its ancillary chunks. Every pixel
     keeps the value it decodes to, though not always the form it came in: 1-, 2- and
-    4-bit grey is stored at 8 bits, a picture with a transparent colour key gets an
-    alpha channel instead, and a palette keeps only the colours its pixels use. An
-    animated PNG keeps its still image.
+    4-bit grey is stored at 8 bits, grey or colour with a transparent colour key is
+    stored as colour with an alpha channel (or with none, if no pixel has the key's
+    colour), and a palette keeps only the colours its pixels use. An animated PNG keeps
+    its still image.
   - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
     count (from either of the two extensions browsers read it from), and dropping
     comments and application data such as XMP. Its colour tables keep only the colours
@@ -448,6 +450,25 @@ client can leave the image picker off a server that would refuse what it sends.
   colour engine Go does not have. The checksum recorded for an attachment is of the
   stored file, so it does not depend on the metadata an upload arrived with, beyond an
   orientation that turns the picture.
+- **Files stored before this** keep their metadata: a server that took uploads before
+  it rewrote them kept them as they came, and nothing rewrites them now, so they are
+  served that way until their posts are deleted. The deployment in `deploy/` has kept
+  uploads off, so it has none. On a server that took them, migration `0008` ran when
+  this release first started, and this lists the posts whose files came before it:
+
+  ```sql
+  SELECT b.slug, t.no AS thread, p.no AS post
+  FROM attachments a
+  JOIN posts p ON p.id = a.post_id
+  JOIN threads t ON t.id = p.thread_id
+  JOIN boards b ON b.id = p.board_id
+  WHERE a.created_at < (SELECT applied_at FROM schema_migrations WHERE version = 8);
+  ```
+
+  Deleting those posts through the [Moderation API](#moderation-api) removes their
+  files; deleting an opening post deletes its thread. An older instance still serving
+  while a release rolls out stores uploads as they came after that moment, so on a
+  rolling deploy move the cutoff to when the last of them stopped.
 - **No filename is kept**: a camera's or a phone's filename can name a date and a person
   (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension
   of the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was

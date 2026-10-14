@@ -522,7 +522,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   extension, loop count. Change the two together.
 - **What is stored is never the upload.** `media.Process` rewrites every image without
   its metadata before `Save` hands it to a backend, so both backends store the same
-  file (`internal/media/sanitize.go`). JPEG is decoded, turned upright by its EXIF
+  file (`internal/media/sanitize.go`). Files stored before this release are the
+  exception: they were kept as uploaded, metadata and all, nothing rewrites them, and
+  they are served that way until their posts are deleted. The README gives the query
+  that lists them, cut off at migration `0008`'s `applied_at`; the deployment in
+  `deploy/` kept uploads off, so it has none. JPEG is decoded, turned upright by its EXIF
   Orientation (`jpegOrientation`, `orient` in `orient.go`), and re-encoded by
   `jpegenc` at the picture's own chroma subsampling, as `orient` left it, and at
   `jpegQuality`: the lowest quality whose tables quantise no coefficient more coarsely
@@ -543,7 +547,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`pngOrientation`; browsers apply it, and read it nowhere else), and re-encoded,
   which keeps only IHDR, PLTE, tRNS, IDAT and IEND (an APNG keeps its still image); the
   pixels are what `image/png` decodes them to, so 1-, 2- and 4-bit grey comes back at 8
-  bits and a colour key (tRNS on grey or truecolour) as an alpha channel. `orient`
+  bits and a colour key (tRNS on grey or truecolour) as colour with an alpha channel,
+  or with none when no pixel has the key's colour
+  (`TestPNGIsStoredInTheFormItDecodesTo`). `orient`
   keeps every pixel exactly, in a picture of the kind it was given: YCbCr in its
   planes where the chroma samples line up with the turned picture, and otherwise (an
   odd side mirrored at 4:2:0, 4:1:1 on its side) at 4:4:4 a pixel at a time, because
