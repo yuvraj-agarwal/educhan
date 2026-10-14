@@ -23,9 +23,17 @@ import (
 // long as a collection that began during that phase is still running. Small
 // garbage a phase makes and drops as it goes (row buffers, a GIF's LZW
 // tables) is left to the collector's pacing, beyond processingSlack.
-// TestProcessingCostCoversWhatIsHeld holds the estimate to measured peaks for
-// every kind of file it models, and TestGIFFrameOverheadCoversWhatDecodingKeeps
-// holds gifFrameOverhead to what image/gif keeps.
+//
+// TestProcessingCostCoversWhatIsHeld measures a file of each kind the model
+// distinguishes against the estimate for the whole of its processing and
+// against its decoding phases alone (decodingPhases), at sizes where each
+// term charged for decoding comes to megabytes; TestThumbScratchCoversTheScaler
+// measures the thumbnail's scratch, and
+// TestGIFFrameOverheadCoversWhatDecodingKeeps what image/gif keeps of each
+// frame. A term left out or cut short fails one of them, unless another term
+// charged for the same moment is at least as large in every file they
+// measure; a few are, the alpha plane and the NRGBA copy of a transparent
+// lossy WebP among them.
 
 // processingBudget is the memory every upload being processed at once may
 // hold between them, by their estimates, from when it starts to be decoded
@@ -67,7 +75,9 @@ type phase struct{ first, alloc, after int64 }
 // live until it ends, so a collection that begins during one phase keeps that
 // phase's scratch alive into the next. The next phase's first allocation is
 // counted on top of the earlier phase's peak for that reason; a collection
-// is over long before the rest of a phase has been allocated.
+// is usually over long before the rest of a phase has been allocated, though
+// on a machine short of CPU one can run on further and, until it ends, hold
+// more than this counts.
 func peakOf(phases ...phase) int64 {
 	var worst, held, top int64
 	for _, p := range phases {
@@ -83,37 +93,10 @@ func peakOf(phases ...phase) int64 {
 // thumbnail scaler's scratch. cfg is the header's, already checked against
 // MaxPixels; frames is a GIF's frames (gifFramePixels).
 func processingCost(format Format, data []byte, cfg image.Config, frames gifFrames) int64 {
-	w, h := int64(cfg.Width), int64(cfg.Height)
-	px := w * h
-	var phases []phase
-	switch format.Name {
-	case FormatJPEG.Name:
-		phases = jpegPhases(data, w, h)
-	case FormatPNG.Name:
-		d := pngBytesPerPixel(data) * px
-		decode := phase{first: d, alloc: d, after: d}
-		if pngInterlaced(data) {
-			// Each of the seven passes is decoded into a picture of its own
-			// and merged into the whole; the last pass is half of it.
-			decode.alloc = 2 * d
-		}
-		phases = []phase{decode}
-		if pngOrientation(data) >= 2 {
-			// orient copies the picture into another of the same kind.
-			phases = append(phases, phase{first: d, alloc: d, after: d})
-		}
-	case FormatGIF.Name:
-		// Every frame is decoded and kept, a byte a pixel and its overhead,
-		// until all of them are encoded again. An interlaced frame is
-		// decoded once more while its rows are put in order.
-		kept := frames.pixels + frames.count*gifFrameOverhead
-		phases = []phase{{alloc: kept + px, after: kept}}
-	case FormatWebP.Name:
-		phases = webpPhases(data, w, h)
-	default:
+	phases := decodingPhases(format, data, cfg, frames)
+	if phases == nil {
 		return processingBudget + 1
 	}
-
 	held := phases[len(phases)-1].after
 	upload := int64(len(data))
 	limit := storedLimit(format, data, cfg.Width, cfg.Height)
@@ -131,6 +114,42 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 		phase{first: scratch, alloc: scratch, after: limit},
 	)
 	return peakOf(phases...) + processingSlack
+}
+
+// decodingPhases are the phases of processing an upload before it is
+// encoded again: decoding it, converting it and turning it upright, which is
+// everything sanitize does before it writes the first byte of the stored
+// file. They are nil for a format it does not know.
+func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFrames) []phase {
+	w, h := int64(cfg.Width), int64(cfg.Height)
+	px := w * h
+	switch format.Name {
+	case FormatJPEG.Name:
+		return jpegPhases(data, w, h)
+	case FormatPNG.Name:
+		d := pngBytesPerPixel(data) * px
+		decode := phase{first: d, alloc: d, after: d}
+		if pngInterlaced(data) {
+			// Each of the seven passes is decoded into a picture of its own
+			// and merged into the whole; the last pass is half of it.
+			decode.alloc = 2 * d
+		}
+		phases := []phase{decode}
+		if pngOrientation(data) >= 2 {
+			// orient copies the picture into another of the same kind.
+			phases = append(phases, phase{first: d, alloc: d, after: d})
+		}
+		return phases
+	case FormatGIF.Name:
+		// Every frame is decoded and kept, a byte a pixel and its overhead,
+		// until all of them are encoded again. An interlaced frame is
+		// decoded once more while its rows are put in order.
+		kept := frames.pixels + frames.count*gifFrameOverhead
+		return []phase{{alloc: kept + px, after: kept}}
+	case FormatWebP.Name:
+		return webpPhases(data, w, h)
+	}
+	return nil
 }
 
 // storedLimit is the most a stored original may take: four times the upload,
@@ -464,12 +483,15 @@ func pngInterlaced(data []byte) bool {
 // after it, starting from stripWebP's copy of the file. A lossy picture
 // decodes to YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a
 // pixel, from a copy the decoder makes of its compressed partitions, and is
-// encoded as a JPEG from those planes. An alpha plane, decoded first, is a
-// byte a pixel, but a compressed one is decoded as a lossless picture before
-// that, which can take 8 bytes a pixel while its colour index is expanded;
-// and a picture that keeps its transparency is converted to NRGBA, 4 bytes a
-// pixel, to be encoded as a PNG. A lossless picture decodes to NRGBA, again
-// with up to as much once more for its colour index.
+// encoded as a JPEG from those planes. A lossless picture decodes to NRGBA, 4
+// bytes a pixel, but one written with a colour index of 16 colours or fewer
+// is decoded packed first, at least two pixels to every four bytes, and
+// unpacked into a second picture: 6 bytes a pixel at most (vp8l's
+// inverseColorIndexing). An alpha plane, decoded first, is a byte a pixel,
+// but a compressed one is decoded as a lossless picture first and copied out
+// of it, which is no more than the lossless picture's own peak; and a picture
+// that keeps its transparency is converted to NRGBA, 4 bytes a pixel, to be
+// encoded as a PNG.
 func webpPhases(data []byte, w, h int64) []phase {
 	px, stripped := w*h, int64(len(data))
 	planes := 384 * ((w + 15) / 16) * ((h + 15) / 16)
@@ -478,12 +500,12 @@ func webpPhases(data []byte, w, h int64) []phase {
 	lossless, alpha := webpPicture(data)
 	switch {
 	case lossless:
-		return []phase{strip, {first: 8 * px, alloc: 8 * px, after: 4 * px}}
+		return []phase{strip, {first: 6 * px, alloc: 6 * px, after: 4 * px}}
 	case alpha:
 		lossy.after += px
 		return []phase{
 			strip,
-			{first: 9 * px, alloc: 9 * px, after: stripped + px},
+			{first: 6 * px, alloc: 6 * px, after: stripped + px},
 			lossy,
 			{first: 4 * px, alloc: 4 * px, after: 4 * px},
 		}

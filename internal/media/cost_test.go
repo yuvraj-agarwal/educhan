@@ -6,10 +6,12 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
 	"image/color/palette"
+	"image/draw"
 	"image/gif"
 	"image/png"
 	"math"
@@ -26,7 +28,8 @@ import (
 
 // rawPNG writes a w×h PNG of the given colour type and bit depth, Adam7
 // interlaced or not, with a tRNS chunk if asked: the kinds image/png cannot
-// write itself. The pixels are a smooth ramp, so the file stays small.
+// write itself. The pixels are four flat quadrants, the top left one black,
+// which is the colour a tRNS chunk written here makes transparent.
 func rawPNG(t *testing.T, w, h int, colour, depth byte, interlaced, trns bool) []byte {
 	t.Helper()
 	channels := map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour]
@@ -63,11 +66,18 @@ func rawPNG(t *testing.T, w, h int, colour, depth byte, interlaced, trns bool) [
 		for y := p[1]; y < h; y += p[3] {
 			row := []byte{0}
 			for x := p[0]; x < w; x += p[2] {
+				quadrant := 0
+				if x >= w/2 {
+					quadrant++
+				}
+				if y >= h/2 {
+					quadrant += 2
+				}
+				v := byte(0x40 * quadrant)
+				if colour == 3 {
+					v = byte(quadrant & 1)
+				}
 				for k := 0; k < bpp; k++ {
-					v := byte((x + y) >> 4)
-					if colour == 3 {
-						v &= 1
-					}
 					row = append(row, v)
 				}
 			}
@@ -99,42 +109,126 @@ func gifOfFrames(t *testing.T, w, h, n int) []byte {
 	return buf.Bytes()
 }
 
-// costFixtures are one file of each kind processingCost models, 1200×900
-// pictures of four flat quadrants unless they say otherwise. The cost-*.jpg
-// and cost-*.webp files in testdata are made with Pillow, because Go encodes
-// neither progressive nor CMYK JPEGs nor any WebP, except cost-411.jpg, which
-// is made with ImageMagick (-sampling-factor 4x1), because Pillow does not
-// write 4:1:1 either. Those marked "o6" carry an EXIF orientation of 6, so
-// they are turned on their side too, and "o3" one of 3, turned around.
+// interlaced marks every frame of a GIF of flat frames interlaced, which
+// image/gif never writes itself. A flat frame is the same picture whatever
+// order its rows come in, so the flag is all that has to change.
+func interlaced(t *testing.T, data []byte) []byte {
+	t.Helper()
+	out := append([]byte(nil), data...)
+	table := func(flags byte) int {
+		if flags&0x80 == 0 {
+			return 0
+		}
+		return 3 << (1 + flags&0x07)
+	}
+	subBlocks := func(i int) int {
+		for i < len(out) && out[i] != 0 {
+			i += 1 + int(out[i])
+		}
+		return i + 1
+	}
+	frames := 0
+	for i := 13 + table(out[10]); i < len(out); {
+		switch out[i] {
+		case 0x21: // an extension: its label, then its sub-blocks
+			i = subBlocks(i + 2)
+		case 0x2C: // a frame: its descriptor, colour table, code size and data
+			flags := out[i+9]
+			out[i+9] = flags | 0x40
+			frames++
+			i = subBlocks(i + 10 + table(flags) + 1)
+		case 0x3B:
+			if frames == 0 {
+				t.Fatal("no frame to mark interlaced")
+			}
+			return out
+		default:
+			t.Fatalf("unexpected GIF block %#x at %d", out[i], i)
+		}
+	}
+	t.Fatal("no GIF trailer")
+	return nil
+}
+
+// paddedBitstream is a simple lossy WebP with n more bytes at the end of its
+// VP8 chunk. Stripping keeps the chunk whole, and the decoder copies all of
+// it before it decodes the picture and then ignores what the picture does
+// not need, as it would a file hidden there (sanitizeWebP).
+func paddedBitstream(t *testing.T, data []byte, n int) []byte {
+	t.Helper()
+	chunks := webpChunks(t, data)
+	if len(chunks) != 1 || chunks[0].id != "VP8 " {
+		t.Fatalf("chunks %v, want a simple lossy WebP", chunkIDs(chunks))
+	}
+	vp8 := chunks[0].payload
+	chunks[0].payload = append(vp8[:len(vp8):len(vp8)], make([]byte, n)...)
+	return webpFile(chunks...)
+}
+
+// greyQuadrants is quadrants as a grey picture.
+func greyQuadrants(w, h int) *image.Gray {
+	m := image.NewGray(image.Rect(0, 0, w, h))
+	draw.Draw(m, m.Rect, quadrants(w, h), image.Point{}, draw.Src)
+	return m
+}
+
+// costFixtures are one file of each kind processingCost models, pictures of
+// four flat quadrants unless they say otherwise. They are large enough for
+// each term the model charges for decoding to come to megabytes more than
+// processingSlack in one of them at least, so that a term left out or cut
+// short is seen: 2400×1800, four times a phone screenshot's pixels, for a
+// term of a byte and a half a pixel; 3200×2400 for the three kinds that turn
+// on a term of a byte a pixel; and 1200×900 for the 16-bit colour PNGs,
+// whose least term is eight bytes a pixel, and which take the longest to
+// encode.
+//
+// The cost-*.jpg and cost-*.webp files in testdata are 2400×1800, made with
+// Pillow, because Go encodes neither progressive nor CMYK JPEGs nor any WebP:
+// the JPEGs at quality 90, the progressive ones with an EXIF orientation of 6
+// and cost-rgb.jpg with keep_rgb (an Adobe segment of transform 0, and
+// components named R, G and B), and the WebPs at Pillow's defaults. The
+// lossless WebP is a grid of nine colours and the transparent one has eight
+// levels of alpha in vertical bands, the first clear, which libwebp writes as
+// a colour index packed two pixels to the byte: the dearest way to decode
+// either. cost-411.jpg is made with ImageMagick (-sampling-factor 4x1
+// -quality 90), because Pillow does not write 4:1:1. The opaque lossy WebP
+// carries 8 MiB more at the end of its bitstream (paddedBitstream), so the
+// two copies of the file the model charges for are megabytes too. Those
+// marked "o6" carry an EXIF orientation of 6, so they are turned on their
+// side too, and "o3" one of 3, turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
 		return withSegments(jpg, exifSegment(orientationTIFF(binary.LittleEndian, o)))
 	}
 	sideways := func(jpg []byte) []byte { return turned(jpg, 6) }
-	const w, h = 1200, 900
+	const w, h = 2400, 1800
+	const large, tall = 3200, 2400
+	const small, short = 1200, 900
 	return map[string][]byte{
 		"baseline 4:2:0 o6":          sideways(encodeJPEGImage(t, quadrants(w, h))),
 		"baseline 4:2:0 odd o3":      turned(encodeJPEGImage(t, quadrants(w+1, h+1)), 3),
 		"baseline 4:1:1 o6":          sideways(readTestdata(t, "cost-411.jpg")),
+		"baseline grey o6":           sideways(encodeJPEGImage(t, greyQuadrants(large, tall))),
 		"progressive 4:2:0 o6":       readTestdata(t, "cost-prog420.jpg"),
 		"progressive 4:4:4 o6":       readTestdata(t, "cost-prog444.jpg"),
 		"progressive grey o6":        readTestdata(t, "cost-proggray.jpg"),
 		"progressive CMYK o6":        readTestdata(t, "cost-progcmyk.jpg"),
 		"baseline CMYK":              readTestdata(t, "cost-cmyk.jpg"),
-		"RGB o6":                     readTestdata(t, "cost-rgb.jpg"),
-		"PNG palette":                rawPNG(t, w, h, 3, 8, false, false),
+		"RGB":                        readTestdata(t, "cost-rgb.jpg"),
+		"PNG palette":                rawPNG(t, large, tall, 3, 8, false, false),
 		"PNG RGB":                    rawPNG(t, w, h, 2, 8, false, false),
 		"PNG grey with transparency": rawPNG(t, w, h, 0, 8, false, true),
 		"PNG RGBA interlaced":        rawPNG(t, w, h, 6, 8, true, false),
 		"PNG grey 16-bit interlaced": rawPNG(t, w, h, 0, 16, true, false),
-		"PNG RGB 16-bit interlaced":  rawPNG(t, w, h, 2, 16, true, false),
-		"PNG RGBA 16-bit o6": withPNGChunks(rawPNG(t, w, h, 6, 16, false, false),
+		"PNG RGB 16-bit interlaced":  rawPNG(t, small, short, 2, 16, true, false),
+		"PNG RGBA 16-bit o6": withPNGChunks(rawPNG(t, small, short, 6, 16, false, false),
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
-		"GIF of four frames":    gifOfFrames(t, w, h, 4),
-		"WebP lossy":            readTestdata(t, "cost-lossy.webp"),
-		"WebP lossy with alpha": readTestdata(t, "cost-alpha.webp"),
-		"WebP lossless":         readTestdata(t, "cost-lossless.webp"),
+		"GIF of four frames":           gifOfFrames(t, w, h, 4),
+		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
+		"WebP lossy":                   paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
+		"WebP lossy with alpha":        readTestdata(t, "cost-alpha.webp"),
+		"WebP lossless":                readTestdata(t, "cost-lossless.webp"),
 	}
 }
 
@@ -147,68 +241,157 @@ func liveHeap() int64 {
 	return int64(s[0].Value.Uint64())
 }
 
-// peakLive processes data with the collector running continually and returns
-// the most the heap held live, as the collector marked it, above what it held
-// before. That is the quantity processingCost estimates: garbage a phase
-// leaves behind is not in it, because a memory limit makes the collector take
-// it back.
+// peakLive runs work with the collector set to start again whenever the heap
+// grows by a hundredth, and returns the most the heap held live, as the
+// collector marked it, above what it held before. That is the quantity
+// processingCost estimates: garbage a phase leaves behind is not in it,
+// because a memory limit makes the collector take it back.
 //
-// What a phase allocates and drops while a collection runs is marked live
-// too, so a file whose processing is mostly such churn measures as much of
-// it as the collector happened to overlap. A GIF of thousands of tiny frames
-// is one: image/gif allocates tens of kilobytes of LZW tables for each frame
-// and keeps a few. What it keeps is measured exactly instead, by
+// A collection marks live everything reachable when it begins and everything
+// allocated while it runs, so what it marks is no less than what was held at
+// any moment while it ran; and with one started at every hundredth of growth,
+// and at once by any allocation large enough to matter, what comes and goes
+// between two of them is small. peakLive reads what each collection marked
+// after it ends, and runs work again if two ended between its reads, so none
+// is missed. What it measures can be more than was held, though: what work
+// allocates and drops while one collection runs is marked live too, and how
+// much of that a run measures depends on how the collections fall, which
+// depends on what else the machine is doing (leastPeak). A GIF of thousands
+// of tiny frames is the extreme case, mostly such churn: image/gif allocates
+// tens of kilobytes of LZW tables for each frame and keeps a few. What it
+// keeps is measured exactly instead, by
 // TestGIFFrameOverheadCoversWhatDecodingKeeps.
-func peakLive(t *testing.T, name string, data []byte) int64 {
+func peakLive(t *testing.T, name string, work func() error) int64 {
 	t.Helper()
 	defer debug.SetGCPercent(debug.SetGCPercent(1))
-	runtime.GC()
-	base := liveHeap()
+	for attempt := 0; attempt < 3; attempt++ {
+		runtime.GC()
+		s := []metrics.Sample{{Name: "/gc/heap/live:bytes"}, {Name: "/gc/cycles/total:gc-cycles"}}
+		metrics.Read(s)
+		base, cycles := int64(s[0].Value.Uint64()), s[1].Value.Uint64()
 
-	var (
-		peak int64
-		wg   sync.WaitGroup
-		stop = make(chan struct{})
-	)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		for {
-			peak = max(peak, liveHeap())
-			select {
-			case <-stop:
-				return
-			case <-time.After(50 * time.Microsecond):
+		var (
+			peak   int64
+			missed bool
+			wg     sync.WaitGroup
+			stop   = make(chan struct{})
+		)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				metrics.Read(s)
+				peak = max(peak, int64(s[0].Value.Uint64()))
+				n := s[1].Value.Uint64()
+				missed = missed || n > cycles+1
+				cycles = n
+				select {
+				case <-stop:
+					return
+				default:
+					time.Sleep(50 * time.Microsecond)
+				}
 			}
+		}()
+		err := work()
+		runtime.GC() // marks whatever work still held
+		close(stop)
+		wg.Wait()
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
 		}
-	}()
-	_, err := Process(context.Background(), data)
-	runtime.GC() // marks whatever the last phase still held
-	close(stop)
-	wg.Wait()
-	if err != nil {
-		t.Fatalf("%s: Process: %v", name, err)
+		if !missed {
+			return peak - base
+		}
 	}
-	return peak - base
+	t.Fatalf("%s: every run ended two collections between reads of what they marked", name)
+	return 0
+}
+
+// leastPeak is the least peakLive measures of work in up to three runs,
+// stopping at the first that is within want. A run can measure more than
+// work held but not less (peakLive), so the least is the closest to what it
+// held, and work that held more than want measures more in every run. One run
+// alone can fail on a busy machine: a collection that runs on across a phase
+// boundary marks the garbage of the phase before it live alongside the next
+// phase's allocations, and it does not fall that way three times running.
+func leastPeak(t *testing.T, name string, want int64, work func() error) int64 {
+	t.Helper()
+	least := int64(math.MaxInt64)
+	for run := 0; run < 3 && least > want; run++ {
+		least = min(least, peakLive(t, name, work))
+	}
+	return least
 }
 
 /* Tests -------------------------------------------------------------------- */
 
 // What an upload holds while it is processed stays inside what its header
 // said it would, for every kind of file the estimate models: progressive
-// coefficients, CMYK and RGB conversions, turning upright, interlaced and
-// 16-bit PNGs, transparency, every frame of a GIF, and WebP's three kinds.
+// coefficients, CMYK and RGB conversions, turning upright exactly and at
+// 4:4:4, interlaced and 16-bit PNGs, transparency, every frame of a GIF and
+// an interlaced one, and WebP's three kinds. So does what it holds before it
+// is encoded again, against the decoding phases alone (decodingPhases): in
+// the cost of the whole, the thumbnail's scratch and a bound on the encoder's
+// output far above what flat quadrants need are often the larger part, and
+// would hide a decoding term the model left out. The encoder is stopped
+// there by a stored limit of nothing, so it is refused the first byte it
+// writes.
 func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 	for name, data := range costFixtures(t) {
 		in, err := inspect(data)
 		if err != nil {
 			t.Fatalf("%s: inspect: %v", name, err)
 		}
-		cost := in.cost
-		live := peakLive(t, name, data)
-		t.Logf("%-28s estimate %6.1f MiB, held %6.1f MiB", name, float64(cost)/(1<<20), float64(live)/(1<<20))
-		if live > cost {
-			t.Errorf("%s: held %d bytes live, over its estimate of %d", name, live, cost)
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: DecodeConfig: %v", name, err)
+		}
+
+		decoding := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
+		decoded := leastPeak(t, name, decoding, func() error {
+			unstored := in
+			unstored.limit = 0
+			if _, err := sanitize(unstored, data); !errors.Is(err, ErrStoredTooLarge) {
+				return fmt.Errorf("sanitize with nowhere to store = %v, want ErrStoredTooLarge", err)
+			}
+			return nil
+		})
+		whole := leastPeak(t, name, in.cost, func() error {
+			_, err := Process(context.Background(), data)
+			return err
+		})
+
+		mib := func(n int64) float64 { return float64(n) / (1 << 20) }
+		t.Logf("%-28s %4d×%-4d decoding %5.1f MiB of %5.1f, all of it %5.1f MiB of %5.1f",
+			name, cfg.Width, cfg.Height, mib(decoded), mib(decoding), mib(whole), mib(in.cost))
+		if decoded > decoding {
+			t.Errorf("%s: held %d bytes live before encoding, over the estimate of its decoding phases, %d", name, decoded, decoding)
+		}
+		if whole > in.cost {
+			t.Errorf("%s: held %d bytes live, over its estimate of %d", name, whole, in.cost)
+		}
+	}
+}
+
+// The thumbnail scaler's scratch is no more than thumbScratch, for a picture
+// wider than it is tall and for one taller than it is wide: the scaler works
+// on a picture as wide as the thumbnail and as tall as the source, so it is
+// the shorter side that counts. In the cost of the whole it sits on top of a
+// bound for the encoder's output that is far above what a flat picture
+// needs, which would hide a scratch smaller than the scaler's.
+func TestThumbScratchCoversTheScaler(t *testing.T) {
+	for _, size := range []image.Point{{2400, 1800}, {1800, 2400}} {
+		pic := image.NewYCbCr(image.Rect(0, 0, size.X, size.Y), image.YCbCrSubsampleRatio420)
+		name := fmt.Sprintf("%dx%d", size.X, size.Y)
+		want := thumbScratch(size.X, size.Y) + processingSlack
+		held := leastPeak(t, name, want, func() error {
+			_, err := makeThumbnail(pic, pic.Rect, FormatJPEG)
+			return err
+		})
+		t.Logf("%s: thumbnail held %.1f MiB of %.1f", name, float64(held)/(1<<20), float64(want)/(1<<20))
+		if held > want {
+			t.Errorf("%s: making the thumbnail held %d bytes live, over thumbScratch and processingSlack, %d", name, held, want)
 		}
 	}
 }

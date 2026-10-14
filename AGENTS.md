@@ -691,11 +691,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   network had failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
   `TestPostPastItsDeadlineIsNotMadeAndNotCharged`, `TestWaitingForRoomEndsInTimeForTheWork`).
   A cancelled wait reaches the handler as `context.Canceled`, which `fail` answers like
-  any request whose client left. `TestProcessingCostCoversWhatIsHeld` processes one file of every kind the
-  model distinguishes with the collector running continually and fails if what it
-  marked live passes the estimate, and `TestGIFFrameOverheadCoversWhatDecodingKeeps`
-  measures what `image/gif` keeps per frame; a change to a decode path, to `orient`, to
-  the stored buffer or to the thumbnail changes `cost.go` in the same commit. A CMYK
+  any request whose client left. `TestProcessingCostCoversWhatIsHeld` processes a file
+  of each kind the model distinguishes (`costFixtures`), at sizes where every term
+  charged for decoding comes to megabytes, with the collector running continually, and
+  fails if what it marked live passes the estimate for the whole of the processing or,
+  before the first byte is encoded, the estimate of the decoding phases alone
+  (`decodingPhases`), which the whole's larger encoder and thumbnail terms would
+  otherwise hide; `TestThumbScratchCoversTheScaler` holds the thumbnail's scratch the
+  same way, and `TestGIFFrameOverheadCoversWhatDecodingKeeps` measures what
+  `image/gif` keeps per frame. What a collection marks can be more than was held but
+  never less, so each check takes the least of up to three runs (`peakLive`,
+  `leastPeak`), and one busy moment does not fail it. A term left out or cut short
+  fails them unless another term charged for the same moment is as large in every
+  fixture, as the comment at the top of `cost.go` says. They are the package's slowest
+  tests, over two minutes under `-race`. A change to a decode path, to `orient`, to the
+  stored buffer or to the thumbnail changes `cost.go` in the same commit. A CMYK
   JPEG is turned into RGBA where it lies (`rgbaOfCMYK`), not into a second picture.
   Tests narrow the budget with `narrowBudget`. Not modelled: x/image's VP8L decoder
   allocates its Huffman groups (up to about 175 MB) from a count inside the compressed
