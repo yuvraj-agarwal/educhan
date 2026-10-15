@@ -2,6 +2,8 @@ package media
 
 import (
 	"bytes"
+	"compress/lzw"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/color"
@@ -116,6 +118,242 @@ func requireSamePlay(t *testing.T, name string, upload, stored []byte) {
 	}
 }
 
+// pictureRows is a picture as rows of its pixels' colours, each six hex
+// digits, or "......" for a transparent one: the form the Chromium
+// observations below are written in.
+func pictureRows(pic *image.NRGBA) []string {
+	var rows []string
+	b := pic.Rect
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		var cells []string
+		for x := b.Min.X; x < b.Max.X; x++ {
+			c := pic.NRGBAAt(x, y)
+			if c.A == 0 {
+				cells = append(cells, "......")
+				continue
+			}
+			cells = append(cells, fmt.Sprintf("%02x%02x%02x", c.R, c.G, c.B))
+		}
+		rows = append(rows, strings.Join(cells, " "))
+	}
+	return rows
+}
+
+/* A GIF written field by field --------------------------------------------- */
+
+// rawGIF is a GIF written field by field, for files image/gif's encoder
+// cannot make: frames with no graphic control extension or with two, a
+// transparent index past the colour table, a table with its colours in any
+// order or repeated, extensions between a frame's control and its pixels.
+type rawGIF struct {
+	w, h      int
+	global    [][3]byte // the global colour table, or none
+	bg        byte      // the background colour index
+	loops     []rawLoop // loop extensions, after the global table
+	frames    []rawFrame
+	noTrailer bool
+}
+
+// rawLoop is a loop extension: NETSCAPE2.0 or ANIMEXTS1.0, and its count.
+type rawLoop struct {
+	id    string
+	count int
+}
+
+// rawControl is a graphic control extension: a disposal method, a delay and a
+// transparent index, or -1 for none.
+type rawControl struct {
+	disposal byte
+	delay    int
+	ti       int
+}
+
+// rawFrame is a frame and the extensions before it.
+type rawFrame struct {
+	controls  []rawControl // graphic control extensions before it, in order
+	plainText bool         // a plain-text extension after them
+	comment   string       // a comment extension after them, if not empty
+	at        image.Rectangle
+	local     [][3]byte // its own colour table, or none
+	interlace bool
+	pix       []uint8 // at.Dx()×at.Dy() indices, row by row
+}
+
+// rawTable appends a colour table, padded with black to a power of two, and
+// returns the size field that says how long it is.
+func rawTable(out []byte, t [][3]byte) ([]byte, byte) {
+	bits := byte(0)
+	for 2<<bits < len(t) {
+		bits++
+	}
+	for i := 0; i < 2<<bits; i++ {
+		var c [3]byte
+		if i < len(t) {
+			c = t[i]
+		}
+		out = append(out, c[:]...)
+	}
+	return out, bits
+}
+
+// bytes is the file.
+func (g rawGIF) bytes() []byte {
+	le := binary.LittleEndian
+	out := le.AppendUint16(le.AppendUint16([]byte("GIF89a"), uint16(g.w)), uint16(g.h))
+	if g.global != nil {
+		out = append(out, 0, g.bg, 0)
+		var bits byte
+		out, bits = rawTable(out, g.global)
+		out[10] = 0x80 | 0x70 | bits
+	} else {
+		out = append(out, 0, g.bg, 0)
+	}
+	for _, l := range g.loops {
+		out = append(out, 0x21, 0xFF, 11)
+		out = append(out, l.id...)
+		out = append(out, 3, 1, byte(l.count), byte(l.count>>8), 0)
+	}
+	for _, f := range g.frames {
+		for _, c := range f.controls {
+			flags, ti := c.disposal<<2, byte(0)
+			if c.ti >= 0 {
+				flags, ti = flags|1, byte(c.ti)
+			}
+			out = append(out, 0x21, 0xF9, 4, flags, byte(c.delay), byte(c.delay>>8), ti, 0)
+		}
+		if f.plainText {
+			out = append(out, 0x21, 0x01, 12, 0, 0, 0, 0, 8, 0, 8, 0, 8, 8, 1, 0, 3, 'a', 'b', 'c', 0)
+		}
+		if f.comment != "" {
+			out = append(append(append(out, 0x21, 0xFE, byte(len(f.comment))), f.comment...), 0)
+		}
+		out = append(out, 0x2C)
+		for _, v := range []int{f.at.Min.X, f.at.Min.Y, f.at.Dx(), f.at.Dy()} {
+			out = le.AppendUint16(out, uint16(v))
+		}
+		table, flags := g.global, byte(0)
+		if f.local != nil {
+			table, flags = f.local, 0x80
+		}
+		if f.interlace {
+			flags |= 0x40
+		}
+		out = append(out, flags)
+		at := len(out) - 1
+		if f.local != nil {
+			var bits byte
+			out, bits = rawTable(out, f.local)
+			out[at] |= bits
+		}
+		lit := 2
+		for 1<<lit < len(table) {
+			lit++
+		}
+		for _, v := range f.pix {
+			for int(v) >= 1<<lit {
+				lit++
+			}
+		}
+		pix := f.pix
+		if f.interlace {
+			w, h := f.at.Dx(), f.at.Dy()
+			pix = nil
+			for _, pass := range [][2]int{{0, 8}, {4, 8}, {2, 4}, {1, 2}} {
+				for y := pass[0]; y < h; y += pass[1] {
+					pix = append(pix, f.pix[y*w:(y+1)*w]...)
+				}
+			}
+		}
+		var lzwData bytes.Buffer
+		lw := lzw.NewWriter(&lzwData, lzw.LSB, lit)
+		lw.Write(pix)
+		lw.Close()
+		out = append(out, byte(lit))
+		for d := lzwData.Bytes(); len(d) > 0; {
+			n := min(255, len(d))
+			out = append(append(out, byte(n)), d[:n]...)
+			d = d[n:]
+		}
+		out = append(out, 0)
+	}
+	if !g.noTrailer {
+		out = append(out, 0x3B)
+	}
+	return out
+}
+
+// chromiumReads is a rawGIF as Chromium reads its fields, decoded without
+// image/gif, for browserPlay to play. Each frame's control is the last
+// graphic control extension before it, and a frame with none has delay 0,
+// disposal 0 and no transparent index; extensions between the control and
+// the frame change nothing. An index past the end of the frame's colour
+// table is opaque black, but for the transparent index, wherever that is.
+// The loop count is the last loop extension's, NETSCAPE2.0 or ANIMEXTS1.0.
+// Each was seen in Chromium (TestGIFIsReadAsChromiumReadsIt).
+func chromiumReads(g rawGIF) *gif.GIF {
+	out := &gif.GIF{LoopCount: -1, Config: image.Config{Width: g.w, Height: g.h}}
+	for _, l := range g.loops {
+		out.LoopCount = l.count
+	}
+	for _, f := range g.frames {
+		c := rawControl{ti: -1}
+		if n := len(f.controls); n > 0 {
+			c = f.controls[n-1]
+		}
+		table := g.global
+		if f.local != nil {
+			table = f.local
+		}
+		pal := make(color.Palette, 256)
+		for v := range pal {
+			switch {
+			case v == c.ti:
+				pal[v] = color.RGBA{}
+			case v < len(table):
+				pal[v] = color.RGBA{table[v][0], table[v][1], table[v][2], 0xFF}
+			default:
+				pal[v] = color.RGBA{A: 0xFF}
+			}
+		}
+		m := image.NewPaletted(f.at, pal)
+		copy(m.Pix, f.pix)
+		out.Image = append(out.Image, m)
+		out.Delay = append(out.Delay, c.delay)
+		out.Disposal = append(out.Disposal, c.disposal)
+	}
+	return out
+}
+
+// requireShowsAs checks that a stored GIF shows what Chromium shows of an
+// upload written field by field (chromiumReads), as requireSamePlay does for
+// one image/gif reads as Chromium does.
+func requireShowsAs(t *testing.T, name string, upload rawGIF, stored []byte) {
+	t.Helper()
+	st, err := gif.DecodeAll(bytes.NewReader(stored))
+	if err != nil {
+		t.Fatalf("%s: the stored GIF does not decode: %v", name, err)
+	}
+	up := chromiumReads(upload)
+	if st.Config.Width != up.Config.Width || st.Config.Height != up.Config.Height {
+		t.Fatalf("%s: stored on a %dx%d canvas, want %dx%d", name, st.Config.Width, st.Config.Height, up.Config.Width, up.Config.Height)
+	}
+	want, got := browserPlay(up), browserPlay(st)
+	if len(got) != len(want) {
+		t.Fatalf("%s: the stored GIF shows %d pictures in turn, Chromium %d of the upload", name, len(got), len(want))
+	}
+	for i := range want {
+		if !bytes.Equal(got[i].pic.Pix, want[i].pic.Pix) {
+			t.Fatalf("%s: picture %d is %q, Chromium shows %q", name, i, pictureRows(got[i].pic), pictureRows(want[i].pic))
+		}
+		if len(want) > 1 && (i < len(want)-1 || up.LoopCount != -1) && got[i].ms != want[i].ms {
+			t.Errorf("%s: picture %d shown for %d ms, want %d", name, i, got[i].ms, want[i].ms)
+		}
+	}
+	if len(want) > 1 && st.LoopCount != up.LoopCount {
+		t.Errorf("%s: stored loop count %d, want %d", name, st.LoopCount, up.LoopCount)
+	}
+}
+
 /* Fixtures ----------------------------------------------------------------- */
 
 // playPalette is the colour table the frames below share: entry 0
@@ -184,6 +422,98 @@ func storedGIF(t *testing.T, upload []byte) ([]byte, *gif.GIF) {
 }
 
 /* Tests -------------------------------------------------------------------- */
+
+// Where image/gif and Chromium read a GIF's fields differently, the GIF is
+// stored as Chromium shows it. Each case is a file Chromium was shown (through
+// WebCodecs' ImageDecoder, which <img> shares its GIF decoder with) and the
+// pictures it showed, each for how long; the stored file must show those, and
+// chromiumReads, the model the other tests hold stored files to, must read
+// the upload that way too. Pictures are rows of colours, "......" a
+// transparent pixel; green, red and blue are 00ff00, ff0000 and 0000ff, and
+// the table's first colour is black.
+func TestGIFIsReadAsChromiumReadsIt(t *testing.T) {
+	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
+	control := func(disposal byte, delay, ti int) rawControl { return rawControl{disposal, delay, ti} }
+	frame := func(x, w int, pix []uint8, controls ...rawControl) rawFrame {
+		return rawFrame{controls: controls, at: image.Rect(x, 0, x+w, 1), pix: pix}
+	}
+	type shown struct {
+		ms  int
+		row string
+	}
+	for _, tc := range []struct {
+		name   string
+		w      int
+		frames []rawFrame
+		want   []shown
+	}{{
+		// image/gif keeps the first extension's transparent index, and
+		// draws the red pixel transparent.
+		name: "two controls, the last naming no transparent index",
+		w:    2,
+		frames: []rawFrame{
+			frame(0, 2, []uint8{2, 2}, control(1, 50, -1)),
+			frame(0, 2, []uint8{1, 3}, control(1, 60, 1), control(1, 70, -1)),
+		},
+		want: []shown{{500, "00ff00 00ff00"}, {700, "ff0000 0000ff"}},
+	}, {
+		name: "two controls, the last leaving the frame in place",
+		w:    2,
+		frames: []rawFrame{
+			frame(0, 2, []uint8{2, 2}, control(1, 50, -1)),
+			frame(0, 1, []uint8{1}, control(2, 60, -1), control(0, 70, -1)),
+			frame(1, 1, []uint8{3}, control(1, 80, -1)),
+		},
+		want: []shown{{500, "00ff00 00ff00"}, {700, "ff0000 00ff00"}, {800, "ff0000 0000ff"}},
+	}, {
+		name: "a control, then a plain-text extension, then the frame",
+		w:    2,
+		frames: []rawFrame{
+			frame(0, 2, []uint8{2, 2}, control(1, 50, -1)),
+			func() rawFrame {
+				f := frame(0, 1, []uint8{1}, control(2, 60, 1))
+				f.plainText = true
+				return f
+			}(),
+			frame(1, 1, []uint8{3}, control(1, 80, -1)),
+		},
+		want: []shown{{1100, "00ff00 00ff00"}, {800, "...... 0000ff"}},
+	}, {
+		// image/gif gives the frame with no control the disposal of the
+		// one before it, and clears it once it has shown.
+		name: "a frame with no control, after one that clears itself",
+		w:    2,
+		frames: []rawFrame{
+			frame(0, 2, []uint8{2, 2}, control(1, 50, -1)),
+			frame(0, 1, []uint8{1}, control(2, 60, 3)),
+			frame(0, 2, []uint8{3, 1}),
+			frame(1, 1, []uint8{0}, control(1, 80, -1)),
+		},
+		want: []shown{{500, "00ff00 00ff00"}, {600, "ff0000 00ff00"}, {100, "0000ff ff0000"}, {800, "0000ff 000000"}},
+	}, {
+		// The table has four entries and the transparent index is 6:
+		// image/gif makes 4, 5 and 6 transparent, Chromium only 6.
+		name: "a transparent index past the table",
+		w:    4,
+		frames: []rawFrame{
+			frame(0, 4, []uint8{2, 2, 2, 2}, control(1, 50, -1)),
+			frame(0, 4, []uint8{1, 4, 6, 5}, control(1, 60, 6)),
+		},
+		want: []shown{{500, "00ff00 00ff00 00ff00 00ff00"}, {600, "ff0000 000000 00ff00 000000"}},
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			upload := rawGIF{w: tc.w, h: 1, global: table, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: tc.frames}
+			var modelled []shown
+			for _, s := range browserPlay(chromiumReads(upload)) {
+				modelled = append(modelled, shown{s.ms, pictureRows(s.pic)[0]})
+			}
+			if fmt.Sprint(modelled) != fmt.Sprint(tc.want) {
+				t.Fatalf("chromiumReads shows %v, Chromium showed %v", modelled, tc.want)
+			}
+			requireShowsAs(t, tc.name, upload, process(t, upload.bytes()).Data)
+		})
+	}
+}
 
 // The reviewer's GIF: a 256×256 canvas with one opaque pixel, and then
 // fifteen frames of one fully transparent pixel each, which draw nothing,

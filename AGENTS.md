@@ -532,7 +532,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   makes of a file, the walk must have read exactly its frames, their area, the largest
   of them (charged again for an interlaced frame's reordering, as the canvas was) and,
   short of an ANIMEXTS1.0 extension, its loop count; and whatever it decodes of a file
-  the walk refused is a disagreement. Change the two together.
+  the walk refused is a disagreement. Change the two together. Where the decoder reads a
+  frame's fields otherwise than Chromium, the walk's record of each frame
+  (`gifFrameHead`, from `walkGIF`) corrects it (`browserFrames`): a frame with no graphic
+  control extension has disposal 0, where `image/gif` carries over the last one's; its
+  transparent index is the last extension's alone, where `image/gif` keeps one an
+  earlier extension before the same frame named; and an index past the end of its
+  colour table is opaque black but for the transparent one, where `image/gif` makes all
+  of them up to a transparent index past the table transparent.
+  `TestGIFIsReadAsChromiumReadsIt` holds files to the pictures Chromium was seen to show
+  of them, and `chromiumReads` in the tests is that reading.
 - **What is stored is never the upload.** `media.Process` rewrites every image without its
   metadata before `Save` hands it to a backend, so both backends store the same file
   (`internal/media/sanitize.go`). Files stored before this release are the exception: they

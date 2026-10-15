@@ -3,12 +3,12 @@ package media
 import (
 	"bytes"
 	"compress/lzw"
-	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
 	"image/png"
 	"math/rand"
+	"strings"
 	"testing"
 )
 
@@ -479,8 +479,10 @@ func TestGIFColourTablesKeepOnlyWhatIsShown(t *testing.T) {
 
 // gifWithPixels is a w×1 GIF89a with a two-colour global table, red and
 // green, whose one frame marks transparent an index past the end of that
-// table, as some encoders do: browsers draw it transparent, and image/gif
-// pads the palette with transparent entries up to it (golang.org/issue/15059).
+// table, as some encoders do. Chromium draws the pixels on that index
+// transparent and those on an index between the table's end and it opaque
+// black; image/gif pads the palette with transparent entries up to it
+// (golang.org/issue/15059), so it reads those transparent too.
 func gifWithPixels(t *testing.T, transparent byte, pixels ...uint8) []byte {
 	t.Helper()
 	b := []byte("GIF89a")
@@ -501,27 +503,49 @@ func gifWithPixels(t *testing.T, transparent byte, pixels ...uint8) []byte {
 	return append(b, 0, 0x3B)
 }
 
-// Pixels on a transparent index past the end of a frame's colour table stay
-// transparent: image/gif's encoder marks only the first of the entries
-// image/gif padded the palette with as transparent, and the pixels on the
-// others were stored opaque black. The frame is stored cut to the pixels it
-// draws (playGIF), so it is held to the picture a browser shows.
+// Pixels on a transparent index past the end of a frame's colour table are
+// stored transparent, and pixels on an index between the table's end and it
+// opaque black, as Chromium shows them (browserFrames), not as image/gif
+// reads them.
 func TestGIFTransparentIndexPastItsTable(t *testing.T) {
-	for _, pixels := range [][]uint8{{0, 1, 3, 3}, {0, 1, 2, 3}, {3, 1, 0, 2}} {
-		upload := gifWithPixels(t, 3, pixels...)
+	const red, green, black, clear = "ff0000", "00ff00", "000000", "......"
+	for _, tc := range []struct {
+		pixels []uint8
+		want   []string
+	}{
+		{[]uint8{0, 1, 3, 3}, []string{red, green, clear, clear}},
+		{[]uint8{0, 1, 2, 3}, []string{red, green, black, clear}},
+		{[]uint8{3, 1, 0, 2}, []string{clear, green, red, black}},
+	} {
+		upload := gifWithPixels(t, 3, tc.pixels...)
 		original, err := gif.DecodeAll(bytes.NewReader(upload))
 		if err != nil {
-			t.Fatalf("%v: the fixture does not decode: %v", pixels, err)
+			t.Fatalf("%v: the fixture does not decode: %v", tc.pixels, err)
 		}
 		clearPixels := 0
-		for x := range pixels {
+		for x := range tc.pixels {
 			if _, _, _, a := original.Image[0].At(x, 0).RGBA(); a == 0 {
 				clearPixels++
 			}
 		}
-		if clearPixels != 2 {
-			t.Fatalf("%v: the fixture has %d transparent pixels, want 2", pixels, clearPixels)
+		// image/gif reads both indices past the table, 2 and 3, as
+		// transparent.
+		past := 0
+		for _, v := range tc.pixels {
+			if v >= 2 {
+				past++
+			}
 		}
-		requireSamePlay(t, fmt.Sprint(pixels), upload, process(t, upload).Data)
+		if clearPixels != past {
+			t.Fatalf("%v: image/gif reads %d transparent pixels, want %d: the test would show nothing", tc.pixels, clearPixels, past)
+		}
+		_, stored := storedGIF(t, upload)
+		shows := browserPlay(stored)
+		if len(shows) != 1 {
+			t.Fatalf("%v: the stored GIF shows %d pictures, want 1", tc.pixels, len(shows))
+		}
+		if got, want := pictureRows(shows[0].pic)[0], strings.Join(tc.want, " "); got != want {
+			t.Errorf("%v: stored as %q, Chromium shows %q", tc.pixels, got, want)
+		}
 	}
 }

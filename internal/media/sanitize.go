@@ -11,6 +11,7 @@ import (
 	"image/jpeg"
 	"image/png"
 	"io"
+	"math"
 
 	"golang.org/x/image/webp"
 
@@ -327,12 +328,19 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 // and is cut to that (clipGIF); image/gif refuses the whole file, so it is
 // told the logical screen takes in every frame (gifReader). A first frame
 // past the canvas is refused by gifFramePixels: browsers disagree on what to
-// show for it.
+// show for it. And where image/gif reads a frame's disposal or colours
+// otherwise than Chromium, they are put right from what the walk read of each
+// frame (browserFrames).
 func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) {
 	g, err := gif.DecodeAll(gifReader(data, frames))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
+	heads := make([]gifFrameHead, 0, frames.count)
+	if _, err := walkGIF(data, math.MaxInt64, func(h gifFrameHead) { heads = append(heads, h) }); err != nil || len(heads) != len(g.Image) {
+		return sanitized{}, ErrCorruptImage
+	}
+	browserFrames(g, heads)
 	if frames.looped {
 		g.LoopCount = frames.loop
 	}
@@ -352,6 +360,48 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 		pic:    g.Image[0],
 		canvas: image.Rect(0, 0, g.Config.Width, g.Config.Height),
 	}, nil
+}
+
+// browserFrames makes the frames image/gif decoded what Chromium shows where
+// the two read a GIF differently, from what the file says of each frame
+// (heads, from walkGIF):
+//
+//   - A frame with no graphic control extension of its own has disposal 0,
+//     so it is left in place; image/gif gives it the disposal of the last
+//     frame that had one.
+//   - A frame's transparent index is the last extension's before it, or none
+//     if that one names none; image/gif keeps one an earlier extension named
+//     before the same frame.
+//   - Every index past the end of the frame's colour table is opaque black
+//     but the transparent one; image/gif makes all of them up to a
+//     transparent index past the table transparent.
+//
+// A palette is copied before it is changed, since frames can share one.
+func browserFrames(g *gif.GIF, heads []gifFrameHead) {
+	for k, m := range g.Image {
+		h := heads[k]
+		if !h.gce {
+			g.Disposal[k] = 0
+		}
+		g.Delay[k] = h.delay
+		copied := false
+		for v := range m.Palette {
+			want := unusedEntry
+			switch {
+			case h.transparent && v == int(h.ti):
+				want = transparentEntry
+			case 3*v+3 <= len(h.table):
+				want = color.RGBA{h.table[3*v], h.table[3*v+1], h.table[3*v+2], 0xFF}
+			}
+			if colourKey(m.Palette[v]) == colourKey(want) {
+				continue
+			}
+			if !copied {
+				m.Palette, copied = append(color.Palette(nil), m.Palette...), true
+			}
+			m.Palette[v] = want
+		}
+	}
 }
 
 // gifTrailer is the block that ends a GIF.
@@ -890,6 +940,30 @@ type gifFrames struct {
 // rather than half counted. TestGIFFramePixelsReadsWhatTheDecoderReads and
 // FuzzGIFFramePixels hold it to the decoder.
 func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
+	return walkGIF(data, limit, nil)
+}
+
+// gifFrameHead is what a GIF says of one of its frames besides its pixels and
+// where it is, read as Chromium reads it, which is not always as image/gif
+// does (browserFrames).
+type gifFrameHead struct {
+	// gce is whether a graphic control extension came before the frame,
+	// since the frame before it; the rest is from the last one that did.
+	// Without one, a frame has delay 0, disposal 0 and no transparent index.
+	gce         bool
+	disposal    byte // the disposal method as written, 0 to 7
+	delay       int  // in hundredths of a second, as written
+	transparent bool // whether it names a transparent index,
+	ti          byte // which is this
+	// table is the colour table the frame's pixels index, three bytes an
+	// entry: its own, or the global one; nil when there is neither, which
+	// image/gif refuses.
+	table []byte
+}
+
+// walkGIF is gifFramePixels, also calling frame, unless it is nil, with each
+// frame's head (gifFrameHead) as the walk reaches the frame.
+func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, error) {
 	const (
 		headerLen     = 13 // signature, version, logical screen descriptor
 		descriptorLen = 10 // separator, position, size, flags
@@ -904,9 +978,14 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 	f.canvas = image.Pt(int(binary.LittleEndian.Uint16(data[6:])), int(binary.LittleEndian.Uint16(data[8:])))
 	f.screen = f.canvas
 	i := headerLen
+	var global []byte
 	if flags := data[10]; flags&0x80 != 0 {
 		i += 3 << (1 + flags&0x07)
+		if i <= len(data) {
+			global = data[headerLen:i]
+		}
 	}
+	var head gifFrameHead // what the extensions since the last frame said
 	// skipBlocks steps over a run of data sub-blocks and its terminator, and
 	// reports whether the file held all of it.
 	skipBlocks := func(i int) (int, bool) {
@@ -934,6 +1013,11 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 				if at+graphicLen > len(data) || data[at] != 4 || data[at+5] != 0 {
 					return f, ErrCorruptImage
 				}
+				flags := data[at+1]
+				head.gce = true
+				head.disposal = flags >> 2 & 0x07
+				head.delay = int(binary.LittleEndian.Uint16(data[at+2:]))
+				head.transparent, head.ti = flags&0x01 != 0, data[at+4]
 				i = at + graphicLen
 			case 0x01: // plain text
 				i, whole = skipBlocks(at + plainTextLen)
@@ -974,14 +1058,21 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 				return f, ErrImageTooCostly
 			}
 			i += descriptorLen
+			head.table = global
 			if flags&0x80 != 0 {
+				at := i
 				i += 3 << (1 + flags&0x07)
+				head.table = data[at:min(i, len(data))]
 			}
 			// The LZW minimum code size, which image/gif holds to 2–8, and
 			// then the compressed pixels.
 			if i >= len(data) || data[i] < 2 || data[i] > 8 {
 				return f, ErrCorruptImage
 			}
+			if frame != nil {
+				frame(head)
+			}
+			head = gifFrameHead{}
 			i, whole = skipBlocks(i + 1)
 		case 0x3B: // the trailer, where the decoder stops reading
 			if f.count == 0 { // which it refuses before any frame

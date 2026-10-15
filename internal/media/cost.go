@@ -93,8 +93,9 @@ const processingSlack int64 = 4 << 20
 const gifFrameOverhead int64 = 16 << 10
 
 // gifFramePlay is what playGIF holds for each frame of a GIF while it plays
-// them, besides its canvas: the colour of each of the 256 indices the frame's
-// pixels can name, 1 KiB, and its record of what is stored of the frame; and
+// them, besides its canvas: what the walk read of the frame (gifFrameHead),
+// the colour of each of the 256 indices the frame's pixels can name, 1 KiB,
+// and its record of what is stored of the frame; and
 // what it makes of each frame and keeps until the GIF is encoded: the
 // header of the frame cut to what it changes, its place in the stored frames,
 // delays and disposals, and the frame of one transparent pixel that holds
