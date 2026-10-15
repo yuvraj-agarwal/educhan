@@ -98,7 +98,7 @@ spec:
               value: "5"
             - name: EDUCHAN_UPLOAD_COOLDOWN
               value: "15"
-            # At most 66060288 (63 MiB): the server refuses to start above it.
+            # At most 32505856 (31 MiB): the server refuses to start above it.
             - name: EDUCHAN_MAX_UPLOAD_BYTES
               value: "8388608"
             # Image posts are refused until uploads are scanned before storage
