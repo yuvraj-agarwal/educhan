@@ -638,8 +638,12 @@ button.link:hover { text-decoration: underline; }
 .pass-renew { display: grid; gap: 12px; justify-items: start; }
 .pass-issued { margin-bottom: 18px; }
 
-/* A new Pass code, shown once: large enough to copy down by hand without
-   mistaking one character for another. */
+/* The held Pass's code, shown on request so it can be written down. */
+.pass-shown { display: grid; gap: 12px; }
+.pass-shown[hidden] { display: none; }
+
+/* A Pass code, new or shown on request: large enough to copy down by hand
+   without mistaking one character for another. */
 .pass-code {
   font-family: var(--mono);
   font-size: 20px;

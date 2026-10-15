@@ -264,11 +264,11 @@ application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a one-ti
 
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass
-only in `submit`, the Pass never beside the credential, the age screen storing its outcome
-alone and sending nothing, the badge's 18+ box and the Pass's never ticked in advance or
-kept, `/api/site` fetched only past the age screen, KaTeX's options, and the highlighting
-cap. They are
-a floor, not a proof; a change that trips one has changed one of those properties and
+only in `submit` (the Pass also in the Pass page's own requests), the Pass never beside the
+credential, a reissue token out of the address before anything else, the age screen
+storing its outcome alone and sending nothing, the badge's 18+ box and the Pass's never
+ticked in advance or kept, `/api/site` fetched only past the age screen, KaTeX's options,
+and the highlighting cap. They are a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
 ### Front end conventions
@@ -452,14 +452,23 @@ needs a browser check before the test changes.
   `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
   either header is attached anywhere but that one line.
 - The educhan Pass lives in `localStorage` under `educhan:pass`, as the code and its
-  expiry. `submit` sends it in `X-Educhan-Pass` on unbadged posts only (a badged post
-  sends the credential and nothing else), and the Pass page sends it in the body of the
-  two requests that use it on purpose: checking a code typed in (`/api/pass/activate`)
-  and renewing (`/api/pass/checkout`). Buying and renewing leave for Stripe's hosted page
-  by `location.assign`: no Stripe script, frame or stylesheet ever loads on this origin,
-  and the CSP has no exception for Stripe. A post refused for its Pass (`"pass":
-  "invalid"` or `"expired"`) forgets or marks it, and the next press posts without it.
-  `TestOnlyThePostingRequestCarriesThePass` pins the header.
+  expiry, or the code alone marked run out. `submit` sends it in `X-Educhan-Pass` on
+  unbadged posts only (a badged post sends the credential and nothing else), and the Pass
+  page sends it in the body of the requests that use it on purpose: checking a code
+  (`/api/pass/activate`, one typed in or the one held, checked again) and renewing
+  (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else. Buying
+  and renewing leave for Stripe's hosted page by `location.assign`: no Stripe script,
+  frame or stylesheet ever loads on this origin, and the CSP has no exception for Stripe.
+  While `GET /api/pass` says `"claim"`, the page draws a collecting state with no form to
+  pay with and asks `/api/pass/claim` on every visit, with a growing pause while it is
+  open (`collectPass`); what a claim brings is stored (`keepClaimed`) before anything asks
+  whether the reader is still on the page, because the server hands a code over once. A
+  reissue link's token rides in the fragment (`/pass#reissue=…`), leaves the address
+  first thing in `render` (`takePassReissueToken`), and goes once in a claim's body. A
+  post refused for its Pass (`"pass": "invalid"` or `"expired"`) forgets it or marks it
+  run out without a date, and says to solve the captcha and post again.
+  `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
+  code; the Pass page's other promises have their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the

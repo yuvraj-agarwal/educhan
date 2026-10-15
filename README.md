@@ -154,9 +154,9 @@ expires or someone clears it. That is why `/verify` gives **Forget this
 credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
 again, so it means verifying from the start. Beside it, in every state of the
-page, **Forget this browser** removes the badge together with the poster key and
-the remembered name (see below), which are what would otherwise let the next
-person at a shared computer post under the same IDs and tripcode.
+page, **Forget this browser** removes the badge together with the poster key,
+the remembered name (see below) and any Pass, which are what would otherwise let
+the next person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -305,8 +305,9 @@ at all — see above.
 
 ## educhan Pass
 
-The educhan Pass is modelled on 4chan's: a year of posting without solving the
-captcha, bought for a small fee that helps run the site. It is optional, sold
+The educhan Pass is modelled on 4chan's: a term of posting without solving the
+captcha (a year, unless `EDUCHAN_PASS_DAYS` says otherwise), bought for a small
+fee that helps run the site. It is optional, sold
 only to people who tick an unticked "I confirm I am 18 or over" box, and it
 gives nothing else. A post made with a Pass looks exactly like any other, and
 the rules and every cooldown still apply.
@@ -397,14 +398,14 @@ is never answered, and refuse a request the browser marks as coming from
 another site (`Sec-Fetch-Site: cross-site`).
 
 **Renewals and refunds.** Renewing from a browser that holds the Pass keeps
-the code and adds a year to it: exactly a year to a Pass that hasn't run out,
-whose expiry is on a midnight already, and a year from now, rounded up to the
+the code and adds a term to it: exactly a term to a Pass that hasn't run out,
+whose expiry is on a midnight already, and a term from now, rounded up to the
 next midnight UTC, to one that has. A full refund or a dispute (a partial
 refund changes nothing) takes off the term that one payment bought: the days
 it moved the expiry on, rounded up to whole days, so the rounding goes with
 it. A Pass with time left after that goes on, and one with none left is
 cancelled. So refunding a purchase cancels the Pass at once, refunding a
-renewal takes that year off and leaves the rest, refunding the purchase
+renewal takes that term off and leaves the rest, refunding the purchase
 leaves the renewals paid after it, and somebody who renews another person's
 Pass and disputes the payment takes back only what they gave. A refunded
 renewal of a Pass that had already run out leaves nothing over, not even the
@@ -583,11 +584,11 @@ button works. `/{slug}/post/{no}` names a post by number alone: it asks the serv
 thread the post is in and replaces itself with that thread, scrolled to the post, so Back
 does not land on it twice. Institution boards are stored as `u-{name}` and live at
 `/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
-`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
-boards.
-`/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
-view.
+`pass`, `mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`,
+`archive`, `safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never
+read as boards.
+`/verify`, `/pass`, `/rules`, and `/faq` are pages; a word without a page yet shows the
+not-found view.
 
 - **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
   13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
@@ -678,7 +679,19 @@ view.
   anything else. A badged post sends the credential instead, never both. The Name field
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
-  `/verify` drops the key, the name and any badge, for a shared computer.
+  `/verify` drops the key, the name, any badge and any Pass, for a shared computer.
+- **educhan Pass**: `/pass` says what a Pass does and what it costs (with "plus any tax"
+  when Stripe adds it), sells and renews it through Stripe's own page, and takes a code
+  typed in. The browser keeps the Pass in `localStorage` and sends it on unbadged posts
+  only (see [educhan Pass](#educhan-pass)); the page sends it only in the body of a
+  renewal or a check. While a purchase waits to be collected (`GET /api/pass` says
+  `claim`), the page shows that in place of any form to pay with and asks for it on every
+  visit, with a growing pause while it is open. A code the server hands over is stored
+  before anything else, shown once, and can be shown again from the held Pass's panel to
+  write down; a browser that will not store it is told so. A Pass that has run out here
+  can be checked again, in case it was renewed elsewhere. A reissue link
+  (`/pass#reissue=…`) leaves the address before anything else and is spent once. A post
+  refused for its Pass says to solve the captcha and post again.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

@@ -273,18 +273,22 @@ func passRequest(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // handlePassStatus tells the Pass page whether the Pass is on sale, for how
-// long one lasts, how many posts an hour it skips the captcha for, and its
-// price. Like /api/verify it looks up nothing about the caller: a browser
-// knows its own Pass and when it runs out. The one thing it reads off the
-// request is whether the browser holds a claim cookie, which the page cannot
-// see (it is HttpOnly), so the page knows there is a purchase to collect. The
-// claim itself is not looked up.
+// long one lasts, how many posts an hour it skips the captcha for, its price
+// and whether tax is added to it. Like /api/verify it looks up nothing about
+// the caller: a browser knows its own Pass and when it runs out. The one thing
+// it reads off the request is whether the browser holds a claim cookie, which
+// the page cannot see (it is HttpOnly), so the page knows there is a purchase
+// to collect. The claim itself is not looked up.
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
 	out := map[string]any{"enabled": true, "days": a.cfg.Pass.Days, "hourly_posts": a.cfg.Pass.HourlyPosts}
+	// With Stripe Tax on, the price shown is before tax, and the page says so.
+	if a.cfg.Pass.StripeAutomaticTax {
+		out["automatic_tax"] = true
+	}
 	if _, ok := passClaimToken(r); ok {
 		out["claim"] = true
 	}

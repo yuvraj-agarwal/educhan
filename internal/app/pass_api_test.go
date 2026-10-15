@@ -143,16 +143,17 @@ func passServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *passHa
 }
 
 type passResponse struct {
-	Enabled     bool       `json:"enabled"`
-	Days        int        `json:"days"`
-	HourlyPosts int        `json:"hourly_posts"`
-	Price       *passPrice `json:"price"`
-	URL         string     `json:"url"`
-	Status      string     `json:"status"`
-	Pass        string     `json:"pass"`
-	ExpiresAt   time.Time  `json:"expires_at"`
-	Claim       bool       `json:"claim"`
-	Error       string     `json:"error"`
+	Enabled      bool       `json:"enabled"`
+	Days         int        `json:"days"`
+	HourlyPosts  int        `json:"hourly_posts"`
+	Price        *passPrice `json:"price"`
+	AutomaticTax bool       `json:"automatic_tax"`
+	URL          string     `json:"url"`
+	Status       string     `json:"status"`
+	Pass         string     `json:"pass"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	Claim        bool       `json:"claim"`
+	Error        string     `json:"error"`
 }
 
 // refusalState reads the machine-readable refusal, which shares the "pass" key
@@ -282,8 +283,17 @@ func TestPassStatus(t *testing.T) {
 
 	p := passServer(t, nil)
 	p.get("/api/pass", &out)
-	if !out.Enabled || out.Days != 365 || out.HourlyPosts != 30 || out.Price == nil || out.Price.Amount != 2000 || out.Price.Currency != "usd" {
+	if !out.Enabled || out.Days != 365 || out.HourlyPosts != 30 || out.Price == nil || out.Price.Amount != 2000 ||
+		out.Price.Currency != "usd" || out.AutomaticTax || out.Claim {
 		t.Fatalf("status: %+v", out)
+	}
+
+	// With Stripe Tax on, the page is told the price is before tax.
+	taxed := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
+	var withTax passResponse
+	taxed.get("/api/pass", &withTax)
+	if !withTax.AutomaticTax {
+		t.Fatalf("status with Stripe Tax on: %+v", withTax)
 	}
 }
 

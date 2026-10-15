@@ -1850,7 +1850,8 @@ function forgetBrowserHTML() {
         shows them which posts there are yours, and could post under your tripcode.</p>
       <p class="muted">Forgetting this browser removes the key, the name, any badge and any
         Pass. Your next post starts a new key, and with it new IDs. Posts you have made stay
-        as they are. Write your Pass code down first if you want to use it again.</p>
+        as they are. To use the Pass again afterwards, show its code on the
+        <a href="/pass">Pass</a> page and write it down first.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
     </div>`;
 }
@@ -2047,28 +2048,52 @@ async function renderVerify() {
 /* educhan Pass ------------------------------------------------------------- */
 
 // The Pass is kept in this browser under PASS_STORAGE_KEY as { code, expires }:
-// the code as the server wrote it, and its expiry as an ISO date. It leaves
-// the browser on an unbadged post, in submit, and in the body of the two
-// requests that use it on purpose: checking a code typed in on the Pass page,
-// and renewing it. Nothing else reads it.
+// the code as the server wrote it, and its expiry as an ISO date. A Pass a post
+// was refused for as expired, when this browser had a later date for it, is
+// kept as { code, expired: true }, with no date rather than an invented one.
+// The code leaves the browser on an unbadged post, in submit, and in the body
+// of the requests that use it on purpose: checking a code on the Pass page
+// (one typed in, or the one held, checked again) and renewing it. "Show the
+// code" puts it on the screen. Nothing else reads it.
 
 // The code as the server writes it: four groups of five from Crockford's
 // base32. What is typed in is checked by the server, which also reads it with
 // the dashes left out, in lower case, or with O for 0 and I or L for 1.
 const PASS_CODE_PATTERN = /^[0-9A-HJKMNP-TV-Z]{5}(-[0-9A-HJKMNP-TV-Z]{5}){3}$/;
-// How long the page keeps asking for a Pass Stripe has not reported paid yet,
-// and how often. Past that the purchase waits in this browser for a week.
-const PASS_CLAIM_TRIES = 20;
-const PASS_CLAIM_INTERVAL_MS = 2000;
+// While this browser has a purchase to collect (GET /api/pass says "claim"),
+// the page asks for it on every visit and keeps asking while it is open: soon
+// at first, since Stripe usually confirms a card within seconds, then less and
+// less often, as a bank payment can take days.
+const PASS_CLAIM_FIRST_WAIT_MS = 2000;
+const PASS_CLAIM_LONGEST_WAIT_MS = 60000;
 
 // The server's words for the Pass's 18+ refusal, recognised so the page can
 // say it in its own.
 const PASS_AGE_REFUSED = "the Pass is sold only to people aged 18 and over; you can still read and post without one";
 const PASS_AGE_REFUSAL =
   "The Pass is sold only to people aged 18 and over. You can still read and post without one.";
+// Said when the browser will not keep a Pass: its storage for the site is
+// blocked or full, so the Pass cannot ride on the next post.
+const PASS_NOT_KEPT =
+  "This browser couldn't keep the Pass, because it isn't letting educhan store anything, so it can't send it with your posts. Allow this site to store data, then enter the code again.";
 
 // Why the Pass that was here has gone, said once on the Pass page.
 let passLost = "";
+
+// passVisit counts the times the Pass page has been drawn, so that a
+// collection started for one drawing stops once another has replaced it.
+let passVisit = 0;
+
+// passStartedAgain is set when the visitor leaves Stripe without paying, or
+// says so while a purchase is being collected: the page then offers to buy
+// again, and goes on collecting underneath, so a payment that does go through
+// is still added to the Pass.
+let passStartedAgain = false;
+
+// passReissueToken is the token of a reissue link this page was opened with,
+// taken out of the address by takePassReissueToken before anything else and
+// spent once by renderPass.
+let passReissueToken = "";
 
 function storedPass() {
   const raw = storageGet(PASS_STORAGE_KEY);
@@ -2077,8 +2102,15 @@ function storedPass() {
   }
   try {
     const saved = JSON.parse(raw);
+    if (typeof saved.code !== "string" || !PASS_CODE_PATTERN.test(saved.code)) {
+      forgetPass();
+      return null;
+    }
+    if (saved.expired === true) {
+      return { code: saved.code, expires: null, expired: true };
+    }
     const expires = new Date(saved.expires);
-    if (typeof saved.code !== "string" || !PASS_CODE_PATTERN.test(saved.code) || Number.isNaN(expires.getTime())) {
+    if (Number.isNaN(expires.getTime())) {
       forgetPass();
       return null;
     }
@@ -2089,8 +2121,19 @@ function storedPass() {
   }
 }
 
+// storePass keeps a Pass in this browser, and says whether it was kept: a
+// browser that blocks storage, or has run out of it, keeps nothing, and the
+// page must not then say the Pass is here.
 function storePass(code, expires) {
   storageSet(PASS_STORAGE_KEY, JSON.stringify({ code, expires }));
+  const kept = storedPass();
+  return Boolean(kept && kept.code === code);
+}
+
+// markPassExpired keeps a Pass the server says has run out, for renewing,
+// without the date this browser had wrong.
+function markPassExpired(code) {
+  storageSet(PASS_STORAGE_KEY, JSON.stringify({ code, expired: true }));
 }
 
 function forgetPass() {
@@ -2101,13 +2144,32 @@ function forgetPass() {
   }
 }
 
+// loadPassInfo asks whether the Pass is on sale and on what terms, and whether
+// this browser has a purchase to collect. A server that did not answer is
+// kept apart from one that does not sell the Pass, so the page does not say
+// the second when it means the first.
 async function loadPassInfo() {
   try {
     const info = await api("/api/pass");
     return info && info.enabled ? info : { enabled: false };
-  } catch {
-    return { enabled: false };
+  } catch (err) {
+    return { enabled: false, failed: err };
   }
+}
+
+// passErrorText is a failed Pass request in words: a server that did not
+// answer is UNREACHABLE, as on any page, and not "not on sale". errorMessage
+// is for the posting form, and speaks of a post and its box, which the Pass
+// page does not have.
+function passErrorText(err) {
+  if (err.unreachable) {
+    return UNREACHABLE;
+  }
+  const seconds = err.status === 429 && err.payload && err.payload.retry_after;
+  if (seconds) {
+    return `Wait ${plural(seconds, "second", "seconds")}, then try again.`;
+  }
+  return err.status === 403 ? `${err.message}.` : err.message;
 }
 
 // passPriceText writes Stripe's amount, kept in the currency's smallest unit,
@@ -2125,15 +2187,17 @@ function passPriceText(price) {
   }
 }
 
-// passDateText is the day a Pass runs out. Its expiry is a UTC midnight, so it
-// is written as that day in UTC: in local time it would read as the evening
-// before, or as a midnight that suggests more precision than there is.
-function passDateText(date) {
-  return date.toLocaleDateString(undefined, { timeZone: "UTC", day: "numeric", month: "long", year: "numeric" });
-}
-
-function passDateHTML(date) {
-  return `<time datetime="${esc(date.toISOString())}">${esc(passDateText(date))}</time>`;
+// passUntilText is when a Pass runs out, in words for a notice, in the
+// reader's own time zone like the badge's expiry (timeHTML): the server keeps
+// a UTC midnight, which is the evening before west of UTC.
+function passUntilText(iso) {
+  return new Date(iso).toLocaleString(undefined, {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function passTermText(days) {
@@ -2145,64 +2209,121 @@ function passTermText(days) {
 function passIntroHTML(info) {
   const term = info.enabled ? passTermText(info.days) : "a year";
   const price = info.enabled ? passPriceText(info.price) : "";
-  const cost = price ? `<p class="verify-note"><strong>${esc(price)} for ${esc(term)}</strong>, paid once. It
-      doesn't renew by itself.</p>` : "";
+  const tax = info.automatic_tax ? " plus any tax" : "";
+  const cost = price
+    ? `<p class="verify-note"><strong>${esc(price + tax)} for ${esc(term)}</strong>, paid once. It
+      doesn't renew by itself.</p>`
+    : "";
+  const budget = info.enabled ? plural(info.hourly_posts, "post", "posts") : "a set number of posts";
   return `
     <p class="verify-note">
-      An educhan Pass lets you post and report without solving the captcha, for ${esc(term)}.
-      It works like 4chan's Pass, and it helps pay for running educhan. You don't need one:
-      ${audienceText()} can read and post without it.
+      An educhan Pass lets you post without solving the captcha, for ${esc(term)}, and it helps
+      pay for running educhan. You don't need one: ${audienceText()} can read and post without it.
     </p>
     ${cost}
     <ul class="verify-note pass-list">
+      <li>A Pass skips the captcha for up to ${esc(budget)} an hour. After that you solve the
+        captcha as usual until the hour ends. Everyone using a shared Pass shares that
+        budget.</li>
       <li>Your posts look exactly like everyone else's. A Pass adds no name, badge or mark,
-        and the rules, filters and wait times between posts apply as usual.</li>
-      <li>A Pass skips the captcha for up to ${esc(info.enabled ? plural(info.hourly_posts, "post", "posts") : "a set number of posts")}
-        an hour. After that you solve the captcha as usual until the hour ends. Everyone
-        using a shared Pass shares that budget.</li>
+        and the rules and the wait between posts apply as usual.</li>
       <li>A Pass is sold only to people aged 18 and over. Buying one means confirming that
         you're 18 or over, and that answer isn't saved anywhere.</li>
     </ul>
     <p class="verify-note">
       You pay on Stripe's own page, not on educhan. Stripe keeps your payment details, such as
-      your card, email and name, as any shop's payment company does. educhan never sees them.
-      It keeps only a scrambled reference to the payment, so that a refund or a chargeback
-      can cancel the Pass, and it keeps nothing that links a Pass to any post.
+      your card, email and name, as any shop's payment company does, and educhan stores none
+      of them. Whoever runs educhan can see in Stripe who bought a Pass, but never which posts
+      it was used on: educhan keeps only a scrambled reference to the payment, so that a refund
+      or a chargeback can cancel the Pass, and nothing that links a Pass to any post.
     </p>
     <p class="verify-note muted">
-      Your Pass code is kept in this browser and sent only with your posts. Posts with the
-      verified badge don't use it, so a payment and a university never meet in one post.
+      Your Pass code is kept in this browser. It's sent with your posts, and from this page
+      when you renew it or check it, and nowhere else. Posts with the verified badge don't send
+      it, so a payment and a university never meet in one post.
     </p>`;
 }
 
-// passHeldHTML is this browser's Pass, with what can be done about it.
-function passHeldHTML(info, held) {
-  const status = held.expired
-    ? `<p>The Pass in this browser ran out on ${passDateHTML(held.expires)}.</p>`
-    : `<p>This browser has a Pass, good until ${passDateHTML(held.expires)}.</p>`;
-  const renew = info.enabled
+// passHeldHTML is this browser's Pass, with what can be done about it. While a
+// purchase is being collected it offers no renewal, so nobody pays twice for
+// one that is on its way.
+function passHeldHTML(info, held, collecting) {
+  let status = "";
+  if (!held.expired) {
+    status = `<p>This browser has a Pass, good until ${timeHTML(held.expires.toISOString())}.</p>`;
+  } else {
+    status = held.expires
+      ? `<p>The Pass in this browser ran out on ${timeHTML(held.expires.toISOString())}.</p>`
+      : `<p>The Pass in this browser has run out.</p>`;
+  }
+  // A Pass renewed on another device looks expired here until the server is
+  // asked again.
+  const check = held.expired
     ? `
+      <p class="muted">Renewed it somewhere else? Check it again, or enter a newer code below.</p>
+      <div class="actions">
+        <button class="btn subtle" type="button" data-action="check-pass">Check it again</button>
+      </div>`
+    : "";
+  const renew =
+    info.enabled && !collecting
+      ? `
       <form class="fields pass-renew" data-pass="renew">
-        <p class="muted">Renewing adds ${esc(passTermText(info.days))} to it${held.expired ? ", from today" : ""}.
-          Your code stays the same.</p>
+        <p class="muted">${held.expired
+          ? `Renewing gives it ${esc(passTermText(info.days))} from the day you pay.`
+          : `Renewing adds ${esc(passTermText(info.days))} to the time it has left.`} Your code stays the same.</p>
         ${passAttestHTML("f-pass-renew-attest")}
         <div class="actions">
           <button class="btn primary" type="submit">Renew on Stripe</button>
         </div>
       </form>`
-    : "";
+      : "";
   return `
     <div class="verify-panel">
       ${status}
+      ${check}
+      <div class="actions">
+        <button class="btn subtle" type="button" data-action="show-pass" aria-expanded="false"
+                aria-controls="pass-shown">Show the code</button>
+      </div>
+      <div class="pass-shown" id="pass-shown" hidden></div>
       ${renew}
       <div class="verify-forget">
         <p><strong>On a shared or borrowed computer, remove it before you walk away.</strong>
-          Anyone using this browser could post with it. Write the code down first: educhan
-          showed it only once. If you lose it, write to the support address on the receipt
-          Stripe emailed you, and you'll be sent a new one.</p>
+          Anyone using this browser could post with it. To use it again afterwards you need its
+          code, so show it and write it down first. If you lose it, write to the support address
+          on the receipt Stripe emailed you, and you'll be sent a link that gives your Pass a new
+          code.</p>
         <button class="btn danger" type="button" data-action="forget-pass">Remove the Pass from this browser</button>
       </div>
     </div>`;
+}
+
+// showPassCode shows or hides the code of the Pass this browser holds, to be
+// written down before it is removed, or typed in on another device. The code
+// goes on the screen and nowhere else.
+function showPassCode(button) {
+  const slot = document.getElementById("pass-shown");
+  const held = storedPass();
+  if (!slot || !held) {
+    return;
+  }
+  if (!slot.hidden) {
+    slot.hidden = true;
+    slot.textContent = "";
+    button.textContent = "Show the code";
+    button.setAttribute("aria-expanded", "false");
+    return;
+  }
+  slot.innerHTML = `
+    <p class="pass-code" id="pass-code" tabindex="-1">${esc(held.code)}</p>
+    <div class="actions">
+      <button class="btn subtle" type="button" data-action="copy-pass">Copy the code</button>
+    </div>`;
+  slot.hidden = false;
+  button.textContent = "Hide the code";
+  button.setAttribute("aria-expanded", "true");
+  document.getElementById("pass-code").focus();
 }
 
 // The 18+ box for buying or renewing. Never ticked in advance, never
@@ -2216,48 +2337,89 @@ function passAttestHTML(id) {
     </label>`;
 }
 
-function passIssuedHTML(code) {
+// passIssuedHTML is a code the server has just handed over, which it will
+// never show again. It is drawn already filled, so the page moves focus to it
+// (focusPassPanel) for a screen reader to read it out.
+function passIssuedHTML(code, kept) {
+  const here = kept
+    ? "This browser has it, and will send it with your posts."
+    : "This browser couldn't keep it, because it isn't letting educhan store anything, so it can't send it with your posts. Allow this site to store data, then enter the code below.";
   return `
-    <div class="verify-panel pass-issued" role="status">
-      <p><strong>Your Pass is ready.</strong> This browser has it, and will send it with your
-        posts.</p>
+    <div class="verify-panel pass-issued" id="pass-issued" tabindex="-1">
+      <p><strong>Your Pass is ready.</strong> ${esc(here)}</p>
       <p class="pass-code" id="pass-code">${esc(code)}</p>
-      <p><strong>Write this code down or save it somewhere safe now.</strong> This is the only
-        time it's shown. You need it to use the Pass on another device, or in this one if
-        its data is cleared.</p>
+      <p><strong>Write this code down or save it somewhere safe now.</strong> educhan can't show
+        it to you again. You need it to use the Pass on another device, or in this one if its
+        data is cleared.</p>
       <div class="actions">
         <button class="btn subtle" type="button" data-action="copy-pass">Copy the code</button>
       </div>
     </div>`;
 }
 
-function passViewHTML(info, issued = "") {
+// passCollectingHTML stands where the forms would be while this browser has a
+// purchase to collect, so nobody pays again for a Pass that is on its way. A
+// visitor who left Stripe without paying can still start again.
+function passCollectingHTML() {
+  return `
+    <div class="verify-panel" id="pass-collecting">
+      <p><strong>Collecting your Pass…</strong> Stripe hasn't confirmed a payment from this
+        browser yet. A card usually takes seconds, and a bank payment can take days. This page
+        keeps checking while it's open, and checks again whenever you come back to it.</p>
+      <p class="muted" id="pass-collect-note"></p>
+      <div class="actions">
+        <button class="btn subtle" type="button" data-action="collect-pass">Check now</button>
+      </div>
+      <p class="muted">Left Stripe without paying?
+        <button class="link" type="button" data-action="restart-pass">Start again</button>.
+        If the earlier payment goes through after all, it's added to your Pass, not lost.
+        Paid, and still waiting after a week? Write to the support address on the receipt
+        Stripe emailed you.</p>
+    </div>`;
+}
+
+// passViewHTML draws the Pass page from what the server said (info) and what
+// this browser holds, with a code just handed over (issued) on top.
+function passViewHTML(info, issued = null) {
   const held = storedPass();
-  const lost = passLost ? `<p class="verify-note">${esc(passLost)}</p>` : "";
   const parts = [`<div class="board-head"><h1>educhan Pass</h1></div>`];
   if (issued) {
-    parts.push(passIssuedHTML(issued));
+    parts.push(passIssuedHTML(issued.code, issued.kept));
   }
-  parts.push(passIntroHTML(info), lost);
-
-  if (held && !issued) {
-    parts.push(passHeldHTML(info, held));
+  parts.push(passIntroHTML(info));
+  if (passLost) {
+    parts.push(`<p class="verify-note">${esc(passLost)}</p>`);
+  }
+  if (info.failed) {
+    parts.push(`<p class="empty">${esc(passErrorText(info.failed))}</p>`);
+    return parts.join("");
+  }
+  const collecting = info.enabled && info.claim === true && !passStartedAgain;
+  if (held && !(issued && issued.kept)) {
+    parts.push(passHeldHTML(info, held, collecting));
   }
   if (!info.enabled) {
     parts.push(`<p class="empty">The Pass is not on sale on this server.</p>`);
     return parts.join("");
   }
-  if (!held) {
+  if (collecting) {
+    parts.push(passCollectingHTML());
+    return parts.join("");
+  }
+  if (!held && !issued) {
     parts.push(`
       <form class="verify-panel fields" data-pass="buy">
         ${passAttestHTML("f-pass-attest")}
         <div class="actions">
           <button class="btn primary" type="submit">Buy on Stripe</button>
         </div>
-      </form>
+      </form>`);
+  }
+  if (!held || held.expired) {
+    parts.push(`
       <form class="verify-panel fields" data-pass="activate">
         <div class="field">
-          <label class="label" for="f-pass-code">Already have a Pass? Enter its code</label>
+          <label class="label" for="f-pass-code">${held ? "Have a newer code? Enter it" : "Already have a Pass? Enter its code"}</label>
           <input type="text" id="f-pass-code" name="pass" autocomplete="off" autocapitalize="characters"
                  spellcheck="false" maxlength="40" placeholder="XXXXX-XXXXX-XXXXX-XXXXX" required />
         </div>
@@ -2269,66 +2431,192 @@ function passViewHTML(info, issued = "") {
   return parts.join("");
 }
 
+// focusPassPanel moves focus to a panel drawn already filled, which a screen
+// reader would otherwise pass over in silence.
+function focusPassPanel(id) {
+  const panel = document.getElementById(id);
+  if (panel) {
+    panel.focus();
+  }
+}
+
+// takePassReissueToken takes a reissue link's token out of the address the
+// moment the page sees it, before the age screen or anything else, so it is
+// left in no history entry, bookmark or screenshot of the address bar. The
+// fragment it rides in is sent to no server and put in no Referer; the token
+// goes to the server once, in the body of the claim (redeemPassReissue).
+function takePassReissueToken() {
+  const { pathname, search, hash } = window.location;
+  if (pathname !== "/pass" || !hash.startsWith("#reissue=")) {
+    return;
+  }
+  passReissueToken = hash.slice("#reissue=".length);
+  window.history.replaceState(null, "", pathname + search);
+}
+
 async function renderPass() {
-  const info = await loadPassInfo();
+  const visit = ++passVisit;
   const query = new URLSearchParams(window.location.search);
+  const back = query.has("paid") ? "paid" : query.has("cancelled") ? "cancelled" : "";
   // Back from Stripe. The address is tidied first, so a reload or a shared
-  // link does not start the collection again.
-  if (query.has("paid") || query.has("cancelled")) {
+  // link does not say it again.
+  if (back) {
     window.history.replaceState(null, "", "/pass");
     renderedPath = "/pass";
+    passStartedAgain = back === "cancelled";
+  }
+  const info = await loadPassInfo();
+  // Drawn again, or left, while the server answered: a reissue token not yet
+  // spent waits for the next drawing.
+  if (visit !== passVisit || state.route.view !== "pass") {
+    return;
   }
   el.main.innerHTML = passViewHTML(info);
   passLost = "";
   announce("educhan Pass");
-  if (query.has("cancelled")) {
+  if (back === "cancelled") {
     showNotice("Checkout cancelled. Nothing was charged.");
-  } else if (query.has("paid")) {
-    await collectPass(info);
+  } else if (back === "paid" && info.enabled && !info.claim) {
+    showNotice(
+      "There's nothing waiting to be collected in this browser. If you paid and don't have your code, write to the support address on the receipt Stripe emailed you."
+    );
+  }
+  // Spent only on a page that sells the Pass and answered; otherwise it waits
+  // for the next drawing.
+  if (passReissueToken && info.enabled) {
+    const token = passReissueToken;
+    passReissueToken = "";
+    await redeemPassReissue(info, token, visit);
+  }
+  if (info.enabled && info.claim && visit === passVisit) {
+    // Not awaited: it goes on while the page is open, and the page is usable
+    // meanwhile.
+    collectPass(info, visit);
   }
 }
 
-// collectPass picks up the Pass this browser just paid for. Stripe sends the
-// buyer back before or after it tells educhan the payment went through, so
-// "not yet" is asked again a few times before the page gives up and says the
-// purchase will keep.
-async function collectPass(info) {
-  showNotice("Collecting your Pass…");
-  for (let tries = 0; tries < PASS_CLAIM_TRIES; tries++) {
-    let res;
+// keepClaimed stores what a claim brought, before anything else is done with
+// it: the server hands a code over once, so it is kept even if the visitor has
+// moved on to another page since asking. It returns the code to show, if a
+// Pass was issued.
+function keepClaimed(res) {
+  if (res.status === "issued") {
+    return { code: res.pass, kept: storePass(res.pass, res.expires_at) };
+  }
+  const held = storedPass();
+  if (res.status === "renewed" && held) {
+    storePass(held.code, res.expires_at);
+  }
+  return null;
+}
+
+// showClaimed redraws the page for what a claim brought, if the visitor is
+// still on the drawing that asked for it.
+function showClaimed(info, res, issued, visit) {
+  if (visit !== passVisit || state.route.view !== "pass") {
+    return;
+  }
+  el.main.innerHTML = passViewHTML(info, issued);
+  if (issued) {
+    focusPassPanel("pass-issued");
+  } else if (res.status === "renewed") {
+    showNotice(`Your Pass is renewed until ${passUntilText(res.expires_at)}.`);
+  }
+}
+
+// collectPass collects what this browser paid for. Stripe sends the buyer
+// back before or after it tells educhan the payment went through, and a bank
+// payment can take days, so "not yet" is asked again with a growing pause
+// while the page stays open, and the next visit asks again. It stops when
+// nothing is left to collect, or the page has been drawn again.
+async function collectPass(info, visit) {
+  let wait = PASS_CLAIM_FIRST_WAIT_MS;
+  for (;;) {
+    let res = null;
     try {
       res = await api("/api/pass/claim", { method: "POST", body: "{}" });
     } catch (err) {
-      if (state.route.view !== "pass") return;
-      showNotice(
-        err.status === 400
-          ? "There's no Pass waiting to be collected in this browser. If you paid and don't have your code, write to the support address on the receipt Stripe emailed you."
-          : errorMessage(err)
-      );
-      return;
-    }
-    if (state.route.view !== "pass") return;
-    if (res.status === "issued") {
-      storePass(res.pass, res.expires_at);
-      clearNotice();
-      el.main.innerHTML = passViewHTML(info, res.pass);
-      return;
-    }
-    if (res.status === "renewed") {
-      const held = storedPass();
-      if (held) {
-        storePass(held.code, res.expires_at);
+      if (err.status === 400) {
+        // Nothing left under the claim: collected in another tab, or every
+        // checkout under it lapsed unpaid.
+        if (visit === passVisit && state.route.view === "pass") {
+          el.main.innerHTML = passViewHTML({ ...info, claim: false });
+        }
+        return;
       }
-      el.main.innerHTML = passViewHTML(info);
-      showNotice(`Your Pass is renewed until ${passDateText(new Date(res.expires_at))}.`);
+      // Unreachable, or a server error: asked again after the pause.
+      const note = document.getElementById("pass-collect-note");
+      if (note && visit === passVisit) {
+        note.textContent = `${passErrorText(err)} This page will ask again shortly.`;
+      }
+    }
+    if (res) {
+      const issued = keepClaimed(res);
+      info = { ...info, claim: res.claim === true };
+      if (res.status === "issued" || res.status === "renewed") {
+        showClaimed(info, res, issued, visit);
+      }
+      if (!info.claim) {
+        return;
+      }
+    }
+    await new Promise((resolve) => setTimeout(resolve, wait));
+    wait = Math.min(Math.round(wait * 1.5), PASS_CLAIM_LONGEST_WAIT_MS);
+    if (visit !== passVisit || state.route.view !== "pass") {
       return;
     }
-    await new Promise((resolve) => setTimeout(resolve, PASS_CLAIM_INTERVAL_MS));
-    if (state.route.view !== "pass") return;
   }
-  showNotice(
-    "Stripe hasn't confirmed your payment yet. Open this page again in a few minutes to collect your Pass: it waits in this browser for a week."
-  );
+}
+
+// redeemPassReissue spends the reissue link this page was opened with.
+async function redeemPassReissue(info, token, visit) {
+  let res;
+  try {
+    res = await api("/api/pass/claim", { method: "POST", body: JSON.stringify({ reissue: token }) });
+  } catch (err) {
+    if (visit !== passVisit) {
+      return;
+    }
+    if (err.payload && err.payload.pass === "invalid") {
+      showNotice(
+        "This link has been used, has run out, or was cancelled by a refund. Write to the support address on your Stripe receipt again for a new one."
+      );
+    } else if (err.unreachable) {
+      // Most likely the request never arrived, and the link still works.
+      showNotice("Couldn't reach educhan. Open the link again from the email when you're back online.");
+    } else {
+      showNotice(passErrorText(err));
+    }
+    return;
+  }
+  showClaimed({ ...info, claim: res.claim === true }, res, keepClaimed(res), visit);
+}
+
+// checkHeldPass asks the server about the Pass this browser holds, for one
+// that looks expired here but may have been renewed on another device. Like a
+// code typed in, the code goes in the body of /api/pass/activate.
+async function checkHeldPass(button) {
+  const held = storedPass();
+  if (!held) {
+    return;
+  }
+  button.disabled = true;
+  try {
+    const res = await api("/api/pass/activate", { method: "POST", body: JSON.stringify({ pass: held.code }) });
+    const kept = storePass(res.pass, res.expires_at);
+    await renderPass();
+    showNotice(kept ? `Your Pass is good until ${passUntilText(res.expires_at)}.` : PASS_NOT_KEPT);
+  } catch (err) {
+    const reason = err.payload && err.payload.pass;
+    if (reason === "invalid") {
+      forgetPass();
+      passLost = "The Pass in this browser is no longer valid, so it has been removed. It may have been refunded or replaced.";
+      await renderPass();
+      return;
+    }
+    showNotice(reason === "expired" ? "Your Pass has still run out. You can renew it here." : passErrorText(err));
+    button.disabled = false;
+  }
 }
 
 // submitPass drives the Pass page's three forms. Buying and renewing leave for
@@ -2364,21 +2652,25 @@ async function submitPass(form) {
   try {
     const res = await api(request.path, { method: "POST", body: JSON.stringify(request.body) });
     if (kind === "activate") {
-      storePass(res.pass, res.expires_at);
-      el.main.innerHTML = passViewHTML(await loadPassInfo());
-      showNotice("This browser now has your Pass.");
+      const kept = storePass(res.pass, res.expires_at);
+      await renderPass();
+      showNotice(kept ? `This browser now has your Pass, good until ${passUntilText(res.expires_at)}.` : PASS_NOT_KEPT);
       return;
     }
+    // Leaving for Stripe, with a checkout that is now this browser's to
+    // collect. Coming Back to this page from there can bring it out of the
+    // back-forward cache as it was left, button and all, so the pageshow
+    // listener draws it again, collecting.
+    passStartedAgain = false;
     window.location.assign(res.url);
   } catch (err) {
     const refusedForAge = err.status === 400 && err.message === PASS_AGE_REFUSED;
     if (kind === "renew" && err.payload && err.payload.pass === "invalid") {
       forgetPass();
-      passLost = "The Pass in this browser is no longer valid, so it has been removed.";
-      el.main.innerHTML = passViewHTML(await loadPassInfo());
-      passLost = "";
+      passLost = "The Pass in this browser can no longer be renewed, so it has been removed. You can buy a new one.";
+      await renderPass();
     }
-    showNotice(refusedForAge ? PASS_AGE_REFUSAL : errorMessage(err));
+    showNotice(refusedForAge ? PASS_AGE_REFUSAL : passErrorText(err));
     button.disabled = false;
     button.textContent = label;
   }
@@ -2556,7 +2848,9 @@ const FAQ_SECTIONS = [
           tidies up.</li>
         <li>educhan never asks for your email address unless you want a badge, and even then
           it keeps only a scrambled fingerprint of it, never the address itself
-          (<a href="#faq-badge">more about the badge</a>).</li>
+          (<a href="#faq-badge">more about the badge</a>). If you buy a Pass, Stripe's checkout
+          asks for your email for the receipt, and educhan doesn't store it
+          (<a href="#faq-pass">more about the Pass</a>).</li>
         <li>Each post has an ID that's the same for all your posts in one thread and different
           in every other, so people can follow a conversation without following you around
           the site (<a href="#faq-ids">more about IDs</a>).</li>
@@ -2614,21 +2908,30 @@ const FAQ_SECTIONS = [
     id: "faq-pass",
     question: "What is the educhan Pass?",
     answer: `
-      <p>An optional Pass that lets you post and report without solving the captcha. It works
-        like 4chan's Pass, lasts a year, and helps pay for running educhan. It's sold only to
-        people aged 18 and over, and you don't need one to read or to post.</p>
+      <p>An optional Pass that lets you post without solving the captcha, and helps pay for
+        running educhan. It's paid for once, lasts a set time and doesn't renew by itself.
+        Not every educhan site sells it; on one that does, the <a href="/pass">Pass</a> page
+        says how long it lasts and what it costs. It's sold only to people aged 18 and over,
+        and you don't need one to read or to post.</p>
       <ul>
+        <li>A Pass skips the captcha for a set number of posts an hour. After that you solve
+          the captcha as usual until the hour ends, and everyone sharing one Pass shares that
+          number. The rules and the wait between posts apply as usual.</li>
         <li>You buy it on the <a href="/pass">Pass</a> page, after ticking the box to confirm
           that you're 18 or over. educhan doesn't save your answer.</li>
-        <li>You pay on Stripe's own page. Stripe keeps your card, email and name, as any
-          shop's payment company does. educhan never sees them: it keeps only a scrambled
-          reference to the payment, so that a refund or a chargeback can cancel the Pass.</li>
-        <li>You get a code, shown once, which your browser keeps and sends with your posts.
-          Posts with the verified badge don't send it.</li>
+        <li>You pay on Stripe's own page, which asks for your email for the receipt. Stripe
+          keeps your card, email and name, as any shop's payment company does, and educhan
+          stores none of them. Whoever runs educhan can see in Stripe who bought a Pass, but
+          never which posts it was used on: educhan keeps only a scrambled reference to the
+          payment, so that a refund or a chargeback can cancel the Pass.</li>
+        <li>You get a code, shown once, which your browser keeps. It's sent with your posts,
+          and from the Pass page when you renew it or check it. Posts with the verified badge
+          don't send it.</li>
         <li>Nothing on a post shows or records that a Pass was used, and educhan keeps no
-          link from a Pass to any post. The rules, the filters and the wait between posts
-          apply as usual. A Pass skips the captcha for a set number of posts an hour, and
-          everyone sharing one Pass shares that number.</li>
+          link from a Pass to any post.</li>
+        <li>Keep a copy of the code: the Pass page can show it again while your browser has
+          it. If you lose it, write to the support address on the receipt Stripe emailed you,
+          and you'll be sent a link that gives your Pass a new code.</li>
       </ul>
       <p>On a shared computer, remove the Pass on the <a href="/pass">Pass</a> page, or use
         <strong>Forget this browser</strong> on the <a href="/verify#forget-browser">Verify</a>
@@ -3063,6 +3366,8 @@ async function resolvePost(route) {
 // The draft defaults to whatever is on screen now; a render that hands over to
 // another passes its own along, because by then the screen may be a skeleton.
 async function render({ draft = captureDraft() } = {}) {
+  // A Pass reissue link's token leaves the address before anything else.
+  takePassReissueToken();
   // /u-{name}/ is the stored slug typed as a path. The board answers to it,
   // but the address it is shared under is /u/{name}/.
   const { pathname, search, hash } = window.location;
@@ -3537,6 +3842,35 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  const showPass = event.target.closest('[data-action="show-pass"]');
+  if (showPass) {
+    event.preventDefault();
+    showPassCode(showPass);
+    return;
+  }
+
+  const checkPass = event.target.closest('[data-action="check-pass"]');
+  if (checkPass) {
+    event.preventDefault();
+    checkHeldPass(checkPass);
+    return;
+  }
+
+  // Asking now draws the page again, which starts collecting afresh.
+  if (event.target.closest('[data-action="collect-pass"]')) {
+    event.preventDefault();
+    renderPass();
+    return;
+  }
+
+  // Starting again offers the forms back, and collecting goes on underneath.
+  if (event.target.closest('[data-action="restart-pass"]')) {
+    event.preventDefault();
+    passStartedAgain = true;
+    renderPass();
+    return;
+  }
+
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     forgetBrowser();
@@ -3589,11 +3923,23 @@ let renderedPath = null;
 // its highlight are all it needs. Back and Forward between such entries are the
 // same.
 window.addEventListener("popstate", () => {
-  if (window.location.pathname + window.location.search === renderedPath) {
+  // A reissue link opened over the Pass page moves only the fragment, but it
+  // is a page of its own: render takes the token out and spends it.
+  const reissue = window.location.hash.startsWith("#reissue=");
+  if (window.location.pathname + window.location.search === renderedPath && !reissue) {
     focusHash();
     return;
   }
   render();
+});
+
+// A page brought back from the back-forward cache is shown as it was left,
+// without running anything. The Pass page left for Stripe with its button
+// disabled and its state from before the checkout, so it is drawn again.
+window.addEventListener("pageshow", (event) => {
+  if (event.persisted && state.route.view === "pass") {
+    renderPass();
+  }
 });
 
 document.addEventListener("keydown", (event) => {
@@ -3888,19 +4234,21 @@ el.main.addEventListener("submit", async (event) => {
       redrawThreadCounts();
     }
     // A Pass the server will not take is dealt with the way a badge is: the
-    // post was not sent, and pressing Post again sends it without the Pass.
-    // An unknown one is forgotten; an expired one is kept, marked as run out,
-    // so the Pass page can still offer to renew it.
+    // post was not sent, and the next one goes without the Pass, so it needs
+    // the captcha. An unknown one is forgotten; an expired one is kept,
+    // marked as run out with no date (this browser's was wrong), so the Pass
+    // page can still offer to renew it or check it again.
     const passReason = err.payload && err.payload.pass;
     let message = errorMessage(err, { hasText: body.trim() !== "" });
     if (pass && passReason === "invalid") {
       forgetPass();
       passLost = "The Pass that was in this browser is no longer valid. It may have been refunded or replaced.";
       message =
-        "Your Pass is no longer valid, so it has been removed from this browser and this post wasn't sent. Post again to send it without the Pass.";
+        "Your Pass is no longer valid, so it has been removed from this browser and this post wasn't sent. Solve the captcha and post again.";
     } else if (pass && passReason === "expired") {
-      storePass(pass.code, new Date().toISOString());
-      message = "Your Pass has expired, so this post wasn't sent. Post again to send it without the Pass, or renew it on the Pass page.";
+      markPassExpired(pass.code);
+      message =
+        "Your Pass has expired, so this post wasn't sent. Solve the captcha and post again, or renew the Pass on the Pass page.";
     }
     showNotice(message);
     button.disabled = false;
