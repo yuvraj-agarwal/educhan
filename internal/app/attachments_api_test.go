@@ -579,21 +579,27 @@ func TestUploadsSwitchedOffRefusesALargeFileUnread(t *testing.T) {
 
 // GET /api/site tells a client what the posting form can offer before anyone
 // fills one in: whether images are taken at all, and the size limit behind the
-// 413. It is configuration, so it carries those two fields and nothing about
-// the caller.
+// 413, and whether the server has the Pass, so the header links to it only
+// where there is one. It is configuration, so it carries those fields and
+// nothing about the caller.
 func TestSiteReportsTheUploadSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		uploads bool
 		limit   int64
+		pass    bool
 	}{
-		{"uploads on", true, 3 << 20},
-		{"uploads off", false, defaultMaxUploadBytes},
+		{"uploads on", true, 3 << 20, false},
+		{"uploads off", false, defaultMaxUploadBytes, false},
+		{"the Pass on", true, defaultMaxUploadBytes, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := testServer(t, func(cfg *Config) {
 				cfg.UploadsEnabled = tc.uploads
 				cfg.MaxUploadBytes = tc.limit
+				if tc.pass {
+					cfg.Pass = testPassConfig(newFakeStripe(t))
+				}
 			})
 
 			res, payload := c.fetch("/api/site", nil)
@@ -609,8 +615,8 @@ func TestSiteReportsTheUploadSettings(t *testing.T) {
 				keys = append(keys, key)
 			}
 			sort.Strings(keys)
-			if got := strings.Join(keys, ","); got != "max_upload_bytes,uploads" {
-				t.Errorf("fields = %s, want exactly max_upload_bytes,uploads", got)
+			if got := strings.Join(keys, ","); got != "max_upload_bytes,pass,uploads" {
+				t.Errorf("fields = %s, want exactly max_upload_bytes,pass,uploads", got)
 			}
 			var site Site
 			if err := json.Unmarshal(payload, &site); err != nil {
@@ -621,6 +627,10 @@ func TestSiteReportsTheUploadSettings(t *testing.T) {
 			}
 			if site.MaxUploadBytes != tc.limit {
 				t.Errorf("max_upload_bytes = %d, want the configured %d", site.MaxUploadBytes, tc.limit)
+			}
+			// The header links to the Pass only where there is one.
+			if site.Pass != tc.pass {
+				t.Errorf("pass = %v, want %v", site.Pass, tc.pass)
 			}
 			if cookies := res.Header.Values("Set-Cookie"); len(cookies) != 0 {
 				t.Errorf("GET /api/site set cookies %v, want none", cookies)

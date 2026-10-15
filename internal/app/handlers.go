@@ -32,6 +32,7 @@ func (a *App) handleSite(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, Site{
 		Uploads:        a.cfg.UploadsEnabled,
 		MaxUploadBytes: a.cfg.MaxUploadBytes,
+		Pass:           a.passEnabled(),
 	})
 }
 
