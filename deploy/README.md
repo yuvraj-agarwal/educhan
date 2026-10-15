@@ -264,8 +264,10 @@ looks tempting and breaks something:
 
 ### 2.4 Secrets
 
-Three values do not belong in a deployment command: the database URL (it carries
-the password), the poster-ID salt, and the moderation key.
+Four values do not belong in a deployment command: the database URL (it carries
+the password), the poster-ID salt, the moderation key, and the captcha secret.
+Unset, the captcha secret switches the captcha off, the way verification is off
+without its secret.
 
 ```bash
 printf 'postgres://educhan:%s@/educhan?host=/cloudsql/%s&sslmode=disable' \
@@ -278,7 +280,10 @@ openssl rand -hex 32 \
 openssl rand -hex 32 \
   | gcloud secrets create educhan-mod-key --replication-policy=automatic --data-file=-
 
-for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key; do
+openssl rand -hex 32 \
+  | gcloud secrets create educhan-captcha-secret --replication-policy=automatic --data-file=-
+
+for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key educhan-captcha-secret; do
   gcloud secrets add-iam-policy-binding "$secret" \
     --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
 done
@@ -369,7 +374,7 @@ gcloud run deploy educhan \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
   --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json" \
   --cpu 1 --memory 512Mi --concurrency 80 --max-instances 4 \
   --allow-unauthenticated

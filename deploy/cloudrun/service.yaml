@@ -59,6 +59,12 @@ spec:
                 secretKeyRef:
                   name: educhan-mod-key
                   key: latest
+            # Keys the captcha's challenges; unset switches the captcha off.
+            - name: EDUCHAN_CAPTCHA_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: educhan-captcha-secret
+                  key: latest
             # Institutional verification is deliberately left off here: with no
             # mail Sender linked in, the development sender would print every
             # address and code into Cloud Logging. Add the secret below once a

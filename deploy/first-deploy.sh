@@ -171,11 +171,11 @@ if ! exists gcloud secrets describe educhan-database-url; then
   unset DB_PASSWORD
 fi
 # Created once and never rotated by this script: the salt keys every poster ID.
-for secret in educhan-poster-id-salt educhan-mod-key; do
+for secret in educhan-poster-id-salt educhan-mod-key educhan-captcha-secret; do
   exists gcloud secrets describe "$secret" ||
     openssl rand -hex 32 | gcloud secrets create "$secret" --replication-policy=automatic --data-file=-
 done
-for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key; do
+for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key educhan-captcha-secret; do
   gcloud secrets add-iam-policy-binding "$secret" \
     --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
 done
@@ -211,7 +211,7 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
   --set-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
   --cpu 1 --memory 512Mi --concurrency 80 \
   --min-instances "$MIN_INSTANCES" --max-instances 4 \
