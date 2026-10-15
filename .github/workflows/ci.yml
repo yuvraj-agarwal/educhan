@@ -65,10 +65,13 @@ jobs:
       # answered is not part of the cache key, so a cached result from a run
       # that skipped everything can be replayed against a healthy database —
       # and this job's whole claim is that the tests actually ran.
+      #
+      # -timeout 20m is per package. Go's default of 10 minutes left too little
+      # margin for internal/media, whose image tests take minutes under -race.
       - name: Test
         run: |
           set -o pipefail
-          go test -race -count=1 -json ./... | tee test-output.json | jq -j 'select(.Action=="output") | .Output'
+          go test -race -count=1 -timeout 20m -json ./... | tee test-output.json | jq -j 'select(.Action=="output") | .Output'
 
       # The guarantee this job exists to make. `go test` exits 0 when every
       # integration test skipped itself for want of a database, so success is
