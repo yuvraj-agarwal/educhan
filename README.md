@@ -182,7 +182,7 @@ can and cannot work out.
 - When a credential was issued: in the database, only to the *day*, because the
   stored expiry is rounded up to a UTC day boundary and nothing else in the
   verification tables is timestamped (the spent [captcha](#captcha) a code
-  request leaves behind is dated to the day the same way); in the application's log, for as long as
+  request leaves behind stores only the day the same way); in the application's log, for as long as
   it is kept, to the second, because the request line for
   `POST /api/verify/confirm` and a bare `verification issued` line each carry a
   time. Neither line says which institution or address the credential was for
@@ -794,7 +794,10 @@ racing with one answer can both pass the lookup; the spend lets one through
 and refuses the other as used, after its cooldowns have started.) A refusal answers `403` with
 `"captcha": "required" | "invalid" | "expired" | "used"` beside the message;
 the page solves a fresh puzzle and sends the post once more, so the reader
-presses the button once. Every response to a request whose answer was spent
+presses the button once. A `used` answer was spent by an earlier request, which
+started its cooldowns, so the resend can meet one of them; the page then says
+how long to wait and keeps the fresh answer for the next press. Every response
+to a request whose answer was spent
 carries `Educhan-Captcha: spent`, a refusal written after the spend included
 (an image whose pixels fail to decode, or a thread that filled up meanwhile).
 The page keeps its answer through any refusal without that header, so the
@@ -814,11 +817,10 @@ puzzles slow a script that asks from one address, not one that fetches from
 many. Spent challenges are kept in `captcha_spent`, shared
 by every instance so they agree on what was used, as a hash of the challenge's
 signature and its expiry rounded up to the next UTC midnight, as a credential's
-is: a row dates the post or code request it let through only to the day. Each
-spend deletes a batch of the rows past their day, and the daily
-[sweep](#the-archive-sweeper) the rest, so a row is gone a day or so after its
-puzzle was solved. Nothing in the table points at the post an answer let
-through.
+is, so the only date a row stores is the day. Each spend deletes a batch of the
+rows past their day, and the daily [sweep](#the-archive-sweeper) the rest, so a
+row is gone a day or so after its puzzle was solved. Nothing stored in the table
+names the post or code request an answer let through, or who solved it.
 
 Proof of work slows a script down; it does not tell a person from one. It
 makes each post cost the poster's processor a moment and a bulk poster's a

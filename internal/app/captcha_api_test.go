@@ -576,7 +576,7 @@ func TestCaptchaChallengesAreNotCached(t *testing.T) {
 }
 
 // A spent answer is stored with its expiry rounded up to the next UTC
-// midnight, so the table dates what it let through only to the day. Rows past
+// midnight, so the only date the table stores is the day. Rows past
 // that are deleted a batch at a time by later spends and all at once by the
 // daily sweep, which on a quiet server is the one that clears them.
 func TestSpentCaptchasArePruned(t *testing.T) {

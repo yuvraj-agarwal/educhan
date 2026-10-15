@@ -3606,16 +3606,18 @@ function runCaptchaWorkers(challenge, signal) {
 // sendWithCaptcha sends a request that may need the captcha: needsIt() says
 // whether it does, and send(answer) makes the request, with "" for no answer.
 // A refusal of the answer itself, for being missing, out of date, used or
-// wrong, comes before flood control and before anything is stored or sent, so
-// the answer is dropped and the request sent once more with a fresh one; the
-// reader pressed the button once and the request goes once. Any other refusal
-// says whether the server spent the answer before refusing, as it does for an
-// image it then cannot read. One that did drops the answer and starts the next
-// puzzle at once, so it is ready, or nearly, when the reader presses again.
-// One that did not, a refusal of what was written or a cooldown, leaves the
-// answer held for the next press, which then goes straight out. With no
-// answer from the server at all the answer is kept too; if it had been spent,
-// the next request is refused as "used" and solves a fresh one here.
+// wrong, comes before anything is stored or sent, so the answer is dropped and
+// the request sent once more with a fresh one, and the reader presses the
+// button once. (A used answer was spent by an earlier request, whose cooldowns
+// can refuse the resend; that refusal keeps the fresh answer, as below.) Any
+// other refusal says whether the server spent the answer before refusing, as
+// it does for an image it then cannot read. One that did drops the answer and
+// starts the next puzzle at once, so it is ready, or nearly, when the reader
+// presses again. One that did not, a refusal of what was written or a
+// cooldown, leaves the answer held for the next press, which then goes
+// straight out. With no answer from the server at all the answer is kept too;
+// if it had been spent, the next request is refused as "used" and solves a
+// fresh one here.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 async function sendWithCaptcha(needsIt, send, solving) {
   for (let retried = false; ; retried = true) {

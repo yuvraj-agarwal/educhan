@@ -1479,9 +1479,8 @@ func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 // requests racing with the same answer exactly one gets true.
 //
 // The row's expiry is the challenge's rounded up to the next UTC midnight, as a
-// credential's is (nextDayBoundary): a row then dates the request it let
-// through, a code request included, only to the day, and the table holds a day
-// or two of answers. Each spend first deletes a batch of the rows past their
+// credential's is (nextDayBoundary), so the only date a row stores is the day,
+// and the table holds a day or two of answers. Each spend first deletes a batch of the rows past their
 // expiry, and the daily sweep the rest (PruneSpentCaptchas). The cut-off is by
 // the server's clock, the one that decided the challenge was still good. SKIP
 // LOCKED leaves rows another spend is already deleting to it, so posts
