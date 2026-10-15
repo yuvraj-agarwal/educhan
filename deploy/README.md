@@ -212,6 +212,18 @@ Cloud SQL defaults to Enterprise Plus, which has no shared-core tiers, and the
 create fails without it. Shared-core tiers carry no SLA and allow about 25
 connections; section 3 covers how the pool size and `maxScale` add up.
 
+**Leave `track_commit_timestamp` off.** It is off by default, in PostgreSQL and
+in Cloud SQL, and none of the commands here set it. Switched on, it stamps every
+row with the time of the transaction that last wrote it, so anyone holding the
+database could date each verification credential to the second, undoing the
+day-only expiry that keeps an issuance from being matched to the posts around
+it. Never add it to `--database-flags`; this shows the instance's flags, and
+should print nothing about it:
+
+```bash
+gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
+```
+
 ### 2.3 The media bucket
 
 Attachments go to Cloud Storage. The container filesystem does not outlive the
