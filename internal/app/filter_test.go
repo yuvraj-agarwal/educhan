@@ -2328,6 +2328,60 @@ func TestFilterReadsEncouragementToldInOtherWords(t *testing.T) {
 	}
 }
 
+// TestFilterReadsCrisisLanguageInOtherWords holds the support phrasings
+// that need the post round them (supportPhrasing) to both sides, with the
+// Hinglish and Pidgin ones, a roof "rn" in a post about jumping, and the
+// method questions with a disclaimer or with "the most painless way to go".
+func TestFilterReadsCrisisLanguageInOtherWords(t *testing.T) {
+	const (
+		publish = "publish"
+		support = "support"
+	)
+	for _, c := range []struct{ body, want string }{
+		{"honestly don't think i'll make it to 17. been planning what songs play at my funeral", support},
+		{"i don't think i'll make it to the 8am lecture tomorrow", publish},
+		{"i don't think i'll survive till 12 with this syllabus", publish},
+		{"I tried to end it two months ago. still here somehow", support},
+		{"i tried to end it with her last week but she cried", publish},
+		{"i overdosed on my antidepressants in march and nobody knows", support},
+		{"i overdosed on caffeine before the exam lol", publish},
+		{"I've been thinking about topping myself", support},
+		{"i'm topping myself up with coffee before the exam", publish},
+		{"some nights i want to go to sleep and not wake up", support},
+		{"this will be my last post. thank you to everyone who was kind, i've said my goodbyes", support},
+		{"this is my last post before boards, see you all in april", publish},
+		{"i have a plan and a date. just wanted someone to know", support},
+		{"I have a plan and a date for prom, wish me luck", publish},
+		{"i'm standing on the bridge rn. how high does it have to be if you jump", support},
+		{"i'm on the roof rn watching the sunset, so pretty", publish},
+		{"i want to jump off a bridge", support},
+		{"what's the least painful way to go", support},
+		{"what's the most painless way to go to the dentist", publish},
+		{"how many sleeping pills do you need to take? asking for a friend", support},
+		{"how many pills for a headache? asking for a friend", publish},
+		{"I don tire for this life. e don do", support},
+		{"agar is baar bhi fail hua toh chhat se kood jaunga. decide ho gaya", support},
+		{"terrace se kood jaunga agar india jeeta lol", publish},
+		{"kal phir se khud ko cut kiya. kisi ko nahi pata", support},
+		{"apne aap ko hurt kiya football mein, ankle twist ho gaya", publish},
+		{"mujhe ab nahi rehna, na is duniya mein", support},
+		{"is duniya mein sab possible hai yaar", publish},
+		{"suicide ka khayal aata hai roz raat ko", support},
+		{"aaj raat sab khatam kar dungi. sorry papa", support},
+		{"aaj raat sab khatam kar dunga, poora syllabus", publish},
+	} {
+		got := publish
+		if v := checkContent(contentInput{Body: c.body}, false); v.Outcome == contentSupport {
+			got = support
+		} else if v.Outcome != contentPublish {
+			got = verdictName(v)
+		}
+		if got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
 // one reading of quoted and reported speech that every family uses. Words
 // the post gives to someone else, or says came to the poster, are not the
@@ -2830,6 +2884,13 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"too late":       rep("should've jumped "),
 		"done it by now": rep("meant done it by now "),
 		"hinglish goad":  rep("apne aap ko khatam kar "),
+		// The support phrasings read with the post round them.
+		"tried to end it":  rep("i tried to end it "),
+		"make it to":       rep("don't think i'll make it to "),
+		"last post":        rep("this is my last post "),
+		"on the roof":      rep("i'm on the roof "),
+		"sab khatam":       rep("sab khatam kar dunga "),
+		"disclaimed pills": rep("how many pills asking for a friend "),
 		// A threat told by implication: hints of every kind, close to a
 		// time and a place, and the words that open the most of them.
 		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),

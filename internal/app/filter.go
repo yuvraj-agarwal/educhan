@@ -2418,7 +2418,7 @@ func validNIPrefix(a, b byte) bool {
 var (
 	selfHurt   = words(`hurt~myself`, `cut~myself`, `harm~myself`, `self~harm`, `starve~myself`, `burn~myself`)
 	crisisActs = words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `not~wake~up`, `never~wake~up`,
-		`sleep~and~never~wake~up`, `not~be~here`, `disappear`, `end~it~all`, `end~my~life`, `end~it`, `end~myself`,
+		`(?:go~to~)?sleep~and~`+words(`never`, `not`)+`~wake~up`, `not~be~here`, `disappear`, `end~it~all`, `end~my~life`, `end~it`, `end~myself`,
 		`end~everything`, `kill~my~self`, `stop~existing`, `commit~suicide`, `take~my~(?:own~)?life`, selfHurt)
 	crisisGerunds = words(words(`hurting`, `cutting`, `harming`, `killing`, `starving`, `burning`)+`~my~self`,
 		`ending~`+words(`it~all`, `it`, `my~life`, `everything`, `things`, `myself`), `taking~my~(?:own~)?life`,
@@ -2455,8 +2455,28 @@ var supportRules = []rule{bothViews(`\b` + words(
 		`jump(?:ing)?~off~(?:a|the)~`+words(`bridge`, `building`, `roof`, `cliff`)),
 	`i~`+words(`'?ll`, `will`, `wil`, `shall`, `might`, `may`, `could`)+`~(?:just~)?`+
 		words(`kill~my~self`, `end~it~all`, `end~my~life`, `commit~suicide`, `take~my~(?:own~)?life`),
-	words(`kill(?:ing)?`, `unaliv(?:e|ing)`)+`~my~self`,
+	words(`kill(?:ing)?`, `unaliv(?:e|ing)`, `top(?:ping)?`)+`~my~self`,
 	`kms`,
+	// A past attempt: "I tried to end it last weekend", "i overdosed last
+	// month". supportCheck reads "end it" with a past time after it, and
+	// "overdosed on" only with medicine.
+	`i~`+words(`tried`, `attempted`)+`~to~`+words(`end~it(?:~all)?`, `end~my~life`, `kill~my~self`,
+		`take~my~(?:own~)?life`, `overdose`, `hang~my~self`),
+	`i~(?:`+words(`'?ve`, `have`, `had`)+`~)?`+words(`attempted~suicide`, `overdosed`),
+	// "i don't think i'll make it to 18": supportCheck wants an age or a
+	// year after it, and no school work.
+	`(?:i~)?`+words(`don'?t`, `dont`, `do~not`)+`~think~i~`+words(`'?ll`, `will`, `wil`)+`~`+words(`make~it`, `live`,
+		`survive`, `last`)+`~`+words(`to`, `till`, `until`, `past`),
+	// "this is my last post", with goodbyes round it (supportCheck).
+	`this~`+words(`is`, `will~be`)+`~my~last~`+words(`post`, `message`, `thread`),
+	// "I have a plan and a date", with nothing after it.
+	`i~(?:`+words(`'?ve`, `have`)+`~)?(?:got~)?(?:have~)?a~plan~and~a~date`,
+	// "i'm on the roof of my building rn", in a post about jumping
+	// (supportCheck).
+	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+words(`standing`, `sitting`)+`~)?on~`+words(`the`, `a`, `my`)+
+		`~(?:\pL+~){0,2}?`+words(`roof`, `rooftop`, `terrace`, `ledge`, `bridge`, `edge`),
+	// Nigerian Pidgin: "I don tire for this life".
+	`i~(?:don~)?tire~for~(?:this~)?`+words(`life`, `world`),
 	`i~`+words(`'?m`, `am`, `m`, `feel`, `feeling`, `felt`, `been`, `'?ve~been`, `have~been`, `get`, `got`)+
 		`~(?:(?:so|really|very|kinda|pretty|a~bit|super)~)?suicidal`,
 	`suicidal~`+words(`thoughts`, `feelings`, `again`, `ideation`),
@@ -2530,12 +2550,25 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// khatam kar lunga", "zinda nahi rehna".
 	words(`marna`, `mar~jana`, `mar~jaana`, `marne`)+`~`+words(`chahta`, `chahti`, `chahte`, `chahata`, `chahu`,
 		`chahun`),
-	words(`marne`, `suicide~karne`, `suicide~krne`, `khud~?kushi~karne`)+`~`+words(`ka`, `ki`,
+	words(`marne`, `suicide~karne`, `suicide~krne`, `khud~?kushi~karne`, `khud~?kushi`, `khud~?khushi`,
+		`suicide`)+`~`+words(`ka`, `ki`,
 		`ke~(?:baare|bare)~(?:mein|me|mai|main)`)+`~(?:\pL+~){0,2}?`+words(`soch`, `sochta`, `sochti`, `sochte`,
 		`vichar`, `khayal`, `khyal`, `irada`, `plan`),
 	`khud~ko~`+words(`khatam`, `khatm`, `khtm`, `maar`, `mar`, `hurt`, `kaat`)+`~(?:`+words(`kar`, `kr`)+`~)?`+
 		words(`lunga`, `lungi`, `loonga`, `loongi`, `dunga`, `dungi`, `doonga`, `doongi`),
 	words(`zinda`, `jinda`)+`~`+words(`nahi`, `nhi`, `nai`)+`~`+words(`rehna`, `rahna`),
+	// "apne aap ko hurt kiya", "khud ko kaat liya": hurting oneself, past.
+	words(`khud`, `apne~aap`)+`~ko~`+words(`hurt`, `cut`)+`~`+words(`kiya`, `kia`, `kar~liya`, `kr~liya`),
+	words(`khud`, `apne~aap`)+`~ko~`+words(`kaat`, `kaata`, `kaati`, `jalaya`, `jalaaya`)+`~`+words(`liya`, `diya`),
+	// "terrace se kood jaungi".
+	words(`chhat`, `chhath`, `terrace`, `building`, `bridge`, `pul`, `balcony`, `roof`)+`~se~`+
+		words(`kood`, `kud`, `koodh`)+`~`+words(`jaunga`, `jaungi`, `jaaunga`, `jaaungi`, `jaoonga`, `jaoongi`),
+	// "aaj raat sab khatam kar dunga", with a goodbye in the post
+	// (supportCheck).
+	words(`sab`, `sabkuch`, `sab~kuch`, `sb`)+`~`+words(`khatam`, `khatm`, `khtm`)+`~`+words(`kar`, `kr`)+`~`+
+		words(`dunga`, `dungi`, `doonga`, `doongi`, `lunga`, `lungi`),
+	// "na is duniya mein", with not staying in the post (supportCheck).
+	`is~duniya~`+words(`mein`, `me`, `mai`, `se`),
 	words(`suicide`, `khud~?kushi`, `khud~?khushi`)+`~`+words(`karna`, `krna`, `kar~lunga`, `kar~lungi`,
 		`karunga`, `karungi`)+
 		`(?:~`+words(`chahta`, `chahti`, `hai`, `h`)+`)?`,
@@ -2700,8 +2733,14 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 	words(`painless`, `easiest`, `easy`, `quickest`, `quick`, `best`, `fastest`, `surest`, `least~painful`)+
 		`~`+words(`way`, `ways`, `method`, `methods`)+`~(?:for~`+words(`me`, `someone`, `a~person`)+`~)?(?:to~)?`+
 		words(`die`, `kill~`+words(`my`, `your`, `ur`, `one`)+`~self`, `commit~suicide`,
-			`end~`+words(`my`, `your`, `one'?s`)+`~life`, `od`, `overdose`, `end~it(?:~all)?`),
+			`end~`+words(`my`, `your`, `one'?s`)+`~life`, `od`, `overdose`, `end~it(?:~all)?`, `go`),
 	`suicide~`+words(`method`, `methods`, `guide`, `instructions`, `tips`),
+	// A how-many question about pills with a disclaimer after it: "kitni
+	// neend ki goliyan leni padti hain? bas pooch raha hoon", "how many
+	// sleeping pills do you take? asking for a friend". methodCheck turns
+	// it down when an ailment is named.
+	words(`kitni`, `kitne`, `how~many`)+`~(?:\pL+~){0,3}?`+words(`goliyan`, `golian`, `goliya`, `pills`, `tablets`)+
+		`[^\n]{0,60}?`+words(`just~asking`, `asking~for~a~friend`, `bas~pooch`, `bas~puch`, `sirf~pooch`),
 	// "how deep should i cut"
 	`how~deep~`+words(`should`, `do`, `can`, `would`, `to`, `must`)+`~(?:`+words(`i`, `you`, `u`, `one`)+`~)?cut`,
 	// The poster's own death as what a question is about: "is there a way
@@ -7173,6 +7212,9 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		inYourShoesBefore(text, m[0]) {
 		return false
 	}
+	if ok, decided := f.supportPhrasing(text, m, ws, next); decided {
+		return ok
+	}
 	first := ws[0]
 	switch {
 	case is(first, "if"):
@@ -7267,6 +7309,100 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	}
 	return true
 }
+
+// supportPhrasing reads the support phrasings that need the post round
+// them, and says whether it decided: a past attempt with a past time after
+// "end it" ("I tried to end it last weekend", not "with her"), an overdose
+// of medicine, not of caffeine; "I don't think I'll make it" to an age or a
+// birthday, not to a class or with school work in the sentence; "this is my
+// last post" among goodbyes, not before a break; "a plan and a date" with
+// nothing after it; "top myself" that is not topping up; and the Hinglish
+// that needs a goodbye ("sab khatam kar dunga. sorry mummy papa") or not
+// staying ("na is duniya mein") in the post.
+func (f *scannedField) supportPhrasing(text string, m []int, ws, next []string) (ok, decided bool) {
+	r := f.wordReading()
+	first, last := ws[0], ws[len(ws)-1]
+	switch {
+	case len(ws) > 2 && (is(ws[1], "tried") || is(ws[1], "attempted")):
+		if is(last, "it") || is(last, "all") {
+			return len(next) == 0 || pastTimes[next[0]] || trailFillers[next[0]], true
+		}
+		return true, true
+	case is(last, "overdosed"):
+		return len(next) == 0 || !is(next[0], "on") || anyIn(next[1:min(len(next), 4)], pillWords) ||
+			anyIn(next[1:min(len(next), 4)], medicineNames), true
+	case is(last, "myself") && (is(ws[len(ws)-2], "top") || is(ws[len(ws)-2], "topping")):
+		return !(len(next) > 0 && is(next[0], "up")), true
+	case hasWord(ws, "think") && (is(last, "to") || is(last, "till") || is(last, "until") || is(last, "past")):
+		sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+		if anyIn(sentence, schoolWorkWords) || anyIn(sentence, hindiStudyWords) || len(next) == 0 {
+			return false, true
+		}
+		// An age, not a time of day: "to 18", not "till 12 tonight".
+		n, err := strconv.Atoi(next[0])
+		age := err == nil && n >= 13 && n <= 30 && !(len(next) > 1 && clockWords[next[1]])
+		return age || ageMarks[next[0]] || len(next) > 1 && is(next[0], "my") && ageMarks[next[1]], true
+	case is(last, "post") || is(last, "message") || is(last, "thread"):
+		return r.postHas("farewell", farewellWords) && !r.postHas("break", breakWords), true
+	case (is(first, "i'm") || is(first, "im") || is(first, "i")) && hasWord(ws, "on") && (is(last, "roof") ||
+		is(last, "rooftop") || is(last, "terrace") || is(last, "ledge") || is(last, "bridge") || is(last, "edge")):
+		return r.postHas("jump", jumpWords) && r.postHas("now", nowWords) && !r.postHas("pool", poolWords) &&
+			!r.postHas("jumpSport", jumpSports), true
+	case is(last, "date"):
+		for _, w := range next {
+			if !trailFillers[w] {
+				return false, true
+			}
+		}
+		return true, true
+	case (is(first, "khud") || is(first, "apne")) && (is(last, "kiya") || is(last, "kia") || is(last, "liya") ||
+		is(last, "diya")):
+		// "apne aap ko hurt kiya football mein" is an injury.
+		return !r.postHas("mishap", hindiMishaps), true
+	case is(last, "jaunga") || is(last, "jaungi") || is(last, "jaaunga") || is(last, "jaaungi") ||
+		is(last, "jaoonga") || is(last, "jaoongi"):
+		// "kood jaunga agar india jeeta" is jumping for joy.
+		return !r.postHas("win", winWords), true
+	case is(first, "sab") || is(first, "sabkuch") || is(first, "sb"):
+		return r.postHas("apology", apologyWords) && !r.postHas("study", hindiStudyWords), true
+	case is(first, "is") && len(ws) > 1 && is(ws[1], "duniya"):
+		return r.postHas("stay", stayWords) && r.postHas("hindiNot", hindiNot), true
+	}
+	return false, false
+}
+
+var (
+	// medicineNames are medicines by name: "overdosed on my antidepressants".
+	medicineNames = canonSetOf(`antidepressants antidepressant tylenol acetaminophen ibuprofen aspirin advil panadol
+		crocin dolo insulin xanax benadryl melatonin capsules`)
+	// pastTimes put an attempt in the past: "tried to end it last weekend".
+	pastTimes = canonSetOf(`last yesterday ago before once twice earlier in at when this a few two three`)
+	// ageMarks are an age or a time of life: "make it to 18", "to my birthday".
+	ageMarks = canonSetOf(`eighteen sixteen seventeen twenty adulthood birthday 18th 16th 17th 21st 20s graduation
+		christmas summer`)
+	// farewellWords and breakWords: "this is my last post" among goodbyes,
+	// letters and thanks, not before a break.
+	farewellWords = canonSetOf(`letters letter goodbye goodbyes bye thank thanks sorry forgive love`)
+	breakWords    = canonSetOf(`before till until break hiatus back moving switching exams boards semester
+		vacation holidays tomorrow week month`)
+	// jumpWords and nowWords: on a roof in a post about jumping, now.
+	jumpWords  = canonSetOf(`jump jumping fall falling high enough`)
+	nowWords   = canonSetOf(`rn now right currently tonight`)
+	jumpSports = canonSetOf(`long triple pole practice parkour`)
+	clockWords = canonSetOf(`am pm baje oclock o'clock tonight midnight noon hours hrs minutes mins`)
+	// hindiMishaps make hurting oneself an injury, and winWords jumping off
+	// a roof a celebration.
+	hindiMishaps = canonSetOf(`football cricket khelte khel match accident gir gira giri girke ankle twist chot moch
+		bike cycle kitchen`)
+	winWords = canonSetOf(`jeeta jeeti jeete jeet win wins won`)
+	// apologyWords are a goodbye in Hinglish: "sorry mummy papa".
+	apologyWords    = canonSetOf(`sorry maaf maafi alvida goodbye bye`)
+	hindiStudyWords = canonSetOf(`syllabus chapter chapters homework kaam notes revision assignment padhai portion
+		sawal questions`)
+	// stayWords and hindiNot: "mujhe ab yahan nahi rehna. na is duniya mein".
+	stayWords = canonSetOf(`rehna rahna jeena jina`)
+	hindiNot  = canonSetOf(`nahi nhi na`)
+)
 
 var (
 	stockpileWords = canonSetOf(`saving saved stockpiling stockpiled hoarding hoarded stashing stashed collecting collected`)
@@ -9155,6 +9291,10 @@ func methodCheck(v *view, m []int) bool {
 		return false
 	}
 	switch first := ws[0]; {
+	case is(ws[len(ws)-1], "asking") || is(ws[len(ws)-1], "friend") || is(ws[len(ws)-1], "pooch") ||
+		is(ws[len(ws)-1], "puch"):
+		// The disclaimed question, unless it names what the pills are for.
+		return !anyIn(ws, medicalWords) && !anyIn(ws, ailments)
 	case is(first, "how") && (is(ws[1], "many") || is(ws[1], "much")), is(first, "what"):
 		// The medicine may be named before the question: "paracetamol, how
 		// many to die?".
@@ -9170,12 +9310,20 @@ func methodCheck(v *view, m []int) bool {
 			return false
 		}
 		return anyIn(wordsIn(sentenceAround(text, m[0], m[1])), methodAsks) || questionAfter(text, m[1])
+	case is(ws[len(ws)-1], "go"):
+		// "the most painless way to go", with nowhere to go to after it.
+		return len(next) == 0 && (hasWord(ws, "painless") || hasWord(ws, "painful"))
 	case is(ws[len(ws)-1], "it") || is(ws[len(ws)-1], "all"):
 		// "the best way to end it with my girlfriend"
 		return len(next) == 0 || !is(next[0], "with") && !is(next[0], "between")
 	}
 	return true
 }
+
+// ailments name what pills are taken for: "how many pills for a headache?
+// asking for a friend".
+var ailments = canonSetOf(`headache headaches migraine pain pains cramps period periods cold cough acidity gas
+	jetlag lag sore throat bukhar sardi dard`)
 
 // methodAsks make a sentence ask how: "how", "which bridge", "is there a
 // way", "high enough".
