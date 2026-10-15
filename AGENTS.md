@@ -790,26 +790,25 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   small upload), and every kind at a quarter of the size. A square is not the dearest
   shape, though: a JPEG's sides are rounded up to whole blocks, a turn that cannot keep
   the subsampling copies at 4:4:4, and the thumbnail's weights grow with the longer
-  side, so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full
-  size each format allows (`eachShape`: for every shorter side, the four longest sides
-  that fit, both ways round), at every orientation, and holds each kind to the shape the
-  README gives for it. It reads `processingCost` with the frame header rewritten in place
-  rather than calling `Inspect` millions of times, and checks `Inspect` agrees at the
-  shapes that decide. A change to `cost.go` that moves a kind, or the shape a kind is
-  refused at, changes the README's lists in the same commit. The same model caps the
-  upload size limit: an upload is charged eight bytes for every byte of it whatever its
-  picture (its stored file may come to four times its size, and the encoder's buffer
-  holds two of those as it grows), so `media.MaxUploadBytes` (31 MiB), derived from
-  `processingBudget` and `storedLimit`'s terms in `cost.go`, is the largest size in whole
-  MiB at which the cheapest file of each format is admitted. `maxUploadLimit`
-  (`config.go`) is that, and the server refuses to start with a larger
-  `EDUCHAN_MAX_UPLOAD_BYTES`; `TestLargestAttachmentLimitIsReachable` posts the cheapest
-  file of each format at that size and holds one a MiB larger to a refusal. A change to
-  the budget or to `storedLimit` moves it, and the README's figure with it. `Save` then
-  holds its estimate of the budget from the start of decoding until both renditions are
-  stored,
-  because until then it holds what it made (`acquireProcessing`, a first-come-first-served
-  weighted semaphore in `budget.go`, so a large upload is not starved by small ones;
+  side, so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full size each
+  format allows (`eachShape`: for every shorter side, the four longest sides that fit,
+  both ways round), at every orientation, and holds each kind to the shape the README
+  gives for it. It reads `processingCost` with the frame header rewritten in place rather
+  than calling `Inspect` millions of times, and checks `Inspect` agrees at the shapes that
+  decide. A change to `cost.go` that moves a kind, or the shape a kind is refused at,
+  changes the README's lists in the same commit. The same model caps the upload size
+  limit: an upload is charged eight bytes for every byte of it whatever its picture (its
+  stored file may come to four times its size, and the encoder's buffer holds two of those
+  as it grows), so `media.MaxUploadBytes` (31 MiB), derived from `processingBudget` and
+  `storedLimit`'s terms in `cost.go`, is the largest size in whole MiB at which the
+  cheapest file of each format is admitted. `maxUploadLimit` (`config.go`) is that, and
+  the server refuses to start with a larger `EDUCHAN_MAX_UPLOAD_BYTES`;
+  `TestLargestAttachmentLimitIsReachable` posts the cheapest file of each format at that
+  size and holds one a MiB larger to a refusal. A change to the budget or to `storedLimit`
+  moves it, and the README's figure with it. `Save` then holds its estimate of the budget
+  from the start of decoding until both renditions are stored, because until then it holds
+  what it made (`acquireProcessing`, a first-come-first-served weighted semaphore in
+  `budget.go`, so a large upload is not starved by small ones;
   `TestSaveHoldsItsShareUntilItIsStored`), and `processHeld` gives that share back by a
   deferred call until it hands it over, because the server recovers from a panic in a
   decoder or an encoder and goes on with whatever the panic left held
