@@ -462,14 +462,15 @@ check before the test changes.
   went ahead started (`TestABurstFromOneAddressPostsOnce` for threads,
   `TestABurstOfRepliesFromOneAddressPostsOnce` for replies,
   `TestABurstOfImagesFromOneAddressPostsOnce` for images on two boards and
-  `TestABurstOfCodeRequestsFromOneClientSendsOneCode` for code requests, each failing if
-  that check is dropped from its handler). A request refused by the second check has
-  spent its answer and carries the spent header; one refused by the first kept its
-  answer. A badged burst posts once too (`TestABadgedBurstFromOneAddressPostsOnce`), but
-  spends nothing between the halves, so the first check alone holds it and the test does
-  not pin the second. In the posting handlers the check is the last refusal before flood
-  control; in `handleVerifyRequest` it comes straight after the 18+ attestation, before
-  the address is parsed.
+  `TestABurstOfCodeRequestsFromOneClientSendsOneCode` for code requests; each holds its
+  burst at the spends (`spendingBurst`) until all of it has passed the first check, so it
+  fails on every run if the second check is dropped from its handler). A request refused
+  by the second check that carried an answer has spent it and carries the spent header;
+  one refused by the first kept its answer. A badged burst posts once too
+  (`TestABadgedBurstFromOneAddressPostsOnce`), but spends nothing between the halves, so
+  the first check alone holds it and the test does not pin the second. In the posting
+  handlers the check is the last refusal before flood control; in `handleVerifyRequest`
+  it comes straight after the 18+ attestation, before the address is parsed.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -539,14 +540,14 @@ check before the test changes.
   every educhan tab open in the browser has on its way, not only the tab it was pressed
   in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a `BroadcastChannel`,
   and every other tab answers with `forgottenElsewhere`, which runs the same
-  `forgetOnThisPage` as the pressing tab (what is on its way, the badge and the poster
-  key the page holds, the code step, the note, and the Name of every posting form on
-  screen) and draws `/verify` again if it is showing. The message is one constant that
-  says nothing about anyone, the other tabs leave storage alone, and in a browser without
-  `BroadcastChannel` a forget covers the tab it was pressed in and no other
-  (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
-  advice points to: the key left behind would give the next person at the computer the
-  same IDs in the same threads.
+  `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft included,
+  the badge and the poster key the page holds, the code step, the note, and the Name and
+  the badge option of every posting form on screen) and draws `/verify` again if it is
+  showing. The message is one constant that says nothing about anyone, the other tabs
+  leave storage alone, and in a browser without `BroadcastChannel` a forget covers the
+  tab it was pressed in and no other (`TestForgettingTheBrowserReachesEveryTab`). It is
+  what the FAQ's shared-computer advice points to: the key left behind would give the
+  next person at the computer the same IDs in the same threads.
 
 ### Child safety
 

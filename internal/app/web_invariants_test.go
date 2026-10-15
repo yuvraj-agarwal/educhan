@@ -941,9 +941,10 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // nothing: not the badge the server issued, not the code step, which would
 // greet the next person with the last one's institution, not the name, and
 // not a note that a badge was lost, which would tell them there had been one.
-// A code request not sent yet is not sent. Each request notes browserForgets
-// at the press, and only forgetOnThisPage moves it, for a press in this tab or
-// one heard from another (TestForgettingTheBrowserReachesEveryTab).
+// A code request not sent yet is not sent, and a redraw on its way puts back
+// no Name its draft read before the press. Each request and each draft notes
+// browserForgets, and only forgetOnThisPage moves it, for a press in this tab
+// or one heard from another (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -954,14 +955,28 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		t.Error("browserForgets is no longer moved by forgetOnThisPage alone")
 	}
 	// What the page holds goes with it: the badge it read, the note about a
-	// lost one, the code step, its own poster key, and the name a posting form
-	// on screen was drawn with.
+	// lost one, the code step, its own poster key, and from every posting form
+	// on screen the name it was drawn with and the option to post with the
+	// badge, which names the institution.
 	page := squash(withoutComments(jsFunction(t, script, "forgetOnThisPage")))
 	if !strings.Contains(page, `{ browserForgets += 1; state.verification.badge = null; badgeLost = ""; `+
 		`verifyStep = { step: "email", label: "" }; pagePosterKey = ""; `+
-		`for (const box of el.main.querySelectorAll('form[data-kind] input[name="name"]')) { box.defaultValue = ""; box.value = ""; } }`) {
+		`for (const form of el.main.querySelectorAll("form[data-kind]")) { const name = field(form, "name"); `+
+		`if (name) { name.defaultValue = ""; name.value = ""; } `+
+		`field(form, "badge")?.closest("label")?.remove(); form.querySelector("#f-badge-hint")?.remove(); } }`) {
 		t.Error("forgetOnThisPage no longer drops everything the page holds that the forget covers")
 	}
+	// A redraw's draft is read before the page is fetched, so a forget can
+	// come between the two: the draft notes browserForgets as it is read, and
+	// its Name goes back into the new form only if nothing has moved it since.
+	if draft := squash(withoutComments(jsFunction(t, script, "formDraft"))); !strings.Contains(draft, "return { forgets: browserForgets,") {
+		t.Error("formDraft no longer notes browserForgets beside the Name it reads")
+	}
+	inOrder(t, "restoreDraft", squash(withoutComments(jsFunction(t, script, "restoreDraft"))),
+		"const forgotten = draft.forgets !== browserForgets;",
+		`for (const name of ["subject", "name", "body"]) { const node = field(form, name); `+
+			`if (node && name in draft && !(name === "name" && forgotten)) { node.value = draft[name]; } }`,
+	)
 	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
 	inOrder(t, "submitVerification", verify,
 		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; "+
@@ -1068,8 +1083,8 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	// had it at the press, refused while on screen, has it back on its button,
 	// unless the reader moved it during the wait: then it stays where they put
 	// it. The page does not scroll to the button: a reader who scrolled away
-	// meanwhile, which leaves the focus lost, stays where they are, with the
-	// notice at the top of the page in view.
+	// meanwhile, which leaves the focus lost, stays where they are, whether or
+	// not that is the top of the page, where the notice is.
 	inOrder(t, "holdForm", hold,
 		"const focused = form.contains(document.activeElement);",
 		"control.disabled = true;",

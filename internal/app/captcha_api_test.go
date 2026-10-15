@@ -432,6 +432,13 @@ func TestCodeRequestsNeedTheCaptcha(t *testing.T) {
 // burstSize is how many requests a burst sends at once.
 const burstSize = 8
 
+// roomForABurst gives the server's pool a connection for each request of a
+// burst held at its spend (spendingBurst), one for the hold, and one to watch
+// the requests arrive with.
+func roomForABurst(cfg *Config) {
+	cfg.DBMaxConns = burstSize + 2
+}
+
 // solveCaptchas answers n challenges, one for each request of a burst.
 func (c *client) solveCaptchas(n int) []string {
 	c.t.Helper()
@@ -466,8 +473,9 @@ type burstOutcome struct {
 }
 
 // burst sends one request for each answer, all at the same moment, each built
-// beforehand by request, and says how each was answered.
-func (h *harness) burst(answers []string, request func(i int, answer string) *http.Request) []burstOutcome {
+// beforehand by request, and says how each was answered. meanwhile, unless it
+// is nil, runs once they have gone, while they are on their way.
+func (h *harness) burst(answers []string, request func(i int, answer string) *http.Request, meanwhile func()) []burstOutcome {
 	h.t.Helper()
 	requests := make([]*http.Request, len(answers))
 	for i, answer := range answers {
@@ -490,33 +498,97 @@ func (h *harness) burst(answers []string, request func(i int, answer string) *ht
 		}()
 	}
 	close(start)
+	if meanwhile != nil {
+		meanwhile()
+	}
 	wg.Wait()
 	return outcomes
 }
 
-// expectOneThrough checks that one request of a burst went ahead, answered ok,
-// and that flood control refused every other, each having kept or spent its
-// answer as its 429 said. again sends a refused answer once more where no
-// cooldown holds it back: a kept answer goes ahead there, and a spent one is
-// refused as used.
+// spendingBurst is burst for requests that each spend an answer, every one of
+// them held at its spend until all of them are there. Nothing starts a
+// cooldown before its spend, so the whole burst passes flood control's first
+// check, and only the second stands between it and every request going ahead.
+// Unheld, one request could start its cooldowns before the others reached the
+// first check, which would then refuse them all and leave the second untried.
+func (h *harness) spendingBurst(answers []string, request func(i int, answer string) *http.Request) []burstOutcome {
+	h.t.Helper()
+	if conns, need := h.app.pool.Config().MaxConns, int32(len(answers))+2; conns < need {
+		h.t.Fatalf("the pool has %d connections, and a burst of %d held at its spends needs %d (roomForABurst)",
+			conns, len(answers), need)
+	}
+	pid, release := h.holdEverySpend()
+	return h.burst(answers, request, func() {
+		h.waitForSpends(pid, len(answers))
+		release()
+	})
+}
+
+// holdEverySpend locks the table answers are spent in, in a transaction it
+// leaves open, so that every request that reaches its spend waits there until
+// release ends the transaction. Checking an answer only reads the table, which
+// the lock allows. pid is the open transaction's backend, which the waiting
+// requests wait on.
+func (h *harness) holdEverySpend() (pid uint32, release func()) {
+	h.t.Helper()
+	ctx := context.Background()
+	tx, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	h.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		h.t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `LOCK TABLE captcha_spent IN SHARE MODE`); err != nil {
+		h.t.Fatalf("hold the spends: %v", err)
+	}
+	return pid, func() {
+		if err := tx.Rollback(ctx); err != nil {
+			h.t.Fatalf("release the spends: %v", err)
+		}
+	}
+}
+
+// waitForSpends waits until n requests are waiting on the hold whose backend
+// is pid.
+func (h *harness) waitForSpends(pid uint32, n int) {
+	h.t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		var waiting int
+		if err := h.app.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid))`,
+			int64(pid)).Scan(&waiting); err != nil {
+			h.t.Fatalf("count the requests at their spends: %v", err)
+		}
+		if waiting >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatalf("%d of %d requests reached their spends", waiting, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// expectOneThrough checks that one request of a spending burst went ahead,
+// answered ok, and that flood control's second check refused every other with
+// a 429 saying its answer was spent. again sends a refused answer once more
+// where no cooldown holds it back, and it is refused as used.
 func expectOneThrough(t *testing.T, what string, outcomes []burstOutcome, ok int, again func(i int, answer string) (int, captchaRefusal)) {
 	t.Helper()
 	through := 0
 	for i, o := range outcomes {
-		switch o.status {
-		case ok:
+		switch {
+		case o.status == ok:
 			through++
-		case http.StatusTooManyRequests:
+		case o.status == http.StatusTooManyRequests && o.spent:
 			status, refused := again(i, o.answer)
-			if o.spent {
-				expectCaptchaRefusal(t, fmt.Sprintf("%s, racer %d's answer, which its 429 said was spent, sent again", what, i),
-					status, refused, captchaUsed)
-			} else if status != ok {
-				t.Errorf("%s, racer %d's answer, which its 429 said was kept, sent again: status %d (%s), want %d",
-					what, i, status, refused.Error, ok)
-			}
+			expectCaptchaRefusal(t, fmt.Sprintf("%s, racer %d's answer, which its 429 said was spent, sent again", what, i),
+				status, refused, captchaUsed)
 		default:
-			t.Errorf("%s, racer %d: status %d, want %d or 429", what, i, o.status, ok)
+			t.Errorf("%s, racer %d: status %d, spent header %v; want %d, or 429 saying the answer was spent",
+				what, i, o.status, o.spent, ok)
 		}
 	}
 	if through != 1 {
@@ -525,15 +597,18 @@ func expectOneThrough(t *testing.T, what string, outcomes []burstOutcome, ok int
 }
 
 // A burst of posts from one address, each with an answer of its own, can all
-// pass flood control's first half before any of them spends; the second half
-// checks again as it starts the cooldowns, so exactly one posts. A post refused
-// there has spent its answer and says so; one refused by the first half kept
-// its answer, which then posts on a board of its own.
+// pass flood control's first check before any of them spends, which the test
+// makes sure of (spendingBurst); the second check comes again as the
+// cooldowns start, so exactly one posts. The others were refused there, have
+// spent their answers, and say so.
 func TestABurstFromOneAddressPostsOnce(t *testing.T) {
-	h := captchaServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Hour })
+	h := captchaServer(t, func(cfg *Config) {
+		cfg.ThreadCooldown = time.Hour
+		roomForABurst(cfg)
+	})
 	h.addBoard("general")
 
-	outcomes := h.burst(h.solveCaptchas(burstSize), func(_ int, answer string) *http.Request {
+	outcomes := h.spendingBurst(h.solveCaptchas(burstSize), func(_ int, answer string) *http.Request {
 		return h.jsonRequest("/api/boards/general/threads", map[string]any{"body": "burst", "captcha": answer})
 	})
 	expectOneThrough(t, "racing threads", outcomes, http.StatusCreated, func(i int, answer string) (int, captchaRefusal) {
@@ -547,12 +622,15 @@ func TestABurstFromOneAddressPostsOnce(t *testing.T) {
 // The same for replies: a burst of them from one address to one thread, each
 // with an answer of its own, posts once.
 func TestABurstOfRepliesFromOneAddressPostsOnce(t *testing.T) {
-	h := captchaServer(t, func(cfg *Config) { cfg.PostCooldown = time.Hour })
+	h := captchaServer(t, func(cfg *Config) {
+		cfg.PostCooldown = time.Hour
+		roomForABurst(cfg)
+	})
 	h.addBoard("general")
 	thread := h.createThreadWithCaptcha("general", "open")
 	path := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
 
-	outcomes := h.burst(h.solveCaptchas(burstSize), func(_ int, answer string) *http.Request {
+	outcomes := h.spendingBurst(h.solveCaptchas(burstSize), func(_ int, answer string) *http.Request {
 		return h.jsonRequest(path, map[string]any{"body": "burst", "captcha": answer})
 	})
 	expectOneThrough(t, "racing replies", outcomes, http.StatusCreated, func(_ int, answer string) (int, captchaRefusal) {
@@ -565,13 +643,16 @@ func TestABurstOfRepliesFromOneAddressPostsOnce(t *testing.T) {
 // posts with images from one address, new threads on one board and replies on
 // another, posts once, though neither board's own cooldown is running.
 func TestABurstOfImagesFromOneAddressPostsOnce(t *testing.T) {
-	h := captchaServer(t, func(cfg *Config) { cfg.UploadCooldown = time.Hour })
+	h := captchaServer(t, func(cfg *Config) {
+		cfg.UploadCooldown = time.Hour
+		roomForABurst(cfg)
+	})
 	h.addBoard("general", "other")
 	thread := h.createThreadWithCaptcha("other", "open")
 	replies := fmt.Sprintf("/api/boards/other/threads/%d/posts", thread.ThreadNo)
 	image := pngBytes(t, 24, 24)
 
-	outcomes := h.burst(h.solveCaptchas(burstSize), func(i int, answer string) *http.Request {
+	outcomes := h.spendingBurst(h.solveCaptchas(burstSize), func(i int, answer string) *http.Request {
 		path := "/api/boards/general/threads"
 		if i%2 == 1 {
 			path = replies
@@ -591,9 +672,10 @@ func TestABurstOfCodeRequestsFromOneClientSendsOneCode(t *testing.T) {
 	h := verifyServer(t, withCaptcha(func(cfg *Config) {
 		cfg.VerifyCooldown = time.Hour
 		cfg.TrustedProxyHops = 1
+		roomForABurst(cfg)
 	}))
 
-	outcomes := h.burst(h.solveCaptchas(burstSize), func(i int, answer string) *http.Request {
+	outcomes := h.spendingBurst(h.solveCaptchas(burstSize), func(i int, answer string) *http.Request {
 		req := h.jsonRequest("/api/verify/request", map[string]any{
 			"email": fmt.Sprintf("student%d@iitb.ac.in", i), "adult": true, "captcha": answer,
 		})
@@ -639,7 +721,7 @@ func TestABadgedBurstFromOneAddressPostsOnce(t *testing.T) {
 		req := h.jsonRequest(path, map[string]any{"body": "badged burst", "badge": true})
 		req.Header.Set(credentialHeader, credential)
 		return req
-	})
+	}, nil)
 	counts := map[int]int{}
 	for _, o := range outcomes {
 		counts[o.status]++

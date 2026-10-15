@@ -1886,20 +1886,27 @@ function forgetBrowser() {
 // forgetOnThisPage is the part of forgetting the browser that a page holds
 // itself rather than in storage, run in the tab where it was pressed and in
 // every tab that hears it. It cancels what is on its way from the page
-// (browserForgets); drops the badge read from storage, the poster key the page
-// keeps for itself, and the code step and the note about a lost badge, which
-// would greet the next person with the last one's institution; and empties the
-// Name of every posting form on screen, drawn with the forgotten name, which
-// would post under its tripcode.
+// (browserForgets), a redraw's draft included (restoreDraft); drops the badge
+// read from storage, the poster key the page keeps for itself, and the code
+// step and the note about a lost badge, which would greet the next person with
+// the last one's institution; and, in every posting form on screen, empties
+// the Name, drawn with the forgotten name, which would post under its
+// tripcode, and takes out the option to post with the badge, which names the
+// institution as well.
 function forgetOnThisPage() {
   browserForgets += 1;
   state.verification.badge = null;
   badgeLost = "";
   verifyStep = { step: "email", label: "" };
   pagePosterKey = "";
-  for (const box of el.main.querySelectorAll('form[data-kind] input[name="name"]')) {
-    box.defaultValue = "";
-    box.value = "";
+  for (const form of el.main.querySelectorAll("form[data-kind]")) {
+    const name = field(form, "name");
+    if (name) {
+      name.defaultValue = "";
+      name.value = "";
+    }
+    field(form, "badge")?.closest("label")?.remove();
+    form.querySelector("#f-badge-hint")?.remove();
   }
 }
 
@@ -2992,7 +2999,8 @@ function captureDraft() {
   return { key: routeKey(state.route), ...formDraft(form) };
 }
 
-// formDraft reads what a posting form holds.
+// formDraft reads what a posting form holds, noting browserForgets as it was,
+// so that restoreDraft can tell a Name read before a forget.
 function formDraft(form) {
   const image = field(form, "image");
   const details = form.closest("details");
@@ -3004,6 +3012,7 @@ function formDraft(form) {
   const badge = field(form, "badge");
   const spoiler = field(form, "spoiler");
   return {
+    forgets: browserForgets,
     open: details ? details.open : true,
     subject: value("subject"),
     name: value("name"),
@@ -3043,10 +3052,15 @@ function restoreDraft(draft) {
     return;
   }
   // An empty field is restored as empty: a Name the poster cleared stays
-  // cleared, rather than the form's remembered name coming back.
+  // cleared, rather than the form's remembered name coming back. A Name read
+  // before "Forget this browser" was pressed, here or in another tab, is not
+  // restored at all: the forget emptied the box on screen, but the draft of a
+  // redraw then on its way still held the forgotten name, tripcode secret
+  // included. The new form keeps the Name it was drawn with.
+  const forgotten = draft.forgets !== browserForgets;
   for (const name of ["subject", "name", "body"]) {
     const node = field(form, name);
-    if (node && name in draft) {
+    if (node && name in draft && !(name === "name" && forgotten)) {
       node.value = draft[name];
     }
   }
@@ -3937,7 +3951,8 @@ const heldForms = new WeakSet();
 // is still lost, on the page itself or nowhere: a reader who moved it during
 // the wait, to read a post say, keeps it where they put it. And it does not
 // scroll the page: a reader who scrolled away during the wait stays where they
-// are, with the notice saying what happened in view.
+// are. The notice saying what happened is at the top of the page, in view only
+// of a reader who is there.
 // Until release, the form is in heldForms, and a redraw of its page carries it
 // across as it is (captureDraft, restoreDraft).
 function holdForm(form) {

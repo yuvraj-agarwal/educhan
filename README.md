@@ -162,9 +162,10 @@ the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode. A verification
 or a post still on its way when it is pressed brings none of them back,
 whichever educhan tab in the browser sent it, and every open educhan tab also
-drops the badge and the poster key it holds and empties the Name of any posting
-form it shows. The other tabs hear of it through `BroadcastChannel`, which every
-current browser has; in one without it, a press covers only its own tab.
+drops the badge and the poster key it holds; any posting form it shows, or is
+drawing at that moment, loses its Name and the option to post with the badge.
+The other tabs hear of it through `BroadcastChannel`, which every current
+browser has; in one without it, a press covers only its own tab.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -370,14 +371,13 @@ One image per post, on both thread creation and replies, **when
 image is then refused with `403` and
 `{"error":"image uploads are switched off on this server"}`, because originals
 are stored and served as uploaded: no metadata stripping and no content scanning
-yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
-be, so the server stops reading an image once the body passes that, and a file
-over the size limit gets the same `403` rather than a `413`; a multipart post
-with no file, or with the empty file part a browser sends for an untouched
-input, posts as usual. `GET /api/site`
-reports the switch and the size limit as `"uploads"` and `"max_upload_bytes"`
-(beside `"captcha"`), so a client can leave the image picker off a server that
-would refuse what it sends.
+yet. With uploads off a multipart post is held to the 64 KiB a JSON post may be,
+so the server stops reading an image once the body passes that, and a file over
+the size limit gets the same `403` rather than a `413`; a multipart post with no
+file, or with the empty file part a browser sends for an untouched input, posts
+as usual. `GET /api/site` reports the switch and the size limit as `"uploads"`
+and `"max_upload_bytes"` (beside `"captcha"`), so a client can leave the image
+picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, or an image whose header claims
@@ -814,8 +814,9 @@ starts it; those that had already passed the first check have spent their
 answers, and those that reach it afterwards keep theirs. Two posts racing with
 one answer can both pass the lookup; the spend lets one through and refuses the
 other as used, with no cooldown started for it, so one answer sent to many
-boards at once holds back only where the one let through went (its board's
-thread or reply cooldown, or, for a code request, its email address's). The page
+boards at once starts only what the one let through starts, as it would alone:
+its board's thread or reply cooldown and, with an image, its address's upload
+cooldown, or, for a code request, its client's and its email address's. The page
 never hands one answer to two requests at once: each request takes its answer
 out of the page, so a post sent while another is on its way solves a puzzle of
 its own. A request refused for the answer itself is answered `403` with
