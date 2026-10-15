@@ -2503,7 +2503,8 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// wasn't alive anymore": counterfactualCheck wants the others' reaction.
 	`if~i~(?:`+words(`just`, `simply`, `ever`, `suddenly`, `really`)+`~)?`+gone,
 	// "the easiest way out is to just not be alive anymore", "the only way
-	// out for me is to end it", with the poster in the sentence.
+	// out for me is to end it": the poster's, unless the sentence names
+	// someone else and not the poster.
 	`way~out~(?:for~me~)?`+words(`is`, `was`, `would~be`, `'?s`, `seems~to~be`, `might~be`)+`~(?:to~)?(?:just~)?`+
 		words(crisisActs, `death`, `dying`, `suicide`),
 	// "I've been saving up pills", "been hoarding paracetamol for weeks":
@@ -6158,9 +6159,12 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	case is(first, "if"):
 		return counterfactualCheck(text, m, ws, next)
 	case is(first, "way") || len(ws) > 1 && is(ws[1], "way"):
-		// "the only way out is to die" is the poster's only with the poster
-		// in the sentence; "the only way out for me" says so itself.
-		if !hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1]))) {
+		// "the easiest way out is to just not be alive anymore" and "the
+		// only way out for me is to end it" are the poster's own; with
+		// someone else in the sentence and not the poster, it is theirs
+		// ("for him the only way out was death").
+		if sentence := wordsIn(sentenceAround(text, m[0], m[1])); !hasFirstPerson(sentence) &&
+			(anyIn(sentence, otherPeople) || anyIn(sentence, otherSubjects) || anyIn(sentence, otherObjects)) {
 			return false
 		}
 	case stockpileWords[first]:
@@ -6208,7 +6212,10 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 			len(next) == 0 && anyIn(wordsIn(sentenceAround(text, m[0], m[1])), heights)
 	case selfCompound(text, m[1]):
 		return false
-	case livingWords[last] || is(last, "life") && hasWord(ws, "with"):
+	case livingWords[last] || is(last, "life") && hasWord(ws, "with") ||
+		is(last, "going") && len(next) > 0 && is(next[0], "to"):
+		// "keep going" is read like "go on" only with "to" after it: "keep
+		// going to tuition".
 		return livingCheck(text, m, ws, next)
 	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && nextIn(0, cutIdioms):
 		return false
@@ -6257,13 +6264,16 @@ var (
 // jokingCause reports crisis words as the hyperbole they are when something
 // is said to cause them and the poster laughs: "statistics homework making
 // me want to die lol", "this group project is going to make me kms 💀". The
-// cause is named, it is not life itself ("life makes me want to die"), and
-// a laugh or a skull is in the sentence. Without them the same words are
-// read as meant: "i want to die lol" can be distress written lightly.
+// cause is named, it is not life itself ("life makes me want to die") or
+// someone at home, bullying or a partner ("my stepdad makes me want to die
+// 💀"), and a laugh or a skull is in the sentence; a crying face is not one.
+// Without them the same words are read as meant: "i want to die lol" can be
+// distress written lightly.
 func jokingCause(text string, m []int) bool {
 	before := wordsIn(clauseBefore(text, m[0]))
 	n := len(before)
-	if n < 3 || !is(before[n-1], "me") || !causeVerbs[before[n-2]] || anyIn(before[:n-2], lifeItself) {
+	if n < 3 || !is(before[n-1], "me") || !causeVerbs[before[n-2]] || anyIn(before[:n-2], lifeItself) ||
+		anyIn(before[:n-2], seriousCauses) {
 		return false
 	}
 	// From the start of the sentence to a little past the match, where a
@@ -6271,13 +6281,19 @@ func jokingCause(text string, m []int) bool {
 	lo := max(0, m[0]-64)
 	lo += strings.LastIndexAny(text[lo:m[0]], ".!?\n") + 1
 	around := text[lo:min(len(text), m[1]+48)]
-	return strings.ContainsAny(around, "💀☠😂🤣😭") || anyIn(wordsIn(around), laughs)
+	return strings.ContainsAny(around, "💀☠😂🤣") || anyIn(wordsIn(around), laughs)
 }
 
 var (
 	causeVerbs = canonSetOf(`make makes making made`)
 	lifeItself = canonSetOf(`life living existing existence everything myself`)
-	laughs     = canonSetOf(`lol lmao lmfao rofl haha hahaha hahahaha hehe xd bruh ded`)
+	// seriousCauses are causes no laugh makes a joke of.
+	seriousCauses = canonSetOf(`stepdad stepmom stepmum stepfather stepmother dad mom mum father mother parents
+		parent family uncle aunt brother sister bullied bullying bullies bully abuse abused abusing hitting beating
+		boyfriend girlfriend bf gf ex`)
+	// laughs are a laugh: not "😭", "bruh" or "ded", which can as well be
+	// someone crying or past caring.
+	laughs = canonSetOf(`lol lmao lmfao rofl haha hahaha hahahaha hehe xd`)
 )
 
 // ownSubject reports that the poster is the one doing what starts at offset
@@ -6309,6 +6325,7 @@ func ownSubject(text string, i int) bool {
 
 var (
 	firstPersonSingular = canonSetOf(`i i'm im i'll i'd i've ive me my myself`)
+	otherObjects        = canonSetOf(`him them character characters protagonist hero heroine victim victims`)
 	otherSubjects       = canonSetOf(`we we're we've we'll we'd us our they'd their his her its it who`)
 	joiners             = canonSetOf(`and then n &`)
 	// carriers carry a verb without being its subject: "been",
@@ -6337,39 +6354,75 @@ func doneAgain(text string, m []int, next []string) bool {
 var againTimes = canonSetOf(`again since for every daily last yesterday today tonight lately recently now`)
 
 // hurtByAccident reads the words after "hurt myself" or "cut myself" for
-// an accident or an activity: "on the stove" (but not "on purpose"),
-// "while cooking", "shaving", "lifting weights", "at football".
+// an accident or an activity, named: "accidentally", "by accident", "on the
+// stove", "on a nail", "while cooking", "shaving", "lifting weights", "at
+// football". What is not named as one is not one: "on my wrist", "on
+// monday", "using a razor blade", "trying to feel something", "when I'm sad".
 func hurtByAccident(next []string) bool {
 	if len(next) == 0 {
 		return false
 	}
 	w := next[0]
 	switch {
-	case is(w, "on"):
-		return !(len(next) > 1 && is(next[1], "purpose"))
-	case accidents[w]:
+	case is(w, "accidentally"):
 		return true
-	case is(w, "at") || is(w, "in") || is(w, "during"):
-		return anyIn(next[1:min(len(next), 4)], activities)
+	case is(w, "by"):
+		return len(next) > 1 && (is(next[1], "accident") || is(next[1], "mistake"))
+	case is(w, "on"):
+		return anyIn(next[1:min(len(next), 4)], accidentObjects)
+	case is(w, "while") || is(w, "whilst") || is(w, "when") || is(w, "during") || is(w, "at") || is(w, "in"):
+		ahead := next[1:min(len(next), 5)]
+		return anyIn(ahead, activities) || anyIn(ahead, activityGerunds)
 	}
-	return strings.HasSuffix(w, "ing") && len(w) > 4 && !feelingWords[w]
+	return activityGerunds[w]
 }
 
 var (
-	// activities, after "at" or "in", make hurting oneself an accident.
+	// activities, after "at", "in", "during" or "while", make hurting
+	// oneself an accident.
 	activities = canonSetOf(`football cricket basketball volleyball hockey tennis badminton kabaddi practice
 		training gym match game pe sports sport nets workout lab kitchen work rehearsal`)
-	// feelingWords after "cut myself" or "hurt myself" are why, not how.
-	feelingWords = canonSetOf(`hoping thinking wishing wanting feeling crying nothing something everything again`)
+	// activityGerunds are what someone was doing when they got hurt:
+	// "shaving", "cooking", "chopping onions". Cutting and burning are not
+	// among them, being what "hurt myself cutting" means.
+	activityGerunds = canonSetOf(`shaving cooking ironing making opening chopping slicing dicing peeling grating
+		carving whittling sharpening playing cleaning washing gardening climbing running cycling biking riding
+		skating skateboarding falling tripping slipping fixing repairing building working sewing knitting baking
+		frying grilling trimming lifting training practicing practising boxing hiking welding soldering moving
+		unpacking packing sawing drilling hammering dancing jumping swimming surfing`)
+	// accidentObjects, after "on", are what someone hurt themselves on.
+	accidentObjects = canonSetOf(`stove hob oven pan pot kettle iron burner bunsen grill toaster glass nail nails
+		fence wire paper can tin lid edge corner table desk door metal rock rocks stone stones bike chain stapler
+		zip zipper broken sharp radiator heater exhaust tray`)
 )
 
-// forAPurpose reports "for" and what something is for after a match, not
-// how long: "saving my meds for the trip", but not "for weeks".
+// forAPurpose reports "for" and an ordinary purpose named after a match:
+// "saving my meds for the trip", "for the school trip", "for exams". Nothing
+// else is one: "for weeks" is how long, and "for when I'm ready", "for
+// tonight", "for the end", "for the right moment" and "for it" are the
+// stockpile's purpose said without naming it.
 func forAPurpose(next []string) bool {
-	return len(next) > 1 && is(next[0], "for") && !anyIn(next[1:min(len(next), 4)], durations)
+	if len(next) < 2 || !is(next[0], "for") {
+		return false
+	}
+	for _, w := range next[1:min(len(next), 5)] {
+		switch {
+		case ordinaryPurposes[w]:
+			return true
+		case !purposeLeads[w]:
+			return false
+		}
+	}
+	return false
 }
 
-var durations = canonSetOf(`while weeks week months month days day years year ages long time`)
+var (
+	// ordinaryPurposes are what medicines are put by for, and purposeLeads
+	// the words that may come before one: "for my school trip".
+	ordinaryPurposes = canonSetOf(`trip trips camp camps exam exams journey travel travelling traveling holiday holidays
+		vacation tour trek flight flights hostel semester term emergency emergencies`)
+	purposeLeads = canonSetOf(`the my a an our this that next upcoming school college class field winter summer`)
+)
 
 // futile reports a "not" or a "what's" in the clause before offset i,
 // which makes "any reason to keep living" or "the point of going on"
@@ -6392,12 +6445,18 @@ var futileWords = canonSetOf(`no not never dont cant cannot couldnt doesnt isnt 
 // counterfactualCheck reads "if i died" and the like for what it imagines:
 // other people's reaction to the poster's death or absence, in the same
 // sentence ("nobody would care", "everyone would be happier", "would
-// anyone even notice"); not a game ("if i died in minecraft"), an absence
-// for a while ("if i was gone for a week"), or anything else that would
-// follow ("if i wasn't here, who would answer your questions").
+// anyone even notice"); not a game ("if i died in minecraft") or an exam
+// ("if i died in the exam"), dyed hair ("if i died my hair"), an absence for
+// a while ("if i was gone for a week"), or anything else that would follow
+// ("if i wasn't here, who would answer your questions").
 func counterfactualCheck(text string, m []int, ws, next []string) bool {
 	if gameDeath(next) || len(next) > 0 && (is(next[0], "for") || is(next[0], "from") || is(next[0], "to")) &&
 		!(len(next) > 1 && is(next[1], "good")) {
+		return false
+	}
+	// "if i died in the exam", "if i died my hair purple".
+	if len(next) > 1 && (is(next[0], "in") || is(next[0], "during") || is(next[0], "at")) &&
+		anyIn(next[1:min(len(next), 4)], schoolWorkWords) || dyesSomething(next) {
 		return false
 	}
 	sentence := wordsIn(sentenceAround(text, m[0], m[1]))
@@ -6471,7 +6530,6 @@ var (
 	dontSubjects  = canonSetOf(`just really honestly seriously literally so and but lol tbh ngl man bro yaar rn now today tonight anymore okay ok also still kinda like yeah i`)
 	cutIdioms     = canonSetOf(`off a an some slack short loose out free`)
 	simplePast    = canonSetOf(`cut burned burnt hurt`)
-	accidents     = canonSetOf(`on while shaving cooking ironing accidentally by during making opening chopping slicing playing when trying`)
 	dieIdioms     = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand shock fright cold heatstroke stress exhaustion tiredness dehydration hypothermia tension`)
 	endItTimes    = canonSetOf(`tonight today now soon all tomorrow already finally forever here this`)
 	dyeObjects    = canonSetOf(`my her his their our your the hair it them clothes shirt`)
@@ -6538,10 +6596,13 @@ func livingCheck(text string, m []int, ws, next []string) bool {
 			return true
 		}
 	}
-	// "going on to a phd", "wake up to another 8am lecture"; not "wake up to
-	// another day", nor "live to see", which can be crisis language.
-	if len(next) > 0 && is(next[0], "to") && len(ws) > 0 && (is(ws[len(ws)-1], "on") || is(ws[len(ws)-1], "up")) {
-		return anyIn(next[1:], toCrisis)
+	// "going on to a phd", "going on to the next chapter", "keep going to
+	// tuition", "wake up to another 8am lecture"; not "wake up to another
+	// day", "keep going to be honest", nor "live to see", which can be
+	// crisis language.
+	if len(next) > 0 && is(next[0], "to") && len(ws) > 0 && (is(ws[len(ws)-1], "on") || is(ws[len(ws)-1], "up") ||
+		is(ws[len(ws)-1], "going")) {
+		return anyIn(next[1:min(len(next), 4)], toCrisis) || len(next) > 2 && is(next[1], "be") && is(next[2], "honest")
 	}
 	return len(next) == 0 || !lifeTopics[next[0]] && !livingPlaces[next[0]]
 }
@@ -6848,7 +6909,7 @@ var (
 	// with your marks", "for people like OP".
 	othersWords = canonSetOf(`someone somebody people op anyone everyone losers loser`)
 	poolWords   = canonSetOf(`pool water lake river sea beach trampoline bungee parachute skipping skip climbing gym
-		queue line conclusions conclusion gun ship bandwagon`)
+		queue line conclusions conclusion gun ship bandwagon pit sandpit hurdle hurdles athletics`)
 	pillWords = canonSetOf(`pills pill meds medication medicines medicine tablets tablet sleeping paracetamol`)
 	// hangOnWords make "latak ja" holding on, and hangWords hanging.
 	hangOnWords = canonSetOf(`bus train metro local auto gate door darwaza rod handle tree jhoola swing bar`)
@@ -7128,7 +7189,14 @@ var (
 // deathAround reports a post about dying near offset m: within 120
 // characters either side.
 func deathAround(text string, m []int) bool {
-	return anyIn(wordsIn(text[max(0, m[0]-120):min(len(text), m[1]+120)]), deathTopic)
+	ws := wordsIn(text[max(0, m[0]-120):min(len(text), m[1]+120)])
+	for i, w := range ws {
+		// "you die of embarrassment" and "dead laughing" are no death.
+		if deathTopic[w] && !dieIdiom(ws[i+1:]) {
+			return true
+		}
+	}
+	return false
 }
 
 // saidFirst reports that an imperative is the first thing said in its

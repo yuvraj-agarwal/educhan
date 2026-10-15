@@ -1212,6 +1212,28 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"we'll rope in the seniors for the fest",
 		"I took od for the fest tomorrow",
 		"stop existing in my group chat with your memes lol",
+		// Study and exam posts in the words of the support rules: tuition
+		// and the next chapter are where "keep going" and "going on" go, an
+		// exam is where "if i died" happens, and hair is what was dyed.
+		"I see no reason to keep going to tuition",
+		"what's the point of going on to the next chapter if we haven't finished this one",
+		"if i died in the exam nobody would notice lol",
+		"nobody would care if I died my hair purple",
+		// Medicines put by for a trip, a camp or exams; accidents and
+		// activities named; a cause laughed at; someone else's way out.
+		"i've been saving up my meds for the trip",
+		"I've been saving my meds for the school trip",
+		"been saving up my prescription for exams",
+		"i cut myself while chopping onions",
+		"i cut myself on a nail",
+		"i cut myself by accident",
+		"i hurt myself while playing cricket",
+		"stats homework is making me want to die lol",
+		"for him the only way out was death",
+		// A jump in athletics, and dying of embarrassment, are not a fall
+		// or a death.
+		"just jump already, the long jump pit is right there",
+		"just do it, worst case you die of embarrassment",
 		// Both halves of a grooming cue, one of them said for a reason that
 		// is all in the open: a reader's year or age beside a cue, or a
 		// question that places the reader beside a meeting in public, with
@@ -1448,6 +1470,41 @@ func TestFilterSupport(t *testing.T) {
 		"khud ko khatam kar lunga agar is baar bhi selection nahi hua",
 		"zindagi se thak gaya hoon. marna chahta hoon bas",
 		"marne ke baare mein bahut sochta hoon aajkal",
+		// Medicines put by for no named purpose: "for when", "tonight",
+		// "the end", "the right moment" and "later" are not one.
+		"I've been saving up pills for when I'm ready",
+		"I've been saving up pills for tonight",
+		"been stockpiling paracetamol for the end",
+		"I've been saving my pills for the right moment",
+		"i've been hoarding my meds for when i finally do it",
+		"I've been saving up pills for later",
+		"I've been saving up pills for weeks",
+		// Hurting oneself with no accident or activity named: a tool, a
+		// reason, a body part, a day or a time.
+		"I cut myself using a razor blade last night",
+		"i burned myself using a lighter last night",
+		"i cut myself trying to feel something",
+		"I cut myself on my wrist last night",
+		"i cut myself on my thighs again",
+		"i cut myself on monday",
+		"i cut myself while my parents were asleep",
+		"i cut myself when i'm sad",
+		// A cause named with a crying face, "bruh", or a laugh at a cause
+		// that is someone at home or bullying, is not a joke.
+		"being bullied every day makes me want to die 😭",
+		"my stepdad makes me want to kill myself 😭",
+		"my parents fighting every night makes me want to die 😭😭",
+		"my stepdad makes me want to kill myself bruh",
+		"my stepdad makes me want to die 💀",
+		"being bullied every day makes me want to die",
+		// "keep going", "going on", "if i died" and "a way out" read as
+		// they are meant when nothing else follows.
+		"I see no reason to keep going",
+		"I don't see any reason to keep going to be honest",
+		"what's the point of going on to another day like this",
+		"if i died in my room nobody would notice",
+		"the easiest way out is to just not be alive anymore",
+		"the only way out is death",
 	} {
 		v := bodyVerdict(body)
 		if v.Outcome != contentSupport || v.Message != supportMessage || v.Rule != "" || v.Match != "" {
@@ -1881,6 +1938,10 @@ func TestFilterHolds(t *testing.T) {
 		{"u 14? dm me", holdGrooming},
 		{"u 14? this server is 18+ only, dm me", holdGrooming},
 		{"you're 15? the age limit is 18, dm me anyway", holdGrooming},
+		// Look-alikes of the jump pit and the embarrassment above.
+		{"just jump already", holdSelfHarm},
+		{"just do it already, nobody would miss you if you died", holdSelfHarm},
+		{"just do it, worst case you die of embarrassment, best case you die for real", holdSelfHarm},
 	}
 	// The method questions show the support message first, because the
 	// person asking may be asking for themselves. Every other hold comes
