@@ -448,6 +448,16 @@ needs a browser check before the test changes.
   the credential, the poster key and the remembered name, and leaves the age answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
+- The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first and
+  is decided on `verifyStep.step` alone, so a pending code's box shows whether or not a
+  badge is held, since a badge is replaced only once the new one is confirmed
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`). A refusal after which the server holds
+  nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own words,
+  held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step; a
+  wrong code keeps the box. `replacing` puts the badge panel away for "Verify another
+  address", and both steps then offer "Keep my badge" back to it
+  (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over at
+  the address step, and a reload does too: nothing about a pending code is stored.
 
 ### Child safety
 
