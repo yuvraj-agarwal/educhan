@@ -453,7 +453,7 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 		t.Fatal("submitVerification no longer recognises the refusals that end a pending verification")
 	}
 	branch := submit[at:]
-	if !strings.Contains(branch, `verifyStep = { step: "email", label: "", replacing: true };`) {
+	if !strings.Contains(branch, `verifyStep = { step: "email", label: "", replacing: true, ended: CODE_ENDED_NOTES[err.message] };`) {
 		t.Error("submitVerification does not go back to the address step when no code is pending")
 	}
 
@@ -552,5 +552,130 @@ func TestReplacingABadgeCanGoBackToIt(t *testing.T) {
 	// Back to the badge panel: the address step, not asked for over the badge.
 	if !strings.Contains(handler[1], `verifyStep = { step: "email", label: "" };`) {
 		t.Errorf("keeping the badge does not go back to the badge panel:%s", handler[1])
+	}
+}
+
+// Verification requests can outlast the page that sent them: a reader who
+// presses Send code or Verify and then follows a link is on another page when
+// the answer comes. Every answer submitVerification handles — the code sent,
+// the badge issued, a refusal — draws on the Verify page only when it is still
+// the one on screen (onVerifyPage); otherwise it only sets verifyStep, so that
+// coming back shows the step it left. Drawing regardless once put the Verify
+// address form over the board list a reader had gone to, under that page's
+// address and title.
+func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
+	script := appScript(t)
+	guard := withoutComments(jsFunction(t, script, "onVerifyPage"))
+	if !strings.Contains(guard, `state.route.view === "verify"`) {
+		t.Fatalf("onVerifyPage no longer asks whether the page on screen is the Verify page:\n%s", guard)
+	}
+
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+	// Each stretch of code that runs once an answer is in: after an await of
+	// the API, or in the catch that takes its refusal. The age refusal before
+	// the first one is drawn before anything is sent, while the page is
+	// certainly on screen.
+	resumes := regexp.MustCompile(`await api\(|\} catch \(err\) \{`).FindAllStringIndex(submit, -1)
+	if len(resumes) != 3 {
+		t.Fatalf("submitVerification resumes after an answer in %d places; this test knows three "+
+			"(the code sent, the badge issued, the catch)", len(resumes))
+	}
+	draws := regexp.MustCompile(`el\.main\.innerHTML\s*=|renderVerify\(|showNotice\(|\.focus\(|scrollIntoView\(`)
+	for i, r := range resumes {
+		end := len(submit)
+		if i+1 < len(resumes) {
+			end = resumes[i+1][0]
+		}
+		stretch := submit[r[0]:end]
+		draw := draws.FindStringIndex(stretch)
+		if draw == nil {
+			t.Errorf("stretch %d of submitVerification draws nothing; this test expects each answer to be shown:\n%s", i+1, stretch)
+			continue
+		}
+		at := strings.Index(stretch, "if (!onVerifyPage())")
+		if at < 0 || at > draw[0] {
+			t.Errorf("stretch %d of submitVerification draws (%q) without first checking that the Verify page is "+
+				"still on screen:\n%s", i+1, stretch[draw[0]:draw[1]], stretch)
+		}
+	}
+}
+
+// When the server drops the code being typed, the code box gives way to the
+// address step, and the reason is said in that step: at the top of its form,
+// where the box was, read out with the address field and scrolled into view.
+// Said only in the notice, it was a screen above the form on a phone, so the
+// box turned into an empty address form with nothing on screen to say why.
+func TestEndedCodeSaysWhyWhereTheBoxWas(t *testing.T) {
+	script := appScript(t)
+	notes := regexp.MustCompile(`(?s)\nconst CODE_ENDED_NOTES = \{\n(.*?)\n\};\n`).FindStringSubmatch(script)
+	if notes == nil {
+		t.Fatal("app.js has no CODE_ENDED_NOTES saying why the code box went")
+	}
+	for _, name := range []string{"NO_CODE_PENDING", "CODE_EXPIRED", "CODE_GUESSES_SPENT"} {
+		if !regexp.MustCompile(`(?m)^  \[` + name + `\]: "[A-Z][^"]+\.",$`).MatchString(notes[1]) {
+			t.Errorf("CODE_ENDED_NOTES has no sentence for %s:\n%s", name, notes[1])
+		}
+	}
+
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	if !strings.Contains(view, `<p class="verify-ended" id="f-email-ended">${esc(verifyStep.ended)}`) {
+		t.Error("verifyViewHTML no longer draws verifyStep.ended, escaped, as the f-email-ended note")
+	}
+	if !strings.Contains(view, `const endedRef = verifyStep.ended ? ' aria-describedby="f-email-ended"' : "";`) {
+		t.Error("the address field is no longer described by the note, so a screen reader would not hear why")
+	}
+	address := strings.Index(view, `data-verify="request"`)
+	if address < 0 {
+		t.Fatal("verifyViewHTML no longer draws the address step")
+	}
+	form := view[address:]
+	if end := strings.Index(form, "</form>"); end >= 0 {
+		form = form[:end]
+	}
+	note, field := strings.Index(form, "${ended}"), strings.Index(form, `id="f-email"`)
+	if note < 0 || field < 0 || note > field {
+		t.Error("the address step does not say why the code box went at the top of its form, above the address field")
+	}
+	if !strings.Contains(form, `required${endedRef} />`) {
+		t.Error("the address field does not carry endedRef")
+	}
+
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+	if !strings.Contains(submit, `ended: CODE_ENDED_NOTES[err.message] };`) {
+		t.Error("submitVerification does not keep the reason with the step it goes back to")
+	}
+	at := strings.LastIndex(submit, "if (ended) {")
+	if at < 0 {
+		t.Fatal("submitVerification no longer draws the address step when no code is pending")
+	}
+	branch := submit[at:]
+	branch = branch[:strings.Index(branch, "return;")]
+	for _, want := range []string{`getElementById("f-email-ended")`, `scrollIntoView(`, `focus({ preventScroll: true })`} {
+		if !strings.Contains(branch, want) {
+			t.Errorf("going back to the address step does not bring the reason into view (no %s):\n%s", want, branch)
+		}
+	}
+	if strings.Contains(branch, "showNotice(") {
+		t.Errorf("going back to the address step says why in the notice as well, twice on a desktop screen:\n%s", branch)
+	}
+}
+
+// The buttons that change the Verify page's step in place put away the notice,
+// which was about the step being left: "that code is not right" stayed over a
+// fresh address form after "Use a different address".
+func TestVerifyStepButtonsClearTheNotice(t *testing.T) {
+	script := withoutComments(appScript(t))
+	for _, opener := range []string{
+		`if (event.target.closest('[data-action="verify-keep"]')) {`,
+		`if (restart) {`,
+	} {
+		m := regexp.MustCompile(`(?s)\n  ` + regexp.QuoteMeta(opener) + `(.*?)\n  \}\n`).FindStringSubmatch(script)
+		if m == nil {
+			t.Errorf("app.js has no click handler opening %q", opener)
+			continue
+		}
+		if !strings.Contains(m[1], "clearNotice();") {
+			t.Errorf("the handler opening %q leaves the notice up:%s", opener, m[1])
+		}
 	}
 }

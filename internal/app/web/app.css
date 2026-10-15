@@ -601,6 +601,14 @@ button.link:hover { text-decoration: underline; }
 .verify-panel p { margin: 0; line-height: 1.6; }
 .verify-panel .hint { color: var(--muted); font-size: 12px; }
 
+/* Why the code box has gone, at the top of the address form that replaced it:
+   a state to read before typing, so it is marked off but not alarming. */
+.verify-panel .verify-ended {
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--warn);
+  color: var(--text);
+}
+
 /* The 18+ attestation: a sentence the visitor confirms, so it reads at body
    size, and the whole label is the hit area. */
 .attest {

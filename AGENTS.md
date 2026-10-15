@@ -453,11 +453,18 @@ needs a browser check before the test changes.
   badge is held, since a badge is replaced only once the new one is confirmed
   (`TestVerifyCodeBoxShowsWhileACodeIsPending`). A refusal after which the server holds
   nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own words,
-  held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step; a
-  wrong code keeps the box. `replacing` puts the badge panel away for "Verify another
-  address", and both steps then offer "Keep my badge" back to it
+  held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step,
+  which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`) and
+  brings that into view, since on a phone the notice is a screen above it; a wrong code
+  keeps the box. The server answers the wrong code that spends the last attempt with
+  `CODE_GUESSES_SPENT`, so a box that stays always takes the right code. An answer that
+  arrives after the reader has left the page (`onVerifyPage`) only sets `verifyStep`:
+  nothing is drawn over the page they went to, and coming back shows the step it left
+  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `replacing` puts the badge panel away
+  for "Verify another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over at
-  the address step, and a reload does too: nothing about a pending code is stored.
+  the address step. A reload drops a pending code too, since nothing about it is stored:
+  the page shows the badge held here, or the address step when there is none.
 
 ### Child safety
 

@@ -1782,7 +1782,9 @@ async function renderArchive(route) {
 // would earn, so a reload starts over rather than resuming. replacing is for
 // the address step alone: it was asked for over a badge this browser holds
 // ("Verify another address"), where the page would otherwise show that badge.
-// While a code is pending the code box shows whatever is held.
+// While a code is pending the code box shows whatever is held. ended is for
+// the address step too: why the code box it replaced has gone, when the server
+// dropped the code being typed (CODE_ENDED_NOTES).
 let verifyStep = { step: "email", label: "" };
 
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
@@ -1926,10 +1928,29 @@ const BADGE_AGE_REFUSED = "the badge is for students aged 18 and over; you can s
 // goes back to the address step, where a new code is asked for. They are known
 // by the server's own words, which TestClientKnowsWhenNoCodeIsPending checks
 // against what the server answers. A wrong code is not among them: the right
-// one still works.
+// one still works, since the server answers the wrong code that spends the
+// last attempt with CODE_GUESSES_SPENT.
 const NO_CODE_PENDING = "no verification in progress, request a code first";
 const CODE_EXPIRED = "that code has expired, request a new one";
 const CODE_GUESSES_SPENT = "too many wrong codes, request a new one";
+
+// Why the code box has gone, said in the address step that replaces it, next
+// to the field the reader is sent to. The notice at the top of the page is
+// not enough on its own: on a phone the box sits a screen below it, and the
+// box would turn into an empty address form with its reason out of sight.
+const CODE_ENDED_NOTES = {
+  [NO_CODE_PENDING]: "The server is no longer waiting for a code from this browser.",
+  [CODE_EXPIRED]: "That code has expired.",
+  [CODE_GUESSES_SPENT]: "Too many wrong codes were tried, so that code no longer works.",
+};
+
+// onVerifyPage says whether the Verify page is still the one on screen. Its
+// requests can outlast it: a reader who presses Send code or Verify and then
+// follows a link is on another page by the time the answer comes, and the
+// answer must not draw the Verify page over that one.
+function onVerifyPage() {
+  return state.route.view === "verify";
+}
 
 // The claim the page is making, in the words the README uses. It belongs on
 // screen next to the form, not only in the repository. Who the badge is for
@@ -2034,16 +2055,23 @@ function verifyViewHTML() {
   const lost = badgeLost
     ? `<p class="verify-note">${esc(badgeLost)} Verify again to get a new one.</p>`
     : "";
+  // The code box this step replaced, and why it went, said at the top of the
+  // form, where the box was, and read out with the address field.
+  const ended = verifyStep.ended
+    ? `<p class="verify-ended" id="f-email-ended">${esc(verifyStep.ended)} Send a new code to carry on.</p>`
+    : "";
+  const endedRef = verifyStep.ended ? ' aria-describedby="f-email-ended"' : "";
 
   return `
     <div class="board-head"><h1>Institutional verification</h1></div>
     ${VERIFY_INTRO}
     ${lost}
     <form class="verify-panel fields" data-verify="request">
+      ${ended}
       <div class="field">
         <label class="label" for="f-email">Institutional email</label>
         <input type="email" id="f-email" name="email" maxlength="254" autocomplete="email"
-               placeholder="you@institution.edu" required />
+               placeholder="you@institution.edu" required${endedRef} />
         <span class="hint">Academic domains only &mdash; .edu, .ac.in, .ac.uk, .edu.au and others.</span>
       </div>
       <label class="attest" for="f-adult">
@@ -3192,10 +3220,13 @@ document.addEventListener("click", (event) => {
   }
 
   // Verifying again from here means starting at the address field, with the
-  // badge already held staying valid until the new one replaces it.
+  // badge already held staying valid until the new one replaces it. Whatever
+  // the notice said was about the step being left, a wrong code say, so it
+  // goes with it.
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
   if (restart) {
     event.preventDefault();
+    clearNotice();
     // replacing shows the address form over a badge that is still held and
     // still usable — it is retired by the new one, not by asking for one.
     verifyStep = { step: "email", label: "", replacing: true };
@@ -3556,6 +3587,9 @@ async function submitVerification(form) {
         body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),
       });
       verifyStep = { step: "code", label: sent.label || "" };
+      // A reader who has gone on to another page finds the code box when
+      // they come back; this one is not drawn over the page they are on.
+      if (!onVerifyPage()) return;
       el.main.innerHTML = verifyViewHTML();
       const input = document.getElementById("f-code");
       if (input) input.focus();
@@ -3569,18 +3603,32 @@ async function submitVerification(form) {
     });
     storeCredential(issued.credential);
     verifyStep = { step: "email", label: "" };
+    if (!onVerifyPage()) {
+      // Read locally, so the next posting form drawn offers the new badge.
+      state.verification.badge = readBadge();
+      return;
+    }
     await renderVerify();
   } catch (err) {
     // Nothing is pending any more, so the code box goes: back to the address
     // step, still over a badge held here, which is kept until a new one is
-    // confirmed.
+    // confirmed, and saying in that step why the box went.
     const ended = !requesting && [NO_CODE_PENDING, CODE_EXPIRED, CODE_GUESSES_SPENT].includes(err.message);
     if (ended) {
-      verifyStep = { step: "email", label: "", replacing: true };
+      verifyStep = { step: "email", label: "", replacing: true, ended: CODE_ENDED_NOTES[err.message] };
+    }
+    // The answer is about the Verify page. A reader who has gone on to
+    // another page is not shown it there; the step it left is what they find
+    // when they come back.
+    if (!onVerifyPage()) return;
+    if (ended) {
       el.main.innerHTML = verifyViewHTML();
-      showNotice(errorMessage(err, { action: "code" }));
+      // The reason, not the notice at the top, is brought into view: on a
+      // phone that is a screen above the form.
+      const why = document.getElementById("f-email-ended");
+      if (why) why.scrollIntoView({ block: "center" });
       const input = document.getElementById("f-email");
-      if (input) input.focus();
+      if (input) input.focus({ preventScroll: true });
       return;
     }
     // The server's refusal of a request without the attestation reads the same
