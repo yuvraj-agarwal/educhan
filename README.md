@@ -176,8 +176,18 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- Roughly when a credential was issued — to the *day*, because the stored
-  expiry is rounded up to a UTC day boundary and nothing else is timestamped.
+- When a credential was issued: in the database, only to the *day*, because the
+  stored expiry is rounded up to a UTC day boundary and nothing else in the
+  verification tables is timestamped; in the application's log, for as long as
+  it is kept, to the second, because the request line for
+  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
+  time. Neither line says which institution or address the credential was for
+  (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
+  after an issuance does name the institution, and its time is kept to the
+  second too. So an issuance followed by a badged post ties that post to its
+  stored record on any day its institution issued only one credential, however
+  many other institutions issued that day. How long the request log is kept is
+  what limits this.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -186,8 +196,9 @@ can and cannot work out.
   the secret, an operator who suspects a particular address can recompute the
   HMAC and check whether that person is verified. This is inherent to a
   uniqueness key and is the sharpest edge of the design. It answers "is
-  ana@iitb.ac.in verified?" — it does not answer "who is verified?" or "which
-  posts are theirs?".
+  ana@iitb.ac.in verified?" — it does not answer "who is verified?", nor
+  "which posts are theirs?" except for a post tied to its record by the
+  issuance times above.
 
 **What they cannot do**
 
@@ -199,9 +210,12 @@ can and cannot work out.
 - Link a credential to a post. The credential carries a label, an expiry, and a
   random identifier — nothing derived from the address. Posts store the badge
   as text and hold no reference to the record it came from.
-- Link a post to a verification record by timing. Verification tables carry no
-  `created_at`, and using a credential updates nothing, so there is no "last
-  used" to line up against a post.
+- Link a post to a verification record by timing, beyond the issuance times
+  above. Verification tables carry no `created_at`, and using a credential
+  updates nothing, so there is no "last used" to line up against a post. The
+  log's issuance times name no institution, but a badged post soon after one
+  does, and that ties the post to a single record on a day its institution
+  issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.
@@ -343,11 +357,21 @@ along with every poster ID.
 
 One image per post, on both thread creation and replies, **when
 `EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
-image is then refused with `403`, because originals are stored and served as
-uploaded: no metadata stripping and no content scanning yet.
+image is then refused with `403` and
+`{"error":"image uploads are switched off on this server"}`, because originals
+are stored and served as uploaded: no metadata stripping and no content scanning
+yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
+be, so the server stops reading an image once the body passes that, and a file
+over the size limit gets the same `403` rather than a `413`; a multipart post
+with no file, or with the empty file part a browser sends for an untouched
+input, posts as usual. `GET /api/site`
+reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
+client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
-  or the content type the client claims.
+  or the content type the client claims. Anything else, or an image whose header claims
+  more than 50 megapixels, is refused with `400` from its header alone, before flood
+  control.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -393,11 +417,11 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -425,7 +449,10 @@ view.
   is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
   outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
   shows a plain page saying who educhan is for, with no way to answer again in that
-  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  browser. The one refusal not kept is an answer in the current month exactly 13 years
+  back, since that reader may have turned 13 this month: it lasts until the page is
+  reloaded or closed, and the FAQ says a reader who may only just have become old enough is asked
+  again. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
 - **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
@@ -440,7 +467,8 @@ view.
   not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
   and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
   Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view.
+  out where the reader is. The footer links to both on every view; its invitation to
+  verify an address shows only on a server with verification switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -476,7 +504,12 @@ view.
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
-  and size, and drag-and-drop anywhere on the form. A half-written reply survives
+  and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
+  which the page learns from `GET /api/site`, the form has no image field at all and the
+  thread view leaves out the image cap; a page that missed the switch takes the image off
+  when the server refuses it, keeps the text, and the next press posts it. The picker
+  names the server's size limit, and a file over it is turned away when it is picked
+  rather than after the upload. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft; if the
   thread was archived or locked meanwhile, the text stays on the page in a read-only box
   to copy. Following a quote link within a thread jumps to the post without reloading
@@ -484,8 +517,8 @@ view.
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
-- **Image cap**: the index and catalog show how many images a thread has, and the thread
-  view shows the count against its board's cap. A thread at the cap keeps its reply form
+- **Image cap**: the index and catalog show how many images a thread has, and on a server
+  that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
   while a reply is being written, the refusal takes the image off, keeps the text, and
   the next press posts it. On a board whose `image_limit` is 0 the picker says replies
@@ -591,7 +624,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
-| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403` |
+| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
@@ -669,8 +702,35 @@ limits never compound.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image — does
-not start a cooldown, so a typo never costs a wait.
+request rejected for any other reason — an empty body, an oversized image, a
+file that is not an accepted image or whose header claims too many pixels, a
+reply to a missing, locked or archived thread or an image past a thread's cap —
+does not start a cooldown, so a typo never costs a wait. Two refusals come only
+after the cooldowns have started: an image whose header reads but whose pixels
+do not decode, which only decoding it can find, and decoding is the cost the
+upload cooldown is there for; and the loser of two replies racing for a
+thread's last image slot (see the HTTP API).
+
+The cooldowns are keyed on client addresses, and they are the only place the
+server holds one. A sweep runs once a minute and drops every entry whose
+cooldown has run out, so **an address is held in memory no longer than the
+longest cooldown that applies to it plus one minute**, counted from its last
+post (or code request, for verification's cooldown), whether or not anyone
+else posts in the meantime, **as long as the process has CPU between
+requests**. A host that gives it CPU only while it answers a request, which is
+Cloud Run's default (request-based billing), holds the sweep's timer back while
+an instance is idle. The first request to arrive after a sweep fell due runs
+it before it is handled, but until one arrives, or the instance is shut down,
+an idle instance's memory still holds the addresses it last saw. On Cloud Run
+the one-minute bound needs CPU allocated for the instance's whole life, which
+is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
+the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+
+The address itself is never written to the database or the logs. A post from a
+client that sends no poster key does store a poster ID derived from it (see
+[Poster IDs](#poster-ids)): eight characters of an HMAC keyed by
+`EDUCHAN_POSTER_ID_SALT`, which anyone holding the salt could test candidate
+addresses against, one thread at a time. The web client always sends a key.
 
 State is held in the process, so each instance of a horizontally scaled
 deployment enforces the cooldowns it sees. Moving to shared storage means
@@ -709,6 +769,7 @@ that overwrites the header with just the peer address are each a single hop.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
+| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes"}`: whether posts may carry an image, and the largest one taken. The same answer for every caller; it reads nothing from the request |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
@@ -755,7 +816,12 @@ the time it was pushed off the board once it is archived. It also carries
 `images`, the posts in the thread with an image, and `at_image_limit`. A reply
 to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
 locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
-at its board's image limit `{"error":"image limit reached"}`.
+at its board's image limit `{"error":"image limit reached"}`. These refusals,
+and a reply to a thread that does not exist, come before flood control and
+before the image is stored, so they start no cooldown, and a reply refused at
+the image limit posts at once when sent again without the image. (Two replies
+racing for a thread's last image slot can both get that far; the loser is
+refused inside the transaction, after its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -968,13 +1034,16 @@ It logs one line of counts (threads, posts, attachments, and files removed,
 failed, and missing) and nothing about which boards or threads went, and exits
 non-zero if the database fails or any file could not be removed or was missing;
 the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below).
+run on a database a newer release has migrated (see below). It needs none of
+the web server's secrets — the poster-ID salt, the moderation key, the
+verification secret — and, run without them, it does not warn about them:
+those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
 a request, so a timer inside the server would fire whenever it happened to, and
-a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
-`deploy/` yet.
+a Job leaves no sweep endpoint to protect. [`deploy/README.md`](deploy/README.md)
+section 2.9 sets up that Job and its daily schedule.
 
 ### What is not stateless yet
 
