@@ -1,8 +1,15 @@
 package app
 
 import (
+	"context"
+	"io"
+	"log/slog"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
 func TestConfigFromEnvDefaults(t *testing.T) {
@@ -183,6 +190,29 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 		t.Setenv("EDUCHAN_UPLOADS_ENABLED", "maybe")
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Error("expected an error for an unparseable boolean")
+		}
+	})
+	// An attachment limit past the largest file the server can process,
+	// whatever picture it holds (TestLargestAttachmentLimitIsReachable), is
+	// refused, and the largest is accepted. The request carrying a file that
+	// large fits the memory set aside for upload bodies, which is reserved for
+	// a body whole before it is read.
+	t.Run("upload size over the most an attachment may be", func(t *testing.T) {
+		if maxUploadLimit+multipartOverhead > media.UploadBudget {
+			t.Errorf("the body of the largest attachment, %d bytes, is over the upload budget, %d",
+				maxUploadLimit+multipartOverhead, media.UploadBudget)
+		}
+		t.Setenv("EDUCHAN_MAX_UPLOAD_BYTES", strconv.FormatInt(maxUploadLimit+1, 10))
+		if _, err := ConfigFromEnv(); err == nil {
+			t.Error("expected an error for an attachment limit over maxUploadLimit")
+		}
+		t.Setenv("EDUCHAN_MAX_UPLOAD_BYTES", strconv.FormatInt(maxUploadLimit, 10))
+		if cfg, err := ConfigFromEnv(); err != nil || cfg.MaxUploadBytes != maxUploadLimit {
+			t.Errorf("ConfigFromEnv = %d, %v; want the largest limit that fits accepted", cfg.MaxUploadBytes, err)
+		}
+		if _, err := New(context.Background(), Config{MaxUploadBytes: maxUploadLimit + 1}, slog.New(slog.NewTextHandler(io.Discard, nil))); err == nil ||
+			!strings.Contains(err.Error(), "EDUCHAN_MAX_UPLOAD_BYTES") {
+			t.Errorf("New = %v, want the limit refused before anything starts", err)
 		}
 	})
 	// A zero TTL would mint codes and credentials that have already expired,

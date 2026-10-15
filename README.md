@@ -358,20 +358,273 @@ along with every poster ID.
 One image per post, on both thread creation and replies, **when
 `EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
 image is then refused with `403` and
-`{"error":"image uploads are switched off on this server"}`, because originals
-are stored and served as uploaded: no metadata stripping and no content scanning
-yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
-be, so the server stops reading an image once the body passes that, and a file
-over the size limit gets the same `403` rather than a `413`; a multipart post
-with no file, or with the empty file part a browser sends for an untouched
-input, posts as usual. `GET /api/site`
-reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
-client can leave the image picker off a server that would refuse what it sends.
+`{"error":"image uploads are switched off on this server"}`, because nothing
+checks what an image shows yet: there is no known-image hash matching and no
+content scanning. Metadata is already stripped (below). With uploads off a
+multipart post is held to the 64 KiB a JSON post may be, so the server stops
+reading an image once the body passes that, and a file over the size limit gets
+the same `403` rather than a `413`; a multipart post with no file, or with the
+empty file part a browser sends for an untouched input, posts as usual.
+`GET /api/site` reports the switch and the size limit as
+`{"uploads","max_upload_bytes"}`, so a client can leave the image picker off a
+server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
-  or the content type the client claims. Anything else, or an image whose header claims
-  more than 50 megapixels, is refused with `400` from its header alone, before flood
-  control.
+  or the content type the client claims. Anything else (`unsupported image format: use
+  JPEG, PNG, WebP, or GIF`), an image whose header claims more than 25 megapixels (room
+  for the 24-megapixel photos phones and cameras save, an iPhone's 5712×4284 included;
+  `image resolution is too large`), a GIF whose frames add up to more than four times
+  that, or an image that would take more memory to process than the server sets aside for
+  all of them at once (`image too large to process`), and a GIF whose blocks cannot be
+  read through to its end or whose first frame reaches past its canvas (browsers disagree
+  on how to show that one), an animated WebP, or a WebP cut short, its RIFF running past
+  the end of the file (`image could not be decoded`), is refused with `400` before
+  anything is decoded and before flood control. A GIF that ends after its last frame
+  without the closing byte, or whose later frames reach past its canvas, is stored as
+  browsers show it: whole, and with each frame cut to the part on the canvas. The memory
+  depends on the encoding as well as the size, and on the shape: a longer, thinner picture
+  costs more for its pixels, because a JPEG's sides are rounded up to whole blocks and
+  making the thumbnail takes 64 bytes and more for every pixel of the longer side. At the
+  full 25 megapixels, from an upload of up to the default 8 MiB, at any shape the format
+  allows:
+  - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
+    whether or not it has to be turned upright, and progressive ones whose colour is at
+    a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
+    4:1:1 one that a turn stores at 4:4:4 (below); baseline CMYK and RGB JPEGs that need
+    no turning; palette PNGs and grey PNGs with no transparency; 8-bit colour PNGs,
+    unless they are interlaced and have to be turned; and opaque lossy WebPs, stored as
+    JPEGs. A grey PNG with a transparent colour or an alpha channel counts as a colour
+    PNG throughout here, since it decodes the same way — four bytes a pixel at 8 bits,
+    eight at 16. The PNGs are accepted until their longer side passes about 750,000
+    pixels in colour, or 1.3 to 1.5 million otherwise: at this size, tens of thousands
+    of times longer than they are wide, which only a PNG can be (a JPEG's sides stop at
+    65,535 pixels and a WebP's at 16,383).
+  - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
+    progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
+    turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
+    with transparency, which are stored as PNGs (below) and so take four bytes a pixel.
+  - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn
+    stores at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at
+    4:1:1 and refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that
+    need no turning, accepted up to about 60:1; by its shape and the upload's size, a
+    16-bit colour PNG that is neither interlaced nor turned; and, by the upload's size, a
+    GIF, which is played on four bytes a pixel of its canvas while all its frames are
+    held: at any shape, one whose frames come to two canvases or less is accepted, three
+    from an upload of up to about 6.9 MiB, and four, the most a GIF's frames can come
+    to, up to about 3.9 MiB. An animation whose colour tables give more than 255 colours
+    between them is played on eight bytes a pixel, for the frames it may put back (see the
+    GIF bullet below): at this size it is accepted only when its frames come to about two
+    thirds of a canvas or less, half of one from an upload of up to about 2.4 MiB, and
+    from an upload of 8 MiB, two whole frames are accepted up to about 17 megapixels and
+    four up to about 15.
+
+  At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
+  and a PNG of any size is refused once its longer side passes about 4 million pixels,
+  however narrow it is. A GIF of many thousands of frames is refused however small they
+  are. An animated WebP is refused whatever its size and however much of it arrived,
+  because nothing in Go can decode one to thumbnail it: the animation flag in its header,
+  or a frame among the chunks of an extended file, is enough to turn it away; a frame
+  after the picture of a simple-format file is not an animation, since browsers show the
+  picture alone, and it is stored as a still. An image whose rewritten file would come to
+  more than four times the upload plus half a byte a pixel is refused with `400` after
+  flood control, once it is encoded (`image would be too large once re-encoded for
+  storage`), which only a file made to compress in a way Go's encoders cannot follow
+  reaches, and so, once it is played, is a GIF that cannot be stored one frame to a
+  picture (`image too large to process`; see the GIF bullet below). A lossy WebP with
+  transparency is held instead to what a PNG of its size can come to, because stored
+  losslessly it is meant to be many times the size it came in at; it is refused from its
+  header when that is too large to process.
+
+  A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
+  compresses it by default), are the one case refused by the *size* of what is
+  compressed rather than by the picture's resolution: Go's WebP decoder sizes its
+  internal tables from the compressed data, not from any header field, so a crafted file
+  of 160 KiB can make it hold about 170 MiB as it decodes, and a larger one more. There
+  is no way to tell a benign file from a crafted one without decoding it, so a lossless
+  WebP whose picture data comes to more than 224 KiB is refused from its header — less
+  for a larger picture, about 203 KiB at a megapixel and 128 KiB at nine, and a little
+  less in a larger upload — and so is a lossy WebP whose compressed transparency alone
+  comes to that much. A small lossless picture (an icon or a sticker) is still stored,
+  and so is an ordinary cut-out, whose transparency is a few hundred bytes to a few
+  kilobytes however large its picture; what else the file carries, a colour profile or
+  EXIF, does not count. The decoder also sets the largest of those tables aside before
+  it reads what is meant to fill them, so a broken file of a few dozen bytes can make it
+  take 167.5 MiB before it finds out: every such WebP, however small, takes at least
+  171.5 MiB of the processing budget (see **Memory**) while it is processed, so two are
+  never processed at once. Opaque lossy WebPs, and those whose transparency is
+  uncompressed, are not affected.
+- **No metadata is stored**: the original kept and served is never the uploaded file but
+  the picture rewritten without what a camera or an editor puts around it — EXIF with
+  its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
+  profiles. Both storage backends get the same rewritten file. Files stored before this
+  are the exception (below).
+  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a
+    phone photo stored on its side is upright everywhere, thumbnail included, and its
+    reported width and height are the upright ones. It keeps its chroma subsampling, so
+    colour saved at full resolution (4:4:4, as editors save screenshots and diagrams at
+    high quality) stays sharp. The exception is a picture whose sampling grid a turn
+    cannot line up, which is stored at finer 4:4:4 instead, a larger file with its
+    colour kept rather than lost: one that the turn mirrors along a side that is not a
+    whole number of colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height
+    at 4:4:0, 4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or
+    4:1:0), and a 4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses
+    depends on the turn, so an odd-sided picture can keep its subsampling through one
+    turn and not through another. It is re-encoded at the lowest quality that compresses
+    no detail more coarsely than the upload did, and at 90 at most: a photo saved at
+    quality 30 by most software is stored at 30, at about the size it came in at and
+    looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
+    whose encoder fitted its Huffman tables to the picture or saved it progressive, as
+    the "optimise" and "progressive" options of an editor do, comes out larger, because
+    Go writes the standard Huffman tables in a single scan: a little larger for a
+    high-quality save (around a tenth at quality 90), but as much as twice the size for
+    a heavily compressed one, where those fixed tables outweigh the picture's own coded
+    data.
+  - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
+    browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma
+    it is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
+    colours first, so that it shows as it did (see below). Every opaque pixel otherwise
+    keeps the value it decodes to, and a transparent or partly transparent one only as
+    much colour as it shows (see the bullet on hidden channels below), though not always
+    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour
+    with a transparent colour key is stored as colour with an alpha channel (or with
+    none, if no pixel has the key's colour), and a palette keeps only the colours its
+    pixels use, written at as few bits a pixel (1, 2, 4 or 8) as that many colours need.
+    16-bit pictures stay 16-bit. An animated PNG keeps its still image.
+  - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
+    shows one after another, each for as long as it shows, and the loop count (from either
+    of the two extensions browsers read it from), and nothing else. It is read as Chromium
+    reads it where Go's decoder reads it otherwise: a frame with no graphic control
+    extension is left in place, a frame's transparent colour is the one the last extension
+    before it names, and an index past the end of a frame's colour table shows opaque
+    black, but for the transparent one. How the frames make those pictures shows nothing,
+    so it could carry anything: frames that draw nothing, or draw the same picture again
+    after clearing it, could spell a message in their positions, delays and disposal
+    methods, and the pixels a frame repaints in the colour already under them, rather than
+    leaving them transparent, could hold a file of tens of kilobytes. So the stored file
+    is written from the pictures by one rule, and two GIFs that show the same pictures for
+    the same times, played as many times over, are stored as the same bytes. Each picture
+    is one frame, which draws exactly the pixels that differ from what the frame before it
+    left, cut to the rectangle around them and around any the next picture has transparent
+    where this one does not; it is cleared once its time is over when there are such
+    pixels, and left in place otherwise. A delay is written as browsers show it — 0 and 1
+    show for a tenth of a second and are written as 10 — and time past the 655 seconds one
+    delay can say is held by frames after it that draw nothing. The last picture of a GIF
+    that plays once is given no delay, because it stays on screen, and a GIF of one
+    picture is stored as a still, with no loop count. The colours are the ones the
+    pictures show, in order of their values: one global table when there are 255 or fewer,
+    and otherwise a table for each frame of the colours it draws. A frame that draws 256
+    has no room for a transparent entry, so the pixels it leaves as they were are written
+    in the colour they already show. With a table a frame, a frame left in place or
+    cleared can leave the next one more colours to draw than its table holds — the ones it
+    covered, back again, and the next picture's own — so there a frame is left in place,
+    or else cleared, only where both can still be written, and is otherwise put back,
+    which leaves what was there before it was drawn, as ImageMagick's frame optimisation
+    does (a frame put back is not cut to take in pixels to clear, and is drawn again,
+    rather than followed by frames that draw nothing, for time past one delay). A GIF
+    where none of the three will do cannot be stored one frame to a picture and is refused
+    (`image too large to process`): for instance one whose frames are put back two in a
+    row, the second to the picture from before the first, which the stored file, having
+    left the first in place, cannot go back to. Only frames that clear or put back what
+    earlier ones drew can bring that about, since a frame on its own draws from one table.
+    None of 126 GIFs made with ffmpeg, ImageMagick and Pillow is refused, nor any of 1,500
+    of many colours made to test it; of 5,000 random GIFs of up to 256 colours a frame and
+    every disposal method, one is, and of 2,000 random animations of sprites of up to 256
+    colours each put back, cleared or left over a background of 256, 75 are. A GIF whose
+    stored frames would add up to more pixels than four 25-megapixel canvases is refused
+    too, which takes frames that jump across the canvas from one picture to the next; with
+    a table a frame, a rectangle looked at for a way of disposing of a frame that is not
+    taken counts as a frame, so that the work of looking is bounded as the work of writing
+    is. Comments and application data such as XMP are dropped, and the background colour,
+    which browsers never draw, is written as the first entry.
+  - *WebP* cannot be encoded in Go, so it is stored as another format made from its
+    pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
+    half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
+    PNG, which keeps a lossless picture exactly. A WebP's quality setting does not mean
+    what a JPEG's does, so there is no lower quality to match, and the JPEG is larger
+    the lower the quality the WebP was saved at: measured on photos, up to 1.4 times the
+    WebP's size from quality 90, two to three times from 75, three and a half to five
+    and a half from 25, and up to eight and a half from 5. A lossy WebP's colours come
+    back from the decoder in a narrower range than they were saved in, so they are
+    expanded again before storing, or black would be kept as dark grey and white as
+    light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
+    `image.png`). Keeping the WebP with only its metadata chunks removed would not be
+    enough: a decoder ignores anything after the picture inside the chunks that hold it,
+    so a second file could ride through unseen. WebPs stored before this stay WebPs.
+  - Besides metadata, a picture can carry a whole second file in channels it never
+    shows, and those are dropped too. A fully transparent pixel is stored with no
+    colour, because an editor that erases part of a picture by clearing its alpha often
+    leaves the erased part behind. A pixel that is only slightly transparent shows
+    almost none of its colour, yet keeps every bit of it, so each pixel's colour is cut
+    to the precision its alpha can actually show — a photo laid under an alpha of 1
+    composites to one faint tint and is stored as that tint, not as the photo. A palette
+    or colour table is rebuilt from the colours its pixels show, which drops the entries
+    no pixel uses, the duplicate entries of one colour, the order of the palette, and
+    which of several equal entries each pixel points at — any of which can hold a second
+    file, EXIF and all, in the pixel bytes of a flat picture. What is left is the
+    picture: a fully opaque pixel keeps its exact value, including the low byte of a
+    16-bit channel, because that is the picture and a lossless format stores it exactly
+    (but for a PNG's gamma, applied as above, which changes the values so that the
+    picture shows as it did). So data hidden in the low bits of a visible picture, as
+    classic steganography does, survives — the aim is to strip the metadata and the
+    channels that do not show, not to alter the picture a reader sees. Nothing of how a
+    GIF's pictures were made of frames is kept (above), so none of that can carry
+    anything; what a GIF keeps is what it shows: its pictures, how long each shows, and
+    how many times they play.
+
+  Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
+  slightly duller than it did; most photos are sRGB and look the same. A profile can
+  name the device or the editor that made it, and converting colours properly needs a
+  colour engine Go does not have. A PNG's `iCCP` profile and `cHRM` primaries are
+  dropped the same way. Its `gAMA` chunk is not, because dropping it shifts far more
+  than slightly: a picture tagged with the linear gamma of 1.0, as renderers write,
+  would show its mid-grey at 128 where it showed at about 188. So its colours are
+  converted to the sRGB values that show the same light, as Chromium converts them —
+  unless an `sRGB` or `iCCP` chunk takes its place, as it does in a browser, or the
+  gamma is within 5% of the usual 1/2.2, which browsers leave alone. The checksum
+  recorded for an attachment is of the stored file, so it does not depend on the
+  metadata an upload arrived with, beyond an orientation that turns the picture.
+- **Files stored before this** keep their metadata: a server that took uploads before
+  it rewrote them kept them as they came, and nothing rewrites them now, so they are
+  served that way until their posts are deleted. The deployment in `deploy/` has kept
+  uploads off, so it has none. On a server that took them, migration `0008` ran when
+  this release first started, and this lists the posts whose files came before it:
+
+  ```sql
+  SELECT b.slug, t.no AS thread, p.no AS post
+  FROM attachments a
+  JOIN posts p ON p.id = a.post_id
+  JOIN threads t ON t.id = p.thread_id
+  JOIN boards b ON b.id = p.board_id
+  WHERE a.created_at < (SELECT applied_at FROM schema_migrations WHERE version = 8);
+  ```
+
+  Deleting those posts through the [Moderation API](#moderation-api) removes their
+  files; deleting an opening post deletes its thread. An older instance still serving
+  while a release rolls out stores uploads as they came after that moment, so on a
+  rolling deploy move the cutoff to when the last of them stopped.
+- **No filename is kept**: a camera's or a phone's filename can name a date and a person
+  (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension
+  of the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was
+  called. Migration `0008` renamed the attachments stored before this the same way.
+- **Memory**: how much memory an image takes to decode and re-encode depends on how it is
+  encoded as well as on its size, so each upload's share is estimated from its header.
+  The uploads being processed at once share a fixed budget (256 MiB per process), each
+  holding its share until its files are stored; one whose estimate alone is over it is
+  refused (see **Formats**), and the rest wait for room in the order they arrived. The
+  uploads' own bytes have a budget of their own (64 MiB), taken before a request body is
+  read, so how many requests an instance is let take at once does not decide how many
+  images it holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at
+  once to a server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an
+  instance of 512 MiB has room with that limit set. A post waits for room in either
+  budget for about ten seconds at most. Once there is room to read it, its body has 30
+  seconds to arrive, and once it has arrived its image has 25 seconds to be processed
+  and stored. A post that cannot be taken in time — no room within the wait, or its
+  image not stored within those 25 seconds — answers `503` (see
+  [Flood control](#flood-control)) with nothing stored, rather than being made after
+  its answer could no longer be sent. A body that takes longer than its 30 seconds is
+  the connection's doing, not the server's, and answers `408` with
+  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time
+  a post spent waiting for room is not counted against its body.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -380,10 +633,20 @@ client can leave the image picker off a server that would refuse what it sends.
   (150 by default), the opening post included. Past it a reply with an image answers
   `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
   `images` and `at_image_limit` so a client can hide the picker before anyone tries.
-- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
+- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 31 MiB at most. What
+  an upload is estimated to hold while it is processed grows by eight bytes for every
+  byte of it, whatever its picture, because its stored file may come to four times its
+  size and the encoder's buffer holds two of those as it grows. A file of one pixel fits
+  the processing budget (see **Memory**) at up to about 31.5 MiB, so a larger limit would
+  let in only files that are then refused as too large to process, whatever picture they
+  hold; the limit stops at the whole MiB below, and the server refuses to start with
+  more. How large a given picture's file can be within the limit depends on its pixels
+  and how it is encoded (see **Formats**).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
-  preserved and never upscaled. JPEG sources keep JPEG thumbnails; the formats that can
-  carry transparency get PNG thumbnails.
+  preserved and never upscaled. A thumbnail follows the stored format, not the uploaded
+  one: an image stored as a JPEG (a JPEG upload, or a lossy, opaque WebP) has a JPEG
+  thumbnail, and one stored as a PNG or a GIF (any other WebP included) has a PNG
+  thumbnail, so its transparency survives. A GIF's is of the first picture it shows.
 - **Storage**: originals and thumbnails are keyed
   `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and `thumbs/{board}/{YYYY}/{MM}/…`, under a
   generated random filename. Two backends implement that key layout — the local filesystem
@@ -417,7 +680,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, stored without metadata (photos turned upright first), thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
@@ -515,7 +778,7 @@ view.
   to copy. Following a quote link within a thread jumps to the post without reloading
   the thread, so revealed spoilers stay revealed. Clicking a
   post number quotes it into the reply box. With an image attached, **Spoiler image**
-  sends it hidden: readers see a neutral tile, filename included, until they click it or
+  sends it hidden: readers see a neutral tile, caption included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
 - **Image cap**: the index and catalog show how many images a thread has, and on a server
   that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
@@ -623,7 +886,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the `local` backend writes originals and thumbnails to; ignored by `gcs` |
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
-| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
+| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment; at most `32505856` (31 MiB), the largest size in whole MiB at which a file of one pixel can still be processed (see **Size limit** under [Image attachments](#image-attachments)), and a larger value stops the server starting |
 | `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
@@ -701,15 +964,25 @@ upload cooldown; when it is refused, neither cooldown is started, so the two
 limits never compound.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
-`retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image, a
-file that is not an accepted image or whose header claims too many pixels, a
-reply to a missing, locked or archived thread or an image past a thread's cap —
-does not start a cooldown, so a typo never costs a wait. Two refusals come only
-after the cooldowns have started: an image whose header reads but whose pixels
-do not decode, which only decoding it can find, and decoding is the cost the
-upload cooldown is there for; and the loser of two replies racing for a
-thread's last image slot (see the HTTP API).
+`retry_after` field in the body. Set a cooldown to `0` to switch it off.
+
+A post with an image the server is too busy to take in time — no room to read or
+process it within about ten seconds, or its image not stored within 25 seconds of
+its body arriving (see **Memory** under [Image attachments](#image-attachments)) —
+answers `503` the same way, with a `Retry-After` and `retry_after` of 10 seconds.
+Nothing is stored for it, and a cooldown it started is given back, so it can be sent
+again as soon as the wait is over. A post whose body takes longer than 30 seconds to
+arrive, counted from when there was room to read it, answers `408` with
+`{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
+connection faster; it is refused before flood control, so it starts no cooldown. A
+request rejected for any other reason — an empty body, an oversized image, a file
+that is not an accepted image or whose header shows it unusable (see **Formats**), a
+reply to a missing, locked or archived thread or an image past a thread's cap — does
+not start a cooldown, so a typo never costs a wait. Two refusals come only after the
+cooldowns have started: an image whose header reads but whose pixels do not decode,
+or whose rewritten file would be too large to store, which only decoding and
+encoding it can find, and those are the cost the upload cooldown is there for; and
+the loser of two replies racing for a thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
@@ -825,8 +1098,12 @@ refused inside the transaction, after its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
-plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
-`retry_after` plus a `Retry-After` header.
+plus an `image` file. Errors are `{"error": "..."}`. A request refused by flood
+control (`429`) and a post turned away because the server is too busy (`503`) add
+`retry_after` plus a `Retry-After` header; the other `429` and `503`, too many wrong
+verification codes and `/healthz` with the database down, carry neither. An image
+post whose body does not arrive within 30 seconds of there being room to read it
+answers `408` (`upload too slow`).
 
 ```bash
 curl -s localhost:8080/api/boards

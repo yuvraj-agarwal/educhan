@@ -36,12 +36,15 @@ func TestSaveDerivesImageMetadata(t *testing.T) {
 	if img.ThumbWidth != ThumbMaxDim {
 		t.Errorf("thumb width = %d, want %d", img.ThumbWidth, ThumbMaxDim)
 	}
-	if img.Size != int64(len(original)) {
-		t.Errorf("size = %d, want %d", img.Size, len(original))
+	// The size and the checksum describe the file that was stored, which is
+	// the upload rewritten without its metadata rather than the upload.
+	stored := mustRead(t, store, OriginalKey(img.Path))
+	if img.Size != int64(len(stored)) {
+		t.Errorf("size = %d, want %d, the stored file's", img.Size, len(stored))
 	}
-	sum := sha256.Sum256(original)
+	sum := sha256.Sum256(stored)
 	if img.Checksum != hex.EncodeToString(sum[:]) {
-		t.Errorf("checksum = %q, want the SHA-256 of the upload", img.Checksum)
+		t.Errorf("checksum = %q, want the SHA-256 of the stored file", img.Checksum)
 	}
 }
 

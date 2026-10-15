@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -169,6 +170,8 @@ func (r *createThreadRequest) submission() submission {
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
+	reserveCtx, cancel := a.reserveContext(r)
+	defer cancel()
 	board, ok := a.board(w, r)
 	if !ok {
 		return
@@ -179,10 +182,11 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sub, ok := a.parseSubmission(w, r, &createThreadRequest{})
+	sub, ok := a.parseSubmission(reserveCtx, w, r, &createThreadRequest{})
 	if !ok {
 		return
 	}
+	defer sub.release()
 	body, ok := postBody(w, sub.Body, sub.Upload != nil)
 	if !ok {
 		return
@@ -198,12 +202,18 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
+	refund, ok := a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil))
+	if !ok {
 		return
 	}
 
-	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
+	procCtx, cancelProc := a.processContext(w, r, sub.Upload != nil)
+	defer cancelProc()
+	img, err := a.storeUpload(procCtx, board.Slug, sub.Upload)
 	if err != nil {
+		if tooBusy(err) {
+			refund()
+		}
 		a.rejectUpload(w, r, err)
 		return
 	}
@@ -241,6 +251,8 @@ func (r *createPostRequest) submission() submission {
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
+	reserveCtx, cancel := a.reserveContext(r)
+	defer cancel()
 	board, ok := a.board(w, r)
 	if !ok {
 		return
@@ -249,29 +261,35 @@ func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	a.createPost(w, r, board, no)
+	a.createPost(reserveCtx, w, r, board, no)
 }
 
 // handleCreatePostByThreadID serves the primary-key reply route, which predates
 // per-board thread numbers.
 func (a *App) handleCreatePostByThreadID(w http.ResponseWriter, r *http.Request) {
+	reserveCtx, cancel := a.reserveContext(r)
+	defer cancel()
 	board, no, ok := a.resolveThreadID(w, r)
 	if !ok {
 		return
 	}
-	a.createPost(w, r, board, no)
+	a.createPost(reserveCtx, w, r, board, no)
 }
 
-func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no int64) {
+// createPost adds a reply. reserveCtx is the post's context while its body is
+// read (reserveContext); its image is then processed under a fresh one
+// (processContext).
+func (a *App) createPost(reserveCtx context.Context, w http.ResponseWriter, r *http.Request, board Board, no int64) {
 	// A header, so a malformed one is refused before the body is read.
 	key, ok := posterKey(w, r)
 	if !ok {
 		return
 	}
-	sub, ok := a.parseSubmission(w, r, &createPostRequest{})
+	sub, ok := a.parseSubmission(reserveCtx, w, r, &createPostRequest{})
 	if !ok {
 		return
 	}
+	defer sub.release()
 	body, ok := postBody(w, sub.Body, sub.Upload != nil)
 	if !ok {
 		return
@@ -291,12 +309,18 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
+	refund, ok := a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil))
+	if !ok {
 		return
 	}
 
-	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
+	procCtx, cancelProc := a.processContext(w, r, sub.Upload != nil)
+	defer cancelProc()
+	img, err := a.storeUpload(procCtx, board.Slug, sub.Upload)
 	if err != nil {
+		if tooBusy(err) {
+			refund()
+		}
 		a.rejectUpload(w, r, err)
 		return
 	}
@@ -317,6 +341,48 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		return
 	}
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+}
+
+// postDeadline is how long a post's image has, once its body has arrived, to
+// be processed and have both its renditions stored: the wait for room to
+// process it (media.Process), the processing, and the two writes. Past it the
+// post is answered 503 (answerBusy) with nothing stored, because the server had
+// no room for it in time. It is measured from after the body is read
+// (processContext), not from the start of the handler, so a slow body — which
+// is the client's doing, answered 408, not the server's load — does not eat the
+// time the image has to be processed. App.postDeadline is this, except in tests.
+const postDeadline = 25 * time.Second
+
+// uploadReadTimeout is how long a multipart post's body has to arrive once
+// there is room to read it. A body slower than this is the client's to answer,
+// 408 (upload too slow), with nothing stored, not the 503 a server with no room
+// gives. App.uploadReadTimeout is this, except in tests.
+const uploadReadTimeout = 30 * time.Second
+
+// answerAllowance is the time left, on top of a post's read and processing
+// windows, to commit it and write the answer.
+const answerAllowance = 5 * time.Second
+
+// reserveContext is a post's context while it waits for upload-budget room and
+// its body is read and validated: the request's, ending postDeadline after the
+// handler began, so a wait for a full budget (ReserveUpload) gives up and the
+// post is answered 503 rather than waiting forever.
+func (a *App) reserveContext(r *http.Request) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(r.Context(), a.postDeadline)
+}
+
+// processContext is a post's context for processing and storing its image: the
+// request's, ending postDeadline from now, which is after the body has been
+// read (the caller has it). It governs the upload, not the database: the commit
+// runs on the request's own context, so a deadline that passed during it could
+// not leave a post made and its image removed. For a post that carries an image
+// it also resets the response's write deadline to cover the processing and the
+// answer, the body read having spent the connection's first write window.
+func (a *App) processContext(w http.ResponseWriter, r *http.Request, hasUpload bool) (context.Context, context.CancelFunc) {
+	if hasUpload {
+		_ = http.NewResponseController(w).SetWriteDeadline(time.Now().Add(a.postDeadline + answerAllowance))
+	}
+	return context.WithTimeout(r.Context(), a.postDeadline)
 }
 
 // newPostResponse is the acknowledgement for a created post. It carries the
@@ -384,25 +450,37 @@ func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey str
 }
 
 // allow applies posting flood control, answering 429 with a Retry-After when
-// the caller must wait.
-func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
-	return a.allowAction(w, "posting", cooldowns)
+// the caller must wait. An admitted post comes with the refund of the
+// cooldowns it started (chargeAll), for a post the server then turned away
+// as busy: the poster is told to come back in a few seconds, and is not then
+// told to wait out a cooldown for a post that was never made.
+func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) (refund func(), ok bool) {
+	wait, refund, ok := chargeAll(cooldowns...)
+	if !ok {
+		tooQuickly(w, "posting", wait)
+	}
+	return refund, ok
 }
 
 // allowAction is allow for anything else that is rate limited; action names
 // what was refused, so a 429 from verification does not talk about posting.
 func (a *App) allowAction(w http.ResponseWriter, action string, cooldowns []cooldown) bool {
 	wait, ok := allowAll(cooldowns...)
-	if ok {
-		return true
+	if !ok {
+		tooQuickly(w, action, wait)
 	}
+	return ok
+}
+
+// tooQuickly answers an action flood control refused: 429, with how long to
+// wait in a Retry-After and in the body.
+func tooQuickly(w http.ResponseWriter, action string, wait time.Duration) {
 	seconds := int(math.Ceil(wait.Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
 		"error":       action + " too quickly, wait " + strconv.Itoa(seconds) + "s",
 		"retry_after": seconds,
 	})
-	return false
 }
 
 // fail maps a store error onto an HTTP response, logging only the unexpected
