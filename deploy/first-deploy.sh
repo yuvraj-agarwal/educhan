@@ -223,15 +223,19 @@ fi
 
 step "Deploying the Cloud Run service"
 # --update-*, not --set-*: a re-run sets the values below and keeps any other
-# variable or secret added since (the Pass, deploy/README.md section 2.10), where
-# --set-* would drop it and switch that feature off without a word.
+# variable or secret added by hand since, where --set-* would drop it and switch
+# that feature off without a word. Two things are enforced on every run all the
+# same: uploads stay off, and verification stays off (its secret is removed,
+# whether it was set as a secret or a plain variable) until a mail sender exists.
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --update-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --remove-secrets EDUCHAN_VERIFY_SECRET \
   --update-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --remove-env-vars EDUCHAN_VERIFY_SECRET \
   --cpu 1 --memory 512Mi --concurrency 80 \
   --min-instances "$MIN_INSTANCES" --max-instances 4 \
   "${PUBLIC_ACCESS[@]}"
