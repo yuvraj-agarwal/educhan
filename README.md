@@ -160,7 +160,11 @@ again, so it means verifying from the start. Beside it, in every state of the
 page, **Forget this browser** removes the badge together with the poster key and
 the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode. A verification
-or a post still on its way when it is pressed brings none of them back.
+or a post still on its way when it is pressed brings none of them back,
+whichever educhan tab in the browser sent it, and every open educhan tab also
+drops the badge and the poster key it holds and empties the Name of any posting
+form it shows. The other tabs hear of it through `BroadcastChannel`, which every
+current browser has; in one without it, a press covers only its own tab.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -437,16 +441,15 @@ The UI is three files served from the Go binary — `index.html`, `app.css`, `ap
 `internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
 and KaTeX, each fetched only when a post that needs it is on screen, and ALTCHA's PBKDF2
 worker, started only by something a reader does in a form that needs it (see
-[Captcha](#captcha)), never when a page is drawn. `app.js` renders the
-JSON API into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`,
-`/{slug}/archive`, `/{slug}/thread/{no}`), so every view is a shareable link and the back
-button works. `/{slug}/post/{no}` names a post by number alone: it asks the server which
-thread the post is in and replaces itself with that thread, scrolled to the post, so Back
-does not land on it twice. Institution boards are stored as `u-{name}` and live at
-`/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
-`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
-boards.
+[Captcha](#captcha)), never when a page is drawn. `app.js` renders the JSON API into
+routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`, `/{slug}/archive`,
+`/{slug}/thread/{no}`), so every view is a shareable link and the back button works.
+`/{slug}/post/{no}` names a post by number alone: it asks the server which thread the
+post is in and replaces itself with that thread, scrolled to the post, so Back does not
+land on it twice. Institution boards are stored as `u-{name}` and live at `/u/{name}/`,
+with the same routes beneath. The top-level words kept for pages — `verify`, `mod`, `u`,
+`rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`, `safety`, and
+the server's own `api`, `media`, `healthz`, and `lib` — are never read as boards.
 `/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
 view.
 
@@ -514,21 +517,21 @@ view.
   - A tag pairs with the first closing tag of its kind after it; one that never closes,
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
-- **Posting**: labelled fields, an image picker that previews the chosen file with its name
-  and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
-  which the page learns from `GET /api/site`, the form has no image field at all and the
-  thread view leaves out the image cap; a page that missed the switch takes the image off
-  when the server refuses it, keeps the text, and the next press posts it. The picker
+- **Posting**: labelled fields, an image picker that previews the chosen file with its
+  name and size, and drag-and-drop anywhere on the form. On a server with uploads switched
+  off, which the page learns from `GET /api/site`, the form has no image field at all and
+  the thread view leaves out the image cap; a page that missed the switch takes the image
+  off when the server refuses it, keeps the text, and the next press posts it. The picker
   names the server's size limit, and a file over it is turned away when it is picked
-  rather than after the upload. A half-written reply survives
-  **Update**, image included, so refreshing a busy thread never costs a draft (a reply
-  on its way meanwhile stays on screen as it was, until it is answered); if the
-  thread was archived or locked meanwhile, the text stays on the page in a read-only box
-  to copy. Following a quote link within a thread jumps to the post without reloading
-  the thread, so revealed spoilers stay revealed. Clicking a
-  post number quotes it into the reply box. With an image attached, **Spoiler image**
-  sends it hidden: readers see a neutral tile, filename included, until they click it or
-  press Enter on it, and it then expands like any other; the catalog shows the tile only.
+  rather than after the upload. A half-written reply survives **Update**, image included,
+  so refreshing a busy thread never costs a draft (a reply on its way meanwhile stays on
+  screen as it was, until it is answered); if the thread was archived or locked meanwhile,
+  the text stays on the page in a read-only box to copy. Following a quote link within a
+  thread jumps to the post without reloading the thread, so revealed spoilers stay
+  revealed. Clicking a post number quotes it into the reply box. With an image attached,
+  **Spoiler image** sends it hidden: readers see a neutral tile, filename included, until
+  they click it or press Enter on it, and it then expands like any other; the catalog
+  shows the tile only.
 - **Image cap**: the index and catalog show how many images a thread has, and on a server
   that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
@@ -715,7 +718,10 @@ upload cooldown; when it is refused, neither cooldown is started, so the two
 limits never compound. The cooldowns are checked and started in one step, so of
 several posts sent at the same moment from one address that need the same
 cooldown (new threads on one board, replies on one board, or images anywhere),
-one goes ahead and the others are refused.
+at most one goes ahead, and each of the rest is refused by a cooldown that a
+post which went ahead started. None goes ahead when another post from the
+address went ahead first holding a cooldown they all need, as an image reply on
+another board holds the upload cooldown that two image threads need.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
@@ -729,22 +735,22 @@ the upload cooldown is there for; and the loser of two replies racing for a
 thread's last image slot (see the HTTP API). The loser of two posts racing with
 one [captcha](#captcha) answer is refused before its cooldowns start.
 
-The cooldowns are keyed on client addresses, and so is the
-[captcha](#captcha)'s count of challenges, which works like a one-minute
-cooldown; they are the only places the server holds one. A sweep runs once a
-minute and drops every entry whose cooldown has run out, so **an address is
-held in memory no longer than the longest cooldown that applies to it plus one
-minute**, counted from its last post (or code request, for verification's
-cooldown, or challenge, for the captcha's count), whether or not anyone else
-posts in the meantime, **as long as the process has CPU between requests**. A
-host that gives it CPU only while it answers a request, which is Cloud Run's
-default (request-based billing), holds the sweep's timer back while
-an instance is idle. The first request to arrive after a sweep fell due runs
-it before it is handled, but until one arrives, or the instance is shut down,
-an idle instance's memory still holds the addresses it last saw. On Cloud Run
-the one-minute bound needs CPU allocated for the instance's whole life, which
-is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
-the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+The cooldowns are keyed on client addresses, and so is the [captcha](#captcha)'s
+count of challenges, which works like a one-minute cooldown; they are the only
+places the server holds one. A sweep runs once a minute and drops every entry
+whose cooldown has run out, so **an address is held in memory no longer than the
+longest cooldown that applies to it plus one minute**, counted from its last
+post (or code request, for verification's cooldown, or challenge, for the
+captcha's count), whether or not anyone else posts in the meantime, **as long as
+the process has CPU between requests**. A host that gives it CPU only while it
+answers a request, which is Cloud Run's default (request-based billing), holds
+the sweep's timer back while an instance is idle. The first request to arrive
+after a sweep fell due runs it before it is handled, but until one arrives, or
+the instance is shut down, an idle instance's memory still holds the addresses
+it last saw. On Cloud Run the one-minute bound needs CPU allocated for the
+instance's whole life, which is also how it is then billed:
+`run.googleapis.com/cpu-throttling: "false"` on the revision, or
+`--no-cpu-throttling` on `gcloud run deploy`.
 
 The address itself is never written to the database or the logs. A post from a
 client that sends no poster key does store a poster ID derived from it (see
@@ -770,9 +776,9 @@ script from anywhere else runs on the page, and no cookie is set.
    however it gets there (a click or tap, Tab, quoting a post), the page asks
    `GET /api/captcha` for a challenge, unless it already holds a good answer or
    is solving one. Attaching an image, unticking the badge, a refusal that spent
-   the answer and a press with no answer ready can start one too (the full list heads
-   `/* Captcha */` in `app.js`); drawing a page never does. A challenge is a
-   random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
+   the answer and a press with no answer ready can start one too (the full list
+   heads `/* Captcha */` in `app.js`); drawing a page never does. A challenge is
+   a random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
    expiry half an hour away, and the server's HMAC over all of it. The server
    made the key by choosing a counter at random, from one to just under twice
    the work, and deriving PBKDF2 over the nonce with that counter appended.
@@ -804,12 +810,15 @@ checks again as it starts the post's cooldowns. So a post refused by the captcha
 starts no cooldown, and a post refused by a cooldown keeps its answer for when
 it is let through, unless another post from the same address started that
 cooldown between the two checks: of several sent at once, the one let through
-starts it, and the others have spent their answers. Two posts racing with one
-answer can both pass the lookup; the spend lets one through and refuses the
+starts it; those that had already passed the first check have spent their
+answers, and those that reach it afterwards keep theirs. Two posts racing with
+one answer can both pass the lookup; the spend lets one through and refuses the
 other as used, with no cooldown started for it, so one answer sent to many
-boards at once holds none of them back. The page itself never sends one answer
-twice: a request takes its answer out of the page, so a post sent while another
-is on its way solves a puzzle of its own. A refusal answers `403` with
+boards at once holds back only where the one let through went (its board's
+thread or reply cooldown, or, for a code request, its email address's). The page
+never hands one answer to two requests at once: each request takes its answer
+out of the page, so a post sent while another is on its way solves a puzzle of
+its own. A request refused for the answer itself is answered `403` with
 `"captcha": "required" | "invalid" | "expired" | "used"` beside the message; the
 page solves a fresh puzzle and sends the post once more, so the reader presses
 the button once (unless they have left the form meanwhile: a request goes only
@@ -818,11 +827,14 @@ which, like others from the same address, may have started cooldowns, so the
 resend can meet one of them; the page then says how long to wait and keeps the
 fresh answer for the next press. Every response to a request whose answer was
 spent carries `Educhan-Captcha: spent`, a refusal written after the spend
-included (a cooldown another request from the same address started meanwhile, an
-image whose pixels fail to decode, or a thread that filled up meanwhile). The
+included: a cooldown another request started meanwhile (one from the same
+address or, for a code request, one for the same email address from anywhere),
+an image whose pixels fail to decode, or a thread that filled up meanwhile. The
 page keeps its answer through any refusal without that header, so the next press
 goes straight out, and starts the next puzzle as soon as one with it arrives,
-while its form is on screen.
+while its form is on screen. A request that brought no response at all puts its
+answer back too, which may have been spent, so the next press can be told it was
+used and solve a fresh one.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is
@@ -834,26 +846,25 @@ goes ahead and is answered there: the form is cleared and the thread shows the
 post when it went, and the form is switched back on with the reason when it was
 refused.
 
-An address that asks for challenges faster than people post gets harder ones:
-up to 60 a minute at the base work, then double for every further 60, up to
-eight times, and past 300 in a minute `GET /api/captcha` answers `429`, which
-the page reports as too many checks started from the reader's network, with the
-wait, rather than as a post's cooldown. The
-count is kept per client address, an IPv6 address counted by its `/64` (the
-block one connection is usually given), in one-minute windows, in each
-instance's memory like flood control, and swept with the cooldowns (see
-[Flood control](#flood-control)); behind several instances an address can ask
-each of them for that many. A challenge is not tied to the address that
-fetched it, which would fail a phone moving between networks, so the harder
-puzzles slow a script that asks from one address, not one that fetches from
-many. Spent challenges are kept in `captcha_spent`, shared
-by every instance so they agree on what was used, as a hash of the challenge's
-signature and its expiry rounded up to the next UTC midnight, as a credential's
-is, so the only date a row stores is the day. Each spend deletes a batch of the
-rows past their day, and the daily [sweep](#the-archive-sweeper) the rest, so a
-row is gone a day or so after its puzzle was solved. Nothing stored in the table
-names the post or code request an answer let through, or who solved it. Where a
-row sits is another matter: until it is deleted, its place in the table and the
+An address that asks for challenges faster than people post gets harder ones: up
+to 60 a minute at the base work, then double for every further 60, up to eight
+times, and past 300 in a minute `GET /api/captcha` answers `429`, which the page
+reports as too many checks started from the reader's network, with the wait,
+rather than as a post's cooldown. The count is kept per client address, an IPv6
+address counted by its `/64` (the block one connection is usually given), in
+one-minute windows, in each instance's memory like flood control, and swept with
+the cooldowns (see [Flood control](#flood-control)); behind several instances an
+address can ask each of them for that many. A challenge is not tied to the
+address that fetched it, which would fail a phone moving between networks, so
+the harder puzzles slow a script that asks from one address, not one that
+fetches from many. Spent challenges are kept in `captcha_spent`, shared by every
+instance so they agree on what was used, as a hash of the challenge's signature
+and its expiry rounded up to the next UTC midnight, as a credential's is, so the
+only date a row stores is the day. Each spend deletes a batch of the rows past
+their day, and the daily [sweep](#the-archive-sweeper) the rest, so a row is
+gone a day or so after its puzzle was solved. Nothing stored in the table names
+the post or code request an answer let through, or who solved it. Where a row
+sits is another matter: until it is deleted, its place in the table and the
 transaction that wrote it, which Postgres keeps with every row, lie beside the
 post's or the code request's, so whoever reads the database files can pair the
 two and date the row by the post. That shows only that the post carried an
@@ -952,11 +963,11 @@ the image limit posts at once when sent again without the image. (Two replies
 racing for a thread's last image slot can both get that far; the loser is
 refused inside the transaction, after its cooldowns have started.)
 
-`"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON
-of `{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
-It is needed when the captcha is on, except on a post that asks for a badge
-and gets it; see [Captcha](#captcha) for its refusals and the
-`Educhan-Captcha: spent` header on any response to a request that used one up.
+`"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON of
+`{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
+It is needed when the captcha is on, except on a post that asks for a badge and
+gets it. [Captcha](#captcha) has its refusals, and the `Educhan-Captcha: spent`
+header on any response to a request that used one up.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields

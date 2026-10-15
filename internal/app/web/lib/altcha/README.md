@@ -26,11 +26,13 @@ starts, in a form that needs the captcha, and never when a page is drawn: when f
 moves into a box to write in, however it gets there (a click or tap, Tab, quoting a
 post, or "Verify another address" or "Use a different address" on `/verify`); when the
 badge is unticked on a form whose tick stopped a puzzle, or that already has something
-written or attached; after a refusal that spent the answer, while its form is on
-screen; and on a press with no good answer held and none being solved. It stops every
-copy once one has found the answer or all have given up, when ticking the badge stops
-the puzzle, and when starting the copies fails part way.
-The CSP needs no change for it: `worker-src` falls back to `default-src 'self'`.
+written or attached; when an image is picked or dropped on it; after a refusal that
+spent the answer, while its form is on screen; and on a press with no good answer held
+and none being solved. It stops every copy once one has found the answer or all have
+given up, when ticking the badge stops the puzzle, and when starting the copies fails
+part way.
+
+The CSP needs no change for the worker: `worker-src` falls back to `default-src 'self'`.
 
 To update, replace `pbkdf2.js` from the new package's `dist/workers/` and `LICENSE` from
 its `LICENSE.txt`, read the new worker in full (it should still make no request and load
