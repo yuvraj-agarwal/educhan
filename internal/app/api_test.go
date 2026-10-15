@@ -799,9 +799,10 @@ func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
 		cfg.PostCooldown = time.Minute
 		cfg.UploadCooldown = time.Minute
 		cfg.VerifyCooldown = time.Minute
+		cfg.RefusalLimit = 10
 		cfg.cooldownSweepEvery = time.Millisecond
 	})
-	h.addBoard("general")
+	h.addBoard("general", "other")
 
 	const address = "198.51.100.7"
 	var thread createdPost
@@ -836,13 +837,27 @@ func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
 	if got := holding(); len(got) != 4 {
 		t.Fatalf("the limiters hold %v, want the address in all four", got)
 	}
+	// A post the content rules send back is counted against the address too.
+	// It goes to another board: one the address is in a cooldown on answers
+	// 429 before the rules read anything.
+	if status := h.postFrom(address, "/api/boards/other/threads",
+		map[string]any{"body": "wa.me/919876543210"}, &createdPost{}); status != http.StatusUnprocessableEntity {
+		t.Fatalf("refused thread: status %d", status)
+	}
+	if got := budgetKeys(h.app.refusals); len(got) != 1 || got[0] != address {
+		t.Fatalf("the refusal budget holds %v, want the address", got)
+	}
 
-	// A minute on, every cooldown has run out; nothing else is sent.
+	// A minute on, every cooldown and the refusal window have run out;
+	// nothing else is sent.
 	later := time.Now().Add(time.Minute)
 	for _, l := range limiters {
 		setClock(l, func() time.Time { return later })
 	}
-	waitUntil(t, "no limiter holds the address", func() bool { return len(holding()) == 0 })
+	setBudgetClock(h.app.refusals, func() time.Time { return later })
+	waitUntil(t, "no limiter holds the address", func() bool {
+		return len(holding()) == 0 && len(budgetKeys(h.app.refusals)) == 0
+	})
 }
 
 // A host that gives the process CPU only while it answers a request, which is

@@ -66,7 +66,10 @@ type submission struct {
 	// display preference: the thumbnail is made either way, and a submission
 	// without an image ignores it.
 	Spoiler bool
-	Upload  *upload
+	// SupportSeen says the poster has been shown the support screen for this
+	// post and is sending it again; see checkContent.
+	SupportSeen bool
+	Upload      *upload
 	// reserved gives back the room taken in the upload budget for reading
 	// the body (media.ReserveUpload), for a multipart post with uploads on.
 	reserved func()
@@ -273,6 +276,8 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 		Sage:    isTruthy(fields["sage"]),
 		Badge:   isTruthy(fields["badge"]),
 		Spoiler: isTruthy(fields["spoiler"]),
+
+		SupportSeen: isTruthy(fields["support_seen"]),
 	}
 	if len(image) == 0 {
 		return sub, 0, ""
@@ -294,7 +299,7 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 // carry in a multipart body.
 func isPostField(name string) bool {
 	switch name {
-	case "subject", "name", "body", "sage", "badge", "spoiler":
+	case "subject", "name", "body", "sage", "badge", "spoiler", "support_seen":
 		return true
 	}
 	return false
@@ -459,6 +464,27 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 		writeError(w, http.StatusNotFound, "not found")
 		return
 	}
+	// A held post's image is for the moderators until one approves it, so it
+	// is answered as if it did not exist unless the moderation key comes with
+	// the request, and nothing on either answer may be kept by a cache: the
+	// same address serves the public once the post is approved. An image in
+	// an expired thread is answered the same way, as its thread is, and so is
+	// a file whose rows are gone (MediaPublic).
+	cacheControl := mediaCacheControl
+	public, err := a.store.MediaPublic(r.Context(), prefix == media.ThumbPrefix, r.PathValue("path"))
+	if err != nil {
+		a.fail(w, r, err, "could not read attachment")
+		return
+	}
+	if !public {
+		cacheControl = "no-store"
+		if !a.isModerator(r) {
+			w.Header().Set("Cache-Control", cacheControl)
+			writeError(w, http.StatusNotFound, "not found")
+			return
+		}
+	}
+
 	rc, obj, err := a.media.Get(r.Context(), key)
 	if err != nil {
 		if errors.Is(err, media.ErrNotFound) || errors.Is(err, media.ErrInvalidKey) {
@@ -471,7 +497,7 @@ func (a *App) serveMedia(w http.ResponseWriter, r *http.Request, prefix string) 
 	defer rc.Close()
 
 	w.Header().Set("Content-Type", obj.ContentType)
-	w.Header().Set("Cache-Control", mediaCacheControl)
+	w.Header().Set("Cache-Control", cacheControl)
 	w.Header().Set("Content-Disposition", "inline")
 	http.ServeContent(w, r, "", obj.ModTime, rc)
 }

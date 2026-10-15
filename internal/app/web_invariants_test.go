@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // The client keeps promises the server cannot check: that the poster key and
@@ -376,5 +377,205 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	offers := strings.Count(view, "${forgetBrowserHTML()}`;")
 	if returns < 4 || offers != returns {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
+	}
+}
+
+// A post about wanting to hurt yourself is answered once with where to get
+// help, and "Post anyway" sends the same post again with support_seen, which
+// takes it past that one step. The flag belongs to that one submission: the
+// submit handler reads it from the button that submitted and puts it on that
+// request, and nothing keeps it — not storage, not the draft, not a field or
+// attribute on the form — so the next post with the same words is asked
+// again, and no browser carries a standing mark that it has seen the help.
+func TestSupportSeenIsSentOnlyFromSubmitAndNeverKept(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	submit := withoutComments(submitHandler(t, script))
+
+	// The wire name twice, both in the submit handler: a JSON post and a
+	// multipart one.
+	if n, in := strings.Count(code, "support_seen"), strings.Count(submit, "support_seen"); n != 2 || in != 2 {
+		t.Errorf(`"support_seen" appears %d times in app.js, %d of them in the submit handler; want twice, both there`, n, in)
+	}
+	for _, want := range []string{
+		`const supportSeen = Boolean(event.submitter && event.submitter.matches('[data-action="post-anyway"]'));`,
+		`payload.support_seen = true;`,
+		`data.set("support_seen", "1");`,
+	} {
+		if !strings.Contains(submit, want) {
+			t.Errorf("the submit handler no longer has %s", want)
+		}
+	}
+	// supportSeen is the submit handler's own, and lives no longer than it.
+	if n, in := strings.Count(code, "supportSeen"), strings.Count(submit, "supportSeen"); n != in || in == 0 {
+		t.Errorf("supportSeen appears %d times in app.js and %d in the submit handler; want every use there", n, in)
+	}
+	for _, line := range strings.Split(code, "\n") {
+		if !strings.Contains(line, "supportSeen") && !strings.Contains(line, "support_seen") {
+			continue
+		}
+		lower := strings.ToLower(line)
+		for _, keeper := range []string{"storage", "dataset", "setattribute", "cookie", "history", "draft", "indexeddb"} {
+			if strings.Contains(lower, keeper) {
+				t.Errorf("the support flag is kept somewhere: %s", strings.TrimSpace(line))
+			}
+		}
+	}
+	// The draft carried across a re-render knows nothing of the support step.
+	for _, name := range []string{"captureDraft", "restoreDraft", "keepUnsentDraft", "storageSet", "storageGet", "api"} {
+		if body := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(body), "support") {
+			t.Errorf("%s mentions the support step; the flag must not outlive one submission", name)
+		}
+	}
+	// The panel's button is what says which submission it is: a submit
+	// button with no name, so no form data carries it, and no field beside it.
+	panel := withoutComments(jsFunction(t, script, "supportPanelHTML"))
+	button := regexp.MustCompile(`<button[^>]*data-action="post-anyway"[^>]*>`).FindString(panel)
+	if button == "" || !strings.Contains(button, `type="submit"`) || strings.Contains(button, "name=") {
+		t.Errorf("Post anyway is no longer an unnamed submit button of the form: %q", button)
+	}
+	if strings.Contains(panel, "<input") {
+		t.Error("the support panel has a field, which every later submission would carry")
+	}
+}
+
+// The posting form reads the content rules' answers by the server's own words:
+// the two refusal outcomes, the block rules it has sentences for, the held
+// acknowledgement, and support_seen in the encodings submit sends it in. If
+// they drifted apart, a post with crisis language could not be made from the
+// page at all, and a held post would send its poster to a page without it.
+func TestClientReadsTheContentRulesAnswersTheServerGives(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	for _, want := range []string{
+		`outcome === "support"`, `outcome === "block"`, `err.payload.outcome === "block"`,
+		`case "` + ruleContact + `":`, `case "` + ruleIDNumber + `":`, `created.held`,
+	} {
+		if !strings.Contains(code, want) {
+			t.Errorf("app.js no longer reads %s", want)
+		}
+	}
+
+	h := testServer(t, nil)
+	h.addBoard("words")
+	thread := h.createThread("words", "", "", "a thread")
+	replies := repliesPath("words", thread.ThreadNo)
+
+	status, out := h.postJSON(replies, map[string]any{"name": "", "body": "call me on 9876543210", "badge": false, "sage": false})
+	if status != http.StatusUnprocessableEntity || out["outcome"] != "block" || out["rule"] != ruleContact ||
+		out["field"] != "body" || out["match"] != "9876543210" {
+		t.Errorf("a phone number: %d %v, want 422 block contact in body", status, out)
+	}
+
+	// What submit sends: the form as JSON, and as multipart with an image.
+	crisis := map[string]any{"name": "", "body": "i want to die", "badge": false, "sage": false}
+	if status, out := h.postJSON(replies, crisis); status != http.StatusUnprocessableEntity || out["outcome"] != "support" {
+		t.Errorf("crisis language: %d %v, want 422 support", status, out)
+	}
+	crisis["support_seen"] = true
+	if status, out := h.postJSON(replies, crisis); status != http.StatusCreated {
+		t.Errorf("crisis language with support_seen: %d %v, want 201", status, out)
+	}
+	fields := map[string]string{"name": "", "body": "i want to die"}
+	if status, out := h.uploadMap(replies, fields, "pic.png", pngBytes(t, 24, 24)); status != http.StatusUnprocessableEntity || out["outcome"] != "support" {
+		t.Errorf("multipart crisis language: %d %v, want 422 support", status, out)
+	}
+	fields["support_seen"] = "1"
+	if status, out := h.uploadMap(replies, fields, "pic.png", pngBytes(t, 24, 24)); status != http.StatusCreated {
+		t.Errorf(`multipart crisis language with support_seen "1": %d %v, want 201`, status, out)
+	}
+
+	status, out = h.postJSON(threadsPath("words"), map[string]any{"name": "", "body": "how old are you? dm me", "badge": false, "subject": ""})
+	if status != http.StatusAccepted || out["held"] != true || out["no"] != nil {
+		t.Errorf("a held thread: %d %v, want 202 held with no number", status, out)
+	}
+
+	// A match too long to quote whole ends in an ellipsis, which pointAtMatch
+	// takes off before it looks for the text and then selects to the end of
+	// the run, so the whole of a long link is selected rather than its start.
+	link := "https://discord.gg/" + strings.Repeat("abcdefghij", 10)
+	status, out = h.postJSON(replies, map[string]any{"name": "", "body": "come chat " + link + " now", "badge": false, "sage": false})
+	match, _ := out["match"].(string)
+	if status != http.StatusUnprocessableEntity || !strings.HasSuffix(match, "…") ||
+		!strings.HasPrefix(link, strings.TrimSuffix(match, "…")) || utf8.RuneCountInString(match) > maxMatchLen {
+		t.Errorf("a long link: %d %v, want 422 with the link's start and an ellipsis, at most %d characters", status, out, maxMatchLen)
+	}
+	point := withoutComments(jsFunction(t, script, "pointAtMatch"))
+	for _, want := range []string{`endsWith("…")`, `slice(0, -1)`, `/^\S*/.exec(input.value.slice(end))`} {
+		if !strings.Contains(point, want) {
+			t.Errorf("pointAtMatch no longer reads a cut match: missing %s", want)
+		}
+	}
+	// The copy it selects is the one the server counted (matchOccurrence):
+	// the quote's words with any whitespace between, every search one
+	// character on from the last place found, and the occurrence'th.
+	for _, want := range []string{
+		`{ field: where, match, occurrence }`, `words.join("\\s+"), "g")`, `search.lastIndex = next.index + 1;`,
+		`occurrence + 1`,
+	} {
+		if !strings.Contains(point, want) {
+			t.Errorf("pointAtMatch no longer selects the copy the server refused: missing %s", want)
+		}
+	}
+	if strings.Contains(point, "indexOf(") {
+		t.Error("pointAtMatch searches with indexOf, which finds the first copy whichever the server refused")
+	}
+	// The sentence is the server's, which says what it found: a request to
+	// talk on another app is not a contact detail.
+	blocked := withoutComments(jsFunction(t, script, "blockedMessage"))
+	if !strings.Contains(blocked, "{ error, rule, field: where, match }") || !strings.Contains(blocked, "${error.trim()}") {
+		t.Error("blockedMessage no longer shows the server's sentence for what it found")
+	}
+	status, out = h.postJSON(replies, map[string]any{"name": "", "body": "what's your insta?", "badge": false, "sage": false})
+	if msg, _ := out["error"].(string); status != http.StatusUnprocessableEntity || out["rule"] != ruleContact ||
+		!strings.Contains(msg, "asks people to talk on another app") {
+		t.Errorf("an ask: %d %v, want a contact block whose sentence says it is an ask", status, out)
+	}
+	// The least scroll leaves a field that is on screen but under the sticky
+	// header where it is; on a phone the header is three rows deep, and the
+	// Name field is right under it.
+	reveal := withoutComments(jsFunction(t, script, "revealBelowHeader"))
+	if !strings.Contains(point, "revealBelowHeader(input)") || !strings.Contains(reveal, `scrollIntoView({ block: "start" })`) ||
+		!strings.Contains(reveal, ".site-header") {
+		t.Error("pointAtMatch no longer brings the field out from under the sticky header")
+	}
+	// So does Go back on the support panel: closing the panel shortens the
+	// page, which can leave the message under the header, where a plain
+	// focus() does not scroll.
+	opener := `const supportBack = event.target.closest('[data-action="support-back"]');`
+	i := strings.Index(script, opener)
+	if i < 0 {
+		t.Fatal("app.js has no Go back handler for the support panel; this test reads it")
+	}
+	back := withoutComments(script[i:])
+	back = back[:strings.Index(back, "return;")]
+	if !strings.Contains(back, "message.focus({ preventScroll: true });") || !strings.Contains(back, "revealBelowHeader(message);") {
+		t.Error("Go back on the support panel no longer brings the message out from under the sticky header")
+	}
+}
+
+// A post's answer can arrive after the page was drawn again — "Update" on the
+// thread while the reply was on its way — and then the form it was sent from
+// is out of the document, with the draft in the form that replaced it. An
+// answer written into the old form is seen by nobody: a held reply looks
+// unsent and is posted twice, and a block or the support panel never shows.
+// After the request, everything is done to liveForm's form.
+func TestPostAnswersGoToTheFormOnScreen(t *testing.T) {
+	handler := withoutComments(submitHandler(t, appScript(t)))
+	i := strings.Index(handler, "await api(")
+	if i < 0 {
+		t.Fatal("the submit handler no longer awaits api(); this test reads what follows it")
+	}
+	after := handler[i:]
+	if n := strings.Count(after, "liveForm(form, draftKey)"); n != 2 {
+		t.Errorf("liveForm(form, draftKey) is called %d times after the request, want once for an answer and once for a refusal", n)
+	}
+	for _, stale := range []string{
+		"showFormNotice(form", "showSupport(form", "pointAtMatch(form", "closeSupport(form",
+		"form.reset(", "field(form", "form.querySelector(", "form.contains(",
+	} {
+		if strings.Contains(after, stale) {
+			t.Errorf("the submit handler uses the submitted form after the request (%s), which a re-render may have taken out of the page", stale)
+		}
 	}
 }

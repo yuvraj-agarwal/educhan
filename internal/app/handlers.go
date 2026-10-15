@@ -163,10 +163,14 @@ type createThreadRequest struct {
 	// Spoiler asks for the attached image to be hidden until it is clicked. A
 	// JSON post carries no image, so it is accepted and has nothing to apply to.
 	Spoiler bool `json:"spoiler"`
+	// SupportSeen is the poster sending a post again after the support screen
+	// it was refused with; see checkContent.
+	SupportSeen bool `json:"support_seen"`
 }
 
 func (r *createThreadRequest) submission() submission {
-	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler}
+	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler,
+		SupportSeen: r.SupportSeen}
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
@@ -201,8 +205,22 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The content rules, after every other check of what was sent and between
+	// the two halves of flood control: a post that would wait out a cooldown
+	// anyway is told so before it is read, and a post sent back to have
+	// something taken out starts no cooldown and leaves no file behind, only a
+	// count against the client's refusal budget.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	refund, ok := a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil))
+	cooldowns := a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)
+	if !a.notCoolingDown(w, cooldowns) {
+		return
+	}
+	verdict, ok := a.refuseContent(w, clientKey,
+		contentInput{Subject: subject, Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
+	if !ok {
+		return
+	}
+	refund, ok := a.allow(w, cooldowns)
 	if !ok {
 		return
 	}
@@ -226,10 +244,15 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		PosterID:   a.posterIDFunc(posterSourceFor(badge, key, clientKey)),
 		Badge:      badge.Label,
 		Attachment: attachmentInput(sub, img),
+		Hold:       verdict.Hold,
 	})
 	if err != nil {
 		a.discardUpload(img)
 		a.fail(w, r, err, "could not create thread")
+		return
+	}
+	if verdict.Hold != "" {
+		writeJSON(w, http.StatusAccepted, heldResponse(board, 0))
 		return
 	}
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
@@ -244,10 +267,14 @@ type createPostRequest struct {
 	Badge bool `json:"badge"`
 	// Spoiler asks for the attached image to be hidden until it is clicked.
 	Spoiler bool `json:"spoiler"`
+	// SupportSeen is the poster sending a post again after the support screen
+	// it was refused with; see checkContent.
+	SupportSeen bool `json:"support_seen"`
 }
 
 func (r *createPostRequest) submission() submission {
-	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler}
+	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler,
+		SupportSeen: r.SupportSeen}
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -308,8 +335,18 @@ func (a *App) createPost(reserveCtx context.Context, w http.ResponseWriter, r *h
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	// The content rules between the two halves of flood control, as for a
+	// new thread.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	refund, ok := a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil))
+	cooldowns := a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)
+	if !a.notCoolingDown(w, cooldowns) {
+		return
+	}
+	verdict, ok := a.refuseContent(w, clientKey, contentInput{Name: displayedName(sub.Name), Body: body}, sub.SupportSeen)
+	if !ok {
+		return
+	}
+	refund, ok := a.allow(w, cooldowns)
 	if !ok {
 		return
 	}
@@ -334,13 +371,70 @@ func (a *App) createPost(reserveCtx context.Context, w http.ResponseWriter, r *h
 		PosterID:   a.posterIDFunc(posterSourceFor(badge, key, clientKey)),
 		Badge:      badge.Label,
 		Attachment: attachmentInput(sub, img),
+		Hold:       verdict.Hold,
 	})
 	if err != nil {
 		a.discardUpload(img)
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	if verdict.Hold != "" {
+		writeJSON(w, http.StatusAccepted, heldResponse(board, no))
+		return
+	}
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+}
+
+// refuseContent applies the content rules to a post (filter.go). A block or a
+// support refusal is answered here with 422, and nothing about the post is
+// logged: not its text, not what matched. Otherwise it reports the verdict, whose
+// Hold is set when the post is to be stored held.
+//
+// Each refusal counts against the client's refusal budget, and a client that
+// has spent it is answered 429 without its post being checked, because a
+// refusal costs no cooldown and checking is the expensive part of turning a
+// post away. The budget is keyed on the address for the reason the cooldowns
+// are (postCooldowns), and counts across every board.
+func (a *App) refuseContent(w http.ResponseWriter, clientKey string, in contentInput, supportSeen bool) (contentVerdict, bool) {
+	if wait := a.refusals.peek(clientKey); wait > 0 {
+		tooQuickly(w, "posting", wait)
+		return contentVerdict{}, false
+	}
+	verdict := checkContent(in, supportSeen)
+	if verdict.Outcome == contentBlock || verdict.Outcome == contentSupport {
+		a.refusals.record(clientKey)
+	}
+	switch verdict.Outcome {
+	case contentBlock:
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":      verdict.Message,
+			"outcome":    "block",
+			"rule":       verdict.Rule,
+			"field":      verdict.Field,
+			"match":      verdict.Match,
+			"occurrence": verdict.Occurrence,
+		})
+		return verdict, false
+	case contentSupport:
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]any{
+			"error":   verdict.Message,
+			"outcome": "support",
+		})
+		return verdict, false
+	}
+	return verdict, true
+}
+
+// heldResponse is the acknowledgement for a held post: that it was received
+// and is waiting, and where. It says nothing of why, and gives no post number,
+// because the post is not anywhere a number could lead to until it is
+// approved. threadNo is the thread a reply was for, and 0 for a new thread.
+func heldResponse(board Board, threadNo int64) map[string]any {
+	resp := map[string]any{"held": true, "board": board.Slug}
+	if threadNo != 0 {
+		resp["thread_no"] = threadNo
+	}
+	return resp
 }
 
 // postDeadline is how long a post's image has, once its body has arrived, to
@@ -449,6 +543,19 @@ func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey str
 	return cooldowns
 }
 
+// notCoolingDown answers 429 for a post that flood control would refuse,
+// starting nothing. It runs before the content rules read the post, so a
+// client in a cooldown learns that and nothing else: its post is not checked,
+// and cannot be refused or held, until the cooldown has passed. allow then
+// checks again and starts the cooldowns for a post that is to be stored.
+func (a *App) notCoolingDown(w http.ResponseWriter, cooldowns []cooldown) bool {
+	if wait := longestWait(cooldowns...); wait > 0 {
+		tooQuickly(w, "posting", wait)
+		return false
+	}
+	return true
+}
+
 // allow applies posting flood control, answering 429 with a Retry-After when
 // the caller must wait. An admitted post comes with the refund of the
 // cooldowns it started (chargeAll), for a post the server then turned away
@@ -495,6 +602,8 @@ func (a *App) fail(w http.ResponseWriter, r *http.Request, err error, msg string
 		writeError(w, http.StatusForbidden, "thread is archived")
 	case errors.Is(err, errImageLimit):
 		writeError(w, http.StatusForbidden, "image limit reached")
+	case errors.Is(err, errNotHeld):
+		writeError(w, http.StatusConflict, "post is not held")
 	case errors.Is(err, context.Canceled), errors.Is(r.Context().Err(), context.Canceled):
 		// The client went away; there is nobody left to answer.
 	default:
@@ -522,7 +631,7 @@ func postBody(w http.ResponseWriter, raw string, hasAttachment bool) (string, bo
 }
 
 func postSubject(w http.ResponseWriter, raw string) (string, bool) {
-	subject := strings.TrimSpace(collapseControl(strings.ReplaceAll(raw, "\n", " ")))
+	subject := normalizeSubject(raw)
 	if utf8.RuneCountInString(subject) > maxSubjectLen {
 		writeError(w, http.StatusBadRequest, "subject must be at most "+strconv.Itoa(maxSubjectLen)+" characters")
 		return "", false

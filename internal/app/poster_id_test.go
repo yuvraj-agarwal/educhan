@@ -498,6 +498,8 @@ func TestPosterKeyIsNeverStoredOrLogged(t *testing.T) {
 		cfg.VerifyCodeTTL = defaultVerifyCodeTTL
 		cfg.VerifyCredentialTTL = defaultVerifyCredentialTTL
 		cfg.Sender = mail
+		cfg.ModKey = testModKey
+		cfg.RefusalLimit = 2
 	}, &logs)
 	h.addBoard("ids")
 	vh := &verifyHarness{harness: h, mail: mail}
@@ -534,6 +536,34 @@ func TestPosterKeyIsNeverStoredOrLogged(t *testing.T) {
 	if status := h.postWithHeaders(ana.headers(false),
 		"/api/boards/nope/threads", map[string]any{"body": "no such board"}, &refused); status != http.StatusNotFound {
 		t.Fatalf("unknown board: status %d, want 404", status)
+	}
+
+	// And every answer the content rules give, with the key on each post: a
+	// held reply and a held thread, one of them then approved; a block; the
+	// support screen; and a post past the refusal budget.
+	replies := fmt.Sprintf("/api/boards/ids/threads/%d/posts", thread)
+	for _, step := range []struct {
+		path   string
+		body   string
+		status int
+	}{
+		{replies, "go die", http.StatusAccepted},
+		{"/api/boards/ids/threads", "how old are you? dm me", http.StatusAccepted},
+		{replies, "call 9876543210", http.StatusUnprocessableEntity},
+		{replies, "i want to die", http.StatusUnprocessableEntity},
+		{replies, "a clean post past the budget", http.StatusTooManyRequests},
+	} {
+		var out map[string]any
+		if status := h.postWithHeaders(ana.headers(false), step.path, map[string]any{"body": step.body}, &out); status != step.status {
+			t.Fatalf("%q with the key: status %d (%v), want %d", step.body, status, out, step.status)
+		}
+	}
+	held := h.heldQueue()
+	if len(held) != 2 || held[0].PosterID == "" {
+		t.Fatalf("held queue: %+v", held)
+	}
+	if status, out := h.approve("ids", held[0].ThreadNo, held[0].No); status != http.StatusOK {
+		t.Fatalf("approve: %d %v", status, out)
 	}
 
 	raw, err := base64.RawURLEncoding.DecodeString(key)

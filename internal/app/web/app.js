@@ -204,7 +204,42 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
   if (err.status === 403) {
     return `${err.message}.`;
   }
+  // The content rules sent the post back to have something taken out. The
+  // server's own sentence stands in if the refusal says less than usual.
+  if (err.status === 422 && err.payload && err.payload.outcome === "block") {
+    return blockedMessage(err.payload) || err.message;
+  }
   return err.message;
+}
+
+// blockedMessage says why the content rules sent a post back and what to take
+// out: the server's own sentence, which names what it found (a phone number,
+// a request to talk on another app) and the field it is in, followed by the
+// text it matched, quoted as the poster wrote it. A refusal without the
+// sentence gets this page's words for its rule, with the field when that is
+// not the message. "" when the refusal does not say what matched, or names a
+// rule this page has no words for.
+function blockedMessage({ error, rule, field: where, match }) {
+  const quoted = typeof match === "string" ? match.trim() : "";
+  if (!quoted) {
+    return "";
+  }
+  if (typeof error === "string" && error.trim()) {
+    return `${error.trim()} The part to take out is “${quoted}”.`;
+  }
+  let why;
+  switch (rule) {
+    case "contact":
+      why = "Posts can't include contact details like phone numbers, email addresses, or usernames and links for other apps.";
+      break;
+    case "id_number":
+      why = "Posts can't include ID numbers, like Aadhaar, Social Security or National Insurance numbers.";
+      break;
+    default:
+      return "";
+  }
+  const from = where === "name" ? " from the Name field" : where === "subject" ? " from the Subject" : "";
+  return `${why} Remove “${quoted}”${from} and try again.`;
 }
 
 /* Storage ------------------------------------------------------------------ */
@@ -297,11 +332,18 @@ function imageTooLargeMessage() {
     : "That image is too large. Try a smaller file.";
 }
 
-function showNotice(message) {
+// showNotice puts a message in the page's notice, as text; with html, the
+// message is markup the caller has built with esc().
+function showNotice(message, { html = false } = {}) {
   el.notice.innerHTML =
     '<span class="notice-text"></span>' +
     '<button class="notice-dismiss" type="button" data-action="dismiss-notice" aria-label="Dismiss">&times;</button>';
-  el.notice.querySelector(".notice-text").textContent = message;
+  const text = el.notice.querySelector(".notice-text");
+  if (html) {
+    text.innerHTML = message;
+  } else {
+    text.textContent = message;
+  }
   el.notice.hidden = false;
 }
 
@@ -1286,6 +1328,11 @@ function postHTML(post, context) {
 
 // Only one posting form is on screen at a time, so these ids are unique.
 const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image: "f-image" };
+// The form's own notice, above its buttons, for what the content rules said
+// about the post just sent: what to take out, or that it is waiting for a
+// moderator. It sits where the poster is looking, which on a long thread the
+// page's notice at the top is not.
+const FORM_NOTICE_ID = "f-notice";
 
 // fileFieldHTML draws the image picker. `blocked` is the reason it cannot be
 // used, when there is one; the field then renders exactly as blockFileField
@@ -1386,6 +1433,7 @@ function formHTML({ kind, slug, thread = null, open = false }) {
             purpose.</p>
         </div>
         ${image}
+        <div class="form-notice" id="${FORM_NOTICE_ID}" data-form-notice role="alert" hidden></div>
         <div class="actions">
           <button class="btn primary" type="submit">${isThread ? "Create thread" : "Post reply"}</button>
           ${sage}
@@ -1751,8 +1799,11 @@ function redrawThreadCounts() {
 }
 
 // archiveKeptFor says how long an archived thread stays, when the board says.
+// "Removed", not "deleted": a thread with a post still waiting for a moderator
+// leaves view on time but is deleted only once the post is decided (the FAQ's
+// archive answer says so).
 function archiveKeptFor(board) {
-  return board.archive_days > 0 ? `, and is deleted after ${plural(board.archive_days, "day", "days")} in the archive` : "";
+  return board.archive_days > 0 ? `, and is removed after ${plural(board.archive_days, "day", "days")} in the archive` : "";
 }
 
 async function renderArchive(route) {
@@ -1779,7 +1830,7 @@ async function renderArchive(route) {
     })
     .join("");
 
-  const kept = board.archive_days > 0 ? ` for ${plural(board.archive_days, "day", "days")}, then deleted` : "";
+  const kept = board.archive_days > 0 ? ` for ${plural(board.archive_days, "day", "days")}, then removed` : "";
   el.main.innerHTML = `
     ${boardHeadHTML(board, "archive")}
     <p class="archive-intro">Threads that have left ${esc(label)} are kept here, read-only${kept}.
@@ -2065,7 +2116,10 @@ function audienceText() {
 // HELPLINES_HTML is where to get help, the same on the rules and the FAQ. It is
 // one fixed list for everyone, because educhan never works out where a reader
 // is: it names the countries and lets each reader find their own. The numbers
-// are the build plan's (2.12), and the links leave without a referrer.
+// are the build plan's (2.12), and the links leave without a referrer. The one
+// link that leaves the site opens in a new tab: this list is also the support
+// panel's, over a post the poster has not sent yet, and following the link in
+// the same tab would take that draft with it.
 const HELPLINES_HTML = `
   <p class="callout">If someone is in danger right now, call your local emergency number.</p>
   <p>If something here upsets or worries you, step away and talk to someone you trust. If
@@ -2079,12 +2133,18 @@ const HELPLINES_HTML = `
     <li><strong>Australia:</strong> Lifeline, <a href="tel:131114">13 11 14</a>, and Kids
       Helpline, <a href="tel:1800551800">1800 55 1800</a></li>
     <li><strong>Anywhere else:</strong> find one near you at
-      <a href="https://findahelpline.com" rel="noopener noreferrer">findahelpline.com</a></li>
+      <a href="https://findahelpline.com" target="_blank" rel="noopener noreferrer">findahelpline.com<span
+        class="sr-only"> (opens in a new tab)</span></a></li>
   </ul>`;
 
 // The rules name every kind of post that is not allowed, for everyone on every
-// board, and say what happens to one using only what is built: moderators can
-// delete posts and threads and lock a thread, and nothing else yet.
+// board, and say what happens to one using only what is built: the server's
+// checks send some posts back, hold others for a moderator, and show where to
+// get help before a post about wanting to hurt yourself (filter.go, and the
+// form's handling of each in the submit handler), and moderators can approve
+// a held post, delete posts and threads, and lock a thread, and nothing else
+// yet. The checks are described as what they are, pattern matching that
+// misses things, never as something that keeps anyone safe.
 function renderRules() {
   el.main.innerHTML = `
     <article class="page" aria-labelledby="page-title">
@@ -2137,6 +2197,22 @@ function renderRules() {
         you on your own usually starts by asking to talk somewhere private. If anyone asks you
         to move to another app, you don't have to reply.</p>
       <h2>When a post breaks the rules</h2>
+      <p>Every post is checked automatically for a few things before it goes up:</p>
+      <ul>
+        <li>A post with contact details (a phone number, an email address, or a username or
+          link for another app), a request to talk on another app, or an ID number such as an
+          Aadhaar number is sent back to you, showing the part to take out. Take it out and
+          post again.</li>
+        <li>A post that might be a threat, that might hurt someone who is struggling (by
+          telling them to hurt or kill themselves, say, or by talking about ways to do it), or
+          that asks someone's age or where they live and also asks to talk privately, waits
+          until a moderator has checked it. It only appears if they approve it.</li>
+        <li>If your post talks about wanting to hurt yourself or to die, you'll see
+          <a href="#help">where to get help</a> first. You can still post it.</li>
+      </ul>
+      <p>These checks are simple: they only look for certain words and number patterns. They
+        miss plenty, and they sometimes stop a post that was fine, so the rules above apply to
+        everything, whether a check catches it or not.</p>
       <p>Moderators can delete posts and whole threads that break these rules, and can lock a
         thread so it takes no more replies. There's no report button yet, but one is
         coming.</p>
@@ -2160,7 +2236,7 @@ const FAQ_SECTIONS = [
         without an account. There are boards for school and university subjects, and for
         student life, such as admissions, exams, careers and studying abroad.</p>
       <p>Threads don't last forever. A reply moves its thread to the top of its board, and
-        threads that stop getting replies sink, move to the board's archive, and are deleted
+        threads that stop getting replies sink, move to the board's archive, and are removed
         after a while.</p>`,
   },
   {
@@ -2207,6 +2283,34 @@ const FAQ_SECTIONS = [
         has no private messages, and its <a href="/rules">rules</a> don't allow contact
         details or asking people to move to other apps. If anyone asks you to, you don't have
         to reply.</p>`,
+  },
+  {
+    id: "faq-checks",
+    question: "Are posts checked before they appear?",
+    answer: `
+      <p>Yes, for a few things. When you post, the server checks your post automatically
+        before anyone else can see it:</p>
+      <ul>
+        <li><strong>Contact details and ID numbers.</strong> A post with a phone number, an
+          email address, a username or link for another app, a request to talk on another
+          app, or an ID number such as an Aadhaar number is sent back to you, showing the
+          part to take out. Take it out and post again.</li>
+        <li><strong>Posts that wait for a moderator.</strong> A post that might be a threat,
+          that might hurt someone who is struggling (by telling them to hurt or kill
+          themselves, say, or by talking about ways to do it), or that asks someone's age or
+          where they live, or looks for someone of a certain age, and also asks to talk
+          privately or meet, is kept back until a moderator has checked it. It only appears if they approve it.</li>
+        <li><strong>If you're having a hard time.</strong> If your post talks about wanting to
+          hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
+          it goes up. You can still post it.</li>
+      </ul>
+      <p>These checks are simple: they only look for certain words and number patterns, in
+        English and some Hinglish (Hindi typed in English letters). They don't read Hindi
+        in Devanagari or any other language. They miss plenty, and they sometimes stop a
+        post that was fine. So the
+        <a href="/rules">rules</a> apply to everything, whether a check catches it or not, and
+        moderators can still delete posts that break them. The checks don't keep a copy of
+        what they read, and a post that's sent back isn't saved.</p>`,
   },
   {
     id: "faq-anonymity",
@@ -2352,7 +2456,9 @@ const FAQ_SECTIONS = [
         <li><strong>The archive.</strong> Each board holds a set number of threads. When a new
           thread pushes the least recently bumped one off the board, that thread moves to
           the board's archive, where it can still be read and linked to but takes no
-          replies. It's deleted after the number of days the archive page shows.</li>
+          replies. After the number of days the archive page shows, it's removed and
+          deleted. A thread with a post still waiting for a moderator is removed on time
+          too, but kept out of sight until they've decided, and deleted after that.</li>
       </ul>`,
   },
   {
@@ -3111,6 +3217,24 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  // Go back on the support panel closes it and leaves the draft as it is,
+  // with the cursor in the message. Closing the panel shortens the page, which
+  // can leave the message on screen but under the sticky header (three rows
+  // deep on a phone), where a plain focus() would not scroll; so it is brought
+  // out from under it, as a block's field is.
+  const supportBack = event.target.closest('[data-action="support-back"]');
+  if (supportBack) {
+    event.preventDefault();
+    const form = supportBack.closest("form");
+    closeSupport(form);
+    const message = form && field(form, "body");
+    if (message) {
+      message.focus({ preventScroll: true });
+      revealBelowHeader(message);
+    }
+    return;
+  }
+
   const clearFile = event.target.closest('[data-action="clear-file"]');
   if (clearFile) {
     event.preventDefault();
@@ -3234,6 +3358,14 @@ el.main.addEventListener("change", (event) => {
   }
   if (event.target.matches('input[type="checkbox"][name="badge"]')) {
     badgeToggled(event.target);
+  }
+});
+
+// A field the form's notice pointed at stops being flagged once the poster
+// edits it; the notice itself stays until the next press, as a reminder.
+el.main.addEventListener("input", (event) => {
+  if (event.target instanceof Element && event.target.getAttribute("aria-invalid") === "true") {
+    clearInvalid(event.target);
   }
 });
 
@@ -3366,6 +3498,211 @@ function posterKey() {
   return pagePosterKey;
 }
 
+/* Content rules ------------------------------------------------------------ */
+
+// The server reads every post before it keeps it (filter.go), and answers in
+// one of three ways besides publishing it. A post with contact details or an
+// ID number is sent back with the text to take out (422, "block"), and the
+// form says what and selects it. A post with crisis language in the poster's
+// own voice is sent back once (422, "support") so the poster sees where to get
+// help; "Post anyway" sends it again and it goes on. A post a moderator has to
+// read first is kept but not shown (202, held), and the form says so. None of
+// it is a feature to sell: the checks are word patterns that miss plenty, and
+// the copy here and on the rules and FAQ says no more than that.
+
+// showFormNotice puts a message in the form's notice, above its buttons. html
+// is markup the caller has built with esc(); info is for news that is not a
+// problem, such as a post waiting for a moderator.
+function showFormNotice(form, html, { info = false } = {}) {
+  const notice = form.querySelector("[data-form-notice]");
+  if (!notice) {
+    return;
+  }
+  notice.innerHTML = html;
+  notice.classList.toggle("info", info);
+  notice.hidden = false;
+}
+
+// clearFormNotice empties the form's notice, and with it the marks on the
+// field it was about.
+function clearFormNotice(form) {
+  const notice = form.querySelector("[data-form-notice]");
+  if (notice) {
+    notice.hidden = true;
+    notice.textContent = "";
+    notice.classList.remove("info");
+  }
+  form.querySelectorAll('[aria-invalid="true"]').forEach(clearInvalid);
+}
+
+// markInvalid flags a field the form's notice is about, and points the field
+// at the notice, so a screen reader that lands on it hears why.
+function markInvalid(input) {
+  input.setAttribute("aria-invalid", "true");
+  const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter(Boolean);
+  if (!ids.includes(FORM_NOTICE_ID)) {
+    input.setAttribute("aria-describedby", [FORM_NOTICE_ID, ...ids].join(" "));
+  }
+}
+
+// clearInvalid undoes markInvalid, once the poster has started to edit.
+function clearInvalid(input) {
+  input.removeAttribute("aria-invalid");
+  const ids = (input.getAttribute("aria-describedby") || "").split(/\s+/).filter((id) => id && id !== FORM_NOTICE_ID);
+  if (ids.length > 0) {
+    input.setAttribute("aria-describedby", ids.join(" "));
+  } else {
+    input.removeAttribute("aria-describedby");
+  }
+}
+
+// revealBelowHeader scrolls an element into view the least it can, and then,
+// if the sticky header still lies over it, down to its scroll margin. The
+// least scroll leaves an element that is already in the viewport where it
+// is, even when it is under the header, which on a phone is three rows deep.
+function revealBelowHeader(element) {
+  element.scrollIntoView({ block: "nearest" });
+  const header = document.querySelector(".site-header");
+  if (header && element.getBoundingClientRect().top < header.getBoundingClientRect().bottom) {
+    element.scrollIntoView({ block: "start" });
+  }
+}
+
+// pointAtMatch takes the poster to what a block quoted: the field it is in,
+// focused, with the text selected so it can be deleted in one go. The server
+// quotes the post as it kept it, trimmed and with its line ends tidied, so
+// the search lets any run of spaces and line breaks stand for another. The
+// same text can be in the field more than once, and only one copy refused —
+// a number in [math] is allowed, the same number after "call" is not — so the
+// server says which copy it means (occurrence: how many places the search
+// finds it before that one, each search starting one character on from the
+// last), and that one is selected; the last copy found stands in if there
+// are fewer. A match too long to quote whole comes with its start and "…":
+// the start is looked for, and the selection runs on to the end of the run of
+// text it is in, so deleting it takes the whole of a long link rather than
+// its first 80 characters. A field it cannot find the text in still gets the
+// focus.
+function pointAtMatch(form, { field: where, match, occurrence }) {
+  if (!["subject", "name", "body"].includes(where)) {
+    return;
+  }
+  const input = field(form, where);
+  if (!input) {
+    return;
+  }
+  markInvalid(input);
+  // The field and the notice under it are brought into view together where
+  // they fit, which on a phone they do not always do by themselves; where
+  // they do not, the field wins.
+  input.focus({ preventScroll: true });
+  form.querySelector("[data-form-notice]")?.scrollIntoView({ block: "nearest" });
+  revealBelowHeader(input);
+  let quoted = typeof match === "string" ? match.trim() : "";
+  const cut = quoted.endsWith("…") && !input.value.includes(quoted);
+  if (cut) {
+    quoted = quoted.slice(0, -1).trimEnd();
+  }
+  if (!quoted) {
+    return;
+  }
+  const words = quoted.split(/\s+/).map((word) => word.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"));
+  const search = new RegExp(words.join("\\s+"), "g");
+  const copies = Number.isInteger(occurrence) && occurrence > 0 ? occurrence + 1 : 1;
+  let found = null;
+  for (let i = 0; i < copies; i++) {
+    const next = search.exec(input.value);
+    if (!next) {
+      break;
+    }
+    found = next;
+    search.lastIndex = next.index + 1;
+  }
+  if (!found) {
+    return;
+  }
+  const start = found.index;
+  let end = start + found[0].length;
+  if (cut) {
+    end += /^\S*/.exec(input.value.slice(end))[0].length;
+  }
+  try {
+    input.setSelectionRange(start, end);
+  } catch {
+    // A field that takes no selection keeps the focus alone.
+  }
+}
+
+// supportPanelHTML is what a post with crisis language is answered with
+// before it goes up: the server's sentence, where to get help (the one list
+// every reader gets), and the choice, which is the poster's. It promises
+// nothing, and never suggests that anyone is watching.
+function supportPanelHTML(message) {
+  return `
+    <h2 class="support-title" id="f-support-title" tabindex="-1">Before you post</h2>
+    <p>${esc(message || "You don't have to go through this on your own.")}</p>
+    ${HELPLINES_HTML}
+    <p>Saying you're having a hard time is fine on educhan. You can post this as it is, or
+      go back and change it.</p>
+    <div class="support-actions">
+      <button class="btn secondary" type="submit" data-action="post-anyway">Post anyway</button>
+      <button class="btn secondary" type="button" data-action="support-back">Go back</button>
+    </div>`;
+}
+
+// showSupport opens the panel in the form, above where its buttons were. The
+// form's own buttons step aside while it is open, so the panel's two are the
+// only way on, and the draft stays exactly as it was. "Post anyway" is a
+// submit button of the form, so the post goes again through the submit
+// handler, and nowhere else.
+function showSupport(form, message) {
+  closeSupport(form);
+  clearFormNotice(form);
+  const actions = form.querySelector(".actions");
+  const panel = document.createElement("section");
+  panel.className = "support-panel";
+  panel.dataset.support = "";
+  panel.setAttribute("aria-labelledby", "f-support-title");
+  panel.innerHTML = supportPanelHTML(message);
+  const anchor = form.querySelector("[data-form-notice]") || actions;
+  if (anchor) {
+    anchor.before(panel);
+  } else {
+    form.append(panel);
+  }
+  if (actions) {
+    actions.hidden = true;
+  }
+  panel.scrollIntoView({ block: "start" });
+  panel.querySelector(".support-title").focus({ preventScroll: true });
+}
+
+// closeSupport puts the form back as it was before the panel opened.
+function closeSupport(form) {
+  const panel = form && form.querySelector("[data-support]");
+  if (!panel) {
+    return;
+  }
+  panel.remove();
+  const actions = form.querySelector(".actions");
+  if (actions) {
+    actions.hidden = false;
+  }
+}
+
+// heldNoticeHTML is what a poster is told when their post is kept for a
+// moderator: that it arrived and will not show yet. Never why — the server
+// does not say — and never a number, since nothing can be linked to yet. It
+// ends with where to get help, on every held post alike, so it says nothing
+// about which rule held this one: a post about hurting yourself can be held,
+// and the person who wrote it is the one the helplines are for.
+function heldNoticeHTML(isThread) {
+  const where = isThread ? "on the board" : "in the thread";
+  return `Your ${isThread ? "thread" : "reply"} was received, but it won't show up yet: it's waiting
+    for a moderator to check it, and it only appears ${where} if they approve it.
+    <a href="/faq#faq-checks">Why some posts wait</a>. If you're having a hard time,
+    <a href="/faq#faq-help">here's where to get help</a>.`;
+}
+
 /* Submitting --------------------------------------------------------------- */
 
 el.main.addEventListener("submit", async (event) => {
@@ -3375,7 +3712,13 @@ el.main.addEventListener("submit", async (event) => {
     await submitVerification(form);
     return;
   }
-  const button = form.querySelector('button[type="submit"]');
+  // "Post anyway" on the support panel is a submit button of this form, and
+  // says the poster has been shown where to get help. It is read from the
+  // button that sent this submission and kept nowhere else — not on the form,
+  // in the draft or in storage — so it goes with this one request only, and
+  // a later post with the same words is asked again.
+  const supportSeen = Boolean(event.submitter && event.submitter.matches('[data-action="post-anyway"]'));
+  const button = event.submitter || form.querySelector('button[type="submit"]');
   const data = new FormData(form);
   const name = String(data.get("name") || "");
   const body = String(data.get("body") || "");
@@ -3405,6 +3748,7 @@ el.main.addEventListener("submit", async (event) => {
   const headers = held ? { [CREDENTIAL_HEADER]: held.token } : { [POSTER_KEY_HEADER]: posterKey() };
 
   const isThread = form.dataset.kind === "thread";
+  const draftKey = routeKey(state.route);
   const payload = { name, body, badge: wantsBadge };
   let path;
   if (isThread) {
@@ -3414,6 +3758,10 @@ el.main.addEventListener("submit", async (event) => {
     payload.sage = data.get("sage") === "on";
     path = `/api/boards/${encodeURIComponent(state.route.slug)}/threads/${form.dataset.thread}/posts`;
   }
+  if (supportSeen) {
+    payload.support_seen = true;
+    data.set("support_seen", "1");
+  }
 
   // A post with an image goes as multipart; text-only posts stay on JSON.
   const requestBody = file ? data : JSON.stringify(payload);
@@ -3422,6 +3770,7 @@ el.main.addEventListener("submit", async (event) => {
   button.disabled = true;
   button.textContent = file ? "Uploading…" : "Posting…";
   clearNotice();
+  clearFormNotice(form);
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
     // The remembered name is the one for unbadged posts; a badged post's name
@@ -3429,22 +3778,47 @@ el.main.addEventListener("submit", async (event) => {
     if (!held) {
       storageSet(NAME_STORAGE_KEY, name);
     }
+    const live = liveForm(form, draftKey);
     // Clear before navigating so the draft carried across the re-render is the
     // empty form rather than the post that just went through. reset() puts the
     // Name back to what the form was drawn with, so it is set again: to the
     // name just used — empty, if the poster cleared it — or after a badged
     // post to the remembered one.
-    form.reset();
-    const nameField = field(form, "name");
-    if (nameField) {
-      nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+    if (live) {
+      live.reset();
+      const nameField = field(live, "name");
+      if (nameField) {
+        nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+      }
+      const fileField = live.querySelector("[data-file-field]");
+      if (fileField) {
+        clearFileField(fileField);
+      }
     }
-    const fileField = form.querySelector("[data-file-field]");
-    if (fileField) {
-      clearFileField(fileField);
+    // A held post was kept but is not shown: there is no number to go to, and
+    // a thread or board drawn again would not have it. The poster stays where
+    // they are, with the form emptied as after any post, and is told it is
+    // waiting for a moderator.
+    if (created && created.held) {
+      button.disabled = false;
+      button.textContent = label;
+      if (!live) {
+        showNotice(heldNoticeHTML(isThread), { html: true });
+        return;
+      }
+      closeSupport(live);
+      showFormNotice(live, heldNoticeHTML(isThread), { info: true });
+      // "Post anyway" went with the panel; the form's own button takes over.
+      if (!live.contains(document.activeElement)) {
+        live.querySelector('.actions button[type="submit"]')?.focus();
+      }
+      return;
     }
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {
+    button.disabled = false;
+    button.textContent = label;
+    const live = liveForm(form, draftKey);
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
     // option goes with it — taking the checkbox out of this form rather than
@@ -3457,11 +3831,11 @@ el.main.addEventListener("submit", async (event) => {
         reason === "expired"
           ? "Your badge has expired."
           : "That badge was replaced by a newer verification.";
-      const box = field(form, "badge");
+      const box = live && field(live, "badge");
       const option = box && box.closest("label");
       if (option) {
         option.remove();
-        form.querySelector("#f-badge-hint")?.remove();
+        live.querySelector("#f-badge-hint")?.remove();
       } else if (box) {
         box.checked = false;
       }
@@ -3469,7 +3843,7 @@ el.main.addEventListener("submit", async (event) => {
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
     if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
-      const fileField = form.querySelector("[data-file-field]");
+      const fileField = live && live.querySelector("[data-file-field]");
       const thread = state.thread;
       if (fileField) {
         blockFileField(fileField, imageLimitReason(thread && thread.board));
@@ -3490,17 +3864,62 @@ el.main.addEventListener("submit", async (event) => {
     // the visit, so the next form it draws has no image field.
     if (err.status === 403 && err.message === UPLOADS_SWITCHED_OFF) {
       state.site.uploads = false;
-      const fileField = form.querySelector("[data-file-field]");
+      const fileField = live && live.querySelector("[data-file-field]");
       if (fileField) {
         blockFileField(fileField, UPLOADS_OFF_REASON);
       }
       redrawThreadCounts();
     }
-    showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
-    button.disabled = false;
-    button.textContent = label;
+    // The content rules answer in the form, where the poster is looking, and
+    // leave the draft as it was: crisis language opens the support panel, and
+    // a block says what to take out and selects it. With no form left to
+    // answer in, the page's notice says it, and where to get help.
+    const outcome = err.status === 422 && err.payload ? err.payload.outcome : "";
+    const notice = live && live.querySelector("[data-form-notice]");
+    if (outcome === "support" && !live) {
+      showNotice(`${esc(errorMessage(err))} <a href="/faq#faq-help">Here's where to get help</a>.`, { html: true });
+    } else if (outcome === "support") {
+      showSupport(live, err.payload.error);
+    } else if (outcome === "block" && live) {
+      closeSupport(live);
+      showFormNotice(live, esc(errorMessage(err)));
+      pointAtMatch(live, err.payload);
+    } else if (notice) {
+      // Everything else (flood control, a thread locked or archived under
+      // the draft, the network) is said in the form, beside the button that
+      // was pressed, rather than in the page's notice: that is at the top,
+      // out of sight below a long thread, and after "Post anyway" the support
+      // panel is all the poster is looking at. The panel stays open, so they
+      // can try again.
+      showFormNotice(live, esc(errorMessage(err, { hasText: body.trim() !== "" })));
+      notice.scrollIntoView({ block: "nearest" });
+      // The pressed button was switched off while the post was on its way,
+      // which sends focus to the page; it goes back to that button, or to the
+      // form's own if the form was drawn again, so Tab carries on from there.
+      if (!live.contains(document.activeElement)) {
+        (live.contains(button) ? button : live.querySelector('.actions button[type="submit"]'))?.focus();
+      }
+    } else {
+      showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    }
   }
 });
+
+// liveForm is the form an answer to a post is shown in. The page can be drawn
+// again while the post is on its way — "Update" on the thread, or a reply
+// arriving — and then the form it was sent from is gone, and the draft is in
+// the one that replaced it (restoreDraft), which is where the poster is
+// looking. null when the page now shows another route, or no form, so the
+// answer goes to the page's notice rather than nowhere.
+function liveForm(form, draftKey) {
+  if (form.isConnected) {
+    return form;
+  }
+  if (routeKey(state.route) !== draftKey) {
+    return null;
+  }
+  return el.main.querySelector(`form[data-kind="${form.dataset.kind}"]`);
+}
 
 // submitVerification drives both halves of the verification form. Nothing is
 // remembered between them but the badge on offer: the code is confirmed against

@@ -21,6 +21,7 @@ var (
 	errThreadArchived = errors.New("thread is archived")
 	errImageLimit     = errors.New("image limit reached")
 	errConflict       = errors.New("already exists")
+	errNotHeld        = errors.New("post is not held")
 )
 
 // uniqueViolation is the PostgreSQL SQLSTATE for a unique constraint failure,
@@ -166,7 +167,8 @@ func (s *Store) Index(ctx context.Context, board Board, page int) (BoardIndex, e
 
 	var total int
 	if err := s.pool.QueryRow(ctx,
-		`SELECT count(*) FROM threads WHERE board_id = $1 AND archived_at IS NULL`, board.ID).Scan(&total); err != nil {
+		`SELECT count(*) FROM threads WHERE board_id = $1 AND archived_at IS NULL AND held_at IS NULL`,
+		board.ID).Scan(&total); err != nil {
 		return BoardIndex{}, err
 	}
 
@@ -180,7 +182,7 @@ func (s *Store) Index(ctx context.Context, board Board, page int) (BoardIndex, e
 	rows, err := s.pool.Query(ctx, `
 		SELECT `+threadColumns+`
 		FROM threads t
-		WHERE t.board_id = $1 AND t.archived_at IS NULL
+		WHERE t.board_id = $1 AND t.archived_at IS NULL AND t.held_at IS NULL
 		ORDER BY t.sticky DESC, t.bumped_at DESC
 		LIMIT $2 OFFSET $3`, board.ID, indexPageSize, (page-1)*indexPageSize)
 	if err != nil {
@@ -264,7 +266,7 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 		FROM threads t
 		JOIN posts p ON p.thread_id = t.id AND p.is_op
 		LEFT JOIN attachments a ON a.post_id = p.id
-		WHERE t.board_id = $1 AND t.archived_at IS NULL
+		WHERE t.board_id = $1 AND t.archived_at IS NULL AND t.held_at IS NULL AND p.held_at IS NULL
 		ORDER BY t.sticky DESC, t.bumped_at DESC
 		LIMIT $2`, board.ID, catalogLimit)
 	if err != nil {
@@ -293,7 +295,9 @@ func (s *Store) Catalog(ctx context.Context, board Board) (Catalog, error) {
 }
 
 // Archive lists a board's archived threads, most recently archived first and
-// capped at archiveLimit. Only the start of each opening post leaves the
+// capped at archiveLimit. A thread whose archive period has run out while a
+// held reply kept it from the sweep (expired_at) is not listed: it is gone as
+// far as a reader can tell, as the threads archived with it are. Only the start of each opening post leaves the
 // database: the listing shows an excerpt, and a few thousand whole bodies could
 // run to megabytes.
 func (s *Store) Archive(ctx context.Context, board Board) (Archive, error) {
@@ -302,7 +306,8 @@ func (s *Store) Archive(ctx context.Context, board Board) (Archive, error) {
 		       left(p.body, $3), length(p.body) > $3
 		FROM threads t
 		JOIN posts p ON p.thread_id = t.id AND p.is_op
-		WHERE t.board_id = $1 AND t.archived_at IS NOT NULL
+		WHERE t.board_id = $1 AND t.archived_at IS NOT NULL AND t.expired_at IS NULL
+		  AND t.held_at IS NULL AND p.held_at IS NULL
 		ORDER BY t.archived_at DESC, t.no DESC
 		LIMIT $2`, board.ID, archiveLimit, archiveBodyWindow)
 	if err != nil {
@@ -326,12 +331,16 @@ func (s *Store) Archive(ctx context.Context, board Board) (Archive, error) {
 	return archive, rows.Err()
 }
 
-// Thread loads a thread and all of its posts by board slug and thread number.
-// Archived threads load like live ones; ArchivedAt tells them apart.
+// Thread loads a thread and all of its published posts by board slug and
+// thread number. Archived threads load like live ones; ArchivedAt tells them
+// apart. A held thread is not found, nor is an expired one (Archive), and a
+// held reply is left out.
 func (s *Store) Thread(ctx context.Context, board Board, no int64) (ThreadDetail, error) {
 	detail := ThreadDetail{Board: board, Posts: []Post{}}
 	t, err := scanThread(s.pool.QueryRow(ctx,
-		`SELECT `+threadColumns+` FROM threads t WHERE t.board_id = $1 AND t.no = $2`, board.ID, no), board)
+		`SELECT `+threadColumns+` FROM threads t
+		 WHERE t.board_id = $1 AND t.no = $2 AND t.held_at IS NULL AND t.expired_at IS NULL`,
+		board.ID, no), board)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return ThreadDetail{}, errNotFound
@@ -344,7 +353,7 @@ func (s *Store) Thread(ctx context.Context, board Board, no int64) (ThreadDetail
 		SELECT `+postColumns+`, `+attachmentColumns+`
 		FROM posts p
 		LEFT JOIN attachments a ON a.post_id = p.id
-		WHERE p.thread_id = $1
+		WHERE p.thread_id = $1 AND p.held_at IS NULL
 		ORDER BY p.no`, t.ID)
 	if err != nil {
 		return ThreadDetail{}, err
@@ -383,7 +392,8 @@ func (s *Store) ThreadByID(ctx context.Context, id int64) (Board, int64, error) 
 		no   int64
 	)
 	err := s.pool.QueryRow(ctx, `
-		SELECT b.slug, t.no FROM threads t JOIN boards b ON b.id = t.board_id WHERE t.id = $1`, id).
+		SELECT b.slug, t.no FROM threads t JOIN boards b ON b.id = t.board_id
+		WHERE t.id = $1 AND t.held_at IS NULL AND t.expired_at IS NULL`, id).
 		Scan(&slug, &no)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return Board{}, 0, errNotFound
@@ -397,12 +407,15 @@ func (s *Store) ThreadByID(ctx context.Context, id int64) (Board, int64, error) 
 
 // PostThreadNo resolves a post number on a board to the number of the thread
 // holding it, live or archived. It returns errNotFound when the board has no
-// such post, which includes one a moderator has deleted.
+// such post, which includes one a moderator has deleted and one that is held,
+// or is in a held or expired thread.
 func (s *Store) PostThreadNo(ctx context.Context, board Board, no int64) (int64, error) {
 	var threadNo int64
 	err := s.pool.QueryRow(ctx, `
 		SELECT t.no FROM posts p JOIN threads t ON t.id = p.thread_id
-		WHERE p.board_id = $1 AND p.no = $2`, board.ID, no).Scan(&threadNo)
+		WHERE p.board_id = $1 AND p.no = $2 AND p.held_at IS NULL
+		  AND t.held_at IS NULL AND t.expired_at IS NULL`,
+		board.ID, no).Scan(&threadNo)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return 0, errNotFound
 	}
@@ -421,10 +434,18 @@ type NewThread struct {
 	Badge string
 	// Attachment is the image already written to the media store, if any.
 	Attachment *newAttachment
+	// Hold is the content filter's reason for keeping the thread back for a
+	// moderator, empty for a thread that is published at once.
+	Hold string
 }
 
 // CreateThread inserts a thread and its opening post, then prunes the board back
 // to its thread limit. It returns the created post.
+//
+// A held thread (in.Hold set) is stored with its opening post held and
+// threads.held_at set, and prunes nothing: it is not on the board, so it takes
+// no other thread's place there until a moderator approves it. Its number is
+// used up all the same, as a held reply's is.
 func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 	var created Post
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -441,9 +462,9 @@ func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 		}
 		var threadID int64
 		if err := tx.QueryRow(ctx, `
-			INSERT INTO threads (board_id, no, subject, image_count)
-			VALUES ($1, $2, $3, $4)
-			RETURNING id`, in.Board.ID, no, in.Subject, images).Scan(&threadID); err != nil {
+			INSERT INTO threads (board_id, no, subject, image_count, held_at)
+			VALUES ($1, $2, $3, $4, CASE WHEN $5 THEN now() END)
+			RETURNING id`, in.Board.ID, no, in.Subject, images, in.Hold != "").Scan(&threadID); err != nil {
 			return fmt.Errorf("insert thread: %w", err)
 		}
 
@@ -457,11 +478,15 @@ func (s *Store) CreateThread(ctx context.Context, in NewThread) (Post, error) {
 			OP:         true,
 			Badge:      in.Badge,
 			Attachment: in.Attachment,
+			Hold:       in.Hold,
 		})
 		if err != nil {
 			return err
 		}
 		created.ThreadNo = no
+		if in.Hold != "" {
+			return nil
+		}
 		return pruneThreads(ctx, tx, in.Board)
 	})
 	return created, err
@@ -482,6 +507,9 @@ type NewReply struct {
 	Sage bool
 	// Attachment is the image already written to the media store, if any.
 	Attachment *newAttachment
+	// Hold is the content filter's reason for keeping the reply back for a
+	// moderator, empty for a reply that is published at once.
+	Hold string
 }
 
 // ReplyRefusal reports what CreateReply would refuse a reply for, as far as the
@@ -492,7 +520,8 @@ type NewReply struct {
 // is stored, which is what a poster told to send the text on its own needs;
 // CreateReply makes the same checks under the board and thread locks, and
 // that is what enforces them when replies race. Like that check, the image
-// count is taken from the posts, not from threads.image_count.
+// count is taken from the posts, not from threads.image_count. A held or
+// expired thread is not found, as everywhere a reader can reach.
 func (s *Store) ReplyRefusal(ctx context.Context, board Board, threadNo int64, withImage bool) error {
 	var (
 		archived, locked bool
@@ -502,10 +531,11 @@ func (s *Store) ReplyRefusal(ctx context.Context, board Board, threadNo int64, w
 		SELECT t.archived_at IS NOT NULL, t.locked,
 		       CASE WHEN $3 THEN (
 		           SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
-		           WHERE p.thread_id = t.id)
+		           WHERE p.thread_id = t.id AND p.held_at IS NULL)
 		       ELSE 0 END
 		FROM threads t
-		WHERE t.board_id = $1 AND t.no = $2`, board.ID, threadNo, withImage).Scan(&archived, &locked, &images)
+		WHERE t.board_id = $1 AND t.no = $2 AND t.held_at IS NULL AND t.expired_at IS NULL`,
+		board.ID, threadNo, withImage).Scan(&archived, &locked, &images)
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		return errNotFound
@@ -523,9 +553,16 @@ func (s *Store) ReplyRefusal(ctx context.Context, board Board, threadNo int64, w
 
 // CreateReply appends a post to a thread. The thread is bumped unless the reply
 // is saged or the thread has reached its board's bump limit. It returns
-// errNotFound for a missing thread, errThreadArchived for an archived one,
-// errThreadLocked for a locked one, and errImageLimit for a reply bringing an
-// image to a thread that already holds its board's image limit.
+// errNotFound for a missing, held or expired thread, errThreadArchived for an archived
+// one, errThreadLocked for a locked one, and errImageLimit for a reply bringing
+// an image to a thread that already holds its board's image limit.
+//
+// A held reply (in.Hold set) goes through the same checks and is stored held,
+// and changes nothing else: the thread's counters, last_post_at and bump stay
+// as they were, so nothing public shows that it was sent but the post number
+// it uses up, whose gap reads as a deleted post's. The image cap counts
+// published posts only, for the same reason: a cap that counted a held image
+// would refuse the next one while the thread showed a free slot.
 func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 	var created Post
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -541,6 +578,7 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 
 		var (
 			threadID   int64
+			held       bool
 			locked     bool
 			archived   bool
 			replyCount int
@@ -553,11 +591,12 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 		// the thread, or a deletion recounting its counters — between these
 		// checks and the insert.
 		err = tx.QueryRow(ctx, `
-			SELECT t.id, t.locked, t.archived_at IS NOT NULL, t.reply_count
+			SELECT t.id, t.held_at IS NOT NULL OR t.expired_at IS NOT NULL, t.locked,
+			       t.archived_at IS NOT NULL, t.reply_count
 			FROM threads t
 			WHERE t.board_id = $1 AND t.no = $2
-			FOR UPDATE`, in.Board.ID, in.ThreadNo).Scan(&threadID, &locked, &archived, &replyCount)
-		if errors.Is(err, pgx.ErrNoRows) {
+			FOR UPDATE`, in.Board.ID, in.ThreadNo).Scan(&threadID, &held, &locked, &archived, &replyCount)
+		if errors.Is(err, pgx.ErrNoRows) || held {
 			return errNotFound
 		}
 		if err != nil {
@@ -582,7 +621,7 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			var images int
 			if err := tx.QueryRow(ctx, `
 				SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
-				WHERE p.thread_id = $1`, threadID).Scan(&images); err != nil {
+				WHERE p.thread_id = $1 AND p.held_at IS NULL`, threadID).Scan(&images); err != nil {
 				return fmt.Errorf("count images: %w", err)
 			}
 			if images >= in.Board.ImageLimit {
@@ -603,11 +642,15 @@ func (s *Store) CreateReply(ctx context.Context, in NewReply) (Post, error) {
 			Body:       in.Body,
 			Badge:      in.Badge,
 			Attachment: in.Attachment,
+			Hold:       in.Hold,
 		})
 		if err != nil {
 			return err
 		}
 		created.ThreadNo = in.ThreadNo
+		if in.Hold != "" {
+			return nil
+		}
 
 		bump := !in.Sage && replyCount+1 <= in.Board.BumpLimit
 		_, err = tx.Exec(ctx, `
@@ -635,6 +678,8 @@ type newPost struct {
 	// not a reference to one.
 	Badge      string
 	Attachment *newAttachment
+	// Hold is the reason the post is stored held, empty for a published one.
+	Hold string
 }
 
 func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
@@ -648,10 +693,11 @@ func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
 		Badge:    in.Badge,
 	}
 	if err := tx.QueryRow(ctx, `
-		INSERT INTO posts (board_id, thread_id, no, name, tripcode, poster_id, body, is_op, badge)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+		INSERT INTO posts (board_id, thread_id, no, name, tripcode, poster_id, body, is_op, badge,
+		                   held_at, held_reason)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, CASE WHEN $10 <> '' THEN now() END, $10)
 		RETURNING id, created_at`,
-		in.BoardID, in.ThreadID, in.No, p.Name, p.Tripcode, p.PosterID, p.Body, p.OP, p.Badge,
+		in.BoardID, in.ThreadID, in.No, p.Name, p.Tripcode, p.PosterID, p.Body, p.OP, p.Badge, in.Hold,
 	).Scan(&p.ID, &p.CreatedAt); err != nil {
 		return Post{}, fmt.Errorf("insert post: %w", err)
 	}
@@ -666,7 +712,10 @@ func insertPost(ctx context.Context, tx pgx.Tx, in newPost) (Post, error) {
 		return p, nil
 	}
 	// Only quotes that resolve to an existing post on the same board are
-	// recorded; dangling references stay as plain text.
+	// recorded; dangling references stay as plain text. A quote of a held post,
+	// or from one, is recorded like any other and shown by attachQuotes only
+	// once both ends are published, so approving a post brings its links with
+	// it.
 	//
 	// FOR KEY SHARE is what keeps a quote of a post that is being deleted —
 	// by the sweeper, or a moderator — from failing the reply. Without it the
@@ -706,7 +755,8 @@ func nextPostNo(ctx context.Context, tx pgx.Tx, boardID int) (int64, error) {
 // board holds more live threads than its limit, which is how imageboards stay
 // bounded without explicit deletion. An archived thread leaves the index and
 // the catalog and stops counting against the limit, so it is never archived
-// twice; the sweeper deletes it once its board's archive_days have passed.
+// twice; the sweeper deletes it once its board's archive_days have passed. A
+// held thread neither counts nor is archived: it is not on the board.
 func pruneThreads(ctx context.Context, tx pgx.Tx, board Board) error {
 	if board.ThreadLimit <= 0 {
 		return nil
@@ -715,7 +765,7 @@ func pruneThreads(ctx context.Context, tx pgx.Tx, board Board) error {
 		UPDATE threads SET archived_at = now()
 		WHERE id IN (
 		    SELECT id FROM threads
-		    WHERE board_id = $1 AND NOT sticky AND archived_at IS NULL
+		    WHERE board_id = $1 AND NOT sticky AND archived_at IS NULL AND held_at IS NULL
 		    ORDER BY bumped_at DESC
 		    OFFSET $2
 		)`, board.ID, board.ThreadLimit)
@@ -740,16 +790,19 @@ const (
 // is in the archive: nothing brings a thread back from there, so a sticky
 // would not keep it on the board or out of the sweep, and a lock would change
 // nothing a reply could notice. Refusing says so, where a quiet success would
-// let a moderator believe an archived thread had been saved.
+// let a moderator believe an archived thread had been saved. A held thread is
+// not found: it is approved or deleted, and nothing else.
 func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag threadFlag, value bool) error {
 	// The column is chosen from literal SQL rather than interpolated, so the
 	// flag name never reaches the database as data.
 	var query string
 	switch flag {
 	case flagSticky:
-		query = `UPDATE threads SET sticky = $3 WHERE board_id = $1 AND no = $2 AND archived_at IS NULL`
+		query = `UPDATE threads SET sticky = $3
+		         WHERE board_id = $1 AND no = $2 AND archived_at IS NULL AND held_at IS NULL`
 	case flagLocked:
-		query = `UPDATE threads SET locked = $3 WHERE board_id = $1 AND no = $2 AND archived_at IS NULL`
+		query = `UPDATE threads SET locked = $3
+		         WHERE board_id = $1 AND no = $2 AND archived_at IS NULL AND held_at IS NULL`
 	default:
 		return fmt.Errorf("unknown thread flag %q", flag)
 	}
@@ -761,12 +814,12 @@ func (s *Store) SetThreadFlag(ctx context.Context, board Board, no int64, flag t
 	if tag.RowsAffected() > 0 {
 		return nil
 	}
-	var archived bool
+	var archived, held bool
 	err = s.pool.QueryRow(ctx,
-		`SELECT archived_at IS NOT NULL FROM threads WHERE board_id = $1 AND no = $2`,
-		board.ID, no).Scan(&archived)
+		`SELECT archived_at IS NOT NULL, held_at IS NOT NULL FROM threads WHERE board_id = $1 AND no = $2`,
+		board.ID, no).Scan(&archived, &held)
 	switch {
-	case errors.Is(err, pgx.ErrNoRows):
+	case errors.Is(err, pgx.ErrNoRows), err == nil && held:
 		return errNotFound
 	case err != nil:
 		return err
@@ -877,15 +930,9 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 		// The counters are maintained on write, so they have to be corrected
 		// here as well: an index that still counts a deleted reply would report
 		// the wrong bump-limit state, and a deleted image has to free its slot
-		// under the image limit.
-		_, err = tx.Exec(ctx, `
-			UPDATE threads
-			SET reply_count  = GREATEST(reply_count - 1, 0),
-			    image_count  = (SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
-			                    WHERE p.thread_id = $1),
-			    last_post_at = COALESCE((SELECT max(created_at) FROM posts WHERE thread_id = $1), created_at)
-			WHERE id = $1`, threadID)
-		return err
+		// under the image limit. They are recounted rather than decremented,
+		// because the post may have been a held one that was never counted.
+		return recountThread(ctx, tx, threadID)
 	})
 	if err != nil {
 		return DeletedPost{}, err
@@ -893,7 +940,188 @@ func (s *Store) DeletePost(ctx context.Context, board Board, threadNo, postNo in
 	return deleted, nil
 }
 
+// recountThread sets a thread's reply and image counts and last_post_at from
+// its published posts, leaving the bump order alone. It is what deleting a
+// post and approving a held one do to the counters a held post never touched.
+func recountThread(ctx context.Context, tx pgx.Tx, threadID int64) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE threads t
+		SET reply_count  = (SELECT count(*) FROM posts p
+		                    WHERE p.thread_id = t.id AND NOT p.is_op AND p.held_at IS NULL),
+		    image_count  = (SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
+		                    WHERE p.thread_id = t.id AND p.held_at IS NULL),
+		    last_post_at = COALESCE((SELECT max(p.created_at) FROM posts p
+		                             WHERE p.thread_id = t.id AND p.held_at IS NULL), t.created_at)
+		WHERE t.id = $1`, threadID)
+	if err != nil {
+		return fmt.Errorf("recount thread: %w", err)
+	}
+	return nil
+}
+
+/* Held posts --------------------------------------------------------------- */
+
+// MediaPublic reports whether readers may see the file at path: an attachment
+// row names it (original_path, or thumb_path when thumb is set), its post is
+// published, and its thread has not expired (Archive). Everything else is for
+// the moderators alone: a held post's image, an expired thread's, and a file
+// no row names. That last is a file whose rows a sweep or a moderator has
+// deleted, between the commit and the file's removal or for good when the
+// store refused it; a file whose row is not written yet has no published URL.
+// Serving it would let a swept thread's images answer while an expired
+// thread's do not, and so say which thread a held reply kept.
+func (s *Store) MediaPublic(ctx context.Context, thumb bool, path string) (bool, error) {
+	query := `SELECT EXISTS (SELECT 1 FROM attachments a
+		JOIN posts p ON p.id = a.post_id JOIN threads t ON t.id = p.thread_id
+		WHERE a.original_path = $1 AND p.held_at IS NULL AND t.expired_at IS NULL)`
+	if thumb {
+		query = `SELECT EXISTS (SELECT 1 FROM attachments a
+		JOIN posts p ON p.id = a.post_id JOIN threads t ON t.id = p.thread_id
+		WHERE a.thumb_path = $1 AND p.held_at IS NULL AND t.expired_at IS NULL)`
+	}
+	var public bool
+	err := s.pool.QueryRow(ctx, query, path).Scan(&public)
+	return public, err
+}
+
+// heldQueueLimit bounds the moderator queue. A queue longer than this is a
+// backlog to work through, and the rest appear as it shrinks; the total says
+// how far behind the moderators are.
+const heldQueueLimit = 500
+
+// HeldPosts lists at most limit held posts (limit is at least one) for the
+// moderator queue, with the number held in all. Threats come first, oldest first among them, and then
+// everything else oldest first: a threat names a place or a time, and the
+// time may be today, while every other held post is already harmless where it
+// is, kept from every reader until someone reads it. Without that order a
+// backlog of other holds would push the threat past the end of the list.
+func (s *Store) HeldPosts(ctx context.Context, limit int) (held []HeldPost, total int, err error) {
+	rows, err := s.pool.Query(ctx, `
+		SELECT b.slug, t.no, p.no, p.is_op, p.held_reason, p.created_at,
+		       CASE WHEN p.is_op THEN t.subject ELSE '' END,
+		       p.name, p.tripcode, p.poster_id, p.body, p.badge, `+attachmentColumns+`,
+		       count(*) OVER ()
+		FROM posts p
+		JOIN threads t ON t.id = p.thread_id
+		JOIN boards b ON b.id = p.board_id
+		LEFT JOIN attachments a ON a.post_id = p.id
+		WHERE p.held_at IS NOT NULL
+		ORDER BY p.held_reason = 'threat' DESC, p.held_at, p.id
+		LIMIT $1`, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+
+	held = []HeldPost{}
+	for rows.Next() {
+		var (
+			h   HeldPost
+			att attachmentRow
+		)
+		dest := append([]any{&h.Board, &h.ThreadNo, &h.No, &h.OP, &h.Reason, &h.CreatedAt,
+			&h.Subject, &h.Name, &h.Tripcode, &h.PosterID, &h.Body, &h.Badge}, att.dest()...)
+		if err := rows.Scan(append(dest, &total)...); err != nil {
+			return nil, 0, err
+		}
+		h.Attachment = att.toAttachment()
+		held = append(held, h)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	// The count is carried on every row, so an empty page (limit is at least
+	// one) is an empty queue and its zero is right.
+	return held, total, nil
+}
+
+// ApprovePost publishes a held post. It returns errNotFound when the board has
+// no such post in that thread, and errNotHeld when the post is already
+// published.
+//
+// An approved reply takes its place in the thread by number, and the thread's
+// counters and last_post_at are recounted to include it. The thread is not
+// bumped: approval can come hours after the reply was written, and a reply
+// that surfaces late should not move a thread to the top of the board when
+// nobody else has touched it since. An approved opening post puts its thread
+// on the board as if it had just been posted — bumped_at now — and the board
+// is pruned back to its thread limit as a new thread prunes it, in the same
+// transaction.
+//
+// The board's row is taken first, for a reply too, because that is the order
+// posting takes them in (nextPostNo, then the thread): approving a thread
+// archives others, and taking a thread before the board here could deadlock
+// with a new thread doing the same.
+func (s *Store) ApprovePost(ctx context.Context, board Board, threadNo, postNo int64) (isOP bool, err error) {
+	err = s.inTx(ctx, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT 1 FROM boards WHERE id = $1 FOR NO KEY UPDATE`, board.ID); err != nil {
+			return fmt.Errorf("lock board: %w", err)
+		}
+		var (
+			threadID, postID int64
+			held             bool
+		)
+		err := tx.QueryRow(ctx, `
+			SELECT t.id, p.id, p.is_op, p.held_at IS NOT NULL
+			FROM threads t
+			JOIN posts p ON p.thread_id = t.id AND p.no = $3
+			WHERE t.board_id = $1 AND t.no = $2
+			FOR UPDATE OF t, p`, board.ID, threadNo, postNo).Scan(&threadID, &postID, &isOP, &held)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errNotFound
+		}
+		if err != nil {
+			return err
+		}
+		if !held {
+			return errNotHeld
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE posts SET held_at = NULL, held_reason = '' WHERE id = $1`, postID); err != nil {
+			return fmt.Errorf("approve post: %w", err)
+		}
+		if !isOP {
+			return recountThread(ctx, tx, threadID)
+		}
+		if _, err := tx.Exec(ctx,
+			`UPDATE threads SET held_at = NULL, bumped_at = now() WHERE id = $1`, threadID); err != nil {
+			return fmt.Errorf("approve thread: %w", err)
+		}
+		if err := recountThread(ctx, tx, threadID); err != nil {
+			return err
+		}
+		return pruneThreads(ctx, tx, board)
+	})
+	return isOP, err
+}
+
 /* Archive sweep ------------------------------------------------------------ */
+
+// ExpireHeld sets expired_at on every archived thread whose board's
+// archive_days had run out by asOf and which SweepArchived will not delete
+// because a reply in it is held. From then on the thread is in no public view,
+// as the threads deleted alongside it are not, so how long it lasts says
+// nothing about what is held in it. It returns how many threads it expired.
+//
+// A thread somebody else holds is left for the next sweep, as SweepArchived
+// leaves it, and stays public until then like any other thread that sweep
+// could not take.
+func (s *Store) ExpireHeld(ctx context.Context, asOf time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx, `
+		WITH due AS (
+			SELECT t.id
+			FROM threads t
+			JOIN boards b ON b.id = t.board_id
+			WHERE t.archived_at IS NOT NULL AND t.expired_at IS NULL
+			  AND t.archived_at <= $1::timestamptz - b.archive_days * interval '1 day'
+			  AND EXISTS (SELECT 1 FROM posts p WHERE p.thread_id = t.id AND p.held_at IS NOT NULL)
+			FOR UPDATE OF t SKIP LOCKED)
+		UPDATE threads SET expired_at = $1 FROM due WHERE threads.id = due.id`, asOf)
+	if err != nil {
+		return 0, fmt.Errorf("expire held threads: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
+}
 
 // SweptThreads reports what one sweep batch deleted. The batch's files are not
 // in it: their keys went into media_deletions with the rows, for the caller to
@@ -916,8 +1144,16 @@ type SweptThreads struct {
 // thread somebody else holds — a reply being refused, an overlapping sweep —
 // for next time rather than queueing behind it.
 //
+// A thread with a held reply is skipped however long ago it was archived:
+// deleting it would decide the held post's fate before a moderator had read
+// it, and a held threat is exactly what must not vanish unread. ExpireHeld
+// takes it out of public view instead, at the moment this would have deleted
+// it. A held thread is never archived in the first place
+// (threads_held_not_archived).
+//
 // Legal holds (build plan 2.10) do not exist yet. When they do, a thread under
-// one must be skipped here however long ago it was archived.
+// one must be skipped here however long ago it was archived, as a thread with
+// a held post is.
 func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (SweptThreads, error) {
 	var swept SweptThreads
 	err := s.inTx(ctx, func(tx pgx.Tx) error {
@@ -927,6 +1163,7 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 			JOIN boards b ON b.id = t.board_id
 			WHERE t.archived_at IS NOT NULL
 			  AND t.archived_at <= $1::timestamptz - b.archive_days * interval '1 day'
+			  AND NOT EXISTS (SELECT 1 FROM posts p WHERE p.thread_id = t.id AND p.held_at IS NOT NULL)
 			ORDER BY t.archived_at
 			LIMIT $2
 			FOR UPDATE OF t SKIP LOCKED`, asOf, limit)
@@ -1226,7 +1463,7 @@ func (s *Store) opPosts(ctx context.Context, threadIDs []int64) (map[int64]Post,
 		FROM posts p
 		JOIN threads t ON t.id = p.thread_id
 		LEFT JOIN attachments a ON a.post_id = p.id
-		WHERE p.thread_id = ANY($1) AND p.is_op`, threadIDs)
+		WHERE p.thread_id = ANY($1) AND p.is_op AND p.held_at IS NULL`, threadIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -1260,7 +1497,7 @@ func (s *Store) lastReplies(ctx context.Context, threadIDs []int64, perThread in
 		           row_number() OVER (PARTITION BY p.thread_id ORDER BY p.no DESC) AS rank
 		    FROM posts p
 		    JOIN threads t ON t.id = p.thread_id
-		    WHERE p.thread_id = ANY($1) AND NOT p.is_op
+		    WHERE p.thread_id = ANY($1) AND NOT p.is_op AND p.held_at IS NULL
 		) p
 		LEFT JOIN attachments a ON a.post_id = p.id
 		WHERE p.rank <= $2
@@ -1287,6 +1524,8 @@ func (s *Store) lastReplies(ctx context.Context, threadIDs []int64, perThread in
 }
 
 // attachQuotes fills in the quote and backlink references for the given posts.
+// A held post, or a post in an expired thread, is on neither end of one: it is
+// not anywhere a link could lead, and a backlink from it would say it exists.
 func (s *Store) attachQuotes(ctx context.Context, ids []int64, byID map[int64]*Post) error {
 	if len(ids) == 0 {
 		return nil
@@ -1297,7 +1536,8 @@ func (s *Store) attachQuotes(ctx context.Context, ids []int64, byID map[int64]*P
 		FROM post_quotes q
 		JOIN posts target ON target.id = q.to_post_id
 		JOIN threads thread ON thread.id = target.thread_id
-		WHERE q.from_post_id = ANY($1)
+		WHERE q.from_post_id = ANY($1) AND target.held_at IS NULL
+		  AND thread.held_at IS NULL AND thread.expired_at IS NULL
 		ORDER BY target.no`, ids)
 	if err != nil {
 		return err
@@ -1313,7 +1553,8 @@ func (s *Store) attachQuotes(ctx context.Context, ids []int64, byID map[int64]*P
 		FROM post_quotes q
 		JOIN posts source ON source.id = q.from_post_id
 		JOIN threads thread ON thread.id = source.thread_id
-		WHERE q.to_post_id = ANY($1)
+		WHERE q.to_post_id = ANY($1) AND source.held_at IS NULL
+		  AND thread.held_at IS NULL AND thread.expired_at IS NULL
 		ORDER BY source.no`, ids)
 	if err != nil {
 		return err

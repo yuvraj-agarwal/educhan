@@ -12,6 +12,7 @@ import (
 
 func TestConfigFromEnvDefaults(t *testing.T) {
 	t.Setenv("PORT", "")
+	t.Setenv("EDUCHAN_REFUSAL_LIMIT", "")
 	cfg, err := ConfigFromEnv()
 	if err != nil {
 		t.Fatalf("ConfigFromEnv: %v", err)
@@ -54,6 +55,11 @@ func TestConfigFromEnvDefaults(t *testing.T) {
 	}
 	if cfg.DBMaxConns != defaultDBMaxConns {
 		t.Errorf("DBMaxConns = %d, want %d", cfg.DBMaxConns, defaultDBMaxConns)
+	}
+	// The refusal budget is on by default: without it a refused post would
+	// cost a client nothing at all.
+	if cfg.RefusalLimit != defaultRefusalLimit || defaultRefusalLimit <= 0 {
+		t.Errorf("RefusalLimit = %d, want the default %d, which must be on", cfg.RefusalLimit, defaultRefusalLimit)
 	}
 }
 
@@ -114,6 +120,16 @@ func TestConfigFromEnvOverrides(t *testing.T) {
 	}
 	if !cfg.UploadsEnabled || !cfg.MailDev {
 		t.Errorf("UploadsEnabled/MailDev = %t/%t, want both on", cfg.UploadsEnabled, cfg.MailDev)
+	}
+	for raw, want := range map[string]int{"3": 3, " 25 ": 25, "0": 0} {
+		t.Setenv("EDUCHAN_REFUSAL_LIMIT", raw)
+		cfg, err := ConfigFromEnv()
+		if err != nil {
+			t.Fatalf("EDUCHAN_REFUSAL_LIMIT=%q: %v", raw, err)
+		}
+		if cfg.RefusalLimit != want {
+			t.Errorf("EDUCHAN_REFUSAL_LIMIT=%q: RefusalLimit = %d, want %d", raw, cfg.RefusalLimit, want)
+		}
 	}
 }
 
@@ -181,6 +197,14 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 			t.Setenv("EDUCHAN_DB_MAX_CONNS", raw)
 			if _, err := ConfigFromEnv(); err == nil {
 				t.Errorf("expected an error for EDUCHAN_DB_MAX_CONNS=%q", raw)
+			}
+		})
+	}
+	for _, raw := range []string{"-1", "lots", "2.5"} {
+		t.Run("refusal limit "+raw, func(t *testing.T) {
+			t.Setenv("EDUCHAN_REFUSAL_LIMIT", raw)
+			if _, err := ConfigFromEnv(); err == nil {
+				t.Errorf("expected an error for EDUCHAN_REFUSAL_LIMIT=%q", raw)
 			}
 		})
 	}

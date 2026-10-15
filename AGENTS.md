@@ -5,7 +5,8 @@ repository contains the working prototype: a Go HTTP API plus an embedded web UI
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
 attachments stored without their metadata, a paginated index, a catalog view, a per-board
 archive, threads with quote links and post markup (spoilers, highlighted code, maths,
-cross-board links), per-client flood control, key-authenticated moderation and board
+cross-board links), per-client flood control, content rules that send back or hold posts
+(with a moderator queue for the held ones), key-authenticated moderation and board
 management, and optional institutional verification badges are implemented. Janitor
 accounts, bans, and reports are not.
 
@@ -14,12 +15,22 @@ accounts, bans, and reports are not.
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
   `golang.org/x/image` (WebP decoding and thumbnail scaling).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
-  `-sweep` mode that deletes expired archived threads and exits.
+  `-sweep` mode that deletes archived threads past their board's archive period (one
+  with a held reply leaves public view instead, until the reply is decided) and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.
   - `attachments.go` — upload parsing, media serving.
-  - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
+  - `moderation.go` — moderation key check, the sticky/lock/delete handlers, and the
+    held-post queue and approval.
+  - `filter.go` — the content filter: normalisation, the rule tables and validators,
+    and `checkContent`, which every post goes through before it is stored;
+    `testdata/filter_corpus/` — the labelled made-up posts `TestFilterCorpus` runs
+    through it.
+  - `filtersearch.go` — how the filter runs its patterns: each split once into
+    branches, one walk of a trie finding every place a branch could start, and a copy
+    of Go's regexp machine run from those places alone; `filtersearch_test.go` holds
+    every search to what Go's regexp finds with the same pattern, and fuzzes it.
   - `boards.go` — board creation and settings updates, behind the same key.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
@@ -238,11 +249,13 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 ```
 
 Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOLDOWN=5`,
-`EDUCHAN_UPLOAD_COOLDOWN=15` seconds), so scripted loops will see `429` with a
-`Retry-After` header. Set them to `0` when a test needs to post rapidly:
+`EDUCHAN_UPLOAD_COOLDOWN=15` seconds, and `EDUCHAN_REFUSAL_LIMIT=10` posts the content
+rules send back per minute), so scripted loops will see `429` with a `Retry-After`
+header. Set them to `0` when a test needs to post rapidly, or to probe the content rules
+with many refused posts:
 
 ```bash
-EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
+EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 EDUCHAN_REFUSAL_LIMIT=0 make run
 ```
 
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
@@ -259,6 +272,7 @@ CI runs no browser, so the client's privacy and safety invariants are pinned by 
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
+`support_seen` sent only on the one resubmission from the support panel and never kept,
 KaTeX's options, and the highlighting cap. They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
@@ -396,6 +410,54 @@ needs a browser check before the test changes.
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
   restored only alongside the file it was ticked for.
+- **The content rules' answers** (see Content rules and held posts below) are shown in
+  the form, never as a page change. The draft stays put for a block and for support; a
+  held post empties the form as a published one does. They go in the form's own notice
+  (`data-form-notice`, above the buttons) rather than the page's `#notice`, because on a
+  long thread the poster is looking at the bottom of the page — and so does every other
+  refusal of a post (flood control, a locked or archived thread, the network), which
+  matters most after **Post anyway**, when the support panel is all that is on screen;
+  focus goes back to the button that was pressed (switched off while the post was out,
+  it had sent focus to the page), or to the form's own if the form was drawn again.
+  A `422` block is worded by `blockedMessage` (through `errorMessage`): the server's
+  sentence, which names what it found (a request to talk on another app is not a contact
+  detail) and the field, then the server's `match` quoted; a refusal without the
+  sentence gets the rule in plain words and the field when it is the Name or the
+  Subject. `pointAtMatch` focuses that field, selects the copy of the match the server
+  named by `occurrence` (a search that lets whitespace runs differ, since the server
+  quotes its normalised text, each search one character on from the last place found,
+  as `matchOccurrence` counts on the server; the last copy found if there are fewer; a
+  match the server cut and ended in "…" is looked for without it and selected to the end
+  of its run of non-space text), marks it `aria-invalid` and describes it by the notice
+  until the poster edits it, and scrolls the field and the notice into view together,
+  the field clear of the sticky header (`revealBelowHeader`: the least scroll leaves a
+  field under the header where it is, so one still covered goes to its scroll margin,
+  which is taller wherever the header wraps to three rows, the `max-width: 700px`
+  block; `TestNarrowScrollMarginsMatchTheHeaderWrap`).
+  Every answer is shown in `liveForm`: a re-render while the post was out ("Update")
+  replaces the form it was sent from and puts the draft in the new one, so the answer,
+  and a held or published post's emptying of the form, goes to that one; with no form
+  left on the same route, the page's `#notice` says it. A `422` support answer opens
+  `showSupport`'s panel above the buttons — the server's sentence, `HELPLINES_HTML`, and
+  **Post anyway** / **Go back** — and hides the form's own buttons while it is open.
+  Post anyway is an unnamed submit button of the form, so the resubmission goes through
+  the one submit handler and the one headers line: `supportSeen` is read from
+  `event.submitter` and adds `support_seen` to that request only, as `true` in JSON or
+  `"1"` in multipart. It is never stored, put in the draft, or left on the form, so the
+  next post with the same words is asked again
+  (`TestSupportSeenIsSentOnlyFromSubmitAndNeverKept`). Go back closes the panel and puts
+  the cursor in the message, clear of the sticky header (`revealBelowHeader`: closing
+  the panel shortens the page, which can leave the message on screen but under the
+  header, where a plain `focus()` does not scroll); nothing here traps the reader or
+  blocks the post. A `202`
+  held post empties the form as a published one does, stays on the thread or board (the
+  answer has no number, and nothing could show the post yet), and says it is waiting
+  for a moderator (`heldNoticeHTML`), linking to the FAQ's `faq-checks` and, on every
+  held post alike, to `faq-help` for where to get help. The outcome
+  names, the two block rules, `created.held` and both `support_seen` encodings are
+  checked against the server in `TestClientReadsTheContentRulesAnswersTheServerGives`.
+  Copy here follows the rules page: plain, kind, no claim that a check keeps anyone safe
+  or that anyone is watching, and no "this was a mistake" button until reports exist.
 - A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
@@ -420,12 +482,16 @@ needs a browser check before the test changes.
   `MIN_AGE` this week, and next month the same answer passes.
   Every sentence that names the age is built from `MIN_AGE`.
 - The FAQ (`FAQ_SECTIONS`) makes claims about what the code does — poster IDs and the
-  poster key, tripcodes, what is logged, the badge, the age screen. So do the rules,
-  about what a moderator can do to a post (delete it or its thread, lock the thread) and
-  what is not built yet (reports). A change to any of those changes the pages in the
+  poster key, tripcodes, what is logged, the badge, the age screen, the content checks
+  (`faq-checks`). So do the rules, about what the content checks send back, hold, and
+  answer with where to get help first, what a moderator can do to a post
+  (approve a held one, delete it or its thread, lock the thread) and what is not built
+  yet (reports). A change to any of those changes the pages in the
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
-  external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
+  external links carry `rel="noopener noreferrer"` and open in a new tab
+  (`target="_blank"`, said to screen readers), because the list is also the support
+  panel's and leaving in the same tab would lose the unsent draft. The rules and FAQ are readable before
   the age screen, so they must not depend on anything fetched: what a server can switch
   off — images, the badge — they qualify in words ("Not every educhan site …") rather
   than by reading a flag. The footer is not one of those pages, so its sentence inviting
@@ -502,7 +568,261 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - **Never market educhan as safe for teenagers.** No "safe space", no claim that a
   filter catches bullying or anything else, and no feature described to users before it
   is built. NGL, an anonymous app that did the first two, was banned by the FTC from
-  offering itself to under-18s (§3.4 item 10).
+  offering itself to under-18s (§3.4 item 10). The content filter (`filter.go`) is
+  described to readers as what it is — word and number patterns that miss plenty and
+  sometimes stop a fine post — and never as something that keeps anyone safe.
+
+### Content rules and held posts
+
+Build plan 2.9 (content rules), the hold half of 2.11 (threats) and 2.12 (self-harm).
+`checkContent` in `filter.go` reads the body, the subject, and the shown part of the
+name (`displayedName`: before the first `#`, so the tripcode secret is never read or
+quoted back). Every one of those fields has already lost its bidirectional controls
+(`collapseControl`, through `bidiControl`), which are never stored either: an override
+would show a reader text in an order the filter never read (`TestBidiControlsAreNotStored`).
+The body's markup is read as a reader sees it (`markupReadings`, from
+`markupBlocks`): a `[math]`/`[eqn]` block as one blank, `[code]` tags as line breaks
+around text that is read, and `[spoiler]` tags as nothing — so a number, handle,
+address or app name split by tags reads whole, as it does on screen once the spoiler is
+opened. Where a tag or an invisible character was, `firstNumber` sees the edge of a word
+(`view.apart`), so a number hidden in a spoiler straight after a word still stands alone. It works on two views of each field, both
+mapped byte by byte back to the source so a match is quoted as written: **plain** (NFKD
+compatibility folding, lower case, combining and enclosing marks (keycaps, circles) and
+invisible characters dropped, every script's digits as 0–9, dashes as `-`, a short list
+of Cyrillic and Greek lookalikes; a character whose compatibility form is more than
+`maxFoldRunes` long, a whole phrase such as U+FDFA, reads as itself) and **loose** (plain with spaced
+or dotted single letters closed up, a letter written three or more times running read
+twice (a capital I counted apart from a small i, since it stands for an l: "kiII"),
+leetspeak `0 1 3 4 5 7 @ $` read as letters when a letter is beside it or another one
+so read is ("ki11"), `!`
+between two letters read as `i`, a letter bracketed inside a word read as part of it
+("i[n]sta", `closingBracket`), and `l` read as `i`). Patterns are tables of Go regexps, planned as
+searches (`newSearch`, see below), for
+both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
+pattern; `TestFilterPatternsSurviveCanon`) or for the plain view only (`plainOnly`, for
+anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`).
+
+| Outcome | Rule / reason | Built from |
+| --- | --- | --- |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by up to three spaces, line breaks, `-`, `.` or `_`, or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber`, `dataSet`, `roundRange`, `decimalRange` and `ipv4` let decimals, thousands, lists, ranges and IPv4 addresses through; `classifyNumber` with `standsAlone` (maths on either side through `operandBefore`/`operandAfter`, a label (`labelled`: `numberLabels`, which include a program's "output" and "returns", with an edition such as "ISBN-10" and up to three `labelLinks` between; an account label after an `accountApp`, "whatsapp acc", is not one) or quantity word, currency, a bracket glued to a name; a `contactCue` straight before the number, "call me =", "wa/", "my number is", outweighs an operator or a maths word near it), `internationalPhone` (a `+` inside the bracket too, "(+91)"), `indianMobile` (`mobileGrouping`; single digits only when every separator is of one kind, `oneSeparatorKind`), `calledMobile` (any grouping of two or more after a `callCue`: "call me", "text me", "my number"), `nanpPhone` (`nanpSeparators`, or a `phoneCue` before spaced groups), `ukPhone`, `auMobile`, `dramaNumber` (Ofcom's ranges and `acmaDramaMobiles`; the NANP's are `nanp`'s), `helpline` (`helplineNumbers`: four Indian lines and four US ones)), `firstSpelledNumber` (digits read out one at a time, `spelledDigits` in English and Hinglish with `digitRepeats`, at least two words, mixed with digits or not, a run read again from its second word only after one of `ambiguousDigitWords`; `spelledPhone`: a mobile's shape, a North American number only after a `phoneCue`, not after a label or a `dataWords` word, and not `counting` up or down unless cued), `emailRule`/`providerEmailRule` (`providerEmail`)/`spelledEmailRule` (`emailTLDs` and `academicSecondLevel`, `exampleDomain`, `spelledEmail`, which lets `codeShape` through at a bare "at" ("Q3 at leetcode.com") except at a mail provider or a university, and a `dottedAbbreviation` ("B.Tech", "vol.1"), an `ordinalWord` ("2nd-year") or a `toolNames` version ("Python3.12") anywhere but a mail provider; bracketed `[.]` and `[@]`), `myMailRule`, `mailColonHandle` (a colon, a dash or an arrow, not the "=", "=>" or ">" of code), `linkRule` + `contactLink` (a slash may be spelled, `linkSlash`; a path may start with Signal's `#`), `spacedInviteRule`, `askRules` + `askCheck` (`topicWords`, `rankedNumber` for "number one" and "number of", `notNegated`, `quotedAsk` for an ask quoted as a kind of post, and `numberRefs` before "number"; moving a chat to an app, swapping accounts, "leave your number", "number bhejo"), `atAskRule`, `myAppRule` + `myAppCheck` (`notAHandle`), `myAmbiguousAppRule` ("my signal is …", only with a handle's marks after it), and `handleRules` (`appColonHandle`, `appAtHandle`, `appLabelHandle`, `hindiHandle`, `handleBeforeApp`, `appThenAtHandle` (an "@" up to three handle-leading words after the app: "telegram pe aao: @x_y"), `discTagHandle`, `labelledAppHandle` ("line id", "steam username"), `ghostHandle` (👻); `handleSeparator` between an app and a handle) + `handleCheck` (`plausibleHandle`, `measureShape`; for `handleBeforeApp`, `handleFirstCheck` and `toolNames`: "python3 on discord"; for `appLabelHandle` with no label, `labelHandleCheck`, `toolNames` and `dottedAbbreviation`: "ig python3 is better", "TG B.Tech") |
+| block, `422` | `id_number` | `aadhaar` (`aadhaarShape` and Verhoeff), `ssn` (`ssnShape` with dashes), or either shape with its label straight before it (`idLabelled`: `aadhaarLabels`, `ssnLabels` or "social security", `idFillers` skipped; the label is the evidence, so a mistyped check digit or spaces in place of dashes still count), `niRule` + `validNIPrefix` |
+| support, `422` | — | `supportRules` (first person only, Hinglish included, and a clause-start "want to die" or "cutting again" with no subject) filtered by `supportCheck` (`aboutSomeoneElse`: the nearest person before the words, when it is someone else, "my friend keeps saying she wants to die"; idioms such as "die of embarrassment", "cut off", "end it with her", "ending things with my boyfriend", "burning myself out", "live in the hostel" and "going on to a PhD", through `livingCheck`; `kmsCheck` for "5 kms" and AWS KMS), and `asksForAMethod` (`selfHarmMethodRules` + `methodCheck`) |
+| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` (the first person with `threatModals` and up to two `threatAdverbs`, swear words and "go" among them; "someone should"; "i planted a bomb"; some Hinglish) near (`threatWindow`, counted in `readingPositions`: letters and digits, and one for each gap however it is filled, so invisible characters and emoji pad nothing) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (`threatExcused` first, for the phrasings that need their own reading: a passive harm ("gets stabbed", "will be shot") that is the poster's own, by someone named, idiomatic ("shot down", "stabbed in the back", "killed off"), habitual, a story's or a game's, "gets" with nothing soon after it; "gets what's coming" and "pay" as karma; "end with" a visit; "nobody gets out alive" in a story; "everyone … is going to die" of an event or food; Hinglish that names a mosquito, a stage, a lamp, an exam or a toy; a weapon held as a prop; a stage set on fire; a topic beaten to death), film and sports shoots, games, named or after a preposition (`gameNamed`: a title or a map within the sentence or the 64 bytes before it; never when the sentence names a real place, `threatPlaceWords`), but not for "there will be a shooting" or "a bomb", a quotation with a verb of saying beside it (`sayingWords`), a condition that is not a demand (`harmlessCondition`: not "if you tell anyone", not "unless"), a metaphor in an exam, the markets or the polls, a drill, hurt feelings and killing with kindness (`harmlessObject`), hyperbole such as "die of boredom", "die in the exam", "die when you see the results" or "when the results come out"); `namedTargetRules` with `namedTargetCheck` (a name with a capital, or any after a title such as "mr" or "sir"; not an exam, subject, team, acronym or someone's occasion: "kill JEE", "kill Rahul's wedding"); `schoolShootingCheck` (a drill, an essay, a debate); `threatWarningRules` near `threatWarningCues` |
+| hold, `202` | `self_harm` | `selfHarmRules` filtered by `selfHarmCheck` (`saidFirst`: a bare "jump off a bridge" or "just end it" counts only as an imperative, not with a subject before it; `mentioned`: words reported or named rather than said ("he said 'just end it'"); "take all your pills" with a routine after it (`pillRoutine`), not "at once"; `notNegated`: a negation ending the same clause, as in "don't you dare kill yourself" or "a bad rank doesn't end your life", not one anywhere before it, and a warning, "careful" earlier in the sentence or "or" before the modal; idioms such as "die your hair" and "a hill to die on", games after the words or after "in" before them, and "self-" compounds, and "delete yourself from" a group) and `selfHarmMethodRules` filtered by `methodCheck` (a how-many question in either order needs a medicine named in its sentence, so "how many volts would it take to kill you" is not one) |
+| hold, `202` | `grooming` | any `ageQuestionRules` match (an age, a school year, where exactly someone lives, which area, hostel or room, an age or class said back as a question: "you're in 9th?", Hinglish "kaunse school mein ho") that `ageCheck` keeps (a question, or an age looked for as a number, `ageNumber` and `ageUnit` before a `youthNoun`: "any 14yo girls", "13-15 yo girls"; "our 15 year old students are doing well" matches too and is held only beside a cue) (or `aslRules` with `aslCheck`: "asl" opening what is said, not "bored asl" or "ASL club") and any `privateCueRules` match (talking privately or alone, meeting, coming over, "just us two", keeping it quiet, parents not knowing, "akele aana", "kisi ko mat batana") that `cueCheck` keeps ("call me crazy", "not just you", "meet the deadline", "between you and me, the food is awful" and "seniors se baat karo" are not cues) in the same post |
+
+Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
+grooming), then publish. A question about a method ("how many pills would kill me")
+gets the support screen first and is held once the poster goes on, because the person
+asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`).
+**The cost is linear in the post, and small.** No pattern is run whole over a view
+(`filtersearch.go`): each is split once into branches, one walk of a trie per view finds
+every place a branch could start, and a copy of Go's own regexp machine, which never
+backtracks, runs each branch from those places alone. The number scanner and the view
+builders are single passes, the checks read at most a clause or a sentence each side of
+a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), and the pairing checks walk
+sorted span lists. Measured on one core of an Intel Xeon @ 2.10GHz (`GOMAXPROCS=1`
+under `taskset`, no race detector, the best of several runs of each verdict, the slower
+of the two): about 0.4 ms for a typical 500-character post, about 2 ms for an ordinary
+maximum-length one, and at most about 15 ms for the slowest of 247 bodies built to be
+slow (before the searches were planned: about 4 ms, 36 ms, and 400–490 ms for a post
+of `㏂`, which folds to `maxFoldRunes`). Refusals are budgeted all the same; see the API
+contract. Planning takes about 3 s of one core, once per process, and keeps about 50 MB
+of heap; while it runs the heap reaches about 300 MB (`runtime.MemStats.HeapSys`), which
+the server's 512 MiB has to hold beside everything else. `Routes` starts it in the
+background, and a post that comes first waits for it. The plain view is skipped when the
+loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost down:
+
+- `TestFilterCostIsBounded` counts work rather than time (`checkContentCost`: the
+  places tried, the characters read, the machines' steps, and each check a match is put
+  to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
+  bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
+  post (the slowest is about 120), and eight times the text at most ten times the
+  steps. A new rule that trips it is planned or rewritten, not given a bigger bound;
+  add the body that tripped it to the table.
+- `TestFilterSearchesMatchTheirRegexps` and `FuzzFilterSearches` hold every search to
+  what Go's regexp finds with the same pattern, groups included, on every view, and
+  `TestFilterSearchesAreAllPlanned` fails if a pattern cannot be planned and would run
+  whole. A new rule's pattern needs nothing but to be written. A check may still read
+  a Go regexp over a bounded stretch round a match (32 or 64 bytes, or the match
+  itself), as most do; one large enough to cost something each match, an alternation
+  of many phrasings, is made with `newWindowSearch`, as `conditionalPlace`, the
+  medicine names and the number scanner's cues (`contactCue`, `phoneCue` and the rest)
+  are, so that it is planned and counted like the rest.
+- What planning keeps and how far its heap climbs grow with the patterns. Every branch
+  compiles its own copy of what follows its start, so the planner splits an
+  alternation only when that tail is at most `maxSplitTail` instructions (the threat
+  patterns' subjects, "i will", "someone should", sit in front of the whole list of
+  acts), shares one copy of each class's ranges among the programs (`shareRunes`), and
+  drops each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded`
+  holds the compiled programs to 800,000 instructions (about 570,000 now, and 1.4
+  million for the same patterns split without the bound). `threatActs` lists each act verb by verb and `joinActs` puts
+  the verbs that take the same people or places in front of one copy of the list, except
+  where two acts could start at the same place; `TestJoinActsMatchesTheActsOneByOne`
+  holds the joined alternation to the acts listed one by one.
+
+**Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
+extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
+or a `plainOnly` rule beside `niRule`, loaded from configuration, with its own
+`findingKind`. A new rule needs true and false positives in `filter_test.go`; the false
+positives are the harder half, and the table there (maths, dates, ISBNs, scores, prices,
+bare app names, "this exam is killing me", history questions, Hinglish and Hindi) is the
+floor. The rules read English and some Hinglish (Hindi in Latin letters: "insta pe add
+karo", "mujhe marna hai", "goli maar dunga"); Devanagari and other languages are not
+read, and the README says so.
+
+**Be honest about the limits**, in code, docs and copy. Keyword filters are easy to get
+round (a number in words other than digit by digit, a separator `groupSeparator` does not know, a bare username,
+contact details inside `[math]`, an email under a TLD not in `emailTLDs` (unless it is an
+academic second-level domain, `academicSecondLevel`: "edu.tr", "ac.il"), any language
+the tables are not written in) and they have false positives (gaming trash talk held as
+self-harm, a countdown blocked as a phone number, a dose question held, a twelve-digit
+reference that passes the Verhoeff check). That is why a block quotes exactly what it
+matched and a hold waits for a person.
+
+**The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}.jsonl`) is 895
+made-up posts, one JSON object a line: `id` (unique across the files), `body`,
+`subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a method question
+that shows support and is then held meets `hold`), `why`, and, only together,
+`known_miss: true` and a `note` saying why the miss is accepted rather than fixed.
+`TestFilterCorpus` runs each post as the handlers would (`normalizeSubject`,
+`displayedName`, `normalizeBody`, both `support_seen` verdicts) and fails on an outcome
+that is not its label, on a known miss that now comes out right (take the mark off),
+and on an unknown field or a repeated id; with `-v` it logs per file how many ordinary
+posts were stopped and how much of each kind was caught. To add a post, append a line
+to the file for its kind with the next id. The text is invented, never copied: no
+real person's number, address, handle or invite (the public helplines are the
+exception, as in `helplineNumbers`). The UK, US and Australian phone numbers in it come
+from the ranges set aside for drama, which the filter passes, so a post meant to be
+blocked uses an Indian or other number instead; an invented number, ID or handle in a
+valid shape may still happen to be someone's, as with the unit tests' examples. Label a post by what the filter should do, not by what
+it does. A rule change that turns a labelled post wrong is a regression to fix, or a
+label to correct with the reason in `why`; a `known_miss` is for a miss whose fix
+would cost more than it buys, and its `note` says what. The rules have been fixed
+against these posts, so the rates describe these posts and are no forecast.
+
+**API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
+endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
+after the body, subject and badge checks, after `ReplyRefusal` for a reply, and
+**between the two halves of flood control, and before the upload is stored**:
+`notCoolingDown` first answers `429` for a post that a cooldown would refuse, without
+reading it or starting anything, so a client in a cooldown cannot use the rules to test
+text; then a block or a support refusal starts no cooldown and stores no file
+(`TestRefusedPostsCostNoCooldownAndStoreNoFile`); then `allow` checks again and starts
+the cooldowns for a post that is to be stored, so a held post takes the cooldown like
+any other (`TestHeldPostsTakeTheCooldown`). A refusal
+is counted instead, against `refusalBudget` (`ratelimit.go`), keyed on `clientIP` across
+every board: once a client has `EDUCHAN_REFUSAL_LIMIT` (10) in a minute, `refuseContent`
+answers its posts `429` before reading them, clean or not, until the minute is up
+(`TestRefusalsAreBudgetedPerClient`). It is swept with the cooldowns, so it holds an
+address for at most its window plus the sweep interval. Badged and
+unbadged posts are filtered alike (`TestBadgedPostsAreFilteredAlike`).
+- block: `422 {"error": <one sentence naming what to remove and where>, "outcome":
+  "block", "rule": "contact"|"id_number", "field": "body"|"subject"|"name", "match":
+  <the source text, trimmed, at most 80 characters (`quoteSource`): a longer one is cut
+  and ends in "…", and the client's `pointAtMatch` then selects to the end of the run>,
+  "occurrence": <how many times the page's search finds the match earlier in the field
+  (`matchOccurrence`), so it selects the copy refused and not an allowed one before it>}`
+- support: `422 {"error": supportMessage, "outcome": "support"}`
+- hold: `202 {"held": true, "board": slug}` plus `"thread_no"` for a reply — never the
+  rule or the post number.
+
+**Nothing the filter reads is logged**: not the text, not the match, not the rule. There
+is no "post held" or "post refused" log line, but `requestLogger`'s line (method, path,
+status, duration) is written for these requests as for every other, so a `422` or `202`
+on a posting route does show that a post there was refused or held; a refusal also
+counts against the address in `refusalBudget`, in memory. A held post is stored with
+`posts.held_at` and `posts.held_reason` (the rule's name), and a held opening post sets
+`threads.held_at` too; nothing else the filter matched is stored, and approval is logged
+like every moderation action.
+`TestTheFilterLogsNothingItRead` pins exactly those records and their keys, so a new
+field on either is a decision; the README says the same, and has to change with it.
+
+**Held posts** (`0009_held_posts.sql`). `posts.held_at` and `posts.held_reason` are set
+together (`posts_held_together`; reasons `threat`, `grooming`, `self_harm`), and
+`threads.held_at` mirrors the opening post's, so a held OP holds its thread and every
+listing stays a query of `threads` alone. The invariant: **a held post appears in no
+public view and changes nothing public but its post number.** The number is taken when
+the post is stored (`nextPostNo`, which is also what orders posting before any thread's
+lock), so the next published post skips it, and `/posts/{no}` answers it exactly as it
+answers a post a moderator deleted (`TestHeldPostsAppearInNoPublicView`); only the
+timing differs, a gap that appears at once and is filled if the post is approved. Every
+public query filters it — the index
+count, list, `opPosts` and `lastReplies`; the catalog; the archive; `Thread()` (thread
+and posts); `ThreadByID`; `PostThreadNo`; both directions of `attachQuotes` — and a held
+reply leaves `reply_count`, `image_count`, `last_post_at` and `bumped_at` alone. A held
+thread is unlisted, `404` to GET, replies (`ReplyRefusal` and `CreateReply`) and
+sticky/lock, prunes nothing when created, does not count against `thread_limit`, and is
+never archived (`threads_held_not_archived`) or swept; `SweepArchived` also skips an
+archived thread with a held reply. Such a thread must not outlive the threads archived
+with it in public, or its lasting would say a held post was in it: the sweep first calls
+`ExpireHeld`, which sets `threads.expired_at` (`0011`) on exactly the expired threads it
+is about to skip, and every public read filters `expired_at IS NULL` as it filters
+`held_at` — `Archive`, `Thread`, `ThreadByID`, `PostThreadNo`, `ReplyRefusal`,
+`CreateReply` (both `404`), both directions of `attachQuotes`, and `MediaPublic`.
+Approval does not bring it back; the next sweep deletes it
+(`TestHeldReplyKeepsItsThreadFromTheSweep`). The image cap counts published posts only, so
+approval can take a thread past it. `TestHeldPostsAppearInNoPublicView` walks every
+public endpoint with a positive control (published text is found, and the held text is
+found once approved); a new public query has to decide whether it means held posts, and
+almost always it does not. `threads_board_public_order_idx` (live and not held) replaces
+`threads_board_live_order_idx`. The migration is numbered `0009` because the
+strip-metadata branch adds `0008_attachment_names.sql`. A rollback across `0009` is
+unsafe for the same reason as one across `0005`: older code ignores `held_at`, so every
+held post and thread is public and takes replies. `deploy/README.md`'s rollback warning
+does not say so yet; the README's **Held posts** does. The same goes for `0011`: older
+code shows the expired threads again.
+
+A held post's image is gated where it is served: `serveMedia` asks `MediaPublic` (the
+`0010` indexes on `attachments.original_path` and `thumb_path` keep that one lookup per
+request), which is true only for a file an attachment row names whose post is published
+and whose thread has not expired, and otherwise answers `404` with `Cache-Control:
+no-store` unless `isModerator(r)` — the moderation key, read by the same code as
+`authorizeMod` — in which case the file is served `no-store`, never `immutable`, because
+the URL turns public on approval (`TestHeldImagesAreServedOnlyToModerators`). A file no
+row names is withheld too: between a sweep deleting a thread's rows and removing its
+files, or after a removal the store refused, a swept thread's images must answer as an
+expired thread's do (`TestFilesWhoseRowsAreGoneAreNotServed`).
+
+**Moderator queue**, behind `authorizeMod`: `GET /api/held` (`{"posts","total"}`: threats
+first, then oldest first, so a backlog of other holds cannot bury one; at most
+`heldQueueLimit` = 500, with `total` counting every held post; board, thread_no, no, is_op,
+held_reason, created_at, subject for an OP, name, tripcode, poster_id, body, badge,
+attachment;
+`TestHeldQueuePutsThreatsFirstAndCountsEverything`) and `POST
+/api/boards/{slug}/threads/{no}/posts/{post}/approve`. `ApprovePost` takes the board's
+row before the thread's (`TestApprovalRacingTheArchivingThreadDoesNotDeadlock`), clears
+the held columns, and recounts (`recountThread`): an approved reply is not bumped
+(approval can come hours late); an approved OP goes live with `bumped_at = now()` and the
+board is pruned in the same transaction, as `CreateThread` prunes. A post that is not
+held is `409 post is not held` (`errNotHeld`). Rejecting is the existing `DELETE` routes,
+which work on held posts and threads; `DeletePost` recounts rather than decrements, since
+a held reply was never counted.
+
+```bash
+EDUCHAN_MOD_KEY=dev-mod-key EDUCHAN_POST_COOLDOWN=0 make run
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"add me on snap"}'      # 422 block
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"kms"}'                 # 422 support
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"kms","support_seen":true}'  # 201
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts \
+  -H 'Content-Type: application/json' -d '{"body":"how old are you? dm me"}'   # 202 held
+curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key'             # the queue
+PNO=$(curl -s localhost:8080/api/held -H 'X-Mod-Key: dev-mod-key' | TNO=$TNO python3 -c \
+  'import os,sys,json;print(next(p["no"] for p in json.load(sys.stdin)["posts"] if p["board"]=="meta" and p["thread_no"]==int(os.environ["TNO"])))')
+curl -s -X POST localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO/approve \
+  -H 'X-Mod-Key: dev-mod-key'                                            # publish it
+curl -s -X DELETE localhost:8080/api/boards/meta/threads/$TNO/posts/$PNO \
+  -H 'X-Mod-Key: dev-mod-key'                                            # or reject it
+```
+
+**Not built**: a held image stays at its ordinary random key (served only with the
+moderation key, as above); build plan 2.2 moves held images under a `quarantine/`
+prefix. Nothing pages an on-duty moderator when a threat is
+held (2.11); the queue has to be read. The page handles all three answers in the
+posting form (see **The content rules' answers** under Front end conventions).
 
 ### Attachments
 
@@ -867,12 +1187,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   out a moderator's lock, delete or recount, which do not touch the board row. It
   refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
   the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
-  creation, set from that count on every image reply, and recounted when a post is
-  deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
-  parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
-  makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
-  image the cap, counted from the posts like the real check) — then flood control,
-  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  creation, set from that count on every published image reply (a held one changes
+  nothing), and recounted from the published posts when a post is deleted or a held
+  one approved (`recountThread`). Nothing enforces the cap against the counter. The
+  order in `createPost` is: parse the body, resolve the badge, then `ReplyRefusal` — a
+  lock-free read that makes `CreateReply`'s checks in its order (missing, archived,
+  locked, and for an image the cap, counted from the posts like the real check) — then
+  `notCoolingDown`, then the content rules (`refuseContent`), then flood control
+  (`allow`), then the upload is stored, then `CreateReply`. So the common refusal costs no
   cooldown and stores nothing, and the client's "send the text on its own" goes
   through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
   nothing: replies racing for the last slot both pass it, and the check inside
@@ -913,7 +1235,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   logs an error naming the versions it does not know, and `App.schemaAhead` makes the
   sweeper refuse to run. A rollback across `0005` is unsafe whatever the code says —
   phase-0 code shows archived threads as live and its prune deletes them, leaving
-  their files behind (`deploy/README.md`). Under the same lock, after the migrations,
+  their files behind (`deploy/README.md`). So is a rollback across `0009`: older code
+  does not know `held_at`, so it shows held posts and held threads publicly. Under the same lock, after the migrations,
   `renameReservedBoards` moves any board whose slug has since been reserved to
   `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
   word needs no migration of its own.
@@ -925,8 +1248,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`pruneThreads`). Every live view — the index count and list, the catalog, and the
   prune subquery itself — filters `archived_at IS NULL`, which is what keeps archived
   threads from counting against the limit or being archived a second time
-  (`TestArchivedThreadsDoNotCountAgainstTheLimit`); the partial index
-  `threads_board_live_order_idx` covers exactly that set. `Thread()` still serves an
+  (`TestArchivedThreadsDoNotCountAgainstTheLimit`). Every one of them also filters
+  `held_at IS NULL` (see Content rules and held posts), and the partial index
+  `threads_board_public_order_idx` covers exactly that set: live and not held. `Thread()` still serves an
   archived thread, with `archived_at` set, and `CreateReply` refuses it with
   `errThreadArchived` (`403 thread is archived`), checked before the lock flag so the
   poster is told the reason that will not change. `/api/boards/{slug}/archive` lists at
@@ -959,9 +1283,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   secret on purpose, so `New` warns about none of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
-  warning about a server-only setting goes there, not in `New`. **Legal holds (build
-  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
-  its comment says so.
+  warning about a server-only setting goes there, not in `New`. `SweepArchived` skips an
+  archived thread that has a held post in it, however long ago it was archived, so a
+  held threat cannot vanish before a moderator reads it. **Legal holds (build plan 2.10)
+  are not built**; when they are, `SweepArchived` must skip held threads the same way,
+  and its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -1015,7 +1341,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestReplyQuotingAPostBeingDeletedStillPosts`).
 - Config via env vars: `DATABASE_URL`, `EDUCHAN_ADDR`, `EDUCHAN_POSTER_ID_SALT`,
   `EDUCHAN_TRUST_PROXY`, `EDUCHAN_THREAD_COOLDOWN`, `EDUCHAN_POST_COOLDOWN`,
-  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
+  `EDUCHAN_UPLOAD_COOLDOWN`, `EDUCHAN_REFUSAL_LIMIT`, `EDUCHAN_LOG_FORMAT`, `EDUCHAN_MEDIA_BACKEND`,
   `EDUCHAN_UPLOAD_DIR`, `EDUCHAN_GCS_BUCKET`, `EDUCHAN_GCS_PREFIX`,
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
@@ -1044,15 +1370,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   passing before the image is stored): `allow` hands back the refund `chargeAll` makes,
   which takes back the cooldowns that post started and leaves alone any that another post
   has started since (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of
-  room to read it is turned away before `allow`, so it has nothing to refund.
+  room to read it is turned away before `allow`, so it has nothing to refund. A post the
+  content rules refuse starts no cooldown and is counted by `refusalBudget` instead, and a
+  post a cooldown would refuse is answered by `notCoolingDown` (the same check, recording
+  nothing) before the rules read it (see **API contract** under Content rules).
   State is per process and in memory — a shared backend means replacing
-  `cooldownLimiter`, which nothing else depends on.
+  `cooldownLimiter` and `refusalBudget`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
-  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
+  builds a `cooldownSweep` over all four limiters and the refusal budget (anything
+  `expiring`) and starts its timer, which drops every expired entry each
+  `cooldownSweepInterval` (one minute), and `Close` stops it.
   **While the process has CPU, an address is held in memory no longer than the
   longest cooldown that applies to it plus one minute**, counted from its last action
-  that started one, busy server or quiet. A host that gives CPU only during requests,
+  that started one (for the refusal budget, from the first refusal of its minute),
+  busy server or quiet. A host that gives CPU only during requests,
   which is Cloud Run's default (request-based billing), holds the timer back on an
   idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
   request is handled; until a request arrives or the instance stops, an idle instance
@@ -1077,10 +1408,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
-  failure there is logged and leaves an orphaned file rather than a broken post.
+  failure there is logged and leaves an orphaned file rather than a broken post, which
+  `serveMedia` answers `404` to all but a moderator because no row names it.
   `removeBlobs` ignores the caller's cancellation, because the rows are already gone and
-  nothing would come back for the files later. Sticky and lock apply to live threads
-  only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
+  nothing would come back for the files later. Approving a held post goes through the
+  same gate (`handleApprovePost`), and logs where it was, never what. Sticky and lock
+  apply to live threads only: `SetThreadFlag` refuses an archived one with `errThreadArchived` (`403 thread is
   archived`), because nothing brings a thread back from the archive and a sticky that
   answered success would not keep it out of the sweep
   (`TestArchivedThreadsCannotBeStickiedOrLocked`).
@@ -1231,7 +1564,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
-  `internal/app/busy_test.go`, and `TestClientKnowsTheServersImageRefusals` in
+  `internal/app/busy_test.go`, `internal/app/filter_api_test.go`, and
+  `TestClientKnowsTheServersImageRefusals` and
+  `TestClientReadsTheContentRulesAnswersTheServerGives` in
   `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
   `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
   the development database. `testServer` builds its `Config` directly, which leaves every
