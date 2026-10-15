@@ -515,6 +515,80 @@ or the Job's own retry, tries it again, so a retry is always safe. In the log,
 `blobs_missing` above zero means the media settings are wrong; `blob_failures`
 means the store refused or was unreachable.
 
+### 2.10 Selling the educhan Pass (optional)
+
+The Pass is off until `EDUCHAN_PASS_SECRET` is set, and nothing else in this
+guide needs it. Turn it on only when it goes on sale. The server refuses to
+start with some of the Pass settings and not the others, so they go on
+together, in one `gcloud run services update`, or not at all. The sweeper Job
+needs none of them.
+
+**In the Stripe dashboard first.** Under *Settings → Public details*, set a
+support email: it is printed on every receipt, and a buyer who lost their code
+writes there to have it reissued. Then make a restricted key (*Developers → API
+keys → Create restricted key*) with **Checkout Sessions: Write** and **Prices:
+Read** and nothing else. Those are the only two calls the server makes. A full
+secret key also works but can do far more than the server needs.
+
+In Cloud Shell, keep the key out of your shell history:
+
+```bash
+read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
+read -rsp 'Stripe secret key (for the two setup calls only): ' STRIPE_ADMIN; echo
+export PUBLIC_URL=https://YOUR-DOMAIN   # the site's origin, no trailing slash
+
+# The product and its one-time price. The currency and amount below are only an
+# example: pick your own. The amount is in the currency's smallest unit (19900 =
+# INR 199.00). A new price later is a new Price and EDUCHAN_STRIPE_PRICE_ID.
+PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
+  -d name="educhan Pass" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
+  -d product="$PRODUCT" -d currency=inr -d unit_amount=19900 \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+
+# The webhook endpoint, pinned to the API version the server is written
+# against. Its signing secret is returned by this call and no other.
+WEBHOOK_SECRET=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STRIPE_ADMIN}:" \
+  -d url="${PUBLIC_URL}/api/pass/stripe-webhook" -d api_version=2024-06-20 \
+  -d "enabled_events[]=checkout.session.completed" \
+  -d "enabled_events[]=checkout.session.async_payment_succeeded" \
+  -d "enabled_events[]=charge.refunded" \
+  -d "enabled_events[]=charge.dispute.created" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])')
+unset STRIPE_ADMIN
+
+openssl rand -hex 32 \
+  | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
+printf '%s' "$STRIPE_KEY" \
+  | gcloud secrets create educhan-stripe-secret-key --replication-policy=automatic --data-file=-
+printf '%s' "$WEBHOOK_SECRET" \
+  | gcloud secrets create educhan-stripe-webhook-secret --replication-policy=automatic --data-file=-
+unset STRIPE_KEY WEBHOOK_SECRET
+for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
+done
+
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
+```
+
+`curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
+price. To have Stripe Tax add sales tax, VAT or GST, switch Stripe Tax on in the
+account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars.
+
+**Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
+payment record is a hash under it, so rotating it cancels every Pass that was
+sold, and leaves no record a refund could find.
+
+**Keep the webhook reachable.** Stripe calls `POST /api/pass/stripe-webhook` from
+its own addresses, and a buyer who has paid gets nothing until that call lands.
+Stripe retries for up to three days, but once a load balancer and Cloud Armor
+are in front of the service, no rate or geography rule may block that path. The
+service also needs outbound HTTPS to `api.stripe.com`. That is open by default;
+if egress is ever restricted, allow it.
+
 ---
 
 ## 3. How the Cloud SQL connection works
@@ -589,6 +663,9 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_DB_MAX_CONNS` | `3` (default) | `3` | Connection pool cap per instance; times `maxScale` it must fit the Cloud SQL tier (section 3) |
 | `EDUCHAN_UPLOADS_ENABLED` | `1` when testing images | **`false`** | Off refuses image posts with `403`. Keep it off until images are stripped of metadata and scanned |
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
+| `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off. Set together with the four below, or the server refuses to start (section 2.10) |
+| `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
+| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
 value higher than the real chain lets a client pick its own rate-limit bucket by
