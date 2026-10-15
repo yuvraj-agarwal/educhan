@@ -2513,11 +2513,11 @@ var linkRule = func() rule {
 		short("line.me"), long("tiktok.com"), long("twitter.com"), short("x.com"), long("reddit.com"),
 		long("join.skype.com"), long("linktr.ee"),
 		// Calls and profiles: a meeting link is a call anyone reading can
-		// join, and a LinkedIn profile is the person. A Zoom link's own
-		// subdomain ("us05web.zoom.us") needs no reading: the host starts
-		// a word after its dot.
+		// join, and a LinkedIn profile is the person. A Zoom or Webex link's
+		// own subdomain ("us05web.zoom.us", "acme.webex.com") needs no
+		// reading: the host starts a word after its dot.
 		short("zoom.us"), long("meet.google.com"), long("teams.microsoft.com"),
-		long("teams.live.com"), long("meet.jit.si"), long("linkedin.com"))
+		long("teams.live.com"), long("meet.jit.si"), long("webex.com"), long("linkedin.com"))
 	// Compiled as written: a path may contain "~", which phrase would read
 	// as a separator.
 	src := `\b(?:https?\W{0,3})?(?:www\s?\.\s?)?(` + hosts + `)` + linkSlash +
@@ -2611,6 +2611,18 @@ func contactLink(host, path string) bool {
 		return first == "meet" && len(segs) > 1
 	case "meet.jit.si":
 		return true
+	case "webex.com":
+		// A personal room ("/meet/" or "/join/" and its name), a meeting or an
+		// event by its site's "j.php" or "e.php" (whose "?MTID=…" the path
+		// stops before), or the join service's page for a meeting; not
+		// "webex.com/downloads" or a help page.
+		switch {
+		case first == "meet" || first == "join":
+			return len(segs) > 1
+		case len(segs) > 1 && (segs[1] == "j.php" || segs[1] == "e.php"):
+			return true
+		}
+		return (first == "wbxmjs" || first == "webappng") && slices.Contains(segs, "meeting")
 	case "linkedin.com":
 		return (first == "in" || first == "pub") && len(segs) > 1
 	}
