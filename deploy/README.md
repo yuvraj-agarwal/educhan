@@ -521,7 +521,10 @@ The Pass is off until `EDUCHAN_PASS_SECRET` is set, and nothing else in this
 guide needs it. Turn it on only when it goes on sale. The server refuses to
 start with some of the Pass settings and not the others, so they go on
 together, in one `gcloud run services update`, or not at all. The sweeper Job
-needs none of them.
+needs none of them, except `EDUCHAN_PASS_DAYS` if you change it: the sweep
+prunes paid orders nobody collected by the Pass's length, so give the Job the
+same value (`gcloud run jobs update educhan-sweep --region "$REGION"
+--update-env-vars EDUCHAN_PASS_DAYS=…`).
 
 **In the Stripe dashboard first.** Under *Settings → Public details*, set a
 support email: it is printed on every receipt, and a buyer who lost their code
@@ -539,7 +542,7 @@ In Cloud Shell, keep the key out of your shell history:
 ```bash
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the two setup calls only): ' STRIPE_ADMIN; echo
-export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin: any path, even "/", is refused
+export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin: any path is refused
 
 # The product and its one-time price: USD 20.00, a year of the Pass. The amount
 # is in the currency's smallest unit (2000 = USD 20.00). A new price later is a
@@ -674,9 +677,9 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 | `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off. Set together with the four below, or the server refuses to start (section 2.10) |
 | `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
-| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (a path or trailing slash refuses to start) |
+| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start) |
 | `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe adds the tax at checkout and the page says "plus any tax" |
-| `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts; at least `1` |
+| `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts; at least `1`. Set the same on the sweeper Job |
 | `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |
 
