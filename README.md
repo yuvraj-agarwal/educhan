@@ -408,8 +408,27 @@ a refund cannot miss a Pass being collected beside it, and a "paid" cannot
 slip past a refund. Posting with a Pass only reads, and takes no lock.
 
 **Lost codes.** A buyer who lost their code writes to the support address on
-Stripe's receipt, and the owner reissues it with `POST /api/pass/reissue` and
-Stripe's payment id; the old code stops working.
+Stripe's receipt. The owner finds the payment in Stripe and asks for a reissue
+link with its id:
+
+```bash
+curl -X POST https://<site>/api/pass/reissue -H 'X-Mod-Key: …' \
+  -H 'Content-Type: application/json' -d '{"payment_intent":"pi_…"}'
+# -> {"url":"https://<site>/pass#reissue=…","expires_at":"…"}
+```
+
+and emails the link, from the support address, to the address the buyer wrote
+in from. The owner never sees a code. Opened on the Pass page, the link gives
+the Pass a new code, shown once, and the old one stops working; for a
+purchase paid and never collected, it collects it. It works once, until a
+deadline like an order's (a week, to the next midnight UTC); a newer link for
+the same payment replaces it, and a refund cancels it. Its token rides in the
+address's fragment, which the browser sends to no server and puts in no
+`Referer`, and the page takes it out of the address bar before anything else
+and sends it in the body of the claim; the server keeps only its hash. Only
+the payment that bought a Pass, or a paid purchase nobody collected, can be
+reissued: a renewal's payment answers `409`, because otherwise somebody who
+saw a code once could renew it and have the owner reissue it to them.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass
 (`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
@@ -916,10 +935,10 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"},"claim"}`; `price` is left out when Stripe can't be asked, and `"claim":true` is there only when the browser holds a claim cookie |
 | `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets the claim cookie or keeps the one the browser has; `409` when the Pass to renew was refunded or lapsed meanwhile |
-| `POST` | `/api/pass/claim` | Collect every paid order under the claim cookie — `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while orders wait for Stripe; `400` when nothing is left. `"claim"` says whether anything still waits |
+| `POST` | `/api/pass/claim` | Collect every paid order under the claim cookie — `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while orders wait for Stripe; `400` when nothing is left. `"claim"` says whether anything still waits. With `{"reissue":"…"}`, a reissue link's token, it redeems the link instead, answering the same way or `403 {"pass":"invalid"}` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}` |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
-| `POST` | `/api/pass/reissue` | Moderation key: a new code for a lost one — `{"payment_intent":"pi_…"}` |
+| `POST` | `/api/pass/reissue` | Moderation key: a one-time link that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"url","expires_at"}`, `404` for a payment that bought nothing or was refunded, `409` for a renewal's payment |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 

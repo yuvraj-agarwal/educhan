@@ -948,7 +948,7 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 	// TestVerificationTablesCannotBeJoinedToPosts and
 	// TestPassTablesCannotBeJoinedToPosts.
 	for _, table := range []string{"posts", "verification_pending", "verification_credentials",
-		"passes", "pass_payments", "pass_orders", "pass_revocations"} {
+		"passes", "pass_payments", "pass_orders", "pass_revocations", "pass_reissues"} {
 		want[table] = nil
 	}
 	for _, table := range h.tables() {

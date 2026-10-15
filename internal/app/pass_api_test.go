@@ -5,11 +5,13 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/cookiejar"
 	"net/http/httptest"
 	"net/url"
 	"strconv"
@@ -988,25 +990,69 @@ func TestPassRefundTakesOffOneTerm(t *testing.T) {
 	}
 }
 
+// reissueLink asks for a reissue link as the owner, and returns the status,
+// the answer and the link's token.
+func (p *passHarness) reissueLink(key, paymentIntent string) (int, passResponse, string) {
+	p.t.Helper()
+	var out passResponse
+	status := p.postWithHeaders(http.Header{modKeyHeader: {key}}, "/api/pass/reissue",
+		map[string]any{"payment_intent": paymentIntent}, &out)
+	token, _ := strings.CutPrefix(out.URL, testPublicURL+"/pass#reissue=")
+	return status, out, token
+}
+
+// otherBrowser is a browser with no cookies of this harness's, as a buyer
+// opening a reissue link somewhere else would be.
+func (p *passHarness) otherBrowser() *passHarness {
+	p.t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	h := &harness{client: &client{t: p.t, base: p.base, http: &http.Client{Jar: jar}}, app: p.app}
+	return &passHarness{harness: h, stripe: p.stripe}
+}
+
+// redeem opens a reissue link on the Pass page, which sends its token in the
+// claim's body.
+func (p *passHarness) redeem(token string) (int, passResponse) {
+	p.t.Helper()
+	var out passResponse
+	status := p.post("/api/pass/claim", map[string]any{"reissue": token}, &out)
+	return status, out
+}
+
+// TestPassReissue holds a reissue to a one-time link the owner passes on and
+// never sees a code through, for the payment that bought a Pass or a paid
+// order nobody collected.
 func TestPassReissue(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	issued := p.buy("pi_lost")
 
-	reissue := func(key, pi string) (int, passResponse) {
-		var out passResponse
-		status := p.postWithHeaders(http.Header{modKeyHeader: {key}}, "/api/pass/reissue",
-			map[string]any{"payment_intent": pi}, &out)
-		return status, out
-	}
-	if status, _ := reissue("wrong", "pi_lost"); status != http.StatusForbidden {
+	if status, _, _ := p.reissueLink("wrong", "pi_lost"); status != http.StatusForbidden {
 		t.Fatalf("reissue without the moderation key: status %d", status)
 	}
-	if status, _ := reissue("mod-key", "pi_unknown"); status != http.StatusNotFound {
+	if status, _, _ := p.reissueLink("mod-key", "pi_unknown"); status != http.StatusNotFound {
 		t.Fatalf("reissue of an unknown payment: status %d", status)
 	}
-	status, fresh := reissue("mod-key", "pi_lost")
-	if status != http.StatusOK || !passCodeShape(fresh.Pass) || fresh.Pass == issued.Pass || !fresh.ExpiresAt.Equal(issued.ExpiresAt) {
-		t.Fatalf("reissue: status %d, %+v", status, fresh)
+	status, link, token := p.reissueLink("mod-key", "pi_lost")
+	if status != http.StatusOK || token == "" || link.Pass != "" || !link.ExpiresAt.Equal(dayCeil(link.ExpiresAt)) {
+		t.Fatalf("reissue: status %d, %+v", status, link)
+	}
+	if raw, err := base64.RawURLEncoding.DecodeString(token); err != nil || len(raw) != 16 {
+		t.Fatalf("reissue link %q does not carry a 16-byte token in its fragment", link.URL)
+	}
+	// Making the link changes nothing: the code works until the link is used.
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("making a link stopped the code: status %d", status)
+	}
+
+	// Opened anywhere, the link gives a new code for the same Pass, once.
+	buyer := p.otherBrowser()
+	status, fresh := buyer.redeem(token)
+	if status != http.StatusOK || fresh.Status != "issued" || !passCodeShape(fresh.Pass) || fresh.Pass == issued.Pass ||
+		!fresh.ExpiresAt.Equal(issued.ExpiresAt) {
+		t.Fatalf("redeeming the link: status %d, %+v", status, fresh)
 	}
 	if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
 		t.Fatalf("the replaced code still works: status %d", status)
@@ -1014,15 +1060,101 @@ func TestPassReissue(t *testing.T) {
 	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
 		t.Fatalf("the reissued code: status %d", status)
 	}
+	if status, out := buyer.redeem(token); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a link used twice: status %d, %+v", status, out)
+	}
+	if status, _ := buyer.redeem("not a token"); status != http.StatusForbidden {
+		t.Fatalf("a malformed link: status %d", status)
+	}
 
-	// Paid for and never collected: reissue issues it, and the claim is gone.
+	// A newer link replaces the one before it, and a link lapses at its
+	// deadline.
+	_, _, older := p.reissueLink("mod-key", "pi_lost")
+	_, _, newer := p.reissueLink("mod-key", "pi_lost")
+	if status, _ := buyer.redeem(older); status != http.StatusForbidden {
+		t.Fatalf("a replaced link still works: status %d", status)
+	}
+	p.exec(`UPDATE pass_reissues SET expires_at = now() - interval '1 second'`)
+	if status, _ := buyer.redeem(newer); status != http.StatusForbidden {
+		t.Fatalf("a link past its deadline still works: status %d", status)
+	}
+
+	// Paid for and never collected: the link collects it, and the browser's
+	// claim has nothing left.
 	p.paid(p.checkout(""), "pi_never_collected")
-	status, rescued := reissue("mod-key", "pi_never_collected")
-	if status != http.StatusOK || !passCodeShape(rescued.Pass) {
-		t.Fatalf("reissue of an uncollected Pass: status %d, %+v", status, rescued)
+	_, _, token = p.reissueLink("mod-key", "pi_never_collected")
+	if status, rescued := buyer.redeem(token); status != http.StatusOK || rescued.Status != "issued" || !passCodeShape(rescued.Pass) {
+		t.Fatalf("redeeming a link for an uncollected Pass: status %d, %+v", status, rescued)
 	}
 	if status, _ := p.claim(); status != http.StatusBadRequest {
-		t.Fatalf("an order reissued by the owner could still be collected: status %d", status)
+		t.Fatalf("an order collected through a link could be collected again: status %d", status)
+	}
+
+	// A refund cancels a link not yet used, and a refunded payment gets none.
+	refunded := p.buy("pi_refunded_after_link")
+	_, _, token = p.reissueLink("mod-key", "pi_refunded_after_link")
+	p.refund("pi_refunded_after_link")
+	if status, _ := buyer.redeem(token); status != http.StatusForbidden {
+		t.Fatalf("a link for a refunded payment still works: status %d", status)
+	}
+	if status, _, _ := p.reissueLink("mod-key", "pi_refunded_after_link"); status != http.StatusNotFound {
+		t.Fatalf("a link for a refunded payment: status %d", status)
+	}
+	if status, _ := p.activate(refunded.Pass); status != http.StatusForbidden {
+		t.Fatalf("a refunded Pass works: status %d", status)
+	}
+}
+
+// TestPassReissueCannotTakeOverAPass holds a reissue to the payment that
+// bought the Pass. Somebody who sees a code once, pays to renew it and asks
+// for a reissue with their own payment gets no link, and the holder keeps the
+// Pass; one whose renewal was never collected gets only the renewal.
+func TestPassReissueCannotTakeOverAPass(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	victim := p.buy("pi_victim")
+
+	intruder := p.otherBrowser()
+	intruder.renew(victim.Pass, "pi_intruder")
+	if status, out, token := p.reissueLink("mod-key", "pi_intruder"); status != http.StatusConflict || token != "" ||
+		!strings.Contains(out.Error, "payment that bought the Pass") {
+		t.Fatalf("reissue with a renewal's payment: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("the holder lost their Pass to a renewal: status %d", status)
+	}
+
+	// A link made while a renewal was uncollected, used after it was collected
+	// as a renewal, gives nothing either.
+	intruder.paid(intruder.checkout(victim.Pass), "pi_collected_after_link")
+	_, _, early := p.reissueLink("mod-key", "pi_collected_after_link")
+	if status, out := intruder.claim(); status != http.StatusOK || out.Status != "renewed" {
+		t.Fatalf("collect the renewal: status %d, %+v", status, out)
+	}
+	if status, out := intruder.redeem(early); status != http.StatusForbidden || out.Pass != passInvalid {
+		t.Fatalf("a link for a renewal collected since: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("the holder lost their Pass to a renewal's early link: status %d", status)
+	}
+
+	// Renewed and never collected: the link collects the renewal, which
+	// renews the Pass and shows no code.
+	before, _ := p.passExpiresAt(victim.Pass)
+	intruder.paid(intruder.checkout(victim.Pass), "pi_uncollected_renewal")
+	status, _, token := p.reissueLink("mod-key", "pi_uncollected_renewal")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of an uncollected renewal: status %d", status)
+	}
+	status, out := intruder.redeem(token)
+	if status != http.StatusOK || out.Status != "renewed" || out.Pass != "" || !out.ExpiresAt.Equal(before.AddDate(0, 0, 365)) {
+		t.Fatalf("redeeming an uncollected renewal: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("the holder lost their Pass to an uncollected renewal's link: status %d", status)
+	}
+	// Collected now, that payment is a renewal like any other.
+	if status, _, _ := p.reissueLink("mod-key", "pi_uncollected_renewal"); status != http.StatusConflict {
+		t.Fatalf("reissue of a collected renewal: status %d", status)
 	}
 }
 
@@ -1192,8 +1324,18 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	if status, _ := p.postWithPass("scan", "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ", "", nil); status != http.StatusForbidden {
 		t.Fatalf("unknown Pass: status %d", status)
 	}
+	// The code is lost and reissued through a link, and the new one posts too.
+	_, _, linkToken := p.reissueLink("mod-key", "pi_scan_payment")
+	status, reissued := p.otherBrowser().redeem(linkToken)
+	if status != http.StatusOK || reissued.Status != "issued" {
+		t.Fatalf("redeem the reissue link: status %d, %+v", status, reissued)
+	}
+	if status, out := p.postWithPass("scan", reissued.Pass, "", nil); status != http.StatusCreated {
+		t.Fatalf("thread with the reissued Pass: status %d (%s)", status, out.Error)
+	}
+	newCode, _ := parsePassCode(reissued.Pass)
 
-	stored := p.app.passTokenHash(code)
+	stored := p.app.passTokenHash(newCode)
 	// Positive controls: the scan finds the post body in posts, and the stored
 	// hash in passes, so a scan that finds nothing has looked.
 	if n := p.rowsContaining("posts", []byte(marker)); n != 1 {
@@ -1204,16 +1346,20 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	}
 	budgetKey := p.app.passBudgetKey(code)
 	for name, needle := range map[string][]byte{
-		"the code":                []byte(issued.Pass),
-		"the canonical code":      []byte(code),
-		"the stored hash":         stored,
-		"the budget key":          []byte(budgetKey),
-		"the unknown code":        []byte("ZZZZZZZZZZZZZZZZZZZZ"),
-		"SHA-256 of the code":     sha(code),
-		"the payment intent":      []byte("pi_scan_payment"),
-		"the buyer's email":       []byte("buyer@example.com"),
-		"the buyer's name":        []byte("Bea Buyer"),
-		"the checkout session id": []byte("cs_test_1"),
+		"the code":                 []byte(issued.Pass),
+		"the canonical code":       []byte(code),
+		"the replaced code's hash": p.app.passTokenHash(code),
+		"the reissued code":        []byte(reissued.Pass),
+		"the canonical new code":   []byte(newCode),
+		"the reissue link token":   []byte(linkToken),
+		"the stored hash":          stored,
+		"the budget key":           []byte(budgetKey),
+		"the unknown code":         []byte("ZZZZZZZZZZZZZZZZZZZZ"),
+		"SHA-256 of the code":      sha(code),
+		"the payment intent":       []byte("pi_scan_payment"),
+		"the buyer's email":        []byte("buyer@example.com"),
+		"the buyer's name":         []byte("Bea Buyer"),
+		"the checkout session id":  []byte("cs_test_1"),
 	} {
 		for _, table := range p.tables() {
 			if table == "passes" && name == "the stored hash" {
@@ -1232,6 +1378,9 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	for name, needle := range map[string]string{
 		"the code":           issued.Pass,
 		"the canonical code": code,
+		"the reissued code":  reissued.Pass,
+		"the new code":       newCode,
+		"the reissue link":   linkToken,
 		"the stored hash":    hex.EncodeToString(stored),
 		"the budget key":     budgetKey,
 		"the payment intent": "pi_scan_payment",
@@ -1261,6 +1410,7 @@ func TestPassTablesCannotBeJoinedToPosts(t *testing.T) {
 		"pass_payments":    {"days", "origin", "pass_id", "payment_hash"},
 		"pass_orders":      {"claim_hash", "expires_at", "payment_hash", "renew_pass_id", "session_hash"},
 		"pass_revocations": {"expires_at", "payment_hash"},
+		"pass_reissues":    {"expires_at", "payment_hash", "token_hash"},
 	}
 	for table, columns := range want {
 		if got := h.columns(table); strings.Join(got, ",") != strings.Join(columns, ",") {
@@ -1315,6 +1465,8 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 				now.Add(-time.Hour), days(1), days(-10), days(-366))
 			h.exec(`INSERT INTO pass_revocations (payment_hash, expires_at) VALUES
 				('\xb5', $1), ('\xb6', $2)`, now.Add(-time.Hour), days(1))
+			h.exec(`INSERT INTO pass_reissues (token_hash, payment_hash, expires_at) VALUES
+				('\xd7', '\xb7', $1), ('\xd8', '\xb8', $2)`, now.Add(-time.Hour), days(1))
 			if _, err := h.app.Sweep(context.Background()); err != nil {
 				t.Fatalf("sweep: %v", err)
 			}
@@ -1324,6 +1476,8 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 				// Unpaid past its deadline goes; paid stays a term past it.
 				"SELECT string_agg(encode(session_hash, 'hex'), ',' ORDER BY session_hash) FROM pass_orders": "a2,a3",
 				"SELECT string_agg(encode(payment_hash, 'hex'), ',') FROM pass_revocations":                  "b6",
+				// A reissue link goes at its deadline.
+				"SELECT string_agg(encode(token_hash, 'hex'), ',') FROM pass_reissues": "d8",
 			} {
 				var got string
 				if err := h.app.pool.QueryRow(context.Background(), table).Scan(&got); err != nil {
@@ -1619,6 +1773,7 @@ func TestEveryPassWriteTakesThePassLock(t *testing.T) {
 		cfg.DBMaxConns = 16
 	})
 	p.buy("pi_reissue")
+	_, _, token := p.reissueLink("mod-key", "pi_reissue")
 	session := p.checkout("")
 	unpaid := map[string]any{"id": session, "object": "checkout.session", "mode": "payment", "payment_status": "unpaid"}
 	request := func(req *http.Request) func() <-chan racedResponse {
@@ -1637,6 +1792,7 @@ func TestEveryPassWriteTakesThePassLock(t *testing.T) {
 		{"a dispute", request(p.webhookRequest(stripeDisputeCreated, map[string]any{"payment_intent": "pi_dispute"}))},
 		{"a reissue", request(p.request("/api/pass/reissue", map[string]any{"payment_intent": "pi_reissue"},
 			http.Header{modKeyHeader: {"mod-key"}}))},
+		{"a reissue link redeemed", request(p.request("/api/pass/claim", map[string]any{"reissue": token}, nil))},
 		{"the sweep", func() <-chan racedResponse {
 			done := make(chan racedResponse, 1)
 			go func() {

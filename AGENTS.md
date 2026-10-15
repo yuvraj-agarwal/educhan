@@ -257,9 +257,10 @@ The Pass is off unless `EDUCHAN_PASS_SECRET` and the four Stripe settings are se
 end-to-end checks live in `pass_api_test.go` against a fake Stripe (`fakeStripe`) rather
 than in curl. A real checkout uses Stripe's test mode: test keys, a test Price, and
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
-with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A Pass code can be reissued with
+with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued with
 `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H 'Content-Type:
-application/json' -d '{"payment_intent":"pi_…"}'`.
+application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a one-time link
+(`/pass#reissue=…`) for the buyer, never a code.
 
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass

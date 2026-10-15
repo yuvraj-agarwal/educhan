@@ -79,3 +79,17 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
     payment_hash BYTEA PRIMARY KEY,
     expires_at   TIMESTAMPTZ NOT NULL
 );
+
+-- One-time links that hand a lost Pass back to its buyer: the owner makes one
+-- for a payment (POST /api/pass/reissue) and sends it to the address the buyer
+-- wrote in from, and whoever opens it is given a new code. The owner never sees
+-- a code. A row lives until its link is used, refunded or past its deadline,
+-- rounded up to a UTC midnight like an order's.
+CREATE TABLE IF NOT EXISTS pass_reissues (
+    -- SHA-256 of the link's random token, which is only ever in the link.
+    token_hash   BYTEA PRIMARY KEY,
+    -- The payment it reissues: the one that made a Pass, or a paid order not
+    -- collected yet. A newer link for the same payment replaces this one.
+    payment_hash BYTEA NOT NULL UNIQUE,
+    expires_at   TIMESTAMPTZ NOT NULL
+);

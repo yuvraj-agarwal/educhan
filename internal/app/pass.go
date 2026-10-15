@@ -432,6 +432,14 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 	if !a.requirePass(w) {
 		return
 	}
+	var req passClaimBody
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if req.Reissue != "" {
+		a.redeemPassReissue(w, r, req.Reissue)
+		return
+	}
 	claim, ok := passClaimToken(r)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "no purchase in progress in this browser")
@@ -482,6 +490,57 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending", "claim": true})
 	default:
 		writeError(w, http.StatusBadRequest, "no purchase in progress in this browser")
+	}
+}
+
+type passClaimBody struct {
+	// Reissue is the token of a reissue link (handlePassReissue), which the
+	// Pass page reads from its address's fragment. Without it, the claim is
+	// the browser's cookie.
+	Reissue string `json:"reissue"`
+}
+
+// redeemPassReissue answers a claim that carries a reissue link's token, in
+// the claim's own words: issued, with the new code shown once, or renewed,
+// for an uncollected renewal. A link works once.
+func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, token string) {
+	if raw, err := base64.RawURLEncoding.DecodeString(token); err != nil || len(raw) != 16 {
+		refusePass(w, passInvalid, "this reissue link is not valid; ask for a new one")
+		return
+	}
+	code, err := newPassCode()
+	if err != nil {
+		a.fail(w, r, err, "could not collect the Pass")
+		return
+	}
+	res, err := a.store.redeemPassReissue(r.Context(), hashToken(token), passCompletion{
+		TokenHash: a.passTokenHash(code),
+		Now:       time.Now(),
+		Days:      a.cfg.Pass.Days,
+	})
+	if err != nil {
+		a.fail(w, r, err, "could not collect the Pass")
+		return
+	}
+	_, claim := passClaimToken(r)
+	switch {
+	case res.Issued:
+		a.log.Info("pass reissued")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "issued",
+			"pass":       formatPassCode(code),
+			"expires_at": res.IssuedExpiresAt,
+			"claim":      claim,
+		})
+	case res.Renewed:
+		a.log.Info("pass renewed")
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "renewed",
+			"expires_at": res.RenewedExpiresAt,
+			"claim":      claim,
+		})
+	default:
+		refusePass(w, passInvalid, "this reissue link has been used, has expired or was cancelled by a refund; ask for a new one")
 	}
 }
 
@@ -688,10 +747,17 @@ type passReissueBody struct {
 	PaymentIntent string `json:"payment_intent"`
 }
 
-// handlePassReissue gives a buyer who lost their code a new one, behind the
-// moderation key. It works for a Pass already collected, whose old code stops
-// working, and for one paid for and never collected. The owner passes the new
-// code on by whatever channel the buyer wrote in from.
+// handlePassReissue gives a buyer who lost their code a way back, behind the
+// moderation key: a link the owner sends to the address the buyer wrote in
+// from, which works once, until a deadline like an order's. Whoever opens it
+// on the Pass page is given a new code for the Pass, and the old one stops
+// working; for a purchase paid and never collected, it collects it.
+//
+// The owner never sees a code, so reading Stripe's records beside the Pass
+// tables gives them nothing to post with. Only the payment that made a Pass,
+// or a paid order not collected yet, can be reissued: somebody who renewed
+// another person's Pass, and then asks for a reissue with their own payment,
+// would otherwise be handed that person's Pass.
 func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 	if !a.authorizeMod(w, r) {
 		return
@@ -708,26 +774,32 @@ func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, `payment_intent: want Stripe's payment id, "pi_…"`)
 		return
 	}
-	code, err := newPassCode()
+	token, err := randomToken()
 	if err != nil {
-		a.fail(w, r, err, "could not reissue the Pass")
+		a.fail(w, r, err, "could not make a reissue link")
 		return
 	}
-	res, err := a.store.reissuePass(r.Context(), a.passPaymentHash(pi), passCompletion{
-		TokenHash: a.passTokenHash(code),
-		Now:       time.Now(),
-		Days:      a.cfg.Pass.Days,
-	})
+	deadline := passClaimDeadline(time.Now())
+	state, err := a.store.createPassReissue(r.Context(), a.passPaymentHash(pi), hashToken(token), deadline)
 	if err != nil {
-		a.fail(w, r, err, "could not reissue the Pass")
+		a.fail(w, r, err, "could not make a reissue link")
 		return
 	}
-	if res.State != orderIssued {
+	switch state {
+	case reissueMissing:
 		writeError(w, http.StatusNotFound, "no Pass was bought with that payment, or it was refunded")
 		return
+	case reissueRenewal:
+		writeError(w, http.StatusConflict, "that payment renewed a Pass; reissue it with the payment that bought the Pass")
+		return
 	}
-	a.log.Info("pass reissued")
-	writeJSON(w, http.StatusOK, map[string]any{"pass": formatPassCode(code), "expires_at": res.ExpiresAt})
+	a.log.Info("pass reissue link made")
+	// The token travels in the fragment, which a browser sends to no server
+	// and puts in no Referer.
+	writeJSON(w, http.StatusOK, map[string]any{
+		"url":        a.cfg.Pass.PublicURL + "/pass#reissue=" + token,
+		"expires_at": deadline,
+	})
 }
 
 // handleStripeWebhook takes Stripe's word that a checkout was paid, or that a
@@ -836,14 +908,15 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 /* Storage ------------------------------------------------------------------- */
 
 // passLockID is the advisory lock every transaction that writes a Pass table
-// takes before anything else: creating an order, marking it paid, collecting
-// it, reissuing, revoking a payment and pruning. They are therefore applied
-// one at a time, in the order they took the lock, and each sees everything
-// the ones before it committed. Pass purchases are rare, so the queue costs
-// nothing, and it rules out every interleaving of a payment, a refund and a
-// collection: no refund can miss a Pass being collected beside it, no "paid"
-// can slip past a refund recorded at the same moment, and no two of them can
-// deadlock over rows taken in different orders. Reading a Pass to post with
+// takes before anything else: creating an order, marking it paid, holding or
+// dropping it, collecting it, making and redeeming a reissue link, revoking a
+// payment and pruning. They are therefore applied one at a time, in the order
+// they took the lock, and each sees everything the ones before it committed.
+// Pass purchases are rare, so the queue costs nothing, and it rules out every
+// interleaving of a payment, a refund and a collection: no refund can miss a
+// Pass being collected beside it, no "paid" can slip past a refund recorded at
+// the same moment, and no two of them can deadlock over rows taken in
+// different orders. Reading a Pass to post with
 // it (passByToken) takes no lock, and no locked transaction makes a network
 // call, so the lock is never held for longer than a few statements.
 //
@@ -1147,60 +1220,104 @@ func renewPass(ctx context.Context, tx pgx.Tx, passID int64, payment []byte, c p
 	return expires, true, err
 }
 
-// What became of a reissue.
-type orderState int
+// What asking for a reissue link came to.
+type reissueState int
 
 const (
-	orderMissing orderState = iota // no such payment, or it was refunded
-	orderIssued                    // a Pass code was issued: new, or replacing one
+	reissueMissing reissueState = iota // no Pass or paid order for the payment, or it was refunded
+	reissueRenewal                     // the payment renewed a Pass; only the one that bought it reissues it
+	reissueReady                       // a link was made
 )
 
-type orderResult struct {
-	State     orderState
-	ExpiresAt time.Time
-}
-
-// reissuePass gives the Pass a payment bought a new code: the Pass itself
-// when it was collected, or the order when it was paid for and never was.
-func (s *Store) reissuePass(ctx context.Context, paymentHash []byte, c passCompletion) (orderResult, error) {
-	var res orderResult
+// createPassReissue records a reissue link for a payment: the payment that
+// made a Pass, or a paid order nobody collected. A newer link for the same
+// payment replaces the one before it.
+func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []byte, deadline time.Time) (reissueState, error) {
+	var state reissueState
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
-		res = orderResult{}
+		state = reissueMissing
 		if revoked, err := paymentRevoked(ctx, tx, paymentHash); err != nil || revoked {
 			return err
 		}
-		var renewID *int64
+		var uncollected bool
+		if err := tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM pass_orders WHERE payment_hash = $1)`, paymentHash).Scan(&uncollected); err != nil {
+			return err
+		}
+		if !uncollected {
+			var origin bool
+			err := tx.QueryRow(ctx, `SELECT origin FROM pass_payments WHERE payment_hash = $1`, paymentHash).Scan(&origin)
+			switch {
+			case errors.Is(err, pgx.ErrNoRows):
+				return nil
+			case err != nil:
+				return err
+			case !origin:
+				state = reissueRenewal
+				return nil
+			}
+		}
+		state = reissueReady
+		_, err := tx.Exec(ctx, `
+			INSERT INTO pass_reissues (token_hash, payment_hash, expires_at) VALUES ($1, $2, $3)
+			ON CONFLICT (payment_hash) DO UPDATE SET token_hash = EXCLUDED.token_hash, expires_at = EXCLUDED.expires_at`,
+			tokenHash, paymentHash, deadline)
+		return err
+	})
+	return state, err
+}
+
+// redeemPassReissue spends a reissue link. A paid order nobody collected is
+// collected, as claimPass would: a renewal renews its Pass, and anything else
+// makes a Pass under the drawn code. Otherwise the Pass the payment made is
+// given the drawn code, which is what stops the old one working. A link that
+// is unknown, used, past its deadline or for a refunded payment gives nothing.
+func (s *Store) redeemPassReissue(ctx context.Context, tokenHash []byte, c passCompletion) (claimResult, error) {
+	var res claimResult
+	err := s.passTx(ctx, func(tx pgx.Tx) error {
+		res = claimResult{}
+		var payment []byte
 		err := tx.QueryRow(ctx, `
-			DELETE FROM pass_orders WHERE payment_hash = $1
-			RETURNING renew_pass_id`, paymentHash).Scan(&renewID)
+			DELETE FROM pass_reissues WHERE token_hash = $1 AND expires_at > $2
+			RETURNING payment_hash`, tokenHash, c.Now).Scan(&payment)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err != nil {
+			return err
+		}
+		// Revoking deletes the link, so this never holds while the lock does
+		// its job; it is checked anyway, as it is everywhere a payment turns
+		// into a Pass.
+		if revoked, err := paymentRevoked(ctx, tx, payment); err != nil || revoked {
+			return err
+		}
+		var renewID *int64
+		err = tx.QueryRow(ctx, `
+			DELETE FROM pass_orders WHERE payment_hash = $1 RETURNING renew_pass_id`, payment).Scan(&renewID)
 		switch {
 		case err == nil:
-			res.State = orderIssued
 			if renewID != nil {
-				expires, found, err := renewPass(ctx, tx, *renewID, paymentHash, c)
+				expires, found, err := renewPass(ctx, tx, *renewID, payment, c)
 				if err != nil || found {
-					res.ExpiresAt = expires
-					if err == nil {
-						_, err = tx.Exec(ctx, `UPDATE passes SET token_hash = $2 WHERE id = $1`, *renewID, c.TokenHash)
-					}
+					res.Renewed, res.RenewedExpiresAt = found, expires
 					return err
 				}
 			}
-			_, res.ExpiresAt, err = issuePass(ctx, tx, paymentHash, c)
+			_, res.IssuedExpiresAt, err = issuePass(ctx, tx, payment, c)
+			res.Issued = err == nil
 			return err
 		case !errors.Is(err, pgx.ErrNoRows):
 			return err
 		}
 		err = tx.QueryRow(ctx, `
 			UPDATE passes SET token_hash = $2
-			WHERE id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1)
-			RETURNING expires_at`, paymentHash, c.TokenHash).Scan(&res.ExpiresAt)
+			WHERE id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1 AND origin)
+			RETURNING expires_at`, payment, c.TokenHash).Scan(&res.IssuedExpiresAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
-		if err == nil {
-			res.State = orderIssued
-		}
+		res.Issued = err == nil
 		return err
 	})
 	return res, err
@@ -1244,6 +1361,9 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 		if tag.RowsAffected() > 0 {
 			res = revokedOrder
 		}
+		if _, err := tx.Exec(ctx, `DELETE FROM pass_reissues WHERE payment_hash = $1`, paymentHash); err != nil {
+			return err
+		}
 		var passID int64
 		var days int
 		err = tx.QueryRow(ctx, `
@@ -1281,9 +1401,10 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 
 // prunePasses deletes what has outlived its use: unpaid orders past their
 // deadline; paid orders nobody collected, once a Pass bought with one at its
-// deadline would have run out too (deadline plus a term of days); remembered
-// refunds past their month; and Passes a month past expiry, which can no
-// longer be renewed and are bought anew instead. Checkout runs it, and so does
+// deadline would have run out too (deadline plus a term of days); reissue
+// links past their deadline; remembered refunds past their month; and Passes
+// a month past expiry, which can no longer be renewed and are bought anew
+// instead. Checkout runs it, and so does
 // the daily sweep, so a quiet server keeps nothing past its time either.
 func (s *Store) prunePasses(ctx context.Context, now time.Time, days int) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
@@ -1291,7 +1412,8 @@ func (s *Store) prunePasses(ctx context.Context, now time.Time, days int) error 
 			WITH o AS (
 			       DELETE FROM pass_orders
 			       WHERE expires_at <= CASE WHEN payment_hash IS NULL THEN $1::timestamptz ELSE $3::timestamptz END),
-			     r AS (DELETE FROM pass_revocations WHERE expires_at <= $1)
+			     r AS (DELETE FROM pass_revocations WHERE expires_at <= $1),
+			     i AS (DELETE FROM pass_reissues WHERE expires_at <= $1)
 			DELETE FROM passes WHERE expires_at <= $2`,
 			now, now.Add(-passExpiredGrace), now.UTC().AddDate(0, 0, -days))
 		return err
