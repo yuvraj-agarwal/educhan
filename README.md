@@ -444,9 +444,12 @@ client can leave the image picker off a server that would refuse what it sends.
     a heavily compressed one, where those fixed tables outweigh the picture's own coded
     data.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
-    browsers apply too), and re-encoded, keeping none of its ancillary chunks. Every pixel
-    keeps the value it decodes to, though not always the form it came in: 1-, 2- and
-    4-bit grey is stored at 8 bits, grey or colour with a transparent colour key is
+    browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma
+    it is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
+    colours first, so that it shows as it did (see below). Every opaque pixel otherwise
+    keeps the value it decodes to, and a transparent or partly transparent one only as
+    much colour as it shows (see the bullet on hidden channels below), though not always
+    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour with a transparent colour key is
     stored as colour with an alpha channel (or with none, if no pixel has the key's
     colour), and a palette keeps only the colours its pixels use. An animated PNG keeps
     its still image.
@@ -479,7 +482,9 @@ client can leave the image picker off a server that would refuse what it sends.
     which of several equal entries each pixel points at — any of which can hold a second
     file, EXIF and all, in the pixel bytes of a flat picture. What is left is the
     picture: a fully opaque pixel keeps its exact value, including the low byte of a
-    16-bit channel, because that is the picture and a lossless format stores it exactly.
+    16-bit channel, because that is the picture and a lossless format stores it exactly
+    (but for a PNG's gamma, applied as above, which changes the values so that the
+    picture shows as it did).
     So data hidden in the low bits of a visible picture, as classic steganography does,
     survives — the aim is to strip the metadata and the channels that do not show, not
     to alter the picture a reader sees.
@@ -487,7 +492,13 @@ client can leave the image picker off a server that would refuse what it sends.
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can
   name the device or the editor that made it, and converting colours properly needs a
-  colour engine Go does not have. The checksum recorded for an attachment is of the
+  colour engine Go does not have. A PNG's `iCCP` profile and `cHRM` primaries are
+  dropped the same way. Its `gAMA` chunk is not, because dropping it shifts far more
+  than slightly: a picture tagged with the linear gamma of 1.0, as renderers write,
+  would show its mid-grey at 128 where it showed at about 188. So its colours are
+  converted to the sRGB values that show the same light, as Chromium converts them —
+  unless an `sRGB` or `iCCP` chunk takes its place, as it does in a browser, or the
+  gamma is within 5% of the usual 1/2.2, which browsers leave alone. The checksum recorded for an attachment is of the
   stored file, so it does not depend on the metadata an upload arrived with, beyond an
   orientation that turns the picture.
 - **Files stored before this** keep their metadata: a server that took uploads before

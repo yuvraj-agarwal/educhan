@@ -59,7 +59,8 @@ import (
 // picture and no rewrite that keeps the picture exact can drop it, so data in
 // the low bits of a visible picture (classic steganography) still survives —
 // the job here is to strip metadata and the channels that do not show, not to
-// alter the picture.
+// alter the picture. The one exception is a PNG's gamma, which is applied to
+// its samples so that the picture shows as it did (applyPNGGamma).
 
 // storedJPEGQuality is the highest quality an original is stored at as a
 // JPEG, and the quality of one made from a lossy WebP. A JPEG upload saved at
@@ -224,8 +225,9 @@ func sanitize(in inspection, data []byte) (sanitized, error) {
 // is accepted because a profile is not just colour: a calibrated one is
 // specific to one screen or one camera, and editors write their own names into
 // it. Converting the pixels to sRGB properly would need a colour engine the
-// standard library does not have. The same goes for the colour chunks of a PNG
-// and the ICCP chunk of a WebP.
+// standard library does not have. The same goes for a PNG's iCCP chunk and
+// its cHRM primaries and a WebP's ICCP chunk; a PNG's gAMA chunk is the
+// exception, and is applied (pngGamma).
 //
 // A CMYK JPEG is converted to RGB where it lies as soon as it is decoded,
 // which is what the encoder would do a pixel at a time, through an interface
@@ -267,7 +269,9 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // sanitizePNG decodes and re-encodes a PNG. image/png writes only IHDR, PLTE
 // and tRNS for a palette, IDAT and IEND, so text of every kind (tEXt, zTXt,
 // and iTXt, which is where XMP goes), eXIf, tIME, colour chunks and anything
-// private are left behind. An opaque pixel is kept exactly as image/png
+// private are left behind. Of the colour chunks, a gAMA that browsers apply
+// is applied to the samples first, so the picture shows as it did
+// (applyPNGGamma). An opaque pixel is otherwise kept exactly as image/png
 // decodes it, which is not always the form it came in: 1-, 2- and 4-bit grey
 // is stored at 8 bits, and grey or colour with a transparent colour key (tRNS)
 // is stored as colour with an alpha channel, or with none when no pixel has the
@@ -283,6 +287,9 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	src, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
+	}
+	if gamma, ok := pngGamma(data); ok {
+		applyPNGGamma(src, gamma)
 	}
 	reduceHiddenColour(src)
 	pic := orient(src, pngOrientation(data))

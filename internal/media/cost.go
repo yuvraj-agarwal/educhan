@@ -54,8 +54,9 @@ import (
 const processingBudget int64 = 256 << 20
 
 // processingSlack is what each estimate adds for what it does not itemise:
-// decoders' tables and row buffers, compressors' windows, the thumbnail's own
-// pixels and encoding, and what a phase allocates while a collection runs.
+// decoders' tables and row buffers, compressors' windows, a PNG's gamma tables
+// (applyPNGGamma, 128 KiB at most), the thumbnail's own pixels and encoding,
+// and what a phase allocates while a collection runs.
 const processingSlack int64 = 4 << 20
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides

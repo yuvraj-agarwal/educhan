@@ -629,7 +629,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   it is not that nothing unseen survives. A fully opaque pixel keeps its exact value,
   including the low byte of a 16-bit channel (`TestPNGKeepsSixteenBitPixels`), so low-bit
   steganography in a visible picture survives by design; removing it would change the
-  picture. `hidden_test.go` holds each path —
+  picture. The one exception is a PNG's gamma, applied so that the picture shows as it
+  did (below). `hidden_test.go` holds each path —
   `TestPartlyTransparentColourIsReducedToItsAlpha` the alpha-precision cut and
   `TestFlatPaletteCannotHideAFileInItsPixels` the index channel of a flat palette — with
   the needles checked present in the upload first.
@@ -659,10 +660,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `original_path`, and has to stay in step with `attachmentName`
   (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`). The client
   shows it as the caption under the thumbnail.
-- Dropping the ICC profile (and PNG's colour chunks) is deliberate: most photos are
-  sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut one
-  (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
-  and converting to sRGB properly needs a colour engine Go does not have.
+- Dropping the ICC profile (and a PNG's `iCCP` and `cHRM`) is deliberate: most photos
+  are sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut
+  one (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
+  and converting to sRGB properly needs a colour engine Go does not have. A PNG's `gAMA`
+  is the exception, because dropping it shifts far more than slightly (a picture tagged
+  1.0, linear light, showed its mid-grey of 128 at about 188) and applying it needs only
+  a curve. `pngGamma` (`gamma.go`) reads it as Chromium does — the first `gAMA` before
+  the first `IDAT`, and none beside an `sRGB` or `iCCP` chunk, at 0, or within 5% of
+  1/2.2 — and `applyPNGGamma` converts the colour samples, never alpha, to the sRGB
+  values that show the same light, at the picture's own depth, before
+  `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored grey ramp
+  to within a level of what Chromium 141 drew for each tag, and has a case for each of
+  those rules; `TestPNGGammaConvertsColourOnly` covers every picture type `image/png`
+  decodes to. A change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
   cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
   `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not pass
