@@ -25,6 +25,10 @@ not.
     held-post queue and approval.
   - `filter.go` — the content filter: normalisation, the rule tables and validators,
     and `checkContent`, which every post goes through before it is stored.
+  - `filtersearch.go` — how the filter runs its patterns: each split once into
+    branches, one walk of a trie finding every place a branch could start, and a copy
+    of Go's regexp machine run from those places alone; `filtersearch_test.go` holds
+    every search to what Go's regexp finds with the same pattern, and fuzzes it.
   - `boards.go` — board creation and settings updates, behind the same key.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
@@ -580,7 +584,8 @@ or dotted single letters closed up, a letter written three or more times running
 twice (a capital I counted apart from a small i, since it stands for an l: "kiII"),
 leetspeak `0 1 3 4 5 7 @ $` read as letters when a letter is beside it or another one
 so read is ("ki11"), `!`
-between two letters read as `i`, and `l` read as `i`). Patterns are tables of Go regexps compiled for
+between two letters read as `i`, and `l` read as `i`). Patterns are tables of Go regexps, planned as
+searches (`newSearch`, see below), for
 both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
 pattern; `TestFilterPatternsSurviveCanon`) or for the plain view only (`plainOnly`, for
 anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`).
@@ -597,14 +602,41 @@ anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`
 Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
 grooming), then publish. A question about a method ("how many pills would kill me")
 gets the support screen first and is held once the poster goes on, because the person
-asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`). Every
-regexp is RE2 (linear), the number scanner and the view builders are single passes, and
-the pairing checks walk sorted span lists, so the cost is linear in the post
-(`TestFilterCostIsBounded`, `BenchmarkCheckContent`: about 30–40 ms for a maximum-length
-post on one 2.1 GHz core, up to about 400 ms for the slowest crafted one — characters
-that each fold to `maxFoldRunes`, such as `㏂` — which is why refusals are budgeted; see
-the API contract). The plain view is skipped when the loose one is
-only it with `l` read as `i` (`looseOnly`).
+asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`).
+**The cost is linear in the post, and small.** No pattern is run whole over a view
+(`filtersearch.go`): each is split once into branches, one walk of a trie per view finds
+every place a branch could start, and a copy of Go's own regexp machine, which never
+backtracks, runs each branch from those places alone. The number scanner and the view
+builders are single passes, the checks read at most a clause or a sentence each side of
+a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), and the pairing checks walk
+sorted span lists. Measured on one core of an Intel Xeon @ 2.10GHz (`GOMAXPROCS=1`
+under `taskset`, no race detector, the best of several runs of each verdict, the slower
+of the two): about 0.3 ms for a typical 500-character post, about 2 ms for an ordinary
+maximum-length one, and at most about 15 ms for the slowest of 220 bodies built to be
+slow (before the searches were planned: about 4 ms, 36 ms, and 400–490 ms for a post
+of `㏂`, which folds to `maxFoldRunes`). Refusals are budgeted all the same; see the API
+contract. Planning takes about 1.5 s of one core and about 30 MB of heap, once per process;
+`Routes` starts it in the background, and a post that comes first waits for it. The
+plain view is skipped when the loose one is only it with `l` read as `i` (`looseOnly`).
+What holds the cost down:
+
+- `TestFilterCostIsBounded` counts work rather than time (`checkContentCost`: the
+  places tried, the characters read, the machines' steps, and each check a match is put
+  to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
+  bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
+  post (the slowest is about 120), and eight times the text at most ten times the
+  steps. A new rule that trips it is planned or rewritten, not given a bigger bound;
+  add the body that tripped it to the table.
+- `TestFilterSearchesMatchTheirRegexps` and `FuzzFilterSearches` hold every search to
+  what Go's regexp finds with the same pattern, groups included, on every view, and
+  `TestFilterSearchesAreAllPlanned` fails if a pattern cannot be planned and would run
+  whole. A new rule's pattern needs nothing but to be written. A check may still read
+  a Go regexp over a bounded stretch round a match (32 or 64 bytes, or the match
+  itself), as most do; one large enough to cost something each match, an alternation
+  of many phrasings, is made with `newWindowSearch`, as `conditionalPlace`, the
+  medicine names and the number scanner's cues (`contactCue`, `phoneCue` and the rest)
+  are, so that it is planned and counted like the rest.
+
 **Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
 extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
 or a `plainOnly` rule beside `niRule`, loaded from configuration, with its own
