@@ -305,8 +305,13 @@ looks tempting and breaks something:
 
 ### 2.4 Secrets
 
-Three values do not belong in a deployment command: the database URL (it carries
-the password), the poster-ID salt, and the moderation key.
+Four values do not belong in a deployment command: the database URL (it carries
+the password), the poster-ID salt, the moderation key, and the captcha secret.
+Unset, the captcha secret switches the captcha off, the way verification is off
+without its secret; set, it must be at least 32 characters or the server refuses
+to start, and `openssl rand -hex 32` makes 64. `first-deploy.sh` creates it the
+same way, only if it is missing. Only the service reads it: the sweeper Job
+neither has nor needs it.
 
 ```bash
 printf 'postgres://educhan:%s@/educhan?host=/cloudsql/%s&sslmode=disable' \
@@ -319,7 +324,10 @@ openssl rand -hex 32 \
 openssl rand -hex 32 \
   | gcloud secrets create educhan-mod-key --replication-policy=automatic --data-file=-
 
-for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key; do
+openssl rand -hex 32 \
+  | gcloud secrets create educhan-captcha-secret --replication-policy=automatic --data-file=-
+
+for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key educhan-captcha-secret; do
   gcloud secrets add-iam-policy-binding "$secret" \
     --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
 done
@@ -331,6 +339,18 @@ so the same browser shows a different ID depending on which container answered.
 A poster ID is an HMAC of the browser's poster key (or of the badge credential's
 id, on a badged post) under this salt; only a post that arrives without a poster
 key falls back to the client address.
+
+**The captcha secret signs each challenge**, so every instance has to share it:
+a challenge one container issued is checked by whichever container takes the
+post. Rotating it only fails the challenges issued in the last half hour, which
+browsers replace on their own, so it can be rotated whenever you like. How much
+work a challenge asks for is `EDUCHAN_CAPTCHA_WORK` (section 4), which needs no
+deploy change at its default. The captcha needs nothing else from the platform:
+its worker is served from the site itself under the existing CSP, so no CSP,
+load balancer or Cloud Armor change; `GET /api/captcha` answers `no-store` and
+sets no cookie; and the per-address challenge count it keeps to raise the work
+for a busy address is swept with the cooldowns, so what the root README's Flood
+control section says about CPU between requests covers it too.
 
 ### 2.5 Build and push
 
@@ -410,7 +430,7 @@ gcloud run deploy educhan \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
   --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json" \
   --cpu 1 --memory 512Mi --concurrency 80 --max-instances 4 \
   --allow-unauthenticated
@@ -492,8 +512,9 @@ the app keeps addresses out of them itself.
 
 A thread that falls off the end of its board is archived, and the sweeper
 deletes it, with its images, once its board's `archive_days` (7 by default)
-have passed. It is the same image run as `educhan -sweep`: one pass, then it
-exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
+have passed. The same run deletes spent captcha answers past their day. It is
+the same image run as `educhan -sweep`: one pass, then it exits. It runs as a
+Cloud Run **Job**, started once a day by Cloud Scheduler,
 because a Cloud Run service only has CPU while it answers a request, so a timer
 inside it would fire whenever it happened to.
 
@@ -563,7 +584,9 @@ failed in the console (`gcloud run jobs executions list --job educhan-sweep
 --region "$REGION"`). The file's key stays in `media_deletions` and the next run,
 or the Job's own retry, tries it again, so a retry is always safe. In the log,
 `blobs_missing` above zero means the media settings are wrong; `blob_failures`
-means the store refused or was unreachable.
+means the store refused or was unreachable. `spent_captchas` counts the spent captcha
+answers past their expiry that the run deleted, the ones no later post pruned;
+the Job needs no captcha secret to do it.
 
 ---
 
@@ -631,6 +654,8 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_GCS_PREFIX` | unused | `media` | Optional key prefix, so the bucket can hold other things too |
 | `EDUCHAN_POSTER_ID_SALT` | random per process | from Secret Manager | Set it locally too, or poster IDs change on every restart. Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | unset; export a throwaway | from Secret Manager | Unset means every moderation endpoint answers `403` |
+| `EDUCHAN_CAPTCHA_SECRET` | unset unless testing the captcha | from Secret Manager | Keys the posting captcha's challenges. Unset switches the captcha off; under 32 characters refuses to start. Same value on every instance; rotating it fails only challenges from the last half hour |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` (default) | `1500` (default) | Average attempts a challenge asks for, raised for an address asking for challenges quickly. Between `1` and `7500` |
 | `EDUCHAN_VERIFY_SECRET` | unset unless testing verification | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
 | `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |

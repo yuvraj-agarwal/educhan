@@ -187,11 +187,11 @@ if ! exists gcloud secrets describe educhan-database-url; then
   unset DB_PASSWORD
 fi
 # Created once and never rotated by this script: the salt keys every poster ID.
-for secret in educhan-poster-id-salt educhan-mod-key; do
+for secret in educhan-poster-id-salt educhan-mod-key educhan-captcha-secret; do
   exists gcloud secrets describe "$secret" ||
     openssl rand -hex 32 | gcloud secrets create "$secret" --replication-policy=automatic --data-file=-
 done
-for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key; do
+for secret in educhan-database-url educhan-poster-id-salt educhan-mod-key educhan-captcha-secret; do
   gcloud secrets add-iam-policy-binding "$secret" \
     --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor >/dev/null
 done
@@ -232,7 +232,7 @@ gcloud run deploy "$SERVICE" \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --update-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
   --remove-secrets EDUCHAN_VERIFY_SECRET \
   --update-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
   --remove-env-vars EDUCHAN_VERIFY_SECRET \
@@ -291,8 +291,8 @@ Moderation key (keep it private; it goes in the X-Mod-Key header):
 
 Image uploads and institutional verification are switched off.
 
-Expired archived threads are deleted daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run
-it now and see what it did:
+Expired archived threads, and spent captcha answers past their day, are deleted
+daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run it now and see what it did:
 
   gcloud run jobs execute ${SWEEP_JOB} --region ${REGION} --wait
 
