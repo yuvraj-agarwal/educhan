@@ -1,22 +1,32 @@
 package media
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"image"
+	"runtime/metrics"
 	"testing"
 )
 
 // golang.org/x/image's vp8l decoder sizes two allocations from the compressed
 // bitstream rather than from the header: an hGroup for every meta-image index
 // (up to 65536, 2680 bytes each) and a node slice for every Huffman tree (up
-// to 2*alphabet-1 nodes). A crafted 1×1 lossless WebP of 160 KiB makes it hold
-// about 170 MiB (TestVP8LHuffmanMemoryIsHeldWithinTheEstimate), which no
-// resolution cap catches, and a larger one more. cost.go charges that memory
-// (vp8lMemory) on the bytes the decoder reads, so Inspect refuses an
-// oversized bitstream from its header, and these tests pin that it does,
-// where the line falls, and that the charge covers what is held.
+// to 2*alphabet-1 nodes). The groups are made all at once, before any of
+// their trees is read, so a bitstream of a few dozen bytes that names group
+// 65535 and ends makes it set aside 167.5 MiB
+// (TestVP8LGroupsNamedButNeverGivenAreCharged): every lossless WebP, and
+// every one whose alpha plane is compressed, is charged that much whatever
+// its size (vp8lStopCost). One the decoder reads to its end has given every
+// group's trees, which bounds both allocations by its size: a crafted 1×1
+// lossless WebP of 160 KiB holds about 170 MiB
+// (TestVP8LHuffmanMemoryIsHeldWithinTheEstimate), which no resolution cap
+// catches, and a larger one more. cost.go charges that memory (vp8lMemory)
+// on the bytes the decoder reads, so Inspect refuses an oversized bitstream
+// from its header, and these tests pin that it does, where the line falls,
+// and that the charge covers what is held.
 
 // vp8lBitWriter writes a VP8L bitstream the way golang.org/x/image's decoder
 // reads one: bits low-order first within each byte.
@@ -168,7 +178,11 @@ func webpOfBitstream(kind string, w, h, n, size int) []byte {
 // README gives is accepted and one past it refused from the header, whatever
 // else the upload carries: the line is 224 KiB for a small picture, about
 // 205 KiB at a megapixel and 130 KiB at nine, where the pixels take more of
-// the budget, and a little lower in a larger upload.
+// the budget, and a little lower in a larger upload. Decoding a small
+// bitstream is charged a small share of the groups; the groups it may name
+// and never give are charged in full whatever its size (vp8lStopCost,
+// TestVP8LGroupsNamedButNeverGivenAreCharged), but on the nodes of its own
+// bytes too, not the file's.
 func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
 	const kib = 1 << 10
 	for _, kind := range []string{"lossless", "calpha"} {
@@ -199,14 +213,17 @@ func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
 
 		// A small bitstream in a large upload — a lossless picture with a
 		// megabyte of EXIF after it, a cut-out whose lossy picture is large
-		// beside its alpha plane — is charged for its bitstream alone.
+		// beside its alpha plane — is charged for its bitstream alone:
+		// decoding it, for a kilobyte's share of the groups and their nodes;
+		// stopping after naming its groups, for all of them and a kilobyte's
+		// nodes. The nodes of four megabytes alone would be over the budget.
 		big := webpOfBitstream(kind, 100, 100, kib, 4<<20)
 		in, err = inspect(big)
 		if err != nil {
 			t.Fatalf("%s, 1 KiB of bitstream in a 4 MiB upload: inspect = %v, want accepted", kind, err)
 		}
-		if in.cost >= vp8lGroupBacking {
-			t.Errorf("%s, 1 KiB of bitstream in a 4 MiB upload: cost %d carries a charge for the whole file", kind, in.cost)
+		if c := completedCostOf(t, big); c >= vp8lGroupBacking {
+			t.Errorf("%s, 1 KiB of bitstream in a 4 MiB upload: decoding it is charged %d, a charge for the whole file", kind, c)
 		}
 	}
 	// An uncompressed alpha plane carries no charge: it is not decoded through vp8l.
@@ -222,7 +239,10 @@ func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
 // the vp8l decoder reads. Charged for the whole file, a cut-out of a quarter
 // of a megabyte was refused as too large while the same picture with no
 // transparency was stored. So is a small lossless picture behind a large
-// colour profile or EXIF, which stripping drops before it is decoded.
+// colour profile or EXIF, which stripping drops before it is decoded. Each
+// is charged in full for the groups its bitstream could name and never give
+// (vp8lStopCost), which is the same whatever else the file carries; decoding
+// it is charged for its bitstream alone.
 func TestLargeWebPsWithSmallVP8LBitstreamsAreStored(t *testing.T) {
 	cutout := paddedBitstream(t, readTestdata(t, "cutout-alpha.webp"), 270<<10)
 	lossless := webpFile(vp8xChunk(vp8xFlagEXIF, 32, 32),
@@ -233,13 +253,12 @@ func TestLargeWebPsWithSmallVP8LBitstreamsAreStored(t *testing.T) {
 		"a lossless icon with 300 KiB of EXIF": lossless,
 	} {
 		name = fmt.Sprintf("%s (%d KiB)", name, len(data)>>10)
-		in, err := inspect(data)
-		if err != nil {
+		if _, err := inspect(data); err != nil {
 			t.Errorf("%s: inspect = %v, want it accepted", name, err)
 			continue
 		}
-		if in.cost >= vp8lGroupBacking {
-			t.Errorf("%s: cost %d carries a Huffman charge for the whole file", name, in.cost)
+		if c := completedCostOf(t, data); c >= vp8lGroupBacking {
+			t.Errorf("%s: decoding it is charged %d, a Huffman charge for the whole file", name, c)
 		}
 		got, err := Process(context.Background(), data)
 		if err != nil {
@@ -257,8 +276,11 @@ func TestLargeWebPsWithSmallVP8LBitstreamsAreStored(t *testing.T) {
 // backing (65536 one-symbol groups, 160 KiB of file that holds about 170 MiB),
 // one that maximises the tree nodes (full 256-symbol trees, 215 KiB holding
 // about 43 MiB) — and confirms each is accepted and holds no more than
-// cost.go estimated. Both are under the 224 KiB the charge allows a small
-// picture, so they are not refused; a larger one would be.
+// cost.go estimated for decoding it to the end (completedCost), which is the
+// estimate these files are made to test: the cost Inspect gives also covers a
+// bitstream that stops after naming its groups (vp8lStopCost), which could
+// hide a term of decoding left out. Both are under the 224 KiB the charge
+// allows a small picture, so they are not refused; a larger one would be.
 func TestVP8LHuffmanMemoryIsHeldWithinTheEstimate(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -269,18 +291,169 @@ func TestVP8LHuffmanMemoryIsHeldWithinTheEstimate(t *testing.T) {
 		{"3000 full-tree groups", 3000, true},
 	} {
 		data := adversarialLosslessWebP(tc.groups, tc.full)
-		in, err := inspect(data)
-		if err != nil {
+		if _, err := inspect(data); err != nil {
 			t.Fatalf("%s (%d bytes): inspect = %v, want accepted", tc.name, len(data), err)
 		}
-		held := leastPeak(t, tc.name, in.cost, func() error {
+		want := completedCostOf(t, data)
+		held := leastPeak(t, tc.name, want, func() error {
 			_, err := Process(context.Background(), data)
 			return err
 		})
 		t.Logf("%-26s %6d bytes held %.1f MiB of %.1f", tc.name, len(data),
-			float64(held)/(1<<20), float64(in.cost)/(1<<20))
+			float64(held)/(1<<20), float64(want)/(1<<20))
+		if held > want {
+			t.Errorf("%s: held %d bytes, over the estimate %d", tc.name, held, want)
+		}
+	}
+}
+
+// completedCostOf is completedCost for an upload, from its header as inspect
+// reads it.
+func completedCostOf(t *testing.T, data []byte) int64 {
+	t.Helper()
+	format, ok := DetectFormat(data)
+	if !ok {
+		t.Fatalf("completedCostOf: no format detected")
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("completedCostOf: DecodeConfig: %v", err)
+	}
+	var frames gifFrames
+	if format == FormatGIF {
+		if frames, err = gifFramePixels(data, maxGIFFramePixels); err != nil {
+			t.Fatalf("completedCostOf: gifFramePixels: %v", err)
+		}
+	}
+	return completedCost(format, data, cfg, frames)
+}
+
+// stoppedVP8L is a VP8L bitstream that names Huffman groups it never gives:
+// its meta-image names group 65535 for every tile, so golang.org/x/image's
+// decoder sets aside all 65536 hGroups (vp8lGroupBacking) before it reads a
+// tree, and then finds the bitstream at its end. Every image in it is of one
+// colour, written with one-symbol trees, whose codes take no bits at all, so
+// it is a few dozen bytes whatever its resolution. With subImages, a
+// predictor and a cross-colour transform come first, each with an image of a
+// pixel for every 4×4 tile, as the meta-image has too: the most the decoder
+// holds beside the groups when it sets them aside. header is whether it
+// starts with the five-byte VP8L header, as a VP8L chunk does; an ALPH
+// chunk's plane does not, because x/image gives it one of its own.
+func stoppedVP8L(w, h int, header, subImages bool) []byte {
+	b := &vp8lBitWriter{}
+	if header {
+		b.put(0x2f, 8)         // VP8L magic
+		b.put(uint32(w-1), 14) // width-1
+		b.put(uint32(h-1), 14) // height-1
+		b.put(0, 1)            // alpha hint
+		b.put(0, 3)            // version
+	}
+	oneColour := func() { // a sub-image: no colour cache, five one-symbol trees
+		b.put(0, 1)
+		for range 5 {
+			b.simpleTree(0)
+		}
+	}
+	if subImages {
+		for _, transform := range []uint32{0, 1} { // predictor, cross-colour
+			b.put(1, 1) // a transform follows
+			b.put(transform, 2)
+			b.put(0, 3) // 4×4 tiles, the smallest
+			oneColour()
+		}
+	}
+	b.put(0, 1)        // no more transforms
+	b.put(0, 1)        // no colour cache
+	b.put(1, 1)        // a meta-image
+	b.put(0, 3)        // of 4×4 tiles
+	b.put(0, 1)        // the meta-image's colour cache: none
+	b.simpleTree(0xff) // green: the low byte of the group index
+	b.simpleTree(0xff) // red: the high byte
+	b.simpleTree(0)    // blue
+	b.simpleTree(0)    // alpha
+	b.simpleTree(0)    // distance
+	return b.bytes()
+}
+
+// stoppedWebP is a w×h WebP whose vp8l bitstream is stoppedVP8L: a lossless
+// picture ("lossless"), or the alpha plane of a lossy one ("calpha"), whose
+// lossy bitstream is a key frame header and nothing more, since x/image
+// decodes the plane first and stops there.
+func stoppedWebP(kind string, w, h int, subImages bool) []byte {
+	switch kind {
+	case "lossless":
+		return webpFile(riffChunk{id: "VP8L", payload: stoppedVP8L(w, h, true, subImages)})
+	case "calpha":
+		// The plane's first byte is its method, 1 for VP8L; the frame is a
+		// key frame's tag and start code, then its size.
+		plane := append([]byte{1}, stoppedVP8L(w, h, false, subImages)...)
+		frame := []byte{0, 0, 0, 0x9d, 0x01, 0x2a}
+		frame = binary.LittleEndian.AppendUint16(frame, uint16(w))
+		frame = binary.LittleEndian.AppendUint16(frame, uint16(h))
+		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: plane}, riffChunk{id: "VP8 ", payload: frame})
+	}
+	panic("stoppedWebP: unknown kind " + kind)
+}
+
+// heapAllocs is everything the heap has allocated since the process began.
+func heapAllocs() int64 {
+	s := []metrics.Sample{{Name: "/gc/heap/allocs:bytes"}}
+	metrics.Read(s)
+	return int64(s[0].Value.Uint64())
+}
+
+// golang.org/x/image's vp8l decoder makes its hGroups for every index up to
+// the largest the meta-image names before it reads a single tree, so a
+// bitstream of a few dozen bytes that names group 65535 and stops makes it set
+// aside 167.5 MiB and then fail. Charged by the size of its bitstream, as
+// though every group it named had to be given, a 32-byte file was charged
+// about 4 MiB while it held 167.5, and a handful posted at once went far past
+// the budget. Such a file, lossless or as a compressed alpha plane, small and
+// at a resolution where the images held beside the groups come to megabytes,
+// is admitted, and charged at least what processing it holds: what a
+// collection finds live, and everything Process allocates for it, since all
+// it lets go before the decoder fails is a few kilobytes of trees and
+// headers, which processingSlack covers.
+func TestVP8LGroupsNamedButNeverGivenAreCharged(t *testing.T) {
+	for _, c := range []struct {
+		kind      string
+		w, h      int
+		subImages bool
+	}{
+		{"lossless", 1, 1, false},
+		{"calpha", 64, 48, false},
+		{"lossless", 5000, 5000, true},
+		{"calpha", 2500, 2500, true},
+	} {
+		data := stoppedWebP(c.kind, c.w, c.h, c.subImages)
+		name := fmt.Sprintf("%s %d×%d (%d bytes)", c.kind, c.w, c.h, len(data))
+		in, err := inspect(data)
+		if err != nil {
+			t.Errorf("%s: inspect = %v, want it admitted", name, err)
+			continue
+		}
+		process := func() error {
+			if _, err := Process(context.Background(), data); !errors.Is(err, ErrCorruptImage) {
+				return fmt.Errorf("Process = %v, want %v", err, ErrCorruptImage)
+			}
+			return nil
+		}
+		before := heapAllocs()
+		if err := process(); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		allocated := heapAllocs() - before
+		if allocated < vp8lGroupBacking {
+			t.Fatalf("%s: processing it allocated %d bytes, less than the %d of the groups it names: it no longer reaches them", name, allocated, vp8lGroupBacking)
+		}
+		held := leastPeak(t, name, in.cost, process)
+		t.Logf("%-32s charged %5.1f MiB, allocated %5.1f MiB, held %5.1f MiB", name,
+			float64(in.cost)/(1<<20), float64(allocated)/(1<<20), float64(held)/(1<<20))
+		if in.cost < allocated {
+			t.Errorf("%s: charged %d bytes, but processing it allocated %d, nearly all of it held at once", name, in.cost, allocated)
+		}
 		if held > in.cost {
-			t.Errorf("%s: held %d bytes, over the estimate %d", tc.name, held, in.cost)
+			t.Errorf("%s: held %d bytes, over its estimate of %d", name, held, in.cost)
 		}
 	}
 }

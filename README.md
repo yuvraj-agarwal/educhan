@@ -424,16 +424,20 @@ server that would refuse what it sends.
   compresses it by default), are the one case refused by the *size* of what is
   compressed rather than by the picture's resolution: Go's WebP decoder sizes its
   internal tables from the compressed data, not from any header field, so a crafted file
-  of 160 KiB can make it hold about 170 MiB, and a larger one more. There is no way to
-  tell a benign file from a crafted one without decoding it, so a lossless WebP whose
-  picture data comes to more than 224 KiB is refused from its header — less for a larger
-  picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little less in a
-  larger upload — and so is a lossy WebP whose compressed transparency alone comes to
-  that much. A small lossless picture (an icon or a sticker) is still stored, and so is
-  an ordinary cut-out, whose transparency is a few hundred bytes to a few kilobytes
-  however large its picture; what else the file carries, a colour profile or EXIF, does
-  not count. Opaque lossy WebPs, and those whose transparency is uncompressed, are not
-  affected.
+  of 160 KiB can make it hold about 170 MiB as it decodes, and a larger one more. There
+  is no way to tell a benign file from a crafted one without decoding it, so a lossless
+  WebP whose picture data comes to more than 224 KiB is refused from its header — less
+  for a larger picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little
+  less in a larger upload — and so is a lossy WebP whose compressed transparency alone
+  comes to that much. A small lossless picture (an icon or a sticker) is still stored,
+  and so is an ordinary cut-out, whose transparency is a few hundred bytes to a few
+  kilobytes however large its picture; what else the file carries, a colour profile or
+  EXIF, does not count. The decoder also sets the largest of those tables aside before
+  it reads what is meant to fill them, so a broken file of a few dozen bytes can make it
+  take 167.5 MiB before it finds out: every such WebP, however small, takes at least
+  171.5 MiB of the processing budget (see **Memory**) while it is processed, so two are
+  never processed at once. Opaque lossy WebPs, and those whose transparency is
+  uncompressed, are not affected.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour

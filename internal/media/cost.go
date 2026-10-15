@@ -25,16 +25,16 @@ import (
 // tables) is left to the collector's pacing, beyond processingSlack.
 //
 // TestProcessingCostCoversWhatIsHeld measures a file of each kind the model
-// distinguishes against the estimate for the whole of its processing and
-// against its decoding phases alone (decodingPhases), at sizes where each
-// term charged for decoding comes to megabytes; TestThumbScratchCoversTheScaler
-// measures the thumbnail's scratch, and
-// TestGIFFrameOverheadCoversWhatDecodingKeeps what image/gif keeps of each
+// distinguishes against the estimate for the whole of its processing, decoded
+// to the end (completedCost), and against its decoding phases alone
+// (decodingPhases), at sizes where each term charged for decoding comes to
+// megabytes; TestThumbScratchCoversTheScaler measures the thumbnail's scratch,
+// and TestGIFFrameOverheadCoversWhatDecodingKeeps what image/gif keeps of each
 // frame. A term dropped is caught when it is larger than processingSlack — as
 // each is in some file — but a partial under-charge smaller than the slack it
 // absorbs and does not: the turn term, only a couple of megabytes above the
-// slack in the largest file that turns, can be cut by more than half unseen.
-// So the tests guard against a term left out, not against every under-estimate.
+// slack in the largest file that turns, can be cut by more than half unseen. So
+// the tests guard against a term left out, not against every under-estimate.
 // Even a term left out goes unnoticed where another term charged for the same
 // moment is at least as large in every file they measure; a few are, the alpha
 // plane and the NRGBA copy of a transparent lossy WebP among them.
@@ -93,11 +93,22 @@ func peakOf(phases ...phase) int64 {
 }
 
 // processingCost estimates the most an upload holds while it is processed,
-// from its header: what the decoder allocates, what converting it and turning
-// it upright copy, the encoder's output (bounded by storedLimit) and the
-// thumbnail scaler's scratch. cfg is the header's, already checked against
+// from its header. That is the more of two ways it can go: decoded to the
+// end (completedCost), which bounds a decoder that fails part of the way
+// through as well, but for one: a WebP whose vp8l bitstream names more
+// Huffman groups than it gives and then ends (vp8lStopCost), which makes
+// golang.org/x/image's decoder set aside every group it named however few
+// bytes it took to name them. cfg is the header's, already checked against
 // MaxPixels; frames is a GIF's frames (gifFramePixels).
 func processingCost(format Format, data []byte, cfg image.Config, frames gifFrames) int64 {
+	return max(completedCost(format, data, cfg, frames), vp8lStopCost(format, data, cfg))
+}
+
+// completedCost is what an upload holds when it is decoded to the end: what
+// the decoder allocates, what converting it and turning it upright copy, the
+// encoder's output (bounded by storedLimit) and the thumbnail scaler's
+// scratch.
+func completedCost(format Format, data []byte, cfg image.Config, frames gifFrames) int64 {
 	phases := decodingPhases(format, data, cfg, frames)
 	if phases == nil {
 		return processingBudget + 1
@@ -535,7 +546,9 @@ func pngInterlaced(data []byte) bool {
 // decoder hold its Huffman groups (vp8lMemory), alive while the pixels are
 // decoded, which the pixel terms alone do not cover. They are charged on the
 // bytes the vp8l decoder can read, which webpPicture finds: the decoder is
-// handed one chunk, never the rest of the file.
+// handed one chunk, never the rest of the file. These are the phases of a
+// bitstream the decoder reads to its end; one that ends after naming its
+// groups can hold more of them, and none of the pixels (vp8lStopCost).
 func webpPhases(data []byte, w, h int64) []phase {
 	px, stripped := w*h, int64(len(data))
 	planes := 384 * ((w + 15) / 16) * ((h + 15) / 16)
@@ -566,45 +579,81 @@ func webpPhases(data []byte, w, h int64) []phase {
 // decoder allocates for its Huffman groups. A lossless (VP8L) bitstream, and
 // a VP8L-compressed alpha plane, may carry a meta-image that maps tiles to a
 // group index, and the decoder makes one hGroup for every index up to the
-// largest the meta-image holds (decodeHuffmanGroups). The index is two bytes,
-// so it reaches 65535; an hGroup is five Huffman trees, each a 24-byte slice
-// header and a 512-byte look-up table. None of this is in the file's header
-// or its resolution: a 1×1 lossless WebP of 160 KiB forces the full
-// allocation, and the only bound the file gives is the size of its bitstream.
+// largest the meta-image holds (decodeHuffmanGroups), all of them at once,
+// before it reads a single group's trees. The index is two bytes, so it
+// reaches 65535; an hGroup is five Huffman trees, each a 24-byte slice header
+// and a 512-byte look-up table. None of this is in the file's header or its
+// resolution, nor bounded by its size: the meta-image can name index 65535
+// in a few bits, so a bitstream of a few dozen bytes that names it and ends
+// forces the whole allocation (vp8lStopCost). Only a bitstream the decoder
+// reads to its end has given the trees of every group it named, which bounds
+// them by its size (vp8lBackingPerByte).
 const vp8lGroupBacking int64 = 65536 * 5 * (24 + 512) // 167.5 MiB
 
-// vp8lBackingPerByte and vp8lNodesPerByte bound, per byte of the bitstream,
-// the two allocations the vp8l decoder makes that the header cannot predict:
-// the hGroup backing array (vp8lGroupBacking, capped), and the trees' node
-// slices (make([]hNode, 1, 2*symbols-1), 8 bytes each). The cheapest hGroup
-// is five one-symbol trees, about 2.5 bytes of bitstream for 2680 bytes of
-// backing, so 1072. The most node memory a bitstream byte can force is
-// bounded by the decoder's alphabets (256, plus up to a 2048-entry colour
-// cache for the first tree) and the cheapest encoding of their code lengths
-// (about half a bit a symbol through repeat codes, eight node bytes a
-// symbol): about 256 node bytes a byte, so 384 leaves a margin.
+// vp8lBackingPerByte and vp8lNodesPerByte bound, per byte of a bitstream the
+// decoder reads to its end, the two allocations the vp8l decoder makes that
+// the header cannot predict: the hGroup backing array (vp8lGroupBacking,
+// capped), and the trees' node slices (make([]hNode, 1, 2*symbols-1), 8
+// bytes each). The cheapest hGroup is five one-symbol trees, about 2.5 bytes
+// of bitstream for 2680 bytes of backing, so 1072. The most node memory a
+// bitstream byte can force is bounded by the decoder's alphabets (256, plus
+// up to a 2048-entry colour cache for the first tree) and the cheapest
+// encoding of their code lengths (about half a bit a symbol through repeat
+// codes, eight node bytes a symbol): about 256 node bytes a byte, so 384
+// leaves a margin. Nodes are made as each tree is read, so vp8lNodesPerByte
+// bounds a bitstream that ends early too.
 // TestVP8LHuffmanMemoryIsHeldWithinTheEstimate measures a crafted file at
-// each extreme against the estimate these give: 160 KiB of one-symbol groups,
-// the most backing a byte can force, which holds about 170 MiB, and 215 KiB of
-// full trees, the most nodes, which holds about 43 MiB.
+// each extreme against the estimate these give: 160 KiB of one-symbol
+// groups, the most backing a byte can force, which holds about 170 MiB, and
+// 215 KiB of full trees, the most nodes, which holds about 43 MiB.
 const (
 	vp8lBackingPerByte int64 = 1072
 	vp8lNodesPerByte   int64 = 384
 )
 
-// vp8lMemory bounds the memory the vp8l decoder holds for a bitstream of n
-// bytes beyond its decoded pixels: the hGroup backing (capped at the 16-bit
-// index ceiling) and the trees' node slices. A file splits its bytes between
-// forcing more groups and fuller trees, so charging the maximum of each on
-// the whole size over-counts, which is safe. A lossless bitstream or a
-// VP8L-compressed alpha plane of more than 224 KiB is refused by this from
-// its header, before any cooldown (processingCost, Inspect), and less in a
-// larger picture, whose pixels take more of the budget beside it: about
-// 205 KiB at a megapixel and 130 KiB at nine, and a little less again in a
-// larger upload (TestVP8LHuffmanMemoryIsCharged). x/image's decoder cannot be
-// held to less, and no header field says a given file is benign.
+// vp8lMemory bounds the memory the vp8l decoder holds, beyond its decoded
+// pixels, for a bitstream of n bytes that it reads to its end: the hGroup
+// backing (capped at the 16-bit index ceiling) and the trees' node slices. A
+// file splits its bytes between forcing more groups and fuller trees, so
+// charging the maximum of each on the whole size over-counts, which is safe.
+// A lossless bitstream or a VP8L-compressed alpha plane of more than 224 KiB
+// is refused by this from its header, before any cooldown (processingCost,
+// Inspect), and less in a larger picture, whose pixels take more of the
+// budget beside it: about 205 KiB at a megapixel and 130 KiB at nine, and a
+// little less again in a larger upload (TestVP8LHuffmanMemoryIsCharged).
+// x/image's decoder cannot be held to less, and no header field says a given
+// file is benign.
 func vp8lMemory(n int64) int64 {
 	return min(vp8lGroupBacking, vp8lBackingPerByte*n) + vp8lNodesPerByte*n
+}
+
+// vp8lStopCost is what a WebP holds when its vp8l bitstream — n bytes, as
+// webpPicture finds them — names Huffman groups and ends before it has given
+// their trees, which golang.org/x/image's decoder finds out only after it has
+// made all of them (vp8lGroupBacking). It then fails, before it makes the
+// pixels, so the picture's size counts only for the images it decoded before
+// the groups and still holds beside them: a predictor and a cross-colour
+// transform's, and the meta-image, each 4 bytes a tile and a tile 4×4 pixels
+// at the least (decodeTransform, decodeHuffmanGroups), which are megabytes in
+// a large picture and cost the bitstream no bits at all when each is one
+// colour; a colour-indexing transform's palette and the colour cache are a few
+// kilobytes, inside processingSlack. With the copy stripWebP made, the nodes
+// of the trees it did read, and processingSlack, that is at least 167.5 MiB
+// for every lossless WebP and every one whose alpha plane is compressed,
+// however small: a file of a few dozen bytes makes the decoder set that much
+// aside (TestVP8LGroupsNamedButNeverGivenAreCharged), and no header field
+// tells such a file from a benign one. So two are never processed at once. It
+// is zero for anything else, which the vp8l decoder does not read.
+func vp8lStopCost(format Format, data []byte, cfg image.Config) int64 {
+	if format != FormatWebP {
+		return 0
+	}
+	_, _, n := webpPicture(data)
+	if n == 0 {
+		return 0
+	}
+	tiles := ((int64(cfg.Width) + 3) / 4) * ((int64(cfg.Height) + 3) / 4)
+	return int64(len(data)) + vp8lGroupBacking + vp8lNodesPerByte*n + 3*4*tiles + processingSlack
 }
 
 // vp8lAlphaHeader is the VP8L header golang.org/x/image's decoder puts in
@@ -614,17 +663,18 @@ const vp8lAlphaHeader = 5
 
 // webpPicture reports, from a WebP's top-level chunks, whether its picture is
 // lossless, whether it has an alpha plane, and how many bytes of it
-// golang.org/x/image's vp8l decoder can read, which is what vp8lMemory is
-// charged on: a lossless picture's VP8L chunk; an alpha plane compressed with
-// VP8L (method 1 in the low bits of its first byte; method 0 is uncompressed,
-// allocates only the plane, and is not read through vp8l), its ALPH chunk
-// with the header the decoder puts in front of it; and otherwise nothing. The
-// decoder reads each chunk through a reader that ends with the chunk, so the
-// rest of the file — a lossy bitstream, a colour profile, EXIF — is never
-// part of it. These are the first such chunks, which are the ones stripWebP
-// keeps and the decoder takes: a file with a second is refused before it is
-// decoded. A file it cannot follow is costed as lossless, the dearer kind,
-// with the whole file as its bitstream; the decoder will have the last word.
+// golang.org/x/image's vp8l decoder can read, which is what vp8lMemory and
+// vp8lStopCost are charged on: a lossless picture's VP8L chunk; an alpha plane
+// compressed with VP8L (method 1 in the low bits of its first byte; method 0
+// is uncompressed, allocates only the plane, and is not read through vp8l),
+// its ALPH chunk with the header the decoder puts in front of it; and
+// otherwise nothing. The decoder reads each chunk through a reader that ends
+// with the chunk, so the rest of the file — a lossy bitstream, a colour
+// profile, EXIF — is never part of it. These are the first such chunks,
+// which are the ones stripWebP keeps and the decoder takes: a file with a
+// second is refused before it is decoded. A file it cannot follow is costed as
+// lossless, the dearer kind, with the whole file as its bitstream; the decoder
+// will have the last word.
 func webpPicture(data []byte) (lossless, alpha bool, vp8l int64) {
 	unknown := func() (bool, bool, int64) { return true, false, int64(len(data)) }
 	if len(data) < 12 {

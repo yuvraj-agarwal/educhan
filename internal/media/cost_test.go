@@ -448,7 +448,11 @@ func leastPeak(t *testing.T, name string, want int64, work func() error) int64 {
 // output far above what flat quadrants need are often the larger part, and
 // would hide a decoding term the model left out. The encoder is stopped
 // there by a stored limit of nothing, so it is refused the first byte it
-// writes.
+// writes. Every fixture decodes to the end, so the whole is held to the cost
+// of that (completedCost), not to what Inspect charges: for a lossless WebP
+// and a compressed alpha plane that is the full Huffman-group charge of a
+// bitstream that stops after naming its groups (vp8lStopCost), which would
+// hide any term of theirs left out.
 func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 	for name, data := range costFixtures(t) {
 		in, err := inspect(data)
@@ -469,19 +473,20 @@ func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 			}
 			return nil
 		})
-		whole := leastPeak(t, name, in.cost, func() error {
+		completed := completedCost(in.format, data, cfg, in.frames)
+		whole := leastPeak(t, name, completed, func() error {
 			_, err := Process(context.Background(), data)
 			return err
 		})
 
 		mib := func(n int64) float64 { return float64(n) / (1 << 20) }
 		t.Logf("%-28s %4d×%-4d decoding %5.1f MiB of %5.1f, all of it %5.1f MiB of %5.1f",
-			name, cfg.Width, cfg.Height, mib(decoded), mib(decoding), mib(whole), mib(in.cost))
+			name, cfg.Width, cfg.Height, mib(decoded), mib(decoding), mib(whole), mib(completed))
 		if decoded > decoding {
 			t.Errorf("%s: held %d bytes live before encoding, over the estimate of its decoding phases, %d", name, decoded, decoding)
 		}
-		if whole > in.cost {
-			t.Errorf("%s: held %d bytes live, over its estimate of %d", name, whole, in.cost)
+		if whole > completed {
+			t.Errorf("%s: held %d bytes live, over the estimate of decoding it to the end, %d", name, whole, completed)
 		}
 	}
 }
