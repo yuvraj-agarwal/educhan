@@ -2135,6 +2135,14 @@ let passLost = "";
 // replaced it, or once this browser stops collecting (forgetPassClaim).
 let passVisit = 0;
 
+// passForgets counts the times this browser has stopped collecting
+// (forgetPassClaim). A claim or a reissue link whose answer arrives after
+// that is dropped without being stored or drawn: whoever pressed it meant
+// this browser to keep nothing more of what was bought here. A Pass that
+// answer brought is still its buyer's, and a reissue link from its payment
+// gives it a new code.
+let passForgets = 0;
+
 // passStartedAgain is set when the visitor leaves Stripe without paying, or
 // says so while a purchase is being collected: the page then offers to buy
 // again, and goes on collecting underneath until another checkout starts, so
@@ -2256,13 +2264,15 @@ function dropPassNonce(key) {
 // forgetPassClaim stops this browser collecting anything bought here that has
 // not arrived yet. The page stops first: the nonces are dropped and the
 // collection on screen ends (passVisit), so no claim is sent after this, and
-// none draws a new nonce. Then the server drops the claim, which only it can
+// none draws a new nonce, and an answer already on its way is dropped when it
+// arrives (passForgets). Then the server drops the claim, which only it can
 // do, since the claim is a cookie the page cannot see; the purchase stays the
 // buyer's, for a reissue link from the receipt. It resolves to whether nothing
 // is left to collect here: true once the server has answered, or when it
 // sells no Pass.
 async function forgetPassClaim() {
   passVisit += 1;
+  passForgets += 1;
   dropPassNonce(PASS_NONCE_STORAGE_KEY);
   dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);
   try {
@@ -2815,21 +2825,23 @@ function keepClaimed(res, reissued = false) {
   return "";
 }
 
-// confirmRenewal says what a renewal collected here came to for the Pass this
-// browser holds. The renewal is of the Pass its checkout was for, which may
-// not be the one held here any more (another code typed in, or a reissue link
-// used, since), so its expiry is never taken on trust: the held code is
-// checked again, as Check it again does, the expiry the server gives is
-// stored, and the notice it resolves to says what is true of that Pass. Code
-// checks are spaced out per address, which a campus shares, so one turned
-// away for that is asked again once, after the wait the server names.
-async function confirmRenewal(renewed) {
+// confirmRenewal says what a renewal collected here, by a claim or by a
+// reissue link (reissued), came to for the Pass this browser holds. The
+// renewal is of the Pass its checkout was for, which may not be the one held
+// here any more (another code typed in, or a reissue link used, since), so its
+// expiry is never taken on trust: the held code is checked again, as Check it
+// again does, the expiry the server gives is stored, and the notice it
+// resolves to says what is true of that Pass. Code checks are spaced out per
+// address, which a campus shares, so one turned away for that is asked again
+// once, after the wait the server names.
+async function confirmRenewal(renewed, reissued = false) {
   const until = passUntilText(renewed.expires_at);
+  const by = reissued ? "This link" : "A payment from this browser";
   const held = storedPass();
   if (!held) {
-    return `A payment from this browser renewed a Pass this browser doesn't have, until ${until}. Enter its code below to use it here.`;
+    return `${by} renewed a Pass this browser doesn't have, until ${until}. Enter its code below to use it here.`;
   }
-  const another = `A payment from this browser renewed a Pass until ${until}.`;
+  const another = `${by} renewed a Pass until ${until}.`;
   let res = null;
   let failed = null;
   for (let attempt = 0; attempt < 2 && !res; attempt += 1) {
@@ -2843,6 +2855,13 @@ async function confirmRenewal(renewed) {
       }
       await new Promise((resolve) => setTimeout(resolve, Math.min(seconds, 5) * 1000));
     }
+  }
+  // The Pass checked left this browser while it was asked about (removed, or
+  // the browser forgotten, here or in another tab): nothing is stored back,
+  // and nothing removed in its name.
+  const still = storedPass();
+  if (!still || still.code !== held.code) {
+    return another;
   }
   if (res) {
     storePass(res.pass, res.expires_at);
@@ -2912,8 +2931,9 @@ function showClaimed(claim, news, notice = "") {
 // carries the collection's nonce, so one whose answer was lost is answered
 // again with the same code. It stops when nothing is left to collect, or the
 // page has been drawn again, or this browser has stopped collecting: then no
-// claim is sent and no nonce drawn, and an answer already on its way is
-// drawn only if it brought something.
+// claim is sent and no nonce drawn. An answer already on its way is drawn
+// only if it brought something, and dropped unstored if this browser has
+// stopped collecting since it was asked (passForgets).
 async function collectPass(visit) {
   let wait = PASS_CLAIM_FIRST_WAIT_MS;
   for (;;) {
@@ -2922,6 +2942,7 @@ async function collectPass(visit) {
     }
     let res = null;
     let failed = null;
+    const forgets = passForgets;
     try {
       res = await api("/api/pass/claim", {
         method: "POST",
@@ -2930,12 +2951,19 @@ async function collectPass(visit) {
     } catch (err) {
       failed = err;
     }
+    // This browser stopped collecting while the claim was on its way.
+    if (forgets !== passForgets) {
+      return;
+    }
     if (res) {
       const news = keepClaimed(res);
       if (res.claim !== true) {
         dropPassNonce(PASS_NONCE_STORAGE_KEY);
       }
       const notice = news === "renewed" ? await confirmRenewal(res) : "";
+      if (forgets !== passForgets) {
+        return;
+      }
       if (visit === passVisit || news) {
         showClaimed(res.claim === true, news, notice);
       }
@@ -2965,10 +2993,13 @@ async function collectPass(visit) {
 
 // redeemPassReissue spends the reissue link this page was opened with. Its
 // nonce is kept until an answer arrives, so the link opened again after an
-// answer that was lost is answered with the code it was spent for.
+// answer that was lost is answered with the code it was spent for. An answer
+// that arrives after this browser stopped collecting is dropped unstored, as
+// a claim's is (passForgets).
 async function redeemPassReissue(token, visit) {
   let res = null;
   let failed = null;
+  const forgets = passForgets;
   try {
     res = await api("/api/pass/claim", {
       method: "POST",
@@ -2977,10 +3008,16 @@ async function redeemPassReissue(token, visit) {
   } catch (err) {
     failed = err;
   }
+  if (forgets !== passForgets) {
+    return;
+  }
   if (res) {
     const news = keepClaimed(res, true);
     dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);
-    const notice = news === "renewed" ? await confirmRenewal(res) : "";
+    const notice = news === "renewed" ? await confirmRenewal(res, true) : "";
+    if (forgets !== passForgets) {
+      return;
+    }
     showClaimed(res.claim === true, news, notice);
     return;
   }
@@ -4338,13 +4375,15 @@ document.addEventListener("click", (event) => {
   }
 
   // A reissue link in a browser that has a Pass is spent once the reader
-  // says so, or left unspent.
+  // says so, or left unspent. The button is left enabled while the answer is
+  // awaited: disabling it would drop focus to the top of the document before
+  // the redraw could move it on, and the token is spent already, so a second
+  // press does nothing.
   const reissue = event.target.closest('[data-action="reissue-pass"]');
   if (reissue) {
     event.preventDefault();
     const token = passReissueToken;
     passReissueToken = "";
-    reissue.disabled = true;
     if (token) {
       redeemPassReissue(token, passVisit);
     }

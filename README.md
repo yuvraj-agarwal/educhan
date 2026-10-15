@@ -395,7 +395,9 @@ even with a copy of the cookie taken before. Paid, or paid later, the order is
 still the buyer's, and the owner reissues it from the payment on the receipt
 (see **Lost codes**). Remove the Pass, Forget this browser and Stop collecting
 it here all send it, and the page stops any collection under way and drops its
-nonces before it does.
+nonces before it does. An answer already on its way when one of them is
+pressed is dropped without being stored or shown; a Pass it brought is still
+the buyer's, and a reissue link from its payment gives it a new code.
 
 An order nobody paid for goes at its deadline, or as soon as Stripe reports
 its checkout expired or its payment failed, or reports it paid with a payment
@@ -827,14 +829,16 @@ not-found view.
   of grace, is kept as run out, with its date, to renew. A Pass that has run out here
   can be checked again, in case it was renewed elsewhere. A renewal the page collects is
   checked against the Pass it holds (`/api/pass/activate`) before it says that Pass is
-  renewed; one it cannot match to the Pass it holds is reported as a payment that
-  renewed a Pass, with that Pass's new date. Brought back from the back-forward cache,
+  renewed; one it cannot match to the Pass it holds is reported as a renewal of a Pass,
+  by a payment from this browser or by the reissue link that brought it, with that
+  Pass's new date. Brought back from the back-forward cache,
   the Pass page is drawn again from the start, age screen first. A reissue link
   (`/pass#reissue=…`) leaves the address before anything else; in a browser that holds a
   Pass it waits for **Use the link here**, and it is spent once, with a nonce of its
   own. **Remove the Pass**, **Forget this browser** and **Stop collecting it here** stop
-  any collection under way, drop its nonces and then the browser's claim, so the next
-  person at a shared computer collects nothing. A post whose Pass was no good goes out
+  any collection under way, drop its nonces and then the browser's claim, and drop
+  unstored an answer to a claim or a reissue link that was already on its way, so the
+  next person at a shared computer collects nothing. A post whose Pass was no good goes out
   like any other, and its answer says so: the page forgets an unknown Pass, keeps one
   that ran out to renew, and says the post was sent.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that

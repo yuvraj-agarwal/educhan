@@ -438,6 +438,10 @@ func faqAnswer(t *testing.T, script, id string) string {
 	return script[start : start+1+end]
 }
 
+// passForgottenCheck is how collectPass and redeemPassReissue drop an answer
+// that arrived after this browser stopped collecting (passForgets).
+var passForgottenCheck = regexp.MustCompile(`if \(forgets !== passForgets\) \{\s*return;\s*\}`)
+
 // words is text with every run of white space made one space, so a sentence
 // is found wherever a template literal wrapped it.
 func words(text string) string {
@@ -466,12 +470,24 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 		regexp.MustCompile(`storePass\([^)]*renewed`).MatchString(confirm) {
 		t.Error("confirmRenewal no longer stores the expiry the server gives for the held code, and only that")
 	}
-	for _, name := range []string{"collectPass", "redeemPassReissue"} {
+	for name, call := range map[string]string{
+		"collectPass":       "await confirmRenewal(res)",
+		"redeemPassReissue": "await confirmRenewal(res, true)",
+	} {
 		body := withoutComments(jsFunction(t, script, name))
-		kept, confirmed := strings.Index(body, "keepClaimed(res"), strings.Index(body, `const notice = news === "renewed" ? await confirmRenewal(res) : "";`)
+		kept, confirmed := strings.Index(body, "keepClaimed(res"), strings.Index(body, `const notice = news === "renewed" ? `+call+` : "";`)
 		if confirmed < kept {
 			t.Errorf("%s no longer checks the held Pass after a renewal, once what the claim brought is kept", name)
 		}
+	}
+	// A Pass removed while it was being checked is not stored back, or
+	// removed again in its name: the check of what is held comes between the
+	// answer and anything that writes.
+	afterCheck := confirm[checked:]
+	still := strings.Index(afterCheck, "if (!still || still.code !== held.code) {\n    return another;\n  }")
+	if still < 0 || !strings.Contains(afterCheck, "const still = storedPass();") ||
+		strings.Index(afterCheck, "storePass(") < still || strings.Index(afterCheck, "forgetPass()") < still {
+		t.Error("confirmRenewal writes what it checked into a browser whose Pass has changed meanwhile")
 	}
 	for _, check := range []string{"state.route", "passVisit"} {
 		if strings.Contains(keep, check) {
@@ -493,6 +509,11 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 			!strings.Contains(between, "} catch (err) {\n    failed = err;\n  }") {
 			t.Errorf("%s does more on a failed claim than note it before storing what an answer brought", name)
 		}
+		// The one check allowed before the store is whether this browser
+		// stopped collecting while the claim was on its way, which is the
+		// reader saying to keep nothing, not a question of where they are
+		// (TestPassClaimsCarryANonceAndCanBeDropped pins it).
+		between = passForgottenCheck.ReplaceAllString(between, "")
 		for _, check := range []string{"return", "state.route", "passVisit", "visit", "await api(", "showClaimed"} {
 			if strings.Contains(between[len(`await api(`):], check) {
 				t.Errorf("%s has %q between the answer and storing what it brought", name, check)
@@ -921,8 +942,16 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	// The page says a Pass here was renewed only once the server, asked about
 	// the code held here, gives it the renewal's expiry.
 	confirm := words(withoutComments(jsFunction(t, script, "confirmRenewal")))
-	if !strings.Contains(confirm, "if (!held) { return `A payment from this browser renewed a Pass this browser doesn't have") {
+	if !strings.Contains(confirm, "if (!held) { return `${by} renewed a Pass this browser doesn't have") {
 		t.Error("a renewal with no Pass in this browser is said to renew the Pass here")
+	}
+	// A renewal a reissue link brought is not said to be a payment from this
+	// browser: the link may have been paid for anywhere.
+	if !strings.Contains(confirm, `async function confirmRenewal(renewed, reissued = false) {`) ||
+		!strings.Contains(confirm, `const by = reissued ? "This link" : "A payment from this browser";`) ||
+		!strings.Contains(confirm, "const another = `${by} renewed a Pass until ${until}.`;") ||
+		strings.Count(confirm, "A payment from this browser") != 1 {
+		t.Error("confirmRenewal no longer says a renewal came from a reissue link when it did")
 	}
 	renewed := "`Your Pass is renewed until"
 	asked := strings.Index(confirm, `await api("/api/pass/activate"`)
@@ -1048,10 +1077,33 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	if asked < 0 {
 		t.Error("forgetPassClaim no longer asks the server to drop the claim")
 	}
-	for _, first := range []string{"passVisit += 1;", "dropPassNonce(PASS_NONCE_STORAGE_KEY);", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);"} {
+	for _, first := range []string{"passVisit += 1;", "passForgets += 1;", "dropPassNonce(PASS_NONCE_STORAGE_KEY);", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);"} {
 		if at := strings.Index(forget, first); at < 0 || at > asked {
 			t.Errorf("forgetPassClaim no longer does %q before it asks the server", first)
 		}
+	}
+	// An answer already on its way when this browser stopped collecting is
+	// dropped, not stored or drawn: the count of forgets is read before each
+	// claim is sent, and compared once the answer is in, before anything is
+	// kept, and again after a renewal was checked, before anything is drawn.
+	for _, name := range []string{"collectPass", "redeemPassReissue"} {
+		body := withoutComments(jsFunction(t, script, name))
+		read := strings.Index(body, "const forgets = passForgets;")
+		asked := strings.Index(body, `await api("/api/pass/claim"`)
+		caught := strings.Index(body, "failed = err;")
+		checks := passForgottenCheck.FindAllStringIndex(body, -1)
+		kept := strings.Index(body, "keepClaimed(res")
+		confirmed := strings.Index(body, "await confirmRenewal(")
+		drawn := strings.Index(body, "showClaimed(")
+		if read < 0 || read > asked || len(checks) != 2 ||
+			checks[0][0] < caught || checks[0][0] > kept ||
+			checks[1][0] < confirmed || checks[1][0] > drawn {
+			t.Errorf("%s can store or draw an answer that arrived after this browser stopped collecting", name)
+		}
+	}
+	if n := len(regexp.MustCompile(`\bpassForgets\b`).FindAllString(code, -1)); n != 8 {
+		t.Errorf("passForgets appears %d times; want its declaration, forgetPassClaim's count, and a read and two "+
+			"checks in each of collectPass and redeemPassReissue", n)
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "return forgetPassClaim();") {
 		t.Error("Forget this browser no longer drops a purchase still being collected")
@@ -1129,6 +1181,15 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 	}
 	if !strings.Contains(code, "redeemPassReissue(token, passVisit);") {
 		t.Error("Use the link here no longer spends the link through redeemPassReissue")
+	}
+	// Use the link here stays enabled while its answer is awaited: a disabled
+	// button drops focus to the top of the document, where redrawPass no
+	// longer sees it on the page. The token is spent before the request, so a
+	// second press does nothing.
+	use := code[strings.Index(code, `const reissue = event.target.closest('[data-action="reissue-pass"]');`):]
+	use = use[:strings.Index(use, "\n    return;\n  }")]
+	if strings.Contains(use, "disabled") || !strings.Contains(use, "passReissueToken = \"\";\n    if (token) {") {
+		t.Error("Use the link here disables the button that has focus, or can spend the link twice")
 	}
 }
 

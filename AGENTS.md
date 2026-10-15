@@ -483,15 +483,17 @@ one of those properties and needs a browser check before the test changes.
   leaves the Pass page, beside any code it took the place of. A renewal's date is never
   stored from the claim's answer, since the Pass it renewed may not be the one held here
   now: `confirmRenewal` checks the held code with `/api/pass/activate`, stores what that
-  says, and says the Pass is renewed only when the date it checks is the renewal's and
-  later than the one it had. A reissue link's token rides in the fragment
+  says unless the Pass held changed meanwhile, and says the Pass is renewed only when the
+  date it checks is the renewal's and later than the one it had; a renewal a reissue link
+  brought is said to come from the link, not from a payment in this browser. A reissue link's token rides in the fragment
   (`/pass#reissue=…`), leaves the address first thing in `render`
   (`takePassReissueToken`), waits for "Use the link here" in a browser that holds a Pass,
   and goes once in a claim's body with a nonce of its own (`educhan:pass-reissue-nonce`),
   the code derived from the two. Remove the Pass, Forget this browser and Stop collecting
   it here stop the collection under way (`passVisit`) and drop both nonces before they
-  drop the claim (`forgetPassClaim`, `{"forget": true}`), so the next person at a shared
-  computer collects nothing. A page brought back from the back-forward cache is drawn
+  drop the claim (`forgetPassClaim`, `{"forget": true}`), and an answer to a claim or a
+  reissue link that arrives after one of them is dropped unstored (`passForgets`), so the
+  next person at a shared computer collects nothing. A page brought back from the back-forward cache is drawn
   again through `render` (the `pageshow` listener), so the age screen still comes first. A
   post whose Pass was no good is a `201` like any other, carrying `"pass": "invalid"` or
   `"expired"`: the page forgets the first, marks the second run out without a date, and
