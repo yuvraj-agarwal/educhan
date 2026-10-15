@@ -1794,7 +1794,7 @@ func TestAnimatedWebP(t *testing.T) {
 	if _, err := Process(context.Background(), upload); !errors.Is(err, ErrCorruptImage) {
 		t.Errorf("Process(animated WebP) = %v, want ErrCorruptImage, as before stripping", err)
 	}
-	if _, err := sanitizeWebP(upload, 1<<20); !errors.Is(err, ErrCorruptImage) {
+	if _, err := sanitizeWebP(context.Background(), upload, 1<<20); !errors.Is(err, ErrCorruptImage) {
 		t.Errorf("sanitizeWebP(animated WebP) = %v, want ErrCorruptImage", err)
 	}
 }

@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -159,16 +160,27 @@ const maxGIFFramePixels = 4 * MaxPixels
 // limit bytes (storedLimit), with ErrStoredTooLarge. It grows by doubling, as a
 // bytes.Buffer does, but never past the limit, so it holds at most twice the
 // limit while it grows: what processingCost counts for it.
+//
+// It also fails a write once its context is done (ctx), so an encode of a
+// costly picture stops promptly when the request that asked for it is
+// cancelled or has run out of time, rather than running to the end and only
+// then finding nothing wants it. While the context is live the check is the
+// one comparison and the bytes written are exactly what they would be
+// without it.
 type storedBuffer struct {
+	ctx   context.Context
 	buf   []byte
 	limit int64
 }
 
-func newStoredBuffer(sizeHint int, limit int64) *storedBuffer {
-	return &storedBuffer{buf: make([]byte, 0, min(int64(sizeHint), limit)), limit: limit}
+func newStoredBuffer(ctx context.Context, sizeHint int, limit int64) *storedBuffer {
+	return &storedBuffer{ctx: ctx, buf: make([]byte, 0, min(int64(sizeHint), limit)), limit: limit}
 }
 
 func (b *storedBuffer) Write(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
 	need := int64(len(b.buf)) + int64(len(p))
 	if need > b.limit {
 		return 0, ErrStoredTooLarge
@@ -208,18 +220,56 @@ type sanitized struct {
 
 // sanitize rewrites an upload for storage. The rewritten file may not be
 // longer than in.limit (storedLimit).
-func sanitize(in inspection, data []byte) (sanitized, error) {
+//
+// ctx is the request's: the decode reads through a ctxReader and the encode
+// writes into a storedBuffer that both fail once it is done, and playGIF
+// checks it between frames, so a costly picture stops being processed the
+// moment the post that asked for it is cancelled or out of time rather than
+// running to the end first — which is what lets processHeld give the budget
+// back promptly. A decode or encode a cancellation cut off surfaces as the
+// format's own error; sanitize reports the context's error instead when it is
+// what stopped the work, so Process and Save map it to the right answer (a
+// deadline to 503, a cancellation to the client having gone) rather than to
+// ErrCorruptImage. While ctx is live nothing it does changes the stored bytes.
+func sanitize(ctx context.Context, in inspection, data []byte) (sanitized, error) {
+	out, err := sanitizeFormat(ctx, in, data)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return sanitized{}, ctxErr
+		}
+	}
+	return out, err
+}
+
+func sanitizeFormat(ctx context.Context, in inspection, data []byte) (sanitized, error) {
 	switch in.format.Name {
 	case FormatJPEG.Name:
-		return sanitizeJPEG(data, in.limit)
+		return sanitizeJPEG(ctx, data, in.limit)
 	case FormatPNG.Name:
-		return sanitizePNG(data, in.limit)
+		return sanitizePNG(ctx, data, in.limit)
 	case FormatGIF.Name:
-		return sanitizeGIF(data, in.limit, in.frames)
+		return sanitizeGIF(ctx, data, in.limit, in.frames)
 	case FormatWebP.Name:
-		return sanitizeWebP(data, in.limit)
+		return sanitizeWebP(ctx, data, in.limit)
 	}
 	return sanitized{}, ErrUnsupportedFormat
+}
+
+// ctxReader makes a reader fail once ctx is done, so a decode reading an
+// upload through it stops promptly when the request is cancelled or out of
+// time instead of reading the whole file first. While ctx is live it is the
+// reader unchanged, so what the decoder sees, and so what is stored, is byte
+// for byte what it would be without it.
+type ctxReader struct {
+	ctx context.Context
+	r   io.Reader
+}
+
+func (c ctxReader) Read(p []byte) (int, error) {
+	if err := c.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return c.r.Read(p)
 }
 
 // sanitizeJPEG decodes a JPEG, applies its EXIF orientation to the pixels, and
@@ -243,8 +293,8 @@ func sanitize(in inspection, data []byte) (sanitized, error) {
 // A CMYK JPEG is converted to RGB where it lies as soon as it is decoded,
 // which is what the encoder would do a pixel at a time, through an interface
 // value each, and what turning it upright would do the same way.
-func sanitizeJPEG(data []byte, limit int64) (sanitized, error) {
-	src, err := jpeg.Decode(bytes.NewReader(data))
+func sanitizeJPEG(ctx context.Context, data []byte, limit int64) (sanitized, error) {
+	src, err := jpeg.Decode(ctxReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
@@ -254,7 +304,7 @@ func sanitizeJPEG(data []byte, limit int64) (sanitized, error) {
 	o := jpegOrientation(data)
 	pic := orient(src, o)
 	f, framed := readJPEGFrame(data)
-	buf := newStoredBuffer(len(data), limit)
+	buf := newStoredBuffer(ctx, len(data), limit)
 	stored, err := buf.encoded(FormatJPEG, jpegenc.Encode(buf, pic, &jpegenc.Options{Quality: jpegQuality(f, framed, o)}))
 	if err != nil {
 		return sanitized{}, err
@@ -294,8 +344,8 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // is turned upright first, as for a JPEG, because browsers show it turned.
 // An animated PNG keeps its still image, which is what a viewer without APNG
 // support has always shown.
-func sanitizePNG(data []byte, limit int64) (sanitized, error) {
-	src, err := png.Decode(bytes.NewReader(data))
+func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, error) {
+	src, err := png.Decode(ctxReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
@@ -304,7 +354,7 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	}
 	reduceHiddenColour(src)
 	pic := orient(src, pngOrientation(data))
-	buf := newStoredBuffer(len(data), limit)
+	buf := newStoredBuffer(ctx, len(data), limit)
 	stored, err := buf.encoded(FormatPNG, png.Encode(buf, pic))
 	if err != nil {
 		return sanitized{}, err
@@ -342,8 +392,8 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 // file, is told the logical screen takes in every frame (gifReader). A first
 // frame past the canvas is refused by gifFramePixels: browsers disagree on
 // what to show for it.
-func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) {
-	g, err := gif.DecodeAll(gifReader(data, frames))
+func sanitizeGIF(ctx context.Context, data []byte, limit int64, frames gifFrames) (sanitized, error) {
+	g, err := gif.DecodeAll(ctxReader{ctx, gifReader(data, frames)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
@@ -363,8 +413,8 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 	if frames.looped {
 		loop = frames.loop
 	}
-	buf := newStoredBuffer(len(data), limit)
-	err = playGIF(g.Image, heads, canvas, loop, buf)
+	buf := newStoredBuffer(ctx, len(data), limit)
+	err = playGIF(ctx, g.Image, heads, canvas, loop, buf)
 	if errors.Is(err, ErrImageTooCostly) {
 		return sanitized{}, err
 	}
@@ -456,7 +506,7 @@ func gifReader(data []byte, frames gifFrames) io.Reader {
 // matching included, which is what makes it a hiding place. Encoding the
 // decoded pixels, with no colour kept under transparent ones, leaves only
 // what is shown, as for the other formats.
-func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
+func sanitizeWebP(ctx context.Context, data []byte, limit int64) (sanitized, error) {
 	stripped, info, err := stripWebP(data)
 	if err != nil {
 		return sanitized{}, err
@@ -464,7 +514,7 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 	if info.Animated {
 		return sanitized{}, ErrCorruptImage
 	}
-	pic, err := webp.Decode(bytes.NewReader(stripped))
+	pic, err := webp.Decode(ctxReader{ctx, bytes.NewReader(stripped)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
@@ -478,7 +528,7 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 		pic = &p.YCbCr
 	}
 	format := FormatPNG
-	buf := newStoredBuffer(len(data), limit)
+	buf := newStoredBuffer(ctx, len(data), limit)
 	switch p := pic.(type) {
 	case *image.YCbCr: // lossy and opaque
 		format = FormatJPEG

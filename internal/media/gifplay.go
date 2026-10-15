@@ -2,6 +2,7 @@ package media
 
 import (
 	"compress/lzw"
+	"context"
 	"encoding/binary"
 	"errors"
 	"image"
@@ -734,7 +735,12 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 // anything is allocated for play, so a limit too small for it costs nothing.
 // Each frame is let go once it has been played, its place in frames set to
 // nil.
-func playGIF(frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectangle, loop int, out io.Writer) error {
+//
+// It checks ctx once a frame and returns its error at once if it is done, so a
+// long animation stops being played the moment the request is cancelled or out
+// of time; out writing through a context-aware storedBuffer stops a frame
+// sooner still. While ctx is live neither changes a byte of what is written.
+func playGIF(ctx context.Context, frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectangle, loop int, out io.Writer) error {
 	w, h := canvas.Dx(), canvas.Dy()
 	colours, global := gifColours(frames, heads, canvas)
 	p := &gifPlayer{w: w, loop: loop, global: global}
@@ -764,6 +770,15 @@ func playGIF(frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectan
 	p.a, p.b = &gifFrame{disposal: keepFrame}, &gifFrame{}
 
 	for j, m := range frames {
+		// Playing a frame draws, compares and may mark its pixels a few times
+		// over; checking the context once a frame stops a costly animation the
+		// moment the request that asked for it is cancelled or out of time,
+		// and gives the budget back, rather than playing to the last frame
+		// first. The check is one comparison a frame and never changes what is
+		// written.
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		p.b.load(m, heads[j], canvas)
 		box, toClear := p.differs()
 		if j == 0 || !box.Empty() {

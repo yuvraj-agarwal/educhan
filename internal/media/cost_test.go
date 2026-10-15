@@ -519,7 +519,7 @@ func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 		decoded := leastPeak(t, name, decoding, func() error {
 			unstored := in
 			unstored.limit = 0
-			if _, err := sanitize(unstored, data); !errors.Is(err, ErrStoredTooLarge) {
+			if _, err := sanitize(context.Background(), unstored, data); !errors.Is(err, ErrStoredTooLarge) {
 				return fmt.Errorf("sanitize with nowhere to store = %v, want ErrStoredTooLarge", err)
 			}
 			return nil
@@ -574,7 +574,7 @@ func TestGIFPlayScratchCoversThePlayer(t *testing.T) {
 		held := leastPeak(t, c.name, want, func() error {
 			// playGIF lets go of the frames in the slice it is given, and
 			// the frames stay held in g.
-			return playGIF(slices.Clone(g.Image), heads, image.Rect(0, 0, w, h), 0, io.Discard)
+			return playGIF(context.Background(), slices.Clone(g.Image), heads, image.Rect(0, 0, w, h), 0, io.Discard)
 		})
 		t.Logf("%s: playing held %.1f MiB of %.1f", c.name, float64(held)/(1<<20), float64(want)/(1<<20))
 		if held > want {
@@ -1503,7 +1503,7 @@ func TestStoredFileCannotOutgrowItsUpload(t *testing.T) {
 		t.Errorf("%d bytes of the budget still held after the refusal", n)
 	}
 
-	b := newStoredBuffer(1, 10_000)
+	b := newStoredBuffer(context.Background(), 1, 10_000)
 	for i := 0; i < 9; i++ {
 		if _, err := b.Write(make([]byte, 1000)); err != nil {
 			t.Fatalf("write %d: %v", i, err)

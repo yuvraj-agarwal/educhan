@@ -242,8 +242,14 @@ func processHeld(ctx context.Context, data []byte) (_ Processed, release func(),
 			give()
 		}
 	}()
-	out, err := sanitize(in, data)
+	out, err := sanitize(ctx, in, data)
 	if err != nil {
+		return Processed{}, nil, err
+	}
+	// The thumbnail scaler is one bounded call and cannot be cut mid-scale;
+	// a cancellation that has already arrived skips it, so the budget is
+	// handed back at once rather than after a scale nothing is waiting for.
+	if err := ctx.Err(); err != nil {
 		return Processed{}, nil, err
 	}
 	if out.thumb == nil {
