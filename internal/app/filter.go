@@ -3343,6 +3343,11 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 		nearest = before[len(before)-1]
 	}
 	mine := firstPerson[nearest] || len(before) > 0 && firstPerson[before[0]] && !relative
+	// "tujhe kal cricket mein dho dunga", "match mein peet dunga": beating
+	// someone in a game, with no blade or gun in it.
+	if anyIn(ws, hindiBeatWords) && !anyIn(ws, hindiBladeWords) && hindiGameNamed(sws) {
+		return true
+	}
 	switch {
 	case passiveHarm.MatchString(cm):
 		destroyed := passiveRuin.MatchString(cm)
@@ -3380,8 +3385,7 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 		return !anyIn(sws, threatPlaceWords) || anyIn(sws, stageWords) || anyIn(sws, eventWords) ||
 			anyIn(sws, festivalWords) || anyIn(sws, hypeWords) || anyIn(sws, gameWords)
 	case hinglishReady.MatchString(cm):
-		return anyIn(sws, propWords) || anyIn(sws, gameWords) || anyIn(sws, toyWeapon) || anyIn(sws, festivalWords) ||
-			gameNamed(text, m)
+		return unnegatedIn(sws, propWords, gameWords, toyWeapon, festivalWords) || gameNamed(text, m)
 	case is(first, "ko") && hasWord(ws, "dho"):
 		// "gaadi ko dho dunga" is the washing: only "tujhe dho dalunga",
 		// said to a person, is the thrashing.
@@ -3401,7 +3405,7 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 	case hinglishBring.MatchString(cm):
 		return toyWeapon[first] || toyWeapon[prev] || anyIn(sws, festivalWords)
 	case weaponHeld.MatchString(cm):
-		return anyIn(sws, propWords) || anyIn(sws, gameWords)
+		return unnegatedIn(sws, propWords, gameWords)
 	case setOnFire.MatchString(cm):
 		return anyIn(sws, stageWords) && !anyIn(sws, fuelWords)
 	case strings.HasSuffix(cm, "death"):
@@ -3420,6 +3424,28 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 	}
 	return false
 }
+
+// hindiGameNamed reports a game in a sentence with the Hinglish "in" or "at"
+// after it: "cricket mein", "match pe", "carrom mein". "match ke baad",
+// after the match, is only when.
+func hindiGameNamed(ws []string) bool {
+	for i, w := range ws[:max(0, len(ws)-1)] {
+		if gameWords[w] && hindiInGame[ws[i+1]] && !anyIn(ws[max(0, i-3):i], excuseNegators) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// hindiBeatWords are the Hinglish verbs of beating, killing and
+	// thrashing, which a game uses of its players too; hindiBladeWords are
+	// the arms none does.
+	hindiBeatWords = canonSetOf(`maar peet pit thok thokk tapka dho maarunga marunga maroonga maaroonga maarungi
+		marungi maarenge marenge peetunga pitunga peetenge pitenge thokunga thokenge tapkaunga tapkaenge tapkayenge`)
+	hindiBladeWords = canonSetOf(`goli chaku chakku chaaku chakoo chhura chhuri chura churi knife talwar talvar`)
+	hindiInGame     = canonSetOf(`mein me main mai mei pe par`)
+)
 
 // habitual reports a sentence about what happens again and again: "kids get
 // shot there every week", "he always gets killed first".
@@ -4038,7 +4064,8 @@ var (
 	nounTails = canonSetOf(`chat gc group groups uniform uniforms fee fees timetable schedule result results marks
 		grades syllabus bag bags bottle record records list rules notice account id card number name dp status story
 		post page song playlist election timings code wifi password lunch tiffin portal app fund funds
-		budget website server bell`)
+		budget website server bell license licence licenses licences permit permits money pump pumps bunk bunks
+		price prices bill bills allowance`)
 	// nounEnds are the words that can come straight after a noun phrase
 	// that is over: a preposition, a conjunction, a time, an adverb, a
 	// pronoun.
@@ -4389,8 +4416,13 @@ func (f *scannedField) threatFrameCheck(v *view, m []int) bool {
 		gameNamed(v.text, whole) && !anyIn(sentence, threatPlaceWords)) {
 		return false
 	}
-	if armed && (anyIn(sentence, propWords) || anyIn(sentence, gameWords) || anyIn(sentence, toyWeapon) ||
-		anyIn(sentence, festivalWords)) {
+	if armed && unnegatedIn(sentence, propWords, gameWords, toyWeapon, festivalWords) {
+		return false
+	}
+	// A blade on a camp or a trip, and a gun at a range: "bringing an axe to
+	// the camp for firewood", "taking my rifle to the shooting range".
+	if carried := wordsIn(v.text[at:end]); armed && (anyIn(carried, bladeHeads) && unnegatedIn(sentence, outdoorWords) ||
+		anyIn(carried, gunHeads) && shootingRange(sentence)) {
 		return false
 	}
 	if hyperbolicActs[verb] && retracted(v.text, end) && closeOne(readNoun(nextWords(clauseAfter(v.text, at), 6))) {
@@ -4411,9 +4443,17 @@ var (
 	// hyperbolicActs are the verbs said in exasperation of someone close,
 	// and taken back: "I'm going to strangle him (I won't, I love him)".
 	hyperbolicActs = setOf(`kill murder strangle choke drown poison hurt beat`)
-	// takenBack are what take an act back straight after it.
+	// takenBack are what take an act back straight after it. The first
+	// four refuse the act, so they end their clause: "I won't, I love him",
+	// not "I won't stop".
 	takenBack = [][]string{{"i", "won't"}, {"i", "wont"}, {"i", "wouldn't"}, {"i", "wouldnt"}, {"not", "really"},
 		{"jk"}, {"just", "kidding"}, {"kidding"}, {"not", "literally"}, {"obviously", "not"}}
+	// refusalTails may follow "I won't" in a clause that takes the act back:
+	// "I won't lol", "i wouldn't actually".
+	refusalTails = canonSetOf(`lol lmao haha obviously actually really ofc tho though but bro`)
+	// retractionNegators before "kidding" or "jk" make it earnest: "I'm not
+	// kidding".
+	retractionNegators = canonSetOf(`not no never ain't aint isn't`)
 )
 
 // closeOne reports one person close to the speaker, the one exasperation is
@@ -4428,21 +4468,44 @@ func closeOne(np nounPhrase) bool {
 }
 
 // retracted reports an act taken back in the words after offset i of
-// text: "(I won't, I love him)", "jk".
+// text: "(I won't, I love him)", "jk". "I won't" and the like refuse the act
+// only as a clause of their own, a bracket, a comma or a stop before them
+// and nothing but a laugh or a stop after them, so "I won't stop till he's
+// dead" and "I won't hold back" take nothing back; and "kidding" after a
+// "not" is the opposite of a joke.
 func retracted(text string, i int) bool {
-	ws := wordsIn(text[i:min(len(text), i+64)])
-	for k := range ws {
-		for _, t := range takenBack {
-			if k+len(t) > len(ws) {
+	s := text[i:min(len(text), i+64)]
+	spans := wordSpans(s)
+	opens := func(k int) bool {
+		gap := s[:spans[k][0]]
+		if k > 0 {
+			gap = s[spans[k-1][1]:spans[k][0]]
+		}
+		return strings.ContainsAny(gap, "(,.;:!?-—–\n") || k == 0 && i == 0
+	}
+	for k := range spans {
+		negated := k > 0 && retractionNegators[s[spans[k-1][0]:spans[k-1][1]]]
+		for n, t := range takenBack {
+			if n < 4 && !opens(k) || n >= 4 && negated {
+				continue
+			}
+			if k+len(t) > len(spans) {
 				continue
 			}
 			match := true
 			for j, w := range t {
-				match = match && is(ws[k+j], w)
+				match = match && is(s[spans[k+j][0]:spans[k+j][1]], w)
 			}
-			if match {
-				return true
+			if !match {
+				continue
 			}
+			if n < 4 {
+				e := k + len(t)
+				if e < len(spans) && !opens(e) && !refusalTails[s[spans[e][0]:spans[e][1]]] {
+					continue // "I won't stop"
+				}
+			}
+			return true
 		}
 	}
 	return false
@@ -4525,18 +4588,20 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		return np
 	}
 	// object is a noun phrase at i, or a name: a word with a capital in
-	// the source that is not a day, a subject or the like.
-	object := func(i int) nounPhrase {
+	// the source that is not a day, a subject or the like, followed by
+	// nounEnds or by one of then ("make Kabir bleed").
+	objectThen := func(i int, then ...string) nounPhrase {
 		if np := noun(i); np.kind != nounNone || i >= len(ws) {
 			return np
 		}
 		a, b := v.span(at+sp[i][0], at+sp[i][1])
 		if r, _ := utf8.DecodeRuneInString(f.src[a:b]); unicode.IsUpper(r) && b-a > 1 &&
-			!notANameTarget[strings.ToLower(f.src[a:b])] && (i+1 >= len(ws) || nounEnds[ws[i+1]]) {
+			!notANameTarget[strings.ToLower(f.src[a:b])] && (i+1 >= len(ws) || nounEnds[ws[i+1]] || word(i+1, then...)) {
 			return nounPhrase{kind: nounKin, head: ws[i], n: i + 1}
 		}
 		return nounPhrase{}
 	}
+	object := func(i int) nounPhrase { return objectThen(i) }
 	// within reports a word of set in the four after i, and where.
 	within := func(i int, set map[string]bool) (int, bool) {
 		for k := i; k < len(ws) && k < i+4; k++ {
@@ -4556,6 +4621,10 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		}
 	case "stab", "shoot", "knife", "shank", "slash", "behead", "strangle", "choke", "drown", "poison":
 		if np := object(0); np.people(true) {
+			if verb == "drown" && word(np.n, "in", "with") && np.n+1 < len(ws) &&
+				anyIn(ws[np.n+1:min(len(ws), np.n+3)], drownedIn) {
+				break // "drown the seniors in compliments"
+			}
 			return act(np.n)
 		}
 		if np := noun(1); verb == "shoot" && word(0, "up") && np.place() {
@@ -4591,8 +4660,8 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		if np := object(1); word(0, "over", "down") && np.people(true) {
 			return act(np.n)
 		}
-		if np := object(0); np.people(true) && word(np.n, "over", "down") {
-			return act(np.n + 1)
+		if np := object(0); np.people(true) && word(np.n, "over", "down") && !word(np.n+1, "to") {
+			return act(np.n + 1) // and not "run the principal over to the station", a lift
 		}
 	case "throw", "push", "shove", "toss":
 		np := object(0)
@@ -4618,6 +4687,13 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 				return act(j + 3)
 			}
 			if k, ok := within(np.n+1, graveHeads); ok && word(np.n, "in", "into", "under") {
+				if is(ws[k-1], "hospital") {
+					if f, ok := within(k, forWord); ok {
+						if _, errand := within(f, hospitalErrands); errand {
+							break // "put my brother in the hospital tomorrow for his checkup"
+						}
+					}
+				}
 				return act(k)
 			}
 		}
@@ -4628,8 +4704,10 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			}
 		}
 	case "make":
-		// "make them bleed", and not "make them bleed red ink".
-		if np := object(0); np.people(true) && word(np.n, "bleed", "beg") && (np.n+1 >= len(ws) || nounEnds[ws[np.n+1]]) {
+		// "make them bleed", "make Kabir bleed", and not "make them bleed red
+		// ink".
+		if np := objectThen(0, "bleed", "beg"); np.people(true) && word(np.n, "bleed", "beg") &&
+			(np.n+1 >= len(ws) || nounEnds[ws[np.n+1]]) {
 			return act(np.n + 1)
 		}
 	case "break", "smash", "snap", "crack":
@@ -4686,10 +4764,15 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			}
 			break
 		}
-		// "take a bat to his head", "take a knife to school".
+		// "take a bat to his head", "take a knife to school", "take a hammer
+		// to the warden": a weapon not the poster's or a known one ("take
+		// the knife to mum" hands it over), to someone.
 		if np := noun(0); (np.kind == nounWeapon || np.kind == nounBlunt) && word(np.n, "to", "into") {
 			if p := noun(np.n + 1); p.place() && !p.mine && !pitchHeads[p.head] ||
 				p.kind == nounBody && p.owned && !p.mine {
+				return held(p.n)
+			}
+			if p := object(np.n + 1); p.people(true) && !p.mine && !np.owned && !word(0, "the") {
 				return held(p.n)
 			}
 		}
@@ -4709,7 +4792,11 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		// "coming with a knife", "going there sunday night with petrol".
 		for k := 0; k < len(ws) && k < 7; k++ {
 			if is(ws[k], "with") {
-				if np := noun(k + 1); np.kind == nounWeapon || np.kind == nounFuel {
+				np := noun(k + 1)
+				if np.kind == nounFuel && word(np.n, "for") && noun(np.n+1).kind == nounVehicle {
+					break // "with petrol for my bike"
+				}
+				if np.kind == nounWeapon || np.kind == nounFuel {
 					return held(np.n)
 				}
 				break
@@ -4721,6 +4808,37 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		}
 	}
 	return 0, false, false
+}
+
+var (
+	// bladeHeads are the carried weapons a camp or a trip has a use for, and
+	// gunHeads the ones a shooting range has.
+	bladeHeads = canonSetOf(`knife knives blade blades machete machetes axe axes hatchet dagger daggers`)
+	gunHeads   = canonSetOf(`gun guns rifle rifles pistol pistols revolver revolvers shotgun shotguns firearm
+		firearms airgun`)
+	// outdoorWords make a blade carried one for a camp, a trip or a trail.
+	outdoorWords = canonSetOf(`camp camps campsite camping campfire bonfire trip trips excursion picnic hike hiking
+		trek trekking scouts scout guides firewood trail trails woods forest jungle`)
+	// drownedIn are what someone is drowned in when it is a way of
+	// talking: "drown the seniors in compliments", "drowning in homework".
+	drownedIn = canonSetOf(`kindness love compliments compliment praise gifts gift chocolates attention work
+		homework assignments notes questions memes messages texts hugs`)
+	// hospitalErrands are what someone is taken to hospital for: "put my
+	// brother in the hospital for his checkup".
+	forWord         = canonSetOf(`for`)
+	hospitalErrands = canonSetOf(`checkup check visit appointment treatment surgery operation admission scan tests
+		test vaccine vaccination physio physiotherapy dialysis delivery`)
+)
+
+// shootingRange reports a range for shooting in ws: "the shooting range".
+func shootingRange(ws []string) bool {
+	for i, w := range ws {
+		if (is(w, "range") || is(w, "ranges")) && i > 0 && (is(ws[i-1], "shooting") || is(ws[i-1], "firing") ||
+			is(ws[i-1], "gun") || is(ws[i-1], "rifle")) {
+			return true
+		}
+	}
+	return false
 }
 
 // campWords make starting a fire a campfire or a stove, or a fire in the
@@ -4750,12 +4868,19 @@ var (
 		// "12 science is dead on friday", "you're all dead tomorrow".
 		words(`is`, `are`, `'?s`, `'?re`, `r`)+`~(?:`+words(`all`, `so`)+`~)?dead`,
 		// "the warden won't see monday", "they won't walk out of there".
-		words(`won'?t`, `wont`, `will~not`, `will~never`, `'?ll~never`, `isn'?t~going~to`, `is~not~going~to`,
-			`aren'?t~going~to`, `ain'?t~gonna`, `not~gonna`)+`~`+words(
-			words(`see`, `live~to~see`, `survive`, `make~it~to`, `last~(?:till|until|to)`)+`~`+
-				words(weekdays, `tomorrow`, `tmrw`, `the~weekend`, `next~week`, `another~day`, `the~morning`),
+		wontLive+`~`+words(
+			surviveTill+`~`+words(weekdays, `tomorrow`, `tmrw`, `next~week`),
 			words(`walk`, `make~it`, `get`, `come`)+`~out~`+words(`alive`, `of~there`, `of~here`)),
 	) + `\b`)}
+	// threatUnseenRules are a time someone is said not to live to see that
+	// is no time of day or place a threat is paired with, so that it is
+	// the threat's own: "the warden won't see the weekend", "won't last
+	// until the morning". threatComingCheck reads them as it reads the rest.
+	threatUnseenRules = []rule{bothViews(`\b` + wontLive + `~` + surviveTill + `~` +
+		words(`the~weekend`, `another~day`, `the~morning`) + `\b`)}
+	wontLive = words(`won'?t`, `wont`, `will~not`, `will~never`, `'?ll~never`, `isn'?t~going~to`, `is~not~going~to`,
+		`aren'?t~going~to`, `ain'?t~gonna`, `not~gonna`)
+	surviveTill = words(`see`, `live~to~see`, `survive`, `make~it~to`, `last~(?:till|until|to)`)
 	// threatSymbolRules are a weapon drawn at a school: "🔫🏫".
 	threatSymbolRules = []rule{bothViews(`(?:🔫|🔪|💣|🧨|🗡)[^\pL\pN]{0,3}(?:🏫|🏛|🏢)`)}
 )
@@ -4764,8 +4889,33 @@ var (
 // that names a game, a toy or a festival: "🔫🏫 game night at school".
 func (f *scannedField) threatSymbolCheck(v *view, m []int) bool {
 	ws := wordsIn(sentenceAround(v.text, m[0], m[1]))
-	return !anyIn(ws, gameWords) && !anyIn(ws, toyWeapon) && !anyIn(ws, festivalWords) && !storyNamed(ws)
+	return !unnegatedIn(ws, gameWords, toyWeapon, festivalWords) && !storyNamed(ws)
 }
+
+// unnegatedIn reports a word of any of sets in ws, and none with a
+// negation in the three words before it: a weapon "for the cake" or "at the
+// game" is excused, but "this is not a game", "no more games", "it's not a
+// toy" and "it's not for cutting fruit" say the opposite, and so does "to
+// the camp, not for firewood".
+func unnegatedIn(ws []string, sets ...map[string]bool) bool {
+	found := false
+	for k, w := range ws {
+		in := false
+		for _, set := range sets {
+			in = in || set[w]
+		}
+		if in {
+			if anyIn(ws[max(0, k-3):k], excuseNegators) {
+				return false
+			}
+			found = true
+		}
+	}
+	return found
+}
+
+// excuseNegators, just before a prop, a game or a toy, deny it.
+var excuseNegators = canonSetOf(`not no never isn't isnt ain't aint wasn't wasnt nahi nhi na without`)
 
 // threatComingCheck reads who or what harm is said to be coming to
 // (threatSubject), and turns down the readings that are not a threat. Harm
@@ -4832,12 +4982,20 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 	}
 	switch {
 	case dead:
+		// An exam, a test, results or homework in the sentence make it the
+		// hyperbole of "you're all dead tomorrow in the exam" or "the class
+		// is dead tomorrow, ma'am is checking homework", unless a weapon is
+		// named as well.
+		if schoolHyperbole(sentence) {
+			return false
+		}
 		// threatCheck reads "dead on" as the idiom; the time read above says
 		// it is not.
 		return !reportedThreat(text, m) && !reportedThreat(text, []int{clauseStart(text, m[0]), m[1]})
 	case survive:
-		if len(next) > 0 && !nounEnds[next[0]] || strings.HasPrefix(text[m[1]:], "'") || anyIn(sentence, eventWords) {
-			return false
+		if len(next) > 0 && !nounEnds[next[0]] || strings.HasPrefix(text[m[1]:], "'") || anyIn(sentence, eventWords) ||
+			schoolHyperbole(sentence) {
+			return false // and not "the teachers won't survive monday, three classes of us"
 		}
 	case out:
 		// "won't walk out of there", with nothing more said of it.
@@ -4849,8 +5007,8 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 		if untimed(sentence, stageWords) || untimed(sentence, eventWords) {
 			return false
 		}
-		if is(last, "burn") && len(next) > 0 && !nounEnds[next[0]] {
-			return false // "will burn a hole in my pocket": what it burns is no fire
+		if is(last, "burn") && len(next) > 0 && (!nounEnds[next[0]] || is(next[0], "through")) {
+			return false // "will burn a hole in my pocket", "will burn through the budget": no fire
 		}
 		if len(next) > 1 && is(next[0], "with") && notRuin[next[1]] {
 			return false // "the hall will blow up with cheers"
@@ -4883,6 +5041,13 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 var (
 	// deadWhen are the words that put "dead" at a time: "dead on friday".
 	deadWhen = canonSetOf(`on by after this before`)
+	// schoolWorkWords are the exams, results and work, and the load of
+	// lessons, that a class or its teachers are said to be dead over or not
+	// to survive.
+	schoolWorkWords = canonSetOf(`exam exams test tests quiz quizzes paper papers midterm midterms boards viva
+		vivas practical practicals olympiad assessment mock mocks dpp homework hw assignment assignments project
+		projects presentation presentations submission submissions deadline deadlines worksheet worksheets copies
+		notebooks checking result results marks grades report card ptm classes periods lectures lessons`)
 	// ruinWords are what threatComingRules say happens to a place, and
 	// notRuin what makes it a celebration: "blow up with cheers".
 	ruinWords = canonSetOf(`burn burned burnt blow blown blows bombed torched flames fire`)
@@ -4906,6 +5071,13 @@ var (
 	// annual function".
 	timePrepositions = canonSetOf(`on during at before after till until by`)
 )
+
+// schoolHyperbole reports a sentence about exams, results, homework or a
+// load of lessons that names no weapon, which makes someone "dead tomorrow"
+// or not surviving monday a way of talking about school.
+func schoolHyperbole(ws []string) bool {
+	return anyIn(ws, schoolWorkWords) && !anyIn(ws, weaponHeads) && !anyIn(ws, bluntHeads) && !anyIn(ws, fuelHeads)
+}
 
 // presenceCondition reports an "if" whose condition is someone being
 // somewhere: "if anyone shows up to the rally", "if he's in it".
@@ -5600,6 +5772,7 @@ func threatens(fields []*scannedField) bool {
 		pair(namedTargetRules, placesAndTimes, func(f *scannedField) matchCheck { return f.namedTargetCheck }, threatWindow) ||
 		pair(threatFrameRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatFrameCheck }, threatWindow) ||
 		pair(threatComingRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatComingCheck }, threatWindow) ||
+		pair(threatUnseenRules, of(threatUnseenRules), func(f *scannedField) matchCheck { return f.threatComingCheck }, 0) ||
 		pair(threatSymbolRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatSymbolCheck }, threatWindow) ||
 		pair(threatWarningRules, of(threatWarningCues), byField(nil), threatWindow) ||
 		pair(schoolShootingRules, of(futureTimeRules), byField(schoolShootingCheck), schoolShootingWindow)

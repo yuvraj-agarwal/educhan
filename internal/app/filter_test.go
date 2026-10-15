@@ -1285,6 +1285,35 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"call me at 5, the answers are 98450 and 12345",
 		"the ratio is 98450/12345 in the table",
 		"scores 9 8 76 5",
+		// A class "dead" over an exam, results or homework, and teachers
+		// that won't survive a load of lessons.
+		"you're all dead tomorrow in the exam lol",
+		"the whole class is dead tomorrow in the physics exam lol",
+		"the whole class is dead tomorrow, sir is checking the assignments",
+		"the seniors are dead tomorrow when the results come out",
+		"everyone in my batch is dead tomorrow, the maths test is impossible",
+		"11C is dead tomorrow, ma'am is checking homework",
+		"the teachers won't survive monday, three classes of us",
+		// Beating someone in a game, in Hinglish.
+		"bhai kal tujhe cricket mein dho dunga",
+		"tujhe kal match mein peet dunga, ready reh",
+		"kal sabko school ke baad thok dunga carrom mein",
+		// A blade for a camp or a trip, a gun at a range, fuel for a bike,
+		// and harm words used of compliments, a checkup, a lift and a budget.
+		"I'm bringing a pocket knife on the school trip tomorrow, is that allowed?",
+		"I'm bringing an axe to the camp tomorrow for firewood",
+		"bringing a machete to the scouts camp tomorrow to clear the trail",
+		"I've got a gun license now, going to the shooting range tomorrow",
+		"I'm going to the hostel tonight with petrol for my bike",
+		"I'm coming to school tomorrow with petrol money for the bus",
+		"I'm going to drown the seniors in compliments at the farewell tomorrow",
+		"I'm going to put my brother in the hospital tomorrow for his checkup",
+		"I'll run the principal over to the station tomorrow in my car",
+		"the library will burn through the budget on friday",
+		// "Make bleed" of ink, and a weapon handed over.
+		"I'm going to make Kabir bleed red ink on his essay tomorrow lol",
+		"I'll take the knife to mum in the kitchen tomorrow",
+		"I'm taking my bat to the coach tomorrow so he can sign it",
 		// Someone else to talk to instead of posting: advice, not an ask.
 		"please talk to a counsellor instead of posting here, they can actually help",
 		"call a helpline instead of posting here if you're in danger",
@@ -1747,6 +1776,41 @@ func TestFilterHolds(t *testing.T) {
 		// Taking it back excuses exasperation with one person close, not
 		// harm to a group.
 		{"I'm going to drown the juniors in the pool tomorrow jk", holdThreat},
+		// "I won't" that goes on to say what the poster won't stop doing,
+		// and "kidding" after a "not", take nothing back.
+		{"I'm going to strangle him at lunch tomorrow, I won't stop till he's dead", holdThreat},
+		{"I'm going to strangle him at lunch tomorrow and I won't stop till he stops breathing", holdThreat},
+		{"I'm going to choke him at lunch tomorrow, I won't hold back", holdThreat},
+		{"I'm going to choke him at lunch tomorrow, I'm not kidding", holdThreat},
+		// A prop, a game or a toy denied is no excuse.
+		{"I've got a gun and I'm coming to school tomorrow, this is not a game", holdThreat},
+		{"I've got a gun and I'm coming to school tomorrow, no more games", holdThreat},
+		{"I've got a gun and I'm coming to school tomorrow, it's not a toy", holdThreat},
+		{"I'm coming to the exam hall tomorrow with a knife, and it's not for cutting fruit", holdThreat},
+		{"I've got a knife and I'm coming to the hostel tonight, it's not for cooking", holdThreat},
+		{"I'm bringing a knife to the camp tomorrow, not for firewood", holdThreat},
+		{"🔫🏫 tomorrow, not a game", holdThreat},
+		// A blade has a use on a camp or a trip; a gun has none there.
+		{"I'm bringing a gun on the school trip tomorrow", holdThreat},
+		// A day someone won't live to see, as the threat's own time.
+		{"the warden won't see the weekend", holdThreat},
+		{"the warden won't see the morning", holdThreat},
+		{"the warden won't see another day", holdThreat},
+		{"the warden won't survive the weekend", holdThreat},
+		{"the warden won't make it to the weekend", holdThreat},
+		{"the warden won't last until the morning", holdThreat},
+		// A weapon in a sentence about an exam is still a weapon.
+		{"10B is dead tomorrow, bringing my dad's gun to the exam", holdThreat},
+		// Making a named person bleed, and a weapon taken to someone.
+		{"I'm going to make Kabir bleed at lunch tomorrow", holdThreat},
+		{"I'll take a hammer to the warden after class", holdThreat},
+		{"I'll take a hammer to him after class", holdThreat},
+		{"I'm taking a bat to the warden tomorrow", holdThreat},
+		{"I'm going to beat up Kabir after school", holdThreat},
+		// A fuel, a drowning, a hospital and running over said plainly.
+		{"going to the hostel tonight with petrol", holdThreat},
+		{"I'm going to put the warden in the hospital tomorrow", holdThreat},
+		{"I'll run the principal over in the parking lot tomorrow", holdThreat},
 		// Self-harm urged on someone: an act told to them, or said to be
 		// what they should do, in any of the ways of telling.
 		{"rope time for OP", holdSelfHarm},
@@ -2116,6 +2180,7 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 		"discTagHandle": {discTagHandle}, "labelledAppHandle": {labelledAppHandle},
 		"threatFrameRules": threatFrameRules, "threatComingRules": threatComingRules,
 		"threatSymbolRules": threatSymbolRules, "selfHarmUrgeRules": selfHarmUrgeRules,
+		"threatUnseenRules": threatUnseenRules,
 	}
 	posix := regexp.MustCompile(`\[:[a-z]+:\]|\\p\{[^}]*l|\(\?[a-z]*l`)
 	for name, rs := range rules {
