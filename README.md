@@ -159,7 +159,8 @@ actions, and says what forgetting costs — the server cannot show the credentia
 again, so it means verifying from the start. Beside it, in every state of the
 page, **Forget this browser** removes the badge together with the poster key and
 the remembered name (see below), which are what would otherwise let the next
-person at a shared computer post under the same IDs and tripcode.
+person at a shared computer post under the same IDs and tripcode. A verification
+or a post still on its way when it is pressed brings none of them back.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -805,26 +806,29 @@ cooldown between the two checks: of several sent at once, the one let through
 starts it, and the others have spent their answers. Two posts racing with one
 answer can both pass the lookup; the spend lets one through and refuses the
 other as used, with no cooldown started for it, so one answer sent to many
-boards at once holds none of them back. A refusal answers `403` with `"captcha":
-"required" | "invalid" | "expired" | "used"` beside the message; the page solves
-a fresh puzzle and sends the post once more, so the reader presses the button
-once (unless they have left the form meanwhile: a request goes only from a form
-still on screen). A `used` answer was spent by an earlier request, which, like
-others from the same address, may have started cooldowns, so the resend can meet
-one of them; the page then says how long to wait and keeps the fresh answer for
-the next press. Every response to a request whose answer was spent carries
-`Educhan-Captcha: spent`, a refusal written after the spend included (a cooldown
-another request from the same address started meanwhile, an image whose pixels
-fail to decode, or a thread that filled up meanwhile). The page keeps its answer
-through any refusal without that header, so the next press goes straight out,
-and starts the next puzzle as soon as one with it arrives, while its form is on
-screen.
+boards at once holds none of them back. The page itself never sends one answer
+twice: a request takes its answer out of the page, so a post sent while another
+is on its way solves a puzzle of its own. A refusal answers `403` with
+`"captcha": "required" | "invalid" | "expired" | "used"` beside the message; the
+page solves a fresh puzzle and sends the post once more, so the reader presses
+the button once (unless they have left the form meanwhile: a request goes only
+from a form still on screen). A `used` answer was spent by an earlier request,
+which, like others from the same address, may have started cooldowns, so the
+resend can meet one of them; the page then says how long to wait and keeps the
+fresh answer for the next press. Every response to a request whose answer was
+spent carries `Educhan-Captcha: spent`, a refusal written after the spend
+included (a cooldown another request from the same address started meanwhile, an
+image whose pixels fail to decode, or a thread that filled up meanwhile). The
+page keeps its answer through any refusal without that header, so the next press
+goes straight out, and starts the next puzzle as soon as one with it arrives,
+while its form is on screen.
 
 While a post or a code request waits for its puzzle and its answer, its form is
-held: its boxes and buttons are switched off, so what is sent is what the form
-shows. A reader who leaves the form before the answer is ready, for another page
-or with Update, sends nothing, and the answer is kept for the next press; a
-request that had already gone is not reported on the page they went to.
+held: its boxes and buttons are switched off, and look it, so what is sent is
+what the form shows. A reader who leaves the form before the answer is ready,
+for another page or with Update, sends nothing, and the answer is put back for
+the next press; a request that had already gone is not reported on the page they
+went to.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to

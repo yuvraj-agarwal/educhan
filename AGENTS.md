@@ -261,10 +261,10 @@ that read `app.js` (`web_invariants_test.go`): the poster key and the credential
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
 KaTeX's options, the highlighting cap, and the captcha's (its answer in memory only, its
 puzzle started only by something a reader does in a form that needs it and never on
-render, its request sent only from a form still on screen and held while it waits, and
-skipped only by a badged post). They are
-a floor, not a proof; a change that trips one has changed one of those properties and
-needs a browser check before the test changes.
+render, each answer handed to one request, its request sent only from a form still on
+screen and held while it waits, and skipped only by a badged post). They are a floor, not
+a proof; a change that trips one has changed one of those properties and needs a browser
+check before the test changes.
 
 ### Front end conventions
 
@@ -409,19 +409,25 @@ needs a browser check before the test changes.
   response shaped like a challenge (`CAPTCHA_UNAVAILABLE` otherwise). Every copy is
   terminated when the puzzle ends, a throw while starting them included. The answer is
   kept in the `captcha` object in memory only, never in storage or a draft, and read only
-  by `captchaAnswer`, `dropCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or
-  a code request, solving first when needed, and only from a form still on screen
-  (`formOnScreen`: in the document, with `state.route` unchanged since the press). One
-  whose form has gone is dropped unsent with its answer kept, and the caller shows,
-  navigates, resets and redraws nothing for it, sent or not. From the press to the answer
-  the form is held (`holdForm`: controls switched off after `FormData` has read them, and
-  switched back on after a refusal, with the focus on the button if the form had it). The
-  answer is dropped when the request succeeds; a refusal carrying `"captcha"` drops it
-  and, while the form is on screen, sends once more with a fresh one, and `"required"`
-  also turns `state.site.captcha` on for a page drawn without knowing. Any other refusal
-  keeps the answer, unless it carries `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`,
-  set by `spendCaptcha`), which drops it and starts the next puzzle at once if the form is
-  on screen. A badged post never waits for or sends an answer
+  by `captchaAnswer`, `takeCaptcha`, `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha`
+  sends a post or a code request, solving first when needed, and only from a form still on
+  screen (`formOnScreen`: in the document, with `state.route` unchanged since the press).
+  Each request takes its answer out of the page as it is handed over (`takeCaptcha`), so a
+  second press while one is on its way solves a fresh puzzle, and puts it back
+  (`keepCaptcha`: only into an empty place, only while good) only when it left it unspent.
+  One whose form has gone is dropped unsent with its answer put back, and the caller
+  shows, navigates, resets and redraws nothing for it, sent or not. From the press to the
+  answer the form is held (`holdForm`: controls switched off once the form has been read
+  and checked, straight into the `try` whose catch releases them, and switched back on
+  after a refusal, with the focus on the button if the form had it and it is still lost,
+  on the page or nowhere; `app.css` shows the held controls switched off). A request that
+  succeeds keeps the answer it took; a refusal carrying `"captcha"` drops it and, while
+  the form is on screen, sends once more with a fresh one, and `"required"` also turns
+  `state.site.captcha` on for a page drawn without knowing. Any other refusal, or no
+  response at all, puts the answer back, unless it carries `Educhan-Captcha: spent`
+  (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from the second flood-control
+  check included), which drops it and starts the next puzzle at once if the form is on
+  screen. A badged post never waits for or sends an answer
   (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
@@ -429,7 +435,8 @@ needs a browser check before the test changes.
   also holds `CAPTCHA_TIMEOUT_MS` to the hardest base puzzle at 4 ms an attempt),
   `TestCaptchaWorkersAreAlwaysStopped`, `TestCaptchaIsNotWorkedOnForNothing`,
   `TestARequestGoesOnlyFromAFormOnScreen`, `TestAPendingFormIsHeld`,
-  `TestCaptchaRefusalSaysWhatTheFormStillHolds` and `TestTheCaptchaFAQSaysWhatThePageDoes`
+  `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
+  `TestEachCaptchaAnswerGoesOnOneRequest` and `TestForgettingTheBrowserCancelsWhatIsOnItsWay`
   pin these; the worker needs no CSP change
   (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the answer is
   checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not
@@ -508,6 +515,8 @@ needs a browser check before the test changes.
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
   the credential, the poster key and the remembered name, and leaves the age answer. It
+  also cancels what is on its way: a code request, a confirmation or a post answered after
+  it stores nothing (`browserForgets`, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
 
