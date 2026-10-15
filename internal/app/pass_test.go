@@ -13,11 +13,22 @@ import (
 )
 
 func TestPassCodes(t *testing.T) {
+	a := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret}}}
 	seen := map[string]bool{}
 	for range 200 {
-		code, err := newPassCode()
+		nonce, err := randomToken()
 		if err != nil {
 			t.Fatal(err)
+		}
+		code := a.passNonceCode(nonce)
+		// The same nonce gives the same code, which is what makes asking
+		// again safe; another secret gives another.
+		if again := a.passNonceCode(nonce); again != code {
+			t.Fatalf("nonce %q gave %q, then %q", nonce, code, again)
+		}
+		other := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret + "-rotated"}}}
+		if other.passNonceCode(nonce) == code {
+			t.Fatalf("two secrets gave nonce %q the same code", nonce)
 		}
 		if len(code) != passCodeLen || strings.Trim(code, passAlphabet) != "" {
 			t.Fatalf("code %q is not %d characters of the alphabet", code, passCodeLen)
@@ -104,7 +115,7 @@ func TestPassConfigFromEnv(t *testing.T) {
 		for k := range full {
 			t.Setenv(k, "")
 		}
-		for _, k := range []string{"EDUCHAN_PASS_DAYS", "EDUCHAN_PASS_HOURLY_POSTS", "EDUCHAN_PASS_COOLDOWN", "EDUCHAN_STRIPE_AUTOMATIC_TAX"} {
+		for _, k := range passSettings {
 			t.Setenv(k, "")
 		}
 		for k, v := range env {
@@ -140,6 +151,10 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"public url with a user":         {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
 		"not a url":                      {"EDUCHAN_PUBLIC_URL": "educhan"},
 		"zero days":                      {"EDUCHAN_PASS_DAYS": "0"},
+		"days past a hundred years":      {"EDUCHAN_PASS_DAYS": "36501"},
+		"days past the year 9999":        {"EDUCHAN_PASS_DAYS": "3000000"},
+		"sales neither open nor paused":  {"EDUCHAN_PASS_SALES": "closed"},
+		"sales off":                      {"EDUCHAN_PASS_SALES": "off"},
 		"days not a number":              {"EDUCHAN_PASS_DAYS": "a year"},
 		"zero hourly posts":              {"EDUCHAN_PASS_HOURLY_POSTS": "0"},
 		"hourly posts negative":          {"EDUCHAN_PASS_HOURLY_POSTS": "-5"},
@@ -178,6 +193,36 @@ func TestPassConfigFromEnv(t *testing.T) {
 	if _, err := passConfigFromEnv(); err != nil {
 		t.Fatalf("restricted key: %v", err)
 	}
+
+	// The term may be up to a hundred years, and sales open or paused, in
+	// any case.
+	for value, paused := range map[string]bool{"": false, "open": false, "OPEN": false, "paused": true, " Paused ": true} {
+		env["EDUCHAN_PASS_SALES"] = value
+		env["EDUCHAN_PASS_DAYS"] = "36500"
+		set(t, env)
+		if cfg, err := passConfigFromEnv(); err != nil || cfg.SalesPaused != paused || cfg.Days != 36500 {
+			t.Errorf("EDUCHAN_PASS_SALES=%q: %+v, %v", value, cfg, err)
+		}
+	}
+
+	// Without the secret, every other Pass setting is refused, each naming
+	// itself: a deployment that has any of them meant to sell the Pass.
+	for name, value := range map[string]string{
+		"EDUCHAN_STRIPE_SECRET_KEY":     "sk_live_x",
+		"EDUCHAN_STRIPE_WEBHOOK_SECRET": "whsec_x",
+		"EDUCHAN_STRIPE_PRICE_ID":       "price_x",
+		"EDUCHAN_PUBLIC_URL":            "https://educhan.example",
+		"EDUCHAN_STRIPE_AUTOMATIC_TAX":  "true",
+		"EDUCHAN_PASS_DAYS":             "30",
+		"EDUCHAN_PASS_HOURLY_POSTS":     "0",
+		"EDUCHAN_PASS_COOLDOWN":         "5s",
+		"EDUCHAN_PASS_SALES":            "paused",
+	} {
+		set(t, map[string]string{name: value})
+		if _, err := passConfigFromEnv(); err == nil || !strings.Contains(err.Error(), name) {
+			t.Errorf("%s without the secret: %v, want a refusal naming it", name, err)
+		}
+	}
 }
 
 // TestPassConfigInCodeIsValidated holds a Config built in code, which New
@@ -201,8 +246,13 @@ func TestPassConfigInCodeIsValidated(t *testing.T) {
 		change func(*PassConfig)
 		names  string
 	}{
-		"trailing slash":  {func(c *PassConfig) { c.PublicURL = testPublicURL + "/" }, "EDUCHAN_PUBLIC_URL"},
-		"publishable key": {func(c *PassConfig) { c.StripeSecretKey = "pk_test_key" }, "EDUCHAN_STRIPE_SECRET_KEY"},
+		"trailing slash":      {func(c *PassConfig) { c.PublicURL = testPublicURL + "/" }, "EDUCHAN_PUBLIC_URL"},
+		"publishable key":     {func(c *PassConfig) { c.StripeSecretKey = "pk_test_key" }, "EDUCHAN_STRIPE_SECRET_KEY"},
+		"a century and a day": {func(c *PassConfig) { c.Days = maxPassDays + 1 }, "EDUCHAN_PASS_DAYS"},
+		"paused without the secret": {func(c *PassConfig) { *c = PassConfig{SalesPaused: true} },
+			"EDUCHAN_PASS_SALES"},
+		"a term without the secret": {func(c *PassConfig) { *c = PassConfig{Days: 30, StripeAutomaticTax: true} },
+			"EDUCHAN_STRIPE_AUTOMATIC_TAX, EDUCHAN_PASS_DAYS"},
 	} {
 		cfg := good
 		c.change(&cfg)
@@ -351,6 +401,26 @@ func TestPassExpiryArithmetic(t *testing.T) {
 		}
 		if back := c.expiry.AddDate(0, 0, -termDays(c.base, c.expiry)); back.After(c.base) {
 			t.Errorf("taking the term off %v lands at %v, after the base %v", c.expiry, back, c.base)
+		}
+	}
+
+	// A refund takes off the days of a term still to come, rounded up so
+	// none of it is left, and nothing of a term that has run.
+	for _, c := range []struct {
+		end, now time.Time
+		want     int
+	}{
+		{midnight, afternoon, 0},
+		{midnight, midnight, 0},
+		{midnight.AddDate(0, 0, 10), midnight, 10},
+		{midnight.AddDate(0, 0, 10), afternoon, 10},
+		{midnight.AddDate(0, 0, 10), midnight.Add(time.Nanosecond), 10},
+	} {
+		if got := daysOff(c.end, c.now); got != c.want {
+			t.Errorf("daysOff(%v, %v) = %d, want %d", c.end, c.now, got, c.want)
+		}
+		if c.want > 0 && c.end.AddDate(0, 0, -daysOff(c.end, c.now)).After(c.now) {
+			t.Errorf("taking %d days off a term ending %v leaves some of it after %v", c.want, c.end, c.now)
 		}
 	}
 }

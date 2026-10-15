@@ -190,6 +190,7 @@ img { max-width: 100%; }
 }
 
 .verify-link:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
+.verify-link[hidden] { display: none; }
 
 .verify-link[aria-current="page"] {
   color: var(--text);
@@ -654,6 +655,15 @@ button.link:hover { text-decoration: underline; }
   border: 1px solid var(--border-strong);
   border-radius: var(--radius-sm);
   justify-self: start;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+/* The code of a Pass a new one took the place of, in a sentence. */
+.pass-code-old {
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--text);
   user-select: all;
   overflow-wrap: anywhere;
 }

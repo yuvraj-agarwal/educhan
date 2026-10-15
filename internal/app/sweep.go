@@ -66,8 +66,9 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	}
 	// The Pass's orders, refunds and lapsed Passes are pruned here as well as
 	// at checkout, so they go on time on a server that sells none for a while,
-	// or has stopped selling.
-	if err := a.store.prunePasses(ctx, asOf, a.passTermDays()); err != nil {
+	// or has stopped selling. Each order carries its own term, so this needs
+	// none of the Pass settings, and the sweeper is run without them.
+	if err := a.store.prunePasses(ctx, asOf); err != nil {
 		a.logSweep(report)
 		return report, fmt.Errorf("sweep: prune the Pass tables: %w", err)
 	}
