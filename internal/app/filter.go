@@ -5028,6 +5028,44 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			!anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), campWords) {
 			return act(2)
 		}
+		if verb != "light" {
+			break
+		}
+		// "light the staff room up", "light up the school": a place not the
+		// poster's set alight, as "blow it up" is. Lighting up a room is
+		// what a person does by walking in, a stage, a court or a party
+		// what a performer or a team does, and a home or a hostel what a
+		// party does (litUpPlaces), so those are left out; so is a sentence
+		// that makes it a show, lamps, a festival, a game, a camp or a
+		// decoration (litUp, lightUpWords, the verb itself aside: "the band
+		// will light the hall up at the farewell"), and a place lit up with
+		// something that burns nothing ("with fairy lights", "with my
+		// outfit"; "with petrol", or "with them inside", still counts).
+		np, end := noun(0), 0
+		if np.place() && word(np.n, "up") {
+			end = np.n + 1
+		} else if np = noun(1); word(0, "up") && np.place() {
+			end = np.n
+		} else {
+			break
+		}
+		if np.mine || litUpPlaces[np.head] || is(np.head, "room") && np.n >= 2 && determiners[ws[np.n-2]] {
+			break
+		}
+		for k := end; k < len(ws); k++ {
+			if is(ws[k], "with") {
+				if w := noun(k + 1); w.kind != nounFuel && w.kind != nounWeapon && !w.people(true) {
+					return 0, false, false
+				}
+				break
+			}
+		}
+		for _, w := range wordsIn(sentenceAround(v.text, at, at+len(after))) {
+			if (litUp[w] || campWords[w] || lightUpWords[w]) && !is(w, "light") {
+				return 0, false, false
+			}
+		}
+		return act(end)
 	case "open":
 		if word(0, "fire") {
 			return act(1)
@@ -5115,6 +5153,20 @@ func shootingRange(ws []string) bool {
 	}
 	return false
 }
+
+// litUpPlaces are the places lit up by a performer, a team or a party
+// rather than by fire: "we'll light up the stage", "light the dorm up
+// tonight". lightUpWords make lighting a place up a decoration, a treat or
+// a person's presence: "light up the hall for annual day", "light up the
+// canteen, it's my birthday treat".
+var (
+	litUpPlaces = canonSetOf(`floor floors court field ground grounds stand stands stadium farewell prom concert
+		convocation graduation meeting rally seminar mall shop store dorm dorms hostel hostels house houses home
+		flat flats apartment apartments rooms`)
+	lightUpWords = canonSetOf(`decorate decorating decorated decoration decorations decor birthday bday treat
+		surprise celebrate celebrating celebration rizz outfit smile vibe vibes energy presence aura fairy rangoli
+		annual`)
+)
 
 // campWords make starting a fire a campfire or a stove, or a fire in the
 // comments: "start a fire at the campsite tonight".
@@ -6774,6 +6826,8 @@ var (
 			place? up|alight|ablaze`), check: lightingUp},
 		{kind: menaceReady, run: runOf(`lock|locking|locked|chain|chaining|block|blocking the|all|every|them|everyone
 			_1 in? from? the? outside`)},
+		{kind: menaceReady, run: runOf(`lock|locking|chain|chaining|trap|trapping|barricade|barricading`),
+			check: lockedIn},
 		{kind: menaceAfter, run: runOf(`with him|her|them|everyone|everybody|people|you|u still? in|inside it`)},
 		{kind: menaceAfter, run: runOf(`ghar _1 nahi|nhi|na _1 pahuchega|pahunchega|pahuchegi|pahunchegi|pohchega|
 			pohochega|pahuchenge|pahunchenge|lautega|lautegi`)},
@@ -6923,6 +6977,37 @@ func lightingUp(r *wordReading, lo, hi int) (strong, ok bool) {
 	// The phrase's own "light" is no lamp.
 	return false, !anyIn(r.ws[from:lo], litUp) && !anyIn(r.ws[min(hi, to):to], litUp)
 }
+
+// lockedIn reads people locked or trapped in a place: "locking them all in
+// the hall", "lock everyone inside the gym during assembly". It is strong
+// for a crowd ("everyone", "them all", "all the teachers") locked in by the
+// poster or by nobody named, and no hint at all for a lockdown or a drill,
+// an exam, a talk, a party, or a time it ends ("until they finish the
+// mock", "with my 3 hour presentation"); something
+// locked away ("my bike in the shed") and "us" ("the teacher locked us all
+// in the hall") are not read.
+func lockedIn(r *wordReading, lo, hi int) (strong, ok bool) {
+	end := r.sentenceEnd[lo]
+	np := readNoun(r.ws[hi:end])
+	k := hi + np.n
+	if !np.people(false) || k >= end || !lockedInWords[r.ws[k]] {
+		return false, false
+	}
+	if p := readNoun(r.ws[k+1 : end]); !p.place() && !(k+1 < end && menacePlaces[r.ws[k+1]]) {
+		return false, false
+	}
+	if anyIn(r.sentenceWords(lo), lockedInExcuses) {
+		return false, false
+	}
+	s := r.subjectBefore(lo)
+	return np.quantified && (s == "" || posterSubject[s]), true
+}
+
+var (
+	lockedInWords   = canonSetOf(`in inside into`)
+	lockedInExcuses = canonSetOf(`until till til untill unless drill drills lockdown lockdowns evacuation rehearsal
+		exam exams escape sleepover presentation presentations lecture speech party surprise`)
+)
 
 // litUp are the words that make lighting a place up a performance or a
 // celebration: a stage, lamps, a festival, an event, a game, a team, an

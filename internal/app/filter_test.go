@@ -2145,6 +2145,20 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"we'll kill them at netball in the gym tomorrow", publish},
 		{"I'm going to murder everyone at school tomorrow, then dodgeball", threat},
 		{"I'm bringing a baseball bat to school tomorrow and he's getting it", threat},
+		// lighting a place up: set alight, or a show, lamps, a party or a
+		// person walking in.
+		{"i'm going to light the staff room up tomorrow", threat},
+		{"i'm going to light up the staff room tomorrow", threat},
+		{"gonna light the school up on monday, they'll learn", threat},
+		{"i'm going to light up the staff room tomorrow with petrol", threat},
+		{"the band is going to light the hall up at the farewell tomorrow", publish},
+		{"we'll light the hall up with fairy lights for diwali tomorrow", publish},
+		{"our team will light the court up on friday", publish},
+		{"i'm going to light up the room when i walk in tomorrow lol", publish},
+		{"i'm gonna light up the library tomorrow with my outfit", publish},
+		{"i'm lighting up the canteen tomorrow, it's my birthday treat", publish},
+		{"i'm going to light the hostel up tonight, bring snacks", publish},
+		{"i'm going to light up the hall tomorrow, decorating committee for annual day", publish},
 		// operandBefore: R's assignment arrow assigns, as "=" does, unless a
 		// request or a phone cue before it says the number is one to call.
 		{"[code]x <- 9876543210[/code]", publish},
@@ -2230,6 +2244,12 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"kal school aa raha hu katta leke, principal ko pata chalega", threat},
 		{"bhai principal ka kamra kal raat jala dunga, petrol le aaya hu already", threat},
 		{"jaise hi wo kal clg aayega, usko maar dunga", threat},
+		// A crowd locked in a place, strong by itself; someone fewer,
+		// with a second hint.
+		{"i'm locking them all in the hall tomorrow", threat},
+		{"tomorrow during assembly I'm locking them all in the hall", threat},
+		{"i'm going to lock everyone in the hall during assembly", threat},
+		{"going to lock the teachers in the staffroom on friday. not a joke", threat},
 		// The same hints with nothing to make them one.
 		{"the physics teacher fainted in assembly and is leaving in an ambulance, hope she's ok", publish},
 		{"my grandpa will be in hospital till friday after his surgery", publish},
@@ -2262,6 +2282,14 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"the old library was burnt to the ground in 1990, the new one opens tomorrow", publish},
 		{"our team will light the place up at sports day tomorrow, you've been warned", publish},
 		{"lock the lab from the outside tomorrow when you leave, the janitor said", publish},
+		{"we're locking them all in the hall until they finish the mock tomorrow lol", publish},
+		{"the teacher locked us all in the hall till the exam ended", publish},
+		{"i'm locking my bike in the shed tomorrow", publish},
+		{"she is locking the hall tomorrow after assembly", publish},
+		{"the principal is going to lock everyone in the school during the lockdown drill tomorrow", publish},
+		{"lock them all in the classroom for the escape room game on friday", publish},
+		{"i'm going to trap them all in the library tomorrow with my 3 hour presentation lol", publish},
+		{"going to lock the teachers in the staffroom on friday for a surprise party", publish},
 		{"the bus left with them still inside it, they missed the trip on friday", publish},
 		{"I've got everything I need in my bag for the trip on friday", publish},
 		{"my parents will finally understand. results come out tomorrow", publish},
