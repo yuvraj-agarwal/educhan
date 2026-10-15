@@ -486,10 +486,12 @@ func pngInterlaced(data []byte) bool {
 // webpPhases models golang.org/x/image/webp and what sanitizeWebP does
 // after it, starting from stripWebP's copy of the file. A lossy picture
 // decodes to YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a
-// pixel, from a copy the decoder makes of its compressed partitions, and is
-// then converted to NRGBA, 4 bytes a pixel, to take its limited-range colours
-// back to full range (lossyWebPToNRGBA) before it is encoded as a JPEG or,
-// with transparency, a PNG. A lossless picture decodes to NRGBA, 4
+// pixel, from a copy the decoder makes of its compressed partitions. An
+// opaque one is taken to full range in those planes (expandLimitedRange) and
+// encoded from them as a JPEG; one with an alpha plane is converted to NRGBA,
+// 4 bytes a pixel, for its PNG (lossyWebPToNRGBA), which the header cannot
+// tell apart from one whose alpha turns out opaque throughout, so it is
+// charged either way. A lossless picture decodes to NRGBA, 4
 // bytes a pixel, but one written with a colour index of 16 colours or fewer
 // is decoded packed first, at least two pixels to every four bytes, and
 // unpacked into a second picture: 6 bytes a pixel at most (vp8l's
@@ -507,10 +509,6 @@ func webpPhases(data []byte, w, h int64) []phase {
 	planes := 384 * ((w + 15) / 16) * ((h + 15) / 16)
 	strip := phase{first: stripped, alloc: stripped, after: stripped}
 	lossy := phase{first: planes + stripped, alloc: planes + stripped, after: planes}
-	// The lossy picture is converted from its YCbCr planes to an NRGBA copy
-	// (4 bytes a pixel), which is held while it is encoded; the planes are let
-	// go once it is made.
-	toNRGBA := phase{first: 4 * px, alloc: 4 * px, after: 4 * px}
 	lossless, alpha, bitstream := webpPicture(data)
 	v := vp8lMemory(bitstream)
 	switch {
@@ -522,10 +520,14 @@ func webpPhases(data []byte, w, h int64) []phase {
 			strip,
 			{first: v + 6*px, alloc: v + 6*px, after: stripped + px},
 			lossy,
-			toNRGBA,
+			// The picture is converted from its YCbCr planes and alpha
+			// plane to an NRGBA copy (4 bytes a pixel), which is held while
+			// it is encoded; the planes are let go once it is made.
+			{first: 4 * px, alloc: 4 * px, after: 4 * px},
 		}
 	}
-	return []phase{strip, lossy, toNRGBA}
+	// The planes are taken to full range where they lie, and encoded from.
+	return []phase{strip, lossy}
 }
 
 // vp8lGroupBacking is the largest backing array golang.org/x/image's vp8l

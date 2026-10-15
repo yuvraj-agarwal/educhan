@@ -251,11 +251,15 @@ func greyQuadrants(w, h int) *image.Gray {
 // levels of alpha in vertical bands, the first clear, which libwebp writes as
 // a colour index packed two pixels to the byte: the dearest way to decode
 // either. cost-411.jpg is made with ImageMagick (-sampling-factor 4x1
-// -quality 90), because Pillow does not write 4:1:1. The opaque lossy WebP
-// carries 8 MiB more at the end of its bitstream (paddedBitstream), so the
-// two copies of the file the model charges for are megabytes too. Those
-// marked "o6" carry an EXIF orientation of 6, so they are turned on their
-// side too, and "o3" one of 3, turned around.
+// -quality 90), because Pillow does not write 4:1:1. An opaque lossy WebP is
+// charged for its planes and two copies of its file (the strip's and the
+// decoder's), so it comes three ways, each term megabytes over the others
+// somewhere: 2400×1800 as Pillow made it, whose planes are megabytes and
+// whose file is not; 144×48 with 8 MiB more at the end of its bitstream
+// (paddedBitstream), whose two copies are megabytes and whose planes are not;
+// and 2400×1800 padded, where both are. Those marked "o6" carry an EXIF
+// orientation of 6, so they are turned on their side too, and "o3" one of 3,
+// turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -286,7 +290,9 @@ func costFixtures(t *testing.T) map[string][]byte {
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
-		"WebP lossy":                   paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
+		"WebP lossy":                   readTestdata(t, "cost-lossy.webp"),
+		"WebP lossy, small, padded":    paddedBitstream(t, readTestdata(t, "webp-swatches.webp"), 8<<20),
+		"WebP lossy, padded":           paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
 		"WebP lossy with alpha":        readTestdata(t, "cost-alpha.webp"),
 		"WebP lossless":                readTestdata(t, "cost-lossless.webp"),
 		"WebP of many chunks":          manyChunkWebP(t, readTestdata(t, "webp-swatches.webp"), 200000),

@@ -561,9 +561,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   first, so `gifFramePixels` reads both (`TestGIFLoopCountIsReadFromEitherLoopExtension`).
   WebP cannot be
   encoded in Go, so a WebP upload is stored as another format (`sanitizeWebP`): a JPEG
-  at `storedJPEGQuality` when it is lossy and opaque (its own quality is no guide: a
-  WebP's quality setting is not a JPEG's, and a low-quality WebP can come out at two
-  to four times its size), otherwise a PNG (lossless pixels
+  at `storedJPEGQuality` when it is lossy and opaque, from its own 4:2:0 planes taken
+  to full range where they lie (`expandLimitedRange`,
+  `TestLossyWebPIsStoredAtItsOwnColourResolution`; its own quality is no guide: a
+  WebP's quality setting is not a JPEG's, and the lower it was the larger the JPEG,
+  measured on photos up to 1.4 times the WebP from quality 90, two to three times
+  from 75 and up to eight and a half from 5), otherwise a PNG (lossless pixels
   exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's
   extension, the content type, the attachment's `name` and the thumbnail's format all
   follow the stored format, not the upload's. Before decoding, `stripWebP` (`webp.go`)

@@ -452,11 +452,13 @@ client can leave the image picker off a server that would refuse what it sends.
     comments and application data such as XMP. Its colour tables keep only the colours
     its frames show.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
-    pixels: a lossy, opaque WebP as a JPEG at quality 90, and any other (lossless, or
-    with transparency) as a PNG, which keeps a lossless picture exactly. A WebP's
-    quality setting does not mean what a JPEG's does, so there is no lower quality to
-    match, and a WebP saved at a low quality can be stored at two to four times its
-    size. A lossy WebP's colours come back from the decoder in a narrower range than
+    pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
+    half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
+    PNG, which keeps a lossless picture exactly. A WebP's quality setting does not mean
+    what a JPEG's does, so there is no lower quality to match, and the JPEG is larger
+    the lower the quality the WebP was saved at: measured on photos, up to 1.4 times
+    the WebP's size from quality 90, two to three times from 75, three and a half to
+    five and a half from 25, and up to eight and a half from 5. A lossy WebP's colours come back from the decoder in a narrower range than
     they were saved in, so they are expanded again before storing, or black would be
     kept as dark grey and white as light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
     `image.png`). Keeping the WebP with only its metadata chunks removed would not be

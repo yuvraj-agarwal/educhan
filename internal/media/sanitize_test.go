@@ -1323,6 +1323,61 @@ func TestLossyWebPKeepsItsColours(t *testing.T) {
 	}
 }
 
+// A lossy WebP carries its colour at half resolution each way (4:2:0), and an
+// opaque one is stored as a JPEG at that same resolution: encoded from RGB at
+// 4:4:4, the JPEG spent bytes on colour detail the WebP never had and was
+// stored up to a quarter larger for it. An alpha plane that is opaque
+// throughout changes nothing, and the colours are the ones the WebP showed
+// (bt601LimitedToRGB), on average to within what re-encoding at quality 90
+// costs.
+func TestLossyWebPIsStoredAtItsOwnColourResolution(t *testing.T) {
+	plain := readTestdata(t, "lossy.webp")
+	chunks := webpChunks(t, plain)
+	if len(chunks) != 1 || chunks[0].id != "VP8 " {
+		t.Fatalf("lossy.webp chunks = %v, want one VP8", chunkIDs(chunks))
+	}
+	opaque := append([]byte{0}, bytes.Repeat([]byte{0xFF}, 64*48)...) // uncompressed, all opaque
+	withAlpha := webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), riffChunk{id: "ALPH", payload: opaque}, chunks[0])
+
+	src, err := webp.Decode(bytes.NewReader(plain))
+	if err != nil {
+		t.Fatalf("decode lossy.webp: %v", err)
+	}
+	ycc, ok := src.(*image.YCbCr)
+	if !ok || ycc.SubsampleRatio != image.YCbCrSubsampleRatio420 {
+		t.Fatalf("lossy.webp decodes as %T, want 4:2:0 YCbCr", src)
+	}
+	want := image.NewNRGBA(ycc.Rect)
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 64; x++ {
+			r, g, b := bt601LimitedToRGB(ycc.Y[ycc.YOffset(x, y)], ycc.Cb[ycc.COffset(x, y)], ycc.Cr[ycc.COffset(x, y)])
+			want.SetNRGBA(x, y, color.NRGBA{r, g, b, 0xFF})
+		}
+	}
+
+	for _, tc := range []struct {
+		name string
+		data []byte
+	}{{"simple", plain}, {"with an opaque alpha plane", withAlpha}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := process(t, tc.data)
+			if got.Format != FormatJPEG {
+				t.Fatalf("stored as %s, want a JPEG", got.Format.Name)
+			}
+			f, framed := readJPEGFrame(got.Data)
+			if !framed || f.comps != 3 {
+				t.Fatal("the stored file has no colour frame")
+			}
+			if s := f.subsampling(); s != image.YCbCrSubsampleRatio420 {
+				t.Errorf("stored at %v, want the WebP's own 4:2:0", s)
+			}
+			if d := meanDifference(t, decodeStored(t, got.Data), want); d > 2 {
+				t.Errorf("stored picture differs from the colours the WebP showed by %.2f levels on average", d)
+			}
+		})
+	}
+}
+
 // A decoder stops reading a picture chunk once it has its picture, so a whole
 // second file can ride inside one: here a JPEG carrying a camera's EXIF and GPS
 // position, inside a lossless bitstream, a lossy one, and an alpha plane. The
