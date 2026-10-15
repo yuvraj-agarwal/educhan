@@ -1781,3 +1781,132 @@ func TestPeakOfCountsTheEarlierPhaseAsTheNextBegins(t *testing.T) {
 		t.Errorf("peakOf = %d, want 22: the 2 kept and all 20 grown on top", got)
 	}
 }
+
+// scanBombBits accumulates entropy-coded bits for a progressive JPEG, stuffing
+// 0xFF with a following 0x00 as the format requires.
+type scanBombBits struct {
+	out  []byte
+	acc  uint32
+	nacc uint
+}
+
+func (b *scanBombBits) put(v uint32, n uint) {
+	for i := int(n) - 1; i >= 0; i-- {
+		b.acc = b.acc<<1 | (v>>uint(i))&1
+		b.nacc++
+		if b.nacc == 8 {
+			c := byte(b.acc)
+			b.out = append(b.out, c)
+			if c == 0xFF {
+				b.out = append(b.out, 0)
+			}
+			b.acc, b.nacc = 0, 0
+		}
+	}
+}
+
+func (b *scanBombBits) flush() []byte {
+	for b.nacc != 0 {
+		b.put(1, 1)
+	}
+	return b.out
+}
+
+// scanBombJPEG builds a w×h greyscale progressive JPEG with one DC scan and
+// acScans AC scans (Ss=1..63) that each code every block as one long EOB run,
+// so the picture is flat grey and every scan is a few dozen bytes yet makes
+// image/jpeg revisit all the picture's blocks. It is how a progressive file
+// hides unbounded decoding work behind a small upload — the memory it holds is
+// a single grey progressive picture's whatever the scan count — which
+// maxJPEGScanRevisits bounds.
+func scanBombJPEG(w, h, acScans int) []byte {
+	seg := func(b []byte, marker byte, body []byte) []byte {
+		b = append(b, 0xFF, marker)
+		b = binary.BigEndian.AppendUint16(b, uint16(len(body)+2))
+		return append(b, body...)
+	}
+	b := []byte{0xFF, 0xD8}
+	dqt := []byte{0}
+	for i := 0; i < 64; i++ {
+		dqt = append(dqt, 1)
+	}
+	b = seg(b, 0xDB, dqt)
+	sof := []byte{8}
+	sof = binary.BigEndian.AppendUint16(sof, uint16(h))
+	sof = binary.BigEndian.AppendUint16(sof, uint16(w))
+	sof = append(sof, 1, 1, 0x11, 0) // one component, 1×1 sampling
+	b = seg(b, 0xC2, sof)
+	counts := make([]byte, 16)
+	counts[0] = 1
+	b = seg(b, 0xC4, append(append([]byte{0x00}, counts...), 0x00)) // DC: '0' → category 0
+	b = seg(b, 0xC4, append(append([]byte{0x10}, counts...), 0xE0)) // AC: '0' → EOB run r=14
+	blocks := ((w + 7) / 8) * ((h + 7) / 8)
+	b = seg(b, 0xDA, []byte{1, 1, 0x00, 0, 0, 0}) // DC scan, Ss=Se=0
+	var dc scanBombBits
+	for i := 0; i < blocks; i++ {
+		dc.put(0, 1)
+	}
+	b = append(b, dc.flush()...)
+	var ac scanBombBits
+	for left := blocks; left > 0; {
+		run := min(left, 32767)
+		if left-run > 0 && left-run < 16384 {
+			run = left - 16384
+		}
+		ac.put(0, 1)
+		ac.put(uint32(run-16384), 14)
+		left -= run
+	}
+	acData := ac.flush()
+	for s := 0; s < acScans; s++ {
+		b = seg(b, 0xDA, []byte{1, 1, 0x00, 1, 63, 0}) // AC scan, Ss=1 Se=63
+		b = append(b, acData...)
+	}
+	return append(b, 0xFF, 0xD9)
+}
+
+// A progressive JPEG can repeat a short, cheap scan so that image/jpeg
+// revisits every block of the picture thousands of times — decoding work the
+// pixel cap and the memory estimate do not see, since the file is small and
+// holds no more than one progressive picture. jpegScanBlockVisits counts that
+// work from the header, and Inspect refuses a file past maxJPEGScanRevisits
+// passes over its blocks as too costly to process, before any cooldown, while
+// the progressive files encoders actually write (a handful of passes) are
+// admitted.
+func TestJPEGScanBombIsRefusedFromHeader(t *testing.T) {
+	// The progressive fixtures, encoders' own output, are well under the cap
+	// and admitted.
+	for _, name := range []string{"cost-prog420.jpg", "cost-prog444.jpg", "cost-progcmyk.jpg", "cost-proggray.jpg"} {
+		data := readTestdata(t, name)
+		f, framed := readJPEGFrame(data)
+		if !framed {
+			t.Fatalf("%s: readJPEGFrame did not read a frame", name)
+		}
+		if visits := jpegScanBlockVisits(data, f); visits > maxJPEGScanRevisits*f.blocks {
+			t.Errorf("%s: %d scan visits over the cap of %d×%d blocks", name, visits, maxJPEGScanRevisits, f.blocks)
+		}
+		if _, err := Inspect(data); err != nil {
+			t.Errorf("Inspect(%s) = %v, want it admitted", name, err)
+		}
+	}
+
+	// A grey progressive file: each AC scan and the DC scan visit every block
+	// once (one component), so acScans AC scans plus the DC scan come to
+	// (acScans+1) passes. The cap admits exactly maxJPEGScanRevisits passes.
+	const w, h = 1000, 1000
+	blocks := int64(((w + 7) / 8) * ((h + 7) / 8))
+	atCap := scanBombJPEG(w, h, maxJPEGScanRevisits-1) // (maxJPEGScanRevisits-1)+1 passes
+	if _, err := Inspect(atCap); err != nil {
+		t.Errorf("Inspect(%d passes) = %v, want admitted at the cap", maxJPEGScanRevisits, err)
+	}
+	overCap := scanBombJPEG(w, h, maxJPEGScanRevisits) // one pass over the cap
+	if _, err := Inspect(overCap); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(%d passes) = %v, want ErrImageTooCostly", maxJPEGScanRevisits+1, err)
+	}
+	// The walk's count is exactly the passes, and nothing smaller admits the
+	// over-cap file by miscounting.
+	f, _ := readJPEGFrame(overCap)
+	if got, want := jpegScanBlockVisits(overCap, f), int64(maxJPEGScanRevisits+1)*blocks; got != want {
+		t.Errorf("jpegScanBlockVisits = %d, want %d", got, want)
+	}
+}

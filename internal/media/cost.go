@@ -366,6 +366,13 @@ func jpegPhases(data []byte, w, h int64) []phase {
 	return phases
 }
 
+// jpegComp is one of a JPEG frame's components: the id a scan names it by and
+// the sampling factors that say how many 8×8 blocks of it an MCU holds.
+type jpegComp struct {
+	id   byte
+	h, v int64
+}
+
 // jpegFrame is what jpegPhases needs of a JPEG's frame header and the
 // application segments around it, and what jpegQuality needs of its
 // quantisation tables.
@@ -374,6 +381,12 @@ type jpegFrame struct {
 	comps       int
 	blocks      int64 // 8×8 blocks the decoder allocates, all components
 	ids         [3]byte
+	// width and height are the frame's, and comp its first ncomp components'
+	// ids and sampling factors, which jpegScanBlockVisits walks the scans
+	// with.
+	width, height int64
+	comp          [4]jpegComp
+	ncomp         int
 	// hRatio and vRatio are how many luma samples across and down share a
 	// chroma sample: the first component's sampling factors over the
 	// second's, as image/jpeg works them out.
@@ -490,6 +503,141 @@ func readJPEGFrame(data []byte) (jpegFrame, bool) {
 	return f, framed
 }
 
+// maxJPEGScanRevisits caps how many times, averaged over the picture, a JPEG's
+// scans may make image/jpeg visit each of its 8×8 blocks (jpegScanBlockVisits).
+// A baseline file visits every block once; the progressive files encoders
+// write revisit them a handful of times — Pillow's are 4.7 to 6, libjpeg's
+// ten-scan default is similar — so a few dozen is far above any real
+// progression. A progressive file may repeat a band's scan any number of
+// times, each a few dozen bytes and holding no more memory, so that its
+// decoding visits orders of magnitude more blocks than the picture has: a loop
+// the pixel cap (MaxPixels) and the memory estimate (processingCost) do not
+// see, because it is bounded by neither the resolution nor what is held but by
+// the scan count. A file whose scans would visit more than this many times its
+// blocks is refused as too costly to process (ErrImageTooCostly), from its
+// header, before any cooldown (inspect). The ceiling bounds the decoder's work:
+// the largest picture it admits is a progressive one the memory estimate still
+// fits — a 25-megapixel grey or 4:2:0 file, about 0.4 to 0.6 million blocks —
+// and at this multiple its scans take about 2 s of CPU on one core, well
+// inside processingAllowance.
+const maxJPEGScanRevisits = 64
+
+// jpegScanBlockVisits adds up the 8×8 blocks image/jpeg visits decoding every
+// scan of a JPEG whose frame header is f (readJPEGFrame). The decoder walks the
+// MCU grid once per scan (processSOS), and for each MCU visits every 8×8 block
+// of the scan's components, loading and storing a 256-byte coefficient block
+// for a progressive file; so a scan's cost is the grid, mxx×myy from the first
+// component's sampling, times the sum of h×v over the components the scan
+// lists. A baseline file's one scan visits each block once; a progressive file
+// revisits a component's blocks on each of its scans. It walks the markers as
+// readJPEGFrame does and steps over each scan's entropy-coded data to the next
+// marker exactly as the decoder's bit reader ends a scan — a stuffed 0xFF00 and
+// the restart markers 0xFFD0..0xFFD7 are within the scan, any other marker ends
+// it — so it counts every scan the decoder processes and stops where the
+// decoder would. The count, not the file's size, is what maxJPEGScanRevisits
+// bounds.
+func jpegScanBlockVisits(data []byte, f jpegFrame) int64 {
+	if f.ncomp == 0 || f.comp[0].h < 1 || f.comp[0].v < 1 {
+		return 0
+	}
+	h0, v0 := f.comp[0].h, f.comp[0].v
+	mxx := (f.width + 8*h0 - 1) / (8 * h0)
+	myy := (f.height + 8*v0 - 1) / (8 * v0)
+	mcus := mxx * myy
+
+	var visits int64
+	i := 2
+	for i+4 <= len(data) {
+		if data[i] != 0xFF {
+			return visits
+		}
+		marker := data[i+1]
+		switch {
+		case marker == 0xFF:
+			i++
+			continue
+		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
+			i += 2
+			continue
+		case marker == 0xD9:
+			return visits
+		}
+		length := int(data[i+2])<<8 | int(data[i+3])
+		if length < 2 || length > len(data)-i-2 {
+			return visits
+		}
+		if marker == 0xDA {
+			// The SOS header lists the scan's components by selector; sum h×v
+			// over the frame components they name.
+			body := data[i+4 : i+2+length]
+			ns := 0
+			if len(body) >= 1 {
+				ns = int(body[0])
+			}
+			if ns < 1 || len(body) < 1+2*ns {
+				return visits
+			}
+			var hv int64
+			for k := 0; k < ns; k++ {
+				cs := body[1+2*k]
+				for c := 0; c < f.ncomp; c++ {
+					if f.comp[c].id == cs {
+						hv += f.comp[c].h * f.comp[c].v
+						break
+					}
+				}
+			}
+			visits += mcus * hv
+			i = jpegSkipEntropy(data, i+2+length)
+			continue
+		}
+		i += 2 + length
+	}
+	return visits
+}
+
+// jpegSkipEntropy returns the offset of the next marker after the
+// entropy-coded data that begins at i, found as image/jpeg's bit reader finds
+// it: the first 0xFF that is neither a stuffed byte (0xFF00) nor a restart
+// marker (0xFFD0..0xFFD7), with runs of 0xFF fill bytes collapsed onto the
+// marker that follows them. It returns len(data) when no further marker is
+// found.
+func jpegSkipEntropy(data []byte, i int) int {
+	for i < len(data) {
+		if data[i] != 0xFF {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(data) && data[j] == 0xFF {
+			j++
+		}
+		if j >= len(data) {
+			return len(data)
+		}
+		m := data[j]
+		if m == 0x00 || (m >= 0xD0 && m <= 0xD7) {
+			i = j + 1
+			continue
+		}
+		return j - 1
+	}
+	return i
+}
+
+// jpegScansTooCostly reports whether a JPEG's scans would make image/jpeg
+// revisit its blocks more than maxJPEGScanRevisits times over
+// (jpegScanBlockVisits). A frame readJPEGFrame could not parse (framed false)
+// has no sampling to walk the scans with, and image/jpeg will not decode it
+// either, so it is left to the memory estimate and the decoder's own refusal.
+func jpegScansTooCostly(data []byte) bool {
+	f, framed := readJPEGFrame(data)
+	if !framed {
+		return false
+	}
+	return jpegScanBlockVisits(data, f) > maxJPEGScanRevisits*f.blocks
+}
+
 // readDQT records the tables a DQT segment defines, as image/jpeg reads them:
 // one after another, each a byte holding its precision (8 or 16 bits) and its
 // number (0–3), and then its 64 values in zig-zag order.
@@ -524,6 +672,7 @@ func (f *jpegFrame) read(sof []byte, progressive bool) bool {
 		return false
 	}
 	f.progressive, f.comps = progressive, n
+	f.width, f.height, f.ncomp = width, height, n
 	h0, v0 := int64(1), int64(1)
 	var units int64
 	for k := 0; k < n; k++ {
@@ -541,6 +690,7 @@ func (f *jpegFrame) read(sof []byte, progressive bool) bool {
 		if k < 3 {
 			f.ids[k] = c[0]
 		}
+		f.comp[k] = jpegComp{id: c[0], h: h, v: v}
 		f.tq[k] = c[2]
 		if k == 1 {
 			f.hRatio, f.vRatio = h0/h, v0/v

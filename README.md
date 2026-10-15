@@ -418,6 +418,15 @@ server that would refuse what it sends.
     none from an upload over about 3.9 MiB; from an upload of 8 MiB, two whole frames are
     accepted up to about 17 megapixels and four up to about 15.
 
+  A progressive JPEG is refused from its header as too costly to process, whatever its
+  shape admits above, when its scans would make the decoder revisit the picture's blocks
+  more than a few dozen times over. The progressive files encoders write pass a handful
+  of times (four to six), but a crafted one can repeat a scan of a few dozen bytes
+  thousands of times — holding no more memory than one progressive picture, so caught by
+  neither the pixel cap nor the memory estimate — to decode for far longer than its size
+  or resolution suggests; the revisit cap holds the worst admitted file to a few seconds
+  of CPU.
+
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,
   however narrow it is. A GIF of many thousands of frames is refused however small they

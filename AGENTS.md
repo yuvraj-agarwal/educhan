@@ -873,10 +873,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   needs that limit, which this code does not set. **Every wait is bounded, and a slow
   client is told apart from a busy server.** A post waits for room in the upload budget
   under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
-  does not get room gives up `processingAllowance` (15 s: the slowest admitted upload
-  measured, a 25-megapixel PNG with transparency of nearly 8 MiB, took about eight seconds
-  of CPU on one core, and the slowest GIF found, 25 frames of a 2000×2000 canvas each with
-  a table of its own and a pixel to clear, about four, so it leaves margin) before that
+  does not get room gives up `processingAllowance` (15 s, which leaves margin: no upload
+  `Inspect` admits decodes for long, because the slowest kinds are bounded from the header
+  — a 25-megapixel transparent PNG takes about 4 s of CPU on one core, the slowest GIF
+  about 4 (25 frames of a 2000×2000 canvas each with a table of its own and a pixel to
+  clear), and a progressive JPEG is held to `maxJPEGScanRevisits` passes over its blocks
+  (`jpegScanBlockVisits`), so the worst admitted one is about 3-4 s rather than the
+  thousands of seconds a repeated cheap scan would take) before that
   deadline, with `media.ErrBusy`, and room that is there is taken however near the
   deadline. Its body then has `uploadReadTimeout` (30 s) to arrive, counted from when the
   wait ends, so time spent waiting for room is not taken out of the body's: a read

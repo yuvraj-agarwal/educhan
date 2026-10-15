@@ -29,19 +29,31 @@ const UploadBudget int64 = 64 << 20
 
 // processingAllowance is how long before its deadline an upload stops waiting
 // for room, in either budget, so that what is left is time to decode,
-// re-encode and thumbnail it and to store both renditions. The slowest
-// upload measured of those Inspect admits from an 8 MiB limit, a 25-megapixel
-// PNG with transparency of nearly 8 MiB, took about eight seconds of CPU to
-// process on one core of a development machine. The slowest GIF found took
-// about four: an animation of many colours, 25 frames of a 2000×2000 canvas
-// each drawn from a table of its own and each leaving a pixel to clear,
-// 4.5 MB, which the frame cap (maxGIFFramePixels) lets come to 100 million
-// pixels. Four 5000×5000 frames of one table take two and a half, and frames
-// a pixel wide, whose rows the cap counts as 64 pixels each (gifRowPixels),
-// a few tenths. A slower core, or other uploads beside it, makes that longer,
-// so the deadline still has the last word: Save stores nothing once it has
-// passed, and the work stops when the context ends. A context without a
-// deadline waits for as long as it lasts.
+// re-encode and thumbnail it and to store both renditions. What bounds that
+// work is not the upload's size — a few dozen bytes of a progressive JPEG can
+// make image/jpeg revisit every block of a 25-megapixel picture — but its
+// shape, which Inspect reads from the header: the pixel cap (MaxPixels), the
+// memory estimate (processingCost), and, for a progressive JPEG, the scan
+// revisit cap (maxJPEGScanRevisits), so that no admitted upload decodes for
+// more than a few seconds of CPU on one core. The slowest kinds measured, each
+// on one core:
+//   - a 25-megapixel PNG with transparency of about 7 MiB: ~4 s.
+//   - a progressive JPEG at the scan cap: the largest the memory estimate
+//     admits is a 25-megapixel 4:2:2 picture, about 50 million block visits
+//     (maxJPEGScanRevisits over ~0.8 million blocks), ~3-4 s; a 25-megapixel
+//     grey one at the cap measured ~2 s. A file past the cap is refused from
+//     its header, before any cooldown — before the cap one could repeat a
+//     cheap scan thousands of times and decode for thousands of seconds.
+//   - a GIF of many colours: 25 frames of a 2000×2000 canvas each drawn from a
+//     table of its own and each leaving a pixel to clear, 4.5 MB, which the
+//     frame cap (maxGIFFramePixels) lets come to 100 million pixels, ~4 s.
+//     Four 5000×5000 frames of one table take ~2.5 s, and frames a pixel wide,
+//     whose rows the cap counts as 64 pixels each (gifRowPixels), a few tenths.
+//
+// A slower core, or other uploads beside it, makes that longer, so the
+// deadline still has the last word: Save stores nothing once it has passed,
+// and the work stops when the context ends. A context without a deadline waits
+// for as long as it lasts.
 const processingAllowance = 15 * time.Second
 
 // budget shares out memory among the uploads using it at once, each taking
