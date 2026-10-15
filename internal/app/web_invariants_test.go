@@ -189,9 +189,15 @@ func TestBadgeAttestationIsNeverPreselectedOrKept(t *testing.T) {
 		}
 	}
 
+	// The Pass asks the same question in its own two functions, held to the
+	// same rules by TestPassAttestationIsNeverPreselectedOrKept.
+	passAttest := withoutComments(jsFunction(t, script, "passAttestHTML"))
+	passSubmit := withoutComments(jsFunction(t, script, "submitPass"))
 	if all, here := strings.Count(withoutComments(script), "adult"),
-		strings.Count(view, "adult")+strings.Count(submit, "adult"); all != here {
-		t.Errorf("app.js mentions the attestation %d times outside verifyViewHTML and submitVerification", all-here)
+		strings.Count(view, "adult")+strings.Count(submit, "adult")+
+			strings.Count(passAttest, "adult")+strings.Count(passSubmit, "adult"); all != here {
+		t.Errorf("app.js mentions the attestation %d times outside verifyViewHTML, submitVerification, "+
+			"passAttestHTML and submitPass", all-here)
 	}
 	for name, body := range map[string]string{"verifyViewHTML": view, "submitVerification": submit} {
 		for _, banned := range []string{"localStorage", "sessionStorage", "storageSet", "document.cookie", "indexedDB"} {
@@ -291,5 +297,68 @@ func TestCodeHighlightingIsBoundedAndLazy(t *testing.T) {
 	}
 	if strings.Contains(highlight, "loadHighlighter") {
 		t.Error("highlightCode loads highlight.js before any block is near the viewport")
+	}
+}
+
+// The Pass is held to the credential's rules: its code leaves the browser on
+// a post only from the submit handler, only on an unbadged post, and never
+// through api(); otherwise only in the body of the Pass page's own requests.
+func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
+	script := appScript(t)
+	submit := submitHandler(t, script)
+
+	if uses, inSubmit := strings.Count(script, "PASS_HEADER"), strings.Count(submit, "PASS_HEADER"); uses != 2 || inSubmit != 1 {
+		t.Errorf("PASS_HEADER appears %d times in app.js, %d of them in the submit handler; "+
+			"want the declaration and one use, in the submit handler", uses, inSubmit)
+	}
+	// Never beside the credential: the Pass is read only when no badge is held.
+	if !strings.Contains(submit, "const pass = held ? null : storedPass();") ||
+		!strings.Contains(submit, "headers[PASS_HEADER] = pass.code;") {
+		t.Error("the submit handler no longer keeps the Pass off badged posts")
+	}
+	api := withoutComments(jsFunction(t, script, "api"))
+	for _, banned := range []string{"storedPass", "PASS_STORAGE_KEY", "PASS_HEADER"} {
+		if strings.Contains(api, banned) {
+			t.Errorf("api() reads %s; every request would carry the Pass", banned)
+		}
+	}
+	// Where the code may go besides a post: the body of a code check and of a
+	// renewal, both in submitPass.
+	code := withoutComments(script)
+	if n := strings.Count(code, "held.code"); n != strings.Count(withoutComments(jsFunction(t, script, "submitPass")), "held.code")+
+		strings.Count(withoutComments(jsFunction(t, script, "collectPass")), "held.code") {
+		t.Errorf("app.js reads the stored code (held.code) outside submitPass and collectPass")
+	}
+}
+
+// Buying a Pass takes the badge's attestation, by the badge's rules: an
+// unticked, unrequired box on every render, read once and stored nowhere, and
+// the server's refusal recognised in its own words.
+func TestPassAttestationIsNeverPreselectedOrKept(t *testing.T) {
+	script := appScript(t)
+	attest := withoutComments(jsFunction(t, script, "passAttestHTML"))
+	submit := withoutComments(jsFunction(t, script, "submitPass"))
+
+	box := regexp.MustCompile(`<input[^>]*\bname="adult"[^>]*>`).FindString(attest)
+	if box == "" || !strings.Contains(box, `type="checkbox"`) {
+		t.Fatalf("passAttestHTML has no adult checkbox: %q", box)
+	}
+	for _, banned := range []string{"checked", "required"} {
+		if regexp.MustCompile(`\s` + banned + `\b`).MatchString(box) {
+			t.Errorf("the Pass attestation box is %s: %s", banned, box)
+		}
+	}
+	for name, body := range map[string]string{"passAttestHTML": attest, "submitPass": submit} {
+		for _, banned := range []string{"localStorage", "sessionStorage", "document.cookie", "indexedDB"} {
+			if strings.Contains(body, banned) {
+				t.Errorf("%s uses %s; the attestation is never stored", name, banned)
+			}
+		}
+	}
+	if !strings.Contains(submit, "showNotice(PASS_AGE_REFUSAL);") {
+		t.Error("submitPass no longer refuses on its own when the box is unticked")
+	}
+	if !strings.Contains(script, `const PASS_AGE_REFUSED = "`+passAdultRequired+`";`) {
+		t.Errorf("PASS_AGE_REFUSED in app.js is not the server's refusal %q", passAdultRequired)
 	}
 }

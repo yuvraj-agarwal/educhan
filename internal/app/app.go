@@ -32,6 +32,9 @@ type App struct {
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
 
+	// pass sells and checks the educhan Pass (pass.go).
+	pass *passState
+
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
@@ -41,6 +44,9 @@ type App struct {
 // and prepares the media store.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	if err := validatePassConfig(cfg.Pass); err != nil {
 		return nil, err
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
@@ -105,6 +111,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
+		pass:          newPassState(cfg.Pass),
 		schemaAhead:   schemaAhead,
 	}, nil
 }
@@ -179,6 +186,16 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/verify", a.handleVerifyStatus)
 	mux.HandleFunc("POST /api/verify/request", a.handleVerifyRequest)
 	mux.HandleFunc("POST /api/verify/confirm", a.handleVerifyConfirm)
+
+	// The educhan Pass. Like verification, nothing here is addressed by
+	// anything a post carries. The webhook is Stripe's, signed with the
+	// endpoint's secret; reissuing is the owner's, behind the moderation key.
+	mux.HandleFunc("GET /api/pass", a.handlePassStatus)
+	mux.HandleFunc("POST /api/pass/checkout", a.handlePassCheckout)
+	mux.HandleFunc("POST /api/pass/claim", a.handlePassClaim)
+	mux.HandleFunc("POST /api/pass/activate", a.handlePassActivate)
+	mux.HandleFunc("POST /api/pass/stripe-webhook", a.handleStripeWebhook)
+	mux.HandleFunc("POST /api/pass/reissue", a.handlePassReissue)
 
 	// Thread routes keyed by primary key, kept for callers that hold an ID from
 	// an earlier revision of the API.

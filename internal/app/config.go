@@ -87,6 +87,8 @@ type Config struct {
 	// MailDev allows the development sender while verification is on. It is
 	// for local work only: in production stdout is the log.
 	MailDev bool
+	// Pass configures the educhan Pass; see pass_config.go.
+	Pass PassConfig
 }
 
 // defaultDBMaxConns keeps one instance's pool small. The smallest Cloud SQL
@@ -171,6 +173,9 @@ func ConfigFromEnv() (Config, error) {
 	// as the feature silently not working.
 	if cfg.VerifyCodeTTL <= 0 || cfg.VerifyCredentialTTL <= 0 {
 		return Config{}, fmt.Errorf("EDUCHAN_VERIFY_CODE_TTL and EDUCHAN_VERIFY_CREDENTIAL_TTL must be positive")
+	}
+	if cfg.Pass, err = passConfigFromEnv(); err != nil {
+		return Config{}, err
 	}
 	if cfg.LogFormat != "text" && cfg.LogFormat != "json" {
 		return Config{}, fmt.Errorf("EDUCHAN_LOG_FORMAT: want \"text\" or \"json\", got %q", cfg.LogFormat)

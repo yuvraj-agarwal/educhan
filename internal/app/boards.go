@@ -58,6 +58,7 @@ var reservedBoardSlugs = map[string]bool{
 	"lib": true,
 	// Pages of the UI.
 	"verify":  true,
+	"pass":    true,
 	"mod":     true,
 	"rules":   true,
 	"faq":     true,

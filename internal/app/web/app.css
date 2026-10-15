@@ -628,6 +628,32 @@ button.link:hover { text-decoration: underline; }
   gap: 12px;
 }
 
+/* The Pass page's list of what a Pass does and does not do. */
+.pass-list {
+  padding-left: 1.2em;
+  display: grid;
+  gap: 6px;
+}
+
+.pass-renew { display: grid; gap: 12px; justify-items: start; }
+.pass-issued { margin-bottom: 18px; }
+
+/* A new Pass code, shown once: large enough to copy down by hand without
+   mistaking one character for another. */
+.pass-code {
+  font-family: var(--mono);
+  font-size: 20px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  justify-self: start;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
 /* The credential outlives the tab now, so the way to get rid of it is called
    out on its own rather than sitting in the row of other actions. */
 .verify-forget {

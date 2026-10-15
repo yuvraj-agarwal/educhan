@@ -22,6 +22,9 @@ not.
   - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
   - `boards.go` — board creation and settings updates, behind the same key.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
+  - `pass.go` — the educhan Pass: its handlers, code format and SQL; `pass_stripe.go`
+    — Stripe over plain HTTPS (hosted checkout, the price, webhook signatures);
+    `pass_config.go` — its settings, off unless `EDUCHAN_PASS_SECRET` is set.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
@@ -246,10 +249,19 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 `addInitScript`). Playwright's headless Chromium hides scrollbars unless launched with
 `ignoreDefaultArgs: ["--hide-scrollbars"]`; a check on the board row's scrollbar needs it.
 
+The Pass is off unless `EDUCHAN_PASS_SECRET` and the four Stripe settings are set
+(`pass_config.go`), and a whole purchase needs Stripe to call the webhook, so its
+end-to-end checks live in `pass_api_test.go` against a fake Stripe (`fakeStripe`) rather
+than in curl. A real checkout uses Stripe's test mode: test keys, a test Price, and
+`stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
+with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A Pass code can be reissued with
+`curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H 'Content-Type:
+application/json' -d '{"payment_intent":"pi_…"}'`.
+
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
-that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
-`submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
-box never ticked in advance or kept, KaTeX's options, and the highlighting cap. They are
+that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass
+only in `submit`, the Pass never beside the credential, the age screen storing its outcome alone and sending nothing, the badge's 18+
+box and the Pass's never ticked in advance or kept, KaTeX's options, and the highlighting cap. They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
@@ -409,6 +421,15 @@ needs a browser check before the test changes.
   browser's key met its credential.
   `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
   either header is attached anywhere but that one line.
+- The educhan Pass lives in `localStorage` under `educhan:pass`, as the code and its
+  expiry. `submit` sends it in `X-Educhan-Pass` on unbadged posts only (a badged post
+  sends the credential and nothing else), and the Pass page sends it in the body of the
+  two requests that use it on purpose: checking a code typed in (`/api/pass/activate`)
+  and renewing (`/api/pass/checkout`). Buying and renewing leave for Stripe's hosted page
+  by `location.assign`: no Stripe script, frame or stylesheet ever loads on this origin,
+  and the CSP has no exception for Stripe. A post refused for its Pass (`"pass":
+  "invalid"` or `"expired"`) forgets or marks it, and the next press posts without it.
+  `TestOnlyThePostingRequestCarriesThePass` pins the header.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the
@@ -416,7 +437,8 @@ needs a browser check before the test changes.
   stays cleared across re-renders and after posting (`restoreDraft` restores empty
   values; `submit` sets the field after `form.reset()`).
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state, removes
-  the credential, the poster key and the remembered name, and leaves the age answer. It
+  the credential, the Pass, the poster key and the remembered name, and leaves the age
+  answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
 
@@ -439,6 +461,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
   `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
   hold the code to the badge alone today.
+- **The Pass gates the captcha skip and nothing else.** It is bought, which makes it
+  the nearest thing educhan has to an account. Like the badge, it is sold only after an
+  unticked 18+ confirmation that stores nothing about age. It carries no name, profile
+  or history, and its code travels only in `X-Educhan-Pass` on the posting request, and
+  in the body of the requests that check or renew it on the Pass page. A badged post
+  sends the credential instead. Nothing about a Pass is written on a post, logged, or
+  used in a poster ID. Its shared cooldown bucket is keyed on a hash of the code and
+  forgotten with the cooldown. The Pass skips the captcha only, never the content rules,
+  the refusal limit or a cooldown. `TestPassIsNeverStoredOrLogged`,
+  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneCooldown` hold it there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what

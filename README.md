@@ -289,6 +289,56 @@ verification endpoints and nowhere else. It is `HttpOnly`, `SameSite=Lax`, and
 `Secure` whenever the request arrived over TLS. The credential is not a cookie
 at all — see above.
 
+## educhan Pass
+
+The educhan Pass works like 4chan's: a year of posting and reporting without
+the captcha, bought for a small fee that helps run the site. It is optional,
+sold only to people who tick an unticked "I confirm I am 18 or over" box, and
+it gives nothing else. A post made with a Pass looks exactly like any other,
+and the content rules, the refusal limit and every cooldown still apply.
+
+Two of 4chan's Pass rules don't carry over. 4chan ties a Pass to one IP
+address at a time, which would mean keeping addresses; here everyone using one
+Pass shares one cooldown instead, so sharing it gains nothing. And 4chan's Pass
+lifts IP range and country blocks, which educhan doesn't have.
+
+**How it is bought.** The Pass page asks the server for a checkout, and the
+browser goes to Stripe's own hosted page by an ordinary navigation: no Stripe
+script, frame or stylesheet loads on educhan's origin, and the CSP has no
+exception for Stripe. Google has no checkout of its own for selling on the web
+(Google Pay sits on top of a processor such as Stripe, whose page offers it),
+so this is a non-Google service by necessity. Stripe tells the server the
+payment went through by a signed webhook, and the browser that paid collects
+its Pass with a claim it holds in a cookie scoped to `/api/pass`. The code,
+four groups of five letters and digits, is shown once.
+
+**What is kept, and what can be worked out.** An operator with the database,
+the server secret and the Stripe account can see:
+
+- that a Pass exists and the day it runs out (`expires_at`, rounded up to a
+  UTC day boundary; there is no `created_at`);
+- which Stripe payments bought or renewed it, as `HMAC(EDUCHAN_PASS_SECRET,
+  payment id)`. With Stripe's records beside it, that ties a Pass to whoever
+  paid. This is what lets a refund or a chargeback cancel the Pass, and it is
+  the sharpest edge of the design.
+
+They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
+writes nothing (no "last used"), the code is stored only as a keyed hash, the
+Pass tables reference only each other, and nothing about a Pass is logged or
+goes into a poster ID. `TestPassIsNeverStoredOrLogged` drives every posting
+path with a Pass and searches every table and the log for the code, its hashes,
+the payment and session ids and the buyer's email and name, with positive
+controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
+handler reads a handful of fields and never logs the body, which carries the
+payer's email and name.
+
+**Lost codes, refunds and renewals.** A full refund or a dispute cancels the
+Pass it paid for (a partial refund doesn't). A buyer who lost their code
+writes to the support address on Stripe's receipt, and the owner reissues it
+with `POST /api/pass/reissue` and Stripe's payment id; the old code stops
+working. Renewing from a browser that holds the Pass adds a year to it, from
+its expiry or from today if it has run out, and keeps the code.
+
 ## Posting identity
 
 ### Poster IDs
@@ -598,6 +648,14 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
+| `EDUCHAN_PASS_SECRET` | empty | Keys the educhan Pass's stored hashes (codes, Stripe payment and session ids). **Unset switches the Pass off**; at least 32 characters. Rotating it cancels every Pass and orphans every payment record |
+| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key checkouts are created with. Required with `EDUCHAN_PASS_SECRET`, refused without it |
+| `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook` |
+| `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax add sales tax, VAT or GST at checkout; switch Stripe Tax on in the account first |
+| `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back |
+| `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts |
+| `EDUCHAN_PASS_COOLDOWN` | `30` (seconds) | Minimum interval between checkouts from one client |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 
 ### Storage backends
@@ -723,6 +781,12 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","price":{"amount","currency"}}`; `price` is left out when Stripe can't be asked |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, Stripe's page, and sets the claim cookie |
+| `POST` | `/api/pass/claim` | Collect a paid Pass with the claim cookie — `202 {"status":"pending"}` until Stripe reports the payment, then `{"status":"issued","pass","expires_at"}` or `{"status":"renewed","expires_at"}` |
+| `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}` |
+| `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`, `charge.dispute.created` |
+| `POST` | `/api/pass/reissue` | Moderation key: a new code for a lost one — `{"payment_intent":"pi_…"}` |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 
@@ -740,6 +804,12 @@ base64url characters, no padding) and no other endpoint reads it. Without the
 header the poster ID comes from the client address; with a malformed one the
 post is refused with `400` and `{"error":"invalid poster key"}` before its body
 is read, so the refusal costs no cooldown.
+
+The two posting endpoints read a Pass from `X-Educhan-Pass`, on unbadged posts
+only: a badged post's request is the credential's, and the Pass header is not
+read on it. A Pass that is unknown, refunded or replaced is refused with `403`
+and `{"pass":"invalid"}`, an expired one with `{"pass":"expired"}`, so the client
+can drop it; a Pass header sent while the Pass is switched off is ignored.
 
 `/api/verify/request` without `"adult": true` answers `400` with
 `{"error":"the badge is for students aged 18 and over; you can still read and post anonymously"}`
