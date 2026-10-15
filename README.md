@@ -379,12 +379,12 @@ not pull them apart. Each rule has one outcome:
 
 | Outcome | Rule | What it looks for |
 | --- | --- | --- |
-| Block (`422`) | `contact` | Phone numbers (`+` and a country code; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps, Signal's included, also with "slash" spelled out and, on hosts too long to turn up inside other words, "dot" ("discord dot gg slash …"); and asking to talk on one ("add me on snap", "what's your insta", "my discord is x_y_z", "snap: x_y_z", "insta pe add karo", "apna number do"). An app named on its own is fine |
-| Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit), US Social Security numbers written with dashes, UK National Insurance numbers |
-| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "thinking about ending it", "kms", "mujhe marna hai", "main khudkushi kar lunga"), and a question about a method ("how many pills would it take to kill me", "is 20 paracetamol enough to die", "how to end it all", "how to make myself throw up"), which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
-| Hold (`202`) | `threat` | An intent to hurt people or attack a place, in the first person or as a call for someone to ("I'm bringing a gun", "gonna shoot up", "someone should shoot up the school"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game (though not a shooting or a bomb at one), a report that quotes what someone said, an exam, a team or a market ("kill JEE tomorrow", "a bloodbath on Dalal Street"), a drill, hurt feelings, killing with kindness, and hyperbole ("you'll die when you see the results", "you're going to die in the exam") are not threats; a condition that demands something ("if you tell anyone", "unless you pay") does not make one harmless |
-| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "cut your wrists", "neck yourself", "off yourself", "an hero", "why are you still alive", "khudkushi kar le", how-many and what-dose questions in either order, "enough to die", lethal doses, how to tie or make a noose, how to purge, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys", "a bad rank doesn't end your life") or warns ("be careful with the scalpel, you could cut yourself"), and not "die your hair" or "a hill to die on" |
-| Hold (`202`) | `grooming` | An age, school-year or location question, or an age asked for by number ("any 14yo girls here?", "13-15 yo girls"), and a private-contact, meet-up, video-call or photo cue ("dm me", "facetime me", "photo bhejo") in the same post |
+| Block (`422`) | `contact` | Phone numbers (`+` and a country code, the `+` inside a bracket or not; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; an Indian mobile in any grouping of two or more digits after "call me", "text me" or "my number"; a mobile read out a digit at a time in words, or in words and digits mixed ("nine eight 7 six …", "oh seven nine one one, double two three …", "nau aath saat …"); email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps, Signal's included, also with "slash" spelled out and, on hosts too long to turn up inside other words, "dot" ("discord dot gg slash …"); and asking to talk on one ("add me on snap", "what's your insta", "let's move this to discord", "exchange snaps?", "leave your number", "my discord is x_y_z", "snap: x_y_z", "telegram pe aao: @x_y", "disc: name#1234", "line id: x_y", "👻 = x_y", "insta pe add karo", "apna number do", "number bhejo"), also with a letter of the app's name in brackets ("i[n]sta"). An app named on its own is fine |
+| Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit, or with any check digit after the word "Aadhaar": "my aadhaar no …"), US Social Security numbers written with dashes, or with spaces after "SSN" or "social security number", UK National Insurance numbers |
+| Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "I've been cutting myself again", "I'm so tired of being alive", "thinking about ending it", "kms", "mujhe marna hai", "jeene ka mann nahi karta", "main khudkushi kar lunga"), not someone else's ("my friend keeps saying she wants to die"), and a question about a method ("how many pills would it take to kill me", "is 20 paracetamol enough to die", "how to end it all", "how to make myself throw up"), which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
+| Hold (`202`) | `threat` | An intent to hurt people or attack a place, in the first person or as a call for someone to ("I'm bringing a gun", "gonna shoot up", "someone should shoot up the school", "I'll be waiting at the bus stop with a knife", "kal chaku leke aaunga"), or harm said to be coming to someone ("whoever snitched gets shot", "everyone in the lab is going to die", "they'll finally pay"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game (though not a shooting or a bomb at one), a report that quotes what someone said, news, a story's plot, an exam, a team or a market ("kill JEE tomorrow", "a bloodbath on Dalal Street"), a drill, hurt feelings, killing with kindness, and hyperbole ("you'll die when you see the results", "you're going to die in the exam") are not threats; a condition that demands something ("if you tell anyone", "unless you pay") does not make one harmless |
+| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "cut your wrists", "neck yourself", "off yourself", "an hero", "why are you still alive", "do us all a favour and jump off a building", "people like that should just kill themselves", "take all your pills", "khudkushi kar le", "chhat se kood ja", how-many and what-dose questions in either order, "enough to die", lethal doses, how to tie or make a noose, how to purge, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys", "a bad rank doesn't end your life") or warns ("be careful with the scalpel, you could cut yourself"), and not "die your hair" or "a hill to die on" |
+| Hold (`202`) | `grooming` | An age, school-year or location question ("which year of school are you in?", "where exactly do you live?", "which hostel and room number?", "you're in 9th?"), or an age asked for by number ("any 14yo girls here?", "13-15 yo girls"), and a private-contact, meet-up, visit, secrecy, video-call or photo cue ("dm me", "we could meet", "I'll come by tonight", "keep it quiet", "facetime me", "photo bhejo") in the same post |
 
 The patterns are written for English and for some Hinglish (Hindi written in
 Latin letters, as in the examples above). Hindi in Devanagari, and every other
@@ -396,27 +396,42 @@ prices, ISBNs, sums, decimals and ranges of them, numbers with thousands
 separators, IPv4 addresses, a program's output ("Output: …", "it returns …"),
 labelled references (an order, roll, seat or application number, a hall
 ticket, "ISBN-10:", "PNR status for …") and digit runs inside longer numbers
-pass, and so do Ofcom's and the NANP's numbers
+pass, and so do Ofcom's, ACMA's and the NANP's numbers
 for drama and the crisis lines whose numbers look like phone numbers (iCall,
-the Vandrevala Foundation and AASRA in India; the old National Suicide
-Prevention Lifeline, the Trevor Project, the National Domestic Violence Hotline
-and Childhelp in the US).
+the Vandrevala Foundation, AASRA and Tele-MANAS in India; the old National
+Suicide Prevention Lifeline, the Trevor Project, the National Domestic Violence
+Hotline and Childhelp in the US). Numbers in words are read only in the shapes
+of a mobile, a North American number only after a word such as "call", and not
+as a count ("ten nine eight … one zero").
 
 **Be clear about what this is.** These are keyword and number patterns. They
-are easy to get round — a number spelled out in words or split some other way
-(a `·` or `|` between the groups, a wider gap, a one-digit group, or a run of
-pairs set off by spaces), a username
-with no app named beside it, contact details hidden in `[math]`, an email
+are easy to get round — a number in words other than one digit at a time
+("ninety-eight seventy-six …"), or split some other way (a `·`, `|` or `/`
+between the groups, a wider gap, a one-digit group, or a run of pairs set off
+by spaces with no "call me" before it), a username
+with no app named beside it, or one pointed to in words ("my snap is my name
+here"), contact details hidden in `[math]`, an email
 address under a top-level domain the filter does not list (it knows the common
 generic ones and about fifty countries', India's, the UK's and the US's among
 them, plus any university's `edu` or `ac` domain under a country's), the same
 request in Devanagari or another language — and they catch posts that
 are fine: gaming trash talk, a countdown written as spaced digits, a question
 about a medicine's dose, a twelve-digit reference number that happens to pass
-the Aadhaar check. That is why a block says exactly what it matched, and why a
+the Aadhaar check, a sentence that says something "will be killed tomorrow"
+when the something is a bill. That is why a block says exactly what it matched, and why a
 hold waits for a person rather than deleting anything. The filter raises the
 cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
+
+What it does with posts like the ones it is written for is pinned by a corpus:
+895 made-up posts in `internal/app/testdata/filter_corpus`, one file per kind
+(academic, student life, contact details, risky posts), each labelled with what
+the filter should do. `TestFilterCorpus` runs every one through the filter and
+fails on any it gets wrong, except the few marked as known misses, each with a
+note saying why the miss is accepted, and logs how many ordinary posts were
+stopped and how much of each kind was caught (`go test -run TestFilterCorpus -v
+./internal/app`). The rules were fixed against these posts, so the rates it
+logs say what the filter does on them, not on posts no one has written yet.
 
 Nothing the filter reads or matches is logged, and nothing of a post it sends
 back is stored: not the text, not what matched, and not which rule. A refused
@@ -431,13 +446,14 @@ its thread's `held_at`. Nothing else the filter matched is kept. A moderator's
 approval is logged with the board, thread and post number, as every
 moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
-length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.3 ms for
+length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.4 ms for
 a typical 500-character post, about 2 ms for an ordinary post of the maximum
-length, and no more than about 15 ms for the slowest of the 220 posts built to
+length, and no more than about 15 ms for the slowest of the 247 posts built to
 be slow (measured one post at a time with `GOMAXPROCS=1` under `taskset`, the
 best of several runs). Each server prepares the rules once, as it starts:
-about 1.5 seconds of one core and about 30 MB of memory, and a post that
-arrives before that is done waits for it. A
+about 3 seconds of one core, with the heap reaching about 300 MB while it does
+and about 50 MB kept afterwards, and a post that arrives before that is done
+waits for it. A
 refused post costs no cooldown, so refusals are counted instead: after
 `EDUCHAN_REFUSAL_LIMIT` of them (10 by default) in a minute, a client's posts
 are answered `429` without being read until the minute is up (see

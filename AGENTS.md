@@ -24,7 +24,9 @@ not.
   - `moderation.go` — moderation key check, the sticky/lock/delete handlers, and the
     held-post queue and approval.
   - `filter.go` — the content filter: normalisation, the rule tables and validators,
-    and `checkContent`, which every post goes through before it is stored.
+    and `checkContent`, which every post goes through before it is stored;
+    `testdata/filter_corpus/` — the labelled made-up posts `TestFilterCorpus` runs
+    through it.
   - `filtersearch.go` — how the filter runs its patterns: each split once into
     branches, one walk of a trie finding every place a branch could start, and a copy
     of Go's regexp machine run from those places alone; `filtersearch_test.go` holds
@@ -584,7 +586,8 @@ or dotted single letters closed up, a letter written three or more times running
 twice (a capital I counted apart from a small i, since it stands for an l: "kiII"),
 leetspeak `0 1 3 4 5 7 @ $` read as letters when a letter is beside it or another one
 so read is ("ki11"), `!`
-between two letters read as `i`, and `l` read as `i`). Patterns are tables of Go regexps, planned as
+between two letters read as `i`, a letter bracketed inside a word read as part of it
+("i[n]sta", `closingBracket`), and `l` read as `i`). Patterns are tables of Go regexps, planned as
 searches (`newSearch`, see below), for
 both views (`bothViews`, through `canon`, which makes the same `l`→`i` change in the
 pattern; `TestFilterPatternsSurviveCanon`) or for the plain view only (`plainOnly`, for
@@ -592,12 +595,12 @@ anything whose `@`, dots or slashes matter), plus small validators (`matchCheck`
 
 | Outcome | Rule / reason | Built from |
 | --- | --- | --- |
-| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by up to three spaces, line breaks, `-`, `.` or `_`, or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber`, `dataSet`, `roundRange`, `decimalRange` and `ipv4` let decimals, thousands, lists, ranges and IPv4 addresses through; `classifyNumber` with `standsAlone` (maths on either side through `operandBefore`/`operandAfter`, a label (`labelled`: `numberLabels`, which include a program's "output" and "returns", with an edition such as "ISBN-10" and up to three `labelLinks` between; an account label after an `accountApp`, "whatsapp acc", is not one) or quantity word, currency, a bracket glued to a name; a `contactCue` straight before the number, "call me =", "wa/", "my number is", outweighs an operator or a maths word near it), `internationalPhone`, `indianMobile` (`mobileGrouping`; single digits only when every separator is of one kind, `oneSeparatorKind`), `nanpPhone` (`nanpSeparators`, or a `phoneCue` before spaced groups), `ukPhone`, `auMobile`, `dramaNumber`, `helpline` (`helplineNumbers`: three Indian lines and four US ones)), `emailRule`/`providerEmailRule` (`providerEmail`)/`spelledEmailRule` (`emailTLDs` and `academicSecondLevel`, `exampleDomain`, `spelledEmail`, which lets `codeShape` through at a bare "at" ("Q3 at leetcode.com") except at a mail provider or a university, and a `dottedAbbreviation` ("B.Tech", "vol.1"), an `ordinalWord` ("2nd-year") or a `toolNames` version ("Python3.12") anywhere but a mail provider; bracketed `[.]` and `[@]`), `myMailRule`, `mailColonHandle` (a colon, a dash or an arrow, not the "=", "=>" or ">" of code), `linkRule` + `contactLink` (a slash may be spelled, `linkSlash`; a path may start with Signal's `#`), `spacedInviteRule`, `askRules` + `askCheck` (`topicWords`, and `rankedNumber` for "number one" and "number of"), `atAskRule`, `myAppRule` + `myAppCheck` (`notAHandle`), and `handleRules` (`appColonHandle`, `appAtHandle`, `appLabelHandle`, `hindiHandle`, `handleBeforeApp`; `handleSeparator` between an app and a handle) + `handleCheck` (`plausibleHandle`, `measureShape`; for `handleBeforeApp`, `handleFirstCheck` and `toolNames`: "python3 on discord"; for `appLabelHandle` with no label, `labelHandleCheck`, `toolNames` and `dottedAbbreviation`: "ig python3 is better", "TG B.Tech") |
-| block, `422` | `id_number` | `aadhaar` (Verhoeff), `ssn`, `niRule` + `validNIPrefix` |
-| support, `422` | — | `supportRules` (first person only) filtered by `supportCheck` (idioms such as "die of embarrassment", "cut off", "end it with her", "ending things with my boyfriend", "burning myself out", "live in the hostel" and "going on to a PhD", through `livingCheck`; `kmsCheck` for "5 kms" and AWS KMS), and `asksForAMethod` (`selfHarmMethodRules` + `methodCheck`) |
-| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` (the first person with `threatModals` and up to two `threatAdverbs`, swear words and "go" among them; "someone should"; "i planted a bomb"; some Hinglish) near (`threatWindow`, counted in `readingPositions`: letters and digits, and one for each gap however it is filled, so invisible characters and emoji pad nothing) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (film and sports shoots, games but not for "there will be a shooting" or "a bomb", a quotation with a verb of saying beside it (`sayingWords`), a condition that is not a demand (`harmlessCondition`: not "if you tell anyone", not "unless"), a metaphor in an exam, the markets or the polls, a drill, hurt feelings and killing with kindness (`harmlessObject`), hyperbole such as "die of boredom", "die in the exam", "die when you see the results" or "when the results come out"); `namedTargetRules` with `namedTargetCheck` (a name with a capital, or any after a title such as "mr" or "sir"; not an exam, subject, team, acronym or someone's occasion: "kill JEE", "kill Rahul's wedding"); `schoolShootingCheck` (a drill, an essay, a debate); `threatWarningRules` near `threatWarningCues` |
-| hold, `202` | `self_harm` | `selfHarmRules` filtered by `selfHarmCheck` (`notNegated`: a negation ending the same clause, as in "don't you dare kill yourself" or "a bad rank doesn't end your life", not one anywhere before it, and a warning, "careful" earlier in the sentence or "or" before the modal; idioms such as "die your hair" and "a hill to die on", games after the words or after "in" before them, and "self-" compounds, and "delete yourself from" a group) and `selfHarmMethodRules` filtered by `methodCheck` (a how-many question in either order needs a medicine named in its sentence, so "how many volts would it take to kill you" is not one) |
-| hold, `202` | `grooming` | any `ageQuestionRules` match that `ageCheck` keeps (a question, or an age looked for as a number, `ageNumber` and `ageUnit` before a `youthNoun`: "any 14yo girls", "13-15 yo girls"; "our 15 year old students are doing well" matches too and is held only beside a cue) (or `aslRules` with `aslCheck`: "asl" opening what is said, not "bored asl" or "ASL club") and any `privateCueRules` match that `cueCheck` keeps ("call me crazy", "meet the deadline", "between you and me, the food is awful" and "seniors se baat karo" are not cues) in the same post |
+| block, `422` | `contact` | `firstNumber` (one pass over the plain view; groups split by up to three spaces, line breaks, `-`, `.` or `_`, or a bare `,`, and `o`/`l` beside digits read as `0`/`1` (`digitLookalike`); `formattedNumber`, `dataSet`, `roundRange`, `decimalRange` and `ipv4` let decimals, thousands, lists, ranges and IPv4 addresses through; `classifyNumber` with `standsAlone` (maths on either side through `operandBefore`/`operandAfter`, a label (`labelled`: `numberLabels`, which include a program's "output" and "returns", with an edition such as "ISBN-10" and up to three `labelLinks` between; an account label after an `accountApp`, "whatsapp acc", is not one) or quantity word, currency, a bracket glued to a name; a `contactCue` straight before the number, "call me =", "wa/", "my number is", outweighs an operator or a maths word near it), `internationalPhone` (a `+` inside the bracket too, "(+91)"), `indianMobile` (`mobileGrouping`; single digits only when every separator is of one kind, `oneSeparatorKind`), `calledMobile` (any grouping of two or more after a `callCue`: "call me", "text me", "my number"), `nanpPhone` (`nanpSeparators`, or a `phoneCue` before spaced groups), `ukPhone`, `auMobile`, `dramaNumber` (Ofcom's ranges and `acmaDramaMobiles`; the NANP's are `nanp`'s), `helpline` (`helplineNumbers`: four Indian lines and four US ones)), `firstSpelledNumber` (digits read out one at a time, `spelledDigits` in English and Hinglish with `digitRepeats`, at least two words, mixed with digits or not, a run read again from its second word only after one of `ambiguousDigitWords`; `spelledPhone`: a mobile's shape, a North American number only after a `phoneCue`, not after a label or a `dataWords` word, and not `counting` up or down unless cued), `emailRule`/`providerEmailRule` (`providerEmail`)/`spelledEmailRule` (`emailTLDs` and `academicSecondLevel`, `exampleDomain`, `spelledEmail`, which lets `codeShape` through at a bare "at" ("Q3 at leetcode.com") except at a mail provider or a university, and a `dottedAbbreviation` ("B.Tech", "vol.1"), an `ordinalWord` ("2nd-year") or a `toolNames` version ("Python3.12") anywhere but a mail provider; bracketed `[.]` and `[@]`), `myMailRule`, `mailColonHandle` (a colon, a dash or an arrow, not the "=", "=>" or ">" of code), `linkRule` + `contactLink` (a slash may be spelled, `linkSlash`; a path may start with Signal's `#`), `spacedInviteRule`, `askRules` + `askCheck` (`topicWords`, `rankedNumber` for "number one" and "number of", `notNegated`, `quotedAsk` for an ask quoted as a kind of post, and `numberRefs` before "number"; moving a chat to an app, swapping accounts, "leave your number", "number bhejo"), `atAskRule`, `myAppRule` + `myAppCheck` (`notAHandle`), `myAmbiguousAppRule` ("my signal is …", only with a handle's marks after it), and `handleRules` (`appColonHandle`, `appAtHandle`, `appLabelHandle`, `hindiHandle`, `handleBeforeApp`, `appThenAtHandle` (an "@" up to three handle-leading words after the app: "telegram pe aao: @x_y"), `discTagHandle`, `labelledAppHandle` ("line id", "steam username"), `ghostHandle` (👻); `handleSeparator` between an app and a handle) + `handleCheck` (`plausibleHandle`, `measureShape`; for `handleBeforeApp`, `handleFirstCheck` and `toolNames`: "python3 on discord"; for `appLabelHandle` with no label, `labelHandleCheck`, `toolNames` and `dottedAbbreviation`: "ig python3 is better", "TG B.Tech") |
+| block, `422` | `id_number` | `aadhaar` (`aadhaarShape` and Verhoeff), `ssn` (`ssnShape` with dashes), or either shape with its label straight before it (`idLabelled`: `aadhaarLabels`, `ssnLabels` or "social security", `idFillers` skipped; the label is the evidence, so a mistyped check digit or spaces in place of dashes still count), `niRule` + `validNIPrefix` |
+| support, `422` | — | `supportRules` (first person only, Hinglish included, and a clause-start "want to die" or "cutting again" with no subject) filtered by `supportCheck` (`aboutSomeoneElse`: the nearest person before the words, when it is someone else, "my friend keeps saying she wants to die"; idioms such as "die of embarrassment", "cut off", "end it with her", "ending things with my boyfriend", "burning myself out", "live in the hostel" and "going on to a PhD", through `livingCheck`; `kmsCheck` for "5 kms" and AWS KMS), and `asksForAMethod` (`selfHarmMethodRules` + `methodCheck`) |
+| hold, `202` | `threat` | `threatens` over every field at once (a subject and a body pair as if adjacent): `threatIntentRules` (the first person with `threatModals` and up to two `threatAdverbs`, swear words and "go" among them; "someone should"; "i planted a bomb"; some Hinglish) near (`threatWindow`, counted in `readingPositions`: letters and digits, and one for each gap however it is filled, so invisible characters and emoji pad nothing) `threatPlaceOrTimeRules`, `schoolShootingRules` near `futureTimeRules`, filtered by `threatCheck` (`threatExcused` first, for the phrasings that need their own reading: a passive harm ("gets stabbed", "will be shot") that is the poster's own, by someone named, idiomatic ("shot down", "stabbed in the back", "killed off"), habitual, a story's or a game's, "gets" with nothing soon after it; "gets what's coming" and "pay" as karma; "end with" a visit; "nobody gets out alive" in a story; "everyone … is going to die" of an event or food; Hinglish that names a mosquito, a stage, a lamp, an exam or a toy; a weapon held as a prop; a stage set on fire; a topic beaten to death), film and sports shoots, games, named or after a preposition (`gameNamed`: a title or a map within the sentence or the 64 bytes before it; never when the sentence names a real place, `threatPlaceWords`), but not for "there will be a shooting" or "a bomb", a quotation with a verb of saying beside it (`sayingWords`), a condition that is not a demand (`harmlessCondition`: not "if you tell anyone", not "unless"), a metaphor in an exam, the markets or the polls, a drill, hurt feelings and killing with kindness (`harmlessObject`), hyperbole such as "die of boredom", "die in the exam", "die when you see the results" or "when the results come out"); `namedTargetRules` with `namedTargetCheck` (a name with a capital, or any after a title such as "mr" or "sir"; not an exam, subject, team, acronym or someone's occasion: "kill JEE", "kill Rahul's wedding"); `schoolShootingCheck` (a drill, an essay, a debate); `threatWarningRules` near `threatWarningCues` |
+| hold, `202` | `self_harm` | `selfHarmRules` filtered by `selfHarmCheck` (`saidFirst`: a bare "jump off a bridge" or "just end it" counts only as an imperative, not with a subject before it; `mentioned`: words reported or named rather than said ("he said 'just end it'"); "take all your pills" with a routine after it (`pillRoutine`), not "at once"; `notNegated`: a negation ending the same clause, as in "don't you dare kill yourself" or "a bad rank doesn't end your life", not one anywhere before it, and a warning, "careful" earlier in the sentence or "or" before the modal; idioms such as "die your hair" and "a hill to die on", games after the words or after "in" before them, and "self-" compounds, and "delete yourself from" a group) and `selfHarmMethodRules` filtered by `methodCheck` (a how-many question in either order needs a medicine named in its sentence, so "how many volts would it take to kill you" is not one) |
+| hold, `202` | `grooming` | any `ageQuestionRules` match (an age, a school year, where exactly someone lives, which area, hostel or room, an age or class said back as a question: "you're in 9th?", Hinglish "kaunse school mein ho") that `ageCheck` keeps (a question, or an age looked for as a number, `ageNumber` and `ageUnit` before a `youthNoun`: "any 14yo girls", "13-15 yo girls"; "our 15 year old students are doing well" matches too and is held only beside a cue) (or `aslRules` with `aslCheck`: "asl" opening what is said, not "bored asl" or "ASL club") and any `privateCueRules` match (talking privately or alone, meeting, coming over, "just us two", keeping it quiet, parents not knowing, "akele aana", "kisi ko mat batana") that `cueCheck` keeps ("call me crazy", "not just you", "meet the deadline", "between you and me, the food is awful" and "seniors se baat karo" are not cues) in the same post |
 
 Precedence is block, then support unless `support_seen`, then hold (threat, self-harm,
 grooming), then publish. A question about a method ("how many pills would kill me")
@@ -611,14 +614,15 @@ builders are single passes, the checks read at most a clause or a sentence each 
 a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), and the pairing checks walk
 sorted span lists. Measured on one core of an Intel Xeon @ 2.10GHz (`GOMAXPROCS=1`
 under `taskset`, no race detector, the best of several runs of each verdict, the slower
-of the two): about 0.3 ms for a typical 500-character post, about 2 ms for an ordinary
-maximum-length one, and at most about 15 ms for the slowest of 220 bodies built to be
+of the two): about 0.4 ms for a typical 500-character post, about 2 ms for an ordinary
+maximum-length one, and at most about 15 ms for the slowest of 247 bodies built to be
 slow (before the searches were planned: about 4 ms, 36 ms, and 400–490 ms for a post
 of `㏂`, which folds to `maxFoldRunes`). Refusals are budgeted all the same; see the API
-contract. Planning takes about 1.5 s of one core and about 30 MB of heap, once per process;
-`Routes` starts it in the background, and a post that comes first waits for it. The
-plain view is skipped when the loose one is only it with `l` read as `i` (`looseOnly`).
-What holds the cost down:
+contract. Planning takes about 3 s of one core, once per process, and keeps about 50 MB
+of heap; while it runs the heap reaches about 300 MB (`runtime.MemStats.HeapSys`), which
+the server's 512 MiB has to hold beside everything else. `Routes` starts it in the
+background, and a post that comes first waits for it. The plain view is skipped when the
+loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost down:
 
 - `TestFilterCostIsBounded` counts work rather than time (`checkContentCost`: the
   places tried, the characters read, the machines' steps, and each check a match is put
@@ -638,11 +642,15 @@ What holds the cost down:
   are, so that it is planned and counted like the rest.
 - What planning keeps and how far its heap climbs grow with the patterns. Every branch
   compiles its own copy of what follows its start, so the planner splits an
-  alternation only when that tail is at most `maxSplitTail` instructions (a pattern's
-  subjects, "i will", "someone should", may sit in front of a whole list of acts),
-  shares one copy of each class's ranges among the programs (`shareRunes`), and drops
-  each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded` holds
-  the compiled programs to 800,000 instructions.
+  alternation only when that tail is at most `maxSplitTail` instructions (the threat
+  patterns' subjects, "i will", "someone should", sit in front of the whole list of
+  acts), shares one copy of each class's ranges among the programs (`shareRunes`), and
+  drops each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded`
+  holds the compiled programs to 800,000 instructions (about 570,000 now, and 1.4
+  million for the same patterns split without the bound). `threatActs` lists each act verb by verb and `joinActs` puts
+  the verbs that take the same people or places in front of one copy of the list, except
+  where two acts could start at the same place; `TestJoinActsMatchesTheActsOneByOne`
+  holds the joined alternation to the acts listed one by one.
 
 **Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
 extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
@@ -655,13 +663,34 @@ karo", "mujhe marna hai", "goli maar dunga"); Devanagari and other languages are
 read, and the README says so.
 
 **Be honest about the limits**, in code, docs and copy. Keyword filters are easy to get
-round (spelled-out digits, a separator `groupSeparator` does not know, a bare username,
+round (a number in words other than digit by digit, a separator `groupSeparator` does not know, a bare username,
 contact details inside `[math]`, an email under a TLD not in `emailTLDs` (unless it is an
 academic second-level domain, `academicSecondLevel`: "edu.tr", "ac.il"), any language
 the tables are not written in) and they have false positives (gaming trash talk held as
 self-harm, a countdown blocked as a phone number, a dose question held, a twelve-digit
 reference that passes the Verhoeff check). That is why a block quotes exactly what it
 matched and a hold waits for a person.
+
+**The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}.jsonl`) is 895
+made-up posts, one JSON object a line: `id` (unique across the files), `body`,
+`subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a method question
+that shows support and is then held meets `hold`), `why`, and, only together,
+`known_miss: true` and a `note` saying why the miss is accepted rather than fixed.
+`TestFilterCorpus` runs each post as the handlers would (`normalizeSubject`,
+`displayedName`, `normalizeBody`, both `support_seen` verdicts) and fails on an outcome
+that is not its label, on a known miss that now comes out right (take the mark off),
+and on an unknown field or a repeated id; with `-v` it logs per file how many ordinary
+posts were stopped and how much of each kind was caught. To add a post, append a line
+to the file for its kind with the next id. The text is invented, never copied: no
+real person's number, address, handle or invite (the public helplines are the
+exception, as in `helplineNumbers`). The UK, US and Australian phone numbers in it come
+from the ranges set aside for drama, which the filter passes, so a post meant to be
+blocked uses an Indian or other number instead; an invented number, ID or handle in a
+valid shape may still happen to be someone's, as with the unit tests' examples. Label a post by what the filter should do, not by what
+it does. A rule change that turns a labelled post wrong is a regression to fix, or a
+label to correct with the reason in `why`; a `known_miss` is for a miss whose fix
+would cost more than it buys, and its `note` says what. The rules have been fixed
+against these posts, so the rates describe these posts and are no forecast.
 
 **API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
 endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs

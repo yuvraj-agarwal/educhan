@@ -559,7 +559,7 @@ func postBody(w http.ResponseWriter, raw string, hasAttachment bool) (string, bo
 }
 
 func postSubject(w http.ResponseWriter, raw string) (string, bool) {
-	subject := strings.TrimSpace(collapseControl(strings.ReplaceAll(raw, "\n", " ")))
+	subject := normalizeSubject(raw)
 	if utf8.RuneCountInString(subject) > maxSubjectLen {
 		writeError(w, http.StatusBadRequest, "subject must be at most "+strconv.Itoa(maxSubjectLen)+" characters")
 		return "", false

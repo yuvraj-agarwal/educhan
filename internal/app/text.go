@@ -41,6 +41,12 @@ func normalizeBody(body string) string {
 	return strings.TrimSpace(body)
 }
 
+// normalizeSubject canonicalises a subject as it is stored: one line, control
+// characters dropped, and no space at either end.
+func normalizeSubject(subject string) string {
+	return strings.TrimSpace(collapseControl(strings.ReplaceAll(subject, "\n", " ")))
+}
+
 // collapseControl removes control characters that have no business in a post,
 // keeping newlines and tabs, and the explicit bidirectional controls.
 //

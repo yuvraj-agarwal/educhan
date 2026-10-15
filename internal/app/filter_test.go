@@ -1,7 +1,15 @@
 package app
 
 import (
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"os"
+	"path/filepath"
+	"reflect"
 	"regexp"
+	"regexp/syntax"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -57,6 +65,9 @@ func TestFilterBlocks(t *testing.T) {
 	aadhaar := withCheckDigit(t, "23456789012")
 	spacedAadhaar := aadhaar[:4] + " " + aadhaar[4:8] + " " + aadhaar[8:]
 	dashedAadhaar := aadhaar[:4] + "-" + aadhaar[4:8] + "-" + aadhaar[8:]
+	// A wrong check digit: only the label before it says what it is.
+	mistyped := aadhaar[:11] + string('0'+(aadhaar[11]-'0'+1)%10)
+	spacedMistyped := mistyped[:4] + " " + mistyped[4:8] + " " + mistyped[8:]
 	// Keycap digits: each digit, an emoji presentation selector, and the
 	// enclosing keycap. The match ends at the last digit.
 	keycaps, circled := "", ""
@@ -364,6 +375,47 @@ func TestFilterBlocks(t *testing.T) {
 		{"pe baat karte", "whatsapp pe baat karte hain", ruleContact, "whatsapp pe baat karte"},
 		{"handle with hai", "mera insta coolkid_12 hai", ruleContact, "mera insta coolkid_12 hai"},
 		{"copula before the handle", "insta id hai coolkid_12", ruleContact, "insta id hai coolkid_12"},
+
+		// Read since the posts in testdata/filter_corpus were measured.
+		// Numbers: a "+" inside the bracket, any grouping after a request to
+		// call, an ID number its label names, and digits read out in words.
+		{"plus inside the bracket", "(+91) 98765 43210", ruleContact, "(+91) 98765 43210"},
+		{"pairs after call me", "call me 98 76 54 32 10", ruleContact, "98 76 54 32 10"},
+		{"a pair a line after text me", "text me\n98\n76\n54\n32\n10", ruleContact, "98\n76\n54\n32\n10"},
+		{"aadhaar its label names", "aadhaar no " + spacedMistyped + " is correct", ruleIDNumber, spacedMistyped},
+		{"aadhaar its label names, in one block", "my aadhar " + mistyped, ruleIDNumber, mistyped},
+		{"ssn with spaces after its label", "ssn 418 62 7351 on file", ruleIDNumber, "418 62 7351"},
+		{"social security number with spaces", "social security number 418 62 7351", ruleIDNumber, "418 62 7351"},
+		{"digits in words", "text me nine eight seven six five four three two two one", ruleContact,
+			"nine eight seven six five four three two two one"},
+		{"words and digits mixed", "9 eight 3 one 0 four 2 2 7 seven", ruleContact, "9 eight 3 one 0 four 2 2 7 seven"},
+		{"double and oh", "oh seven nine one one, double two three, four five six", ruleContact,
+			"oh seven nine one one, double two three, four five six"},
+		{"hinglish digit words", "nau aath saat chhe paanch chaar teen do do ek", ruleContact,
+			"nau aath saat chhe paanch chaar teen do do ek"},
+		{"us number in words after call me", "call me on two one two, eight six seven, five three zero nine",
+			ruleContact, "two one two, eight six seven, five three zero nine"},
+		{"a stray word before the words", "pls do nine eight seven six five four three two two one", ruleContact,
+			"nine eight seven six five four three two two one"},
+		// A letter in brackets inside an app's name.
+		{"letter in brackets", "i[n]sta: hollow_moon_17", ruleContact, "i[n]sta: hollow_moon_17"},
+		{"letter in round brackets", "sn(a)p: hollow_moon_17", ruleContact, "sn(a)p: hollow_moon_17"},
+		// Asking to move, or to swap accounts.
+		{"move this to an app", "let's move this to discord", ruleContact, "let's move this to discord"},
+		{"take this to an app", "can we take this to telegram?", ruleContact, "can we take this to telegram"},
+		{"exchange snaps", "exchange snaps?", ruleContact, "exchange snaps"},
+		{"swap insta", "swap insta?", ruleContact, "swap insta"},
+		{"leave your number", "leave your number in the comments", ruleContact, "leave your number"},
+		{"number bhejo", "number bhejo", ruleContact, "number bhejo"},
+		// Handles: an "@" a few words after the app, a Discord tag after
+		// "disc", a label after an app that is also a word, the ghost.
+		{"@ a few words after the app", "telegram pe aao: @organicchem_aditya", ruleContact,
+			"telegram pe aao: @organicchem_aditya"},
+		{"discord tag after disc", "disc: quietfox#1234", ruleContact, "disc: quietfox#1234"},
+		{"line id", "line id: quiet_fox27", ruleContact, "line id: quiet_fox27"},
+		{"steam username", "steam username quiet_fox27", ruleContact, "steam username quiet_fox27"},
+		{"snapchat ghost", "👻: quiet.fox_27", ruleContact, "👻: quiet.fox_27"},
+		{"my signal is a handle", "my signal is quietfox.27", ruleContact, "my signal is quietfox.27"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -451,6 +503,9 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"07700 900123",
 		"+44 7700 900123",
 		"020 7946 0123",
+		"0491 570 156",
+		"+61 491 570 158",
+		"Tele-MANAS 1-800-891-4416, free and in Hindi too",
 		"QQ 12 34 56 C",
 		"ab123456c is the commit",
 		"000-12-3456",
@@ -925,6 +980,77 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"the 9th grade girls won the debate",
 		"any 2nd year students here? we hang out at the canteen",
 		"where u from? I'm from Pune and the hostel is great",
+
+		// Beside what was added after measuring testdata/filter_corpus.
+		// Numbers: pairs with no request to call, or a set of values after
+		// one; labels that name no ID number; a count, dice, and numbers
+		// read out in words that no one can be called on.
+		"marks 98 76 54 32 10",
+		"call me after 6, my marks were 98 76 54 32 10",
+		"aadhaar card ke liye 2 photo chahiye",
+		"the ssn format is 3-2-4, like 123 45 6789",
+		"ten nine eight seven six five four three two one zero, liftoff!",
+		"my dice rolls were six two five one three four six six two five",
+		"oh seven seven double oh, nine double oh, four one six",
+		"zero four nine one, five seven oh, one five six",
+		"two one two, eight six seven, five three zero nine",
+		"I sat one exam, two papers",
+		"f(x)g(x) composition",
+		// Asks and handles.
+		"let's move this to the other thread",
+		"we should move on to the next chapter",
+		"exchange notes after class?",
+		"i don't want your number",
+		`tired of all the "send me your number" posts`,
+		"my signal is weak in the hostel",
+		"my line is busy, try later",
+		// Secrecy said of an opinion, a routine with pills, an argument or
+		// a game ended, a flip off something low, a quote, and someone else.
+		"keep this between us anons but I actually enjoyed the organic chem paper",
+		"take all your pills with food, as prescribed",
+		"we should just end it with a 3-2 win",
+		"i did a backflip off the diving board",
+		`my mom says "just end it" whenever the serial drags`,
+		"my friend keeps saying she wants to die",
+		"he said he wants to disappear for a week after the exam",
+		"how old are you guys? the jee cutoff changed",
+		"is this just you?",
+		// Harm that happens to someone, said of a phone, a film, a parent's
+		// temper, an idea, a game, the news, a betrayal, karma, a bill, a
+		// story's end, boredom, and a dare about food.
+		"my phone is getting blown up with messages tonight",
+		"the main character gets killed in season 3 tomorrow, no spoilers pls",
+		"I'm gonna get killed by my mom tomorrow if I fail",
+		"the photo will be blown up to A3 for the school exhibition tomorrow",
+		"my idea will be shot down in the meeting tomorrow",
+		"he always gets killed first in our school's among us games",
+		"kids get shot at school in the US all the time, it's scary",
+		"Student gets stabbed outside college in Pune",
+		"the movie will be shot in our college next month!",
+		"he will be stabbed in the back by his own team at the meeting tomorrow",
+		"karma: everyone who cheated in the exam gets what's coming",
+		"they'll pay for the trip tomorrow, don't worry",
+		"the trip will end with a hospital visit for the vaccine tomorrow",
+		"the movie ends with the hero in hospital, saw it at the mall today",
+		"everyone in my class is going to die of boredom tomorrow",
+		"everyone who eats at the canteen today is going to die lol",
+		"nobody gets out alive in this horror movie, watching it tonight",
+		"you won't make it home if you miss the last metro tonight",
+		// Hinglish: a mosquito, a stage, lamps, a water gun at Holi.
+		"kal machhar ko maar dunga, raat bhar sone nahi diya",
+		"kal stage pe aag laga dunga, dance practice done",
+		"diwali pe ghar mein diye jala dunga kal",
+		"kal holi pe water gun leke aaunga school",
+		// Knives for food, guns in a game, a stage set on fire, a topic
+		// beaten to death, and a game's map.
+		"i'll have a knife and fork ready for the cake at the party tomorrow",
+		"I'll be carrying a knife for the fruit salad in class tomorrow",
+		"in pubg tomorrow i'll have a gun and shoot everyone",
+		"we're going to set the stage on fire at the fest tomorrow",
+		"this joke has been beaten to death at school",
+		"we're gonna beat this topic to death in class tomorrow",
+		"valo 5 stack tomorrow 8pm, we're gonna slaughter them on ascent",
+		"Among Us after class? I'm killing all of you in electrical",
 	}
 	for _, body := range posts {
 		if v := bodyVerdict(body); v.Outcome != contentPublish {
@@ -1001,6 +1127,22 @@ func TestFilterSupport(t *testing.T) {
 		// "live to see" can be crisis language whatever follows.
 		"i don't want to live to see tomorrow",
 		"main khudkushi kar lunga",
+		// Read since the posts in testdata/filter_corpus were measured:
+		// cutting again, tiredness of living, a wish held for long,
+		// thinking of a fall, and Hinglish.
+		"i've been cutting myself again",
+		"started cutting again",
+		"i keep hurting myself",
+		"I'm so tired of being alive",
+		"i'm sick of living",
+		"i've always wanted to die",
+		"been thinking of jumping off the hostel roof",
+		"honestly, i want to disappear",
+		"lol. wanna end it all",
+		"mujhe sach mein marna hai",
+		"jeene ka mann nahi karta",
+		"khud ko khatam karne ka soch raha hu",
+		"khud ko hurt karta hu",
 	} {
 		v := bodyVerdict(body)
 		if v.Outcome != contentSupport || v.Message != supportMessage || v.Rule != "" || v.Match != "" {
@@ -1029,6 +1171,20 @@ func TestFilterHolds(t *testing.T) {
 		{"thinspo pls", holdSelfHarm},
 		{"meanspo thread", holdSelfHarm},
 		{"looking for an ana coach", holdSelfHarm},
+		// Read since the posts in testdata/filter_corpus were measured:
+		// a fall in other words, someone else told to, ending it, an
+		// overdose, hurting again, and Hinglish.
+		{"do us all a favour and jump off a building", holdSelfHarm},
+		{"just jump off a bridge already", holdSelfHarm},
+		{"people like that should just kill themselves", holdSelfHarm},
+		{"he should go kill himself", holdSelfHarm},
+		{"just end it all", holdSelfHarm},
+		{"take all your pills then, see if anyone cares", holdSelfHarm},
+		{"take all your pills at once", holdSelfHarm},
+		{"go hurt yourself again, attention seeker", holdSelfHarm},
+		{"chhat se kood ja", holdSelfHarm},
+		{"phansi laga le", holdSelfHarm},
+		{"khud ko khatam kar le", holdSelfHarm},
 		// A negation further back than the words themselves is about
 		// something else, and "kys" is never advice.
 		{"i don't care, kys", holdSelfHarm},
@@ -1146,6 +1302,9 @@ func TestFilterHolds(t *testing.T) {
 		{"there will be a shooting at the football game friday", holdThreat},
 		{"there will be a bombing at the cricket match tomorrow", holdThreat},
 		{"There's going to be a shooting at the basketball game tonight", holdThreat},
+		// A game named in the sentence excuses no threat to a place in it.
+		{"i will kill everyone at school tomorrow then play valo", holdThreat},
+		{"I'll shoot everyone in the lobby tomorrow", holdThreat},
 		{"there will be a bomb at the football game tomorrow", holdThreat},
 		// A quotation with a report word but no one saying it.
 		{"\"i will shoot up the school tomorrow\" news", holdThreat},
@@ -1194,6 +1353,48 @@ func TestFilterHolds(t *testing.T) {
 		{"you're gonna die when you see what I brought to school tomorrow", holdThreat},
 		{"there will be a bomb at school tomorrow", holdThreat},
 		{"there will be a bloodbath at school tomorrow", holdThreat},
+		// Read since the posts in testdata/filter_corpus were measured.
+		// Harm that will happen to someone, with a place or a time.
+		{"NEXT PERSON WHO CALLS ME FAT IN 9B GETS STABBED. TOMORROW. TRY ME", holdThreat},
+		{"Principal's office gets blown up next tuesday. I've got the stuff.", holdThreat},
+		{"The library will be on fire by tonight. Last warning to anyone studying late.", holdThreat},
+		{"whoever snitched gets shot at school tomorrow", holdThreat},
+		{"every teacher in the staff room at lunch on wednesday gets what's coming", holdThreat},
+		{">dad keeps a revolver\n>morning assembly tomorrow\n>they'll finally pay", holdThreat},
+		{"tomorrow's farewell is going to end with bodies on the floor", holdThreat},
+		{"everyone in the computer lab at 2pm tomorrow is going to die", holdThreat},
+		{"whoever reported me, I know your hostel. tonight you won't walk again", holdThreat},
+		// Hinglish: a beating, a knife, a gun brought, a fire.
+		{"aaj raat ghar jaake usko maarunga", holdThreat},
+		{"Verma ma'am ko kal chaku maar dunga", holdThreat},
+		{"kal 12 baje gate pe milna. chaku leke aaunga", holdThreat},
+		{"papa ki bandook le aaunga kal school", holdThreat},
+		{"kal 6 baje ke baad pitwa dunga", holdThreat},
+		{"kal practical ke time uska sar phod dunga", holdThreat},
+		{"hostel mein aaj raat aag laga dunga", holdThreat},
+		{"Sharma sir ko kal parking mein jala dunga", holdThreat},
+		// Acts: a building burnt, a weapon brought, carried or waited with,
+		// poison, opening fire, a car into a crowd, broken legs, a beating
+		// to death.
+		{"I'm burning the exam cell down friday night", holdThreat},
+		{"taking a bat to coach's head at practice tomorrow", holdThreat},
+		{"[spoiler]shooting up st. mary's on friday[/spoiler]", holdThreat},
+		{"sports day next week. bringing knives for the 12th graders", holdThreat},
+		{"I'll be waiting at the bus stop tomorrow with a knife", holdThreat},
+		{"i'm going to poison the mess food tomorrow", holdThreat},
+		{"i will open fire in the auditorium tomorrow", holdThreat},
+		{"i'll drive my car into the crowd at the fest tomorrow", holdThreat},
+		{"i'll break your legs after school", holdThreat},
+		{"i will beat him to death tomorrow at school", holdThreat},
+		// Grooming: a school year, where exactly, an age stated back, a
+		// room, Hinglish, and "just you and me".
+		{"which year of school are you in? dm me", holdGrooming},
+		{"where exactly do you live? we could meet", holdGrooming},
+		{"you're in 9th? text me privately", holdGrooming},
+		{"which hostel and room number? I'll come by tonight, keep it quiet", holdGrooming},
+		{"which area exactly? I'm there friday, we could meet, just us two", holdGrooming},
+		{"tum kaunse school mein ho? akele aana", holdGrooming},
+		{"how old are you? just you and me", holdGrooming},
 		{"asl pls dm me", holdGrooming},
 		{"a/s/l? dm me", holdGrooming},
 		{"how old are you? call me tonight", holdGrooming},
@@ -1526,6 +1727,8 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 		"appLabelHandle": {appLabelHandle}, "spacedInviteRule": {spacedInviteRule},
 		"atAskRule": {atAskRule}, "myMailRule": {myMailRule}, "mailColonHandle": {mailColonHandle},
 		"hindiHandle": {hindiHandle}, "handleBeforeApp": {handleBeforeApp}, "namedTargetRules": namedTargetRules,
+		"myAmbiguousAppRule": {myAmbiguousAppRule}, "appThenAtHandle": {appThenAtHandle},
+		"discTagHandle": {discTagHandle}, "labelledAppHandle": {labelledAppHandle},
 	}
 	posix := regexp.MustCompile(`\[:[a-z]+:\]|\\p\{[^}]*l|\(\?[a-z]*l`)
 	for name, rs := range rules {
@@ -1541,6 +1744,46 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 			}
 			if r.loose.NumSubexp() != r.plain.NumSubexp() {
 				t.Fatalf("%s[%d]: canon changed the groups", name, i)
+			}
+		}
+	}
+}
+
+// TestJoinActsMatchesTheActsOneByOne holds joinActs to what it stands in
+// for: the acts listed one by one, longest first where one starts another,
+// find the same matches in both views' spelling. Every act is tried alone
+// and run on into the act after it, so that one act reading on into the
+// next, where their order decides the match, is tried for each.
+func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
+	rnd := rand.New(rand.NewSource(20261015))
+	for _, ing := range []bool{false, true} {
+		var each []string
+		for _, a := range threatActList(ing) {
+			each = append(each, a.verb+a.rest)
+		}
+		slices.Sort(each)
+		slices.Reverse(each)
+		each = slices.Compact(each)
+		oneByOne, joined := phrase(words(each...)), phrase(threatActs(ing))
+		for _, view := range []func(string) string{func(s string) string { return s }, canon} {
+			want, got := regexp.MustCompile(view(oneByOne)), regexp.MustCompile(view(joined))
+			var samples []string
+			for _, act := range each {
+				re, err := syntax.Parse(view(phrase(act)), syntax.Perl)
+				if err != nil {
+					t.Fatal(err)
+				}
+				g := &searchSampler{rnd: rnd}
+				g.sample(re)
+				samples = append(samples, g.b.String())
+			}
+			for i, s := range samples {
+				for _, text := range []string{s, s + " " + samples[(i+1)%len(samples)]} {
+					w, g := want.FindAllStringSubmatchIndex(text, -1), got.FindAllStringSubmatchIndex(text, -1)
+					if !reflect.DeepEqual(w, g) {
+						t.Errorf("ing %v: %q: one by one %v, joined %v", ing, text, w, g)
+					}
+				}
 			}
 		}
 	}
@@ -1623,6 +1866,19 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"ranges":         rep("96.123-97.456 percentile\n"),
 		"helpline":       rep("Trevor Project 1-866-488-7386. "),
 		"scores":         rep("mock scores 65-70-78-84-91\n"),
+		// Digits read out in words, a word before them that may or may not
+		// be one, pairs after a request to call, an ID number's label, a
+		// bracketed letter, an app with the words before a handle, and the
+		// passive and Hinglish threats.
+		"spelled digits":   rep("nine eight seven six five "),
+		"stray digit word": rep("do nine eight seven six five four three two two one, "),
+		"doubles":          rep("double "),
+		"called pairs":     rep("call me 98 76 54 32 10\n"),
+		"id label":         rep("aadhaar no 2345 "),
+		"bracketed letter": rep("i[n]sta "),
+		"app then words":   rep("telegram pe aao "),
+		"passive":          rep("gets stabbed tomorrow "),
+		"hinglish":         rep("usko kal maar dunga "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
@@ -1670,6 +1926,134 @@ func TestFilterReadsNoCharacterAsAPhrase(t *testing.T) {
 			t.Errorf("%q reads as %q, want %q", src, got, want)
 		}
 	}
+}
+
+// corpusItem is one labelled post in testdata/filter_corpus: what was posted,
+// and what the filter should do with it.
+type corpusItem struct {
+	ID      string `json:"id"`
+	Body    string `json:"body"`
+	Subject string `json:"subject"`
+	Name    string `json:"name"`
+	// Expect is publish, block, support or hold. A hold is met by a post
+	// that is shown the support message first and held once that has been
+	// seen, as a method question is.
+	Expect string `json:"expect"`
+	// Why says what the post is, for whoever reads a failure.
+	Why string `json:"why"`
+	// KnownMiss marks a post the filter is known to get wrong, and Note says
+	// why that is accepted rather than fixed.
+	KnownMiss bool   `json:"known_miss,omitempty"`
+	Note      string `json:"note,omitempty"`
+}
+
+var corpusOutcomes = map[contentOutcome]string{
+	contentPublish: "publish", contentBlock: "block", contentSupport: "support", contentHold: "hold",
+}
+
+// TestFilterCorpus runs every labelled post in testdata/filter_corpus — one
+// file per category, one JSON object per line, all of it made-up text —
+// through the filter as the handlers do, and fails on any whose outcome is
+// not its label, unless it is marked as a known miss with a note saying why
+// the miss is accepted. A known miss that the filter now gets right fails too,
+// so the marks stay true. It logs, per category, how many ordinary posts were
+// stopped and how much of each kind of post was caught.
+func TestFilterCorpus(t *testing.T) {
+	dir := filepath.Join("testdata", "filter_corpus")
+	paths, err := filepath.Glob(filepath.Join(dir, "*.jsonl"))
+	if err != nil || len(paths) == 0 {
+		t.Fatalf("no corpus files in %s: %v", dir, err)
+	}
+	type tally struct{ n, ok int }
+	type rates struct {
+		items, misses                 int
+		publish, block, support, hold tally
+	}
+	all := rates{}
+	seen := map[string]bool{}
+	for _, path := range paths {
+		category := strings.TrimSuffix(filepath.Base(path), ".jsonl")
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r := rates{}
+		for i, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			var it corpusItem
+			dec := json.NewDecoder(strings.NewReader(line))
+			dec.DisallowUnknownFields()
+			if err := dec.Decode(&it); err != nil {
+				t.Fatalf("%s:%d: %v", path, i+1, err)
+			}
+			switch {
+			case it.ID == "" || seen[it.ID]:
+				t.Fatalf("%s:%d: missing or repeated id %q", path, i+1, it.ID)
+			case it.KnownMiss != (it.Note != ""):
+				t.Fatalf("%s: a known miss needs a note saying why, and only a known miss has one", it.ID)
+			}
+			seen[it.ID] = true
+			in := contentInput{Subject: normalizeSubject(it.Subject), Name: displayedName(it.Name), Body: normalizeBody(it.Body)}
+			v := checkContent(in, false)
+			got := corpusOutcomes[v.Outcome]
+			right := got == it.Expect
+			if v.Outcome == contentSupport {
+				after := checkContent(in, true)
+				got += " then " + corpusOutcomes[after.Outcome]
+				right = right || it.Expect == "hold" && after.Outcome == contentHold
+			}
+			var tl *tally
+			switch it.Expect {
+			case "publish":
+				tl = &r.publish
+			case "block":
+				tl = &r.block
+			case "support":
+				tl = &r.support
+			case "hold":
+				tl = &r.hold
+			default:
+				t.Fatalf("%s: unknown label %q", it.ID, it.Expect)
+			}
+			tl.n++
+			r.items++
+			if right {
+				tl.ok++
+			}
+			switch {
+			case it.KnownMiss && right:
+				t.Errorf("%s: a known miss that now comes out %s, as labelled: take known_miss and its note off", it.ID, got)
+			case it.KnownMiss:
+				r.misses++
+			case !right:
+				t.Errorf("%s (%s): want %s, got %s (%s %s)\n\t%s %s %q", it.ID, category, it.Expect, got,
+					v.Rule, v.Hold, it.Why, v.Field, v.Match)
+			}
+		}
+		logCorpusRates(t, category, r.items, r.misses, r.publish.n-r.publish.ok, r.publish.n, r.block.ok, r.block.n,
+			r.support.ok, r.support.n, r.hold.ok, r.hold.n)
+		all.items += r.items
+		all.misses += r.misses
+		for _, p := range [][2]*tally{{&all.publish, &r.publish}, {&all.block, &r.block}, {&all.support, &r.support},
+			{&all.hold, &r.hold}} {
+			p[0].n += p[1].n
+			p[0].ok += p[1].ok
+		}
+	}
+	logCorpusRates(t, "all", all.items, all.misses, all.publish.n-all.publish.ok, all.publish.n, all.block.ok,
+		all.block.n, all.support.ok, all.support.n, all.hold.ok, all.hold.n)
+}
+
+func logCorpusRates(t *testing.T, category string, items, misses, stopped, publish, blocked, block, supported, support,
+	held, hold int) {
+	rate := func(a, b int) string {
+		if b == 0 {
+			return "-"
+		}
+		return fmt.Sprintf("%d/%d (%.1f%%)", a, b, 100*float64(a)/float64(b))
+	}
+	t.Logf("%-8s %3d items, %2d known misses: ordinary posts stopped %s, contact details blocked %s, "+
+		"support shown %s, risky posts held %s", category, items, misses, rate(stopped, publish), rate(blocked, block),
+		rate(supported, support), rate(held, hold))
 }
 
 func BenchmarkCheckContent(b *testing.B) {
