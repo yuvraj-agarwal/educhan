@@ -1458,6 +1458,19 @@ const (
 	captchaPruneBatch = 64
 )
 
+// CaptchaSpent reports whether a captcha challenge has been used. It is the
+// read that turns a replayed answer away before flood control, so a poster
+// resending an answer already used is charged no cooldown for it; the insert
+// in SpendCaptcha is still what settles two requests racing with one answer.
+func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
+	var spent bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM captcha_spent WHERE signature_hash = $1)`, key).Scan(&spent); err != nil {
+		return false, fmt.Errorf("look up spent captcha: %w", err)
+	}
+	return spent, nil
+}
+
 // SpendCaptcha records a captcha challenge as used, reporting false when it
 // already was. The insert and the uniqueness check are one statement, so of two
 // requests racing with the same answer exactly one gets true.

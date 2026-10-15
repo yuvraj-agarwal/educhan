@@ -143,6 +143,7 @@ async function api(path, options = {}) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.payload = payload;
+    err.headers = res.headers;
     throw err;
   }
   return payload;
@@ -3393,6 +3394,9 @@ function posterKey() {
 // by the time the post is written it is usually solved. The answer is kept in
 // memory only, never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
+// The server sets this header, to "spent", on any response to a request whose
+// answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
+const CAPTCHA_SPENT_HEADER = "Educhan-Captcha";
 // Up to this many copies of the worker share a puzzle, each trying every nth
 // counter, so a phone's cores all work on it.
 const CAPTCHA_MAX_WORKERS = 4;
@@ -3532,13 +3536,17 @@ function runCaptchaWorkers(challenge) {
 }
 
 // sendWithCaptcha sends a request that may need the captcha: needsIt() says
-// whether it does, and send(answer) makes the request, with "" for no answer. A refusal of the answer itself, for
-// being missing, out of date, used or wrong, comes before the server does
-// anything else with the request, so the answer is dropped and the request
-// sent once more with a fresh one; the reader pressed the button once and the
-// request goes once. Any other refusal leaves the answer held: the server
-// checks the answer first and spends it last, so a request refused for
-// anything else, a cooldown included, has usually not used it, and if it had,
+// whether it does, and send(answer) makes the request, with "" for no answer.
+// A refusal of the answer itself, for being missing, out of date, used or
+// wrong, comes before the server does anything else with the request, so the
+// answer is dropped and the request sent once more with a fresh one; the
+// reader pressed the button once and the request goes once. Any other refusal
+// says whether the server spent the answer before refusing, as it does for an
+// image it then cannot read. One that did drops the answer and starts the next
+// puzzle at once, so it is ready, or nearly, when the reader presses again.
+// One that did not, a refusal of what was written or a cooldown, leaves the
+// answer held for the next press, which then goes straight out. With no
+// answer from the server at all the answer is kept too; if it had been spent,
 // the next request is refused as "used" and solves a fresh one here.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 async function sendWithCaptcha(needsIt, send, solving) {
@@ -3566,6 +3574,10 @@ async function sendWithCaptcha(needsIt, send, solving) {
     } catch (err) {
       const reason = err.payload && err.payload.captcha;
       if (!reason) {
+        if (answer && err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent") {
+          dropCaptcha(answer);
+          if (needsIt()) prepareCaptcha();
+        }
         throw err;
       }
       dropCaptcha(answer);

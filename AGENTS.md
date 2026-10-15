@@ -397,7 +397,9 @@ needs a browser check before the test changes.
   server refuses it. `sendWithCaptcha` sends a post or a code request, solving first
   when needed; a refusal carrying `"captcha"` drops the answer and sends once more with a
   fresh one, and `"required"` also turns `state.site.captcha` on for a page drawn
-  without knowing. A badged post never solves one (`() => state.site.captcha &&
+  without knowing. Any other refusal keeps the answer, unless it carries
+  `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`), which drops
+  it and starts the next puzzle at once. A badged post never solves one (`() => state.site.captcha &&
   !held`), and a code request always does. `CAPTCHA_LIFETIME_MS` must stay under the
   server's `captchaTTL` less a minute. `TestCaptchaAnswerStaysInMemory`,
   `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`, `TestCaptchaIsSkippedOnlyByABadgedPost`

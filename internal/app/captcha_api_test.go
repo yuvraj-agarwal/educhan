@@ -230,6 +230,69 @@ func TestCaptchaAndFloodControl(t *testing.T) {
 	}
 }
 
+// A refusal says whether it took the answer with it. Every refusal before the
+// spend, a cooldown included, leaves the answer for the next press and carries
+// no header; one after it, for an image the server cannot read, carries the
+// header, and the answer is refused as used from then on. So the page keeps an
+// answer exactly as long as it is good and solves the next one only when it
+// has to.
+func TestARefusalSaysWhetherTheAnswerWasSpent(t *testing.T) {
+	h := captchaServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Hour })
+	h.addBoard("general", "other", "third")
+	spent := func() bool { return h.lastHeader.Get(captchaSpentHeader) == "spent" }
+
+	// The thread also starts the cooldown on its board.
+	locked := h.createThreadWithCaptcha("other", "locked soon")
+	h.exec(`UPDATE threads SET locked = true WHERE no = $1`, locked.ThreadNo)
+
+	answer := h.solveCaptcha()
+	for _, refusal := range []struct {
+		what, path string
+		body       map[string]any
+		status     int
+	}{
+		{"an empty thread", "/api/boards/general/threads", map[string]any{"body": " "}, http.StatusBadRequest},
+		{"a reply to a locked thread", fmt.Sprintf("/api/boards/other/threads/%d/posts", locked.ThreadNo),
+			map[string]any{"body": "too late"}, http.StatusForbidden},
+		{"a thread inside the cooldown", "/api/boards/other/threads", map[string]any{"body": "too soon"}, http.StatusTooManyRequests},
+	} {
+		refusal.body["captcha"] = answer
+		if status, refused := h.attempt(refusal.path, refusal.body); status != refusal.status || refused.Captcha != "" || spent() {
+			t.Errorf("%s: status %d, captcha %q, spent header %q; want %d, the answer kept",
+				refusal.what, status, refused.Captcha, h.lastHeader.Get(captchaSpentHeader), refusal.status)
+		}
+	}
+
+	// A file that looks like an image is let through to flood control and the
+	// spend, and refused only when its pixels fail to decode.
+	var refused captchaRefusal
+	status := h.upload("/api/boards/general/threads", map[string]string{"body": "look", "captcha": answer},
+		"cut.png", pngBytes(t, 24, 24)[:33], &refused)
+	if status != http.StatusBadRequest || refused.Captcha != "" || !strings.Contains(refused.Error, "image could not be decoded") || !spent() {
+		t.Errorf("an image refused after the spend: status %d, captcha %q (%s), spent header %q; want 400 saying the answer was spent",
+			status, refused.Captcha, refused.Error, h.lastHeader.Get(captchaSpentHeader))
+	}
+	// The refused image started general's cooldown, as any post let through
+	// flood control does, so the answer is tried on another board. It is
+	// refused as used before flood control, so the fresh answer that follows
+	// posts there at once.
+	status, refused = h.attempt("/api/boards/third/threads", map[string]any{"body": "text alone", "captcha": answer})
+	expectCaptchaRefusal(t, "the answer an image refusal spent", status, refused, captchaUsed)
+	if spent() {
+		t.Error("a refusal as used says the answer was spent by it")
+	}
+
+	var created createdPost
+	if status := h.post("/api/boards/third/threads", map[string]any{"body": "fresh", "captcha": h.solveCaptcha()}, &created); status != http.StatusCreated || !spent() {
+		t.Errorf("a post with a fresh answer: status %d (%s), spent header %q; want 201 saying the answer was spent",
+			status, created.Error, h.lastHeader.Get(captchaSpentHeader))
+	}
+	h.get("/api/site", &Site{})
+	if spent() {
+		t.Error("a request that carried no answer says one was spent")
+	}
+}
+
 // A badged post skips the captcha; the badge has already cost a verified
 // student more than a puzzle would. Holding a credential is not enough: only a
 // post that asks for the badge, and gets it, goes without an answer.

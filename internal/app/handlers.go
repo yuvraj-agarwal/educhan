@@ -203,7 +203,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	}
 	// The last refusal before flood control, so a post without a good answer
 	// costs no cooldown. A badged post is exempt: the badge skips the captcha.
-	ticket, ok := a.checkCaptcha(w, sub.Captcha, badge.Label != "")
+	ticket, ok := a.checkCaptcha(w, r, sub.Captcha, badge.Label != "")
 	if !ok {
 		return
 	}
@@ -309,7 +309,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		return
 	}
 	// As for a thread: checked before flood control, spent after it.
-	ticket, ok := a.checkCaptcha(w, sub.Captcha, badge.Label != "")
+	ticket, ok := a.checkCaptcha(w, r, sub.Captcha, badge.Label != "")
 	if !ok {
 		return
 	}

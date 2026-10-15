@@ -471,9 +471,11 @@ func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 // not exempt, and answers the ticket to spend once flood control has let the
 // request through. A nil ticket with ok true means there is nothing to spend.
 //
-// It is a stateless check, so a request refused afterwards, by flood control
-// or anything else, leaves its answer unspent for the retry.
-func (a *App) checkCaptcha(w http.ResponseWriter, payload string, exempt bool) (*captchaTicket, bool) {
+// It refuses every answer it can before flood control: a missing, malformed,
+// wrong or expired one, and one already spent, so a captcha refusal costs no
+// cooldown. It writes nothing, so a request refused afterwards, by flood
+// control or anything else before the spend, leaves its answer for the retry.
+func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload string, exempt bool) (*captchaTicket, bool) {
 	if !a.captchaEnabled() || exempt {
 		return nil, true
 	}
@@ -483,15 +485,31 @@ func (a *App) checkCaptcha(w http.ResponseWriter, payload string, exempt bool) (
 	}
 	ticket, err := a.captcha.check(payload, time.Now())
 	switch {
-	case err == nil:
-		return &ticket, true
 	case errors.Is(err, errCaptchaExpired):
 		refuseCaptcha(w, captchaExpired, "the captcha ran out, solve a new one")
-	default:
+		return nil, false
+	case err != nil:
 		refuseCaptcha(w, captchaInvalid, "the captcha answer is not valid, solve a new one")
+		return nil, false
 	}
-	return nil, false
+	spent, err := a.store.CaptchaSpent(r.Context(), ticket.key)
+	if err != nil {
+		a.fail(w, r, err, "could not check the captcha")
+		return nil, false
+	}
+	if spent {
+		refuseCaptchaUsed(w)
+		return nil, false
+	}
+	return &ticket, true
 }
+
+// captchaSpentHeader is set, to "spent", on every response to a request whose
+// answer has been spent, a refusal written later included: an image that
+// cannot be read, or a thread that filled up while the post was on its way.
+// The client keeps its answer through a refusal without it and solves the
+// next one as soon as a refusal with it arrives.
+const captchaSpentHeader = "Educhan-Captcha"
 
 // spendCaptcha marks a checked answer used, refusing a second use of it. It
 // comes after flood control, so an answer is spent only by a request that is
@@ -505,10 +523,14 @@ func (a *App) spendCaptcha(w http.ResponseWriter, r *http.Request, ticket *captc
 		a.fail(w, r, err, "could not check the captcha")
 		return false
 	}
+	// Another request spent the same answer between this one's check and
+	// now: a replay racing its original, the one refusal as used that comes
+	// after flood control.
 	if !fresh {
-		refuseCaptcha(w, captchaUsed, "that captcha answer was already used, solve a new one")
+		refuseCaptchaUsed(w)
 		return false
 	}
+	w.Header().Set(captchaSpentHeader, "spent")
 	return true
 }
 
@@ -516,4 +538,8 @@ func (a *App) spendCaptcha(w http.ResponseWriter, r *http.Request, ticket *captc
 // beside the message for the client to act on.
 func refuseCaptcha(w http.ResponseWriter, reason, msg string) {
 	writeJSON(w, http.StatusForbidden, map[string]any{"error": msg, "captcha": reason})
+}
+
+func refuseCaptchaUsed(w http.ResponseWriter) {
+	refuseCaptcha(w, captchaUsed, "that captcha answer was already used, solve a new one")
 }

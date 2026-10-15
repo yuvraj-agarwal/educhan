@@ -171,7 +171,7 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// Next the captcha, before the address is so much as parsed, so a script
 	// walking a list of addresses solves a puzzle for each. It is spent below,
 	// once both cooldowns have let the request through.
-	ticket, ok := a.checkCaptcha(w, req.Captcha, false)
+	ticket, ok := a.checkCaptcha(w, r, req.Captcha, false)
 	if !ok {
 		return
 	}

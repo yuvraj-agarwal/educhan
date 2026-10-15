@@ -773,7 +773,12 @@ refused by the captcha starts no cooldown, and a post refused by a cooldown
 keeps its answer for when it is let through. A refusal answers `403` with
 `"captcha": "required" | "invalid" | "expired" | "used"` beside the message;
 the page solves a fresh puzzle and sends the post once more, so the reader
-presses the button once.
+presses the button once. Every response to a request whose answer was spent
+carries `Educhan-Captcha: spent`, a refusal written after the spend included
+(an image whose pixels fail to decode, or a thread that filled up meanwhile).
+The page keeps its answer through any refusal without that header, so the
+next press goes straight out, and starts the next puzzle as soon as one with
+it arrives.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to
@@ -880,7 +885,8 @@ refused inside the transaction, after its cooldowns have started.)
 `"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON
 of `{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
 It is needed when the captcha is on, except on a post that asks for a badge
-and gets it; see [Captcha](#captcha) for its refusals.
+and gets it; see [Captcha](#captcha) for its refusals and the
+`Educhan-Captcha: spent` header on any response to a request that used one up.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields

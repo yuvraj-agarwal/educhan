@@ -415,8 +415,10 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 }
 
 // A reader who never posts never asks for a captcha: the challenge is fetched
-// in one place, and the only thing that starts a fetch before a request needs
-// it is a reader moving into a box to write in.
+// in one place, and the only things that start a fetch before a request needs
+// it are a reader moving into a box to write in, and a post or code request
+// refused after the server spent its answer, which the reader is about to send
+// again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -443,8 +445,12 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 		}
 	}
 	focus := jsBlock(t, script, `el.main.addEventListener("focusin", (event) => {`, "});")
-	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 1 || !strings.Contains(focus, "prepareCaptcha()") {
-		t.Errorf("prepareCaptcha() is called %d times in app.js; want once, from the focusin listener", n)
+	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
+	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 2 || !strings.Contains(focus, "prepareCaptcha()") ||
+		!strings.Contains(send, `=== "spent") {
+          dropCaptcha(answer);
+          if (needsIt()) prepareCaptcha();`) {
+		t.Errorf("prepareCaptcha() is called %d times in app.js; want twice, from the focusin listener and after a refusal that spent the answer", n)
 	}
 	if !strings.Contains(focus, `box.matches("textarea, input[type=text], input[type=email]")`) {
 		t.Error("the focusin listener no longer starts the puzzle only from a box to write in")
@@ -509,6 +515,13 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
 	if !strings.Contains(send, "err.payload && err.payload.captcha") || !strings.Contains(send, `reason === "`+captchaMissing+`"`) {
 		t.Errorf("sendWithCaptcha no longer reads the refusal's captcha field, or no longer knows %q", captchaMissing)
+	}
+	// Any other refusal keeps the answer unless the server says it spent it,
+	// and then the next puzzle starts at once.
+	if !strings.Contains(code, `const CAPTCHA_SPENT_HEADER = "`+captchaSpentHeader+`";`) ||
+		!strings.Contains(send, `err.headers.get(CAPTCHA_SPENT_HEADER) === "spent"`) ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "api")), "err.headers = res.headers;") {
+		t.Errorf("sendWithCaptcha no longer reads the %s header that says a refusal spent the answer", captchaSpentHeader)
 	}
 	if !strings.Contains(code, `const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";`) || strings.Count(code, "new Worker(") != 1 ||
 		!strings.Contains(code, "new Worker(CAPTCHA_WORKER_SRC)") {
