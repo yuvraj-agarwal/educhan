@@ -507,7 +507,7 @@ approval is logged with the board, thread and post number, as every
 moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
 length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.7 ms for
-a typical 500-character post, about 3 ms for an ordinary post of the maximum
+a typical 500-character post, about 3.5 ms for an ordinary post of the maximum
 length, and no more than about 17 ms for the slowest of the 1,193 posts built
 to be slow (measured one post at a time with `GOMAXPROCS=1` under `taskset`,
 the best of several runs). Each server prepares the rules once, as it starts:

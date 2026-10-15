@@ -664,7 +664,7 @@ finds the places and times first and looks each intent up among them by binary s
 its check, which is where the grammar's reading costs. Measured on one core of an Intel
 Xeon @ 2.10GHz (`GOMAXPROCS=1` under `taskset`, no race detector, the best of several
 runs of each verdict, the slower of the two): about 0.7 ms for a typical 500-character
-post, about 3 ms for an ordinary maximum-length one, and at most about 17 ms for the
+post, about 3.5 ms for an ordinary maximum-length one, and at most about 17 ms for the
 slowest of 1,193 bodies built to be slow (the 247 the earlier figures were taken on, the
 grammar rules' true and false positives, and the grammar's openings, each repeated to the maximum length with and without a place or
 a time; before the searches were planned: about 4 ms, 36 ms, and 400–490 ms for a post
@@ -680,7 +680,7 @@ loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost dow
   places tried, the characters read, the machines' steps, and each check a match is put
   to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
-  post (the slowest is about 120), and eight times the text at most ten times the
+  post (the slowest, a pill question over and over, is about 150), and eight times the text at most ten times the
   steps. A step is not a fixed time: `checkWork` charges a check 128 bytes, and the
   checks that read wider fixed windows (its comment lists them) are not charged the
   rest, so across those bodies a millisecond is about 25,000 to 120,000 steps, and the
