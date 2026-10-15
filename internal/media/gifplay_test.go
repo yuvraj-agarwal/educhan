@@ -1986,3 +1986,124 @@ func gifDisposals(t *testing.T, data []byte) []byte {
 	}
 	return g.Disposal
 }
+
+/* spans walks only the rows the rectangles cover --------------------------- */
+
+// spansBoundingBox is spans as it was before it walked only covered rows: it
+// iterates every row of the bounding box of the three rectangles, so two
+// one-pixel rectangles at the top and the bottom of a tall canvas made it
+// iterate every row of the canvas though only two held a run. It is kept here
+// as the reference spans must still match call for call, and as what the
+// row-count test is measured against.
+func spansBoundingBox(a, b, c image.Rectangle, f func(y, x0, x1 int)) {
+	rects := [3]image.Rectangle{a, b, c}
+	bound := a.Union(b).Union(c)
+	for y := bound.Min.Y; y < bound.Max.Y; y++ {
+		var runs [3][2]int
+		n := 0
+		for _, r := range rects {
+			if r.Empty() || y < r.Min.Y || y >= r.Max.Y {
+				continue
+			}
+			i := n
+			for ; i > 0 && runs[i-1][0] > r.Min.X; i-- {
+				runs[i] = runs[i-1]
+			}
+			runs[i] = [2]int{r.Min.X, r.Max.X}
+			n++
+		}
+		if n == 0 {
+			continue
+		}
+		x0, x1 := runs[0][0], runs[0][1]
+		for _, run := range runs[1:n] {
+			if run[0] <= x1 {
+				x1 = max(x1, run[1])
+				continue
+			}
+			f(y, x0, x1)
+			x0, x1 = run[0], run[1]
+		}
+		f(y, x0, x1)
+	}
+}
+
+// TestSpansVisitsEachPixelOnce holds spans to spansBoundingBox call for call,
+// over random rectangles overlapping, apart, nested and empty, so that
+// walking only covered rows did not change which runs it reports.
+func TestSpansVisitsEachPixelOnce(t *testing.T) {
+	rng := rand.New(rand.NewSource(1))
+	rect := func() image.Rectangle {
+		if rng.Intn(5) == 0 {
+			return image.Rectangle{}
+		}
+		x, y := rng.Intn(40), rng.Intn(40)
+		return image.Rect(x, y, x+rng.Intn(12), y+rng.Intn(12))
+	}
+	for i := 0; i < 100000; i++ {
+		a, b, c := rect(), rect(), rect()
+		var want, got []string
+		spansBoundingBox(a, b, c, func(y, x0, x1 int) { want = append(want, fmt.Sprint(y, x0, x1)) })
+		spans(a, b, c, func(y, x0, x1 int) { got = append(got, fmt.Sprint(y, x0, x1)) })
+		if fmt.Sprint(want) != fmt.Sprint(got) {
+			t.Fatalf("%v %v %v:\n want %v\n got  %v", a, b, c, want, got)
+		}
+	}
+}
+
+// walkedRows is how many rows spans iterates for the rectangles: the rows
+// coveredRows reports, which is its whole outer loop. It is a structural
+// count, not a time, so it holds on CI whatever the load.
+func walkedRows(a, b, c image.Rectangle) int {
+	rects := [3]image.Rectangle{a, b, c}
+	ys, m := coveredRows(&rects)
+	rows := 0
+	for _, iv := range ys[:m] {
+		rows += iv[1] - iv[0]
+	}
+	return rows
+}
+
+// TestSpansWalksOnlyCoveredRows pins that spans iterates only the rows a
+// rectangle covers, not every row between them. The CPU finding was a GIF of
+// a one-pixel frame at the top and another at the bottom of a 1×65535 canvas:
+// spans walked all 65,535 rows per frame though only two held a pixel, and
+// nothing charged the gap (the walk charges the frames' pixels, playGIF's
+// area the stored frames'). Before the fix walkedRows returned the bounding
+// box's height; it now returns the covered rows. The count is structural, so
+// a revert to the bounding-box walk (spansBoundingBox) fails it without any
+// timing.
+func TestSpansWalksOnlyCoveredRows(t *testing.T) {
+	top := image.Rect(0, 0, 1, 1)
+	bottom := image.Rect(0, 65534, 1, 65535)
+	if got := walkedRows(top, bottom, image.Rectangle{}); got != 2 {
+		t.Errorf("spans walks %d rows for two one-pixel rectangles 65,534 apart, want 2 (the bounding box is 65,535 rows)", got)
+	}
+
+	// Over random rectangles, spans never walks more rows than the rectangles
+	// cover between them, which is at most their heights added up — never the
+	// gaps between them, which nothing charges.
+	rng := rand.New(rand.NewSource(2))
+	rect := func() image.Rectangle {
+		if rng.Intn(5) == 0 {
+			return image.Rectangle{}
+		}
+		x, y := rng.Intn(1000), rng.Intn(100000)
+		return image.Rect(x, y, x+rng.Intn(50), y+rng.Intn(50))
+	}
+	for i := 0; i < 20000; i++ {
+		a, b, c := rect(), rect(), rect()
+		covered := map[int]bool{}
+		for _, r := range []image.Rectangle{a, b, c} {
+			if r.Empty() {
+				continue
+			}
+			for y := r.Min.Y; y < r.Max.Y; y++ {
+				covered[y] = true
+			}
+		}
+		if got, want := walkedRows(a, b, c), len(covered); got != want {
+			t.Fatalf("%v %v %v: spans walks %d rows, want %d (the rows a rectangle covers)", a, b, c, got, want)
+		}
+	}
+}

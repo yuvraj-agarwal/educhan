@@ -159,38 +159,71 @@ func clearRun(row []uint32, r image.Rectangle, y, x0 int) {
 
 // spans calls f for each row of the union of three rectangles, in runs
 // [x0, x1) that do not overlap, so that each pixel of the union is visited
-// once.
+// once. It visits only the rows the rectangles cover (coveredRows): a row
+// between two of them holds no run, and walking it would be work in
+// proportion to the gap, which nothing charges — the walk charges the frames'
+// pixels and playGIF's area the stored frames', and two one-pixel frames at
+// the top and the bottom of a tall canvas are two pixels.
 func spans(a, b, c image.Rectangle, f func(y, x0, x1 int)) {
 	rects := [3]image.Rectangle{a, b, c}
-	bound := a.Union(b).Union(c)
-	for y := bound.Min.Y; y < bound.Max.Y; y++ {
-		var runs [3][2]int
-		n := 0
-		for _, r := range rects {
-			if r.Empty() || y < r.Min.Y || y >= r.Max.Y {
-				continue
+	ys, m := coveredRows(&rects)
+	for _, iv := range ys[:m] {
+		for y := iv[0]; y < iv[1]; y++ {
+			var runs [3][2]int
+			n := 0
+			for i := range rects {
+				r := &rects[i]
+				if r.Empty() || y < r.Min.Y || y >= r.Max.Y {
+					continue
+				}
+				k := n
+				for ; k > 0 && runs[k-1][0] > r.Min.X; k-- {
+					runs[k] = runs[k-1]
+				}
+				runs[k] = [2]int{r.Min.X, r.Max.X}
+				n++
 			}
-			i := n
-			for ; i > 0 && runs[i-1][0] > r.Min.X; i-- {
-				runs[i] = runs[i-1]
-			}
-			runs[i] = [2]int{r.Min.X, r.Max.X}
-			n++
-		}
-		if n == 0 {
-			continue
-		}
-		x0, x1 := runs[0][0], runs[0][1]
-		for _, run := range runs[1:n] {
-			if run[0] <= x1 {
-				x1 = max(x1, run[1])
-				continue
+			x0, x1 := runs[0][0], runs[0][1]
+			for _, run := range runs[1:n] {
+				if run[0] <= x1 {
+					x1 = max(x1, run[1])
+					continue
+				}
+				f(y, x0, x1)
+				x0, x1 = run[0], run[1]
 			}
 			f(y, x0, x1)
-			x0, x1 = run[0], run[1]
 		}
-		f(y, x0, x1)
 	}
+}
+
+// coveredRows is the rows that at least one of the rectangles covers, as up
+// to three intervals [y0, y1) that do not overlap or touch, in order: the
+// rows spans visits, each once.
+func coveredRows(rects *[3]image.Rectangle) (ys [3][2]int, m int) {
+	var sorted [3][2]int
+	n := 0
+	for i := range rects {
+		r := &rects[i]
+		if r.Empty() {
+			continue
+		}
+		k := n
+		for ; k > 0 && sorted[k-1][0] > r.Min.Y; k-- {
+			sorted[k] = sorted[k-1]
+		}
+		sorted[k] = [2]int{r.Min.Y, r.Max.Y}
+		n++
+	}
+	for _, iv := range sorted[:n] {
+		if m > 0 && iv[0] <= ys[m-1][1] {
+			ys[m-1][1] = max(ys[m-1][1], iv[1])
+			continue
+		}
+		ys[m] = iv
+		m++
+	}
+	return ys, m
 }
 
 // clearBitRange clears bits lo to hi of a bit set.
