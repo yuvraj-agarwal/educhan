@@ -31,18 +31,19 @@ import (
 //     storedJPEGQuality.
 //   - PNG is decoded, turned upright by the EXIF orientation of an eXIf chunk,
 //     and re-encoded, which keeps none of its ancillary chunks.
-//   - GIF is decoded frame by frame and re-encoded as it plays: each picture
-//     it shows, for as long as it shows, and its loop count, and none of its
-//     comments, its other application data, or the frames, positions, delays
-//     and disposal methods that show nothing (playGIF).
+//   - GIF is decoded frame by frame and played, and what it shows is written
+//     out by one rule (playGIF): each picture it shows, for as long as it
+//     shows, and its loop count, and none of its comments, its other
+//     application data, or anything of how its frames made those pictures.
+//     Two GIFs a browser shows alike are stored as the same bytes.
 //   - WebP is decoded and stored as a PNG, or as a JPEG when it is lossy and
 //     opaque, because nothing in the standard library or x/image can encode
 //     WebP (sanitizeWebP says why it is not kept as it came).
 //
 // So the stored file is always one Go encoded from decoded pixels, and holds
 // nothing of the upload's own bytes. The thumbnail is made from those same
-// pixels as they were handed to the encoder (sanitized.pic), not from the
-// stored file decoded again, and the checksum is of the stored file, so all
+// pixels as they were handed to the encoder (sanitized.pic; for a GIF, the
+// first picture it shows), not from the stored file decoded again, and the checksum is of the stored file, so all
 // three describe the same picture: exactly when it is stored as a PNG or a
 // GIF, and within what the re-encoding loses when it is stored as a JPEG.
 //
@@ -58,8 +59,9 @@ import (
 // reduceHiddenColour cuts each pixel's colour to the precision its alpha can
 // show (reduce8/reduce16), zero under a fully transparent one, and rebuilds a
 // palette from the colours its pixels show, in first-use order, folding every
-// transparent entry onto one and remapping the pixels (cleanPaletted,
-// cleanGIF). What is left is the picture: a fully opaque pixel keeps its exact
+// transparent entry onto one and remapping the pixels (cleanPaletted). A
+// GIF's tables are written from the colours its pictures show, in order of
+// their values (playGIF). What is left is the picture: a fully opaque pixel keeps its exact
 // value, including the low byte of a 16-bit channel, because that is the
 // picture and no rewrite that keeps the picture exact can drop it, so data in
 // the low bits of a visible picture (classic steganography) still survives —
@@ -310,30 +312,36 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	return sanitized{format: FormatPNG, data: stored, pic: pic}, nil
 }
 
-// sanitizeGIF decodes every frame of a GIF and encodes again what they show.
-// What a browser plays survives — each picture, for as long as it shows, and
-// the loop count — and nothing else does (playGIF): a frame that changes
-// nothing on screen is folded into the time of the one before it, a frame
-// kept is cut to what it changes, and disposal methods and delays are written
-// as browsers carry them out. Comment extensions and every application
-// extension (XMP, for one) are dropped, because image/gif reads past them and
-// never writes them, but for the loop count, which it writes as NETSCAPE2.0
-// whichever of the two loop extensions it came in (gifFramePixels reads it).
-// The colour tables keep only the colours the pixels show, and which frames
-// share the global table is decided from those (cleanGIF). The thumbnail is
-// of the first picture the GIF shows, at the size of its canvas, made before
-// its frames are played.
+// sanitizeGIF decodes every frame of a GIF and stores what they show, and
+// nothing else (playGIF): each picture, for as long as it shows, and the loop
+// count, written by one rule, so that two GIFs Chromium shows alike are
+// stored as the same bytes however their frames made what they show. Comment
+// extensions, every application extension (XMP, for one) and plain text are
+// dropped, but for the loop count, which is written as NETSCAPE2.0 whichever
+// of the two loop extensions it came in (gifFramePixels reads it). The
+// thumbnail is of the first picture the GIF shows, at the size of its canvas,
+// made before its frames are played. A GIF that cannot be stored one frame
+// to a picture, because a stored frame would need more colours than one
+// table holds, is refused, as is one whose stored frames would have more
+// pixels between them than maxGIFFramePixels (ErrImageTooCostly, from
+// playGIF).
 //
-// It is stored as browsers show it where that and image/gif part ways. A
+// A frame's colours, delay and disposal method are taken from what the walk
+// read of it (gifFrameHead), as Chromium reads them, where that and
+// image/gif part ways: a frame with no graphic control extension of its own
+// has disposal 0, where image/gif gives it the disposal of the last frame
+// that had one; its transparent index is the last extension's before it, or
+// none, where image/gif keeps one an earlier extension named; and every
+// index past the end of its colour table is opaque black but the transparent
+// one, where image/gif makes all of them up to a transparent index past the
+// table transparent. So are files image/gif refuses and browsers show. A
 // file that ends after its last block without a trailer plays in a browser,
-// and is decoded with one put after it. A frame after the first that reaches
+// and is decoded with one put after it; a frame after the first that reaches
 // past the canvas is drawn by a browser only where it overlaps the canvas,
-// and is cut to that (clipGIF); image/gif refuses the whole file, so it is
-// told the logical screen takes in every frame (gifReader). A first frame
-// past the canvas is refused by gifFramePixels: browsers disagree on what to
-// show for it. And where image/gif reads a frame's disposal or colours
-// otherwise than Chromium, they are put right from what the walk read of each
-// frame (browserFrames).
+// which is all playGIF plays of it, and image/gif, which refuses the whole
+// file, is told the logical screen takes in every frame (gifReader). A first
+// frame past the canvas is refused by gifFramePixels: browsers disagree on
+// what to show for it.
 func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) {
 	g, err := gif.DecodeAll(gifReader(data, frames))
 	if err != nil {
@@ -343,87 +351,60 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 	if _, err := walkGIF(data, math.MaxInt64, func(h gifFrameHead) { heads = append(heads, h) }); err != nil || len(heads) != len(g.Image) {
 		return sanitized{}, ErrCorruptImage
 	}
-	browserFrames(g, heads)
-	if frames.looped {
-		g.LoopCount = frames.loop
-	}
-	clipGIF(g, frames.canvas)
+	canvas := image.Rect(0, 0, frames.canvas.X, frames.canvas.Y)
 	// The thumbnail is of the first picture the GIF shows, its first frame
-	// on the canvas, made before the frames are played and rewritten.
-	first := firstGIFPicture{frame: g.Image[0], canvas: image.Rect(0, 0, frames.canvas.X, frames.canvas.Y)}
+	// on the canvas, made before the frames are played.
+	first := newFirstGIFPicture(g.Image[0], heads[0], canvas)
 	thumb, err := makeThumbnail(first, FormatGIF)
 	if err != nil {
 		return sanitized{}, err
 	}
-	if err := playGIF(g); err != nil {
+	loop := -1
+	if frames.looped {
+		loop = frames.loop
+	}
+	buf := newStoredBuffer(len(data), limit)
+	err = playGIF(g.Image, heads, canvas, loop, buf)
+	if errors.Is(err, ErrImageTooCostly) {
 		return sanitized{}, err
 	}
-	cleanGIF(g)
-	buf := newStoredBuffer(len(data), limit)
-	stored, err := buf.encoded(FormatGIF, gif.EncodeAll(buf, g))
+	stored, err := buf.encoded(FormatGIF, err)
 	if err != nil {
 		return sanitized{}, err
 	}
 	return sanitized{format: FormatGIF, data: stored, pic: first, thumb: &thumb}, nil
 }
 
-// browserFrames makes the frames image/gif decoded what Chromium shows where
-// the two read a GIF differently, from what the file says of each frame
-// (heads, from walkGIF):
-//
-//   - A frame with no graphic control extension of its own has disposal 0,
-//     so it is left in place; image/gif gives it the disposal of the last
-//     frame that had one.
-//   - A frame's transparent index is the last extension's before it, or none
-//     if that one names none; image/gif keeps one an earlier extension named
-//     before the same frame.
-//   - Every index past the end of the frame's colour table is opaque black
-//     but the transparent one; image/gif makes all of them up to a
-//     transparent index past the table transparent.
-//
-// A palette is copied before it is changed, since frames can share one.
-func browserFrames(g *gif.GIF, heads []gifFrameHead) {
-	for k, m := range g.Image {
-		h := heads[k]
-		if !h.gce {
-			g.Disposal[k] = 0
-		}
-		g.Delay[k] = h.delay
-		copied := false
-		for v := range m.Palette {
-			want := unusedEntry
-			switch {
-			case h.transparent && v == int(h.ti):
-				want = transparentEntry
-			case 3*v+3 <= len(h.table):
-				want = color.RGBA{h.table[3*v], h.table[3*v+1], h.table[3*v+2], 0xFF}
-			}
-			if colourKey(m.Palette[v]) == colourKey(want) {
-				continue
-			}
-			if !copied {
-				m.Palette, copied = append(color.Palette(nil), m.Palette...), true
-			}
-			m.Palette[v] = want
-		}
-	}
-}
-
 // firstGIFPicture is the first picture a GIF shows, at the size of its
-// canvas: its first frame, on the canvas (clipGIF), drawn where it is on one
-// that is otherwise transparent.
+// canvas: its first frame, which gifFramePixels holds to the canvas, drawn
+// where it is on a canvas that is otherwise transparent, each index in the
+// colour Chromium reads it as (gifFrameHead.keys). It is an
+// image.RGBA64Image, which the thumbnail scaler reads a pixel at a time
+// without making a color.Color of each.
 type firstGIFPicture struct {
-	frame  *image.Paletted
-	canvas image.Rectangle
+	frame   *image.Paletted
+	colours [256]color.RGBA64
+	canvas  image.Rectangle
 }
 
-func (p firstGIFPicture) ColorModel() color.Model { return color.NRGBAModel }
-func (p firstGIFPicture) Bounds() image.Rectangle { return p.canvas }
-func (p firstGIFPicture) At(x, y int) color.Color {
-	if !image.Pt(x, y).In(p.frame.Rect) {
-		return color.NRGBA{}
+func newFirstGIFPicture(frame *image.Paletted, head gifFrameHead, canvas image.Rectangle) *firstGIFPicture {
+	p := &firstGIFPicture{frame: frame, canvas: canvas}
+	for v, k := range head.keys() {
+		if k != 0 {
+			p.colours[v] = color.RGBA64{uint16(k>>16&0xFF) * 0x101, uint16(k>>8&0xFF) * 0x101, uint16(k&0xFF) * 0x101, 0xFFFF}
+		}
 	}
-	return visibleNRGBA(paletteEntryAt(p.frame.Palette, p.frame.Pix[p.frame.PixOffset(x, y)]))
+	return p
+}
+
+func (p *firstGIFPicture) ColorModel() color.Model { return color.RGBA64Model }
+func (p *firstGIFPicture) Bounds() image.Rectangle { return p.canvas }
+func (p *firstGIFPicture) At(x, y int) color.Color { return p.RGBA64At(x, y) }
+func (p *firstGIFPicture) RGBA64At(x, y int) color.RGBA64 {
+	if !image.Pt(x, y).In(p.frame.Rect) {
+		return color.RGBA64{}
+	}
+	return p.colours[p.frame.Pix[p.frame.PixOffset(x, y)]]
 }
 
 // gifTrailer is the block that ends a GIF.
@@ -446,27 +427,6 @@ func gifReader(data []byte, frames gifFrames) io.Reader {
 		parts = append(parts, bytes.NewReader(gifTrailer))
 	}
 	return io.MultiReader(parts...)
-}
-
-// clipGIF holds a decoded GIF to its canvas, as browsers draw one: a frame
-// reaching past the canvas is cut to the part on it, and a frame wholly off
-// it, which shows nothing for its delay, becomes a single transparent pixel
-// that is left in place, which shows the same nothing for the same time and
-// which playGIF then folds into the time of the frame before it.
-func clipGIF(g *gif.GIF, canvas image.Point) {
-	g.Config.Width, g.Config.Height = canvas.X, canvas.Y
-	r := image.Rectangle{Max: canvas}
-	for k, m := range g.Image {
-		if m.Rect.In(r) {
-			continue
-		}
-		if on := m.Rect.Intersect(r); !on.Empty() {
-			g.Image[k] = m.SubImage(on).(*image.Paletted)
-			continue
-		}
-		g.Image[k] = image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{transparentEntry})
-		g.Disposal[k] = gif.DisposalNone
-	}
 }
 
 // sanitizeWebP checks a WebP's structure and strips it to the chunks that
@@ -657,8 +617,8 @@ func lossyWebPToNRGBA(p *image.NYCbCrA) *image.NRGBA {
 /* What nobody sees --------------------------------------------------------- */
 
 // The entries a cleaned palette gives what it does not show: opaque black for
-// a pixel that names an entry past its palette's end (image/png and
-// image/gif), transparent black for the one transparent entry. They are
+// a pixel that names an entry past its palette's end (as image/png pads a
+// short table), transparent black for the one transparent entry. They are
 // values of the color.Color interface made once.
 var (
 	unusedEntry      color.Color = color.RGBA{A: 0xFF}
@@ -762,8 +722,7 @@ func isTransparent(c color.Color) bool {
 // it drops the three things a flat or near-flat picture can carry that it does
 // not show: duplicate entries of one colour, the order of the palette, and the
 // particular index a pixel points at among equal entries — each of which can
-// hold a whole second file in the pixel bytes. One folder serves a GIF's
-// frames that share a table, so they keep sharing one.
+// hold a whole second file in the pixel bytes.
 type colourFolder struct {
 	palette color.Palette
 	index   map[color.NRGBA]int
@@ -796,8 +755,7 @@ func (f *colourFolder) fold(c color.Color) (idx int, ok bool) {
 }
 
 // paletteEntryAt is the colour a pixel of value v shows, treating an index
-// past the palette's end as opaque black, as image/png and image/gif pad a
-// short table.
+// past the palette's end as opaque black, as image/png pads a short table.
 func paletteEntryAt(pal color.Palette, v uint8) color.Color {
 	if int(v) < len(pal) {
 		return pal[v]
@@ -855,53 +813,6 @@ func foldPaletted(m *image.Paletted, uses []uint8, f *colourFolder) {
 			row[j] = to[v]
 		}
 	}
-}
-
-// cleanGIF rebuilds the colour tables of a decoded GIF from the colours its
-// frames show, as cleanPaletted rebuilds one palette, and decides for itself
-// which frames share the global table.
-//
-// Whether a frame carries a colour table of its own or uses the global one is
-// a bit a browser shows nothing of, and the order of a table, its unused and
-// duplicate entries and which of two equal entries a pixel names are bytes it
-// shows nothing of; so none of them is taken from the upload. The frames take
-// the global table in turn, the first one first: each that shows no more
-// colours than the global table, with the colours of the frames before it
-// that took it, still has room for (256) takes it, and each of its colours
-// the table does not have yet is added after the others, in the order its
-// pixels first show them, with every transparent entry folded onto one. A
-// frame that would overflow the table carries one of its own, rebuilt the
-// same way from its colours alone. image/gif writes the global table once,
-// and a frame given that very palette as using it. The background colour,
-// which browsers never draw, is written as the table's first entry.
-func cleanGIF(g *gif.GIF) {
-	shared := newColourFolder()
-	var sharers []*image.Paletted
-	for _, m := range g.Image {
-		uses := firstUses(m)
-		own := newColourFolder()
-		for _, v := range uses {
-			own.fold(paletteEntryAt(m.Palette, v)) // a lone frame never overflows
-		}
-		fresh := 0
-		for _, c := range own.palette {
-			if _, ok := shared.index[visibleNRGBA(c)]; !ok {
-				fresh++
-			}
-		}
-		if len(shared.palette)+fresh > 256 {
-			foldPaletted(m, uses, own)
-			m.Palette = own.palette
-			continue
-		}
-		foldPaletted(m, uses, shared)
-		sharers = append(sharers, m)
-	}
-	for _, m := range sharers {
-		m.Palette = shared.palette
-	}
-	g.Config.ColorModel = shared.palette
-	g.BackgroundIndex = 0
 }
 
 // gifFrames is what a GIF's frames come to: their area together, and how
@@ -967,12 +878,10 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 
 // gifFrameHead is what a GIF says of one of its frames besides its pixels and
 // where it is, read as Chromium reads it, which is not always as image/gif
-// does (browserFrames).
+// does (sanitizeGIF). The disposal method, the delay and the transparent
+// index are the last graphic control extension's since the frame before it;
+// a frame with none has delay 0, disposal 0 and no transparent index.
 type gifFrameHead struct {
-	// gce is whether a graphic control extension came before the frame,
-	// since the frame before it; the rest is from the last one that did.
-	// Without one, a frame has delay 0, disposal 0 and no transparent index.
-	gce         bool
 	disposal    byte // the disposal method as written, 0 to 7
 	delay       int  // in hundredths of a second, as written
 	transparent bool // whether it names a transparent index,
@@ -1036,7 +945,6 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 					return f, ErrCorruptImage
 				}
 				flags := data[at+1]
-				head.gce = true
 				head.disposal = flags >> 2 & 0x07
 				head.delay = int(binary.LittleEndian.Uint16(data[at+2:]))
 				head.transparent, head.ti = flags&0x01 != 0, data[at+4]

@@ -716,10 +716,8 @@ func nearPremul(u, v uint32) bool {
 /* GIF ---------------------------------------------------------------------- */
 
 // animatedGIF is four frames on a 60×40 canvas, the second covering only part
-// of it, with distinct delays and disposals and the given loop count. Each
-// frame changes what is on screen throughout its rectangle, and is disposed
-// of the way it is stored (playGIF): the last left in place, since how the
-// last frame is disposed of never shows.
+// of it, with distinct delays and disposals and the given loop count, each
+// showing a picture of its own.
 func animatedGIF(t *testing.T, loop int) *gif.GIF {
 	t.Helper()
 	pal := color.Palette(palette.WebSafe[:32])
@@ -769,9 +767,10 @@ func withGIFExtras(t *testing.T, data []byte) []byte {
 	return append(out, 0x3B)
 }
 
-// An animated GIF stays animated: frames, positions, delays, disposals and the
-// loop count survive, and the comments and the XMP do not, nor does the
-// background colour, which browsers never draw: it is written as entry 0.
+// An animated GIF stays animated: what it shows survives, each picture for
+// as long as it shows, and the loop count, and the comments and the XMP do
+// not, nor does the background colour, which browsers never draw: it is
+// written as entry 0.
 func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 	for _, loop := range []int{0, 3} {
 		original := animatedGIF(t, loop)
@@ -791,6 +790,7 @@ func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 		if got.Width != 60 || got.Height != 40 {
 			t.Errorf("dimensions = %dx%d, want the 60x40 canvas", got.Width, got.Height)
 		}
+		requireSamePlay(t, "with its extensions", upload, got.Data)
 		stored, err := gif.DecodeAll(bytes.NewReader(got.Data))
 		if err != nil {
 			t.Fatalf("decode stored gif: %v", err)
@@ -799,17 +799,7 @@ func TestGIFKeepsItsAnimationAndDropsItsExtensions(t *testing.T) {
 			t.Errorf("loop count = %d, want %d", stored.LoopCount, loop)
 		}
 		if len(stored.Image) != 4 {
-			t.Fatalf("stored gif has %d frames, want 4", len(stored.Image))
-		}
-		for i := range original.Image {
-			if stored.Delay[i] != original.Delay[i] || stored.Disposal[i] != original.Disposal[i] {
-				t.Errorf("frame %d: delay %d disposal %d, want %d and %d", i,
-					stored.Delay[i], stored.Disposal[i], original.Delay[i], original.Disposal[i])
-			}
-			if stored.Image[i].Bounds() != original.Image[i].Bounds() {
-				t.Errorf("frame %d: bounds %v, want %v", i, stored.Image[i].Bounds(), original.Image[i].Bounds())
-			}
-			requireSamePixels(t, original.Image[i], stored.Image[i])
+			t.Errorf("stored gif has %d frames, want one for each of its 4 pictures", len(stored.Image))
 		}
 		if stored.BackgroundIndex != 0 {
 			t.Errorf("background index = %d, want 0 whatever the upload's (%d)", stored.BackgroundIndex, original.BackgroundIndex)
@@ -1178,19 +1168,23 @@ func withFrameAt(t *testing.T, data []byte, k, left, top int) []byte {
 // A file that ends after its last frame without the trailer plays in a
 // browser, and is stored as if it had one. A frame after the first that
 // reaches past the canvas is drawn by a browser only where it is on the
-// canvas, and is stored cut to that; one wholly off the canvas shows nothing
-// for its delay, so the frame before it shows on for that time, and it is
-// stored as that: the frame before it, for both delays. A first frame past
-// the canvas is refused before any cooldown: Chromium widens the canvas to
-// show it, Firefox moves it to the corner, and there is no one picture to
-// store.
+// canvas, and is stored as the same GIF with that frame cut to it would be;
+// one wholly off the canvas shows nothing for its delay, so the frame before
+// it shows on for that time, and it is stored as the GIF without it would be
+// with the frame before it shown for both delays. A first frame past the
+// canvas is refused before any cooldown: Chromium widens the canvas to show
+// it, Firefox moves it to the corner, and there is no one picture to store.
 func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 	src := animatedGIF(t, 0) // 60×40; frame 1 is 20×20 at (10,5)
-	var buf bytes.Buffer
-	if err := gif.EncodeAll(&buf, src); err != nil {
-		t.Fatalf("encode: %v", err)
+	encode := func(t *testing.T, g *gif.GIF) []byte {
+		t.Helper()
+		var buf bytes.Buffer
+		if err := gif.EncodeAll(&buf, g); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return buf.Bytes()
 	}
-	whole := buf.Bytes()
+	whole := encode(t, src)
 	want := process(t, whole)
 
 	t.Run("no trailer", func(t *testing.T) {
@@ -1200,68 +1194,51 @@ func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 		}
 	})
 
-	// stored decodes the stored GIF and checks it is on the 60×40 canvas.
-	stored := func(t *testing.T, data []byte) *gif.GIF {
+	// requireStoredAs checks that an upload past the canvas is stored as
+	// the GIF a browser shows of it, and that that shows what the upload
+	// does, decoded as sanitizeGIF decodes it (gifReader) and played on the
+	// canvas.
+	requireStoredAs := func(t *testing.T, upload []byte, shown *gif.GIF) {
 		t.Helper()
-		g, err := gif.DecodeAll(bytes.NewReader(process(t, data).Data))
-		if err != nil {
-			t.Fatalf("the stored GIF does not decode: %v", err)
+		got, as := process(t, upload).Data, process(t, encode(t, shown)).Data
+		if !bytes.Equal(got, as) {
+			t.Error("stored differently from the GIF a browser shows of it")
 		}
-		if g.Config.Width != 60 || g.Config.Height != 40 {
-			t.Fatalf("stored a %dx%d GIF, want the 60x40 canvas", g.Config.Width, g.Config.Height)
-		}
-		return g
+		up, _ := decodeAsStored(t, upload)
+		up.Config.Width, up.Config.Height = 60, 40
+		requirePlays(t, "past the canvas", up, got)
 	}
-	// frame decodes the stored GIF and checks it has the source's frames,
-	// delays and disposal but for frame 1, which it returns.
-	frame := func(t *testing.T, data []byte) (*image.Paletted, *gif.GIF) {
-		t.Helper()
-		g := stored(t, data)
-		if len(g.Image) != 4 {
-			t.Fatalf("stored a GIF of %d frames, want all 4", len(g.Image))
+	// without is src with frame k replaced, or left out if m is nil.
+	without := func(k int, m *image.Paletted) *gif.GIF {
+		g := *src
+		g.Image = append([]*image.Paletted(nil), src.Image...)
+		g.Delay = append([]int(nil), src.Delay...)
+		g.Disposal = append([]byte(nil), src.Disposal...)
+		if m != nil {
+			g.Image[k] = m
+			return &g
 		}
-		for _, k := range []int{0, 2, 3} {
-			if g.Image[k].Rect != src.Image[k].Rect || g.Delay[k] != src.Delay[k] || g.Disposal[k] != src.Disposal[k] {
-				t.Errorf("frame %d stored at %v, delay %d, disposal %d; want it as it was", k, g.Image[k].Rect, g.Delay[k], g.Disposal[k])
-			}
-		}
-		return g.Image[1], g
+		g.Delay[k-1] += g.Delay[k]
+		g.Image = append(g.Image[:k], g.Image[k+1:]...)
+		g.Delay = append(g.Delay[:k], g.Delay[k+1:]...)
+		g.Disposal = append(g.Disposal[:k], g.Disposal[k+1:]...)
+		return &g
 	}
 
 	t.Run("a later frame past the canvas", func(t *testing.T) {
-		m, g := frame(t, withFrameAt(t, whole, 1, 50, 30))
-		if m.Rect != image.Rect(50, 30, 60, 40) {
-			t.Fatalf("frame 1 stored at %v, want the part on the canvas, (50,30)-(60,40)", m.Rect)
-		}
-		if g.Delay[1] != src.Delay[1] || g.Disposal[1] != src.Disposal[1] {
-			t.Errorf("frame 1 stored with delay %d and disposal %d, want them as they were", g.Delay[1], g.Disposal[1])
-		}
-		// Moved, frame 1's pixel (x, y) is the source's (x-40, y-25).
-		orig := src.Image[1]
+		// Moved to (50,30), frame 1's pixel (x, y) is the source's
+		// (x-40, y-25), and the part on the canvas is (50,30)-(60,40).
+		cut := image.NewPaletted(image.Rect(50, 30, 60, 40), src.Image[1].Palette)
 		for y := 30; y < 40; y++ {
 			for x := 50; x < 60; x++ {
-				if a, b := m.At(x, y), orig.At(x-40, y-25); !sameColour(a, b) {
-					t.Fatalf("frame 1 at (%d,%d) = %v, want %v", x, y, a, b)
-				}
+				cut.SetColorIndex(x, y, src.Image[1].ColorIndexAt(x-40, y-25))
 			}
 		}
+		requireStoredAs(t, withFrameAt(t, whole, 1, 50, 30), without(1, cut))
 	})
 
 	t.Run("a later frame wholly off the canvas", func(t *testing.T) {
-		upload := withFrameAt(t, whole, 1, 61, 41)
-		g := stored(t, upload)
-		if len(g.Image) != 3 {
-			t.Fatalf("stored a GIF of %d frames, want 3: frame 1 shows nothing", len(g.Image))
-		}
-		if g.Image[0].Rect != src.Image[0].Rect || g.Delay[0] != src.Delay[0]+src.Delay[1] || g.Disposal[0] != src.Disposal[0] {
-			t.Errorf("frame 0 stored at %v, delay %d, disposal %d; want it as it was, shown for frame 1's delay as well",
-				g.Image[0].Rect, g.Delay[0], g.Disposal[0])
-		}
-		for k := 1; k < 3; k++ {
-			if g.Image[k].Rect != src.Image[k+1].Rect || g.Delay[k] != src.Delay[k+1] || g.Disposal[k] != src.Disposal[k+1] {
-				t.Errorf("frame %d stored at %v, delay %d, disposal %d; want the source's frame %d as it was", k, g.Image[k].Rect, g.Delay[k], g.Disposal[k], k+1)
-			}
-		}
+		requireStoredAs(t, withFrameAt(t, whole, 1, 61, 41), without(1, nil))
 	})
 
 	t.Run("a first frame past the canvas", func(t *testing.T) {
@@ -1270,13 +1247,6 @@ func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 			t.Errorf("Inspect = %v, want ErrCorruptImage before any cooldown", err)
 		}
 	})
-}
-
-// sameColour reports whether two colours are the same, alpha included.
-func sameColour(a, b color.Color) bool {
-	r1, g1, b1, a1 := a.RGBA()
-	r2, g2, b2, a2 := b.RGBA()
-	return r1 == r2 && g1 == g2 && b1 == b2 && a1 == a2
 }
 
 // The frame count reads a GIF block for block as image/gif does, so no

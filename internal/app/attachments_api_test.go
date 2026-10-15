@@ -700,6 +700,48 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image too large once re-encoded: %d, want 429: encoding comes after flood control", status)
 	}
+
+	// A GIF that cannot be stored one frame to a picture, which only playing
+	// it can find, is refused after flood control too.
+	const fourth = "198.51.100.24"
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {fourth}}, replies, map[string]string{"body": "look"},
+		"colours.gif", gifOfTooManyColoursAtOnce(t), &out); status != http.StatusBadRequest || out.Error != media.ErrImageTooCostly.Error() {
+		t.Fatalf("reply with a GIF of too many colours at once: %d %q, want 400 %q", status, out.Error, media.ErrImageTooCostly.Error())
+	}
+	if status := c.postFrom(fourth, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after a GIF of too many colours at once: %d, want 429: playing a GIF comes after flood control", status)
+	}
+}
+
+// gifOfTooManyColoursAtOnce is a 300×1 GIF whose third picture changes 300
+// pixels to 300 colours at once: the first frame draws 150 colours, the
+// second draws 150 others over them and is put back, and the third draws
+// 150 more beside them. No one stored frame can draw that picture's changes,
+// so it cannot be stored one frame to a picture.
+func gifOfTooManyColoursAtOnce(t *testing.T) []byte {
+	t.Helper()
+	frame := func(x0, first int) *image.Paletted {
+		pal := make(color.Palette, 150)
+		for i := range pal {
+			pal[i] = color.RGBA{byte(first + i), byte((first + i) >> 8), 0x55, 0xFF}
+		}
+		m := image.NewPaletted(image.Rect(x0, 0, x0+150, 1), pal)
+		for i := range m.Pix {
+			m.Pix[i] = uint8(i)
+		}
+		return m
+	}
+	g := &gif.GIF{
+		Image:    []*image.Paletted{frame(0, 0), frame(0, 1000), frame(150, 2000)},
+		Delay:    []int{10, 10, 10},
+		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalNone},
+		Config:   image.Config{Width: 300, Height: 1},
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	return buf.Bytes()
 }
 
 // cheapestUpload is a file of the given format of exactly size bytes that is

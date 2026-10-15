@@ -8,6 +8,7 @@ import (
 	"image/gif"
 	"image/png"
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -373,11 +374,12 @@ func gifTables(t *testing.T, data []byte) (global []byte, local []bool) {
 // A GIF's colour tables keep only the colours its frames show. Here the
 // unused entries of the global table and of a frame's own table each carry a
 // sentence, the global table's entry for a frame's transparent colour holds a
-// colour nobody draws, and two one-pixel frames carry a camera's JPEG, EXIF
-// and GPS position and all, in tables they use one entry of. None of it is
-// stored; every frame shows the same pixels, and every frame uses the one
-// global table, which holds the colours they show between them, in the order
-// they first show them, rather than each getting a table of its own.
+// colour nobody draws, and one-pixel frames carry a camera's JPEG, EXIF and
+// GPS position and all, in tables they use one entry of. None of it is
+// stored; the stored GIF shows what the upload does, and every frame uses
+// the one global table, which holds a transparent entry and then the colours
+// the frames show between them, in order of their values, rather than each
+// getting a table of its own.
 func TestGIFColourTablesKeepOnlyWhatIsShown(t *testing.T) {
 	seen := []color.Color{
 		color.RGBA{220, 30, 30, 255}, color.RGBA{30, 200, 30, 255},
@@ -431,37 +433,31 @@ func TestGIFColourTablesKeepOnlyWhatIsShown(t *testing.T) {
 	upload := buf.Bytes()
 	needles := []string{needleGlobal[:20], needleLocal[:20], "TRN", "Exif", needleCamera, needleGPS, needleDatum, needleXMP, needleComment}
 	requireCarries(t, upload, needles...)
-	original, err := gif.DecodeAll(bytes.NewReader(upload))
-	if err != nil {
-		t.Fatalf("the fixture does not decode: %v", err)
-	}
 	if _, local := gifTables(t, upload); local[0] || local[1] || !local[2] {
 		t.Fatalf("the fixture's frames carry their own tables %v; want the first two on the global one", local)
 	}
 
 	got := process(t, upload)
 	requireFree(t, got.Data, needles...)
-	stored, err := gif.DecodeAll(bytes.NewReader(got.Data))
-	if err != nil {
-		t.Fatalf("decode stored gif: %v", err)
-	}
-	if len(stored.Image) != len(original.Image) {
-		t.Fatalf("stored %d frames, want %d", len(stored.Image), len(original.Image))
-	}
-	for i := range original.Image {
-		requireSamePixels(t, original.Image[i], stored.Image[i])
-	}
+	requireSamePlay(t, "colour tables", upload, got.Data)
 	table, local := gifTables(t, got.Data)
 	for k, own := range local {
 		if own {
 			t.Errorf("frame %d carries a table of its own: %v", k, local)
 		}
 	}
-	// The colours shown, black for the transparent one, then each one-pixel
-	// frame's colour, and black up to the next power of two.
-	want := []byte{220, 30, 30, 30, 200, 30, 0, 0, 0, 30, 30, 220}
+	// Black for the transparent entry, then the colours shown in order of
+	// their values, and black up to the next power of two.
+	shown := [][3]byte{{220, 30, 30}, {30, 200, 30}, {30, 30, 220}}
 	for at := 0; at < len(hidden); at += 768 {
-		want = append(want, hidden[at:at+3]...)
+		shown = append(shown, [3]byte{hidden[at], hidden[at+1], hidden[at+2]})
+	}
+	slices.SortFunc(shown, func(a, b [3]byte) int { return bytes.Compare(a[:], b[:]) })
+	want := []byte{0, 0, 0}
+	for i, c := range shown {
+		if i == 0 || c != shown[i-1] {
+			want = append(want, c[:]...)
+		}
 	}
 	for n := 2; ; n *= 2 {
 		if 3*n >= len(want) {
@@ -470,7 +466,7 @@ func TestGIFColourTablesKeepOnlyWhatIsShown(t *testing.T) {
 		}
 	}
 	if !bytes.Equal(table, want) {
-		t.Errorf("stored global table = % x, want the colours shown and black for the transparent one: % x", table, want)
+		t.Errorf("stored global table = % x, want black for the transparent entry and the colours shown: % x", table, want)
 	}
 	if len(got.Data) >= len(upload)/2 {
 		t.Errorf("stored %d bytes of a %d-byte upload; the unused tables should be gone", len(got.Data), len(upload))
@@ -505,7 +501,7 @@ func gifWithPixels(t *testing.T, transparent byte, pixels ...uint8) []byte {
 
 // Pixels on a transparent index past the end of a frame's colour table are
 // stored transparent, and pixels on an index between the table's end and it
-// opaque black, as Chromium shows them (browserFrames), not as image/gif
+// opaque black, as Chromium shows them (gifFrameHead.keys), not as image/gif
 // reads them.
 func TestGIFTransparentIndexPastItsTable(t *testing.T) {
 	const red, green, black, clear = "ff0000", "00ff00", "000000", "......"

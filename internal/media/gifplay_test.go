@@ -3,23 +3,26 @@ package media
 import (
 	"bytes"
 	"compress/lzw"
+	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
 	"math/rand"
+	"slices"
 	"strings"
 	"testing"
 )
 
 // What a GIF shows is the frames drawn one on another, each for its delay,
-// and that is all a stored GIF keeps of its frames: a frame that changes
-// nothing on screen is folded into the time of the one before it, and the
-// fields browsers read past are written the same whatever the upload said.
-// These tests hold the stored file to what Chromium and Firefox show of the
-// upload, through a model of their compositing written here independently of
-// playGIF (browserPlay).
+// and that is all a stored GIF keeps of its frames: it is written from the
+// run of pictures they show, one frame to a picture, by one rule, so that
+// GIFs a browser shows alike are stored alike. These tests hold the stored
+// file to what Chromium shows of the upload, through a model of its
+// compositing written here independently of playGIF (browserPlay), and to
+// the rule.
 
 /* A browser, as far as a GIF goes ------------------------------------------ */
 
@@ -29,25 +32,25 @@ type onScreen struct {
 	ms  int
 }
 
-// browserPlay plays a decoded GIF as Chromium and Firefox do: on a canvas that
-// starts transparent, each frame's pixels other than its transparent ones are
-// drawn, the canvas is shown for the frame's delay (one of 10 ms or less shown
-// for 100 ms), and the frame is then disposed of by its method — 2 clears its
-// rectangle to transparent, 3 and 4 put back what was there before it, and
-// anything else leaves it. Consecutive frames that show the same picture are
-// one picture shown for their time together.
-func browserPlay(g *gif.GIF) []onScreen {
+// composite plays a decoded GIF as Chromium and Firefox do: on a canvas that
+// starts transparent, each frame's pixels other than its transparent ones
+// are drawn, the canvas is shown for the frame's delay, and the frame is then
+// disposed of by its method — 2 clears its rectangle to transparent, 3 and 4
+// put back what was there before it, and anything else leaves it. It returns
+// what each frame is drawn on, and what shows while it does.
+func composite(g *gif.GIF) (before, shown []*image.NRGBA) {
 	canvas := image.NewNRGBA(image.Rect(0, 0, g.Config.Width, g.Config.Height))
-	var shows []onScreen
+	snapshot := func() *image.NRGBA {
+		pic := image.NewNRGBA(canvas.Rect)
+		copy(pic.Pix, canvas.Pix)
+		return pic
+	}
 	for k, m := range g.Image {
 		var disposal byte
 		if g.Disposal != nil {
 			disposal = g.Disposal[k]
 		}
-		var saved []byte
-		if disposal == 3 || disposal == 4 {
-			saved = append([]byte(nil), canvas.Pix...)
-		}
+		before = append(before, snapshot())
 		r := m.Rect.Intersect(canvas.Rect)
 		for y := r.Min.Y; y < r.Max.Y; y++ {
 			for x := r.Min.X; x < r.Max.X; x++ {
@@ -60,61 +63,89 @@ func browserPlay(g *gif.GIF) []onScreen {
 				}
 			}
 		}
-		ms := 10 * g.Delay[k]
-		if ms <= 10 {
-			ms = 100
-		}
-		if n := len(shows); n > 0 && bytes.Equal(shows[n-1].pic.Pix, canvas.Pix) {
-			shows[n-1].ms += ms
-		} else {
-			pic := image.NewNRGBA(canvas.Rect)
-			copy(pic.Pix, canvas.Pix)
-			shows = append(shows, onScreen{pic: pic, ms: ms})
-		}
+		shown = append(shown, snapshot())
 		switch disposal {
 		case 2:
 			for y := r.Min.Y; y < r.Max.Y; y++ {
 				clear(canvas.Pix[canvas.PixOffset(r.Min.X, y):canvas.PixOffset(r.Max.X, y)])
 			}
 		case 3, 4:
-			copy(canvas.Pix, saved)
+			copy(canvas.Pix, before[k].Pix)
 		}
+	}
+	return before, shown
+}
+
+// browserPlay is what a browser shows of a decoded GIF (composite): each
+// picture, and for how long, a delay of 10 ms or less shown for 100 ms.
+// Consecutive frames that show the same picture are one picture shown for
+// their time together.
+func browserPlay(g *gif.GIF) []onScreen {
+	_, pictures := composite(g)
+	var shows []onScreen
+	for k, pic := range pictures {
+		ms := 10 * g.Delay[k]
+		if ms <= 10 {
+			ms = 100
+		}
+		if n := len(shows); n > 0 && bytes.Equal(shows[n-1].pic.Pix, pic.Pix) {
+			shows[n-1].ms += ms
+			continue
+		}
+		shows = append(shows, onScreen{pic: pic, ms: ms})
 	}
 	return shows
 }
 
-// requireSamePlay checks that a stored GIF shows what its upload showed: the
-// same pictures, in the same order, each for the same time, and played as
-// many times. The time the last picture of an animation played once is shown
-// for is not compared, because it stays on screen once the animation ends;
-// nor is anything about the timing of a GIF that only ever shows one picture.
+// showDifference is how what a browser shows of one GIF differs from what it
+// shows of another, or "" if it does not: the pictures, in order, each for
+// its time, but for the time of the last of a GIF played once, which stays
+// on screen once it is drawn, and how many times they are played, for more
+// than one picture.
+func showDifference(a, b *gif.GIF) string {
+	if a.Config.Width != b.Config.Width || a.Config.Height != b.Config.Height {
+		return fmt.Sprintf("a %dx%d canvas against %dx%d", a.Config.Width, a.Config.Height, b.Config.Width, b.Config.Height)
+	}
+	pa, pb := browserPlay(a), browserPlay(b)
+	if len(pa) != len(pb) {
+		return fmt.Sprintf("%d pictures in turn against %d", len(pa), len(pb))
+	}
+	for i := range pa {
+		if !bytes.Equal(pa[i].pic.Pix, pb[i].pic.Pix) {
+			return fmt.Sprintf("picture %d is %q against %q", i, pictureRows(pa[i].pic), pictureRows(pb[i].pic))
+		}
+		if len(pa) > 1 && (i < len(pa)-1 || a.LoopCount != -1) && pa[i].ms != pb[i].ms {
+			return fmt.Sprintf("picture %d shown for %d ms against %d", i, pa[i].ms, pb[i].ms)
+		}
+	}
+	if len(pa) > 1 && a.LoopCount != b.LoopCount {
+		return fmt.Sprintf("loop count %d against %d", a.LoopCount, b.LoopCount)
+	}
+	return ""
+}
+
+// requireSamePlay checks that a stored GIF shows what its upload showed
+// (showDifference): the same pictures, in the same order, each for the same
+// time, and played as many times.
 func requireSamePlay(t *testing.T, name string, upload, stored []byte) {
 	t.Helper()
 	up, err := gif.DecodeAll(bytes.NewReader(upload))
 	if err != nil {
 		t.Fatalf("%s: the upload does not decode: %v", name, err)
 	}
+	requirePlays(t, name, up, stored)
+}
+
+// requirePlays checks that a stored GIF shows what a browser shows of a
+// decoded upload, read as the browser reads it.
+func requirePlays(t *testing.T, name string, up *gif.GIF, stored []byte) {
+	t.Helper()
 	st, err := gif.DecodeAll(bytes.NewReader(stored))
 	if err != nil {
 		t.Fatalf("%s: the stored GIF does not decode: %v", name, err)
 	}
-	if st.Config.Width != up.Config.Width || st.Config.Height != up.Config.Height {
-		t.Fatalf("%s: stored on a %dx%d canvas, want %dx%d", name, st.Config.Width, st.Config.Height, up.Config.Width, up.Config.Height)
-	}
-	want, got := browserPlay(up), browserPlay(st)
-	if len(got) != len(want) {
-		t.Fatalf("%s: the stored GIF shows %d pictures in turn, the upload %d", name, len(got), len(want))
-	}
-	for i := range want {
-		if !bytes.Equal(got[i].pic.Pix, want[i].pic.Pix) {
-			t.Fatalf("%s: picture %d differs from the upload's", name, i)
-		}
-		if len(want) > 1 && (i < len(want)-1 || up.LoopCount != -1) && got[i].ms != want[i].ms {
-			t.Errorf("%s: picture %d shown for %d ms, want %d", name, i, got[i].ms, want[i].ms)
-		}
-	}
-	if len(want) > 1 && st.LoopCount != up.LoopCount {
-		t.Errorf("%s: stored loop count %d, want %d", name, st.LoopCount, up.LoopCount)
+	if d := showDifference(up, st); d != "" {
+		t.Fatalf("%s: the stored GIF does not show what the upload does: %s (the upload's first)", name, d)
 	}
 }
 
@@ -329,29 +360,7 @@ func chromiumReads(g rawGIF) *gif.GIF {
 // one image/gif reads as Chromium does.
 func requireShowsAs(t *testing.T, name string, upload rawGIF, stored []byte) {
 	t.Helper()
-	st, err := gif.DecodeAll(bytes.NewReader(stored))
-	if err != nil {
-		t.Fatalf("%s: the stored GIF does not decode: %v", name, err)
-	}
-	up := chromiumReads(upload)
-	if st.Config.Width != up.Config.Width || st.Config.Height != up.Config.Height {
-		t.Fatalf("%s: stored on a %dx%d canvas, want %dx%d", name, st.Config.Width, st.Config.Height, up.Config.Width, up.Config.Height)
-	}
-	want, got := browserPlay(up), browserPlay(st)
-	if len(got) != len(want) {
-		t.Fatalf("%s: the stored GIF shows %d pictures in turn, Chromium %d of the upload", name, len(got), len(want))
-	}
-	for i := range want {
-		if !bytes.Equal(got[i].pic.Pix, want[i].pic.Pix) {
-			t.Fatalf("%s: picture %d is %q, Chromium shows %q", name, i, pictureRows(got[i].pic), pictureRows(want[i].pic))
-		}
-		if len(want) > 1 && (i < len(want)-1 || up.LoopCount != -1) && got[i].ms != want[i].ms {
-			t.Errorf("%s: picture %d shown for %d ms, want %d", name, i, got[i].ms, want[i].ms)
-		}
-	}
-	if len(want) > 1 && st.LoopCount != up.LoopCount {
-		t.Errorf("%s: stored loop count %d, want %d", name, st.LoopCount, up.LoopCount)
-	}
+	requirePlays(t, name, chromiumReads(upload), stored)
 }
 
 /* Fixtures ----------------------------------------------------------------- */
@@ -590,14 +599,16 @@ func TestGIFFramesThatDrawNothingCarryNothing(t *testing.T) {
 	}
 }
 
-// A frame that changes nothing on screen is folded into the one before it, so
-// what a browser shows is the same picture for the same time; but where the
-// one before it disposes of itself, what shows during it is what that left,
-// and it is kept as one transparent pixel at the corner, which shows that for
-// its time. What a frame draws over the canvas is cut to the part it draws on,
-// and a frame that clears its rectangle afterwards to the part that clearing
-// changes. Each case is held to what a browser shows of the upload.
-func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
+// A GIF is stored one frame to a picture: frames that show the same picture
+// one after another are one frame, shown for their time together. Each frame
+// draws exactly the pixels in which its picture differs from what the frame
+// before it left, and is cut to the smallest rectangle around them and the
+// pixels the next picture has transparent where this one does not, which it
+// is cleared of once its time is over; a frame clears nothing otherwise, and
+// a picture that differs from what was left in nothing draws one transparent
+// pixel at the corner. Each case is held to what a browser shows of the
+// upload, and to the frames that rule makes of it.
+func TestGIFIsStoredOneFrameToAPicture(t *testing.T) {
 	rect := image.Rect
 	base := playFrame{at: rect(0, 0, 8, 8), pixels: []uint8{whitePx}, disposal: gif.DisposalNone, delay: 40}
 	red := func(r image.Rectangle, disposal byte, delay int) playFrame {
@@ -638,6 +649,9 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 		},
 		{
+			// The red square shows for both frames' time, and is cleared
+			// where the next picture is transparent; the next frame draws
+			// what is left of it again.
 			name: "a frame that draws nothing and clears what is under it",
 			loop: 0,
 			frames: []playFrame{
@@ -646,9 +660,8 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 				green,
 			},
 			want: []stored{
-				{rect(0, 0, 4, 4), 10, gif.DisposalNone, false},
-				{rect(2, 2, 4, 4), 5, gif.DisposalBackground, true},
-				{rect(7, 7, 8, 8), 30, gif.DisposalNone, false},
+				{rect(0, 0, 4, 4), 15, gif.DisposalBackground, false},
+				{rect(0, 0, 8, 8), 30, gif.DisposalNone, false},
 			},
 		},
 		{
@@ -665,7 +678,7 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 		},
 		{
-			name: "a frame that draws nothing after one that clears itself",
+			name: "frames that draw nothing after one that clears itself",
 			loop: 0,
 			frames: []playFrame{
 				red(rect(0, 0, 2, 2), gif.DisposalBackground, 10),
@@ -680,6 +693,8 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 		},
 		{
+			// What the red square was drawn over shows again, and is drawn
+			// again: no frame is stored to put anything back.
 			name: "a frame that draws nothing after one that puts back what was under it",
 			loop: 0,
 			frames: []playFrame{
@@ -690,8 +705,8 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 			want: []stored{
 				{rect(0, 0, 8, 8), 40, gif.DisposalNone, false},
-				{rect(0, 0, 2, 2), 10, gif.DisposalPrevious, false},
-				{rect(0, 0, 1, 1), 20, gif.DisposalNone, true},
+				{rect(0, 0, 2, 2), 10, gif.DisposalNone, false},
+				{rect(0, 0, 2, 2), 20, gif.DisposalNone, false},
 				{rect(7, 7, 8, 8), 30, gif.DisposalNone, false},
 			},
 		},
@@ -707,6 +722,24 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 			want: []stored{
 				{rect(0, 0, 4, 4), 28, gif.DisposalNone, false},
+				{rect(7, 7, 8, 8), 30, gif.DisposalNone, false},
+			},
+		},
+		{
+			name: "pictures made through a clear and a put-back",
+			loop: 0,
+			frames: []playFrame{
+				base,
+				red(rect(0, 0, 2, 2), gif.DisposalBackground, 10),
+				{at: rect(0, 0, 2, 2), pixels: []uint8{redPx, whitePx, redPx, redPx}, disposal: gif.DisposalPrevious, delay: 20},
+				red(rect(0, 0, 2, 2), gif.DisposalNone, 30),
+				green,
+			},
+			want: []stored{
+				{rect(0, 0, 8, 8), 40, gif.DisposalNone, false},
+				{rect(0, 0, 2, 2), 10, gif.DisposalNone, false},
+				{rect(1, 0, 2, 1), 20, gif.DisposalNone, false},
+				{rect(1, 0, 2, 1), 30, gif.DisposalNone, false},
 				{rect(7, 7, 8, 8), 30, gif.DisposalNone, false},
 			},
 		},
@@ -742,6 +775,9 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 		},
 		{
+			// Frame 2 puts back the white under frame 1 and draws a red
+			// square of its own, so the stored frame of its picture draws
+			// both.
 			name: "reserved disposal methods, short delays and the last frame's disposal",
 			loop: 2,
 			frames: []playFrame{
@@ -753,8 +789,8 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 			},
 			want: []stored{
 				{rect(0, 0, 8, 8), 40, gif.DisposalNone, false},
-				{rect(0, 0, 2, 2), 10, gif.DisposalPrevious, false},
-				{rect(2, 2, 4, 4), 10, gif.DisposalNone, false},
+				{rect(0, 0, 2, 2), 10, gif.DisposalNone, false},
+				{rect(0, 0, 4, 4), 10, gif.DisposalNone, false},
 				{rect(4, 4, 6, 6), 2, gif.DisposalNone, false},
 				{rect(6, 6, 8, 8), 3, gif.DisposalNone, false},
 			},
@@ -820,6 +856,23 @@ func TestGIFFramesThatChangeNothingAreFolded(t *testing.T) {
 				{rect(0, 0, 1, 1), 2, gif.DisposalNone, true},
 				{rect(3, 3, 4, 4), 65535, gif.DisposalNone, false},
 				{rect(0, 0, 1, 1), 10, gif.DisposalNone, true},
+				{rect(7, 7, 8, 8), 30, gif.DisposalNone, false},
+			},
+		},
+		{
+			// The frame of the red square is left in place for the first
+			// of its time; what draws nothing and holds the rest is
+			// cleared once it is over, of the square's rectangle.
+			name: "more time than one delay can say, then cleared",
+			loop: 0,
+			frames: []playFrame{
+				red(rect(0, 0, 2, 2), gif.DisposalNone, 65535),
+				empty(rect(0, 0, 2, 2), gif.DisposalBackground, 100),
+				green,
+			},
+			want: []stored{
+				{rect(0, 0, 2, 2), 65535, gif.DisposalNone, false},
+				{rect(0, 0, 2, 2), 100, gif.DisposalBackground, true},
 				{rect(7, 7, 8, 8), 30, gif.DisposalNone, false},
 			},
 		},
@@ -913,6 +966,131 @@ func TestGIFFieldsBrowsersDoNotShowAreWrittenTheSame(t *testing.T) {
 	}
 }
 
+// shades is n colours no other shade is, the first of them the one given.
+func shades(first, n int) [][3]byte {
+	t := make([][3]byte, n)
+	for i := range t {
+		t[i] = [3]byte{byte(first + i), byte((first + i) >> 8), 0x55}
+	}
+	return t
+}
+
+// indices is the indices 0 to n-1, in order.
+func indices(n int) []uint8 {
+	pix := make([]uint8, n)
+	for i := range pix {
+		pix[i] = uint8(i)
+	}
+	return pix
+}
+
+// A GIF of more than 255 colours is stored with a colour table a frame: the
+// colours the frame draws, in order of their values, after a transparent
+// entry where it has a pixel it does not draw. A frame that draws 256
+// colours has no room for that entry, so each pixel it does not draw is
+// written in the colour it already shows, which the frame draws elsewhere. A
+// GIF that would need a frame of more than 256 colours, or of 256 and a
+// pixel that cannot be written so, cannot be stored one frame to a picture,
+// and is refused (ErrImageTooCostly).
+func TestGIFOfManyColoursHasATableAFrame(t *testing.T) {
+	frame := func(at image.Rectangle, disposal byte, ti int, table [][3]byte, pix []uint8) rawFrame {
+		return rawFrame{controls: []rawControl{{disposal, 10, ti}}, at: at, local: table, pix: pix}
+	}
+	sortedOf := func(tables ...[][3]byte) [][3]byte {
+		var all [][3]byte
+		for _, t := range tables {
+			all = append(all, t...)
+		}
+		slices.SortFunc(all, func(a, b [3]byte) int { return bytes.Compare(a[:], b[:]) })
+		return slices.Compact(all)
+	}
+	// stores requires the GIF stored as it shows, each frame with a table
+	// of its own holding want[k], after a transparent entry if clear[k].
+	stores := func(name string, g rawGIF, want [][][3]byte, clear []bool) {
+		t.Helper()
+		data := process(t, g.bytes()).Data
+		requireShowsAs(t, name, g, data)
+		st, err := gif.DecodeAll(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: the stored GIF does not decode: %v", name, err)
+		}
+		if global, local := gifTables(t, data); global != nil || slices.Contains(local, false) || len(local) != len(want) {
+			t.Fatalf("%s: stored a global table of %d bytes and frames with tables of their own %v; want %d frames, each with one", name, len(global), local, len(want))
+		}
+		for k, m := range st.Image {
+			var table [][3]byte
+			first := 0
+			if clear[k] {
+				if _, _, _, a := m.Palette[0].RGBA(); a != 0 {
+					t.Errorf("%s: frame %d's entry 0 is not transparent", name, k)
+				}
+				first = 1
+			}
+			for _, c := range m.Palette[first:][:len(want[k])] {
+				r, g, b, a := c.RGBA()
+				if a == 0 {
+					t.Errorf("%s: frame %d has a transparent entry it should not", name, k)
+				}
+				table = append(table, [3]byte{byte(r >> 8), byte(g >> 8), byte(b >> 8)})
+			}
+			if !slices.Equal(table, want[k]) {
+				t.Errorf("%s: frame %d's table is not the colours it draws, in order", name, k)
+			}
+		}
+	}
+
+	// 200 colours, then 100 more on every other pixel of the rows below.
+	checks := make([]uint8, 200)
+	for i := range checks {
+		checks[i] = 100
+		if (i+i/20)%2 == 0 {
+			checks[i] = uint8(i / 2)
+		}
+	}
+	stores("more than 255 colours", rawGIF{w: 20, h: 20, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{
+		frame(image.Rect(0, 0, 20, 10), keepFrame, -1, shades(0, 200), indices(200)),
+		frame(image.Rect(0, 10, 20, 20), keepFrame, 100, shades(200, 100), checks),
+	}}, [][][3]byte{sortedOf(shades(0, 200)), sortedOf(shades(200, 100))}, []bool{false, true})
+
+	// A row of one colour with a sixth shade in the middle, then 256 shades
+	// over it that leave that one as it is.
+	a := [][3]byte{{1, 2, 3}}
+	under := make([]uint8, 257)
+	under[128] = 1
+	over := make([]uint8, 257)
+	for x := range over {
+		over[x] = uint8(x)
+		if x > 128 {
+			over[x] = uint8(x - 1)
+		}
+	}
+	over[128] = 5
+	stores("256 colours and a pixel left as it is", rawGIF{w: 257, h: 1, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{
+		frame(image.Rect(0, 0, 257, 1), keepFrame, -1, append(a, shades(5, 1)...), under),
+		frame(image.Rect(0, 0, 257, 1), keepFrame, -1, shades(0, 256), over),
+	}}, [][][3]byte{sortedOf(a, shades(5, 1)), sortedOf(shades(0, 256))}, []bool{false, false})
+
+	// What a frame put back and what the next draws, between them more
+	// colours than one table holds; and 256 of them around a pixel that
+	// shows nothing.
+	for name, g := range map[string]rawGIF{
+		"more than 256 colours in a frame": {w: 300, h: 1, frames: []rawFrame{
+			frame(image.Rect(0, 0, 150, 1), keepFrame, -1, shades(0, 150), indices(150)),
+			frame(image.Rect(0, 0, 150, 1), restoreFrame, -1, shades(1000, 150), indices(150)),
+			frame(image.Rect(150, 0, 300, 1), keepFrame, -1, shades(2000, 150), indices(150)),
+		}},
+		"256 colours in a frame and a pixel it cannot write": {w: 257, h: 1, frames: []rawFrame{
+			frame(image.Rect(0, 0, 128, 1), keepFrame, -1, shades(0, 128), indices(128)),
+			frame(image.Rect(0, 0, 128, 1), restoreFrame, -1, a, make([]uint8, 128)),
+			frame(image.Rect(129, 0, 257, 1), keepFrame, -1, shades(1000, 128), indices(128)),
+		}},
+	} {
+		if _, err := Process(context.Background(), g.bytes()); !errors.Is(err, ErrImageTooCostly) {
+			t.Errorf("%s: Process returned %v, want ErrImageTooCostly", name, err)
+		}
+	}
+}
+
 // randomGIF is a GIF of up to eight frames on a small canvas, drawn at
 // random from what a crafted file can say about its frames: where they are,
 // pixels that are mostly transparent or repeat what is under them, any of the
@@ -936,10 +1114,11 @@ func randomGIF(t *testing.T, rng *rand.Rand) []byte {
 	return gifPlaying(t, w, h, []int{-1, 0, 1, 65535}[rng.Intn(4)], frames...)
 }
 
-// Whatever its frames, a GIF is stored as it plays, and as nothing more: each
-// stored frame changes what is on screen or disposes of what one did, and
-// processing a stored GIF again stores the same bytes, so nothing a frame
-// carries that does not show was left behind to be folded the second time.
+// Whatever its frames, a GIF is stored as it plays, and as nothing more:
+// processing a stored GIF again stores the same bytes, every frame of an
+// animation is left in place or cleared, the last left in place, and no
+// delay but the last of a GIF played once is one a browser does not show as
+// written.
 func TestGIFIsStoredAsItPlays(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < 2000; i++ {
@@ -958,7 +1137,7 @@ func TestGIFIsStoredAsItPlays(t *testing.T) {
 			switch {
 			case len(g.Image) == 1 && (d != 0 || g.Delay[k] != 0):
 				t.Errorf("%s: a still stored with disposal %d and delay %d, want neither", name, d, g.Delay[k])
-			case len(g.Image) > 1 && (d < gif.DisposalNone || d > gif.DisposalPrevious || last && d != gif.DisposalNone):
+			case len(g.Image) > 1 && (d != keepFrame && d != clearFrame || last && d != keepFrame):
 				t.Errorf("%s: frame %d of %d stored with disposal %d", name, k, len(g.Image), d)
 			case len(g.Image) > 1 && g.Delay[k] < 2 && !(last && g.LoopCount == -1 && g.Delay[k] == 0):
 				t.Errorf("%s: frame %d stored with delay %d, which browsers do not show as written", name, k, g.Delay[k])

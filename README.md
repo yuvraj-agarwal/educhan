@@ -406,8 +406,12 @@ server that would refuse what it sends.
   - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn
     stores at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at
     4:1:1 and refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that
-    need no turning, accepted up to about 60:1; and, by its shape and the upload's size,
-    a 16-bit colour PNG that is neither interlaced nor turned.
+    need no turning, accepted up to about 60:1; by its shape and the upload's size, a
+    16-bit colour PNG that is neither interlaced nor turned; and, by the upload's size, a
+    GIF, which is played on four bytes a pixel of its canvas while all its frames are
+    held: at any shape, one whose frames come to two canvases or less is accepted, three
+    from an upload of up to about 6.9 MiB, and four, the most a GIF's frames can come
+    to, up to about 3.9 MiB.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,

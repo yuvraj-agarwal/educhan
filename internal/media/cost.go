@@ -92,15 +92,25 @@ const processingSlack int64 = 4 << 20
 // few megabytes could decode to gigabytes of frames of no pixels at all.
 const gifFrameOverhead int64 = 16 << 10
 
-// gifFramePlay is what playGIF holds for each frame of a GIF while it plays
-// them, besides its canvas: what the walk read of the frame (gifFrameHead),
-// the colour of each of the 256 indices the frame's pixels can name, 1 KiB,
-// and its record of what is stored of the frame; and
-// what it makes of each frame and keeps until the GIF is encoded: the
-// header of the frame cut to what it changes, its place in the stored frames,
-// delays and disposals, and the frame of one transparent pixel that holds
-// time a delay cannot say, which there are no more of than frames.
-const gifFramePlay int64 = 2 << 10
+// gifFramePlay is what a GIF holds for each of its frames besides what
+// image/gif keeps (gifFrameOverhead) while it is played and written:
+// what the walk read of the frame (gifFrameHead), 40 bytes, kept from before
+// the frames are played until they all have been. playGIF keeps nothing
+// else of a frame: what it writes of each goes into the stored file, which
+// storedLimit bounds, and it lets each frame go once it has played it.
+const gifFramePlay int64 = 64
+
+// gifPlayScratch is what playGIF allocates to play a GIF on a w×h canvas:
+// the colour key of every pixel of what the frames before the one being
+// played left (under), four bytes each; two bit sets over the canvas, of the
+// pixels the stored frames of the picture showing and of the next one draw;
+// and four rows of scratch, three of colour keys and one of the indices
+// written. Its colour index and its LZW compressor's tables, under 80 KiB
+// together, are left to processingSlack.
+func gifPlayScratch(w, h int64) int64 {
+	px := w * h
+	return 4*px + 2*8*((px+63)/64) + 13*w
+}
 
 // phase is one step of processing an upload. It allocates first as it
 // begins, goes on to allocate the rest of alloc (which includes first) on
@@ -150,6 +160,17 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 	held := phases[len(phases)-1].after
 	upload := int64(len(data))
 	limit := storedLimit(format, data, cfg.Width, cfg.Height)
+	if format == FormatGIF {
+		// A GIF is written as its frames are played (playGIF), into a
+		// buffer the size of the upload that doubles up to limit, holding
+		// the old and the new while it grows (storedBuffer); the buffer
+		// and the player's scratch are allocated as it starts. Its
+		// thumbnail was made among its decoding phases, and its frames are
+		// let go once they are written.
+		play := gifPlayScratch(int64(cfg.Width), int64(cfg.Height))
+		phases = append(phases, phase{first: min(upload, limit) + play, alloc: play + 2*limit, after: limit})
+		return peakOf(phases...) + processingSlack
+	}
 	// The thumbnail is made of the picture as it is stored, turned upright.
 	tw, th := cfg.Width, cfg.Height
 	if storedOnItsSide(format, data) {
@@ -165,11 +186,7 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 	// holds the budget until then), but nothing larger is made for
 	// that: the local store writes the file from it as it is, and the
 	// Cloud Storage writer is given no buffer of its own (GCSStore.Put).
-	// A GIF's thumbnail is made before its frames are played, among its
-	// decoding phases.
-	if format != FormatGIF {
-		phases = append(phases, phase{first: scratch, alloc: scratch, after: limit})
-	}
+	phases = append(phases, phase{first: scratch, alloc: scratch, after: limit})
 	return peakOf(phases...) + processingSlack
 }
 
@@ -189,8 +206,8 @@ func storedOnItsSide(format Format, data []byte) bool {
 
 // decodingPhases are the phases of processing an upload before it is
 // encoded again: decoding it, converting it and turning it upright (and for a
-// GIF, thumbnailing it and playing its frames), which is everything sanitize
-// does before it writes the first byte of the stored file. They are nil for a
+// GIF, thumbnailing its first picture), which is everything sanitize does
+// before it writes the first byte of the stored file. They are nil for a
 // format it does not know.
 func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFrames) []phase {
 	w, h := int64(cfg.Width), int64(cfg.Height)
@@ -214,19 +231,18 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		return phases
 	case FormatGIF.Name:
 		// Every frame is decoded and kept, a byte a pixel and its overhead,
-		// until all of them are encoded again. An interlaced frame is
-		// decoded once more while its rows are put in order: at most the
-		// canvas, or a frame reaching past it (gifReader) if that is larger.
-		// The first picture is thumbnailed, at the size of the canvas.
-		// The frames are then played (playGIF) on a canvas of two bytes a
-		// pixel, which is let go once they have been.
-		kept := frames.pixels + frames.count*gifFrameOverhead
+		// with what the walk read of it, until it has been played. An
+		// interlaced frame is decoded once more while its rows are put in
+		// order: at most the canvas, or a frame reaching past it
+		// (gifReader) if that is larger. The first picture is then
+		// thumbnailed, at the size of the canvas. Playing the frames
+		// writes the stored file as it goes, from its first byte
+		// (completedCost).
+		kept := frames.pixels + frames.count*(gifFrameOverhead+gifFramePlay)
 		scratch := thumbScratch(cfg.Width, cfg.Height)
-		play := 2*px + frames.count*gifFramePlay
 		return []phase{
 			{alloc: kept + max(px, frames.largest), after: kept},
 			{first: scratch, alloc: scratch, after: kept},
-			{first: play, alloc: play, after: kept + frames.count*gifFramePlay},
 		}
 	case FormatWebP.Name:
 		return webpPhases(data, w, h)

@@ -630,6 +630,34 @@ func headerUpload(head []byte, o uint16, size int) []byte {
 	return append(out, make([]byte, max(size-len(out), 0))...)
 }
 
+// gifHeaderUpload is a GIF of the given number of frames, each covering its
+// w×h canvas, made up to an upload of about size bytes with a comment. Each
+// frame's pixel data is one sub-block of nonsense: Inspect's walk reads where
+// the frames are and how large, never their pixels.
+func gifHeaderUpload(w, h, frames, size int) []byte {
+	b := []byte("GIF89a")
+	b = binary.LittleEndian.AppendUint16(b, uint16(w))
+	b = binary.LittleEndian.AppendUint16(b, uint16(h))
+	b = append(b, 0x80, 0, 0, 0, 0, 0, 255, 255, 255) // a two-colour global table
+	for i := 0; i < frames; i++ {
+		b = append(b, 0x21, 0xF9, 4, 0, 10, 0, 0, 0) // a graphic control extension
+		b = append(b, 0x2C, 0, 0, 0, 0)
+		b = binary.LittleEndian.AppendUint16(b, uint16(w))
+		b = binary.LittleEndian.AppendUint16(b, uint16(h))
+		b = append(b, 0, 2, 1, 0x44, 0)
+	}
+	if pad := size - len(b) - 4; pad > 0 {
+		b = append(b, 0x21, 0xFE) // a comment, in sub-blocks of up to 255 bytes
+		for ; pad > 1; pad -= 256 {
+			k := min(255, pad-1)
+			b = append(b, byte(k))
+			b = append(b, make([]byte, k)...)
+		}
+		b = append(b, 0)
+	}
+	return append(b, 0x3B)
+}
+
 // webpHeader is a VP8X WebP of the given size with a stub bitstream: lossy,
 // lossy with an alpha plane (uncompressed, or VP8L-compressed with "calpha"),
 // or lossless.
@@ -783,6 +811,35 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	} {
 		check(k, side, side, large, ErrImageTooCostly)
 		check(k, 4*side, side/4, small, nil)
+	}
+	// A GIF is either by the pixels its frames come to and the upload's size,
+	// at any shape: it is played on four bytes for every pixel of its canvas
+	// (gifPlayScratch) while all its frames are held, into a stored file that
+	// can come to four times the upload. Frames of two canvases are stored
+	// from a large upload, of three from one of up to about 6.9 MiB, and of
+	// four, the most there can be (maxGIFFramePixels), from one of up to
+	// about 3.9 MiB. At a quarter of the size, the most there can be is
+	// stored from a large upload.
+	for _, c := range []struct {
+		w, h, frames, size int
+		want               error
+	}{
+		{side, side, 2, large, nil},
+		{side, side, 3, 66 << 20 / 10, nil},
+		{side, side, 3, 72 << 20 / 10, ErrImageTooCostly},
+		{side, side, 4, 36 << 20 / 10, nil},
+		{side, side, 4, 42 << 20 / 10, ErrImageTooCostly},
+		{4 * side, side / 4, 2, large, nil},
+		{4 * side, side / 4, 3, 66 << 20 / 10, nil},
+		{4 * side, side / 4, 3, 72 << 20 / 10, ErrImageTooCostly},
+		{4 * side, side / 4, 4, 36 << 20 / 10, nil},
+		{4 * side, side / 4, 4, 42 << 20 / 10, ErrImageTooCostly},
+		{side / 2, side / 2, 16, large, nil},
+	} {
+		data := gifHeaderUpload(c.w, c.h, c.frames, c.size)
+		if _, err := Inspect(data); !errors.Is(err, c.want) {
+			t.Errorf("Inspect(GIF of %d %dx%d frames, %d KiB) = %v, want %v", c.frames, c.w, c.h, len(data)>>10, err, c.want)
+		}
 	}
 	// One pixel more than the cap is refused whatever it is.
 	check(kind{"baseline 4:2:0 JPEG", headJPEG(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
