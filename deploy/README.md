@@ -75,9 +75,14 @@ project that has billing linked, one script does every step in this section:
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
 the build, the deploy, the request-log exclusion, and the archive sweeper Job
 with its daily schedule. Re-running it from a newer checkout is how an update
-ships: it moves the service and the Job onto the new image together. It leaves image uploads
-and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
-the environment turns that off), prints the service URL, and is safe to re-run.
+ships: it moves the service and the Job onto the new image together, sets the
+variables and secrets it names, and keeps any others added by hand since. Every
+run still turns image uploads and verification off, and sets the warm instance
+count: one, for a demo, unless `MIN_INSTANCES=0` is in the environment. It
+prints the service URL and is safe to re-run. To take a setting off on purpose,
+use `gcloud run services update educhan --region "$REGION"` with
+`--remove-env-vars NAME` or, for a secret, `--remove-secrets NAME`; the sweeper
+takes the same flags through `gcloud run jobs update educhan-sweep`.
 
 ```bash
 git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
