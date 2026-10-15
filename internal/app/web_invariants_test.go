@@ -448,8 +448,8 @@ var captchaFunctions = []string{
 // A captcha answer is good for one request and kept in memory only: never in
 // storage, a cookie or a draft, where it would outlive the page or be found by
 // the next person at a shared computer. It is set where it is solved, taken out
-// where a request takes it, put back where a request left it unspent, and read
-// nowhere else.
+// where a request takes it, put back where a request left it unspent or got no
+// response, and read nowhere else.
 func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	script := appScript(t)
 	banned := []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"}
@@ -536,6 +536,12 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	}
 	// An answer held and still good is sent rather than a fresh one solved,
 	// and one past CAPTCHA_LIFETIME_MS is replaced.
+	// A puzzle started in the background says nothing when it fails: the
+	// request that needs the answer tries again and says what went wrong. Its
+	// rejection is caught, so it never surfaces as an unhandled one.
+	if prepare := squash(withoutComments(jsFunction(t, script, "prepareCaptcha"))); prepare != "function prepareCaptcha() { captchaAnswer().catch(() => {}); }" {
+		t.Errorf("prepareCaptcha is %q; want it to start the puzzle and catch its failure, and do nothing else", prepare)
+	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "captchaAnswer")), "if (captcha.answer && Date.now() < captcha.goodUntil) {") ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "solveCaptcha")), "captcha.goodUntil = fetched + CAPTCHA_LIFETIME_MS;") {
 		t.Error("captchaAnswer no longer reuses a held answer only while it is good")
@@ -647,6 +653,12 @@ func TestCaptchaIsSkippedOnlyByABadgedPost(t *testing.T) {
 	needs := squash(withoutComments(jsFunction(t, script, "captchaFormNeedsIt")))
 	if !strings.Contains(needs, "!(badge && badge.checked)") {
 		t.Error("captchaFormNeedsIt no longer leaves a badged post's puzzle unsolved")
+	}
+	// Of the two forms on /verify only the code request needs an answer; the
+	// confirmation sends none, so a puzzle solved for it would be work, and a
+	// challenge counted against the address, for nothing.
+	if !strings.Contains(needs, `if (form.dataset.verify) { return form.dataset.verify === "request"; }`) {
+		t.Error("captchaFormNeedsIt no longer says that only the code request, of /verify's forms, needs an answer")
 	}
 	// And no form needs one while the captcha is off: on a site without it, a
 	// box to write in would otherwise fetch a challenge on every visit.
@@ -873,14 +885,16 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	)
 }
 
-// Each answer goes out on one request at most. The server takes an answer from
-// only one of two requests that carry it, and refuses the other as used, so a
-// page that handed its held answer to a second press while the first was on
-// its way, a slow upload say, would have one of its own posts refused, and
-// that one, its form gone, dropped without a word. So a request takes the
-// answer out of the page as it is handed over, in the same step, and a press
+// No answer is on two requests at once. The server takes an answer from only
+// one of two requests that carry it, and refuses the other as used, so a page
+// that handed its held answer to a second press while the first was on its
+// way, a slow upload say, would have one of its own posts refused, and that
+// one, its form gone, dropped without a word. So a request takes the answer
+// out of the page as it is handed over, in the same step, and a press
 // meanwhile solves a fresh puzzle. The answer goes back only when the request
-// left it unspent, and only into an empty place while it is still good.
+// left it unspent, or brought no response at all, which may have spent it,
+// and only into an empty place while it is still good: the next request is
+// then refused as used and solves a fresh one.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -925,17 +939,28 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // "Forget this browser" covers what is already on its way. A code request, a
 // confirmation or a post sent before the press and answered after it keeps
 // nothing: not the badge the server issued, not the code step, which would
-// greet the next person with the last one's institution, and not the name.
+// greet the next person with the last one's institution, not the name, and
+// not a note that a badge was lost, which would tell them there had been one.
 // A code request not sent yet is not sent. Each request notes browserForgets
-// at the press, and forgetBrowser alone moves it.
+// at the press, and only forgetOnThisPage moves it, for a press in this tab or
+// one heard from another (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
-	// Two assignments: the declaration, and forgetBrowser's.
+	// Two assignments: the declaration, and forgetOnThisPage's.
 	moves := regexp.MustCompile(`(\+\+|--)\s*browserForgets|browserForgets\s*([-+*/]?=[^=]|\+\+|--)`)
 	if !strings.Contains(code, "\nlet browserForgets = 0;\n") || len(moves.FindAllString(code, -1)) != 2 ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "browserForgets += 1;") {
-		t.Error("browserForgets is no longer moved by forgetBrowser alone")
+		!strings.Contains(withoutComments(jsFunction(t, script, "forgetOnThisPage")), "browserForgets += 1;") {
+		t.Error("browserForgets is no longer moved by forgetOnThisPage alone")
+	}
+	// What the page holds goes with it: the badge it read, the note about a
+	// lost one, the code step, its own poster key, and the name a posting form
+	// on screen was drawn with.
+	page := squash(withoutComments(jsFunction(t, script, "forgetOnThisPage")))
+	if !strings.Contains(page, `{ browserForgets += 1; state.verification.badge = null; badgeLost = ""; `+
+		`verifyStep = { step: "email", label: "" }; pagePosterKey = ""; `+
+		`for (const box of el.main.querySelectorAll('form[data-kind] input[name="name"]')) { box.defaultValue = ""; box.value = ""; } }`) {
+		t.Error("forgetOnThisPage no longer drops everything the page holds that the forget covers")
 	}
 	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
 	inOrder(t, "submitVerification", verify,
@@ -954,9 +979,62 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		"const forgets = browserForgets;",
 		"const release = holdForm(form);",
 		"if (!held && forgets === browserForgets) { storageSet(NAME_STORAGE_KEY, name); }",
+		`nameField.value = held || forgets !== browserForgets ? storageGet(NAME_STORAGE_KEY) || "" : name;`,
+		`if (reason === "expired" || reason === "revoked") { if (forgets === browserForgets) { forgetCredential(); badgeLost =`,
 	)
-	if strings.Count(submit, "storageSet(") != 1 {
-		t.Error("the submit handler stores something besides the name it checks against browserForgets")
+	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
+		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
+	}
+}
+
+// "Forget this browser" pressed in one tab reaches every other educhan tab
+// open in the browser, where it has BroadcastChannel: each cancels what it has
+// on its way and drops what it holds itself, as the tab it was pressed in
+// does, and draws /verify again if it shows it. Storage is shared, and was
+// cleared by the tab it was pressed in, so the others leave it alone. The one
+// message is a constant that says nothing about anyone, only forgetBrowser
+// sends it, and a tab acts on nothing else that arrives.
+func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	if !regexp.MustCompile(`\nconst FORGET_CHANNEL = "educhan:[a-z-]+";\n`).MatchString(code) ||
+		!regexp.MustCompile(`\nconst FORGET_MESSAGE = "[a-z-]+";\n`).MatchString(code) {
+		t.Error("the forget channel's name or its message is no longer a constant")
+	}
+	// One channel, opened once, listening for that message and nothing else.
+	open := squash(withoutComments(jsFunction(t, script, "openForgetChannel")))
+	if strings.Count(code, "new BroadcastChannel(") != 1 || !strings.Contains(code, "\nconst forgetChannel = openForgetChannel();\n") ||
+		!strings.Contains(open, `if (typeof BroadcastChannel !== "function") { return null; } try { `+
+			`const channel = new BroadcastChannel(FORGET_CHANNEL); channel.addEventListener("message", (event) => { `+
+			`if (event.data === FORGET_MESSAGE) { forgottenElsewhere(); } }); return channel; } catch { return null; }`) {
+		t.Error("openForgetChannel no longer opens the one channel, where there is one, and acts only on FORGET_MESSAGE")
+	}
+	// Posted on in one place, forgetBrowser, after its own work, with the
+	// constant: the only other postMessage in app.js gives the captcha's
+	// worker its puzzle.
+	forget := squash(withoutComments(jsFunction(t, script, "forgetBrowser")))
+	inOrder(t, "forgetBrowser", forget,
+		"forgetOnThisPage();", "forgetCredential();", "localStorage.removeItem(key);",
+		"if (forgetChannel) { forgetChannel.postMessage(FORGET_MESSAGE); } }")
+	if strings.Count(code, ".postMessage(") != 2 || strings.Count(code, "forgetChannel.postMessage(") != 1 ||
+		strings.Count(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), "worker.postMessage({") != 1 ||
+		strings.Count(code, "forgetChannel") != 3 {
+		t.Error("something besides forgetBrowser posts on the forget channel, or uses it")
+	}
+	// A tab that hears it forgets what it holds, and touches no storage.
+	elsewhere := squash(withoutComments(jsFunction(t, script, "forgottenElsewhere")))
+	if !strings.HasPrefix(elsewhere, `function forgottenElsewhere() { forgetOnThisPage(); `+
+		`if (state.route.view === "verify" && ageStatus() === "ok") { renderVerify().then(() => { showNotice(BROWSER_FORGOTTEN); }); } }`) {
+		t.Error("a tab that hears the forget no longer forgets what it holds, or draws /verify again")
+	}
+	for _, name := range []string{"forgottenElsewhere", "forgetOnThisPage"} {
+		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(fn), "storage") ||
+			strings.Contains(fn, "Credential(") {
+			t.Errorf("%s touches storage, which the tab the forget was pressed in has cleared", name)
+		}
+	}
+	if strings.Count(code, "forgottenElsewhere(") != 2 || strings.Count(code, "forgetOnThisPage(") != 3 {
+		t.Error("forgetOnThisPage or forgottenElsewhere is called from somewhere besides a forget")
 	}
 }
 
@@ -967,8 +1045,10 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 // A refusal switches back on what was switched off, and nothing else, before
 // the recovery that may switch the picker off for good, and gives the focus
 // that switching off took back to the form's button, unless the reader has
-// put it somewhere since; and nothing writes into a held form from outside
-// it: not a quote, not a dropped image.
+// put it somewhere since, without scrolling a reader who has scrolled away
+// from the form back to it; nothing writes into a held form from outside it:
+// not a quote, not a dropped image; and app.css shows the held controls
+// switched off.
 func TestAPendingFormIsHeld(t *testing.T) {
 	script := appScript(t)
 	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))
@@ -986,14 +1066,17 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	}
 	// Switching off the focused control leaves the focus nowhere; a form that
 	// had it at the press, refused while on screen, has it back on its button,
-	// unless the reader moved it during the wait: then it stays where they put it.
+	// unless the reader moved it during the wait: then it stays where they put
+	// it. The page does not scroll to the button: a reader who scrolled away
+	// meanwhile, which leaves the focus lost, stays where they are, with the
+	// notice at the top of the page in view.
 	inOrder(t, "holdForm", hold,
 		"const focused = form.contains(document.activeElement);",
 		"control.disabled = true;",
 		"const lost = !document.activeElement || document.activeElement === document.body; "+
-			`if (refocus && focused && lost) { form.querySelector('button[type="submit"]')?.focus(); }`,
+			`if (refocus && focused && lost) { form.querySelector('button[type="submit"]')?.focus({ preventScroll: true }); }`,
 	)
-	if strings.Count(hold, ".focus()") != 1 {
+	if strings.Count(hold, ".focus(") != 1 {
 		t.Error("holdForm moves the focus somewhere besides the one refocus, which is for a focus that was lost")
 	}
 	if n := strings.Count(withoutComments(script), "= holdForm(form);"); n != 2 {
@@ -1042,6 +1125,25 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	drag := squash(withoutComments(jsBlock(t, script, `document.addEventListener("dragover", (event) => {`, "});")))
 	if !strings.Contains(drag, `if (field && !field.querySelector(".file-input").disabled) { field.classList.add("dragging"); }`) {
 		t.Error("a picker held while its post is pending is still shown as a place to drop an image")
+	}
+
+	// A held form looks held: a box, a button, a tick box or a picker that
+	// will not take a tap does not look ready to.
+	css, err := fs.ReadFile(webFS(), "app.css")
+	if err != nil {
+		t.Fatalf("reading app.css: %v", err)
+	}
+	styles := squash(string(css))
+	for _, rule := range []string{
+		`.fields input[type="text"]:disabled, .fields input[type="email"]:disabled, .fields select:disabled, ` +
+			`.fields textarea:disabled { color: var(--muted); background: var(--panel); cursor: progress; }`,
+		`.fields .btn:disabled { opacity: 0.6; cursor: progress; }`,
+		`.fields label:has(> input:disabled) { opacity: 0.6; cursor: progress; }`,
+		`.file-input:disabled + .file-button { opacity: 0.6; cursor: progress; }`,
+	} {
+		if !strings.Contains(styles, rule) {
+			t.Errorf("app.css no longer shows a held form's controls switched off: missing %s", rule)
+		}
 	}
 }
 

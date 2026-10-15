@@ -1813,10 +1813,20 @@ let verifyStep = { step: "email", label: "" };
 // page that can do anything about it.
 let badgeLost = "";
 
-// How many times "Forget this browser" has been pressed on this page. A request
-// notes it at the press, and an answer that arrives after another press keeps
-// nothing: forgetting has to cover what was already on its way.
+// How many times "Forget this browser" has been pressed, on this page or, where
+// the browser has BroadcastChannel, on any other educhan page open in it. A
+// request notes it at the press, and an answer that arrives after another
+// press keeps nothing: forgetting has to cover what was already on its way.
 let browserForgets = 0;
+
+// Every open educhan tab hears "Forget this browser" pressed in any other on
+// FORGET_CHANNEL, so a forget covers what the others hold and have on their
+// way, as it does its own. The one message is FORGET_MESSAGE, a constant: it
+// says nothing about anyone, only that the browser was forgotten.
+const FORGET_CHANNEL = "educhan:forget-browser";
+const FORGET_MESSAGE = "forget";
+// What the page says once the browser has been forgotten.
+const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
 
 // localStorage throws rather than degrading in some privacy modes, so every
 // access is guarded. Losing the credential costs a full re-verification: the
@@ -1852,12 +1862,13 @@ function forgetCredential() {
 // threads, and see which posts there were yours — and the remembered name,
 // with its tripcode secret. The age answer stays: it says nothing about any
 // post. Like forgetting the badge, it is entirely local.
-// It also cancels what is on its way: a code request, a confirmation or a post
-// sent before it keeps nothing when its answer comes back after it
-// (browserForgets), neither the badge the server issued nor the code step nor
-// the name.
+// It also cancels what is on its way (forgetOnThisPage), here and, through
+// FORGET_CHANNEL, in every other open tab that hears it: a code request, a
+// confirmation or a post sent before it keeps nothing when its answer comes
+// back after it, neither the badge the server issued nor the code step nor the
+// name, nor a note that a badge was lost.
 function forgetBrowser() {
-  browserForgets += 1;
+  forgetOnThisPage();
   forgetCredential();
   for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
     try {
@@ -1866,7 +1877,64 @@ function forgetBrowser() {
       // Nothing was stored, so nothing needs removing.
     }
   }
+  // Storage is shared, so the other tabs leave it alone.
+  if (forgetChannel) {
+    forgetChannel.postMessage(FORGET_MESSAGE);
+  }
+}
+
+// forgetOnThisPage is the part of forgetting the browser that a page holds
+// itself rather than in storage, run in the tab where it was pressed and in
+// every tab that hears it. It cancels what is on its way from the page
+// (browserForgets); drops the badge read from storage, the poster key the page
+// keeps for itself, and the code step and the note about a lost badge, which
+// would greet the next person with the last one's institution; and empties the
+// Name of every posting form on screen, drawn with the forgotten name, which
+// would post under its tripcode.
+function forgetOnThisPage() {
+  browserForgets += 1;
+  state.verification.badge = null;
+  badgeLost = "";
+  verifyStep = { step: "email", label: "" };
   pagePosterKey = "";
+  for (const box of el.main.querySelectorAll('form[data-kind] input[name="name"]')) {
+    box.defaultValue = "";
+    box.value = "";
+  }
+}
+
+// forgottenElsewhere is a tab's answer to Forget this browser pressed in
+// another: what the page holds goes, as it did there, and /verify, when it is
+// on screen here, is drawn again without the badge or the code step.
+function forgottenElsewhere() {
+  forgetOnThisPage();
+  if (state.route.view === "verify" && ageStatus() === "ok") {
+    renderVerify().then(() => {
+      showNotice(BROWSER_FORGOTTEN);
+    });
+  }
+}
+
+// forgetChannel is this tab's end of FORGET_CHANNEL, opened once at start-up,
+// or null in a browser without BroadcastChannel, or one that will not open it:
+// there a forget covers the tab it was pressed in and no other.
+const forgetChannel = openForgetChannel();
+
+function openForgetChannel() {
+  if (typeof BroadcastChannel !== "function") {
+    return null;
+  }
+  try {
+    const channel = new BroadcastChannel(FORGET_CHANNEL);
+    channel.addEventListener("message", (event) => {
+      if (event.data === FORGET_MESSAGE) {
+        forgottenElsewhere();
+      }
+    });
+    return channel;
+  } catch {
+    return null;
+  }
 }
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
@@ -3236,9 +3304,8 @@ document.addEventListener("click", (event) => {
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     forgetBrowser();
-    verifyStep = { step: "email", label: "" };
     renderVerify().then(() => {
-      showNotice("This browser no longer holds your post key, your name or a badge.");
+      showNotice(BROWSER_FORGOTTEN);
     });
     return;
   }
@@ -3634,9 +3701,11 @@ function takeCaptcha(answer) {
   return taken;
 }
 
-// keepCaptcha puts back an answer a request took and did not spend: it was
-// not sent, or the server refused the request without using it. It goes back
-// only while the page holds no other answer, and only while it is still good.
+// keepCaptcha puts back an answer a request took and did not spend, or that
+// brought no response at all, which may have spent it: it was not sent, the
+// server refused the request without using it, or nothing came back. It goes
+// back only while the page holds no other answer, and only while it is still
+// good.
 function keepCaptcha(taken) {
   if (taken && !captcha.answer && Date.now() < taken.goodUntil) {
     captcha.answer = taken.answer;
@@ -3761,7 +3830,7 @@ function runCaptchaWorkers(challenge, signal) {
 // another press while this request is on its way, from a form on another page
 // say, solves a fresh puzzle rather than sending the same answer, which the
 // server would let only one of the two use. It is put back (keepCaptcha) only
-// when this request leaves it unspent, as below.
+// when this request left it unspent, or brought no response, as below.
 // A refusal of the answer itself, for being missing, out of date, used or
 // wrong, comes before anything is stored or sent, so the answer is dropped and
 // the request sent once more with a fresh one, and the reader presses the
@@ -3866,7 +3935,9 @@ const heldForms = new WeakSet();
 // took away, gets it back on its button, ready to press again; put back in a
 // box to write in, it would start another puzzle. That is only while the focus
 // is still lost, on the page itself or nowhere: a reader who moved it during
-// the wait, to read a post say, keeps it where they put it.
+// the wait, to read a post say, keeps it where they put it. And it does not
+// scroll the page: a reader who scrolled away during the wait stays where they
+// are, with the notice saying what happened in view.
 // Until release, the form is in heldForms, and a redraw of its page carries it
 // across as it is (captureDraft, restoreDraft).
 function holdForm(form) {
@@ -3883,7 +3954,7 @@ function holdForm(form) {
     }
     const lost = !document.activeElement || document.activeElement === document.body;
     if (refocus && focused && lost) {
-      form.querySelector('button[type="submit"]')?.focus();
+      form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
     }
   };
 }
@@ -3986,7 +4057,7 @@ el.main.addEventListener("submit", async (event) => {
     // The remembered name is the one for unbadged posts; a badged post's name
     // is never offered on the next form, where the badge starts unticked. A
     // post that went before "Forget this browser" and was answered after it
-    // leaves the name forgotten.
+    // leaves the name forgotten, in storage and in the form below.
     if (!held && forgets === browserForgets) {
       storageSet(NAME_STORAGE_KEY, name);
     }
@@ -3995,11 +4066,12 @@ el.main.addEventListener("submit", async (event) => {
     // navigation below, or a redraw of the page that carried the form while
     // it was held (captureDraft). reset() puts the Name back to what the form
     // was drawn with, so it is set again: to the name just used — empty, if
-    // the poster cleared it — or after a badged post to the remembered one.
+    // the poster cleared it — or, after a badged post or a forget, to the
+    // remembered one.
     form.reset();
     const nameField = field(form, "name");
     if (nameField) {
-      nameField.value = held ? storageGet(NAME_STORAGE_KEY) || "" : name;
+      nameField.value = held || forgets !== browserForgets ? storageGet(NAME_STORAGE_KEY) || "" : name;
     }
     const fileField = form.querySelector("[data-file-field]");
     if (fileField) {
@@ -4023,13 +4095,18 @@ el.main.addEventListener("submit", async (event) => {
     // option goes with it — taking the checkbox out of this form rather than
     // re-rendering leaves the half-written post exactly where it is — so the
     // retry that follows is an ordinary post instead of the same refusal.
+    // Why it went is kept for /verify to say, unless the browser was forgotten
+    // meanwhile: the badge went with it, a badge stored since is someone
+    // else's, and the note would tell the next person there had been one.
     const reason = err.payload && err.payload.credential;
     if (reason === "expired" || reason === "revoked") {
-      forgetCredential();
-      badgeLost =
-        reason === "expired"
-          ? "Your badge has expired."
-          : "That badge was replaced by a newer verification.";
+      if (forgets === browserForgets) {
+        forgetCredential();
+        badgeLost =
+          reason === "expired"
+            ? "Your badge has expired."
+            : "That badge was replaced by a newer verification.";
+      }
       const box = field(form, "badge");
       const option = box && box.closest("label");
       if (option) {
