@@ -362,12 +362,12 @@ image is then refused with `403` and
 checks what an image shows yet: there is no known-image hash matching and no
 content scanning. Metadata is already stripped (below). With uploads off a
 multipart post is held to the 64 KiB a JSON post may be, so the server stops
-reading an image once the body passes that, and a file
-over the size limit gets the same `403` rather than a `413`; a multipart post
-with no file, or with the empty file part a browser sends for an untouched
-input, posts as usual. `GET /api/site`
-reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
-client can leave the image picker off a server that would refuse what it sends.
+reading an image once the body passes that, and a file over the size limit gets
+the same `403` rather than a `413`; a multipart post with no file, or with the
+empty file part a browser sends for an untouched input, posts as usual.
+`GET /api/site` reports the switch and the size limit as
+`{"uploads","max_upload_bytes"}`, so a client can leave the image picker off a
+server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, an image whose header claims
@@ -423,12 +423,12 @@ client can leave the image picker off a server that would refuse what it sends.
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is
   compressed rather than by the picture's resolution: Go's WebP decoder sizes its
-  internal tables from the compressed data, not from any header field, so a crafted
-  file of 160 KiB can make it hold about 170 MiB, and a larger one more. There is no
-  way to tell a benign file from a crafted one without decoding it, so a lossless WebP whose
-  picture data comes to more than 224 KiB is refused from its header — less for a
-  larger picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little less in
-  a larger upload — and so is a lossy WebP whose compressed transparency alone comes to
+  internal tables from the compressed data, not from any header field, so a crafted file
+  of 160 KiB can make it hold about 170 MiB, and a larger one more. There is no way to
+  tell a benign file from a crafted one without decoding it, so a lossless WebP whose
+  picture data comes to more than 224 KiB is refused from its header — less for a larger
+  picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little less in a
+  larger upload — and so is a lossy WebP whose compressed transparency alone comes to
   that much. A small lossless picture (an icon or a sticker) is still stored, and so is
   an ordinary cut-out, whose transparency is a few hundred bytes to a few kilobytes
   however large its picture; what else the file carries, a colour profile or EXIF, does
@@ -439,20 +439,19 @@ client can leave the image picker off a server that would refuse what it sends.
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
   profiles. Both storage backends get the same rewritten file. Files stored before this
   are the exception (below).
-  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a phone
-    photo stored on its side is upright everywhere, thumbnail included, and its reported
-    width and height are the upright ones. It keeps its chroma subsampling, so colour
-    saved at full resolution (4:4:4, as editors save screenshots and diagrams at high
-    quality) stays sharp. The exception is a picture whose sampling grid a turn cannot
-    line up, which is stored at finer 4:4:4 instead, a larger file with its colour kept
-    rather than lost: one that the turn mirrors along a side that is not a whole number
-    of colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height at 4:4:0,
-    4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or 4:1:0), and a
-    4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses depends on
-    the turn, so an odd-sided picture can keep its subsampling through one turn and not
-    through another.
-    It is re-encoded at the lowest quality that compresses no
-    detail more coarsely than the upload did, and at 90 at most: a photo saved at
+  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a
+    phone photo stored on its side is upright everywhere, thumbnail included, and its
+    reported width and height are the upright ones. It keeps its chroma subsampling, so
+    colour saved at full resolution (4:4:4, as editors save screenshots and diagrams at
+    high quality) stays sharp. The exception is a picture whose sampling grid a turn
+    cannot line up, which is stored at finer 4:4:4 instead, a larger file with its
+    colour kept rather than lost: one that the turn mirrors along a side that is not a
+    whole number of colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height
+    at 4:4:0, 4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or
+    4:1:0), and a 4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses
+    depends on the turn, so an odd-sided picture can keep its subsampling through one
+    turn and not through another. It is re-encoded at the lowest quality that compresses
+    no detail more coarsely than the upload did, and at 90 at most: a photo saved at
     quality 30 by most software is stored at 30, at about the size it came in at and
     looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
     whose encoder fitted its Huffman tables to the picture or saved it progressive, as
@@ -481,14 +480,15 @@ client can leave the image picker off a server that would refuse what it sends.
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
     PNG, which keeps a lossless picture exactly. A WebP's quality setting does not mean
     what a JPEG's does, so there is no lower quality to match, and the JPEG is larger
-    the lower the quality the WebP was saved at: measured on photos, up to 1.4 times
-    the WebP's size from quality 90, two to three times from 75, three and a half to
-    five and a half from 25, and up to eight and a half from 5. A lossy WebP's colours come back from the decoder in a narrower range than
-    they were saved in, so they are expanded again before storing, or black would be
-    kept as dark grey and white as light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
+    the lower the quality the WebP was saved at: measured on photos, up to 1.4 times the
+    WebP's size from quality 90, two to three times from 75, three and a half to five
+    and a half from 25, and up to eight and a half from 5. A lossy WebP's colours come
+    back from the decoder in a narrower range than they were saved in, so they are
+    expanded again before storing, or black would be kept as dark grey and white as
+    light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
     `image.png`). Keeping the WebP with only its metadata chunks removed would not be
-    enough: a decoder ignores anything after the picture inside the chunks that hold
-    it, so a second file could ride through unseen. WebPs stored before this stay WebPs.
+    enough: a decoder ignores anything after the picture inside the chunks that hold it,
+    so a second file could ride through unseen. WebPs stored before this stay WebPs.
   - Besides metadata, a picture can carry a whole second file in channels it never
     shows, and those are dropped too. A fully transparent pixel is stored with no
     colour, because an editor that erases part of a picture by clearing its alpha often
@@ -503,10 +503,9 @@ client can leave the image picker off a server that would refuse what it sends.
     picture: a fully opaque pixel keeps its exact value, including the low byte of a
     16-bit channel, because that is the picture and a lossless format stores it exactly
     (but for a PNG's gamma, applied as above, which changes the values so that the
-    picture shows as it did).
-    So data hidden in the low bits of a visible picture, as classic steganography does,
-    survives — the aim is to strip the metadata and the channels that do not show, not
-    to alter the picture a reader sees.
+    picture shows as it did). So data hidden in the low bits of a visible picture, as
+    classic steganography does, survives — the aim is to strip the metadata and the
+    channels that do not show, not to alter the picture a reader sees.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can
@@ -517,9 +516,9 @@ client can leave the image picker off a server that would refuse what it sends.
   would show its mid-grey at 128 where it showed at about 188. So its colours are
   converted to the sRGB values that show the same light, as Chromium converts them —
   unless an `sRGB` or `iCCP` chunk takes its place, as it does in a browser, or the
-  gamma is within 5% of the usual 1/2.2, which browsers leave alone. The checksum recorded for an attachment is of the
-  stored file, so it does not depend on the metadata an upload arrived with, beyond an
-  orientation that turns the picture.
+  gamma is within 5% of the usual 1/2.2, which browsers leave alone. The checksum
+  recorded for an attachment is of the stored file, so it does not depend on the
+  metadata an upload arrived with, beyond an orientation that turns the picture.
 - **Files stored before this** keep their metadata: a server that took uploads before
   it rewrote them kept them as they came, and nothing rewrites them now, so they are
   served that way until their posts are deleted. The deployment in `deploy/` has kept
@@ -904,16 +903,14 @@ again as soon as the wait is over. A post whose body takes longer than 30 second
 arrive, counted from when there was room to read it, answers `408` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
 connection faster; it is refused before flood control, so it starts no cooldown. A
-request rejected for any other reason — an empty body, an oversized image, a
-file that is not an accepted image or whose header shows it too large to
-process, a reply to a missing, locked or archived thread or an image past a
-thread's cap —
-does not start a cooldown, so a typo never costs a wait. Two refusals come only
-after the cooldowns have started: an image whose header reads but whose pixels
-do not decode, or whose rewritten file would be too large to store, which only
-decoding and encoding it can find, and those are the cost the upload cooldown is
-there for; and the loser of two replies racing for a thread's last image slot
-(see the HTTP API).
+request rejected for any other reason — an empty body, an oversized image, a file
+that is not an accepted image or whose header shows it too large to process, a reply
+to a missing, locked or archived thread or an image past a thread's cap — does not
+start a cooldown, so a typo never costs a wait. Two refusals come only after the
+cooldowns have started: an image whose header reads but whose pixels do not decode,
+or whose rewritten file would be too large to store, which only decoding and
+encoding it can find, and those are the cost the upload cooldown is there for; and
+the loser of two replies racing for a thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
