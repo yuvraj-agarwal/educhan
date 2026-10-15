@@ -2271,6 +2271,18 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"i'm coming for you at 5 to pick you up from tuition tomorrow", publish},
 		{"say goodbye to them at the farewell on friday, they're leaving for uni", publish},
 		{"stay home tomorrow if you're sick, the flu is going around school", publish},
+		// A phrase broken by a comma, a colon or a dash reads on in the
+		// clause it ends in, as it would unbroken. Reading on from the
+		// clause it started in once made the filter panic, which refused
+		// the post with a server error.
+		{"whoever reported me to the principal: you have, until friday. i know where you live", threat},
+		{"assembly hall, 10am thursday. i've got enough for, every single one of you.", threat},
+		{"Please don't - come to school on monday", publish},
+		{"stay: away from the canteen on friday", publish},
+		{"skip, school tomorrow", publish},
+		{"avoid: the hall at lunch", publish},
+		{"the bus won't make it, to the zoo in time", publish},
+		{"you have, until friday to submit the lab report", publish},
 		{"it's his last day at school tomorrow, he's moving to Pune", publish},
 		{"remember i said it first: our class will top the boards this year", publish},
 		{"the seniors better enjoy their last weekend before boards", publish},
@@ -2342,6 +2354,10 @@ func TestFilterReadsEncouragementToldInOtherWords(t *testing.T) {
 		{"then disappear for a week and come back stronger, that's what i did before boards", publish},
 		{"you should've killed yourself when you had the chance", selfHarm},
 		{"should've jumped on that deal when you had the chance", publish},
+		// Broken by a comma, as TestFilterReadsAThreatToldByImplication
+		// reads one.
+		{"you should've, killed yourself when you had the chance", selfHarm},
+		{"should've, jumped on that deal when you had the chance", publish},
 		{"you should've ended it when you had the chance", publish},
 		{"if you really meant it you'd have done it already. what are you waiting for", selfHarm},
 		{"if you meant it you'd have done it by now. go on then, apply", publish},

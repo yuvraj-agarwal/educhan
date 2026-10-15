@@ -6580,6 +6580,13 @@ func (r *wordReading) sentenceWords(i int) []string {
 // clauseFrom is where word i's clause starts, or readReach words back.
 func (r *wordReading) clauseFrom(i int) int { return max(r.clauseStart[i], i-readReach) }
 
+// restOfClause is up to n words after a phrase that ends at word hi, in the
+// clause the phrase ends in. A phrase is matched over its sentence, so it
+// can end in a later clause than it starts in: "don't - come to school".
+func (r *wordReading) restOfClause(hi, n int) []string {
+	return r.ws[hi:min(r.clauseEnd[hi-1], hi+n)]
+}
+
 // subjectBefore is the word before i, in its clause, that heads what it is
 // said of: the first going back past auxiliaries and adverbs ("he'll
 // definitely be"), or "" at the clause's start.
@@ -7102,7 +7109,7 @@ func nobodyLeaves(r *wordReading, lo, hi int) (strong, ok bool) {
 // trip bus won't make it to the zoo". In time, on time and a phone are not
 // one.
 func notMakingIt(r *wordReading, lo, hi int) (strong, ok bool) {
-	after := r.ws[hi:min(r.clauseEnd[lo], hi+4)]
+	after := r.restOfClause(hi, 4)
 	return false, !hasWord(after, "time") && !anyIn(r.sentenceWords(lo), deviceWords)
 }
 
@@ -7171,7 +7178,7 @@ func enoughForAll(r *wordReading, lo, hi int) (strong, ok bool) {
 	if r.postHas("supply", supplyWords) || r.postHas("food", foodWords) {
 		return false, false
 	}
-	after := r.ws[hi:min(r.clauseEnd[lo], hi+4)]
+	after := r.restOfClause(hi, 4)
 	return hasWord(after, "single") || everyOne[r.ws[hi-1]] && hasWord(after, "one"), true
 }
 
@@ -7218,7 +7225,7 @@ func clubAndCrew(r *wordReading, lo, hi int) (strong, ok bool) {
 // ultimatum reads "you have until friday" with no task to do by then: not
 // "you have until friday to submit".
 func ultimatum(r *wordReading, lo, hi int) (strong, ok bool) {
-	rest := r.ws[hi:min(r.clauseEnd[lo], hi+6)]
+	rest := r.restOfClause(hi, 6)
 	return false, !hasWord(rest, "to") && !hasWord(rest, "for") && len(rest) <= 5
 }
 
@@ -7280,7 +7287,7 @@ func stayAway(r *wordReading, lo, hi int) (strong, ok bool) {
 	if r.endsSentence(hi) {
 		return false, true
 	}
-	for _, w := range r.ws[hi:min(r.clauseEnd[lo], hi+6)] {
+	for _, w := range r.restOfClause(hi, 6) {
 		if placeHeads[w] || soonWords[w] || is(w, "weekend") {
 			return false, true
 		}
@@ -8890,7 +8897,7 @@ func tooLate(g *goadReading, lo, hi int) bool {
 	if subj := g.subjectBefore(lo); subj != "" && !secondPerson[subj] || anyIn(g.sentenceWords(lo), firstPersonSubjects) {
 		return false
 	}
-	ws := g.ws[hi:min(g.clauseEnd[lo], hi+10)]
+	ws := g.restOfClause(hi, 10)
 	act := g.ws[hi-1]
 	k := 0
 	switch {
