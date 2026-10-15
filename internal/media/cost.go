@@ -100,16 +100,24 @@ const gifFrameOverhead int64 = 16 << 10
 // storedLimit bounds, and it lets each frame go once it has played it.
 const gifFramePlay int64 = 64
 
-// gifPlayScratch is what playGIF allocates to play a GIF on a w×h canvas:
-// the colour key of every pixel of what the frames before the one being
-// played left (under), four bytes each; two bit sets over the canvas, of the
-// pixels the stored frames of the picture showing and of the next one draw;
-// and four rows of scratch, three of colour keys and one of the indices
-// written. Its colour index and its LZW compressor's tables, under 80 KiB
-// together, are left to processingSlack.
-func gifPlayScratch(w, h int64) int64 {
+// gifPlayScratch is what playGIF allocates to play a GIF of the frames given
+// on a w×h canvas: the colour key of every pixel of what the frames before
+// the one being played left (under), four bytes each; two bit sets over the
+// canvas, of the pixels the stored frames of the picture showing and of the
+// next one draw; and four rows of scratch, three of colour keys and one of
+// the indices written. An animation whose tables give more than 255 colours
+// (gifFrames.many) may be stored with a table a frame, and some of its
+// frames put back, for which the player keeps what was under the stored
+// frame of the picture showing (saved), four bytes a pixel more. Its colour
+// index and its LZW compressor's tables, under 80 KiB together, are left to
+// processingSlack.
+func gifPlayScratch(w, h int64, frames gifFrames) int64 {
 	px := w * h
-	return 4*px + 2*8*((px+63)/64) + 13*w
+	scratch := 4*px + 2*8*((px+63)/64) + 13*w
+	if frames.count > 1 && frames.many {
+		scratch += 4 * px
+	}
+	return scratch
 }
 
 // phase is one step of processing an upload. It allocates first as it
@@ -167,7 +175,7 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 		// and the player's scratch are allocated as it starts. Its
 		// thumbnail was made among its decoding phases, and its frames are
 		// let go once they are written.
-		play := gifPlayScratch(int64(cfg.Width), int64(cfg.Height))
+		play := gifPlayScratch(int64(cfg.Width), int64(cfg.Height), frames)
 		phases = append(phases, phase{first: min(upload, limit) + play, alloc: play + 2*limit, after: limit})
 		return peakOf(phases...) + processingSlack
 	}

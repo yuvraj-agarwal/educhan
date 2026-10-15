@@ -411,7 +411,12 @@ server that would refuse what it sends.
     GIF, which is played on four bytes a pixel of its canvas while all its frames are
     held: at any shape, one whose frames come to two canvases or less is accepted, three
     from an upload of up to about 6.9 MiB, and four, the most a GIF's frames can come
-    to, up to about 3.9 MiB.
+    to, up to about 3.9 MiB. An animation whose colour tables give more than 255 colours
+    between them is played on eight bytes a pixel, for the frames it may put back (see the
+    GIF bullet below): at this size it is accepted only when its frames come to about two
+    thirds of a canvas or less, half of one from an upload of up to about 2.4 MiB, and
+    from an upload of 8 MiB, two whole frames are accepted up to about 17 megapixels and
+    four up to about 15.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,
@@ -509,19 +514,28 @@ server that would refuse what it sends.
     pictures show, in order of their values: one global table when there are 255 or fewer,
     and otherwise a table for each frame of the colours it draws. A frame that draws 256
     has no room for a transparent entry, so the pixels it leaves as they were are written
-    in the colour they already show; a GIF where that cannot be done, or where the frame
-    of one picture would have to draw more than 256 colours, cannot be stored one frame to
-    a picture and is refused (`image too large to process`). Only a frame that clears or
-    puts back what an earlier one drew can bring that about, since a frame on its own
-    draws from one table. None of 1,500 GIFs of many colours made to test it was refused,
-    but 4 of 126 made with ffmpeg, ImageMagick and Pillow were: ImageMagick's frame
-    optimisation (`-layers OptimizeFrame` or `OptimizePlus`) of one animation with a table
-    of 256 colours a frame, which puts back a frame and so leaves the picture after it
-    more than 256 colours to change. A GIF whose stored frames would add up to more pixels
-    than four 25-megapixel canvases is refused too, which takes frames that jump across
-    the canvas from one picture to the next. Comments and application data such as XMP are
-    dropped, and the background colour, which browsers never draw, is written as the first
-    entry.
+    in the colour they already show. With a table a frame, a frame left in place or
+    cleared can leave the next one more colours to draw than its table holds — the ones it
+    covered, back again, and the next picture's own — so there a frame is left in place,
+    or else cleared, only where both can still be written, and is otherwise put back,
+    which leaves what was there before it was drawn, as ImageMagick's frame optimisation
+    does (a frame put back is not cut to take in pixels to clear, and is drawn again,
+    rather than followed by frames that draw nothing, for time past one delay). A GIF
+    where none of the three will do cannot be stored one frame to a picture and is refused
+    (`image too large to process`): for instance one whose frames are put back two in a
+    row, the second to the picture from before the first, which the stored file, having
+    left the first in place, cannot go back to. Only frames that clear or put back what
+    earlier ones drew can bring that about, since a frame on its own draws from one table.
+    None of 126 GIFs made with ffmpeg, ImageMagick and Pillow is refused, nor any of 1,500
+    of many colours made to test it; of 5,000 random GIFs of up to 256 colours a frame and
+    every disposal method, one is, and of 2,000 random animations of sprites of up to 256
+    colours each put back, cleared or left over a background of 256, 75 are. A GIF whose
+    stored frames would add up to more pixels than four 25-megapixel canvases is refused
+    too, which takes frames that jump across the canvas from one picture to the next; with
+    a table a frame, a rectangle looked at for a way of disposing of a frame that is not
+    taken counts as a frame, so that the work of looking is bounded as the work of writing
+    is. Comments and application data such as XMP are dropped, and the background colour,
+    which browsers never draw, is written as the first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a

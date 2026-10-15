@@ -14,11 +14,13 @@ import (
 	"image/draw"
 	"image/gif"
 	"image/png"
+	"io"
 	"math"
 	"math/rand"
 	"runtime"
 	"runtime/debug"
 	"runtime/metrics"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -101,6 +103,43 @@ func gifOfFrames(t *testing.T, w, h, n int) []byte {
 	for i := 0; i < n; i++ {
 		g.Image = append(g.Image, image.NewPaletted(image.Rect(0, 0, w, h), pal))
 		g.Delay = append(g.Delay, 1)
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	return buf.Bytes()
+}
+
+// gifPutBack is a GIF of five frames on a w×h canvas that is stored with a
+// table a frame and frames put back (playGIF): a background of 256 bands of
+// colour, then a spark of one colour over its left half, put back, then 256
+// bands of other colours over its right half, and the spark and another 256
+// after that. Left in place or cleared, the spark would leave the frame
+// after it to draw the background's left half as well, 512 colours.
+func gifPutBack(t *testing.T, w, h int) []byte {
+	t.Helper()
+	bands := func(r image.Rectangle, red uint8) *image.Paletted {
+		pal := make(color.Palette, 256)
+		for i := range pal {
+			pal[i] = color.RGBA{red, uint8(i), uint8(255 - i), 0xFF}
+		}
+		m := image.NewPaletted(r, pal)
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			row := m.Pix[m.PixOffset(r.Min.X, y):][:r.Dx()]
+			for x := range row {
+				row[x] = uint8((y - r.Min.Y) * 256 / r.Dy())
+			}
+		}
+		return m
+	}
+	left, right := image.Rect(0, 0, w/2, h), image.Rect(w/2, 0, w, h)
+	spark := image.NewPaletted(left, color.Palette{color.RGBA{0xF0, 0xF0, 0x10, 0xFF}})
+	g := &gif.GIF{
+		Image:    []*image.Paletted{bands(image.Rect(0, 0, w, h), 0), spark, bands(right, 1), spark, bands(right, 2)},
+		Delay:    []int{10, 10, 10, 10, 10},
+		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalNone, gif.DisposalPrevious, gif.DisposalNone},
+		Config:   image.Config{Width: w, Height: h},
 	}
 	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, g); err != nil {
@@ -287,7 +326,9 @@ func greyQuadrants(w, h int) *image.Gray {
 // than decoding it does, and hide a term of its decoding from the cost of the
 // whole. The GIF past its canvas has a 3200×2400 interlaced frame on a canvas
 // of 64×64, so that the copy its rows are put in order in is charged on the
-// frame, not the canvas. An opaque lossy WebP is charged for its planes and
+// frame, not the canvas. The GIF of frames put back is stored with frames
+// put back, for which what was under them is kept (gifPlayScratch). An
+// opaque lossy WebP is charged for its planes and
 // two copies of its file (the strip's and the decoder's), so it comes three
 // ways, each term megabytes over the others somewhere: 2400×1800 as Pillow
 // made it, whose planes are megabytes and whose file is not; 144×48 with 8 MiB
@@ -333,6 +374,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
 		"GIF past its canvas":          interlaced(t, gifPastCanvas(t, large, tall)),
+		"GIF of frames put back":       gifPutBack(t, w, h),
 		"WebP lossy":                   readTestdata(t, "cost-lossy.webp"),
 		"WebP lossy, small, padded":    paddedBitstream(t, readTestdata(t, "webp-swatches.webp"), 8<<20),
 		"WebP lossy, padded":           paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
@@ -500,6 +542,125 @@ func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 	}
 }
 
+// What playGIF allocates is no more than gifPlayScratch: for a GIF of few
+// colours, what the frames left and the two bit sets; and for an animation
+// of many, which may be stored with frames put back and here is
+// (gifPutBack), what was under the stored frame as well. The frames are
+// decoded before it is measured and held throughout. In the cost of the
+// whole the scratch sits on top of a bound for the stored file that is far
+// above what these need, which would hide a scratch smaller than the
+// player's.
+func TestGIFPlayScratchCoversThePlayer(t *testing.T) {
+	const w, h = 2400, 1800
+	for _, c := range []struct {
+		name string
+		data []byte
+		many bool
+	}{
+		{"few colours", gifOfFrames(t, w, h, 4), false},
+		{"frames put back", gifPutBack(t, w, h), true},
+	} {
+		frames, err := gifFramePixels(c.data, maxGIFFramePixels)
+		if err != nil || frames.many != c.many {
+			t.Fatalf("%s: read as %+v, %v; want many colours %v", c.name, frames, err, c.many)
+		}
+		g, err := gif.DecodeAll(bytes.NewReader(c.data))
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		var heads []gifFrameHead
+		walkGIF(c.data, math.MaxInt64, func(head gifFrameHead) { heads = append(heads, head) })
+		want := gifPlayScratch(w, h, frames) + processingSlack
+		held := leastPeak(t, c.name, want, func() error {
+			// playGIF lets go of the frames in the slice it is given, and
+			// the frames stay held in g.
+			return playGIF(slices.Clone(g.Image), heads, image.Rect(0, 0, w, h), 0, io.Discard)
+		})
+		t.Logf("%s: playing held %.1f MiB of %.1f", c.name, float64(held)/(1<<20), float64(want)/(1<<20))
+		if held > want {
+			t.Errorf("%s: playing the GIF held %d bytes live, over gifPlayScratch and processingSlack, %d", c.name, held, want)
+		}
+	}
+}
+
+// An animation is charged for what putting frames back keeps
+// (gifPlayScratch) when its frames' tables, as Chromium reads them, give more
+// than 255 colours between them (gifFrames.many): a frame's transparent
+// entry shows no colour, and an index past the end of a table of fewer than
+// 256 entries shows black. Only such tables can draw more colours than one
+// table holds beside a transparent entry, which is when playGIF gives each
+// frame a table of its own and may put frames back; so every GIF of random
+// frames or of sprites that is stored so was charged.
+func TestGIFOfManyColoursIsReadFromItsTables(t *testing.T) {
+	distinct := func(first, n int) [][3]byte {
+		c := make([][3]byte, n)
+		for i := range c {
+			c[i] = [3]byte{byte(first + i), byte((first + i) >> 8), 0x77}
+		}
+		return c
+	}
+	frame := func(local [][3]byte, ti int) rawFrame {
+		return rawFrame{controls: []rawControl{{keepFrame, 10, ti}}, at: image.Rect(0, 0, 2, 1), local: local, pix: []uint8{0, 1}}
+	}
+	for _, c := range []struct {
+		name string
+		g    rawGIF
+		many bool
+	}{
+		{"a global table of 256 colours", rawGIF{w: 2, h: 1, global: distinct(0, 256),
+			frames: []rawFrame{frame(nil, -1), frame(nil, -1)}}, true},
+		{"a global table of 256 colours, one of them transparent in every frame", rawGIF{w: 2, h: 1, global: distinct(0, 256),
+			frames: []rawFrame{frame(nil, 7), frame(nil, 7)}}, false},
+		{"a global table of 256 colours, a different one transparent in each frame", rawGIF{w: 2, h: 1, global: distinct(0, 256),
+			frames: []rawFrame{frame(nil, 7), frame(nil, 9)}}, true},
+		{"tables of 128 colours and the black past them", rawGIF{w: 2, h: 1, global: distinct(0, 128),
+			frames: []rawFrame{frame(nil, -1), frame(distinct(0, 127), -1)}}, false},
+		{"two tables of 128 colours and the black past them", rawGIF{w: 2, h: 1,
+			frames: []rawFrame{frame(distinct(0, 128), -1), frame(distinct(128, 128), -1)}}, true},
+	} {
+		frames, err := gifFramePixels(c.g.bytes(), maxGIFFramePixels)
+		if err != nil || frames.many != c.many {
+			t.Errorf("%s: read as many colours %v (%v), want %v", c.name, frames.many, err, c.many)
+		}
+	}
+	// Reading the tables allocates nothing, however many there are: here
+	// 2,000 of 128 colours each, the same ones, so that it reads them all.
+	g := rawGIF{w: 2, h: 1}
+	for len(g.frames) < 2000 {
+		g.frames = append(g.frames, frame(distinct(0, 128), 5))
+	}
+	tables := g.bytes()
+	if frames, err := gifFramePixels(tables, maxGIFFramePixels); err != nil || frames.many {
+		t.Fatalf("2,000 tables of the same 128 colours read as many colours %v (%v)", frames.many, err)
+	}
+	if allocs := testing.AllocsPerRun(10, func() { gifFramePixels(tables, maxGIFFramePixels) }); allocs != 0 {
+		t.Errorf("gifFramePixels allocated %v times reading 2,000 tables, want none", allocs)
+	}
+
+	rng := rand.New(rand.NewSource(3))
+	own := 0
+	for i := 0; i < 600; i++ {
+		g := randomSpritesGIF(rng)
+		if i%2 == 0 {
+			g = randomRawGIF(rng, 600)
+		}
+		data := g.bytes()
+		got, err := Process(context.Background(), data)
+		if err != nil {
+			continue
+		}
+		if _, local := gifTables(t, got.Data); slices.Contains(local, true) && len(local) > 1 {
+			own++
+			if frames, _ := gifFramePixels(data, maxGIFFramePixels); !frames.many {
+				t.Fatalf("GIF %d is stored with a table a frame, but was not read as many colours", i)
+			}
+		}
+	}
+	if own < 300 {
+		t.Errorf("%d GIFs stored with a table a frame; the test shows little", own)
+	}
+}
+
 // The thumbnail scaler's scratch is no more than thumbScratch, for a picture
 // wider than it is tall and for one taller than it is wide: the scaler works
 // on a picture as wide as the thumbnail and as tall as the source, so it is
@@ -630,20 +791,35 @@ func headerUpload(head []byte, o uint16, size int) []byte {
 	return append(out, make([]byte, max(size-len(out), 0))...)
 }
 
-// gifHeaderUpload is a GIF of the given number of frames, each covering its
-// w×h canvas, made up to an upload of about size bytes with a comment. Each
-// frame's pixel data is one sub-block of nonsense: Inspect's walk reads where
-// the frames are and how large, never their pixels.
-func gifHeaderUpload(w, h, frames, size int) []byte {
+// gifHeaderUpload is a GIF of the given number of frames, each as wide as
+// its w×h canvas and frameH tall, made up to an upload of about size bytes
+// with a comment. The frames are drawn from a two-colour global table, or,
+// with many, each from a table of its own of 256 greys, more than 255
+// colours (gifFrames.many). Each frame's pixel data is one sub-block of
+// nonsense: Inspect's walk reads where the frames are and how large, and
+// their tables, never their pixels.
+func gifHeaderUpload(w, h, frameH, frames, size int, many bool) []byte {
 	b := []byte("GIF89a")
 	b = binary.LittleEndian.AppendUint16(b, uint16(w))
 	b = binary.LittleEndian.AppendUint16(b, uint16(h))
-	b = append(b, 0x80, 0, 0, 0, 0, 0, 255, 255, 255) // a two-colour global table
+	if many {
+		b = append(b, 0, 0, 0)
+	} else {
+		b = append(b, 0x80, 0, 0, 0, 0, 0, 255, 255, 255) // a two-colour global table
+	}
 	for i := 0; i < frames; i++ {
 		b = append(b, 0x21, 0xF9, 4, 0, 10, 0, 0, 0) // a graphic control extension
 		b = append(b, 0x2C, 0, 0, 0, 0)
 		b = binary.LittleEndian.AppendUint16(b, uint16(w))
-		b = binary.LittleEndian.AppendUint16(b, uint16(h))
+		b = binary.LittleEndian.AppendUint16(b, uint16(frameH))
+		if many {
+			b = append(b, 0x87) // a table of its own of 256 entries
+			for e := 0; e < 256; e++ {
+				b = append(b, byte(e), byte(e), byte(e))
+			}
+			b = append(b, 8, 1, 0x44, 0)
+			continue
+		}
 		b = append(b, 0, 2, 1, 0x44, 0)
 	}
 	if pad := size - len(b) - 4; pad > 0 {
@@ -818,27 +994,44 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	// can come to four times the upload. Frames of two canvases are stored
 	// from a large upload, of three from one of up to about 6.9 MiB, and of
 	// four, the most there can be (maxGIFFramePixels), from one of up to
-	// about 3.9 MiB. At a quarter of the size, the most there can be is
-	// stored from a large upload.
+	// about 3.9 MiB. An animation whose tables give more than 255 colours is
+	// played on eight, for the frames it may put back: at this size only one
+	// whose frames come to less than two thirds of a canvas, half of one
+	// from an upload of up to about 2.4 MiB; from a large upload, two whole
+	// frames up to about 17 megapixels and four up to about 15. One frame of
+	// many colours is a still, which puts nothing back, and is charged as
+	// any other. At a quarter of the size, the most there can be is stored
+	// from a large upload, of many colours or few.
 	for _, c := range []struct {
-		w, h, frames, size int
-		want               error
+		w, h, frameH, frames, size int
+		many                       bool
+		want                       error
 	}{
-		{side, side, 2, large, nil},
-		{side, side, 3, 66 << 20 / 10, nil},
-		{side, side, 3, 72 << 20 / 10, ErrImageTooCostly},
-		{side, side, 4, 36 << 20 / 10, nil},
-		{side, side, 4, 42 << 20 / 10, ErrImageTooCostly},
-		{4 * side, side / 4, 2, large, nil},
-		{4 * side, side / 4, 3, 66 << 20 / 10, nil},
-		{4 * side, side / 4, 3, 72 << 20 / 10, ErrImageTooCostly},
-		{4 * side, side / 4, 4, 36 << 20 / 10, nil},
-		{4 * side, side / 4, 4, 42 << 20 / 10, ErrImageTooCostly},
-		{side / 2, side / 2, 16, large, nil},
+		{side, side, side, 2, large, false, nil},
+		{side, side, side, 3, 66 << 20 / 10, false, nil},
+		{side, side, side, 3, 72 << 20 / 10, false, ErrImageTooCostly},
+		{side, side, side, 4, 36 << 20 / 10, false, nil},
+		{side, side, side, 4, 42 << 20 / 10, false, ErrImageTooCostly},
+		{4 * side, side / 4, side / 4, 2, large, false, nil},
+		{4 * side, side / 4, side / 4, 3, 66 << 20 / 10, false, nil},
+		{4 * side, side / 4, side / 4, 3, 72 << 20 / 10, false, ErrImageTooCostly},
+		{4 * side, side / 4, side / 4, 4, 36 << 20 / 10, false, nil},
+		{4 * side, side / 4, side / 4, 4, 42 << 20 / 10, false, ErrImageTooCostly},
+		{side / 2, side / 2, side / 2, 16, large, false, nil},
+		{side, side, side, 1, large, true, nil},
+		{side, side, side / 3, 2, small, true, nil},
+		{side, side, side * 7 / 20, 2, small, true, ErrImageTooCostly},
+		{side, side, side / 4, 2, 22 << 20 / 10, true, nil},
+		{side, side, side / 4, 2, 26 << 20 / 10, true, ErrImageTooCostly},
+		{4100, 4100, 4100, 2, large, true, nil},
+		{4250, 4250, 4250, 2, large, true, ErrImageTooCostly},
+		{3800, 3800, 3800, 4, large, true, nil},
+		{3900, 3900, 3900, 4, large, true, ErrImageTooCostly},
+		{side / 2, side / 2, side / 2, 16, large, true, nil},
 	} {
-		data := gifHeaderUpload(c.w, c.h, c.frames, c.size)
+		data := gifHeaderUpload(c.w, c.h, c.frameH, c.frames, c.size, c.many)
 		if _, err := Inspect(data); !errors.Is(err, c.want) {
-			t.Errorf("Inspect(GIF of %d %dx%d frames, %d KiB) = %v, want %v", c.frames, c.w, c.h, len(data)>>10, err, c.want)
+			t.Errorf("Inspect(GIF of %d %dx%d frames on %dx%d, many colours %v, %d KiB) = %v, want %v", c.frames, c.w, c.frameH, c.w, c.h, c.many, len(data)>>10, err, c.want)
 		}
 	}
 	// One pixel more than the cap is refused whatever it is.

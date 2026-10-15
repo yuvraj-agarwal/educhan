@@ -713,11 +713,15 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}
 }
 
-// gifOfTooManyColoursAtOnce is a 300×1 GIF whose third picture changes 300
+// gifOfTooManyColoursAtOnce is a 300×1 GIF whose fourth picture changes 300
 // pixels to 300 colours at once: the first frame draws 150 colours, the
-// second draws 150 others over them and is put back, and the third draws
-// 150 more beside them. No one stored frame can draw that picture's changes,
-// so it cannot be stored one frame to a picture.
+// second and the third each draw 150 others over them and are put back, and
+// the fourth draws 150 more beside them. The stored file leaves the second
+// picture's frame in place, since nothing after it needs otherwise, so
+// putting back the third's leaves the second picture's colours where the
+// first's show again: whichever way the third is disposed of, the fourth
+// picture's stored frame has to draw 300 colours, and the GIF cannot be
+// stored one frame to a picture.
 func gifOfTooManyColoursAtOnce(t *testing.T) []byte {
 	t.Helper()
 	frame := func(x0, first int) *image.Paletted {
@@ -732,9 +736,9 @@ func gifOfTooManyColoursAtOnce(t *testing.T) []byte {
 		return m
 	}
 	g := &gif.GIF{
-		Image:    []*image.Paletted{frame(0, 0), frame(0, 1000), frame(150, 2000)},
-		Delay:    []int{10, 10, 10},
-		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalNone},
+		Image:    []*image.Paletted{frame(0, 0), frame(0, 1000), frame(0, 2000), frame(150, 3000)},
+		Delay:    []int{10, 10, 10, 10},
+		Disposal: []byte{gif.DisposalNone, gif.DisposalPrevious, gif.DisposalPrevious, gif.DisposalNone},
 		Config:   image.Config{Width: 300, Height: 1},
 	}
 	var buf bytes.Buffer

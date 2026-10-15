@@ -832,6 +832,14 @@ type gifFrames struct {
 	// trailed is whether the file ends with a trailer rather than straight
 	// after its last block.
 	trailed bool
+	// many is whether the frames' colour tables, as Chromium reads them
+	// (gifFrameHead.keys), give more than 255 colours between them: each
+	// table's entries but the frame's transparent one, and black for a
+	// table of fewer than 256 entries, which an index past its end shows.
+	// Only then can the frames draw more colours than one table holds
+	// beside a transparent entry, and only then may playGIF put a stored
+	// frame back (gifPlayScratch).
+	many bool
 }
 
 // gifFramePixels adds up the area of every frame a GIF declares, and counts
@@ -917,6 +925,24 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 		}
 	}
 	var head gifFrameHead // what the extensions since the last frame said
+	// colours is the colours the frames' tables give (gifFrames.many),
+	// gathered until there are more than 255. The global table is gathered
+	// once with each transparent index frames give it (gathered[i+1]), and
+	// once with none (gathered[0]).
+	var colours colourIndex
+	var gathered [257]bool
+	gather := func(table []byte, transparent bool, ti byte) {
+		n := len(table) / 3
+		for e := 0; e < n && !f.many; e++ {
+			if !transparent || e != int(ti) {
+				k := opaqueKey | uint32(table[3*e])<<16 | uint32(table[3*e+1])<<8 | uint32(table[3*e+2])
+				f.many = colours.add(k, 0) && colours.n > 255
+			}
+		}
+		if n < 256 && !f.many {
+			f.many = colours.add(opaqueKey, 0) && colours.n > 255
+		}
+	}
 	// skipBlocks steps over a run of data sub-blocks and its terminator, and
 	// reports whether the file held all of it.
 	skipBlocks := func(i int) (int, bool) {
@@ -993,6 +1019,10 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 				at := i
 				i += 3 << (1 + flags&0x07)
 				head.table = data[at:min(i, len(data))]
+				gather(head.table, head.transparent, head.ti)
+			} else if g := b2i(head.transparent) * (1 + int(head.ti)); !gathered[g] {
+				gathered[g] = true
+				gather(global, head.transparent, head.ti)
 			}
 			// The LZW minimum code size, which image/gif holds to 2–8, and
 			// then the compressed pixels.

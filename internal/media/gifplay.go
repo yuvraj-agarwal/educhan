@@ -27,25 +27,35 @@ import (
 //
 //   - Each picture is one frame. A picture that shows for longer than one
 //     delay can say is that frame and then frames that draw nothing, holding
-//     the rest of its time.
+//     the rest of its time; or, if the frame is put back, the frame drawn
+//     again for each delay, since only the frame itself can put back what
+//     was under it.
 //   - A frame draws exactly the pixels in which its picture differs from what
 //     the frame before it left, and leaves every other pixel transparent; it
-//     is cut to the smallest rectangle that holds those pixels and the
-//     pixels the next picture has transparent where this one does not. It is
-//     cleared once its time is over when there are such pixels, since only
-//     clearing makes a pixel transparent again, and left in place otherwise.
+//     is cut to the smallest rectangle that holds those pixels. It is left
+//     in place once its time is over, unless the next picture has pixels
+//     transparent where this one does not: then it is cleared, its rectangle
+//     taking those pixels in as well, since only clearing makes a pixel
+//     transparent again (but for putting a frame back, below).
 //   - The colours are the ones the pictures show, in order of their values.
 //     Where there are 255 or fewer, they are one global table after a
 //     transparent entry at index 0, which every frame uses. Where there are
 //     more, each frame has a table of its own, of the colours it draws, after
-//     a transparent entry if any pixel of its rectangle needs one.
+//     a transparent entry if any pixel of its rectangle needs one. There, a
+//     frame is disposed of in the first of three ways after which it and
+//     the next frame can be written so: left in place, if the next picture
+//     needs nothing cleared; cleared, in the rectangle above; and put back,
+//     which leaves what was there before it was drawn, if that is
+//     transparent wherever the next picture is (choose).
 //   - Delays are the times a browser shows (shownDelay), the last picture of
 //     a GIF played once has none, and a GIF of one picture is a still: one
 //     frame, with no delay, no disposal and no loop count.
 
 // The disposal methods browsers carry out: keepFrame leaves a frame where it
 // is, clearFrame clears its rectangle to transparent, and restoreFrame puts
-// back what was there before it was drawn. playGIF writes only the first two.
+// back what was there before it was drawn. playGIF writes restoreFrame only
+// in a GIF of a table a frame, where the other two would leave a frame more
+// colours to draw than its table holds (choose).
 const (
 	keepFrame    = gif.DisposalNone
 	clearFrame   = gif.DisposalBackground
@@ -207,8 +217,10 @@ func clearBitRange(bits []uint64, lo, hi int) {
 // A picture ends where the next frame changes what shows. Until then the
 // player knows the picture being shown and the pixels its stored frame
 // draws (changed, a bit a canvas pixel, with box around them), and adds up
-// the time it shows; when it ends, it knows what the next picture needs
-// cleared, and writes the frame.
+// the time it shows; when it ends, it knows the next picture, chooses how
+// the frame is disposed of (choose), and writes it. For a GIF of a table a
+// frame, it also keeps what was under the frame where it draws (saved), to
+// put that back.
 type gifPlayer struct {
 	w       int
 	under   []uint32
@@ -221,6 +233,11 @@ type gifPlayer struct {
 	emitted int // the pictures written
 	area    int64
 	global  bool
+	// saved is, where the stored frame of the picture showing draws, what
+	// was there before it was drawn, which putting it back leaves. It is
+	// kept only for a GIF of more than 255 colours, the only kind whose
+	// frames are ever put back.
+	saved   []uint32
 	index   colourIndex
 	colours []uint32 // a frame's colours, for its own table
 	table   []uint32 // a frame's own table
@@ -304,11 +321,22 @@ func (p *gifPlayer) differs() (box, toClear image.Rectangle) {
 }
 
 // mark marks in next what the stored frame of the new picture draws when
-// the stored frame before it clears cleared: every pixel in which the new
-// picture differs from the one before it with cleared made transparent. It
-// returns the rectangle around them.
-func (p *gifPlayer) mark(cleared image.Rectangle) (box image.Rectangle) {
-	spans(p.a.r, p.b.r, cleared, func(y, x0, x1 int) {
+// the stored frame before it, of rectangle r, is disposed of as disposal
+// says: every pixel in which the new picture differs from what that leaves,
+// which is the picture before it, with r cleared for clearFrame, and for
+// restoreFrame with what was there before that frame was drawn (saved)
+// where it draws. It returns the rectangle around those pixels, and whether
+// the new picture can be drawn on what that leaves: whether it leaves no
+// pixel opaque that the new picture has transparent. With save, it keeps
+// what that leaves of each pixel it marks in saved, for the new picture's
+// stored frame to be put back.
+func (p *gifPlayer) mark(disposal byte, r image.Rectangle, save bool) (box image.Rectangle, ok bool) {
+	ok = true
+	var cleared image.Rectangle
+	if disposal == clearFrame {
+		cleared = r
+	}
+	spans(p.a.r, p.b.r, r, func(y, x0, x1 int) {
 		prev, _, now := p.rows(y, x0, x1)
 		prev = prev[:len(now)]
 		c0, c1 := x0, x0 // the part of the run cleared
@@ -319,15 +347,22 @@ func (p *gifPlayer) mark(cleared image.Rectangle) (box image.Rectangle) {
 		lo, hi := -1, -1
 		for i, k := range now {
 			was := prev[i]
-			if x := x0 + i; x >= c0 && x < c1 {
+			switch x := x0 + i; {
+			case x >= c0 && x < c1:
 				was = 0
+			case disposal == restoreFrame && p.isChanged(at+i):
+				was = p.saved[at+i]
 			}
 			bit := uint64(1) << ((at + i) & 63)
 			if k == was {
 				p.next[(at+i)>>6] &^= bit
 				continue
 			}
+			ok = ok && k != 0
 			p.next[(at+i)>>6] |= bit
+			if save {
+				p.saved[at+i] = was
+			}
 			if lo < 0 {
 				lo = i
 			}
@@ -337,7 +372,94 @@ func (p *gifPlayer) mark(cleared image.Rectangle) (box image.Rectangle) {
 			box = box.Union(image.Rect(x0+lo, y, x0+hi+1, y+1))
 		}
 	})
-	return box
+	return box, ok
+}
+
+// choose is how the stored frame of the picture showing is disposed of once
+// its time is over, and the rectangle it is written in, now that the next
+// picture is known: box and toClear are what differs found of it. It marks
+// in next what the next picture's stored frame draws, and returns the
+// rectangle around that.
+//
+// The ways are tried in turn, and the first that will do is taken: left in
+// place, which will not do if the next picture has a pixel transparent that
+// the frame leaves opaque; cleared, cut to take those pixels in as well; and
+// put back, which leaves what was there before the frame was drawn, and
+// will not do if that has such a pixel. A GIF of 255 colours or fewer has
+// one table, which every frame can be written with, so one of the first two
+// always does. A GIF of more has a table a frame, and a way does only if the
+// next picture's stored frame can then be written with a table of its own
+// (ownTable), and a cleared frame with its wider rectangle as well. If none
+// does, the GIF is refused (ErrImageTooCostly). Every choice is made from
+// the pictures and the choices before it, so GIFs shown alike are still
+// stored alike. What a way not taken looked at is charged as if it had been
+// written (tried).
+func (p *gifPlayer) choose(box, toClear image.Rectangle) (disposal byte, r, next image.Rectangle, err error) {
+	if p.global {
+		if toClear.Empty() {
+			return keepFrame, p.box, box, nil
+		}
+		r = p.box.Union(toClear)
+		next, _ = p.mark(clearFrame, r, false)
+		return clearFrame, r, next, nil
+	}
+	if toClear.Empty() {
+		if _, ok := p.ownTable(box, true); ok {
+			p.mark(keepFrame, image.Rectangle{}, true)
+			return keepFrame, p.box, box, nil
+		}
+		if err := p.tried(box); err != nil {
+			return 0, image.Rectangle{}, image.Rectangle{}, err
+		}
+	}
+	// A cleared frame of no rectangle would be written as one pixel at the
+	// corner, and clear that: it is left in place, which was not taken.
+	if r = p.box.Union(toClear); !r.Empty() {
+		var looked image.Rectangle // next, once ownTable has looked at it
+		if _, ok := p.ownTable(r, false); ok {
+			if next, ok = p.mark(clearFrame, r, false); ok {
+				looked = next
+				if _, ok = p.ownTable(next, true); ok {
+					p.mark(clearFrame, r, true)
+					return clearFrame, r, next, nil
+				}
+			}
+		}
+		// What marking it marked outside the frames and the rectangle
+		// before it, which marking the next way does not reach.
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			clearBitRange(p.next, y*p.w+r.Min.X, y*p.w+r.Max.X)
+		}
+		if err := p.tried(r, looked); err != nil {
+			return 0, image.Rectangle{}, image.Rectangle{}, err
+		}
+	}
+	// Putting back is the last way, so it keeps what it leaves as it looks:
+	// if it is not taken, the GIF is refused.
+	if next, ok := p.mark(restoreFrame, p.box, true); ok {
+		if _, ok = p.ownTable(next, true); ok {
+			return restoreFrame, p.box, next, nil
+		}
+	}
+	return 0, image.Rectangle{}, image.Rectangle{}, ErrImageTooCostly
+}
+
+// tried charges the rectangles that a way of disposing of a frame looked
+// at, and did not take, to area, the pixels of the stored frames, as if
+// frames of them had been written, and refuses the GIF once area passes
+// maxGIFFramePixels. Looking at a rectangle is work in proportion to its
+// pixels, as writing a frame of it is, and a way not taken is never
+// written: without the charge, a GIF of small frames far apart, where every
+// way but the last spans them all, could have choose look at most of a
+// large canvas for each picture, with nothing to stop it.
+func (p *gifPlayer) tried(rs ...image.Rectangle) error {
+	for _, r := range rs {
+		p.area += int64(r.Dx()) * int64(r.Dy())
+	}
+	if p.area > maxGIFFramePixels {
+		return ErrImageTooCostly
+	}
+	return nil
 }
 
 // advance moves on to the next frame: under becomes what frame j-1's
@@ -358,17 +480,11 @@ func (p *gifPlayer) advance() {
 }
 
 // emit writes the stored frame of the picture showing, once it has ended,
-// or, with last, once the GIF has: cut to the pixels it changes and the
-// pixels cleared, which the next picture needs cleared, and cleared after
-// its time if they are any. It returns the frame's rectangle.
-func (p *gifPlayer) emit(cleared image.Rectangle, last bool) (image.Rectangle, error) {
-	r := p.box.Union(cleared)
+// or, with last, once the GIF has: in rectangle r, disposed of as disposal
+// says (choose).
+func (p *gifPlayer) emit(disposal byte, r image.Rectangle, last bool) error {
 	if last && p.emitted == 0 {
-		return r, p.frame(r, 0, 0, true, false)
-	}
-	disposal := byte(keepFrame)
-	if !cleared.Empty() {
-		disposal = clearFrame
+		return p.frame(r, 0, 0, true, false)
 	}
 	if p.emitted == 0 && p.loop >= 0 {
 		p.out.loopCount(p.loop)
@@ -389,24 +505,38 @@ func (p *gifPlayer) emit(cleared image.Rectangle, last bool) (image.Rectangle, e
 	}
 	d := piece(t)
 	t -= d
-	if t > 0 {
-		if err := p.frame(r, d, keepFrame, false, false); err != nil {
-			return r, err
-		}
-		for t > 0 {
+	if t == 0 {
+		return p.frame(r, d, disposal, false, false)
+	}
+	if disposal == restoreFrame {
+		// Only the frame itself can put back what was under it, so it is
+		// drawn again for each delay, and put back after each.
+		for {
+			if err := p.frame(r, d, restoreFrame, false, false); err != nil || t == 0 {
+				return err
+			}
 			d = piece(t)
 			t -= d
-			at, how := image.Rectangle{}, byte(keepFrame)
-			if t == 0 && disposal == clearFrame {
-				at, how = r, clearFrame
-			}
-			if err := p.frame(at, d, how, false, true); err != nil {
-				return r, err
-			}
 		}
-		return r, nil
 	}
-	return r, p.frame(r, d, disposal, false, false)
+	// Otherwise frames that draw nothing hold the rest of the time, the
+	// last of them taking the frame's rectangle to clear it if it is
+	// cleared.
+	if err := p.frame(r, d, keepFrame, false, false); err != nil {
+		return err
+	}
+	for t > 0 {
+		d = piece(t)
+		t -= d
+		at, how := image.Rectangle{}, byte(keepFrame)
+		if t == 0 && disposal == clearFrame {
+			at, how = r, clearFrame
+		}
+		if err := p.frame(at, d, how, false, true); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // errGIFColour is a pixel whose colour is not in the table it is written
@@ -490,40 +620,69 @@ func (p *gifPlayer) allChanged(r image.Rectangle) bool {
 }
 
 // frameColours is the colours a stored frame of its own table draws, in
-// order of their values, and whether it needs a transparent entry: for every
-// pixel of its rectangle it does not draw. 256 colours leave no room for
-// one, and then each pixel it does not draw is written in the colour it
-// already shows, which the frame has to draw elsewhere; where that cannot be
-// done, or the frame draws more than 256 colours, the GIF is refused
-// (ErrImageTooCostly): it cannot be stored one frame to a picture.
+// order of their values, and whether it needs a transparent entry
+// (ownTable); a frame that cannot be written so is refused
+// (ErrImageTooCostly).
 func (p *gifPlayer) frameColours(r image.Rectangle, blank bool) (colours []uint32, transparent bool, err error) {
 	if blank {
 		return nil, true, nil
 	}
+	transparent, ok := p.ownTable(r, false)
+	if !ok {
+		return nil, false, ErrImageTooCostly
+	}
+	return p.index.sorted(p.colours[:0]), transparent, nil
+}
+
+// ownTable reports whether a stored frame of rectangle r can be written
+// with a table of its own, and whether that table needs a transparent entry,
+// leaving the frame's colours in index: the stored frame of the picture
+// showing, which draws the pixels marked in changed, or with next, the
+// stored frame of the next picture, which draws those marked in next. The
+// table is the colours the frame draws, after a transparent entry if there
+// is a pixel of r it does not draw. 256 colours leave no room for one, and
+// then each pixel the frame does not draw is written in the colour it
+// already shows, which the frame has to draw elsewhere; a frame of more than
+// 256 colours, or of 256 and a pixel that cannot be written so, cannot be
+// written at all.
+func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool) {
+	bits := p.changed
+	if next {
+		bits = p.next
+	}
+	// row is what the frame's picture shows of row y of r: the picture
+	// showing, or the next one.
+	row := func(y int) []uint32 {
+		if next {
+			_, _, now := p.rows(y, r.Min.X, r.Max.X)
+			return now
+		}
+		return p.prevRow(y, r.Min.X, r.Max.X)
+	}
+	drawn := func(i int) bool { return bits[i>>6]>>(i&63)&1 != 0 }
 	p.index.reset()
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		at := y*p.w + r.Min.X
-		for i, k := range p.prevRow(y, r.Min.X, r.Max.X) {
-			if !p.isChanged(at + i) {
+		for i, k := range row(y) {
+			if !drawn(at + i) {
 				transparent = true
 			} else if p.index.add(k, 0) && p.index.n > 256 {
-				return nil, false, ErrImageTooCostly
+				return false, false
 			}
 		}
 	}
-	colours = p.index.sorted(p.colours[:0])
-	if transparent && len(colours) == 256 {
+	if transparent && p.index.n == 256 {
 		for y := r.Min.Y; y < r.Max.Y; y++ {
 			at := y*p.w + r.Min.X
-			for i, k := range p.prevRow(y, r.Min.X, r.Max.X) {
-				if _, ok := p.index.lookup(k); !p.isChanged(at+i) && !ok {
-					return nil, false, ErrImageTooCostly
+			for i, k := range row(y) {
+				if _, ok := p.index.lookup(k); !drawn(at+i) && !ok {
+					return false, false
 				}
 			}
 		}
 		transparent = false
 	}
-	return colours, transparent, nil
+	return transparent, true
 }
 
 // playGIF writes to out the run of pictures a GIF's frames show on a canvas,
@@ -535,9 +694,10 @@ func (p *gifPlayer) frameColours(r image.Rectangle, blank bool) (colours []uint3
 // delays and disposal methods are taken, as Chromium reads them. loop is the
 // loop count, or -1 for a GIF played once.
 //
-// It refuses a GIF it cannot store one frame to a picture (frameColours), or
-// whose stored frames would have more pixels between them than
-// maxGIFFramePixels, with ErrImageTooCostly. The header is written before
+// It refuses a GIF it cannot store one frame to a picture (choose,
+// frameColours), or whose stored frames would have more pixels between them
+// than maxGIFFramePixels, counting the ways choose looked at and did not
+// take as frames (tried), with ErrImageTooCostly. The header is written before
 // anything is allocated for play, so a limit too small for it costs nothing.
 // Each frame is let go once it has been played, its place in frames set to
 // nil.
@@ -561,6 +721,9 @@ func playGIF(frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectan
 		}
 	} else {
 		p.colours, p.table = make([]uint32, 0, 256), make([]uint32, 0, 257)
+		if len(frames) > 1 {
+			p.saved = make([]uint32, w*h) // before the first, nothing
+		}
 	}
 	words := (w*h + 63) / 64
 	p.under, p.changed, p.next = make([]uint32, w*h), make([]uint64, words), make([]uint64, words)
@@ -573,13 +736,14 @@ func playGIF(frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectan
 		if j == 0 || !box.Empty() {
 			// Frame j shows a new picture: the one before it has ended.
 			if j > 0 {
-				r, err := p.emit(toClear, false)
+				disposal, r, next, err := p.choose(box, toClear)
 				if err != nil {
 					return err
 				}
-				if !toClear.Empty() {
-					box = p.mark(r)
+				if err := p.emit(disposal, r, false); err != nil {
+					return err
 				}
+				box = next
 				for y := p.box.Min.Y; y < p.box.Max.Y; y++ {
 					clearBitRange(p.changed, y*w+p.box.Min.X, y*w+p.box.Max.X)
 				}
@@ -593,7 +757,7 @@ func playGIF(frames []*image.Paletted, heads []gifFrameHead, canvas image.Rectan
 			frames[j-1] = nil
 		}
 	}
-	if _, err := p.emit(image.Rectangle{}, true); err != nil {
+	if err := p.emit(keepFrame, p.box, true); err != nil {
 		return err
 	}
 	p.out.trailer()

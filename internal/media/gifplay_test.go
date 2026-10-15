@@ -988,10 +988,12 @@ func indices(n int) []uint8 {
 // colours the frame draws, in order of their values, after a transparent
 // entry where it has a pixel it does not draw. A frame that draws 256
 // colours has no room for that entry, so each pixel it does not draw is
-// written in the colour it already shows, which the frame draws elsewhere. A
-// GIF that would need a frame of more than 256 colours, or of 256 and a
-// pixel that cannot be written so, cannot be stored one frame to a picture,
-// and is refused (ErrImageTooCostly).
+// written in the colour it already shows, which the frame draws elsewhere.
+// Where leaving a frame in place or clearing it would have the next frame
+// draw more colours than that, the frame is put back instead, if that
+// leaves the next one few enough. A GIF that no way of disposing of a frame
+// leaves few enough cannot be stored one frame to a picture, and is refused
+// (ErrImageTooCostly).
 func TestGIFOfManyColoursHasATableAFrame(t *testing.T) {
 	frame := func(at image.Rectangle, disposal byte, ti int, table [][3]byte, pix []uint8) rawFrame {
 		return rawFrame{controls: []rawControl{{disposal, 10, ti}}, at: at, local: table, pix: pix}
@@ -1005,8 +1007,9 @@ func TestGIFOfManyColoursHasATableAFrame(t *testing.T) {
 		return slices.Compact(all)
 	}
 	// stores requires the GIF stored as it shows, each frame with a table
-	// of its own holding want[k], after a transparent entry if clear[k].
-	stores := func(name string, g rawGIF, want [][][3]byte, clear []bool) {
+	// of its own holding want[k], after a transparent entry if clear[k],
+	// and returns it decoded.
+	stores := func(name string, g rawGIF, want [][][3]byte, clear []bool) *gif.GIF {
 		t.Helper()
 		data := process(t, g.bytes()).Data
 		requireShowsAs(t, name, g, data)
@@ -1037,6 +1040,7 @@ func TestGIFOfManyColoursHasATableAFrame(t *testing.T) {
 				t.Errorf("%s: frame %d's table is not the colours it draws, in order", name, k)
 			}
 		}
+		return st
 	}
 
 	// 200 colours, then 100 more on every other pixel of the rows below.
@@ -1070,24 +1074,173 @@ func TestGIFOfManyColoursHasATableAFrame(t *testing.T) {
 		frame(image.Rect(0, 0, 257, 1), keepFrame, -1, shades(0, 256), over),
 	}}, [][][3]byte{sortedOf(a, shades(5, 1)), sortedOf(shades(0, 256))}, []bool{false, false})
 
-	// What a frame put back and what the next draws, between them more
-	// colours than one table holds; and 256 of them around a pixel that
-	// shows nothing.
-	for name, g := range map[string]rawGIF{
-		"more than 256 colours in a frame": {w: 300, h: 1, frames: []rawFrame{
+	// A frame put back where what was under it and what the next frame
+	// draws come to more colours than one table holds; and to 256 of them
+	// around a pixel that shows nothing. Left in place or cleared, the
+	// frame would leave the next one to draw both.
+	for _, c := range []struct {
+		name  string
+		g     rawGIF
+		want  [][][3]byte
+		clear []bool
+	}{
+		{"more than 256 colours", rawGIF{w: 300, h: 1, frames: []rawFrame{
 			frame(image.Rect(0, 0, 150, 1), keepFrame, -1, shades(0, 150), indices(150)),
 			frame(image.Rect(0, 0, 150, 1), restoreFrame, -1, shades(1000, 150), indices(150)),
 			frame(image.Rect(150, 0, 300, 1), keepFrame, -1, shades(2000, 150), indices(150)),
-		}},
-		"256 colours in a frame and a pixel it cannot write": {w: 257, h: 1, frames: []rawFrame{
+		}}, [][][3]byte{sortedOf(shades(0, 150)), sortedOf(shades(1000, 150)), sortedOf(shades(2000, 150))}, []bool{false, false, false}},
+		{"256 colours and a pixel that shows nothing", rawGIF{w: 257, h: 1, frames: []rawFrame{
 			frame(image.Rect(0, 0, 128, 1), keepFrame, -1, shades(0, 128), indices(128)),
 			frame(image.Rect(0, 0, 128, 1), restoreFrame, -1, a, make([]uint8, 128)),
 			frame(image.Rect(129, 0, 257, 1), keepFrame, -1, shades(1000, 128), indices(128)),
-		}},
+		}}, [][][3]byte{sortedOf(shades(0, 128)), a, sortedOf(shades(1000, 128))}, []bool{false, false, false}},
 	} {
-		if _, err := Process(context.Background(), g.bytes()); !errors.Is(err, ErrImageTooCostly) {
-			t.Errorf("%s: Process returned %v, want ErrImageTooCostly", name, err)
+		name := "a frame put back, rather than its next drawing " + c.name
+		st := stores(name, c.g, c.want, c.clear)
+		if want := []byte{keepFrame, restoreFrame, keepFrame}; !bytes.Equal(st.Disposal, want) {
+			t.Errorf("%s: stored with disposals %v, want %v", name, st.Disposal, want)
 		}
+	}
+
+	// Two frames put back in turn, the second to the picture the first
+	// showed: once the second is over, whichever way it is disposed of, the
+	// next frame has to draw what the first frame covered and what it draws
+	// itself, 300 colours.
+	g := rawGIF{w: 300, h: 1, frames: []rawFrame{
+		frame(image.Rect(0, 0, 150, 1), keepFrame, -1, shades(0, 150), indices(150)),
+		frame(image.Rect(0, 0, 150, 1), restoreFrame, -1, shades(1000, 150), indices(150)),
+		frame(image.Rect(0, 0, 150, 1), restoreFrame, -1, shades(2000, 150), indices(150)),
+		frame(image.Rect(150, 0, 300, 1), keepFrame, -1, shades(3000, 150), indices(150)),
+	}}
+	if _, err := Process(context.Background(), g.bytes()); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("frames put back to a picture no frame can: Process returned %v, want ErrImageTooCostly", err)
+	}
+}
+
+// An animation as ImageMagick optimises one, with a table of up to 256
+// colours to each frame, can put a frame back where nothing else would do:
+// ImageMagick's -layers OptimizeFrame did, for a sprite over a background
+// of many colours, and the GIF was refused until frames were put back in
+// the stored file too. Here a background of 256 colours has a spark shown
+// over its left half and put back, and then a figure of 256 colours drawn
+// over its right half: left in place or cleared, the spark would leave the
+// figure's frame to draw the background's left half again as well, 384
+// colours. A spark the upload draws twice, to show it for longer than one
+// delay can say, is stored drawn for as much of that time as one delay
+// holds and again for the rest, and put back each time.
+func TestGIFOfManyColoursPutsAFrameBack(t *testing.T) {
+	background, spark, figure := make([][3]byte, 256), make([][3]byte, 128), make([][3]byte, 256)
+	for i := range background {
+		background[i] = [3]byte{byte(i), 0x40, byte(255 - i)}
+		figure[i] = [3]byte{byte(i), 0xC0, byte(i / 2)}
+	}
+	for i := range spark {
+		spark[i] = [3]byte{0xF0, byte(i), byte(2 * i)}
+	}
+	// Each of the background's colours is three pixels of a row, and each
+	// of the spark's six; the figure's are pixels in turn.
+	pixels := func(at image.Rectangle, index func(x, y int) int) []uint8 {
+		var pix []uint8
+		for y := at.Min.Y; y < at.Max.Y; y++ {
+			for x := at.Min.X; x < at.Max.X; x++ {
+				pix = append(pix, uint8(index(x, y)))
+			}
+		}
+		return pix
+	}
+	whole, left, right := image.Rect(0, 0, 48, 16), image.Rect(0, 0, 24, 16), image.Rect(24, 0, 48, 16)
+	// The spark is drawn once for each of the delays given, and put back
+	// after each.
+	animation := func(sparkTimes ...int) rawGIF {
+		g := rawGIF{w: 48, h: 16, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{
+			{controls: []rawControl{{keepFrame, 8, -1}}, at: whole, local: background,
+				pix: pixels(whole, func(x, y int) int { return x/3 + 16*y })},
+		}}
+		for _, d := range sparkTimes {
+			g.frames = append(g.frames, rawFrame{controls: []rawControl{{restoreFrame, d, -1}}, at: left, local: spark,
+				pix: pixels(left, func(x, y int) int { return x/6 + 4*y })})
+		}
+		g.frames = append(g.frames, rawFrame{controls: []rawControl{{keepFrame, 8, -1}}, at: right, local: figure,
+			pix: pixels(right, func(x, y int) int { return (x - 24 + 24*y) % 256 })})
+		return g
+	}
+	for _, c := range []struct {
+		name      string
+		g         rawGIF
+		disposals []byte
+		delays    []int
+	}{
+		{"a spark put back", animation(8), []byte{keepFrame, restoreFrame, keepFrame}, []int{8, 8, 8}},
+		{"a spark shown for longer than a delay can say, put back", animation(40000, 30000),
+			[]byte{keepFrame, restoreFrame, restoreFrame, keepFrame}, []int{8, maxGIFDelay, 70000 - maxGIFDelay, 8}},
+	} {
+		g := c.g
+		got, err := Process(context.Background(), g.bytes())
+		if err != nil {
+			t.Fatalf("%s: Process returned %v, want it stored", c.name, err)
+		}
+		requireShowsAs(t, c.name, g, got.Data)
+		st, err := gif.DecodeAll(bytes.NewReader(got.Data))
+		if err != nil {
+			t.Fatalf("%s: the stored GIF does not decode: %v", c.name, err)
+		}
+		if !bytes.Equal(st.Disposal, c.disposals) || !slices.Equal(st.Delay, c.delays) {
+			t.Errorf("%s: stored with disposals %v and delays %v, want %v and %v", c.name, st.Disposal, st.Delay, c.disposals, c.delays)
+		}
+		if global, local := gifTables(t, got.Data); global != nil || slices.Contains(local, false) {
+			t.Errorf("%s: stored with a global table of %d bytes and tables of their own %v; want a table a frame", c.name, len(global), local)
+		}
+		if again := process(t, got.Data).Data; !bytes.Equal(again, got.Data) {
+			t.Errorf("%s: processing the stored GIF again stores it differently", c.name)
+		}
+	}
+}
+
+// What choose looks at for a way it does not take is charged to the stored
+// frames' pixels, as if a frame of it had been written, so the work a GIF of
+// a table a frame takes stays within maxGIFFramePixels. Here frames of 256
+// colours, 16 pixels square, at opposite corners of a canvas of a megapixel,
+// are put back by turns: after each over the top left, the next picture
+// shows the colours it covered again and the frame at the bottom right as
+// well. Left in place or cleared, it would leave the next frame to draw
+// both, 512 colours, in a rectangle of the whole canvas, which choose looks
+// at twice before putting it back. Uncharged, every such picture had choose
+// look at two canvases of which nothing is written, and an upload of a few
+// megabytes of these frames on a 25-megapixel canvas would have taken
+// minutes; charged, fifty of them come to the limit.
+func TestGIFWaysNotTakenAreCharged(t *testing.T) {
+	const side = 1000
+	topLeft, bottomRight := image.Rect(0, 0, 16, 16), image.Rect(side-16, side-16, side, side)
+	animation := func(n int) rawGIF {
+		g := rawGIF{w: side, h: side, frames: []rawFrame{
+			{controls: []rawControl{{keepFrame, 10, -1}}, at: topLeft, local: shades(0, 256), pix: indices(256)},
+		}}
+		for k := 1; k < n; k++ {
+			at, table := topLeft, shades(1000, 256)
+			if k%2 == 0 {
+				at, table = bottomRight, shades(2000, 256)
+			}
+			g.frames = append(g.frames, rawFrame{controls: []rawControl{{restoreFrame, 10, -1}}, at: at, local: table, pix: indices(256)})
+		}
+		return g
+	}
+
+	g := animation(21)
+	got, err := Process(context.Background(), g.bytes())
+	if err != nil {
+		t.Fatalf("21 frames: Process returned %v, want it stored", err)
+	}
+	requireShowsAs(t, "21 frames", g, got.Data)
+	want := []byte{keepFrame}
+	for k := 1; k < 20; k++ {
+		want = append(want, []byte{clearFrame, restoreFrame}[k%2])
+	}
+	if want = append(want, keepFrame); !bytes.Equal(gifDisposals(t, got.Data), want) {
+		t.Errorf("21 frames: stored with disposals %v, want %v", gifDisposals(t, got.Data), want)
+	}
+
+	if _, err := Process(context.Background(), animation(101).bytes()); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("101 frames, with 50 pictures after which choose looks at two canvases for ways it does not take: Process returned %v, want ErrImageTooCostly", err)
 	}
 }
 
@@ -1118,7 +1271,9 @@ func randomGIF(t *testing.T, rng *rand.Rand) []byte {
 // processing a stored GIF again stores the same bytes, every frame of an
 // animation is left in place or cleared, the last left in place, and no
 // delay but the last of a GIF played once is one a browser does not show as
-// written.
+// written. These GIFs are of a few colours, in one table, whose frames are
+// never put back; a GIF of a table a frame may have frames put back
+// (TestGIFOfManyColoursPutsAFrameBack, TestGIFsShownAlikeAreStoredAlike).
 func TestGIFIsStoredAsItPlays(t *testing.T) {
 	rng := rand.New(rand.NewSource(1))
 	for i := 0; i < 2000; i++ {
@@ -1279,6 +1434,65 @@ func randomRawGIF(rng *rand.Rand, colours int) rawGIF {
 		}
 		f.interlace = rng.Intn(4) == 0
 		g.frames = append(g.frames, f)
+	}
+	return g
+}
+
+// randomSpritesGIF is an animation drawn at random as ImageMagick draws
+// one: a background over the whole canvas in up to 256 colours, then up to
+// five sprites over large parts of it, each with a table of its own of 192
+// to 256 colours from a pool of 1,000, most of them put back once shown and
+// the rest cleared or left in place, some with a transparent index, and
+// some put back and drawn again to show for longer than one delay can say.
+// Put back over a background of many colours, a sprite leaves the next
+// frame to draw the background again as well as its own; so these are the
+// GIFs whose stored files have frames put back.
+func randomSpritesGIF(rng *rand.Rand) rawGIF {
+	pool := make([][3]byte, 1000)
+	for i := range pool {
+		pool[i] = [3]byte{byte(rng.Intn(256)), byte(rng.Intn(256)), byte(rng.Intn(256))}
+	}
+	table := func(n int) [][3]byte {
+		t := make([][3]byte, n)
+		for i := range t {
+			t[i] = pool[rng.Intn(len(pool))]
+		}
+		return t
+	}
+	g := rawGIF{w: 24 + rng.Intn(25), h: 16 + rng.Intn(17)}
+	if rng.Intn(2) == 0 {
+		g.loops = []rawLoop{{"NETSCAPE2.0", []int{0, 2}[rng.Intn(2)]}}
+	}
+	delays := []int{2, 5, 10, 50}
+	background := rawFrame{
+		controls: []rawControl{{keepFrame, delays[rng.Intn(len(delays))], -1}},
+		at:       image.Rect(0, 0, g.w, g.h),
+		local:    table(256),
+		pix:      make([]uint8, g.w*g.h),
+	}
+	for i := range background.pix {
+		background.pix[i] = uint8(rng.Intn(256))
+	}
+	g.frames = append(g.frames, background)
+	for n := 2 + rng.Intn(5); len(g.frames) < n; {
+		w, h := g.w/3+rng.Intn(g.w-g.w/3+1), g.h/3+rng.Intn(g.h-g.h/3+1)
+		x, y := rng.Intn(g.w-w+1), rng.Intn(g.h-h+1)
+		f := rawFrame{at: image.Rect(x, y, x+w, y+h), local: table(192 + rng.Intn(65)), pix: make([]uint8, w*h)}
+		c := rawControl{[]byte{keepFrame, restoreFrame, restoreFrame, 4, clearFrame}[rng.Intn(5)], delays[rng.Intn(len(delays))], -1}
+		if rng.Intn(3) == 0 {
+			c.ti = rng.Intn(len(f.local))
+		}
+		f.controls = []rawControl{c}
+		for i := range f.pix {
+			f.pix[i] = uint8(rng.Intn(len(f.local)))
+		}
+		g.frames = append(g.frames, f)
+		if browserDisposal(c.disposal) == restoreFrame && rng.Intn(6) == 0 {
+			again := f
+			again.controls = []rawControl{{c.disposal, maxGIFDelay, c.ti}}
+			g.frames[len(g.frames)-1].controls[0].delay = 40000
+			g.frames = append(g.frames, again)
+		}
 	}
 	return g
 }
@@ -1543,6 +1757,21 @@ var gifRewrites = []gifRewrite{
 		g.frames = slices.Insert(g.frames, k+1, again)
 		return g, true
 	}},
+	{"a frame put back, drawn again for part of its time", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		c := g.frames[k].control()
+		first, rest, ok := splitDelay(rng, c.delay)
+		if !ok || browserDisposal(c.disposal) != restoreFrame {
+			return g, false
+		}
+		g = g.clone()
+		again := g.frames[k]
+		again.local, again.pix = slices.Clone(again.local), slices.Clone(again.pix)
+		again.controls = []rawControl{{[]byte{3, 4}[rng.Intn(2)], rest, c.ti}}
+		g.frames[k].controls = []rawControl{{c.disposal, first, c.ti}}
+		g.frames = slices.Insert(g.frames, k+1, again)
+		return g, true
+	}},
 	{"a disposal method the next frame paints over", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
 		k := rng.Intn(len(g.frames))
 		if k == len(g.frames)-1 {
@@ -1668,18 +1897,25 @@ var gifRewrites = []gifRewrite{
 // what the original does, which holds the test to rewrites that change
 // nothing; the stored files then have to be the same. Each original is also
 // held to what it shows, and to being stored again as the same bytes. A
-// quarter of them draw from many colours, so that their frames' colours
-// overflow one table between them.
+// quarter of the first 800 draw from many colours, so that their frames'
+// colours overflow one table between them; the rest are animations of
+// sprites over a background of many colours (randomSpritesGIF), so that
+// their stored files have frames put back, which only a GIF of tables of
+// their own may have.
 func TestGIFsShownAlikeAreStoredAlike(t *testing.T) {
 	rng := rand.New(rand.NewSource(20261015))
 	applied := map[string]int{}
-	stored, refused, own := 0, 0, 0
-	for i := 0; i < 800; i++ {
-		colours := 6
-		if i%4 == 3 {
-			colours = 600
+	stored, refused, own, putBack, putBackForms := 0, 0, 0, 0, 0
+	for i := 0; i < 1100; i++ {
+		var g rawGIF
+		switch {
+		case i >= 800:
+			g = randomSpritesGIF(rng)
+		case i%4 == 3:
+			g = randomRawGIF(rng, 600)
+		default:
+			g = randomRawGIF(rng, 6)
 		}
-		g := randomRawGIF(rng, colours)
 		name := fmt.Sprintf("GIF %d", i)
 		want, wantErr := Process(context.Background(), g.bytes())
 		switch {
@@ -1693,8 +1929,15 @@ func TestGIFsShownAlikeAreStoredAlike(t *testing.T) {
 			if again := process(t, want.Data).Data; !bytes.Equal(again, want.Data) {
 				t.Fatalf("%s: processing the stored GIF again stores it differently", name)
 			}
-			if _, local := gifTables(t, want.Data); slices.Contains(local, true) {
+			_, local := gifTables(t, want.Data)
+			if slices.Contains(local, true) {
 				own++
+			}
+			if bytes.Contains(gifDisposals(t, want.Data), []byte{restoreFrame}) {
+				putBack++
+				if slices.Contains(local, false) {
+					t.Fatalf("%s: stored with a frame put back and a frame of the global table", name)
+				}
 			}
 		}
 		for form := 0; form < 6; form++ {
@@ -1718,15 +1961,28 @@ func TestGIFsShownAlikeAreStoredAlike(t *testing.T) {
 			if !errors.Is(err, wantErr) || err == nil && !bytes.Equal(got.Data, want.Data) {
 				t.Fatalf("%s rewritten (%s) is stored differently (%v, against %v for the original)", name, strings.Join(done, "; "), err, wantErr)
 			}
+			if err == nil && bytes.Contains(gifDisposals(t, got.Data), []byte{restoreFrame}) {
+				putBackForms++
+			}
 		}
 	}
-	t.Logf("%d GIFs stored (%d with tables of their own), %d refused; rewrites applied: %v", stored, own, refused, applied)
+	t.Logf("%d GIFs stored (%d with tables of their own, %d with a frame put back, rewritten %d times), %d refused; rewrites applied: %v", stored, own, putBack, putBackForms, refused, applied)
 	for _, r := range gifRewrites {
 		if applied[r.name] < 50 {
 			t.Errorf("%q was applied %d times; the test shows little of it", r.name, applied[r.name])
 		}
 	}
-	if own < 50 || stored < 600 {
-		t.Errorf("%d GIFs stored, %d with tables of their own; the test shows little", stored, own)
+	if own < 300 || putBack < 50 || putBackForms < 200 || stored < 900 {
+		t.Errorf("%d GIFs stored, %d with tables of their own and %d with a frame put back, rewritten %d times; the test shows little", stored, own, putBack, putBackForms)
 	}
+}
+
+// gifDisposals is the disposal method of each frame of a GIF, as written.
+func gifDisposals(t *testing.T, data []byte) []byte {
+	t.Helper()
+	g, err := gif.DecodeAll(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("the stored GIF does not decode: %v", err)
+	}
+	return g.Disposal
 }

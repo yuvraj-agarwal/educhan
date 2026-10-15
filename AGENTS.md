@@ -594,44 +594,64 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   the rectangle around those pixels and the ones the next picture has transparent where
   this one does not; it is cleared after its time when there are such pixels, since only a
   clear makes a pixel transparent again, and left in place otherwise, the last always in
-  place. Time past 65,535 hundredths goes into one-pixel frames that draw nothing after it
-  (the last of them cleared, of the picture's rectangle, when the picture is), none given
-  a delay of 1. A GIF played once gets delay 0 on its last picture, and a GIF of one
-  picture is a still: one frame, no delay, disposal or loop count, and a control extension
-  only for transparent pixels. The header has background and aspect 0. Colours: when the
-  pictures show 255 or fewer, one global table, transparent black at 0 and then the
-  colours in order of their values, with 0 the transparent index of every frame of an
-  animation; otherwise each frame has a table of the colours it draws, in order, after a
-  transparent 0 when a pixel of its rectangle is not drawn (`frameColours`). A frame of
-  256 colours has no room for that entry, so it writes each pixel it does not draw in the
-  colour already showing there, which has to be one of its 256; where it is not, or a
-  frame would need more than 256, the GIF is refused (`ErrImageTooCostly`), as is one
-  whose stored frames come to more than `maxGIFFramePixels`
-  (`TestGIFOfManyColoursHasATableAFrame`; after flood control,
-  `TestImagesRefusedByTheirHeaderStartNoCooldown`). Only a frame that clears or puts back
-  what an earlier one drew can leave a stored frame needing more colours than that, since
-  a frame alone draws from one table: 0 of the 1,500 many-coloured GIFs of the Chromium
-  comparison were refused, and 7 of 5,000 random GIFs of up to 256 colours a frame and
-  every disposal method; of 126 made with ffmpeg, ImageMagick and Pillow, the 4 refused
-  were ImageMagick's `-layers OptimizeFrame` and `OptimizePlus` of one animation of 256
-  colours a frame, where a put-back leaves the next picture 304 colours to change, and the
-  other 122 showed alike in Chromium. The player keeps what the frames before the one
-  being played left (`under`) as a four-byte colour key a pixel, with two bit sets over
-  the canvas (`gifPlayScratch`, charged in `completedCost`), lets each decoded frame go
-  once it has played it, and keeps the walk's head of each until then (`gifFramePlay`).
-  The thumbnail is of the first picture, made before playing (`firstGIFPicture`).
-  `TestGIFIsStoredAsItPlays` holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`),
-  a model of Chromium's compositing written apart from `playGIF`, and to storing the same
-  bytes when processed again; `TestGIFsShownAlikeAreStoredAlike` rewrites 800 random GIFs,
-  six times each, in a dozen ways that change nothing Chromium shows (`gifRewrites`, each
-  checked against the model first) and requires every form stored as the original's bytes;
+  place — but for a GIF of a table a frame (below). Time past 65,535 hundredths goes into
+  one-pixel frames that draw nothing after it (the last of them cleared, of the picture's
+  rectangle, when the picture is), or for a frame put back into copies of it, each put
+  back, none given a delay of 1. A GIF played once gets delay 0 on its last picture, and a
+  GIF of one picture is a still: one frame, no delay, disposal or loop count, and a
+  control extension only for transparent pixels. The header has background and aspect 0.
+  Colours: when the pictures show 255 or fewer, one global table, transparent black at 0
+  and then the colours in order of their values, with 0 the transparent index of every
+  frame of an animation; otherwise each frame has a table of the colours it draws, in
+  order, after a transparent 0 when a pixel of its rectangle is not drawn (`ownTable`). A
+  frame of 256 colours has no room for that entry, so it writes each pixel it does not
+  draw in the colour already showing there, which has to be one of its 256. A frame left
+  in place or cleared can leave the next one more than that to draw (the colours it
+  covered, back again, and the next picture's own: ImageMagick's `-layers OptimizeFrame`
+  made one that left 304), so `choose` takes, for each frame, the first of three ways
+  after which it and the next frame can be written: left in place (if the next picture
+  needs nothing cleared), cleared with the rectangle widened as above, and put back to
+  what was there before it was drawn, which the player keeps for that (`saved`) and which
+  has to be transparent wherever the next picture is. Every choice is a function of the
+  pictures and the choices before it, so "shown alike, stored alike" still holds, and
+  every GIF stored before frames could be put back is stored as the same bytes, the way it
+  took then being still the first that does. Where no way will do, the GIF is refused
+  (`ErrImageTooCostly`), as is one whose stored frames, with what `choose` looked at for
+  ways it did not take (`tried`, so that looking is bounded as writing is), come to more
+  than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
+  `TestGIFOfManyColoursPutsAFrameBack`, `TestGIFWaysNotTakenAreCharged`; after flood
+  control, `TestImagesRefusedByTheirHeaderStartNoCooldown`). The choice is greedy, one
+  frame at a time, so some GIFs a file could store one frame to a picture are refused:
+  frames put back two in a row, the second to the picture before the first, after the
+  stored file left the first in place; or a clear whose widened rectangle takes in too
+  many colours. Only frames that clear or put back what earlier ones drew can bring that
+  about, since a frame alone draws from one table: none of 126 GIFs made with ffmpeg,
+  ImageMagick and Pillow is refused, nor any of the 1,500 many-coloured GIFs of the
+  Chromium comparison; 1 of 5,000 random GIFs of up to 256 colours a frame and every
+  disposal method is, and 75 of 2,000 random animations of sprites put back, cleared or
+  left over a background of 256 colours (`randomSpritesGIF`). The player keeps what the
+  frames before the one being played left (`under`) as a four-byte colour key a pixel,
+  with two bit sets over the canvas, and for an animation whose tables give more than 255
+  colours (`gifFrames.many`, read by the walk) four bytes a pixel more for `saved`
+  (`gifPlayScratch`, charged in `completedCost`, `TestGIFPlayScratchCoversThePlayer`); it
+  lets each decoded frame go once it has played it, and keeps the walk's head of each
+  until then (`gifFramePlay`). The thumbnail is of the first picture, made before playing
+  (`firstGIFPicture`). `TestGIFIsStoredAsItPlays` holds 2000 random GIFs to `browserPlay`
+  (`gifplay_test.go`), a model of Chromium's compositing written apart from `playGIF`, and
+  to storing the same bytes when processed again; `TestGIFsShownAlikeAreStoredAlike`
+  rewrites 1,100 random GIFs, 300 of them animations of sprites over many colours
+  (`randomSpritesGIF`), at least 50 of which are stored with frames put back, six times
+  each, in thirteen ways that change nothing Chromium shows (`gifRewrites`, each checked
+  against the model first) and requires every form stored as the original's bytes;
   `hidden_test.go` pins the channels found, each as two uploads stored alike
   (`TestGIFFramesOfOnePictureCarryNothing`, `TestGIFPixelsThatChangeNothingCarryNothing`,
   `TestGIFDisposalPaintedOverCarriesNothing`,
   `TestGIFTimeSplitBetweenFramesCarriesNothing`,
   `TestGIFFramesThatDrawNothingCarryNothing`). The model and the forms were compared with
   Chromium (through WebCodecs' `ImageDecoder`, which `<img>` shares its GIF decoder with)
-  over some 9,000 GIFs, every one showing alike; change the player and the model only
+  over some 9,000 GIFs, and again, once frames could be put back, over 8,550 stored ones
+  (the 126 made with real tools, the 1,500 of many colours, 4,999 random ones and 1,925
+  animations of sprites), every one showing alike; change the player and the model only
   together, and only after checking Chromium again. The loop count is written back as
   NETSCAPE2.0, from whichever loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as
   browsers read them; `image/gif` reads only the first, so `gifFramePixels` reads both
@@ -764,7 +784,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   to 2 when it is grey with no transparency, as `pngBytesPerPixel` reads its header;
   `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
   thousands of empty frames is not free, and `playGIF` four bytes and two bits a pixel of
-  the canvas, `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the
+  the canvas, and four bytes more for an animation whose tables give more than 255
+  colours, `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the
   encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
