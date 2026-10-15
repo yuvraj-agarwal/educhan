@@ -102,10 +102,15 @@ type submissionForm interface {
 //
 // A multipart body sets its own connection deadlines, because it may take
 // longer than one WriteTimeout from the end of its headers allows: the body
-// has uploadReadTimeout to arrive, and a body slower than that is answered 408
-// (upload too slow), not the 503 a server with no room gives; the write
-// deadline covers that read and the answer to it, and processContext resets it
-// for the processing that follows.
+// has uploadReadTimeout to arrive from when there is room to read it, and a
+// body slower than that is answered 408 (upload too slow), not the 503 a
+// server with no room gives; the write deadline covers that read and the
+// answer to it, and processContext resets it for the processing that follows.
+// The deadlines are set once the wait for room is over, whatever its outcome,
+// so a post that waited has its whole uploadReadTimeout for its body — the
+// wait was the server's, and taken out of the body's time it would turn a
+// busy server into a slow upload — and a post turned away has that long for
+// the rest of its body to be read past and the answer written.
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -114,11 +119,6 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 		sub := form.submission()
 		return &sub, true
 	}
-
-	rc := http.NewResponseController(w)
-	now := time.Now()
-	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
-	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
 
 	// With uploads switched off a post can carry nothing but its text fields,
 	// so its body is held to what a JSON post may be (maxRequestBytes, well
@@ -134,18 +134,26 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	if r.ContentLength >= 0 {
 		size = min(r.ContentLength, bodyLimit)
 	}
-	var reserved func()
+	var (
+		reserved func()
+		err      error
+	)
 	if a.cfg.UploadsEnabled {
-		var err error
-		if reserved, err = media.ReserveUpload(ctx, size); err != nil {
-			// The browser is still sending the body. Answered before it has
-			// finished, a connection closed under it can reach the poster
-			// as a network failure instead of this answer, so the body is
-			// read, and nothing of it kept.
-			_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, bodyLimit))
-			a.rejectUpload(w, r, err)
-			return nil, false
-		}
+		reserved, err = media.ReserveUpload(ctx, size)
+	}
+	// Nothing has read the body yet: its time starts now.
+	rc := http.NewResponseController(w)
+	now := time.Now()
+	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
+	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
+	if err != nil {
+		// The browser is still sending the body. Answered before it has
+		// finished, a connection closed under it can reach the poster as a
+		// network failure instead of this answer, so the body is read, and
+		// nothing of it kept.
+		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, bodyLimit))
+		a.rejectUpload(w, r, err)
+		return nil, false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
 	sub, status, msg := a.readMultipart(r, size)

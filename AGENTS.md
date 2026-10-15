@@ -700,10 +700,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `processingAllowance` (15 s, about what the dearest upload takes on one core, with
   margin) before that deadline, with `media.ErrBusy`, and room that is there is taken
   however near the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive,
-  a read deadline set on the connection through an `http.ResponseController` (the
+  counted from when the wait ends, so time spent waiting for room is not taken out of
+  the body's: a read deadline set on the connection through an
+  `http.ResponseController` once `ReserveUpload` has returned, whatever it returned (the
   logging middleware's `statusRecorder` carries an `Unwrap` so the controller reaches
   the connection underneath); a body slower than that is the client's doing, answered
-  `408` (`upload too slow`, `isReadTimeout`), not the `503` a server with no room gives.
+  `408` (`upload too slow`, `isReadTimeout`), not the `503` a server with no room gives,
+  and a body that waited for room is not answered `408` for the server's load.
   Once the body is read, the image has a fresh `postDeadline` (25 s, `processContext`)
   to be processed and both renditions stored — measured from after the body, not from
   the start of the handler, so a slow body no longer spends the time the image has and

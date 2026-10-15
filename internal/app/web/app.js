@@ -177,6 +177,12 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
     const wait = plural(err.payload.retry_after, "second", "seconds");
     return `Too many images are being posted right now, so yours wasn't. Wait ${wait} and post again: your post is still in the form.`;
   }
+  // The image did not finish arriving in the time the server gives a body,
+  // counted from when it had room to read it: the connection, not the server.
+  // Nothing was posted and no flood-control wait was started.
+  if (err.status === 408) {
+    return "Your image took too long to upload, so nothing was posted. Check your connection or try a smaller image, then post again: your post is still in the form.";
+  }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
   if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {

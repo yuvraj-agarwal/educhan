@@ -423,6 +423,65 @@ func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 		}
 	})
 
+	// The wait for room in the upload budget is the server's: a post that
+	// waited still has the whole read timeout for its body, counted from when
+	// there was room, and is not answered 408 for the server's own load.
+	t.Run("a body that waited for room has the whole read timeout", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		const (
+			held    = 2 * time.Second // the budget is full this long, well inside the wait postDeadline allows
+			timeout = 3 * time.Second // the body's read timeout
+			sending = 2400 * time.Millisecond
+		)
+		h.app.uploadReadTimeout = timeout
+
+		full, err := media.ReserveUpload(context.Background(), math.MaxInt64)
+		if err != nil {
+			t.Fatalf("fill the upload budget: %v", err)
+		}
+		var once sync.Once
+		free := func() { once.Do(full) }
+		t.Cleanup(free)
+		release := time.AfterFunc(held, free)
+		defer release.Stop()
+
+		// Expect: 100-continue keeps the body back until the server starts
+		// reading it, as a slow connection whose buffers have filled does,
+		// so the body takes its time from when there was room.
+		body, contentType := multipartImage(t, "waited, then slow", pngBytes(t, 32, 32))
+		const chunks = 12
+		req, err := http.NewRequest(http.MethodPost, h.client.base+"/api/boards/general/threads",
+			&throttledReader{data: body, chunk: len(body)/chunks + 1, pause: sending / chunks})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", contentType)
+		req.Header.Set("Expect", "100-continue")
+		req.ContentLength = int64(len(body))
+		patient := &http.Client{Transport: &http.Transport{ExpectContinueTimeout: time.Minute}}
+		t.Cleanup(patient.CloseIdleConnections)
+
+		start := time.Now()
+		resp, err := patient.Do(req)
+		if err != nil {
+			t.Fatalf("post: %v", err)
+		}
+		defer resp.Body.Close()
+		answer, _ := io.ReadAll(resp.Body)
+		took := time.Since(start)
+		if took < timeout {
+			t.Fatalf("answered after %v, inside the %v read timeout from the start; the test proves nothing", took, timeout)
+		}
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("a post that waited %v for room, then sent its body in %v: status %d (%s) after %v, want 201",
+				held, sending, resp.StatusCode, answer, took)
+		}
+		if n := h.countRows("posts"); n != 1 {
+			t.Errorf("%d posts stored, want the post made", n)
+		}
+	})
+
 	t.Run("a body slower than the read timeout is answered 408", func(t *testing.T) {
 		h := testServer(t, nil)
 		h.addBoard("general")

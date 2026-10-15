@@ -512,10 +512,15 @@ client can leave the image picker off a server that would refuse what it sends.
   images it holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at
   once to a server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an
   instance of 512 MiB has room with that limit set. A post waits for room in either
-  budget for about ten seconds at most, and one that cannot be taken in time, or whose
-  image is not stored within 25 seconds of its arrival, answers `503` (see
+  budget for about ten seconds at most. Once there is room to read it, its body has 30
+  seconds to arrive, and once it has arrived its image has 25 seconds to be processed
+  and stored. A post that cannot be taken in time — no room within the wait, or its
+  image not stored within those 25 seconds — answers `503` (see
   [Flood control](#flood-control)) with nothing stored, rather than being made after
-  its answer could no longer be sent.
+  its answer could no longer be sent. A body that takes longer than its 30 seconds is
+  the connection's doing, not the server's, and answers `408` with
+  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time
+  a post spent waiting for room is not counted against its body.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -849,10 +854,13 @@ A refused request answers `429` with a `Retry-After` header in seconds and a
 
 A post with an image the server is too busy to take in time — no room to read or
 process it within about ten seconds, or its image not stored within 25 seconds of
-the post's arrival (see **Memory** under [Image attachments](#image-attachments)) —
+its body arriving (see **Memory** under [Image attachments](#image-attachments)) —
 answers `503` the same way, with a `Retry-After` and `retry_after` of 10 seconds.
 Nothing is stored for it, and a cooldown it started is given back, so it can be sent
-again as soon as the wait is over. A
+again as soon as the wait is over. A post whose body takes longer than 30 seconds to
+arrive, counted from when there was room to read it, answers `408` with
+`{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
+connection faster; it is refused before flood control, so it starts no cooldown. A
 request rejected for any other reason — an empty body, an oversized image, a
 file that is not an accepted image or whose header shows it too large to
 process, a reply to a missing, locked or archived thread or an image past a
@@ -979,7 +987,9 @@ refused inside the transaction, after its cooldowns have started.)
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
 plus an `image` file. Errors are `{"error": "..."}`, and `429` and `503` responses
-add `retry_after` plus a `Retry-After` header.
+add `retry_after` plus a `Retry-After` header. An image post whose body does not
+arrive within 30 seconds of there being room to read it answers `408`
+(`upload too slow`).
 
 ```bash
 curl -s localhost:8080/api/boards
