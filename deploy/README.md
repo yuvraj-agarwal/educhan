@@ -458,7 +458,11 @@ both already in the `roles/storage.objectAdmin` grant from section 2.3 (it check
 that each file is there before deleting it). It gets neither the moderation key nor
 `EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
 with that secret set and no mail sender). The poster-ID salt is left out too, as
-nothing the sweeper does touches a poster ID.
+nothing the sweeper does touches a poster ID. So is every educhan Pass setting,
+whether or not the service sells the Pass: each run prunes the Pass's tables
+without them, because every order carries the term it was sold with and every
+other row its own deadline, and a Pass setting given without
+`EDUCHAN_PASS_SECRET` would stop the Job from starting.
 
 ```bash
 gcloud run jobs deploy educhan-sweep \
@@ -514,6 +518,131 @@ failed in the console (`gcloud run jobs executions list --job educhan-sweep
 or the Job's own retry, tries it again, so a retry is always safe. In the log,
 `blobs_missing` above zero means the media settings are wrong; `blob_failures`
 means the store refused or was unreachable.
+
+### 2.10 Selling the educhan Pass (optional)
+
+The Pass is off until `EDUCHAN_PASS_SECRET` is set, and nothing else in this
+guide needs it. Turn it on only when it goes on sale. The server refuses to
+start with some of the Pass settings and not the others, so they go on
+together, in one `gcloud run services update`, or not at all. They go on the
+service only: the sweeper Job gets none of them, and would refuse to start with
+any of them set without the secret (section 2.9).
+
+**In the Stripe dashboard first.** Under *Settings → Public details*, set a
+support email: it is printed on every receipt, and a buyer who lost their code
+writes there to have it reissued. Then make a restricted key (*Developers → API
+keys → Create restricted key*) with **Checkout Sessions: Write** and **Prices:
+Read** and nothing else. Those are the only two calls the server makes. A full
+secret key also works but can do far more than the server needs; the server
+refuses to start with anything but an `sk_…` or `rk_…` key. Turn on Stripe's
+email receipts for successful payments, and set up no custom domain for
+Checkout: the server sends buyers only to `https://checkout.stripe.com` and
+refuses any other address Stripe hands back.
+
+In Cloud Shell, keep the key out of your shell history:
+
+```bash
+read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
+read -rsp 'Stripe secret key (for the two setup calls only): ' STRIPE_ADMIN; echo
+export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin: any path is refused
+
+# The product and its one-time price: USD 20.00, a year of the Pass. The amount
+# is in the currency's smallest unit (2000 = USD 20.00). A new price later is a
+# new Price and a new EDUCHAN_STRIPE_PRICE_ID, not a code change.
+PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
+  -d name="educhan Pass" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
+  -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+
+# The webhook endpoint, pinned to the API version the server is written
+# against. Its signing secret is returned by this call and no other.
+WEBHOOK_SECRET=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STRIPE_ADMIN}:" \
+  -d url="${PUBLIC_URL}/api/pass/stripe-webhook" -d api_version=2024-06-20 \
+  -d "enabled_events[]=checkout.session.completed" \
+  -d "enabled_events[]=checkout.session.async_payment_succeeded" \
+  -d "enabled_events[]=checkout.session.async_payment_failed" \
+  -d "enabled_events[]=checkout.session.expired" \
+  -d "enabled_events[]=charge.refunded" \
+  -d "enabled_events[]=charge.dispute.created" \
+  | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])')
+unset STRIPE_ADMIN
+
+openssl rand -hex 32 \
+  | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
+printf '%s' "$STRIPE_KEY" \
+  | gcloud secrets create educhan-stripe-secret-key --replication-policy=automatic --data-file=-
+printf '%s' "$WEBHOOK_SECRET" \
+  | gcloud secrets create educhan-stripe-webhook-secret --replication-policy=automatic --data-file=-
+unset STRIPE_KEY WEBHOOK_SECRET
+for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
+done
+
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
+```
+
+`curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
+price. To have Stripe Tax add sales tax, VAT or GST, switch Stripe Tax on in the
+account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars; the page then
+says "plus any tax" beside the price. Three more settings have working defaults
+and need no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
+`EDUCHAN_PASS_COOLDOWN` (section 4).
+
+Re-running `first-deploy.sh` keeps these settings.
+
+**To stop selling, pause.** This leaves everything already sold working:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --update-env-vars EDUCHAN_PASS_SALES=paused
+```
+
+Checkout then refuses purchases and renewals alike with `403`, before it reads
+the request's body or asks Stripe anything, and the Pass page says "The Pass is not on
+sale right now." where Buy and Renew were. Everything else goes on: Stripe's
+webhooks are still verified and recorded, so a checkout opened before the pause
+and paid after it is collected, and a refund or dispute still takes back what it
+paid for; existing Passes keep skipping the captcha; and the page still
+collects, shows and checks codes, and reissue links are still made and spent.
+`EDUCHAN_PASS_SALES=open` (the default) sells again; any other value refuses to
+start. Re-running `first-deploy.sh` keeps the pause.
+
+**Retiring the Pass is a different step:** take the secret and every other Pass
+setting off together, or the server refuses to start. Removing a setting that
+was never set is harmless, so the same command works whichever optional ones
+you added:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --remove-secrets EDUCHAN_PASS_SECRET,EDUCHAN_STRIPE_SECRET_KEY,EDUCHAN_STRIPE_WEBHOOK_SECRET \
+  --remove-env-vars EDUCHAN_STRIPE_PRICE_ID,EDUCHAN_PUBLIC_URL,EDUCHAN_STRIPE_AUTOMATIC_TAX,EDUCHAN_PASS_DAYS,EDUCHAN_PASS_HOURLY_POSTS,EDUCHAN_PASS_COOLDOWN,EDUCHAN_PASS_SALES
+```
+
+Every Pass endpoint then answers as if there were no Pass, and existing Passes
+stop skipping the captcha. The webhook answers `404`, and Stripe gives up on an
+event after about three days, so an event sent meanwhile is lost unless the
+settings are back before then: a payment among them never becomes a Pass, and a
+refund or dispute takes nothing back. So pause first, and retire only once
+nothing is in flight: no checkout still open (Stripe keeps one open for up to a
+day) and no refund or dispute pending. The tables stay and the sweep keeps
+pruning them; setting the same `educhan-pass-secret` again brings back every
+Pass not yet pruned. Before that, check in the Stripe Dashboard that the
+webhook endpoint is still enabled: Stripe can disable one that keeps failing.
+
+**Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
+payment record is a hash under it, so rotating it cancels every Pass that was
+sold, and leaves no record a refund could find.
+
+**Keep the webhook reachable.** Stripe calls `POST /api/pass/stripe-webhook` from
+its own addresses, and a buyer who has paid gets nothing until that call lands.
+Stripe retries for up to three days, but once a load balancer and Cloud Armor
+are in front of the service, no rate or geography rule may block that path. The
+service also needs outbound HTTPS to `api.stripe.com`. That is open by default;
+if egress is ever restricted, allow it.
 
 ---
 
@@ -589,6 +718,14 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_DB_MAX_CONNS` | `3` (default) | `3` | Connection pool cap per instance; times `maxScale` it must fit the Cloud SQL tier (section 3) |
 | `EDUCHAN_UPLOADS_ENABLED` | `1` when testing images | **`false`** | Off refuses image posts with `403`. Keep it off until images are stripped of metadata and scanned |
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
+| `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off, and any other Pass setting given without it refuses to start. Set together with the four below (section 2.10). Never on the sweeper Job, nor is any Pass setting (section 2.9) |
+| `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
+| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start) |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe adds the tax at checkout and the page says "plus any tax" |
+| `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts, from `1` to `36500`. Each order keeps the term it was sold with, so a change applies only to checkouts started after it |
+| `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
+| `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |
+| `EDUCHAN_PASS_SALES` | `open` (default) | `open`, or `paused` to stop selling | `paused` refuses new purchases and renewals and keeps everything sold working; any other value refuses to start (section 2.10) |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
 value higher than the real chain lets a client pick its own rate-limit bucket by
