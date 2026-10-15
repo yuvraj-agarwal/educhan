@@ -190,6 +190,7 @@ img { max-width: 100%; }
 }
 
 .verify-link:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
+.verify-link[hidden] { display: none; }
 
 .verify-link[aria-current="page"] {
   color: var(--text);

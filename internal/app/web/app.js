@@ -88,8 +88,9 @@ const state = {
   // What this server takes, from GET /api/site: whether it accepts images at
   // all, and the largest it accepts. Until that answers, or if it never does,
   // the picker is offered as it always was and the size limit is unknown (0);
-  // the server's refusal is the last word either way.
-  site: { uploads: true, maxUploadBytes: 0 },
+  // the server's refusal is the last word either way. pass is whether it has
+  // the Pass, which only decides whether the header links to its page.
+  site: { uploads: true, maxUploadBytes: 0, pass: false },
 };
 
 const el = {
@@ -104,6 +105,9 @@ const el = {
   // feature is switched on here. The header's Verify link stays regardless:
   // the page also holds Forget this browser.
   verifyFooter: document.querySelector("[data-verify-footer]"),
+  // The header's Pass link, hidden until the server says it has the Pass or
+  // this browser holds one (showPassLink).
+  passLink: document.querySelector("[data-pass-link]"),
 };
 
 /* API ---------------------------------------------------------------------- */
@@ -1535,6 +1539,17 @@ function renderNav(route) {
     } else {
       link.removeAttribute("aria-current");
     }
+  }
+  showPassLink();
+}
+
+// showPassLink shows the header's Pass link on a server that has the Pass, and
+// in a browser that holds one whatever the server does now, so its holder can
+// still show the code or remove it. A server without it, the default, does not
+// advertise a paid product it does not sell.
+function showPassLink() {
+  if (el.passLink) {
+    el.passLink.hidden = !(state.site.pass || storedPass());
   }
 }
 
@@ -4333,7 +4348,7 @@ async function loadSite() {
     api("/api/site")
       .then((site) => {
         const max = Number(site.max_upload_bytes);
-        state.site = { uploads: site.uploads !== false, maxUploadBytes: max > 0 ? max : 0 };
+        state.site = { uploads: site.uploads !== false, maxUploadBytes: max > 0 ? max : 0, pass: site.pass === true };
       })
       .catch(() => {}),
   ]);

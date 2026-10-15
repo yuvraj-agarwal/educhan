@@ -762,3 +762,30 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
 	}
 }
+
+// The header links to the Pass only on a server that has it, or in a browser
+// that holds one, which needs the page to show its code or remove it.
+func TestHeaderLinksToThePassOnlyWhereItIs(t *testing.T) {
+	shell, err := fs.ReadFile(webFS(), "index.html")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(shell), `<a class="verify-link" href="/pass" data-page="pass" data-pass-link hidden>Pass</a>`) {
+		t.Error("the header's Pass link is not hidden until the page knows the server has the Pass")
+	}
+	css, err := fs.ReadFile(webFS(), "app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(css), ".verify-link[hidden] { display: none; }") {
+		t.Error("the header link's display would override its hidden attribute")
+	}
+	script := appScript(t)
+	if !strings.Contains(withoutComments(jsFunction(t, script, "showPassLink")), "el.passLink.hidden = !(state.site.pass || storedPass());") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "renderNav")), "showPassLink();") {
+		t.Error("the header's Pass link is no longer shown for a server with the Pass or a browser holding one")
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "loadSite")), "pass: site.pass === true") {
+		t.Error("loadSite no longer reads whether the server has the Pass")
+	}
+}
