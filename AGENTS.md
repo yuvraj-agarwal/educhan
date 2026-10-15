@@ -620,11 +620,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   why the sweep checks with `Get` before `Delete` rather than going through
   `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's
   deletion should. A cancelled sweep stops between files, never between a file and
-  its key. It logs one record of counts and nothing that names a board or thread,
-  failures included, and the error it returns has the key taken out
-  (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
-  failure, a file it could not remove or did not find, or a database a newer release
-  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
+  its key. Last — after the media pass, whatever it found, but not after a database
+  error or a cancellation — it calls `RewriteCredentials` (see **Verified Anonymity**
+  below). It logs one record of counts and nothing that names a board or thread or
+  says anything of a credential, failures included, and the error it returns has the
+  key taken out (`TestSweepLogsOnlyCounts`); `credentials_rewritten` is the size of
+  the credentials table, which anyone holding the database has anyway, and nothing
+  finer belongs beside it. It returns an error — a non-zero exit — on a database failure, a
+  file it could not remove or did not find, a rewrite or vacuum of the verification
+  tables that did not finish, or a database a newer release migrated
+  (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
   like the server, and runs without the salt, the moderation key and the verification
   secret on purpose, so `New` warns about none of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
@@ -790,6 +795,35 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
     stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
     reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
+  - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
+    credentials every night.** Every row carries `xmin`, the id of the transaction that
+    wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
+    dates its issuance to the minutes between two of them; freezing keeps `xmin`, and
+    `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's last
+    step, locks `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed
+    transaction (writers wait, `CredentialLabel` reads on), deletes every row and
+    inserts the returned copy back `ORDER BY random()` in one statement, then runs
+    `VACUUM FULL` on both verification tables outside the transaction, which takes the
+    dead versions — and deleted pending rows, with their email hash and an expiry to
+    the second — off disk. It runs on a connection taken out of the pool with
+    `lock_timeout` at five seconds, so a session holding a table fails the sweep
+    instead of queueing badged posts behind the vacuum. `VACUUM FULL` skips, with only
+    a warning, a table its role owns neither itself nor through owning the database, so
+    the sweep compares `pg_relation_filenode` before and after and fails on an
+    unchanged one: the sweeper connects as the role that ran the migrations. A new write path into the
+    credentials table re-dates the rows it writes until the next sweep, so treat one
+    like a new column. The README's "Transaction ids, and the nightly rewrite" says
+    exactly what this protects — the live database after the 03:17 UTC sweep, where a
+    credential is dated only by its expiry day — and what it does not: a credential
+    issued since the last sweep, backups (taken from 05:00 UTC, up to 09:00, seven
+    kept), a session holding an old snapshot during the vacuum, and the write-ahead
+    log. Point-in-time recovery stays off and `track_commit_timestamp` stays off
+    (`deploy/README.md` section 2.2); changing either means changing that README
+    section in the same commit. `TestSweepTakesIssuanceTimeOutOfCredentials`,
+    `TestSweepStoresCredentialsOutOfIssuanceOrder`,
+    `TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
+    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce` and
+    `TestSweepFailsWhenTheVerificationTablesAreHeld` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
     returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent
     in `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be

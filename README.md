@@ -176,18 +176,23 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- When a credential was issued: in the database, only to the *day*, because the
-  stored expiry is rounded up to a UTC day boundary and nothing else in the
-  verification tables is timestamped; in the application's log, for as long as
-  it is kept, to the second, because the request line for
-  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
-  time. Neither line says which institution or address the credential was for
-  (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
-  after an issuance does name the institution, and its time is kept to the
-  second too. So an issuance followed by a badged post ties that post to its
-  stored record on any day its institution issued only one credential, however
-  many other institutions issued that day. How long the request log is kept is
-  what limits this.
+- When a credential was issued. In the live database, once the nightly sweep has
+  run, only to the *day*: the stored expiry is rounded up to a UTC day boundary,
+  nothing else in the verification tables is timestamped, and the sweep rewrites
+  the credentials so that the transaction id PostgreSQL keeps on every row is
+  the sweep's rather than the issuance's. Before that, and in a backup, a
+  credential's transaction id can place its issuance between two posts;
+  [Transaction ids, and the nightly
+  rewrite](#transaction-ids-and-the-nightly-rewrite) says exactly when. In the
+  application's log, for as long as it is kept, to the second, because the
+  request line for `POST /api/verify/confirm` and a bare `verification issued`
+  line each carry a time. Neither line says which institution or address the
+  credential was for (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged
+  post made soon after an issuance does name the institution, and its time is
+  kept to the second too. So an issuance followed by a badged post ties that
+  post to its stored record on any day its institution issued only one
+  credential, however many other institutions issued that day. How long the
+  request log is kept is what limits this.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -212,8 +217,9 @@ can and cannot work out.
   as text and hold no reference to the record it came from.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
-  updates nothing, so there is no "last used" to line up against a post. The
-  log's issuance times name no institution, but a badged post soon after one
+  updates nothing, so there is no "last used" to line up against a post; the
+  transaction id on a rewritten credential row dates the sweep that rewrote it.
+  The log's issuance times name no institution, but a badged post soon after one
   does, and that ties the post to a single record on a day its institution
   issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
@@ -235,6 +241,75 @@ can and cannot work out.
 
 Rotating `EDUCHAN_VERIFY_SECRET` invalidates every credential and orphans every
 uniqueness key, so everyone re-verifies and their old rows match nothing.
+
+### Transaction ids, and the nightly rewrite
+
+PostgreSQL keeps something on every row besides its columns: `xmin`, the id of
+the transaction that wrote it. Transaction ids are handed out in the order
+transactions first write, and posts are written by transactions too, with their
+times on the page, so a credential row's `xmin` falls between two posts' and
+dates its issuance to the minutes between them — what leaving `created_at` out
+of the table was for — and, with its label, points at the first badged posts
+after it. Freezing a row does not clear its `xmin`. The order rows sit in the
+table's file, which is the order a dump lists them in, is the order they were
+written. And a row that is deleted or replaced stays on disk with its `xmin`
+until it is vacuumed: every pending row a confirmation deleted, with its email
+hash and an expiry to the second, and every credential a second verification
+replaced.
+
+So the archive sweeper ends every run on the verification tables
+(`RewriteCredentials` in `store.go`):
+
+1. In one transaction, holding a lock that makes writers wait and lets readers
+   through, it deletes every credential row and inserts the copy back in random
+   order. Every row then carries the sweep's transaction id, and where a row
+   sits says nothing about when it was issued. Badged posts read the table
+   throughout. A confirmation that already has the table is waited for and
+   rewritten with the rest; one that arrives during the rewrite waits for it
+   and is then written as usual — once either way
+   (`TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
+   `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`).
+2. Then `VACUUM FULL` writes `verification_credentials` and
+   `verification_pending` to new files without their dead rows and drops the
+   old files. Badged posts and confirmations wait out the moment it holds each
+   table.
+
+`TestSweepTakesIssuanceTimeOutOfCredentials` issues credentials between posts
+and checks that afterwards they all carry one transaction id, that none lies
+between two posts written before the sweep, and that both tables are in new
+files; `TestSweepStoresCredentialsOutOfIssuanceOrder` checks the stored order.
+
+What that protects, exactly:
+
+- **The live database, after the nightly sweep at 03:17 UTC.** A credential is
+  dated only by its expiry, rounded to the day.
+- **A credential issued since the last sweep** carries its own transaction id
+  and can be placed between two timed posts until the next sweep rewrites it.
+  Until then, too, the pending row its confirmation deleted can still be in the
+  table's pages, where anyone who can read them would find the time its code was
+  requested.
+- **Backups** hold rows as they stood when they were taken. The instance keeps a
+  daily backup, the last seven — about a week — each started in a window that
+  opens at 05:00 UTC ([deploy guide](deploy/README.md) section 2.2). A
+  credential issued between the sweep and the backup, which can start as late as
+  09:00 UTC, is in that backup as it was before the next sweep — with its own
+  transaction id, and its deleted pending row perhaps still in the pages — for
+  as long as the backup is kept.
+- **Point-in-time recovery is off.** Turning it on would keep a week of
+  write-ahead log, and the commit record of every transaction in it carries its
+  time, which dates every write exactly; rewriting rows does nothing to a log
+  of how they were written.
+- **`track_commit_timestamp` must stay off**, as the deploy guide's section 2.2
+  says. With it on, PostgreSQL records when each transaction committed, and a
+  row's `xmin` gives the time it was written to well under a second.
+
+Nothing more than that. `VACUUM FULL` keeps any old row version that a
+transaction still running from before the rewrite could read, so a session left
+open elsewhere in the database while the sweep runs — an export, a `psql` left
+in a transaction — keeps those versions on disk past the sweep. A sweep that
+fails exits non-zero and leaves what it did not finish to the next one. And the
+write-ahead log the server keeps for its own crash recovery is outside all of
+this; with point-in-time recovery off, none of it is archived.
 
 ### Domain allowlist
 
@@ -421,7 +496,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so no row carries its issuance's transaction id; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -1030,14 +1105,28 @@ fixed, the next sweep removes them. A file that really is gone for good (lost
 with a container's disk, or removed by hand) fails every sweep until its row is
 deleted from `media_deletions` by hand.
 
-It logs one line of counts (threads, posts, attachments, and files removed,
-failed, and missing) and nothing about which boards or threads went, and exits
-non-zero if the database fails or any file could not be removed or was missing;
-the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below). It needs none of
-the web server's secrets — the poster-ID salt, the moderation key, the
-verification secret — and, run without them, it does not warn about them:
-those warnings come from the server alone.
+Last, whatever became of the files, it rewrites the verification credentials and
+runs `VACUUM FULL` on both verification tables, so that a credential row carries
+the sweep's transaction id rather than its own ([Transaction ids, and the
+nightly rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly
+what that protects). It needs no verification secret for that, but its database
+role must own the tables, or the database: `VACUUM FULL` skips any other table
+with only a warning, so the sweep checks that both tables moved to new files and
+fails if not. Run it as the role that ran the migrations, which is the server's.
+It waits at most five seconds for each lock on those tables and fails rather
+than wait longer, so a session holding one — an export, say — costs a failed
+run, which the Job's retry or the next night's run repeats, instead of badged
+posts and confirmations queued behind the vacuum until the session ends.
+
+It logs one line of counts (threads, posts, attachments, files removed, failed,
+and missing, and credentials rewritten) and nothing about which boards or
+threads went or what any credential says, and exits non-zero if the database
+fails, any file could not be removed or was missing, or the rewrite or the
+vacuum did not finish; the error it exits with says why without naming the file.
+It also refuses to run on a database a newer release has migrated (see below).
+It needs none of the web server's secrets — the poster-ID salt, the moderation
+key, the verification secret — and, run without them, it does not warn about
+them: those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers

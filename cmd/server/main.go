@@ -2,8 +2,9 @@
 // embedded web UI that consumes it, backed by PostgreSQL.
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
-// archive_days have run out, with their media, and exits. That is the mode a
-// scheduled Cloud Run Job runs, from the same image.
+// archive_days have run out, with their media, rewrites the verification
+// credentials so that no row keeps the transaction id it was issued in, and
+// exits. That is the mode a scheduled Cloud Run Job runs, from the same image.
 package main
 
 import (
@@ -39,7 +40,8 @@ func main() {
 func run(args []string, logs io.Writer) error {
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
 	sweep := flags.Bool("sweep", false,
-		"delete archived threads past their board's archive_days, with their media, then exit")
+		"delete archived threads past their board's archive_days, with their media, "+
+			"rewrite the verification credentials, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -76,9 +78,11 @@ func run(args []string, logs io.Writer) error {
 
 // runSweep makes one pass over the archive. SIGTERM, which a Cloud Run Job
 // receives when it overruns its task timeout, stops it at the next batch or
-// the next file. A batch commits or rolls back whole, and its files' keys are
-// queued in the same transaction, so a file the run did not get to is removed
-// by the next one.
+// the next file, or cancels the credential rewrite or the vacuum after it. A
+// batch commits or rolls back whole, and its files' keys are queued in the
+// same transaction, so a file the run did not get to is removed by the next
+// one; a cancelled rewrite or vacuum rolls back whole too, and the next run
+// does it again.
 func runSweep(application *app.App) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
