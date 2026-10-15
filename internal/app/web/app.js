@@ -143,6 +143,7 @@ async function api(path, options = {}) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
     err.status = res.status;
     err.payload = payload;
+    err.headers = res.headers;
     throw err;
   }
   return payload;
@@ -187,7 +188,7 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
       : `${UPLOADS_OFF_REASON} Write something to post text instead.`;
   }
   // The captcha refused a fresh answer as well, which a working server does
-  // not: the request was not acted on, and pressing the button again solves
+  // not: nothing was posted or sent, and pressing the button again solves
   // another.
   if (err.status === 403 && err.payload && err.payload.captcha) {
     return action === "code"
@@ -1357,7 +1358,12 @@ function formHTML({ kind, slug, thread = null, open = false }) {
 
   // Said where the button is, since pressing it may wait on the puzzle. No
   // link to the FAQ's entry here: leaving the page would lose the post.
-  const check = state.site.captcha ? " Your browser does a quick anti-spam check first." : "";
+  let check = "";
+  if (state.site.captcha) {
+    check = held
+      ? " Unless the post carries your badge, your browser does a quick anti-spam check first."
+      : " Your browser does a quick anti-spam check first.";
+  }
 
   // Under the message, on every form: no contact details, because they are
   // how a conversation leaves the site for a private one, which educhan
@@ -2284,13 +2290,15 @@ const FAQ_SECTIONS = [
     answer: `
       <p>On sites that have it switched on, your browser solves a small maths puzzle before
         each post goes, and before it asks for a badge code. You don't have to do anything:
-        the puzzle starts when you start typing and usually takes a second or two. That costs
+        the puzzle starts when you click or tap into a box to write in, and usually takes a
+        few seconds, while you write. That costs
         a person almost nothing, but it makes a program that posts thousands of times a minute
         slow and expensive to run.</p>
       <p>The puzzle comes from educhan itself, not from Google or any other company, and no
-        cookie is set for it. The answer goes with the one post it was solved for. So that it
-        can't be used twice, the server keeps a scrambled fingerprint of the puzzle for half
-        an hour, with nothing that points to you or to your post. Posts with the
+        cookie is set for it. Each answer is used once, for one post or one code request. So
+        that it can't be used twice, the server keeps a scrambled fingerprint of the puzzle for
+        a day or so, dated only to the day, with nothing that points to you or to your post.
+        Posts with the
         <a href="#faq-badge">verified badge</a> skip the check.</p>`,
   },
   {
@@ -3247,6 +3255,7 @@ el.main.addEventListener("change", (event) => {
   }
   if (event.target.matches('input[type="checkbox"][name="badge"]')) {
     badgeToggled(event.target);
+    captchaBadgeToggled(event.target);
   }
 });
 
@@ -3388,13 +3397,19 @@ function posterKey() {
 // the prefix the challenge gives, and the request carries the answer. Nothing
 // goes to anyone but educhan, and nothing is asked of the reader.
 //
-// The puzzle starts the first time a reader focuses a form that needs it,
-// never when a page is drawn, so a reader who never posts never asks for one;
-// by the time the post is written it is usually solved. The answer is kept in
+// The puzzle starts the first time a reader moves into a box to write in, in a
+// form that needs it, never when a page is drawn, so a reader who never starts
+// to write never asks for one; by the time the post is written it is usually
+// solved. The answer is kept in
 // memory only, never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
+// The server sets this header, to "spent", on any response to a request whose
+// answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
+const CAPTCHA_SPENT_HEADER = "Educhan-Captcha";
 // Up to this many copies of the worker share a puzzle, each trying every nth
-// counter, so a phone's cores all work on it.
+// counter, for a browser that runs them side by side. Chromium runs every
+// copy's Web Crypto on one thread, so there they take turns and finish no
+// sooner than one copy would.
 const CAPTCHA_MAX_WORKERS = 4;
 // CAPTCHA_LIFETIME_MS is how long after its challenge was fetched an answer is
 // used for. The server takes one for half an hour (captchaTTL in captcha.go);
@@ -3402,17 +3417,27 @@ const CAPTCHA_MAX_WORKERS = 4;
 // older than this is replaced before a post goes out with it.
 const CAPTCHA_LIFETIME_MS = 25 * 60 * 1000;
 // A copy of the worker gives up after this long, so a puzzle that cannot be
-// solved, which a working server never sends, stops using the processor.
+// solved, which a working server never sends, stops using the processor. The
+// hardest puzzle a server gives a reader posting at a person's pace takes a
+// slow phone under a minute (maxCaptchaWork in captcha.go).
 const CAPTCHA_TIMEOUT_MS = 2 * 60 * 1000;
 // What a post or a code request says when the browser could not solve the
-// puzzle: no Web Worker, no Web Crypto, or a worker that gave up.
+// puzzle: it is not on HTTPS, has no Web Worker or Web Crypto, or the worker
+// would not run.
 const CAPTCHA_FAILED =
   "Your browser couldn't finish the anti-spam check, so nothing was sent. Try again, or try another browser.";
+// What it says when every copy of the worker gave up at CAPTCHA_TIMEOUT_MS:
+// the server asks an address for harder puzzles while it asks for many, and
+// eases off within a minute.
+const CAPTCHA_TOO_SLOW = "The anti-spam check took too long, so nothing was sent. Wait a minute and try again.";
+// What it says when the server could not make a challenge.
+const CAPTCHA_UNAVAILABLE = "The anti-spam check couldn't start, so nothing was sent. Try again in a moment.";
 
 // The answer this page holds, until a request uses it: goodUntil is when it is
 // replaced rather than sent, by this browser's clock. solving is the puzzle in
-// progress, which a post waits for rather than starting another.
-const captcha = { answer: "", goodUntil: 0, solving: null };
+// progress, which a post waits for rather than starting another; stop stops
+// it, and waiting counts the requests waiting for it.
+const captcha = { answer: "", goodUntil: 0, solving: null, stop: null, waiting: 0 };
 
 // captchaFormNeedsIt says whether a form's request will need an answer: a post
 // without a badge, or a request for a verification code, while the server has
@@ -3442,11 +3467,37 @@ function captchaAnswer() {
     return Promise.resolve(captcha.answer);
   }
   if (!captcha.solving) {
-    captcha.solving = solveCaptcha().finally(() => {
-      captcha.solving = null;
+    const stop = new AbortController();
+    const solving = solveCaptcha(stop.signal).finally(() => {
+      if (captcha.solving === solving) {
+        captcha.solving = null;
+        captcha.stop = null;
+      }
     });
+    captcha.solving = solving;
+    captcha.stop = stop;
   }
   return captcha.solving;
+}
+
+// stopCaptcha stops the puzzle solving in the background, unless a request is
+// waiting for it: a post that will carry the badge needs none.
+function stopCaptcha() {
+  if (captcha.stop && captcha.waiting === 0) {
+    captcha.stop.abort();
+    captcha.solving = null;
+    captcha.stop = null;
+  }
+}
+
+// A reader who ticks the badge after starting to write stops the puzzle, and
+// one who unticks it starts it again, as moving into a box to write in does.
+function captchaBadgeToggled(box) {
+  if (box.checked) {
+    stopCaptcha();
+  } else if (captchaFormNeedsIt(box.form)) {
+    prepareCaptcha();
+  }
 }
 
 // dropCaptcha forgets an answer once a request has used it, or the server has
@@ -3458,13 +3509,23 @@ function dropCaptcha(answer) {
   }
 }
 
-// solveCaptcha fetches a challenge and solves it. The answer is ALTCHA's
-// payload: the challenge as issued, and the solution, as base64 JSON. The time
-// the worker took is left out; the server would not read it.
-async function solveCaptcha() {
-  const challenge = await api("/api/captcha");
+// solveCaptcha fetches a challenge and solves it, unless signal stops it
+// first. The answer is ALTCHA's payload: the challenge as issued, and the
+// solution, as base64 JSON. The time the worker took is left out; the server
+// would not read it. A browser that cannot run the worker, which needs Web
+// Crypto and so HTTPS, is told so before a challenge is fetched for nothing.
+async function solveCaptcha(signal) {
+  if (!window.isSecureContext || typeof Worker !== "function" || !(window.crypto && crypto.subtle)) {
+    throw new Error(CAPTCHA_FAILED);
+  }
+  let challenge;
+  try {
+    challenge = await api("/api/captcha", { signal });
+  } catch (err) {
+    throw err.status >= 500 ? new Error(CAPTCHA_UNAVAILABLE) : err;
+  }
   const fetched = Date.now();
-  const solution = await runCaptchaWorkers(challenge);
+  const solution = await runCaptchaWorkers(challenge, signal);
   captcha.answer = btoa(
     JSON.stringify({
       challenge: { parameters: challenge.parameters, signature: challenge.signature },
@@ -3477,14 +3538,16 @@ async function solveCaptcha() {
 
 // runCaptchaWorkers solves a challenge across copies of the worker, each
 // counting from its own start in steps of their number, and stops them all at
-// the first answer. Exactly one counter answers a challenge, so whichever copy
-// it falls to finds it, and the rest are stopped short.
-function runCaptchaWorkers(challenge) {
-  const failed = () => Object.assign(new Error(CAPTCHA_FAILED), { captchaFailed: true });
+// the first answer, or when signal says to. Exactly one counter answers a
+// challenge, so whichever copy it falls to finds it, and the rest are stopped
+// short.
+function runCaptchaWorkers(challenge, signal) {
+  const failed = () => new Error(CAPTCHA_FAILED);
   const count = Math.min(CAPTCHA_MAX_WORKERS, Math.max(1, navigator.hardwareConcurrency || 1));
   const workers = [];
   return new Promise((resolve, reject) => {
     let left = count;
+    let timedOut = 0;
     let settled = false;
     const finish = (settle, value) => {
       if (settled) return;
@@ -3492,11 +3555,18 @@ function runCaptchaWorkers(challenge) {
       for (const worker of workers) worker.terminate();
       settle(value);
     };
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    signal.addEventListener("abort", () => finish(reject, signal.reason), { once: true });
     // A copy that gave up, threw, or never loaded is out; the puzzle fails
-    // only when every copy is.
-    const giveUp = () => {
+    // only when every copy is, and took too long when every copy ran out of
+    // time.
+    const giveUp = (outOfTime) => {
       left -= 1;
-      if (left === 0) finish(reject, failed());
+      if (outOfTime) timedOut += 1;
+      if (left === 0) finish(reject, timedOut === count ? new Error(CAPTCHA_TOO_SLOW) : failed());
     };
     for (let i = 0; i < count; i++) {
       let worker;
@@ -3512,12 +3582,14 @@ function runCaptchaWorkers(challenge) {
         if (solution && typeof solution.derivedKey === "string" && Number.isInteger(solution.counter)) {
           finish(resolve, solution);
         } else {
-          giveUp();
+          // The worker answers null when it ran out of time, and an error
+          // when it could not work at all.
+          giveUp(solution === null);
         }
       };
       worker.onerror = (event) => {
         event.preventDefault();
-        giveUp();
+        giveUp(false);
       };
       worker.postMessage({
         type: "work",
@@ -3532,13 +3604,17 @@ function runCaptchaWorkers(challenge) {
 }
 
 // sendWithCaptcha sends a request that may need the captcha: needsIt() says
-// whether it does, and send(answer) makes the request, with "" for no answer. A refusal of the answer itself, for
-// being missing, out of date, used or wrong, comes before the server does
-// anything else with the request, so the answer is dropped and the request
-// sent once more with a fresh one; the reader pressed the button once and the
-// request goes once. Any other refusal leaves the answer held: the server
-// checks the answer first and spends it last, so a request refused for
-// anything else, a cooldown included, has usually not used it, and if it had,
+// whether it does, and send(answer) makes the request, with "" for no answer.
+// A refusal of the answer itself, for being missing, out of date, used or
+// wrong, comes before flood control and before anything is stored or sent, so
+// the answer is dropped and the request sent once more with a fresh one; the
+// reader pressed the button once and the request goes once. Any other refusal
+// says whether the server spent the answer before refusing, as it does for an
+// image it then cannot read. One that did drops the answer and starts the next
+// puzzle at once, so it is ready, or nearly, when the reader presses again.
+// One that did not, a refusal of what was written or a cooldown, leaves the
+// answer held for the next press, which then goes straight out. With no
+// answer from the server at all the answer is kept too; if it had been spent,
 // the next request is refused as "used" and solves a fresh one here.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 async function sendWithCaptcha(needsIt, send, solving) {
@@ -3546,6 +3622,7 @@ async function sendWithCaptcha(needsIt, send, solving) {
     let answer = "";
     if (needsIt()) {
       solving(true);
+      captcha.waiting += 1;
       try {
         answer = await captchaAnswer();
       } catch (err) {
@@ -3556,6 +3633,7 @@ async function sendWithCaptcha(needsIt, send, solving) {
         }
         state.site.captcha = false;
       } finally {
+        captcha.waiting -= 1;
         solving(false);
       }
     }
@@ -3566,6 +3644,10 @@ async function sendWithCaptcha(needsIt, send, solving) {
     } catch (err) {
       const reason = err.payload && err.payload.captcha;
       if (!reason) {
+        if (answer && err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent") {
+          dropCaptcha(answer);
+          if (needsIt()) prepareCaptcha();
+        }
         throw err;
       }
       dropCaptcha(answer);
@@ -3582,8 +3664,8 @@ async function sendWithCaptcha(needsIt, send, solving) {
 }
 
 // The puzzle starts when a reader moves into a box to write in, in a form that
-// needs it: not on the badge box, which a badged post ticks before writing
-// and then needs no puzzle at all.
+// needs it: not on the badge box, and not in a form whose badge is ticked (see
+// captchaBadgeToggled for a reader who ticks it later).
 el.main.addEventListener("focusin", (event) => {
   const box = event.target;
   if (box.matches("textarea, input[type=text], input[type=email]") && captchaFormNeedsIt(box.form)) {
@@ -3652,6 +3734,10 @@ el.main.addEventListener("submit", async (event) => {
     const created = await sendWithCaptcha(
       () => state.site.captcha && !held,
       (answer) => {
+        // The second send, after a refused answer, carries the fresh one or,
+        // when the server has switched the captcha off, none.
+        data.delete("captcha");
+        delete payload.captcha;
         if (answer && file) {
           data.set("captcha", answer);
         } else if (answer) {

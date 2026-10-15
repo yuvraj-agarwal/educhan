@@ -105,7 +105,9 @@ directions:
 - `TestCredentialHasNoEffectOffTheBadgePath` presents a valid credential to
   every other endpoint and asserts the responses are byte-identical to the same
   requests without it — including that an unbadged post carrying a credential
-  still gets no badge.
+  still gets no badge. `TestCredentialHasNoEffectOnTheCaptcha` does the same
+  for `GET /api/captcha`, whose challenges are random: one is issued the same
+  way, counted against the same address, with a credential or without.
 
 `GET /api/verify` therefore reports only whether the feature is configured. It
 cannot answer "am I verified?", because answering would mean the credential
@@ -179,7 +181,8 @@ can and cannot work out.
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
 - When a credential was issued: in the database, only to the *day*, because the
   stored expiry is rounded up to a UTC day boundary and nothing else in the
-  verification tables is timestamped; in the application's log, for as long as
+  verification tables is timestamped (the spent [captcha](#captcha) a code
+  request leaves behind is dated to the day the same way); in the application's log, for as long as
   it is kept, to the second, because the request line for
   `POST /api/verify/confirm` and a bare `verification issued` line each carry a
   time. Neither line says which institution or address the credential was for
@@ -367,8 +370,9 @@ be, so the server stops reading an image once the body passes that, and a file
 over the size limit gets the same `403` rather than a `413`; a multipart post
 with no file, or with the empty file part a browser sends for an untouched
 input, posts as usual. `GET /api/site`
-reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
-client can leave the image picker off a server that would refuse what it sends.
+reports the switch and the size limit as `"uploads"` and `"max_upload_bytes"`
+(beside `"captcha"`), so a client can leave the image picker off a server that
+would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, or an image whose header claims
@@ -421,15 +425,17 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
 | Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
+| Captcha | A self-hosted proof-of-work puzzle in ALTCHA's protocol on every unbadged post and code request, solved by the browser while the post is written; off unless `EDUCHAN_CAPTCHA_SECRET` is set, and `GET /api/site` says which |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, and spent captcha answers past their day; per-client cooldowns limit new threads, replies, and uploads, and they and the captcha's challenge count forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
-and KaTeX, each fetched only when a post that needs it is on screen. `app.js` renders the
+and KaTeX, each fetched only when a post that needs it is on screen, and ALTCHA's PBKDF2
+worker, started only when a reader moves into a box to write in. `app.js` renders the
 JSON API into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`,
 `/{slug}/archive`, `/{slug}/thread/{no}`), so every view is a shareable link and the back
 button works. `/{slug}/post/{no}` names a post by number alone: it asks the server which
@@ -466,8 +472,8 @@ view.
   and lock a thread. Boards can add their own rules under the header's **Rules**
   disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
   born, why there are no accounts or private messages, what anonymity here does and does
-  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
-  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
+  not hide, the badge, the anti-spam check, tripcodes, per-thread IDs, markup, and the
+  bump limit, image cap, and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
   Australia, and Find A Helpline for everyone else), which is static text: nothing works
   out where the reader is. The footer links to both on every view; its invitation to
   verify an address shows only on a server with verification switched on.
@@ -635,7 +641,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 | `EDUCHAN_CAPTCHA_SECRET` | empty | Keys the [captcha](#captcha): the signature on every challenge. **Unset switches the captcha off**, so posts and code requests need no answer. At least 32 characters (`openssl rand -hex 32`), the same on every instance; rotating it only invalidates the challenges out at the time |
-| `EDUCHAN_CAPTCHA_WORK` | `1500` | Average number of PBKDF2 attempts a challenge asks of the browser, before an address asking fast is given harder ones; 1 to 2097152 |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` | Average number of PBKDF2 attempts a challenge asks of the browser, before an address asking fast is given harder ones; 1 to 7500. At the default a laptop takes about two seconds and a slow phone a few more; above a few thousand a slow phone waits a long while before every post |
 
 ### Storage backends
 
@@ -709,11 +715,12 @@ A refused request answers `429` with a `Retry-After` header in seconds and a
 request rejected for any other reason — an empty body, an oversized image, a
 file that is not an accepted image or whose header claims too many pixels, a
 reply to a missing, locked or archived thread or an image past a thread's cap —
-does not start a cooldown, so a typo never costs a wait. Two refusals come only
-after the cooldowns have started: an image whose header reads but whose pixels
-do not decode, which only decoding it can find, and decoding is the cost the
-upload cooldown is there for; and the loser of two replies racing for a
-thread's last image slot (see the HTTP API).
+does not start a cooldown, so a typo never costs a wait. Three refusals come
+only after the cooldowns have started: an image whose header reads but whose
+pixels do not decode, which only decoding it can find, and decoding is the cost
+the upload cooldown is there for; the loser of two replies racing for a
+thread's last image slot (see the HTTP API); and the loser of two posts racing
+with one [captcha](#captcha) answer.
 
 The cooldowns are keyed on client addresses, and so is the
 [captcha](#captcha)'s count of challenges, which works like a one-minute
@@ -722,8 +729,9 @@ minute and drops every entry whose cooldown has run out, so **an address is
 held in memory no longer than the longest cooldown that applies to it plus one
 minute**, counted from its last post (or code request, for verification's
 cooldown, or challenge, for the captcha's count), whether or not anyone else
-posts in the meantime, **as long as the process has CPU between requests**. A host that gives it CPU only while it answers a request, which is
-Cloud Run's default (request-based billing), holds the sweep's timer back while
+posts in the meantime, **as long as the process has CPU between requests**. A
+host that gives it CPU only while it answers a request, which is Cloud Run's
+default (request-based billing), holds the sweep's timer back while
 an instance is idle. The first request to arrive after a sweep fell due runs
 it before it is handled, but until one arrives, or the instance is shut down,
 an idle instance's memory still holds the addresses it last saw. On Cloud Run
@@ -738,9 +746,10 @@ client that sends no poster key does store a poster ID derived from it (see
 addresses against, one thread at a time. The web client always sends a key.
 
 State is held in the process, so each instance of a horizontally scaled
-deployment enforces the cooldowns it sees. Moving to shared storage means
-replacing `cooldownLimiter` in `internal/app/ratelimit.go`, which nothing else
-depends on.
+deployment enforces the cooldowns it sees, and counts the captcha challenges it
+issues. Moving the cooldowns to shared storage means replacing `cooldownLimiter`
+in `internal/app/ratelimit.go`, which nothing else depends on; the challenge
+count is `captchaMeter` in `captcha.go`.
 
 ### Captcha
 
@@ -753,37 +762,63 @@ script from anywhere else runs on the page, and no cookie is set.
 1. When a reader first moves into a box to write in, the page asks
    `GET /api/captcha` for a challenge: a random salt and nonce, a PBKDF2-SHA-256
    cost, the first half of a key, an expiry half an hour away, and the server's
-   HMAC over all of it. The server made the key by choosing a counter and
-   deriving PBKDF2 over the nonce with that counter appended.
+   HMAC over all of it. The server made the key by choosing a counter at
+   random, from one to just under twice the work, and deriving PBKDF2 over the
+   nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
-   copies and tries counters from zero until a key starts with that half. That is
-   about 1500 attempts at the default work, a second or two of arithmetic, done
-   while the post is being written.
+   copies and tries counters until a key starts with that half. That is 1500
+   attempts on average at the default work and never more than 2999, about two
+   seconds on a laptop and a few more on a slow phone, done while the post is
+   being written. (Chromium runs every copy's Web Crypto on one thread, so there
+   the copies take turns.) The worker needs Web Crypto, which a browser gives
+   only to a page on HTTPS or `localhost`; anywhere else, with the captcha on,
+   the page sends no unbadged post and no code request, and says the check could
+   not finish.
 3. The post carries the answer, the challenge and the key it found, as
    `"captcha"`. The server checks the signature, the expiry and an HMAC of the
-   key, which costs it the same two HMACs whether the answer is right or not,
-   and records the challenge as spent so it works once.
+   key, at most two HMACs and never a key derivation, so a wrong answer costs it
+   no more than a right one. It looks up that the challenge is not spent yet,
+   and once flood control has let the post through it records it as spent, so
+   it works once.
 
 A **badged post skips the captcha**: the credential has already cost its holder
 more than a puzzle would. Holding one is not enough; only a post that asks for
 the badge, and gets it, goes without an answer. A code request never skips it.
+There is no limit per credential: its holder posts without puzzles from any
+address, under that address's flood control.
 
-The answer is checked before flood control and spent after it, so a post
-refused by the captcha starts no cooldown, and a post refused by a cooldown
-keeps its answer for when it is let through. A refusal answers `403` with
+The answer is checked, the lookup included, before flood control and spent
+after it, so a post refused by the captcha starts no cooldown, and a post
+refused by a cooldown keeps its answer for when it is let through. (Two posts
+racing with one answer can both pass the lookup; the spend lets one through
+and refuses the other as used, after its cooldowns have started.) A refusal answers `403` with
 `"captcha": "required" | "invalid" | "expired" | "used"` beside the message;
 the page solves a fresh puzzle and sends the post once more, so the reader
-presses the button once.
+presses the button once. Every response to a request whose answer was spent
+carries `Educhan-Captcha: spent`, a refusal written after the spend included
+(an image whose pixels fail to decode, or a thread that filled up meanwhile).
+The page keeps its answer through any refusal without that header, so the
+next press goes straight out, and starts the next puzzle as soon as one with
+it arrives.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to
-eight times, and past 600 in a minute `GET /api/captcha` answers `429`. The
-count is kept per client address in one-minute windows and swept with the
-cooldowns (see [Flood control](#flood-control)). Spent challenges are kept in
-`captcha_spent` as a hash of their signature and their expiry, so the instances
-behind a load balancer agree on what was used, and each spend deletes the rows
-more than a minute past their expiry. Nothing in it points at the post an
-answer let through.
+eight times, and past 300 in a minute `GET /api/captcha` answers `429`. The
+count is kept per client address, an IPv6 address counted by its `/64` (the
+block one connection is usually given), in one-minute windows, in each
+instance's memory like flood control, and swept with the cooldowns (see
+[Flood control](#flood-control)); behind several instances an address can ask
+each of them for that many. A challenge is not tied to the address that
+fetched it, which would fail a phone moving between networks, so the harder
+puzzles slow a script that asks from one address, not one that fetches from
+many. Spent challenges are kept in `captcha_spent`, shared
+by every instance so they agree on what was used, as a hash of the challenge's
+signature and its expiry rounded up to the next UTC midnight, as a credential's
+is: a row dates the post or code request it let through only to the day. Each
+spend deletes a batch of the rows past their day, and the daily
+[sweep](#the-archive-sweeper) the rest, so a row is gone a day or so after its
+puzzle was solved. Nothing in the table points at the post an answer let
+through.
 
 Proof of work slows a script down; it does not tell a person from one. It
 makes each post cost the poster's processor a moment and a bulk poster's a
@@ -811,7 +846,8 @@ Anything that does not match the declared shape falls back to the peer address:
 a chain shorter than the configured depth, or an entry that is not an IP
 address. **Set this to the real number of hops.** A value higher than the actual
 chain makes the server read an entry the client controls, which forfeits flood
-control entirely; a value lower than the chain buckets every client behind the
+control entirely and lets a client start a fresh captcha challenge count
+whenever it likes; a value lower than the chain buckets every client behind the
 proxy together.
 
 Both proxy styles work: one that appends (`proxy_add_x_forwarded_for`) and one
@@ -823,7 +859,7 @@ that overwrites the header with just the peer address are each a single hop.
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
 | `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes","captcha"}`: whether posts may carry an image, the largest one taken, and whether posts need a captcha answer. The same answer for every caller; it reads nothing from the request |
-| `GET` | `/api/captcha` | A captcha challenge — `{"parameters","signature"}`, ALTCHA's format; `404` when the captcha is off, `429` past 600 a minute from one address. See [Captcha](#captcha) |
+| `GET` | `/api/captcha` | A captcha challenge — `{"parameters","signature"}`, ALTCHA's format; `404` when the captcha is off, `429` past 300 a minute from one address. See [Captcha](#captcha) |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
@@ -880,7 +916,8 @@ refused inside the transaction, after its cooldowns have started.)
 `"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON
 of `{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
 It is needed when the captcha is on, except on a post that asks for a badge
-and gets it; see [Captcha](#captcha) for its refusals.
+and gets it; see [Captcha](#captcha) for its refusals and the
+`Educhan-Captcha: spent` header on any response to a request that used one up.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -1080,7 +1117,9 @@ records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to
 delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists.
+image public with nothing left to say it exists. Last, it deletes the spent
+[captcha](#captcha) answers past their day, the ones no later post came along
+to prune.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
@@ -1091,13 +1130,13 @@ fixed, the next sweep removes them. A file that really is gone for good (lost
 with a container's disk, or removed by hand) fails every sweep until its row is
 deleted from `media_deletions` by hand.
 
-It logs one line of counts (threads, posts, attachments, and files removed,
-failed, and missing) and nothing about which boards or threads went, and exits
+It logs one line of counts (threads, posts, attachments, files removed, failed,
+and missing, and spent captchas deleted) and nothing about which boards or threads went, and exits
 non-zero if the database fails or any file could not be removed or was missing;
 the error it exits with says why without naming the file. It also refuses to
 run on a database a newer release has migrated (see below). It needs none of
 the web server's secrets — the poster-ID salt, the moderation key, the
-verification secret — and, run without them, it does not warn about them:
+verification secret, the captcha secret — and, run without them, it does not warn about them:
 those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
@@ -1116,11 +1155,15 @@ old caveat still applies — `/tmp` is per-instance and in-memory, so an image
 uploaded to one instance answers `404` from another and is lost when the
 container stops.
 
-One thing remains per instance:
+Two things remain per instance:
 
 - **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
   instances enforce the cooldowns N times over. Moving it to shared storage means
   replacing that one type, which nothing else depends on.
+- **The captcha's challenge count.** `captchaMeter` counts each address's
+  challenges in process memory too, so behind N instances an address gets N
+  times the challenges before they grow harder or are refused. Spent answers are
+  not per instance: they are in `captcha_spent`.
 
 ## Development
 

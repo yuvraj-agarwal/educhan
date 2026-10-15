@@ -7,12 +7,14 @@
 -- carries an answer inserts its challenge here, and an insert that finds the
 -- row already there is a replay.
 --
--- A row is kept only until a minute after its challenge would have expired
--- anyway, which is half an hour after the challenge was issued, and each
--- insert deletes a batch of the rows past that. It holds a hash of the
--- challenge's signature, a value the server made at random, and the
--- challenge's expiry: nothing about who asked for it, solved it or used it,
--- and no reference to the post it let through.
+-- A row holds a hash of the challenge's signature, a value the server made at
+-- random, and the challenge's expiry rounded up to the next UTC midnight, as a
+-- verification credential's is (0004): so a row dates the post or code request
+-- it let through only to the day. Nothing about who asked for the challenge,
+-- solved it or used it, and no reference to the post it let through. Each
+-- insert deletes a batch of the rows past their expiry, and the daily sweep
+-- (educhan -sweep) the rest, so a row is gone a day or so after its puzzle was
+-- solved.
 CREATE TABLE IF NOT EXISTS captcha_spent (
     signature_hash BYTEA PRIMARY KEY,
     expires_at     TIMESTAMPTZ NOT NULL
