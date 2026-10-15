@@ -1,7 +1,10 @@
 package app
 
 import (
+	"context"
 	"fmt"
+	"io"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -123,22 +126,25 @@ func TestPassConfigFromEnv(t *testing.T) {
 	}
 
 	bad := map[string]map[string]string{
-		"secret without stripe":     {"EDUCHAN_STRIPE_SECRET_KEY": "", "EDUCHAN_STRIPE_WEBHOOK_SECRET": "", "EDUCHAN_STRIPE_PRICE_ID": "", "EDUCHAN_PUBLIC_URL": ""},
-		"stripe without secret":     {"EDUCHAN_PASS_SECRET": ""},
-		"short secret":              {"EDUCHAN_PASS_SECRET": "short"},
-		"webhook secret shape":      {"EDUCHAN_STRIPE_WEBHOOK_SECRET": "sk_x"},
-		"price shape":               {"EDUCHAN_STRIPE_PRICE_ID": "prod_x"},
-		"http public url":           {"EDUCHAN_PUBLIC_URL": "http://educhan.example"},
-		"public url with a path":    {"EDUCHAN_PUBLIC_URL": "https://educhan.example/board"},
-		"public url with a query":   {"EDUCHAN_PUBLIC_URL": "https://educhan.example?x=1"},
-		"public url with a user":    {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
-		"not a url":                 {"EDUCHAN_PUBLIC_URL": "educhan"},
-		"zero days":                 {"EDUCHAN_PASS_DAYS": "0"},
-		"days not a number":         {"EDUCHAN_PASS_DAYS": "a year"},
-		"zero hourly posts":         {"EDUCHAN_PASS_HOURLY_POSTS": "0"},
-		"hourly posts negative":     {"EDUCHAN_PASS_HOURLY_POSTS": "-5"},
-		"hourly posts not a number": {"EDUCHAN_PASS_HOURLY_POSTS": "many"},
-		"tax not a boolean":         {"EDUCHAN_STRIPE_AUTOMATIC_TAX": "maybe"},
+		"secret without stripe":          {"EDUCHAN_STRIPE_SECRET_KEY": "", "EDUCHAN_STRIPE_WEBHOOK_SECRET": "", "EDUCHAN_STRIPE_PRICE_ID": "", "EDUCHAN_PUBLIC_URL": ""},
+		"stripe without secret":          {"EDUCHAN_PASS_SECRET": ""},
+		"short secret":                   {"EDUCHAN_PASS_SECRET": "short"},
+		"webhook secret shape":           {"EDUCHAN_STRIPE_WEBHOOK_SECRET": "sk_x"},
+		"publishable key":                {"EDUCHAN_STRIPE_SECRET_KEY": "pk_live_x"},
+		"key shape":                      {"EDUCHAN_STRIPE_SECRET_KEY": "whsec_x"},
+		"public url with an empty query": {"EDUCHAN_PUBLIC_URL": "https://educhan.example?"},
+		"price shape":                    {"EDUCHAN_STRIPE_PRICE_ID": "prod_x"},
+		"http public url":                {"EDUCHAN_PUBLIC_URL": "http://educhan.example"},
+		"public url with a path":         {"EDUCHAN_PUBLIC_URL": "https://educhan.example/board"},
+		"public url with a query":        {"EDUCHAN_PUBLIC_URL": "https://educhan.example?x=1"},
+		"public url with a user":         {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
+		"not a url":                      {"EDUCHAN_PUBLIC_URL": "educhan"},
+		"zero days":                      {"EDUCHAN_PASS_DAYS": "0"},
+		"days not a number":              {"EDUCHAN_PASS_DAYS": "a year"},
+		"zero hourly posts":              {"EDUCHAN_PASS_HOURLY_POSTS": "0"},
+		"hourly posts negative":          {"EDUCHAN_PASS_HOURLY_POSTS": "-5"},
+		"hourly posts not a number":      {"EDUCHAN_PASS_HOURLY_POSTS": "many"},
+		"tax not a boolean":              {"EDUCHAN_STRIPE_AUTOMATIC_TAX": "maybe"},
 	}
 	for name, change := range bad {
 		env := map[string]string{}
@@ -164,6 +170,47 @@ func TestPassConfigFromEnv(t *testing.T) {
 	set(t, env)
 	if cfg, err := passConfigFromEnv(); err != nil || cfg.Days != 30 || cfg.HourlyPosts != 5 || !cfg.StripeAutomaticTax || cfg.CheckoutCooldown != 0 {
 		t.Fatalf("local: %+v, %v", cfg, err)
+	}
+
+	// A restricted key is as good as a secret one.
+	env["EDUCHAN_STRIPE_SECRET_KEY"] = "rk_live_x"
+	set(t, env)
+	if _, err := passConfigFromEnv(); err != nil {
+		t.Fatalf("restricted key: %v", err)
+	}
+}
+
+// TestPassConfigInCodeIsValidated holds a Config built in code, which New
+// validates, to the environment's rules: a public URL with a trailing slash,
+// which the environment's reading trims, is refused rather than turned into
+// "https://educhan.example//pass".
+func TestPassConfigInCodeIsValidated(t *testing.T) {
+	good := PassConfig{
+		Secret:              testPassSecret,
+		StripeSecretKey:     "sk_test_key",
+		StripeWebhookSecret: testWebhookSecret,
+		StripePriceID:       testPriceID,
+		PublicURL:           testPublicURL,
+		Days:                365,
+		HourlyPosts:         30,
+	}
+	if err := validatePassConfig(good); err != nil {
+		t.Fatalf("good config: %v", err)
+	}
+	for name, c := range map[string]struct {
+		change func(*PassConfig)
+		names  string
+	}{
+		"trailing slash":  {func(c *PassConfig) { c.PublicURL = testPublicURL + "/" }, "EDUCHAN_PUBLIC_URL"},
+		"publishable key": {func(c *PassConfig) { c.StripeSecretKey = "pk_test_key" }, "EDUCHAN_STRIPE_SECRET_KEY"},
+	} {
+		cfg := good
+		c.change(&cfg)
+		// New refuses it before it connects to anything.
+		_, err := New(context.Background(), Config{Pass: cfg}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err == nil || !strings.Contains(err.Error(), c.names) {
+			t.Errorf("%s: New answered %v, want a refusal naming %s", name, err, c.names)
+		}
 	}
 }
 

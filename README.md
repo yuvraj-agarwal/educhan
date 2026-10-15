@@ -379,13 +379,22 @@ the server secret and the Stripe account can see:
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
-Pass tables reference only each other, and nothing about a Pass is logged or
-goes into a poster ID. `TestPassIsNeverStoredOrLogged` drives every posting
-path with a Pass and searches every table and the log for the code, its hashes,
-the payment and session ids and the buyer's email and name, with positive
+Pass tables reference only each other, and nothing about a Pass goes into a
+poster ID. Nothing identifying a Pass is logged: the log says that a Pass was
+issued, renewed, reissued or cancelled, never which, and a failure to read a
+Pass on a post is logged without the post's path, which names its board and
+thread (the request's own line keeps the path and its `500`, as for any failed
+request). `TestPassIsNeverStoredOrLogged` drives every posting path with a Pass
+and searches every table and the log for the code, its hashes, the payment and
+session ids, a reissue link and the buyer's email and name, with positive
 controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
 handler reads a handful of fields and never logs the body, which carries the
 payer's email and name.
+
+The Pass's `POST` endpoints take only a body declared as JSON, which no form
+can send and no other origin's script can send without a CORS preflight that
+is never answered, and refuse a request the browser marks as coming from
+another site (`Sec-Fetch-Site: cross-site`).
 
 **Renewals and refunds.** Renewing from a browser that holds the Pass keeps
 the code and adds a year to it: exactly a year to a Pass that hasn't run out,

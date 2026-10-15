@@ -250,6 +250,28 @@ func (a *App) requirePass(w http.ResponseWriter) bool {
 	return true
 }
 
+// passRequest refuses a request to a Pass endpoint that another site could
+// have made the browser send. Its body must be declared JSON, which no form
+// can send and no other origin's script can send without asking first (a
+// CORS preflight this server never answers), and a browser that says the
+// request came from another site is refused outright. The claim cookie is
+// SameSite=Lax already; this also keeps a page on a sibling subdomain, which
+// Lax counts as the same site, from spending a browser's claim. decodeJSON,
+// which every other endpoint uses, lets a missing Content-Type through; the
+// Pass endpoints do not.
+func passRequest(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("Sec-Fetch-Site") == "cross-site" {
+		writeError(w, http.StatusForbidden, "requests from other sites are refused")
+		return false
+	}
+	mediaType, _, _ := strings.Cut(r.Header.Get("Content-Type"), ";")
+	if !strings.EqualFold(strings.TrimSpace(mediaType), "application/json") {
+		writeError(w, http.StatusUnsupportedMediaType, "expected application/json")
+		return false
+	}
+	return true
+}
+
 // handlePassStatus tells the Pass page whether the Pass is on sale, for how
 // long one lasts, how many posts an hour it skips the captcha for, and its
 // price. Like /api/verify it looks up nothing about the caller: a browser
@@ -288,7 +310,10 @@ func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 	if !s.priceFetchedAt.IsZero() && time.Since(s.priceFetchedAt) < ttl {
 		return s.price, s.priceErr
 	}
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// The answer is cached for every later request, so it must not depend on
+	// this one: a client that goes away mid-fetch would otherwise leave
+	// "context canceled" in the cache for a minute.
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	s.price, s.priceErr = s.stripe.price(ctx)
 	s.priceFetchedAt = time.Now()
@@ -315,7 +340,7 @@ type passCheckoutBody struct {
 // order the webhook can mark paid, and gives the browser the claim it will
 // collect the Pass with. The answer is the Stripe page to go to.
 func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
-	if !a.requirePass(w) {
+	if !a.requirePass(w) || !passRequest(w, r) {
 		return
 	}
 	var req passCheckoutBody
@@ -429,7 +454,7 @@ func passClaimToken(r *http.Request) (string, bool) {
 // retry, not an error. The answer says whether anything is still waiting
 // under the claim ("claim"), and the cookie is cleared once nothing is.
 func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
-	if !a.requirePass(w) {
+	if !a.requirePass(w) || !passRequest(w, r) {
 		return
 	}
 	var req passClaimBody
@@ -552,7 +577,7 @@ type passActivateBody struct {
 // whether it works and until when before the first post depends on it. It
 // writes nothing: the browser keeps the code, as it keeps the credential.
 func (a *App) handlePassActivate(w http.ResponseWriter, r *http.Request) {
-	if !a.requirePass(w) {
+	if !a.requirePass(w) || !passRequest(w, r) {
 		return
 	}
 	var req passActivateBody
@@ -585,7 +610,13 @@ func (a *App) checkPass(w http.ResponseWriter, r *http.Request, code string) (ti
 		refusePass(w, passInvalid, "this Pass is not valid; it may have been refunded or replaced")
 		return time.Time{}, false
 	case err != nil:
-		a.fail(w, r, err, "could not read the Pass")
+		// Not a.fail, which logs the request's path: on a post that names the
+		// board and the thread, and a line saying a Pass was read there, at
+		// that moment, would tie the Pass's holder to the thread.
+		if r.Context().Err() == nil {
+			a.log.Error("could not read the Pass", "error", err)
+		}
+		writeError(w, http.StatusInternalServerError, "could not read the Pass")
 		return time.Time{}, false
 	case !time.Now().Before(expires):
 		refusePass(w, passExpired, "this Pass has expired; renew it on the Pass page")
@@ -762,7 +793,7 @@ func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 	if !a.authorizeMod(w, r) {
 		return
 	}
-	if !a.requirePass(w) {
+	if !a.requirePass(w) || !passRequest(w, r) {
 		return
 	}
 	var req passReissueBody

@@ -1277,6 +1277,118 @@ func TestPassRefusedOnPosts(t *testing.T) {
 	}
 }
 
+// TestPassLookupFailureNamesNoThread holds a failed Pass lookup on a post to
+// a log line without the post's path, which names the board and the thread:
+// beside the time, it would say a Pass holder posted there.
+func TestPassLookupFailureNamesNoThread(t *testing.T) {
+	var logs syncBuffer
+	p := passServerLogging(t, nil, &logs)
+	p.addBoard("telltale")
+	thread := p.createThread("telltale", "", "", "a thread")
+	p.exec(`ALTER TABLE passes RENAME TO passes_unreadable`)
+	status, _ := p.postWithHeadersStatus(http.Header{passHeader: {"ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"}},
+		fmt.Sprintf("/api/boards/telltale/threads/%d/posts", thread.ThreadNo), map[string]any{"body": "with a pass"})
+	if status != http.StatusInternalServerError {
+		t.Fatalf("a post whose Pass could not be read: status %d", status)
+	}
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if entry["msg"] != "could not read the Pass" {
+			continue
+		}
+		found = true
+		if _, ok := entry["path"]; ok || strings.Contains(line, "telltale") {
+			t.Errorf("the Pass lookup failure names the thread: %s", line)
+		}
+	}
+	if !found {
+		t.Fatalf("no Pass lookup failure in the log:\n%s", logs.String())
+	}
+}
+
+// postWithHeadersStatus is postWithHeaders for a test that wants the status
+// and the error only.
+func (p *passHarness) postWithHeadersStatus(header http.Header, path string, body any) (int, string) {
+	p.t.Helper()
+	var out passResponse
+	status := p.postWithHeaders(header, path, body, &out)
+	return status, out.Error
+}
+
+// TestPassEndpointsTakeOnlyJSONFromThisSite holds the Pass's POST endpoints
+// to requests another site cannot make a browser send: a body declared as
+// JSON, and no Sec-Fetch-Site saying the request came from another site.
+func TestPassEndpointsTakeOnlyJSONFromThisSite(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_guarded")
+	send := func(path, contentType, site, body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, p.base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		req.Header.Set(modKeyHeader, "mod-key")
+		var out passResponse
+		status := p.send(req, &out)
+		return status, out.Error
+	}
+	sessions := p.stripe.sessionCount()
+	for path, body := range map[string]string{
+		"/api/pass/checkout": `{"adult":true}`,
+		"/api/pass/claim":    `{}`,
+		"/api/pass/activate": `{"pass":"` + issued.Pass + `"}`,
+		"/api/pass/reissue":  `{"payment_intent":"pi_guarded"}`,
+	} {
+		for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"} {
+			if status, _ := send(path, contentType, "", body); status != http.StatusUnsupportedMediaType {
+				t.Errorf("%s with Content-Type %q: status %d, want 415", path, contentType, status)
+			}
+		}
+		if status, msg := send(path, "application/json", "cross-site", body); status != http.StatusForbidden ||
+			!strings.Contains(msg, "other sites") {
+			t.Errorf("%s from another site: status %d (%s), want 403", path, status, msg)
+		}
+		for _, site := range []string{"", "same-origin", "none"} {
+			status, msg := send(path, "application/json; charset=utf-8", site, body)
+			if status == http.StatusUnsupportedMediaType || strings.Contains(msg, "other sites") {
+				t.Errorf("%s with Sec-Fetch-Site %q: status %d (%s)", path, site, status, msg)
+			}
+		}
+	}
+	// Three checkouts went through, one per same-site try, and the refused
+	// ones never reached Stripe.
+	if n := p.stripe.sessionCount() - sessions; n != 3 {
+		t.Errorf("Stripe opened %d sessions, want 3", n)
+	}
+}
+
+// TestPassPriceSurvivesACancelledRequest holds the cached price to Stripe's
+// answer, not to the request that happened to ask: a client that went away
+// mid-fetch would otherwise blank the price for everyone for a minute.
+func TestPassPriceSurvivesACancelledRequest(t *testing.T) {
+	p := passServer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	price, err := p.app.passPrice(ctx)
+	if err != nil || price.Amount != 2000 {
+		t.Fatalf("price for a cancelled request: %+v, %v", price, err)
+	}
+	var out passResponse
+	if p.get("/api/pass", &out); out.Price == nil {
+		t.Fatal("a cancelled request left the price out of the cache")
+	}
+}
+
 func TestPassDisabled(t *testing.T) {
 	h := testServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	var out passResponse

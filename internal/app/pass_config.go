@@ -132,6 +132,9 @@ func validatePassConfig(c PassConfig) error {
 	if len(c.Secret) < 32 {
 		return errors.New("EDUCHAN_PASS_SECRET must be at least 32 characters")
 	}
+	if !strings.HasPrefix(c.StripeSecretKey, "sk_") && !strings.HasPrefix(c.StripeSecretKey, "rk_") {
+		return errors.New(`EDUCHAN_STRIPE_SECRET_KEY: want a secret or restricted API key, "sk_…" or "rk_…"`)
+	}
 	if !strings.HasPrefix(c.StripeWebhookSecret, "whsec_") {
 		return errors.New(`EDUCHAN_STRIPE_WEBHOOK_SECRET: want the endpoint's signing secret, "whsec_…"`)
 	}
@@ -154,12 +157,14 @@ func validatePassConfig(c PassConfig) error {
 }
 
 // checkPublicURL wants a bare origin: Stripe appends nothing to it, and the
-// return paths are added here. Plain http is accepted only for a local
+// return paths and the reissue link are added here, so a trailing slash would
+// make them "//pass". The environment's value has its slash trimmed already;
+// one set in code is refused. Plain http is accepted only for a local
 // checkout, where Stripe's test mode allows it.
 func checkPublicURL(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-		return fmt.Errorf("EDUCHAN_PUBLIC_URL: want the site's origin, like https://educhan.example, got %q", raw)
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+		return fmt.Errorf("EDUCHAN_PUBLIC_URL: want the site's origin with no path or trailing slash, like https://educhan.example, got %q", raw)
 	}
 	switch u.Scheme {
 	case "https":
