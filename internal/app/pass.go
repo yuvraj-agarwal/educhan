@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The educhan Pass, after 4chan's: a year of posting without the captcha,
@@ -50,9 +52,14 @@ const (
 	passClaimCookie = "educhan_pass_claim"
 	passCookiePath  = "/api/pass"
 	// passClaimTTL is how long a paid Pass waits to be collected by the
-	// browser that bought it. A week covers a buyer who closes the tab before
+	// browser that bought it, before it is rounded up to the next midnight UTC
+	// (passClaimDeadline). A week covers a buyer who closes the tab before
 	// Stripe sends them back; past that, the owner can reissue it.
 	passClaimTTL = 7 * 24 * time.Hour
+	// passPendingPaymentTTL is how long an order whose checkout was completed
+	// with a payment still on its way waits for it: longer than a bank debit
+	// takes to confirm, the slowest method Stripe Checkout offers.
+	passPendingPaymentTTL = 30 * 24 * time.Hour
 	// passRevocationTTL is how long a refunded payment is remembered after its
 	// order is gone, longer than Stripe goes on retrying an event.
 	passRevocationTTL = 30 * 24 * time.Hour
@@ -193,6 +200,22 @@ func termDays(base, expiry time.Time) int {
 	return int(n)
 }
 
+// passClaimDeadline is when an order started at now stops being collectable
+// by its claim: a week on, rounded up to a UTC midnight, so the stored
+// deadline dates a checkout to the day and not the microsecond.
+func passClaimDeadline(now time.Time) time.Time {
+	return dayCeil(now.Add(passClaimTTL))
+}
+
+// passTermDays is the term a Pass is sold for. A Config built without the Pass
+// switched on has none, and the sweeper still prunes with the default.
+func (a *App) passTermDays() int {
+	if a.cfg.Pass.Days >= 1 {
+		return a.cfg.Pass.Days
+	}
+	return defaultPassDays
+}
+
 /* Handlers ------------------------------------------------------------------ */
 
 // passState is the part of App the Pass needs beyond Config: the Stripe client,
@@ -229,14 +252,20 @@ func (a *App) requirePass(w http.ResponseWriter) bool {
 
 // handlePassStatus tells the Pass page whether the Pass is on sale, for how
 // long one lasts, how many posts an hour it skips the captcha for, and its
-// price. Like /api/verify it looks at nothing the caller holds: a browser
-// knows its own Pass and when it runs out.
+// price. Like /api/verify it looks up nothing about the caller: a browser
+// knows its own Pass and when it runs out. The one thing it reads off the
+// request is whether the browser holds a claim cookie, which the page cannot
+// see (it is HttpOnly), so the page knows there is a purchase to collect. The
+// claim itself is not looked up.
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
 	out := map[string]any{"enabled": true, "days": a.cfg.Pass.Days, "hourly_posts": a.cfg.Pass.HourlyPosts}
+	if _, ok := passClaimToken(r); ok {
+		out["claim"] = true
+	}
 	// The price is shown when Stripe could be asked for it. Without it the page
 	// still sells: Stripe's own page always shows the price before anyone pays.
 	if price, err := a.passPrice(r.Context()); err == nil {
@@ -298,6 +327,15 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	now := time.Now()
+	// Orders past their deadline, refunds past their month and Passes past
+	// their grace month go first, so a Pass too old to renew is gone before it
+	// is looked up. The sweeper prunes too, so a quiet server keeps nothing
+	// past its time either.
+	if err := a.store.prunePasses(r.Context(), now, a.passTermDays()); err != nil {
+		a.log.Warn("could not prune Pass tables", "error", err)
+	}
+
 	var renewID *int64
 	if strings.TrimSpace(req.Renew) != "" {
 		code, ok := parsePassCode(req.Renew)
@@ -305,8 +343,8 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 			refusePass(w, passInvalid, "that is not a Pass code")
 			return
 		}
-		id, _, err := a.store.passByToken(r.Context(), a.passTokenHash(code))
-		if errors.Is(err, errNotFound) {
+		id, expires, err := a.store.passByToken(r.Context(), a.passTokenHash(code))
+		if errors.Is(err, errNotFound) || (err == nil && !now.Before(expires.Add(passExpiredGrace))) {
 			refusePass(w, passInvalid, "this Pass is no longer valid, buy a new one instead")
 			return
 		}
@@ -324,10 +362,16 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	claim, err := randomToken()
-	if err != nil {
-		a.fail(w, r, err, "could not start checkout")
-		return
+	// A browser already holding a claim keeps it, and the new order joins the
+	// ones under it: a Stripe tab opened earlier and paid later is collected
+	// with this one, rather than orphaned by a new cookie.
+	claim, ok := passClaimToken(r)
+	if !ok {
+		var err error
+		if claim, err = randomToken(); err != nil {
+			a.fail(w, r, err, "could not start checkout")
+			return
+		}
 	}
 	base := a.cfg.Pass.PublicURL
 	session, err := a.pass.stripe.createCheckout(r.Context(), base+"/pass?paid", base+"/pass?cancelled")
@@ -337,39 +381,59 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	now := time.Now()
-	// Expired orders, revocations and long-expired Passes go here, on the one
-	// path that adds rows, so the tables stay small without a job of their own.
-	if err := a.store.prunePasses(r.Context(), now); err != nil {
-		a.log.Warn("could not prune Pass tables", "error", err)
-	}
-	if err := a.store.createPassOrder(r.Context(), passOrder{
+	until, err := a.store.createPassOrder(r.Context(), passOrder{
 		ClaimHash:   hashToken(claim),
 		SessionHash: a.passSessionHash(session.ID),
 		RenewPassID: renewID,
-		ExpiresAt:   now.Add(passClaimTTL),
-	}); err != nil {
+		ExpiresAt:   passClaimDeadline(now),
+	}, now)
+	if errors.Is(err, errPassGone) {
+		// Refunded, or past its grace month, between the lookup above and the
+		// order. The Stripe session is left to expire unpaid.
+		writeJSON(w, http.StatusConflict, map[string]any{
+			"error": "that Pass can't be renewed any more; buy a new one",
+			"pass":  passInvalid,
+		})
+		return
+	}
+	if err != nil {
 		a.fail(w, r, err, "could not start checkout")
 		return
 	}
 
-	a.setCookie(w, r, passClaimCookie, claim, passCookiePath, passClaimTTL)
+	// The cookie lasts as long as the longest-lived order under it.
+	a.setCookie(w, r, passClaimCookie, claim, passCookiePath, time.Until(until))
 	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL})
 }
 
-// handlePassClaim hands a paid-for Pass to the browser that bought it. The
-// code is shown here once and never again: only its HMAC is kept, so a buyer
-// who loses it asks the owner to reissue it.
+// passClaimToken reads the claim cookie, when it holds a token this server
+// could have made: 16 random bytes in unpadded base64url.
+func passClaimToken(r *http.Request) (string, bool) {
+	cookie, err := r.Cookie(passClaimCookie)
+	if err != nil {
+		return "", false
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(cookie.Value)
+	if err != nil || len(raw) != 16 {
+		return "", false
+	}
+	return cookie.Value, true
+}
+
+// handlePassClaim hands what a browser paid for to that browser: every paid
+// order under its claim. A code is shown here once and never again: only its
+// HMAC is kept, so a buyer who loses it asks the owner to reissue it.
 //
 // Stripe sends the buyer back before or after its webhook arrives, whichever
 // is faster, so "not paid yet" is an ordinary answer (202) for the page to
-// retry, not an error.
+// retry, not an error. The answer says whether anything is still waiting
+// under the claim ("claim"), and the cookie is cleared once nothing is.
 func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 	if !a.requirePass(w) {
 		return
 	}
-	cookie, err := r.Cookie(passClaimCookie)
-	if err != nil || cookie.Value == "" {
+	claim, ok := passClaimToken(r)
+	if !ok {
 		writeError(w, http.StatusBadRequest, "no purchase in progress in this browser")
 		return
 	}
@@ -378,7 +442,7 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not collect the Pass")
 		return
 	}
-	res, err := a.store.claimPass(r.Context(), hashToken(cookie.Value), passCompletion{
+	res, err := a.store.claimPass(r.Context(), hashToken(claim), passCompletion{
 		TokenHash: a.passTokenHash(code),
 		Now:       time.Now(),
 		Days:      a.cfg.Pass.Days,
@@ -387,24 +451,37 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not collect the Pass")
 		return
 	}
-	switch res.State {
-	case orderMissing:
+	// The cookie goes once nothing is left under it, and otherwise lasts as
+	// long as the order that waits longest, which a slow payment can extend
+	// (holdPassOrder).
+	waiting := res.Waiting > 0
+	if waiting {
+		a.setCookie(w, r, passClaimCookie, claim, passCookiePath, time.Until(res.WaitUntil))
+	} else {
 		clearCookie(w, passClaimCookie, passCookiePath)
-		writeError(w, http.StatusBadRequest, "no purchase in progress in this browser")
-	case orderUnpaid:
-		writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending"})
-	case orderRenewed:
-		clearCookie(w, passClaimCookie, passCookiePath)
+	}
+	if res.Renewed {
 		a.log.Info("pass renewed")
-		writeJSON(w, http.StatusOK, map[string]any{"status": "renewed", "expires_at": res.ExpiresAt})
-	case orderIssued:
-		clearCookie(w, passClaimCookie, passCookiePath)
+	}
+	switch {
+	case res.Issued:
 		a.log.Info("pass issued")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":     "issued",
 			"pass":       formatPassCode(code),
-			"expires_at": res.ExpiresAt,
+			"expires_at": res.IssuedExpiresAt,
+			"claim":      waiting,
 		})
+	case res.Renewed:
+		writeJSON(w, http.StatusOK, map[string]any{
+			"status":     "renewed",
+			"expires_at": res.RenewedExpiresAt,
+			"claim":      waiting,
+		})
+	case waiting:
+		writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending", "claim": true})
+	default:
+		writeError(w, http.StatusBadRequest, "no purchase in progress in this browser")
 	}
 }
 
@@ -686,9 +763,22 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid checkout session")
 			return
 		}
-		// A completed session can still be waiting on a slow payment method;
-		// its async_payment_succeeded event comes later and lands here again.
-		if s.Mode != "payment" || s.PaymentStatus != "paid" || s.PaymentIntent == nil || *s.PaymentIntent == "" {
+		if s.Mode != "payment" {
+			break
+		}
+		// A completed session can still be waiting on a slow payment method, a
+		// bank debit say, which can take a couple of weeks. Its order is held
+		// that long, and its async_payment_succeeded event comes later and
+		// lands here again.
+		if ev.Type == stripeCheckoutCompleted && s.PaymentStatus == "unpaid" {
+			until := dayCeil(time.Now().Add(passPendingPaymentTTL))
+			if err := a.store.holdPassOrder(r.Context(), a.passSessionHash(s.ID), until); err != nil {
+				a.fail(w, r, err, "could not record the checkout")
+				return
+			}
+			break
+		}
+		if s.PaymentStatus != "paid" || s.PaymentIntent == nil || *s.PaymentIntent == "" {
 			break
 		}
 		found, err := a.store.markPassOrderPaid(r.Context(), a.passSessionHash(s.ID), a.passPaymentHash(*s.PaymentIntent))
@@ -697,10 +787,23 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if !found {
-			// Another integration's checkout, an order past its week, or a
-			// payment already refunded. Nothing here can tell which, and none
-			// of them should become a Pass.
+			// Another integration's checkout, an unpaid order pruned after its
+			// deadline, or a payment already refunded. Nothing here can tell
+			// which, and none of them should become a Pass.
 			a.log.Warn("a paid Stripe checkout matched no open Pass order")
+		}
+	case stripeCheckoutExpired, stripeCheckoutAsyncFailure:
+		// A checkout left unpaid until Stripe closed it, or whose slow payment
+		// failed, can never be paid, so its order goes now rather than at its
+		// deadline, and the browser that started it stops waiting for it.
+		var s stripeSessionObject
+		if err := json.Unmarshal(ev.Data.Object, &s); err != nil || s.ID == "" {
+			writeError(w, http.StatusBadRequest, "invalid checkout session")
+			return
+		}
+		if err := a.store.dropUnpaidPassOrder(r.Context(), a.passSessionHash(s.ID)); err != nil {
+			a.fail(w, r, err, "could not record the expired checkout")
+			return
 		}
 	case stripeChargeRefunded, stripeDisputeCreated:
 		var p stripePaymentObject
@@ -766,18 +869,60 @@ type passOrder struct {
 	ExpiresAt   time.Time
 }
 
-func (s *Store) createPassOrder(ctx context.Context, o passOrder) error {
-	return s.passTx(ctx, func(tx pgx.Tx) error {
+// errPassGone is a renewal whose Pass was refunded or pruned between the
+// checkout's lookup and its order.
+var errPassGone = errors.New("the Pass to renew is gone")
+
+// createPassOrder records a checkout's order. A renewal's Pass is looked up
+// again under the lock, with the same grace limit as the checkout's own
+// lookup, so a refund or a prune that landed in between, while Stripe was
+// being asked for a session, answers errPassGone rather than a foreign-key
+// failure. It returns the latest deadline of any order under the claim, which
+// is how long the browser's claim cookie needs to last.
+func (s *Store) createPassOrder(ctx context.Context, o passOrder, now time.Time) (time.Time, error) {
+	var until time.Time
+	err := s.passTx(ctx, func(tx pgx.Tx) error {
+		if o.RenewPassID != nil {
+			var expires time.Time
+			err := tx.QueryRow(ctx, `SELECT expires_at FROM passes WHERE id = $1`, *o.RenewPassID).Scan(&expires)
+			if errors.Is(err, pgx.ErrNoRows) || (err == nil && !now.Before(expires.Add(passExpiredGrace))) {
+				return errPassGone
+			}
+			if err != nil {
+				return err
+			}
+		}
 		_, err := tx.Exec(ctx, `
 			INSERT INTO pass_orders (claim_hash, session_hash, renew_pass_id, expires_at)
 			VALUES ($1, $2, $3, $4)`, o.ClaimHash, o.SessionHash, o.RenewPassID, o.ExpiresAt)
-		return err
+		if isForeignKeyViolation(err) {
+			return errPassGone
+		}
+		if err != nil {
+			return err
+		}
+		return tx.QueryRow(ctx, `
+			SELECT max(expires_at) FROM pass_orders WHERE claim_hash = $1`, o.ClaimHash).Scan(&until)
 	})
+	return until, err
+}
+
+// foreignKeyViolation is the PostgreSQL SQLSTATE for a reference to a row
+// that does not exist.
+const foreignKeyViolation = "23503"
+
+// isForeignKeyViolation reports whether err is a PostgreSQL foreign key
+// failure.
+func isForeignKeyViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation
 }
 
 // markPassOrderPaid records the payment behind an order. It is idempotent,
 // since Stripe may deliver one event more than once, and it refuses a payment
 // already refunded, since Stripe may deliver a refund before a retried "paid".
+// An order past its claim deadline is still marked: the money has been taken,
+// and a paid order waits to be collected or reissued (prunePasses).
 func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash []byte) (bool, error) {
 	var found bool
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
@@ -788,13 +933,35 @@ func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash 
 		tag, err := tx.Exec(ctx, `
 			UPDATE pass_orders SET payment_hash = $2
 			WHERE session_hash = $1
-			  AND expires_at > now()
 			  AND (payment_hash IS NULL OR payment_hash = $2)`,
 			sessionHash, paymentHash)
 		found = tag.RowsAffected() == 1
 		return err
 	})
 	return found, err
+}
+
+// holdPassOrder keeps an unpaid order until at least until. A checkout
+// completed with a payment that takes days to confirm, a bank debit say,
+// would otherwise be pruned at its deadline before the money arrived.
+func (s *Store) holdPassOrder(ctx context.Context, sessionHash []byte, until time.Time) error {
+	return s.passTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			UPDATE pass_orders SET expires_at = $2
+			WHERE session_hash = $1 AND payment_hash IS NULL AND expires_at < $2`,
+			sessionHash, until)
+		return err
+	})
+}
+
+// dropUnpaidPassOrder deletes an order whose checkout can no longer be paid:
+// Stripe closed it unpaid, or its payment failed.
+func (s *Store) dropUnpaidPassOrder(ctx context.Context, sessionHash []byte) error {
+	return s.passTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			DELETE FROM pass_orders WHERE session_hash = $1 AND payment_hash IS NULL`, sessionHash)
+		return err
+	})
 }
 
 // paymentRevoked reports whether a payment was refunded or disputed.
@@ -816,21 +983,6 @@ func (s *Store) passByToken(ctx context.Context, tokenHash []byte) (int64, time.
 	return id, expires, err
 }
 
-// What became of an order on collection.
-type orderState int
-
-const (
-	orderMissing orderState = iota // no such order, or it is past its week
-	orderUnpaid                    // Stripe has not reported it paid yet
-	orderIssued                    // a Pass code was issued: new, or replacing one
-	orderRenewed                   // the existing Pass was extended
-)
-
-type orderResult struct {
-	State     orderState
-	ExpiresAt time.Time
-}
-
 // passCompletion is what turning a paid order into a Pass needs from the
 // caller: the hash of a freshly drawn code, the time, and the term a payment
 // buys.
@@ -840,46 +992,172 @@ type passCompletion struct {
 	Days      int
 }
 
-// claimPass collects the order a claim belongs to.
-func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletion) (orderResult, error) {
-	var res orderResult
+// claimResult is what collecting a claim came to.
+type claimResult struct {
+	// Issued is set when a new Pass was made, under the code whose hash the
+	// passCompletion carried. IssuedExpiresAt is when it runs out, after any
+	// later payment under the same claim renewed it.
+	Issued          bool
+	IssuedExpiresAt time.Time
+	// Renewed is set when a Pass the browser already held was extended, and
+	// RenewedExpiresAt is its new expiry.
+	Renewed          bool
+	RenewedExpiresAt time.Time
+	// Waiting counts the orders still unpaid under the claim, and WaitUntil
+	// is the latest of their deadlines.
+	Waiting   int
+	WaitUntil time.Time
+}
+
+// claimPass collects every paid order under a claim, oldest deadline first.
+// An order that renews a Pass renews it. The first that does not creates a
+// Pass with the drawn code, and any later one under the same claim, paid now
+// or later, renews that new Pass, so a buyer who paid twice gets a longer Pass
+// and never loses a payment. A renewal whose Pass is gone counts as one that
+// does not renew.
+//
+// An unpaid order past its deadline is deleted, as prunePasses would. A paid
+// order is collected whatever its deadline: it was paid for.
+func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletion) (claimResult, error) {
+	var res claimResult
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
-		var payment []byte
-		var renewID *int64
-		var expires time.Time
-		err := tx.QueryRow(ctx, `
-			SELECT payment_hash, renew_pass_id, expires_at FROM pass_orders
-			WHERE claim_hash = $1`, claimHash).Scan(&payment, &renewID, &expires)
-		if errors.Is(err, pgx.ErrNoRows) {
-			res.State = orderMissing
-			return nil
-		}
+		res = claimResult{}
+		rows, err := tx.Query(ctx, `
+			SELECT session_hash, payment_hash, renew_pass_id, expires_at FROM pass_orders
+			WHERE claim_hash = $1
+			ORDER BY expires_at, session_hash`, claimHash)
 		if err != nil {
 			return err
 		}
-		if !c.Now.Before(expires) {
-			res.State = orderMissing
-			_, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE claim_hash = $1`, claimHash)
+		type order struct {
+			session, payment []byte
+			renewID          *int64
+			expires          time.Time
+		}
+		var orders []order
+		for rows.Next() {
+			var o order
+			if err := rows.Scan(&o.session, &o.payment, &o.renewID, &o.expires); err != nil {
+				return err
+			}
+			orders = append(orders, o)
+		}
+		if err := rows.Err(); err != nil {
 			return err
 		}
-		if payment == nil {
-			res.State = orderUnpaid
+
+		var created int64
+		for _, o := range orders {
+			if o.payment == nil && c.Now.Before(o.expires) {
+				res.Waiting++
+				res.WaitUntil = maxTime(res.WaitUntil, o.expires)
+				continue
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE session_hash = $1`, o.session); err != nil {
+				return err
+			}
+			if o.payment == nil {
+				continue
+			}
+			// Revoking deletes the order, so this never holds while the lock
+			// does its job; it is checked anyway, as it is everywhere a payment
+			// turns into a Pass.
+			if revoked, err := paymentRevoked(ctx, tx, o.payment); err != nil {
+				return err
+			} else if revoked {
+				continue
+			}
+			if o.renewID != nil {
+				expires, found, err := renewPass(ctx, tx, *o.renewID, o.payment, c)
+				if err != nil {
+					return err
+				}
+				if found {
+					if *o.renewID == created {
+						res.IssuedExpiresAt = expires
+					} else {
+						res.Renewed, res.RenewedExpiresAt = true, expires
+					}
+					continue
+				}
+			}
+			if created != 0 {
+				if res.IssuedExpiresAt, _, err = renewPass(ctx, tx, created, o.payment, c); err != nil {
+					return err
+				}
+				continue
+			}
+			if created, res.IssuedExpiresAt, err = issuePass(ctx, tx, o.payment, c); err != nil {
+				return err
+			}
+			res.Issued = true
+		}
+		if created == 0 || res.Waiting == 0 {
 			return nil
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE claim_hash = $1`, claimHash); err != nil {
-			return err
-		}
-		// Revoking deletes the order, so this never holds while the lock does
-		// its job; it is checked anyway, as it is everywhere a payment turns
-		// into a Pass.
-		if revoked, err := paymentRevoked(ctx, tx, payment); err != nil || revoked {
-			res.State = orderMissing
-			return err
-		}
-		res, err = completePassOrder(ctx, tx, payment, renewID, c, false)
+		// What is still unpaid under the claim, paid later, renews the Pass
+		// just made rather than making a second one with a code this browser
+		// would be shown in place of the first.
+		_, err = tx.Exec(ctx, `
+			UPDATE pass_orders SET renew_pass_id = $2
+			WHERE claim_hash = $1 AND renew_pass_id IS NULL`, claimHash, created)
 		return err
 	})
 	return res, err
+}
+
+// issuePass makes a new Pass for a payment, under the code whose hash c
+// carries, for a full term from now, and links the payment to it as its
+// origin.
+func issuePass(ctx context.Context, tx pgx.Tx, payment []byte, c passCompletion) (int64, time.Time, error) {
+	expires := passExpiry(c.Now, c.Days)
+	var id int64
+	if err := tx.QueryRow(ctx, `
+		INSERT INTO passes (token_hash, expires_at) VALUES ($1, $2) RETURNING id`,
+		c.TokenHash, expires).Scan(&id); err != nil {
+		return 0, time.Time{}, err
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO pass_payments (payment_hash, pass_id, days, origin) VALUES ($1, $2, $3, true)`,
+		payment, id, termDays(c.Now, expires))
+	return id, expires, err
+}
+
+// renewPass extends a Pass by a full term from its expiry, or from now if it
+// has run out, and links the payment to it with the term it bought
+// (termDays), which is what a refund of it takes off again. found is false
+// when there is no such Pass.
+func renewPass(ctx context.Context, tx pgx.Tx, passID int64, payment []byte, c passCompletion) (time.Time, bool, error) {
+	var current time.Time
+	err := tx.QueryRow(ctx, `SELECT expires_at FROM passes WHERE id = $1`, passID).Scan(&current)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return time.Time{}, false, nil
+	}
+	if err != nil {
+		return time.Time{}, false, err
+	}
+	base := maxTime(current, c.Now)
+	expires := passExpiry(base, c.Days)
+	if _, err := tx.Exec(ctx, `UPDATE passes SET expires_at = $2 WHERE id = $1`, passID, expires); err != nil {
+		return time.Time{}, false, err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO pass_payments (payment_hash, pass_id, days, origin) VALUES ($1, $2, $3, false)`,
+		payment, passID, termDays(base, expires))
+	return expires, true, err
+}
+
+// What became of a reissue.
+type orderState int
+
+const (
+	orderMissing orderState = iota // no such payment, or it was refunded
+	orderIssued                    // a Pass code was issued: new, or replacing one
+)
+
+type orderResult struct {
+	State     orderState
+	ExpiresAt time.Time
 }
 
 // reissuePass gives the Pass a payment bought a new code: the Pass itself
@@ -887,102 +1165,44 @@ func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletio
 func (s *Store) reissuePass(ctx context.Context, paymentHash []byte, c passCompletion) (orderResult, error) {
 	var res orderResult
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
+		res = orderResult{}
 		if revoked, err := paymentRevoked(ctx, tx, paymentHash); err != nil || revoked {
-			res.State = orderMissing
 			return err
 		}
 		var renewID *int64
 		err := tx.QueryRow(ctx, `
 			DELETE FROM pass_orders WHERE payment_hash = $1
 			RETURNING renew_pass_id`, paymentHash).Scan(&renewID)
-		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return err
-		}
-		uncollected := err == nil
-		if !uncollected {
-			var known bool
-			if err := tx.QueryRow(ctx, `
-				SELECT EXISTS (SELECT 1 FROM pass_payments WHERE payment_hash = $1)`, paymentHash).Scan(&known); err != nil {
-				return err
-			}
-			if !known {
-				res.State = orderMissing
-				return nil
-			}
-		}
-		res, err = completePassOrder(ctx, tx, paymentHash, renewID, c, true)
-		return err
-	})
-	return res, err
-}
-
-// completePassOrder turns a paid order into a Pass, inside the caller's
-// transaction:
-//
-//   - a payment already linked to a Pass (reissued before it was collected)
-//     gives that Pass the new code;
-//   - a renewal extends the Pass it renews by a full term from its expiry, or
-//     from now if it has run out, and links the payment to it;
-//   - anything else, including a renewal of a Pass refunded in the meantime,
-//     is a new Pass, and the payment is linked to it as its origin.
-//
-// Each payment is linked with the term it bought (termDays), which is what a
-// refund of it takes off again.
-//
-// A renewal keeps its code unless rotate is set, which reissuing does: a buyer
-// asking for a reissue has lost the code, so they get a new one either way.
-func completePassOrder(ctx context.Context, tx pgx.Tx, payment []byte, renewID *int64, c passCompletion, rotate bool) (orderResult, error) {
-	var res orderResult
-	var linked int64
-	err := tx.QueryRow(ctx, `SELECT pass_id FROM pass_payments WHERE payment_hash = $1`, payment).Scan(&linked)
-	switch {
-	case err == nil:
-		res.State = orderIssued
-		err = tx.QueryRow(ctx, `
-			UPDATE passes SET token_hash = $2 WHERE id = $1 RETURNING expires_at`,
-			linked, c.TokenHash).Scan(&res.ExpiresAt)
-		return res, err
-	case !errors.Is(err, pgx.ErrNoRows):
-		return res, err
-	}
-
-	if renewID != nil {
-		var current time.Time
-		err := tx.QueryRow(ctx, `SELECT expires_at FROM passes WHERE id = $1`, *renewID).Scan(&current)
 		switch {
 		case err == nil:
-			base := maxTime(current, c.Now)
-			res.ExpiresAt = passExpiry(base, c.Days)
-			res.State = orderRenewed
-			if _, err := tx.Exec(ctx, `UPDATE passes SET expires_at = $2 WHERE id = $1`, *renewID, res.ExpiresAt); err != nil {
-				return res, err
-			}
-			if rotate {
-				res.State = orderIssued
-				if _, err := tx.Exec(ctx, `UPDATE passes SET token_hash = $2 WHERE id = $1`, *renewID, c.TokenHash); err != nil {
-					return res, err
+			res.State = orderIssued
+			if renewID != nil {
+				expires, found, err := renewPass(ctx, tx, *renewID, paymentHash, c)
+				if err != nil || found {
+					res.ExpiresAt = expires
+					if err == nil {
+						_, err = tx.Exec(ctx, `UPDATE passes SET token_hash = $2 WHERE id = $1`, *renewID, c.TokenHash)
+					}
+					return err
 				}
 			}
-			_, err = tx.Exec(ctx, `
-				INSERT INTO pass_payments (payment_hash, pass_id, days, origin) VALUES ($1, $2, $3, false)`,
-				payment, *renewID, termDays(base, res.ExpiresAt))
-			return res, err
+			_, res.ExpiresAt, err = issuePass(ctx, tx, paymentHash, c)
+			return err
 		case !errors.Is(err, pgx.ErrNoRows):
-			return res, err
+			return err
 		}
-	}
-
-	res.State = orderIssued
-	res.ExpiresAt = passExpiry(c.Now, c.Days)
-	var id int64
-	if err := tx.QueryRow(ctx, `
-		INSERT INTO passes (token_hash, expires_at) VALUES ($1, $2) RETURNING id`,
-		c.TokenHash, res.ExpiresAt).Scan(&id); err != nil {
-		return res, err
-	}
-	_, err = tx.Exec(ctx, `
-		INSERT INTO pass_payments (payment_hash, pass_id, days, origin) VALUES ($1, $2, $3, true)`,
-		payment, id, termDays(c.Now, res.ExpiresAt))
+		err = tx.QueryRow(ctx, `
+			UPDATE passes SET token_hash = $2
+			WHERE id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1)
+			RETURNING expires_at`, paymentHash, c.TokenHash).Scan(&res.ExpiresAt)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		if err == nil {
+			res.State = orderIssued
+		}
+		return err
+	})
 	return res, err
 }
 
@@ -1059,15 +1279,21 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 	return res, err
 }
 
-// prunePasses deletes what has outlived its use: orders past their week,
-// remembered refunds past their month, and Passes a month past expiry, which
-// can no longer be renewed and are bought anew instead.
-func (s *Store) prunePasses(ctx context.Context, now time.Time) error {
+// prunePasses deletes what has outlived its use: unpaid orders past their
+// deadline; paid orders nobody collected, once a Pass bought with one at its
+// deadline would have run out too (deadline plus a term of days); remembered
+// refunds past their month; and Passes a month past expiry, which can no
+// longer be renewed and are bought anew instead. Checkout runs it, and so does
+// the daily sweep, so a quiet server keeps nothing past its time either.
+func (s *Store) prunePasses(ctx context.Context, now time.Time, days int) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		_, err := tx.Exec(ctx, `
-			WITH o AS (DELETE FROM pass_orders WHERE expires_at <= $1),
+			WITH o AS (
+			       DELETE FROM pass_orders
+			       WHERE expires_at <= CASE WHEN payment_hash IS NULL THEN $1::timestamptz ELSE $3::timestamptz END),
 			     r AS (DELETE FROM pass_revocations WHERE expires_at <= $1)
-			DELETE FROM passes WHERE expires_at <= $2`, now, now.Add(-passExpiredGrace))
+			DELETE FROM passes WHERE expires_at <= $2`,
+			now, now.Add(-passExpiredGrace), now.UTC().AddDate(0, 0, -days))
 		return err
 	})
 }

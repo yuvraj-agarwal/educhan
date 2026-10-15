@@ -341,6 +341,28 @@ payment went through by a signed webhook, and the browser that paid collects
 its Pass with a claim it holds in a cookie scoped to `/api/pass`. The code,
 four groups of five letters and digits, is shown once.
 
+**Orders.** A checkout records an order under the browser's claim, with a
+deadline a week on, rounded up to the next midnight UTC. A browser that starts
+a second checkout keeps its claim, so a Stripe tab paid after another is still
+collected, and collecting takes every paid order under the claim at once: a
+renewal renews its Pass, the first new purchase makes the Pass, and any other
+renews that one, now or when it is paid later. Paying twice buys a longer Pass
+and never loses a payment or replaces a code. `GET /api/pass` says whether the
+browser holds a claim, which the page cannot see for itself (the cookie is
+`HttpOnly`), so the page collects on every visit until nothing is left under
+it, and then the cookie goes. An order nobody paid for goes at its deadline, or
+as soon as Stripe reports its checkout expired or its payment failed. A
+checkout completed with a payment that takes days to clear, a bank debit say,
+is held for 30 days from then, and so is the browser's claim. A paid order is
+never dropped for being late: a payment confirmed after the deadline still
+counts, and a paid order nobody collected is kept for a term past its deadline,
+by when a Pass bought with it would have run out, for the owner to reissue.
+Checkout and the daily sweep (`educhan -sweep`) prune what is past all that,
+along with Passes a month past expiry, which can then no longer be renewed and
+are bought anew. A renewal whose Pass was refunded or ran past that month while
+Stripe was opening the checkout is refused with `409`, and the checkout is left
+to expire unpaid.
+
 **What is kept, and what can be worked out.** An operator with the database,
 the server secret and the Stripe account can see:
 
@@ -350,7 +372,10 @@ the server secret and the Stripe account can see:
   payment id)`, with the term each one bought in days and which one created
   it. With Stripe's records beside it, that ties a Pass to whoever paid. This
   is what lets a refund or a chargeback take back what it paid for, and it is
-  the sharpest edge of the design.
+  the sharpest edge of the design;
+- while an order waits to be paid or collected: HMACs of its Stripe session
+  and payment ids, a hash of the browser's claim, the Pass it renews, and its
+  deadline to the day.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
@@ -385,6 +410,19 @@ slip past a refund. Posting with a Pass only reads, and takes no lock.
 **Lost codes.** A buyer who lost their code writes to the support address on
 Stripe's receipt, and the owner reissues it with `POST /api/pass/reissue` and
 Stripe's payment id; the old code stops working.
+
+**Setting it up.** In Stripe: a one-time Price for the Pass
+(`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
+restricted key (`rk_…`) allowed to write Checkout Sessions and read Prices and
+nothing more; and a webhook endpoint at
+`EDUCHAN_PUBLIC_URL/api/pass/stripe-webhook`, created with API version
+`2024-06-20` (`stripeAPIVersion` in `pass_stripe.go`) and sending the six
+events listed in the [HTTP API](#http-api) table, whose signing secret is
+`EDUCHAN_STRIPE_WEBHOOK_SECRET`. Turn on Stripe's email receipts and give the
+account a public support email: the receipt is how a buyer finds their
+payment, and whom to write to about a lost code. Buyers are sent only to
+`checkout.stripe.com`, so a custom checkout domain set up in Stripe would make
+every checkout fail.
 
 ## Posting identity
 
@@ -876,11 +914,11 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"}}`; `price` is left out when Stripe can't be asked |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, Stripe's page, and sets the claim cookie |
-| `POST` | `/api/pass/claim` | Collect a paid Pass with the claim cookie — `202 {"status":"pending"}` until Stripe reports the payment, then `{"status":"issued","pass","expires_at"}` or `{"status":"renewed","expires_at"}` |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"},"claim"}`; `price` is left out when Stripe can't be asked, and `"claim":true` is there only when the browser holds a claim cookie |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets the claim cookie or keeps the one the browser has; `409` when the Pass to renew was refunded or lapsed meanwhile |
+| `POST` | `/api/pass/claim` | Collect every paid order under the claim cookie — `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while orders wait for Stripe; `400` when nothing is left. `"claim"` says whether anything still waits |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}` |
-| `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`, `charge.dispute.created` |
+| `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
 | `POST` | `/api/pass/reissue` | Moderation key: a new code for a lost one — `{"payment_intent":"pi_…"}` |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
@@ -1119,7 +1157,9 @@ records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to
 delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists.
+image public with nothing left to say it exists. Before any of that it prunes
+the educhan Pass's tables of what has outlived its use (see
+[Orders](#educhan-pass)), whether or not the Pass is on sale.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost

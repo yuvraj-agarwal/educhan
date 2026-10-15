@@ -638,7 +638,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   opening post read from the database. A new query over threads has to decide which set
   it means.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
-  board's `archive_days` have passed. It is a one-shot mode rather than a timer because
+  board's `archive_days` have passed, and prunes the Pass tables (`prunePasses`), on
+  sale or not (`TestSweepPrunesThePassTables`). It is a one-shot mode rather than a timer because
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
   on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
