@@ -985,7 +985,7 @@ var (
 	asksTo = words(`on`, `at`, `in`, `via`, `thru`, `through`, `over`, `@`)
 	// hindiGive is "give" or "send" or "tell", in Hinglish.
 	hindiGive = words(`do`, `de`, `dedo`, `de~do`, `dena`, `bhejo`, `bhej`, `bhej~do`, `batao`, `bata`, `bta`,
-		`share~`+karo)
+		`share~`+karo, `comment~`+karo, `daalo`, `dalo`, `likho`)
 	// karo and its spellings: "do it", in Hinglish.
 	karo = words(`karo`, `kar`, `kr`, `kro`, `karna`, `krna`, `karlo`, `kar~lo`, `kr~lo`, `kar~do`, `kardo`,
 		`krdo`, `kr~do`)
@@ -1012,6 +1012,14 @@ var askRules = []rule{bothViews(`\b` + words(
 		`comment`, `leave`, `post`, `reply~with`)+
 		`~(?:me~)?`+yours+`~(?:(?:phone|mobile|cell|whatsapp|contact|personal)~)?`+
 		words(`number`, `no`, `num`, `digits`),
+	// "give me your email", "drop ur email": askCheck wants nothing after
+	// it but the end of the ask, so "send me your email draft" is a draft.
+	words(`what'?s`, `whats`, `wats`, `wat'?s`, `what~is`, `give~me`, `gimme`, `drop`, `share`, `send~me`, `dm~me`,
+		`tell~me`, `leave`, `post`, `comment`)+`~`+yours+`~(?:`+words(`personal`, `school`, `college`, `uni`)+`~)?`+
+		words(`e~?mail`, `g~?mail`)+`(?:~`+words(`id`, `address`, `addy`)+`)?`,
+	// "follow me on X @name": X is a letter everywhere else, so only with
+	// the handle.
+	words(`follow`, `add`, `dm`, `message`, `msg`, `find`)+`~(?:me|us)~on~x[ \t]*@[\pL\pN_]{2,}`,
 	// "can i get your snap"
 	words(`can`, `could`, `may`)+`~i~`+words(`get`, `have`, `add`, `grab`)+`~`+words(`your`, `ur`, `ya`)+`~`+
 		words(contactApps, `number`, `no`, `num`, `digits`),
@@ -1054,9 +1062,9 @@ var askRules = []rule{bothViews(`\b` + words(
 	words(`number`, `nmbr`, `num`)+`~`+words(`bhej`, `bhejo`, `bhejna`, `dedo`, `de~do`, `de`, `share~`+karo,
 		`send~`+karo),
 ) + `\b(?:[ \t]*@[ \t]*[\pL\pN._]+)?`),
-	// "whatsapp me", "kik me": only a space between, so "WhatsApp, me and my
-	// friends" is a list.
-	bothViews(`\b` + words(whatsApp, `kik`, `telegram`, `snapchat`) + `[ \t]+me\b`),
+	// "whatsapp me", "kik me", "facetime me": only a space between, so
+	// "WhatsApp, me and my friends" is a list. askCheck wants it asked.
+	bothViews(`\b` + words(whatsApp, `kik`, `telegram`, `snapchat`, `face~?time`) + `[ \t]+me\b`),
 	// "ur snap?", "u on snap?"
 	bothViews(`\b` + words(`your`, `ur`) + `~` + contactApps + `[ \t]*\?`),
 	bothViews(`\b` + words(`you`, `u`, `ya`) + `[ \t]+on[ \t]+` + contactApps + `[ \t]*\?`),
@@ -1096,8 +1104,70 @@ func askCheck(v *view, m []int) bool {
 			return false
 		}
 	}
+	if mailAsked(text, m) {
+		// An address asked for ends the ask: "drop ur email and I'll share
+		// the folder", not "send me your email draft".
+		if next := nextWords(clauseAfter(text, m[1]), 1); len(next) > 0 && !mailTails[next[0]] {
+			return false
+		}
+	}
+	if is(lastWord(text[m[0]:m[1]]), "me") && !askedOfReaderHere(v, m) {
+		// "whatsapp me" asked, not "my mum will whatsapp me tonight".
+		return false
+	}
 	return !topicWords[firstWordAfter(text, m[1])]
 }
+
+// mailAsked reports an ask that ends in an address's name: "drop your
+// email", "what's your email address".
+func mailAsked(text string, m []int) bool {
+	ws := wordsIn(text[m[0]:m[1]])
+	for k := len(ws) - 1; k >= 0; k-- {
+		if mailWords[ws[k]] {
+			return true
+		}
+		if !mailLabels[ws[k]] {
+			break
+		}
+	}
+	return false
+}
+
+// askedOfReaderHere reports a private ask at m said as one: an imperative or
+// a "can you", "feel free to", "let's" (askMood), and not asked why or how
+// ("why would you text me at 3am").
+func askedOfReaderHere(v *view, m []int) bool {
+	text := v.text
+	ws, lo := readBack(text, m[1], 10, 96)
+	v.work += m[1] - lo
+	k := 0
+	for k < len(ws) && ws[k].to <= m[0] {
+		k++
+	}
+	if k >= len(ws) {
+		return false
+	}
+	start := clauseOpening(text, ws, k)
+	given := start < k
+	for _, w := range ws[start:k] {
+		if whWords[w.w] {
+			return false
+		}
+		given = given && (strings.ContainsAny(w.w, "0123456789") || askFillers[w.w])
+	}
+	// A number or a handle before it is what to use: "082 541 7703
+	// whatsapp me".
+	return given || askMood(text, ws, k, false)
+}
+
+var (
+	mailLabels = canonSetOf(`id address addy`)
+	// mailTails may follow an address asked for: "drop ur email and I'll
+	// share it", "your email pls", "email below".
+	mailTails = canonSetOf(`and so below here if i'll ill i we then n pls plz please rn now asap too also bro yaar
+		na anon op guys quickly`)
+	whWords = canonSetOf(`why how who when what whom whose`)
+)
 
 var (
 	numberWords = canonSetOf(`number nmbr num`)
@@ -1217,9 +1287,10 @@ var (
 var (
 	discTagHandle = bothViews(`\b` + words(`disc`, `dsc`, `dc`) + `\s*` + handleSeparator +
 		`\s*(@?)([\pL\pN._]{2,30})(#\d{4})`)
-	labelledAppHandle = bothViews(`\b` + words(`line`, `signal`, `steam`, `epic`, `kik`) + `~` +
+	// A Riot ID's tag is letters and digits: "riot id: name#IND1".
+	labelledAppHandle = bothViews(`\b` + words(`line`, `signal`, `steam`, `epic`, `kik`, `riot`) + `~` +
 		words(`id`, `username`, `user~name`, `handle`, `tag`) + `\s*(?:` + handleSeparator + `|` +
-		words(`is`, `hai`) + `\b)?\s*(@?)([\pL\pN._]{2,30})(#\d{4})?`)
+		words(`is`, `hai`) + `\b)?\s*(@?)([\pL\pN._]{2,30})(#[\pL\pN]{3,5})?`)
 	// The separator before the spaces: a single character and then a run
 	// of spaces would be planned as a sentence boundary (filtersearch.go,
 	// "delimited"), found from the handle after it, and so tried at every
@@ -1230,6 +1301,15 @@ var (
 // handleRules are the rules above that end at the handle.
 var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandle, handleBeforeApp,
 	discTagHandle, labelledAppHandle, ghostHandle}
+
+// accountNumberRules are accounts written as numbers no other rule reads: a
+// Session messenger ID, 66 hexadecimal digits starting "05", which nothing
+// else is written as; and a game's friend code after its name ("steam
+// friend code 412877305", "friend code SW-1234-5678-9012").
+var accountNumberRules = []rule{
+	plainOnly(`\b05[0-9a-f]{64}\b`),
+	plainOnly(`\bfriend~?codes?(?:~is)?~(?:sw~?)?\d(?:~?\d){7,11}\b`),
+}
 
 /* Apps named in a sentence ---------------------------------------------------- */
 
@@ -1263,15 +1343,19 @@ var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandl
 var appNameRule = bothViews(`(?:\b` + words(anyApps, `threema`) + `\b|👻)`)
 
 // offBoardRule is talking off the board with no app named: "anyone want to
-// text instead of posting here?", "let's dm somewhere else". offBoardCheck
-// wants a verb of talking said as an ask before it.
+// text instead of posting here?", "can u text me instead?", "let's dm
+// somewhere else", "is there somewhere more private we could talk?".
+// offBoardCheck wants a verb of talking said as an ask beside it.
 var offBoardRule = bothViews(`\b` + words(
-	words(`instead~of`, `rather~than`)+`~`+words(`posting`, `commenting`, `replying`, `here`, `on~here`,
-		`this~board`, `the~board`, `this~thread`, `this~site`, `educhan`),
-	`off~`+words(`here`, `this~board`, `the~board`, `this~site`, `educhan`),
-	`outside~(?:of~)?`+words(`here`, `this~board`, `the~board`, `this~site`, `educhan`),
-	`somewhere~else`, `elsewhere`,
-) + `\b`)
+	words(
+		words(`instead~of`, `rather~than`)+`~`+words(`posting`, `commenting`, `replying`, `here`, `on~here`,
+			`this~board`, `the~board`, `this~thread`, `this~site`, `educhan`),
+		`off~`+words(`here`, `this~board`, `the~board`, `this~site`, `educhan`),
+		`outside~(?:of~)?`+words(`here`, `this~board`, `the~board`, `this~site`, `educhan`),
+		`somewhere~else`, `elsewhere`, `somewhere~(?:more~)?private`,
+	)+`\b`,
+	`instead[ \t]*(?:[.!?\n,;:)]|$)`,
+))
 
 // aWord is a word of a view and where it is: letters, digits, apostrophes
 // and underscores, an "@" before them, and a dot only inside it, so that
@@ -1482,8 +1566,13 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 	next := ws(after)
 	question := strings.HasPrefix(text[hi:], "?")
 	// What comes after the app makes it a topic: "my snap score", "come to
-	// insta live", "tg eamcet counselling".
+	// insta live", "tg eamcet counselling". A streak kept with someone is
+	// an ask: "who wants to be my snap streak buddy".
 	if len(next) > 0 && topicWords[next[0]] {
+		if len(after) > 1 && streakWords[next[0]] && streakPartners[next[1]] && anyIn(ws(before), partnerAsks) &&
+			!v.reported([]int{m[0], after[1].to}) {
+			return m[0], after[1].to, kindAsk, true
+		}
 		return 0, 0, 0, false
 	}
 	// The app ends its clause, but for a word or two that do not change
@@ -1565,6 +1654,14 @@ func allIn(ws []string, set map[string]bool) bool {
 }
 
 var (
+	streakWords    = canonSetOf(`streak streaks`)
+	streakPartners = canonSetOf(`buddy buddies partner partners pal pals bestie besties friend friends mate mates`)
+	// partnerAsks before an app's streak partner ask for one: "who wants to
+	// be my snap streak buddy", "need a snap streak partner".
+	partnerAsks = canonSetOf(`be want wants wanna need needs looking anyone anybody someone somebody who any`)
+)
+
+var (
 	mailWords         = canonSetOf(`gmail email mail`)
 	ambiguousAppWords = canonSetOf(`signal sc dc wa wp steam epic monkey`)
 	// shortApps are as often a place as an app ("tg" is Telangana, "wa"
@@ -1582,7 +1679,13 @@ var (
 	// web".
 	appProducts = canonSetOf(`web desktop app apk business beta update version premium plus lite`)
 	talkVerbs   = canonSetOf(`talk chat text txt dm pm msg message ping call ring add follow find reach hmu contact
-		inbox snap hit join speak facetime vc`)
+		inbox snap hit join speak facetime vc holla holler knock`)
+	// hollaVerbs take "at" before their object: "holla at me on IG".
+	hollaVerbs = canonSetOf(`holla holler`)
+	// movedTalk are what a move verb moves when it is not "this" or "it":
+	// "move the study group to telegram", "take our chat to discord".
+	movedTalk = canonSetOf(`group gc grp chat chats convo conversation conversations discussion discussions thread
+		talk server squad crew gang batch`)
 	movePreps = canonSetOf(`to onto into`)
 	talkPreps = canonSetOf(`on at in via over thru through`)
 	appDets   = canonSetOf(`my our the your ur a this that`)
@@ -1591,7 +1694,7 @@ var (
 	// askFillers come before an imperative without changing it: "pls just
 	// come to tg", "bro add me on snap".
 	askFillers = canonSetOf(`just pls plz please bro bhai yaar so ok okay then yo lol and also kindly do maybe guys
-		everyone all sab anon op hey btw fr ngl now quickly`)
+		everyone all sab anon op hey btw fr ngl now quickly abeg biko oya`)
 )
 
 // askMood reports that the words ws[:k], in the clause before a verb, make
@@ -1659,6 +1762,19 @@ func (f *scannedField) asksToMove(v *view, before []aWord, next []string, app st
 	if i >= 0 && objects[before[i].w] {
 		object = before[i].w
 		i--
+		if i >= 1 && is(before[i].w, "at") && hollaVerbs[before[i-1].w] {
+			i-- // "holla at me"
+		}
+	} else if movePreps[prep] {
+		// What is moved, when it is the talk itself: "move the study
+		// group to telegram", "take our chat to discord".
+		for span := 1; span <= 2; span++ {
+			j := i - span
+			if i >= 0 && movedTalk[before[i].w] && j >= 1 && appDets[before[j].w] && moveVerbs[before[j-1].w] {
+				i = j - 1
+				break
+			}
+		}
 	}
 	if i < 0 {
 		return 0, false
@@ -1784,7 +1900,7 @@ func messagesThere(before, after []aWord, m []int) (int, int, bool) {
 		}
 		if i >= 0 && dmWords[before[i].w] && i < n-1 {
 			if i >= 1 && (is(before[i-1].w, "my") || is(before[i-1].w, "your") || is(before[i-1].w, "ur")) ||
-				i >= 1 && dmVerbs[before[i-1].w] || i >= 2 && dmVerbs[before[i-2].w] {
+				i >= 1 && dmVerbs[before[i-1].w] || i >= 2 && dmVerbs[before[i-2].w] || takenToDMs(before, i) {
 				if len(after) > 0 && dmStatements[after[0].w] {
 					return 0, 0, false
 				}
@@ -1801,6 +1917,20 @@ func messagesThere(before, after []aWord, m []int) (int, int, bool) {
 		return before[n-1].from, after[0].to, true
 	}
 	return 0, 0, false
+}
+
+// takenToDMs reports the talk moved to the messages at before[i]: "take
+// this to dms on insta", "let's move it to pms on discord".
+func takenToDMs(before []aWord, i int) bool {
+	if i < 2 || !movePreps[before[i-1].w] {
+		return false
+	}
+	k := i - 2
+	for n := 0; n < 2 && k >= 1 && (is(before[k].w, "this") || is(before[k].w, "it") || appDets[before[k].w] ||
+		movedTalk[before[k].w]); n++ {
+		k--
+	}
+	return moveVerbs[before[k].w]
 }
 
 var (
@@ -1822,6 +1952,11 @@ func hinglishAsk(before, after []aWord, m []int) (int, int, bool) {
 				if j+1 < len(after) && hindiPast[after[j+1].w] {
 					return 0, 0, false
 				}
+				return m[0], after[j].to, true
+			}
+			// A bare "aa" is "come" only as an order: "whatsapp pe aa
+			// jaldi", not "result telegram pe aa jayega".
+			if is(after[j].w, "aa") && (j+1 == len(after) || hindiComeTails[after[j+1].w]) {
 				return m[0], after[j].to, true
 			}
 		}
@@ -1866,7 +2001,8 @@ var (
 	karWords       = canonSetOf(`kar karo kr kro karna krna karlo karle krlo krle`)
 	hindiTalkVerbs = canonSetOf(`dm msg message text ping add follow call baat contact connect`)
 	idWords        = canonSetOf(`number no num nmbr id account username`)
-	hindiGiveWords = canonSetOf(`do de dedo bhejo bhej batao bata bta dena share`)
+	hindiGiveWords = canonSetOf(`do de dedo bhejo bhej batao bata bta dena share comment daalo dalo likho`)
+	hindiComeTails = canonSetOf(`ja jaa jao jaldi na naa bhai yaar pls plz abhi`)
 	hindiYour      = canonSetOf(`apna apni tera teri tumhara tumhari aapka aapki apka apki`)
 	englishAfterDo = canonSetOf(`you u i we they it not this that the a your ur my he she`)
 )
@@ -2123,8 +2259,8 @@ func talksThere(text string, ws []aWord) (int, int, bool) {
 	return 0, 0, false
 }
 
-var thereVerbs = canonSetOf(`comment reply dm message msg text talk chat explain tell continue discuss reach find hmu
-	meet ask`)
+var thereVerbs = canonSetOf(`comment reply dm pm message msg text talk chat explain tell continue discuss reach find
+	hmu meet ask`)
 
 // offBoardCheck wants a verb of talking said as an ask before talking off
 // the board: "anyone want to text instead of posting here", "let's chat
@@ -2137,22 +2273,76 @@ var thereVerbs = canonSetOf(`comment reply dm message msg text talk chat explain
 // the rules want people to give.
 func offBoardCheck(v *view, m []int) bool {
 	text := v.text
+	matched := wordsIn(text[m[0]:m[1]])
 	ws, lo := readBack(text, m[0], 6, 64)
 	v.work += m[0] - lo
-	matched := wordsIn(text[m[0]:m[1]])
-	private := is(matched[0], "somewhere") || is(matched[0], "elsewhere")
+	// "instead" on its own ends the ask: "can u text me instead?". Only a
+	// private message to the poster or the reader, so "let's call the
+	// office instead" and "talk to me instead" are not one.
+	bare := len(matched) == 1
+	private := is(matched[0], "somewhere") || is(matched[0], "elsewhere") || bare
+	// Somewhere private is the point of the talk, so any verb of talking
+	// will do: "let's talk somewhere private", "take this convo somewhere
+	// more private".
+	spot := is(matched[len(matched)-1], "private")
 	for k := len(ws) - 1; k >= max(0, len(ws)-4); k-- {
 		w := ws[k].w
-		if privateVerbs[w] || !private && (talkVerbs[w] || is(w, "continue") || is(w, "move") || is(w, "take")) {
+		if privateVerbs[w] || (!private || spot) && (talkVerbs[w] || is(w, "continue") || is(w, "move") ||
+			is(w, "take")) || spot && is(w, "go") && weFrame(ws, k) {
+			person := false
 			for _, o := range ws[k+1:] {
 				if !offBoardObjects[o.w] {
 					return false
 				}
+				person = person || objects[o.w]
+			}
+			if bare && (!person || numberGiven(v, m)) {
+				return false
 			}
 			return askMood(text, ws, k, true) && notNegated(v, []int{ws[k].from, m[1]})
 		}
 	}
+	// Or the talk after it: "is there somewhere more private we could
+	// talk?", "somewhere private where we can chat".
+	if spot {
+		next := nextWords(clauseAfter(text, m[1]), 4)
+		if len(next) > 0 && is(next[0], "where") {
+			next = next[1:]
+		}
+		if len(next) > 1 && (is(next[0], "we") || is(next[0], "you") || is(next[0], "u")) {
+			next = next[1:]
+			if canModals[next[0]] {
+				next = next[1:]
+			}
+			return len(next) > 0 && (talkVerbs[next[0]] || privateVerbs[next[0]]) && notNegated(v, m)
+		}
+	}
 	return false
+}
+
+// lineAround is the line round text[a:b], within 64 bytes either side: a
+// sentence's dots may be a number's ("07.88.42.61.39.0").
+func lineAround(text string, a, b int) string {
+	before := text[max(0, a-64):a]
+	after := text[b:min(len(text), b+64)]
+	if j := strings.IndexByte(after, '\n'); j >= 0 {
+		after = after[:j]
+	}
+	return before[strings.LastIndexByte(before, '\n')+1:] + text[a:b] + after
+}
+
+// numberGiven reports a number on the line round m: given with a private
+// ask, it is the contact detail, which the number rules judge ("text me
+// instead, 07700 900xxx" gives one of Ofcom's drama numbers, which no one can
+// be reached on).
+func numberGiven(v *view, m []int) bool {
+	digits := 0
+	for _, r := range lineAround(v.text, m[0], m[1]) {
+		if r >= '0' && r <= '9' {
+			digits++
+		}
+	}
+	return digits >= 7
 }
 
 // offBoardObjects may come between the verb and talking off the board: the
@@ -9479,7 +9669,7 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		consider(from, to, true, kindPhone)
 	}
 	from, to, ok := f.first(niRule, func(v *view, m []int) bool {
-		return validNIPrefix(v.text[m[2]], v.text[m[4]]) && f.upperInSource(m[0], m[1])
+		return validNIPrefix(v.text[m[2]], v.text[m[4]]) && (f.upperInSource(m[0], m[1]) || niLabelled(v.text, m[0]))
 	})
 	consider(from, to, ok, kindNI)
 
@@ -9534,6 +9724,10 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 	consider(from, to, ok, kindAsk)
 	from, to, ok = f.first(myAppRule, f.myAppCheck)
 	consider(from, to, ok, kindHandle)
+	for _, r := range accountNumberRules {
+		from, to, ok = f.first(r, func(v *view, m []int) bool { return !v.reported(m) })
+		consider(from, to, ok, kindHandle)
+	}
 	from, to, ok = f.first(myAmbiguousAppRule, func(v *view, m []int) bool {
 		a, b := v.span(m[2], m[3])
 		handle := f.src[a:b]
@@ -9585,6 +9779,24 @@ func (f *scannedField) firstAppFrame() (int, int, findingKind, bool) {
 		})
 	}
 	return from, to, kind, found
+}
+
+// niLabelled reports a National Insurance number named just before it,
+// which makes one in lower case one too: "national insurance no. sh 71 58
+// 20 d", "NI number: ab 12 34 56 c".
+func niLabelled(text string, i int) bool {
+	ws := wordsBefore(text, i, 4)
+	for k, w := range ws {
+		switch {
+		case is(w, "insurance") || is(w, "nino"):
+			return true
+		case is(w, "ni") && k > 0:
+			return true
+		case !idFillers[w]:
+			return false
+		}
+	}
+	return false
 }
 
 // upperInSource reports whether every letter of the source behind text[a:b]
@@ -9938,6 +10150,9 @@ func (f *scannedField) firstNumber() (digitRun, findingKind, bool) {
 		}
 		if from, to, ok := piecedNumber(&f.plain, i); ok {
 			return digitRun{from: from, to: to}, kindPhone, true
+		}
+		if to, ok := halvedNumber(&f.plain, run); ok {
+			return digitRun{from: run.from, to: to}, kindPhone, true
 		}
 		i = max(run.to, i+1)
 	}
@@ -10344,13 +10559,14 @@ var (
 		`)\b`)
 	// phoneCue, shortly before a number, says it is one to call.
 	phoneCue = newWindowSearch(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `phone`, `ph`, `mob`, `mobile`,
-		`cell`, `number`, `num`, `no`, `whatsapp`, `dial`, `contact`, `tel`, `sms`) + `)\b`)
+		`cell`, `number`, `num`, `no`, `whatsapp`, `dial`, `contact`, `tel`, `sms`, `hmu`) + `)\b`)
 	// callCue, shortly before a number, asks for the poster to be called or
 	// says the number is theirs: "call me", "text me", "hmu", "my number".
 	callCue = newWindowSearch(phrase(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `dial`, `sms`, `msg`,
 		`message`, `ping`, `whatsapp`, `wa`, `reach`) + `~` + words(`me`, `us`) + `|` + words(`my`, `mera`, `meri`) +
 		`~(?:` + words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`) + `~)?` +
-		words(`number`, `no`, `num`, `nmbr`) + `|hmu)\b`))
+		words(`number`, `no`, `num`, `nmbr`) + `|` + words(`my`, `mera`, `meri`) + `~` + words(`hp`, `handphone`) +
+		`|text~` + words(`only`, `dont~call`, `don'?t~call`, `no~calls?`) + `|hmu)\b`))
 	// contactCue, with nothing but punctuation between it and a number, asks
 	// for the number to be called or says whose it is: "call me on", "text
 	// me", "wa:", "my number is". "The number" is not one: "is the number
@@ -10400,7 +10616,8 @@ func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 	}
 	shaped := regrouped(run)
 	local := n == 7 && localNumber(shaped)
-	if n < 9 && !local {
+	short := n == 8 && sgMobile(v, shaped)
+	if n < 9 && !local && !short {
 		return 0, false
 	}
 	if !standsAlone(v, run) || formattedNumber(run) || dataSet(v, run) || roundRange(run) || decimalRange(v, run) ||
@@ -10409,6 +10626,9 @@ func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 	}
 	if local {
 		return kindPhone, areaCoded(v, shaped)
+	}
+	if short {
+		return kindPhone, true
 	}
 	if kind, ok := numberShape(v, shaped); ok {
 		return kind, true
@@ -10445,7 +10665,8 @@ func numberShape(v *view, run digitRun) (findingKind, bool) {
 	}
 	switch {
 	case indianMobile(d, run.groups, run.seps), nanpPhone(v, run), ukPhone(d, run.groups, run.seps),
-		auMobile(d, run.groups, run.seps), auLandline(d, run.groups), calledMobile(v, run):
+		auMobile(d, run.groups, run.seps), auLandline(d, run.groups), tenDigitMobile(d, run.groups, run.seps),
+		calledMobile(v, run):
 		return kindPhone, true
 	case aadhaar(d, run.groups, run.seps), idLabelled(v, run, aadhaarLabels) && aadhaarShape(d, run.groups, run.seps):
 		return kindAadhaar, true
@@ -10600,6 +10821,12 @@ func piecedNumber(v *view, i int) (int, int, bool) {
 			break
 		}
 		digits = append(digits, t[s:k]...)
+		// A piece spaced out a digit at a time: "07 9 1 5 / 3 3 0 / 2 1 8".
+		for n := k - s; !quoted && n < 6 && k+1 < len(t) && t[k] == ' ' && isASCIIDigit(t[k+1]) &&
+			(k+2 == len(t) || !isASCIIDigit(t[k+2]) && !('a' <= t[k+2] && t[k+2] <= 'z') && t[k+2] < utf8.RuneSelf); n++ {
+			digits = append(digits, t[k+1])
+			k += 2
+		}
 		if quoted {
 			if k >= len(t) || t[k] != t[i-1] {
 				break
@@ -10637,6 +10864,66 @@ func piecedNumber(v *view, i int) (int, int, bool) {
 	return 0, 0, false
 }
 
+// halvedNumber reads a phone number given in two parts, each labelled as
+// which part it is: "first 5: 93104 / last 5: 72286", "first half 98450,
+// second half 12345". Labels like that say the parts make one number, so
+// no other cue is needed. It returns where the second part ends.
+func halvedNumber(v *view, run digitRun) (int, bool) {
+	t := v.text
+	if len(run.groups) != 1 || len(run.digits) < 2 || len(run.digits) > 6 ||
+		!partLabelled(wordsBefore(t, run.from, 3), firstParts) {
+		return 0, false
+	}
+	rest := t[run.to:min(len(t), run.to+32)]
+	ws := nextWords(rest, 4)
+	v.work += len(rest)
+	for k := 0; k+1 < len(ws); k++ {
+		if !lastParts[ws[k]] {
+			continue
+		}
+		n := k + 1
+		if partSizes[ws[n]] || len(ws[n]) == 1 && isASCIIDigit(ws[n][0]) {
+			n++
+		}
+		if n >= len(ws) {
+			return 0, false
+		}
+		d := ws[n]
+		if len(d) < 2 || len(d) > 6 || strings.Trim(d, "0123456789") != "" {
+			return 0, false
+		}
+		at := strings.Index(rest, ws[k]) + len(ws[k])
+		end := run.to + at + strings.Index(rest[at:], d) + len(d)
+		if end < len(t) && isASCIIDigit(t[end]) || !piecedPhone(string(run.digits)+d, false) {
+			return 0, false
+		}
+		return end, true
+	}
+	return 0, false
+}
+
+// partLabelled reports a label for the first part of a number in ws, the
+// words before it nearest first: "first", "first 5", "first 5 digits",
+// "first half".
+func partLabelled(ws []string, parts map[string]bool) bool {
+	for _, w := range ws {
+		switch {
+		case parts[w]:
+			return true
+		case partSizes[w] || len(w) == 1 && isASCIIDigit(w[0]):
+		default:
+			return false
+		}
+	}
+	return false
+}
+
+var (
+	firstParts = setOf(`first 1st starts start beginning`)
+	lastParts  = setOf(`last second 2nd next rest then ends end ending other`)
+	partSizes  = setOf(`half part bit digits nums numbers four five six`)
+)
+
 // quoteMarks are the quotes a string in code or a word in a sentence is put
 // in.
 const quoteMarks = `'"` + "`"
@@ -10651,8 +10938,8 @@ const (
 )
 
 // pieceJoiners are the words a number given in pieces is joined with: "99
-// then 30 then 412", "98450 aur 17723", "followed by".
-var pieceJoiners = setOf(`then and plus aur phir fir followed`)
+// then 30 then 412", "98450 aur 17723", "followed by", "and ends in".
+var pieceJoiners = setOf(`then and plus aur phir fir followed ends ending`)
 
 // pieceJoiner reads what joins one piece of a number to the next, from
 // t[k]: a space or two, then "+" between quoted strings, or a slash, a bar,
@@ -10677,6 +10964,10 @@ func pieceJoiner(t string, k int, quoted bool) int {
 		k++
 	case strings.IndexByte("/|,", t[k]) >= 0:
 		k++
+		// "76, then 1180, and ends in 5249": a word may follow the mark.
+		if j := skip(k); j < len(t) && pieceJoiners[firstWordAfter(t, j)] {
+			return pieceJoiner(t, j, false)
+		}
 	default:
 		for n := 0; n < 2; n++ {
 			w := firstWordAfter(t, k)
@@ -10687,11 +10978,22 @@ func pieceJoiner(t string, k int, quoted bool) int {
 				break
 			}
 			k = skip(k + len(w))
-			if w == "followed" {
+			switch w {
+			case "followed":
 				if !strings.HasPrefix(t[k:], "by") {
 					return -1
 				}
 				k += 2
+			case "ends", "ending":
+				// "and ends in 5249", "ending with 5249".
+				switch {
+				case strings.HasPrefix(t[k:], "in"):
+					k += 2
+				case strings.HasPrefix(t[k:], "with"):
+					k += 4
+				default:
+					return -1
+				}
 			}
 		}
 	}
@@ -10945,8 +11247,8 @@ func standsAlone(v *view, run digitRun) bool {
 }
 
 // operandAfter reports an operator after a number with an operand after it:
-// "= 2", "/ 2", "% of", "+ 1". An emoticon ("=)", "^^", "<3") or a sarcasm
-// tag ("/s") is not one.
+// "= 2", "/ 2", "% of", "+ 1". An emoticon ("=)", "^^", "<3"), an arrow
+// pointing back at it ("<-") or a sarcasm tag ("/s") is not one.
 func operandAfter(after string) bool {
 	s := strings.TrimLeft(after, " ")
 	spaced := len(s) < len(after)
@@ -10955,6 +11257,9 @@ func operandAfter(after string) bool {
 	case r == '%':
 		return true
 	case r == '<' && strings.HasPrefix(s, "<3") && !(len(s) > 2 && isASCIIDigit(s[2])):
+		return false
+	case r == '<' && strings.HasPrefix(s, "<-"):
+		// An arrow pointing back at it: "1-773-502-8814 <- text me".
 		return false
 	case r == '/' && spaced && strings.HasPrefix(s, "/s") &&
 		(len(s) == 2 || !unicode.IsLetter(rune(s[2])) && !isASCIIDigit(s[2])):
@@ -11231,7 +11536,7 @@ func mobileGrouping(g []int, seps []string) bool {
 	if ones {
 		return len(g) >= 9 && oneSeparatorKind(seps)
 	}
-	if len(g) > 5 {
+	if len(g) > 5 && !(len(g) == 6 && dashed(seps)) {
 		return false
 	}
 	pairs, singles := 0, 0
@@ -11245,7 +11550,10 @@ func mobileGrouping(g []int, seps []string) bool {
 	}
 	switch {
 	case singles > 0:
-		return singles == 1 && pairs == 0 && len(g) <= 4
+		// Pairs set off by points or dashes may leave one digit over at
+		// an end: "07.88.42.61.39.0".
+		return singles == 1 && (pairs == 0 && len(g) <= 4 ||
+			dashed(seps) && pairs == len(g)-1 && (g[0] == 1 || g[len(g)-1] == 1))
 	case dashed(seps):
 		return true
 	}
@@ -11404,6 +11712,41 @@ func ukPhone(d string, g []int, seps []string) bool {
 	return false
 }
 
+// sgMobile is a Singapore mobile, eight digits starting 8 or 9, in one
+// block, in fours or spaced out a digit at a time, after a word asking for it
+// to be called or naming it the poster's: "whatsapp 9137 2684", "my hp is
+// 9628-4017". Eight digits alone are as often a date or a roll number.
+func sgMobile(v *view, run digitRun) bool {
+	d, g := string(run.digits), run.groups
+	if len(d) != 8 || d[0] != '8' && d[0] != '9' || repdigit(d) {
+		return false
+	}
+	ones := len(g) == 8 && oneSeparatorKind(run.seps)
+	if !(len(g) == 1 || len(g) == 2 && g[0] == 4 || ones) {
+		return false
+	}
+	near := windowBefore(v.text, run.from, 32)
+	return contactCue.matchIn(v, near) || callCue.matchIn(v, near)
+}
+
+// tenDigitMobile is a mobile written the national way in South Africa or
+// Ireland, ten digits starting 06, 07 or 08 (not 070, 080, a free line, or
+// 088), set off 3-3-4 or 3-7: "082 541 7703", "087 214 6639". An Indian or a
+// UK number with its trunk zero has eleven digits, so the two do not meet.
+func tenDigitMobile(d string, g []int, seps []string) bool {
+	if len(d) != 10 || d[0] != '0' || d[1] < '6' || d[1] > '8' || d[1:3] == "80" || d[1:3] == "88" ||
+		d[1:3] == "70" {
+		return false
+	}
+	switch {
+	case len(g) == 3 && g[0] == 3 && g[1] == 3 && g[2] == 4:
+		return oneSeparatorKind(seps)
+	case len(g) == 2 && g[0] == 3 && g[1] == 7:
+		return true
+	}
+	return false
+}
+
 // auMobile is an Australian mobile written the national way, 04 and eight
 // more digits: 0412 345 678.
 func auMobile(d string, g []int, seps []string) bool {
@@ -11433,14 +11776,19 @@ func aadhaar(d string, g []int, seps []string) bool {
 	return aadhaarShape(d, g, seps) && verhoeffValid(d)
 }
 
-// aadhaarShape is twelve digits, the first 2-9, as one block or as 4-4-4. A
-// run of years (2019 2020 2021) is not one.
+// aadhaarShape is twelve digits, the first 2-9, as one block, as 4-4-4 or a
+// digit at a time. A run of years (2019 2020 2021) is not one.
 func aadhaarShape(d string, g []int, seps []string) bool {
 	if len(d) != 12 || d[0] < '2' {
 		return false
 	}
 	switch {
 	case len(g) == 1:
+	case len(g) == 12:
+		// A digit at a time, every gap the same: "8 3 4 1 2 9 0 6 7 5 2 9".
+		if !oneSeparatorKind(seps) {
+			return false
+		}
 	case len(g) == 3 && g[0] == 4 && g[1] == 4 && g[2] == 4:
 		for _, s := range seps {
 			if s != " " && s != "-" {

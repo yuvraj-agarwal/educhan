@@ -2311,8 +2311,9 @@ const FAQ_SECTIONS = [
           it goes up. You can still post it.</li>
       </ul>
       <p>These checks are simple: they only look for certain words and number patterns, in
-        English and some Hinglish (Hindi typed in English letters). They don't read Hindi
-        in Devanagari or any other language. They miss plenty, and they sometimes stop a
+        English (with a little Nigerian Pidgin) and some Hinglish (Hindi typed in English
+        letters). They don't read Hindi in Devanagari or any other language. They miss
+        plenty, and they sometimes stop a
         post that was fine. So the
         <a href="/rules">rules</a> apply to everything, whether a check catches it or not, and
         moderators can still delete posts that break them. The checks don't keep a copy of

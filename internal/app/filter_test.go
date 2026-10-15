@@ -2437,6 +2437,71 @@ func TestFilterReadsGroomingCuesInOtherWords(t *testing.T) {
 	}
 }
 
+// TestFilterReadsContactAsksAndNumbersInOtherWords holds the contact rules to
+// both sides where an ask or a number is written outside the usual frames: an
+// address asked for, a verb such as "holla at" or "chat me up", what is moved
+// to an app, its messages, Hinglish "pe aa", an account written as a number
+// or a tag, and numbers in the national ways of other countries, in labelled
+// or joined pieces, spaced a digit at a time or pointed at with an arrow; and
+// the same words where nothing asks the reader anywhere.
+func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
+	const (
+		publish = "publish"
+		contact = "block:" + ruleContact
+		id      = "block:" + ruleIDNumber
+	)
+	for _, c := range []struct{ body, want string }{
+		{"give me your email and i'll forward the mark scheme", contact},
+		{"drop ur email and I'll share the google drive folder with you", contact},
+		{"what's your email etiquette when writing to profs?", publish},
+		{"send me your email draft and I'll proofread it", publish},
+		{"holla at me on IG, too much to type here", contact},
+		{"holla at me if you need help with the maths here", publish},
+		{"Abeg chat me up on WhatsApp make we discuss am well", contact},
+		{"can we move the study group to telegram? I'll make the group", contact},
+		{"we moved the class group to telegram last year", publish},
+		{"lets take this to dms on insta, easier to send screenshots", contact},
+		{"whatsapp pe aa jaldi", contact},
+		{"result telegram pe aa jayega", publish},
+		{"interested log apna whatsapp number comment karo", contact},
+		{"can u text me instead? this site is so slow on my phone", contact},
+		{"the portal is down, let's call the office instead", publish},
+		{"facetime me later, u have my number", contact},
+		{"my mum will facetime me tonight about the fees", publish},
+		{"my mum will whatsapp me tonight about the fees", publish},
+		{"is there somewhere more private we could talk? this board is way too public", contact},
+		{"is there somewhere private to study on campus?", publish},
+		{"reddit u/quietbiochem, pm me there for the full spreadsheet", contact},
+		{"follow me on X @tunde_builds i post leetcode solutions", contact},
+		{"who wants to be my snap streak buddy", contact},
+		{"my snap streak buddy ghosted me after 300 days", publish},
+		{"riot id: baingan#IND1 val pe aaja shaam ko", contact},
+		{"steam friend code 412877305, add me we need a 4th", contact},
+		{"session id 0515cee4fa0394e660be657b7e4033b7f26b6da202de62ebd149d552f228b8a721 if u want to talk", contact},
+		{"Tele me or whatsapp 9137 2684, got the O level chem TYS worked solutions", contact},
+		{"my hp is 9 6 2 8 - 4 0 1 7 lah, just msg", contact},
+		{"my roll no 91372684 is wrong on the admit card", publish},
+		{"text me, 087 214 6639. leaving cert irish oral is next week", contact},
+		{"order id 087 214 6639", publish},
+		{"text me 07.88.42.61.39.0 innit, got all the edexcel papers", contact},
+		{"81-7525-766-0", publish},
+		{"07 9 1 5 / 3 3 0 / 2 1 8 — text dont call", contact},
+		{"not typing it in one go bc of the filter\nfirst 5: 93104\nlast 5: 72286\nu know what to do", contact},
+		{"first 5 questions: 93104 marks? no", publish},
+		{"it starts with 76, then 1180, and ends in 5249. text me if ur also doing CA foundation", contact},
+		{"my marks are 65, then 70, then 78, then 84, then 91, call me consistent", publish},
+		{"1-773-5O2-88l4 <- text me, typed it weird so it doesnt get eaten", contact},
+		{"hmu 415 829 3361 i made a quizlet for the whole AP bio CED", contact},
+		{"need to fill this for the NSP portal, is this right: 8 3 4 1 2 9 0 6 7 5 2 9", id},
+		{"national insurance no. sh 71 58 20 d, the letter finally came today", id},
+		{"on 12 34 56 a the shop closed", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
 // one reading of quoted and reported speech that every family uses. Words
 // the post gives to someone else, or says came to the poster, are not the
@@ -2951,6 +3016,18 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"alone said last": rep("come here, alone. "),
 		"between us":      rep("just between us "),
 		"tell no one":     rep("tell no one about "),
+		// Contact asks and accounts read outside the usual frames: an
+		// address asked for, "instead" ending an ask, an app's messages, a
+		// Session ID's hexadecimal and a friend code; and numbers in labelled
+		// halves, in spaced pieces and pointed at.
+		"email ask":     rep("drop ur email "),
+		"instead":       rep("text me instead. "),
+		"dms on app":    rep("take this to dms on insta "),
+		"hex":           rep("05"),
+		"friend code":   rep("friend code 1 "),
+		"halves":        rep("first 5: 12 "),
+		"spaced pieces": rep("1 2 / "),
+		"arrow":         rep("98765 43210 <- "),
 		// A threat told by implication: hints of every kind, close to a
 		// time and a place, and the words that open the most of them.
 		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),
