@@ -581,6 +581,13 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 		SELECT count(DISTINCT claim_hash), count(*) FROM pass_orders`).Scan(&claims, &orders); err != nil || claims != 2 || orders != 2 {
 		t.Fatalf("two checkouts in one browser made %d orders under %d claims (%v), want one under each of 2", orders, claims, err)
 	}
+	// The claim index is unique, which is what holds a claim to one order:
+	// claimPass reads, and deletes, by the claim alone.
+	if _, err := p.app.pool.Exec(context.Background(), `
+		INSERT INTO pass_orders (session_hash, claim_hash, days, expires_at)
+		SELECT '\xee', claim_hash, days, expires_at FROM pass_orders LIMIT 1`); !isUniqueViolation(err) {
+		t.Fatalf("a second order under one claim: %v, want a unique violation", err)
+	}
 	if !p.reportsClaim() {
 		t.Fatal("GET /api/pass did not say the browser has a purchase to collect")
 	}
