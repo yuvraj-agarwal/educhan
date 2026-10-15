@@ -156,7 +156,9 @@ actions, and says what forgetting costs — the server cannot show the credentia
 again, so it means verifying from the start. Beside it, in every state of the
 page, **Forget this browser** removes the badge together with the poster key,
 the remembered name (see below) and any Pass, which are what would otherwise let
-the next person at a shared computer post under the same IDs and tripcode.
+the next person at a shared computer post under the same IDs and tripcode, and
+drops any Pass purchase the browser is still waiting to collect, so that
+person cannot collect it either.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -318,11 +320,13 @@ hourly budget instead, and everyone using one Pass shares it. And 4chan's Pass
 lifts IP range and country blocks, which educhan doesn't have.
 
 **The hourly budget.** A Pass skips the captcha for at most
-`EDUCHAN_PASS_HOURLY_POSTS` posts (30 by default) in each clock hour. A post
-counts only once it is saved: one that is refused, fails or is turned away by
-flood control costs nothing. When the hour's budget is spent, the Pass simply
-stops skipping the captcha until the hour ends, and posts with it solve the
-captcha like anyone else's; no post is ever refused because of the budget.
+`EDUCHAN_PASS_HOURLY_POSTS` posts (30 by default) in each hour, counted in UTC,
+so in India, and wherever else the clock is half an hour off UTC, each one
+starts at half past. A post counts only once it is saved: one that is
+refused, fails or is turned away by flood control costs nothing. When the
+hour's budget is spent, the Pass simply stops skipping the captcha until the
+hour ends, and posts with it solve the captcha like anyone else's; no post is
+ever refused because of the budget.
 Sharing a Pass shares the budget. The count lives in the server's memory, per
 instance like flood control, keyed on an HMAC of the code that matches nothing
 in the database, and all it holds is which hour it is for and how many posts:
@@ -340,57 +344,136 @@ exception for Stripe. Google has no checkout of its own for selling on the web
 so this is a non-Google service by necessity. Stripe tells the server the
 payment went through by a signed webhook, and the browser that paid collects
 its Pass with a claim it holds in a cookie scoped to `/api/pass`. The code,
-four groups of five letters and digits, is shown once.
+four groups of five letters and digits, is handed to that browser, and the
+server keeps only its HMAC. A browser that keeps no cookies or storage is told
+so on the Pass page and not sent to Stripe, since it could neither collect a
+Pass nor keep one.
 
-**Orders.** A checkout records an order under the browser's claim, with a
-deadline a week on, rounded up to the next midnight UTC. A browser that starts
-a second checkout keeps its claim, so a Stripe tab paid after another is still
-collected, and collecting takes every paid order under the claim at once: a
-renewal renews its Pass, the first new purchase makes the Pass, and any other
-renews that one, now or when it is paid later. Paying twice buys a longer Pass
-and never loses a payment or replaces a code. `GET /api/pass` says whether the
-browser holds a claim, which the page cannot see for itself (the cookie is
-`HttpOnly`), so the page collects on every visit until nothing is left under
-it, and then the cookie goes. An order nobody paid for goes at its deadline, or
-as soon as Stripe reports its checkout expired or its payment failed. A
-checkout completed with a payment that takes days to clear, a bank debit say,
-is held for 30 days from then, and so is the browser's claim. A paid order is
-never dropped for being late: a payment confirmed after the deadline still
-counts, and a paid order nobody collected is kept for a term past its deadline,
-by when a Pass bought with it would have run out, for the owner to reissue.
-Checkout and the daily sweep (`educhan -sweep`) prune what is past all that,
-along with Passes a month past expiry, which can then no longer be renewed and
-are bought anew. A renewal whose Pass was refunded or ran past that month while
-Stripe was opening the checkout is refused with `409`, and the checkout is left
-to expire unpaid.
+**Orders.** A checkout records an order with the term it buys, which is
+`EDUCHAN_PASS_DAYS` as it is at that moment and is kept on the order, and a
+deadline a week on, rounded up to the next midnight UTC. Changing
+`EDUCHAN_PASS_DAYS` therefore changes what is sold from then on and nothing
+already paid for, whether it is collected, renewed or reissued later.
+
+Every checkout gives the browser a new claim and moves the orders under the
+one it held to it. A Stripe tab paid after another is still collected by this
+browser, and a claim token copied off a shared computer, or planted in the
+browser, before somebody buys there collects nothing of what they buy. The
+cookie is set at checkout to outlast every order under it, and at least 30
+days past Stripe's 24-hour checkout, which is the longest a slow payment can
+hold its order (below). Nothing else sets the cookie, and only forgetting the
+claim clears it.
+
+Collecting takes every paid order under the claim at once: a renewal renews
+its Pass, the first new purchase makes the Pass, and any other renews that
+one, now or when it is paid later, each by its own order's term. Paying twice
+buys a longer Pass and never loses a payment or replaces a code.
+`GET /api/pass` says whether the claim has anything left to collect, which the
+page cannot see for itself (the cookie is `HttpOnly`), so the page collects on
+every visit until nothing is left under it. Collecting is safe to repeat: the
+page draws a random nonce for each collection and sends it with every claim,
+and the code is derived from it with the server's secret. A claim whose answer
+was lost after the server committed it, to a closed tab or a dropped
+connection, is asked again with the same nonce and given the same code. The
+page keeps the nonce in `localStorage` until an answer says nothing more is
+waiting; the server keeps neither the nonce nor the code, only the code's
+HMAC. A claim with any other nonce, or the cookie copied without it, gets
+nothing that has been handed over already.
+
+`POST /api/pass/claim` with `{"forget": true}` drops the browser's claim, for
+a shared computer: its orders move under a random hash nobody holds, and the
+cookie is cleared, so whoever uses the browser next collects none of them. A
+paid order among them, or one paid later, is still the buyer's, and the owner
+reissues it from the payment on the receipt (see **Lost codes**). Remove the
+Pass, Forget this browser and Stop collecting it here all send it.
+
+An order nobody paid for goes at its deadline, or as soon as Stripe reports
+its checkout expired or its payment failed, or reports it paid with a payment
+already refunded. A checkout completed with a payment that takes days to
+clear, a bank debit say, is held for 30 days from then, to the next midnight
+UTC, and the claim cookie already lasts that long. A payment confirmed after
+its order's deadline still counts while the unpaid order is kept, which is
+only until the next prune: a checkout, the daily sweep, or a claim from its
+own browser. After that the "paid" event matches nothing, and the log says
+that a paid Stripe checkout matched no open Pass order, without saying which;
+the owner can refund it in Stripe. A paid order nobody collected is kept for
+its own term past its deadline, by when a Pass bought with it would have run
+out, for the owner to reissue. Checkout and the daily sweep (`educhan -sweep`)
+prune what is past all that, along with reissue links past their deadline,
+refunds remembered for their month, and Passes a month past expiry, which can
+then no longer be renewed and are bought anew. The sweep needs no Pass setting
+to do it, since every order carries its own term. A renewal whose Pass was
+refunded or ran past that month while Stripe was opening the checkout is
+refused with `409`, and the checkout is left to expire unpaid.
+
+**Pausing and retiring.** `EDUCHAN_PASS_SALES=paused` stops selling and
+honours what was sold. Checkout refuses a purchase and a renewal alike with
+`403` and `the Pass is not on sale right now`, before it reads the request's
+body or asks Stripe for anything; `GET /api/pass` says `"paused": true` and
+asks Stripe for no price; and the Pass page says "The Pass is not on sale
+right now." where Buy and Renew were, and offers no Start again. Everything
+else goes on: Stripe's webhooks are checked and recorded, so a checkout opened
+before the pause and paid after it is collected as usual, and a refund or a
+dispute takes back what it paid for; Passes skip the captcha; the page
+collects, shows a code, checks one typed in and drops a claim; and reissue
+links are made and spent. Setting it back to `open`, the default, sells again;
+any other value refuses to start.
+
+Retiring the Pass is a different thing: unset `EDUCHAN_PASS_SECRET` and every
+other Pass setting. Every Pass endpoint then answers as if there were no Pass,
+and a Pass sent on a post is ignored, so existing Passes stop skipping the
+captcha. Stripe's webhooks answer `404`, and Stripe retries an event for a
+while and then gives up, so an event sent meanwhile is lost unless the
+settings are back before then: a payment among them never becomes a Pass, and
+a refund or a dispute takes nothing back. So pause first, and retire only once
+nothing is in flight. The tables stay, and the sweep goes on pruning them;
+setting the same secret again brings back every Pass not yet pruned.
 
 **What is kept, and what can be worked out.** An operator with the database,
 the server secret and the Stripe account can see:
 
-- that a Pass exists and the day it runs out (`expires_at`, rounded up to a
-  UTC day boundary; there is no `created_at`);
-- which Stripe payments bought or renewed it, as `HMAC(EDUCHAN_PASS_SECRET,
-  payment id)`, with the term each one bought in days and which one created
-  it. With Stripe's records beside it, that ties a Pass to whoever paid. This
-  is what lets a refund or a chargeback take back what it paid for, and it is
-  the sharpest edge of the design;
-- while an order waits to be paid or collected: HMACs of its Stripe session
-  and payment ids, a hash of the browser's claim, the Pass it renews, and its
-  deadline to the day.
+- in `passes`: that a Pass exists and the day it runs out (`expires_at`),
+  with its code only as `HMAC(EDUCHAN_PASS_SECRET, code)`;
+- in `pass_payments`: which Stripe payments bought or renewed it, as
+  `HMAC(EDUCHAN_PASS_SECRET, payment id)`, with the term each one bought in
+  days, the day that term ends, and which one is its origin. With Stripe's
+  records beside it, that ties a Pass to whoever paid. This is what lets a
+  refund or a chargeback take back what it paid for, and it is the sharpest
+  edge of the design;
+- in `pass_orders`, while an order waits to be paid or collected: HMACs of its
+  Stripe session and payment ids, a hash of the browser's claim, the Pass it
+  renews, the term it buys, and its deadline;
+- in `pass_revocations`, for a month after a refund or a dispute: the
+  payment's HMAC, so that a late "paid" event cannot undo it. Stripe sends
+  these for any payment on the account, so a refund of something else the
+  account sells is remembered the same way;
+- in `pass_reissues`, while a reissue link is unspent: a hash of its token,
+  the HMAC of the payment it reissues, and its deadline.
+
+There is no `created_at` anywhere, and every date in these tables is rounded
+up to a UTC midnight, so it dates a purchase, a refund or a link to the day
+and not the minute.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
 Pass tables reference only each other, and nothing about a Pass goes into a
-poster ID. Nothing identifying a Pass is logged: the log says that a Pass was
-issued, renewed, reissued or cancelled, never which, and a failure to read a
-Pass on a post is logged without the post's path, which names its board and
-thread (the request's own line keeps the path and its `500`, as for any failed
-request). `TestPassIsNeverStoredOrLogged` drives every posting path with a Pass
-and searches every table and the log for the code, its hashes, the payment and
-session ids, a reissue link and the buyer's email and name, with positive
-controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
-handler reads a handful of fields and never logs the body, which carries the
-payer's email and name.
+poster ID. A Pass presented on a post that is no good, because it is unknown,
+refunded, replaced or has run out, is treated as no Pass at all: the post is
+held to the captcha like any other, so nothing in the request log tells it
+apart, and its `201` says `"pass": "invalid"` or `"expired"` in the body,
+which no log records, so the page can forget the code or offer to renew it.
+Nothing identifying a Pass is logged: the log says that a Pass was issued,
+renewed, reissued or cancelled, never which, and a failure to read a Pass on a
+post is logged without the post's path, which names its board and thread (the
+request's own line keeps the path and its `500`, as for any failed request).
+`TestPassIsNeverStoredOrLogged` posts with a Pass on every posting route, a
+thread and a reply each as JSON and with an image, and a reply by thread id,
+and then searches every table and the log for the code, its hashes, the
+collection and reissue nonces, the payment and session ids, a reissue link and
+the buyer's email and name, with positive controls;
+`TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook handler
+reads a handful of fields and never logs the body, which carries the payer's
+email and name.
 
 The Pass's `POST` endpoints take only a body declared as JSON, which no form
 can send and no other origin's script can send without a CORS preflight that
@@ -398,24 +481,30 @@ is never answered, and refuse a request the browser marks as coming from
 another site (`Sec-Fetch-Site: cross-site`).
 
 **Renewals and refunds.** Renewing from a browser that holds the Pass keeps
-the code and adds a term to it: exactly a term to a Pass that hasn't run out,
-whose expiry is on a midnight already, and a term from now, rounded up to the
-next midnight UTC, to one that has. A full refund or a dispute (a partial
-refund changes nothing) takes off the term that one payment bought: the days
-it moved the expiry on, rounded up to whole days, so the rounding goes with
-it. A Pass with time left after that goes on, and one with none left is
-cancelled. So refunding a purchase cancels the Pass at once, refunding a
-renewal takes that term off and leaves the rest, refunding the purchase
-leaves the renewals paid after it, and somebody who renews another person's
-Pass and disputes the payment takes back only what they gave. A refunded
-renewal of a Pass that had already run out leaves nothing over, not even the
-rest of the day, and the Pass is gone.
+the code and adds the order's term to it: exactly that many days to a Pass
+that hasn't run out, whose expiry is on a midnight already, and that many days
+from now, rounded up to the next midnight UTC, to one that has. Each payment
+records the term it bought, as the days it moved the expiry on rounded up to
+whole days, and the day that term ends. A full refund or a dispute (a partial
+refund changes nothing) takes off only the part of that payment's term still
+to come: the days from now to the day it ends, rounded up so that it stops at
+once rather than at midnight, and never more than the term. The terms paid
+after it move back by as much, since the Pass now reaches them sooner. A Pass
+with time left after that goes on, and one with none left is cancelled. So
+refunding a renewal takes its term off and leaves the rest; refunding the
+purchase while its term runs ends that term now and brings the renewals paid
+after it forward, whole; refunding a purchase whose term has run takes nothing
+off; and somebody who renews another person's Pass and disputes the payment
+takes back only what they gave. Refunding the only payment a Pass has cancels
+it at once, as does refunding any payment of a Pass that has run out and is
+waiting in its month of grace: neither has any time left to come.
 
 Every change to the Pass tables (an order, a payment, a collection, a
-reissue, a refund, pruning) takes one Postgres advisory lock first
-(`passLockID`), so events that arrive together are applied one after another:
-a refund cannot miss a Pass being collected beside it, and a "paid" cannot
-slip past a refund. Posting with a Pass only reads, and takes no lock.
+reissue, a refund, a forgotten claim, pruning) takes one Postgres advisory
+lock first (`passLockID`), so events that arrive together are applied one
+after another: a refund cannot miss a Pass being collected beside it, and a
+"paid" cannot slip past a refund. Posting with a Pass only reads, and takes no
+lock.
 
 **Lost codes.** A buyer who lost their code writes to the support address on
 Stripe's receipt. The owner finds the payment in Stripe and asks for a reissue
@@ -435,10 +524,21 @@ deadline like an order's (a week, to the next midnight UTC); a newer link for
 the same payment replaces it, and a refund cancels it. Its token rides in the
 address's fragment, which the browser sends to no server and puts in no
 `Referer`, and the page takes it out of the address bar before anything else
-and sends it in the body of the claim; the server keeps only its hash. Only
-the payment that bought a Pass, or a paid purchase nobody collected, can be
-reissued: a renewal's payment answers `409`, because otherwise somebody who
-saw a code once could renew it and have the owner reissue it to them.
+and sends it in the body of the claim, with a nonce of its own, so a link
+whose answer was lost is asked again and gives the same code; the server keeps
+only the token's hash. In a browser that already holds a Pass, the page asks
+before using the link, and once it has, it shows the code it replaced beside
+the new one, to be written down.
+
+Only the payment that made a Pass, or a paid purchase nobody collected, can be
+reissued. A renewal's payment answers `409`, because otherwise somebody who
+saw a code once could renew it and have the owner reissue it to them. When
+the purchase is refunded and the Pass goes on, the earliest payment left on
+it takes the purchase's place, so a Pass still paid for can always be
+reissued: the `409` says to use the purchase or, if that was refunded, the
+earliest renewal that was not. That gives nobody a way in who did not have
+one already, because a renewal is bought only by somebody holding the code, or
+by the browser that bought the Pass, through its claim.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass
 (`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
@@ -451,7 +551,10 @@ events listed in the [HTTP API](#http-api) table, whose signing secret is
 account a public support email: the receipt is how a buyer finds their
 payment, and whom to write to about a lost code. Buyers are sent only to
 `checkout.stripe.com`, so a custom checkout domain set up in Stripe would make
-every checkout fail.
+every checkout fail. Then set `EDUCHAN_PASS_SECRET` beside them. Every Pass
+setting given without the secret refuses to start rather than leaving the Pass
+quietly off, and `EDUCHAN_PASS_SALES=paused` keeps it off sale while
+everything else is tried.
 
 ## Posting identity
 
@@ -679,19 +782,35 @@ not-found view.
   anything else. A badged post sends the credential instead, never both. The Name field
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
-  `/verify` drops the key, the name, any badge and any Pass, for a shared computer.
-- **educhan Pass**: `/pass` says what a Pass does and what it costs (with "plus any tax"
-  when Stripe adds it), sells and renews it through Stripe's own page, and takes a code
-  typed in. The browser keeps the Pass in `localStorage` and sends it on unbadged posts
-  only (see [educhan Pass](#educhan-pass)); the page sends it only in the body of a
-  renewal or a check. While a purchase waits to be collected (`GET /api/pass` says
-  `claim`), the page shows that in place of any form to pay with and asks for it on every
-  visit, with a growing pause while it is open. A code the server hands over is stored
-  before anything else, shown once, and can be shown again from the held Pass's panel to
-  write down; a browser that will not store it is told so. A Pass that has run out here
-  can be checked again, in case it was renewed elsewhere. A reissue link
-  (`/pass#reissue=…`) leaves the address before anything else and is spent once. A post
-  refused for its Pass says to solve the captcha and post again.
+  `/verify` drops the key, the name, any badge and any Pass, and any Pass purchase still
+  being collected, for a shared computer.
+- **educhan Pass**: the header links to `/pass` only once `GET /api/site` says the
+  server has the Pass, on sale or paused, or while this browser holds one, so a holder
+  can still show or remove it. `/pass` says what a Pass does and what it costs (with
+  "plus any tax" when Stripe adds it, and "a set time" until the server's terms are
+  known), sells and renews it through Stripe's own page, and takes a code typed in.
+  While sales are paused it says "The Pass is not on sale right now." where Buy and Renew
+  were. A browser that keeps no cookies or storage is told so rather than sent to Stripe.
+  The browser keeps the Pass in `localStorage` and sends it on unbadged posts only (see
+  [educhan Pass](#educhan-pass)); the page sends it only in the body of a renewal or a
+  check. While a purchase waits to be collected (`GET /api/pass` says `claim`), the page
+  shows that in place of any form to pay with, or, when the browser already has a Pass,
+  says another checkout from it is still open and keeps Renew. It asks on every visit,
+  with a growing pause while it is open, and sends the collection's nonce
+  (`educhan:pass-nonce`) each time until an answer says nothing more is waiting, so an
+  answer lost on the way is asked for again and brings the same code. A code the server
+  hands over is stored before anything else and stays on screen, beside any code it took
+  the place of, until the reader leaves the page; it can be shown again from the held
+  Pass's panel to write down, and a browser that will not store it is told so. A code
+  typed in after it ran out, within its month of grace, is kept as run out, with its
+  date, to renew. A Pass that has run out here can be checked again, in case it was
+  renewed elsewhere. A reissue link (`/pass#reissue=…`) leaves the address before
+  anything else; in a browser that holds a Pass it waits for **Use the link here**, and
+  it is spent once, with a nonce of its own. **Remove the Pass**, **Forget this
+  browser** and **Stop collecting it here** drop the browser's claim, so the next person
+  at a shared computer collects nothing. A post whose Pass was no good goes out like any
+  other, and its answer says so: the page forgets an unknown Pass, keeps one that ran out
+  to renew, and says the post was sent.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
@@ -793,15 +912,16 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
-| `EDUCHAN_PASS_SECRET` | empty | Keys the educhan Pass's stored hashes (codes, Stripe payment and session ids). **Unset switches the Pass off**; at least 32 characters. Rotating it cancels every Pass and orphans every payment record |
-| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key checkouts are created with. Required with `EDUCHAN_PASS_SECRET`, refused without it |
+| `EDUCHAN_PASS_SECRET` | empty | Keys the educhan Pass's stored hashes (codes, Stripe payment and session ids). **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 characters. Rotating it cancels every Pass and orphans every payment record |
+| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key checkouts are created with. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook` |
 | `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for |
 | `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax add sales tax, VAT or GST at checkout; switch Stripe Tax on in the account first |
 | `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back |
-| `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts |
-| `EDUCHAN_PASS_HOURLY_POSTS` | `30` | A Pass's hourly budget: how many posts in one clock hour skip the captcha. At least 1 |
+| `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts, from 1 to 36500 days. Each order keeps the term it was sold with, so a change applies to checkouts started after it and to nothing already sold |
+| `EDUCHAN_PASS_HOURLY_POSTS` | `30` | A Pass's hourly budget: how many posts in one hour, counted in UTC, skip the captcha. At least 1 |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (seconds) | Minimum interval between checkouts from one client |
+| `EDUCHAN_PASS_SALES` | `open` | `open` sells the Pass; `paused` stops selling it and honours what was sold (checkout refuses, everything else goes on); anything else refuses to start. See [Pausing and retiring](#educhan-pass) |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 
 ### Storage backends
@@ -886,7 +1006,8 @@ The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
 cooldown has run out, so **an address is held in memory no longer than the
 longest cooldown that applies to it plus one minute**, counted from its last
-post (or code request, for verification's cooldown), whether or not anyone
+post (or code request, Pass checkout or Pass code check, for the cooldowns of
+verification and the Pass), whether or not anyone
 else posts in the meantime, **as long as the process has CPU between
 requests**. A host that gives it CPU only while it answers a request, which is
 Cloud Run's default (request-based billing), holds the sweep's timer back while
@@ -940,7 +1061,7 @@ that overwrites the header with just the peer address are each a single hop.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
-| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes"}`: whether posts may carry an image, and the largest one taken. The same answer for every caller; it reads nothing from the request |
+| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes","pass"}`: whether posts may carry an image, the largest one taken, and whether the server has the Pass, on sale or paused. The same answer for every caller; it reads nothing from the request |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
@@ -955,12 +1076,12 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"},"claim"}`; `price` is left out when Stripe can't be asked, and `"claim":true` is there only when the browser holds a claim cookie |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets the claim cookie or keeps the one the browser has; `409` when the Pass to renew was refunded or lapsed meanwhile |
-| `POST` | `/api/pass/claim` | Collect every paid order under the claim cookie — `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while orders wait for Stripe; `400` when nothing is left. `"claim"` says whether anything still waits. With `{"reissue":"…"}`, a reissue link's token, it redeems the link instead, answering the same way or `403 {"pass":"invalid"}` |
-| `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}` |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","automatic_tax","price":{"amount","currency"},"paused","claim"}`, or `{"enabled":false}` without it. `"automatic_tax":true` is there only when Stripe Tax adds tax to the price; `price` is left out when Stripe can't be asked and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when the browser's claim cookie has something under it to collect |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets a new claim cookie, moving the orders under the old one to it; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `409` when the Pass to renew was refunded or lapsed meanwhile |
+| `POST` | `/api/pass/claim` | Collect every paid order under the claim cookie — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends until it has the code. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while orders wait for Stripe; `400` when nothing is left. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue link's token, it redeems the link instead, answering the same way or `403 {"pass":"invalid"}`. With `{"forget":true}` it drops the browser's claim and clears the cookie — `{"status":"forgotten","claim":false}` |
+| `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}` |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
-| `POST` | `/api/pass/reissue` | Moderation key: a one-time link that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"url","expires_at"}`, `404` for a payment that bought nothing or was refunded, `409` for a renewal's payment |
+| `POST` | `/api/pass/reissue` | Moderation key: a one-time link that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"url","expires_at"}`, `404` for a payment that bought nothing or was refunded, `409` for a renewal's payment (use the purchase's, or, if that was refunded, the earliest renewal's that was not) |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 
@@ -981,9 +1102,12 @@ is read, so the refusal costs no cooldown.
 
 The two posting endpoints read a Pass from `X-Educhan-Pass`, on unbadged posts
 only: a badged post's request is the credential's, and the Pass header is not
-read on it. A Pass that is unknown, refunded or replaced is refused with `403`
-and `{"pass":"invalid"}`, an expired one with `{"pass":"expired"}`, so the client
-can drop it; a Pass header sent while the Pass is switched off is ignored.
+read on it. A Pass that is unknown, refunded or replaced, or has run out, is
+treated as no Pass at all, so nothing about the answer's status or the request
+log tells it apart from a post made without one; the `201` carries
+`{"pass":"invalid"}` or `{"pass":"expired"}` beside the post, so the client can
+drop the code or offer to renew it. A Pass header sent while the Pass is
+switched off is ignored.
 
 `/api/verify/request` without `"adult": true` answers `400` with
 `{"error":"the badge is for students aged 18 and over; you can still read and post anonymously"}`
@@ -1200,7 +1324,9 @@ sweep removes each queued file and forgets its key. A file the store refuses to
 delete keeps its key, so the next sweep tries it again rather than leaving an
 image public with nothing left to say it exists. Before any of that it prunes
 the educhan Pass's tables of what has outlived its use (see
-[Orders](#educhan-pass)), whether or not the Pass is on sale.
+[Orders](#educhan-pass)), whether or not the Pass is on sale. It needs no Pass
+setting for that: each order carries the term it was sold with, and every
+other deadline is stored on its row.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
