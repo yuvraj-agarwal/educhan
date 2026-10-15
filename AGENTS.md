@@ -758,9 +758,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   same way, and `TestGIFFrameOverheadCoversWhatDecodingKeeps` measures what
   `image/gif` keeps per frame. What a collection marks can be more than was held but
   never less, so each check takes the least of up to three runs (`peakLive`,
-  `leastPeak`), and one busy moment does not fail it. A term left out or cut short
-  fails them unless another term charged for the same moment is as large in every
-  fixture, as the comment at the top of `cost.go` says. They are the package's slowest
+  `leastPeak`), and one busy moment does not fail it. They catch a term left out, which
+  comes to more than `processingSlack` in some fixture, unless another term charged for
+  the same moment is at least as large in every fixture, as the alpha plane and the
+  NRGBA copy of a transparent lossy WebP are. They do not catch a term cut short by
+  less than that slack: the turn term can be halved and every test still passes. So
+  they guard against a term left out, not against every under-estimate, as the comment
+  at the top of `cost.go` says, and a new term needs a fixture where it is megabytes
+  over the slack, as the comment on `costFixtures` sets out. They are the package's slowest
   tests, over two minutes under `-race`. A change to a decode path, to `orient`, to the
   stored buffer or to the thumbnail changes `cost.go` in the same commit. A CMYK
   JPEG is turned into RGBA where it lies (`rgbaOfCMYK`), not into a second picture.
