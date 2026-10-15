@@ -194,7 +194,8 @@ gcloud sql instances create educhan-db \
   --edition=ENTERPRISE \
   --tier=db-f1-micro \
   --region="$REGION" \
-  --storage-size=10GB
+  --storage-size=10GB \
+  --backup --backup-start-time=05:00 --retained-backups-count=7
 
 gcloud sql databases create educhan --instance=educhan-db
 
@@ -223,6 +224,28 @@ the instance's flags, and should print nothing about it:
 
 ```bash
 gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
+```
+
+**Backups.** The three backup flags spell out the backup schedule and how many
+backups are kept, rather than leaning on defaults. The instance keeps a daily
+backup, the last seven of them, so a deleted row can sit in a backup for about a
+week. Each backup starts somewhere in a four-hour window opening at 05:00 UTC,
+well after the archive sweeper's run at 03:17 and its one retry (section 2.9). A
+backup therefore holds as little as possible of what the sweep deletes, and if
+you move either time, move the other with it. On an instance that already has
+backups on, re-running `first-deploy.sh` moves the window to 05:00 and changes
+nothing else; it leaves alone an instance whose backups were turned off.
+
+Point-in-time recovery is off: `gcloud sql instances create` leaves it off for
+the Enterprise edition, where the Console would have turned it on. It would keep
+seven days of write-ahead log, and every commit record in that log carries its
+commit time, which would date each write exactly within those seven days,
+whatever `track_commit_timestamp` (above) says. Turning it on is a trade between
+recovery and that record, so it is a decision, not a default. To check what an
+instance keeps:
+
+```bash
+gcloud sql instances describe educhan-db --format='yaml(settings.backupConfiguration)'
 ```
 
 ### 2.3 The media bucket
@@ -525,6 +548,10 @@ gcloud scheduler jobs create http educhan-sweep-daily \
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/educhan-sweep:run" \
   --oauth-service-account-email "$SCHEDULER_SA"
 ```
+
+03:17 UTC leaves the sweep and its one retry time to finish before the
+database's backup window opens at 05:00 (section 2.2). Keep it that way if you
+move either.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep

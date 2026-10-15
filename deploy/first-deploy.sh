@@ -133,13 +133,29 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
   --member="serviceAccount:${BUILD_SA}" --role=roles/storage.objectViewer >/dev/null
 
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
-exists gcloud sql instances describe "$DB_INSTANCE" ||
+# Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
+# sweep (below), so a backup holds as little as possible of what the sweep
+# deletes. Point-in-time recovery stays off, the gcloud default for this
+# edition, and is never changed here. deploy/README.md section 2.2 says what
+# each of these keeps. An existing instance with backups on gets only the start
+# time moved, so a re-run never shortens a retention someone has raised and
+# never turns backups back on where someone turned them off.
+if exists gcloud sql instances describe "$DB_INSTANCE"; then
+  BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
+    --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
+  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *05:00 ]]; then
+    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null ||
+      echo "Could not move the backup window to 05:00 UTC; see deploy/README.md section 2.2." >&2
+  fi
+else
   gcloud sql instances create "$DB_INSTANCE" \
     --database-version=POSTGRES_16 \
     --edition=ENTERPRISE \
     --tier=db-f1-micro \
     --region="$REGION" \
-    --storage-size=10GB
+    --storage-size=10GB \
+    --backup --backup-start-time=05:00 --retained-backups-count=7
+fi
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"
 CLOUDSQL_INSTANCE="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
@@ -235,6 +251,7 @@ gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
   --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
 SCHEDULE_ARGS=(
   --location "$REGION"
+  # Done, retry included, before the database's backup window opens at 05:00 UTC.
   --schedule "17 3 * * *" --time-zone "Etc/UTC"
   --http-method POST
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${SWEEP_JOB}:run"
