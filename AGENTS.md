@@ -571,7 +571,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   extension, the content type, the attachment's `name` and the thumbnail's format all
   follow the stored format, not the upload's. Before decoding, `stripWebP` (`webp.go`)
   rewrites the RIFF so the decoder sees only the picture: it keeps VP8X (flags masked
-  to alpha and animation, reserved bits cleared), ALPH, VP8, VP8L, ANIM and ANMF (each
+  to alpha and animation, reserved bits cleared, and a still picture's alpha flag set
+  exactly when an ALPH is kept, because x/image refuses the mismatches libwebp ignores,
+  a lossless picture with transparency and metadata under the flag among them:
+  `TestWebPAlphaFlagFollowsTheChunks`), ALPH, VP8, VP8L, ANIM and ANMF (each
   frame cut to its picture), drops EXIF, XMP, ICCP and every unknown chunk, recomputes
   the RIFF size, drops bytes past the RIFF's end, and refuses a file whose canvas and
   bitstream sizes disagree. Its output is never stored: a decoder ignores whatever

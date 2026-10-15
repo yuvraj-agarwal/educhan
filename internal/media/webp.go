@@ -17,7 +17,8 @@ import (
 // a tool would put metadata nobody asked for. Readers are required to ignore
 // unknown chunks, so dropping them changes nothing on screen. The VP8X flags
 // that announce ICC, EXIF and XMP are cleared to match, and its reserved bits
-// with them, the RIFF size is recomputed, and anything after the RIFF's
+// with them, a still picture's alpha flag is made to say whether an alpha
+// plane was kept, the RIFF size is recomputed, and anything after the RIFF's
 // declared end is dropped with the rest. What it keeps of the picture chunks
 // (VP8, VP8L, ALPH) it keeps byte for byte, and a decoder ignores whatever
 // follows the picture inside them, which is why the result is decoded rather
@@ -210,6 +211,16 @@ func stripExtended(head riffChunk, rest []byte) ([]riffChunk, webpInfo, error) {
 	picture, ok := stillImage(rest, info.Width, info.Height)
 	if !ok {
 		return nil, webpInfo{}, ErrCorruptImage
+	}
+	// The alpha flag is set when an alpha plane is kept, and only then.
+	// libwebp, and with it every browser, takes the flag as a hint and shows
+	// what the chunks hold, but golang.org/x/image refuses a file where the
+	// two disagree: a lossless picture, which carries its own alpha, under the
+	// flag, as libwebp itself writes one with transparency and metadata; a
+	// lossy one under it with no plane; or a plane without it.
+	vp8x[0] &^= vp8xFlagAlpha
+	if picture[0].id == "ALPH" {
+		vp8x[0] |= vp8xFlagAlpha
 	}
 	return append(kept, picture...), info, nil
 }

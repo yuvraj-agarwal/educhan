@@ -1220,6 +1220,53 @@ func TestWebPIsStrippedChunkByChunk(t *testing.T) {
 	requireSamePixels(t, want, decodeStored(t, got.Data))
 }
 
+// A VP8X's alpha flag is a hint: libwebp, and so every browser, shows what
+// the chunks hold whatever it says. libwebp writes a lossless picture with
+// transparency and metadata under it, though the lossless bitstream carries
+// its own alpha and golang.org/x/image refuses the flag beside one, as it
+// refuses the flag over a lossy picture with no alpha plane and a plane
+// without the flag. Each is stored as the same picture with the flag right.
+func TestWebPAlphaFlagFollowsTheChunks(t *testing.T) {
+	lossless := webpChunks(t, readTestdata(t, "hidden-lossless.webp")) // VP8L, half transparent
+	lossy := webpChunks(t, readTestdata(t, "lossy.webp"))              // VP8, opaque
+	lossyAlpha := webpChunks(t, readTestdata(t, "lossy-alpha.webp"))   // VP8X, ALPH, VP8
+	if len(lossless) != 1 || lossless[0].id != "VP8L" || len(lossy) != 1 || lossy[0].id != "VP8 " ||
+		len(lossyAlpha) != 3 || lossyAlpha[1].id != "ALPH" {
+		t.Fatal("the fixtures are not the chunks this test expects")
+	}
+	exif := riffChunk{id: "EXIF", payload: gpsTIFF(binary.LittleEndian, 1)}
+	icc := riffChunk{id: "ICCP", payload: []byte(needleICC)}
+	for _, tc := range []struct {
+		name       string
+		upload, as []byte
+	}{
+		{"lossless under the alpha flag, with EXIF",
+			webpFile(vp8xChunk(vp8xFlagAlpha|vp8xFlagEXIF, 32, 32), lossless[0], exif),
+			webpFile(lossless[0])},
+		{"lossless under the alpha flag, with a profile",
+			webpFile(vp8xChunk(vp8xFlagAlpha|vp8xFlagICC, 32, 32), icc, lossless[0]),
+			webpFile(lossless[0])},
+		{"lossy under the alpha flag with no plane",
+			webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), lossy[0]),
+			webpFile(lossy[0])},
+		{"an alpha plane without the flag",
+			webpFile(vp8xChunk(0, 64, 48), lossyAlpha[1], lossyAlpha[2]),
+			webpFile(lossyAlpha...)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := process(t, tc.as)
+			got, err := Process(context.Background(), tc.upload)
+			if err != nil {
+				t.Fatalf("Process = %v, want it stored as the picture it shows", err)
+			}
+			if !bytes.Equal(got.Data, want.Data) || !bytes.Equal(got.Thumb.Data, want.Thumb.Data) {
+				t.Errorf("stored as a different %s from the same picture without the flag's mismatch", got.Format.Name)
+			}
+			requireFree(t, got.Data, needleGPS, needleICC)
+		})
+	}
+}
+
 // A WebP is stored as a file Go encoded from its pixels: a lossless one as a
 // PNG with exactly the same pixels, a lossy one with transparency as a PNG
 // that keeps it, and a lossy opaque one as a JPEG. The thumbnail follows the
