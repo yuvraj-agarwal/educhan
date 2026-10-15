@@ -767,7 +767,7 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		check(k, side, side, large, nil)
 	}
 	for _, k := range refused {
-		check(k, 4*side, side/4, small, ErrImageTooLarge)
+		check(k, 4*side, side/4, small, ErrImageTooCostly)
 		check(k, side/2, side/2, large, nil)
 	}
 	// The "either" kinds: a 16-bit colour PNG that is neither interlaced nor
@@ -781,7 +781,7 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		{"16-bit RGBA PNG", headPNG(6, 16, false), 1},
 		{"16-bit grey+tRNS PNG", headPNGWithTRNS(0, 16, false), 1},
 	} {
-		check(k, side, side, large, ErrImageTooLarge)
+		check(k, side, side, large, ErrImageTooCostly)
 		check(k, 4*side, side/4, small, nil)
 	}
 	// One pixel more than the cap is refused whatever it is.
@@ -800,7 +800,7 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 			want    error
 		}{
 			{small, small, nil},
-			{1 << 20, 1 << 20, ErrImageTooLarge},
+			{1 << 20, 1 << 20, ErrImageTooCostly},
 			{small, large, nil},
 		} {
 			data := webpOfBitstream(k, 256, 256, c.n, c.size)
@@ -875,7 +875,7 @@ func FuzzInspect(f *testing.F) {
 
 		in, err := inspect(data)
 		if err != nil {
-			if !errors.Is(err, ErrUnsupportedFormat) && !errors.Is(err, ErrCorruptImage) && !errors.Is(err, ErrImageTooLarge) {
+			if !errors.Is(err, ErrUnsupportedFormat) && !errors.Is(err, ErrCorruptImage) && !errors.Is(err, ErrImageTooLarge) && !errors.Is(err, ErrImageTooCostly) {
 				t.Fatalf("Inspect refused with %v", err)
 			}
 			return
@@ -1145,7 +1145,7 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 					wrong = append(wrong, fmt.Sprintf("%dx%d estimated at %d as a file of its own, %d in the scan", p.X, p.Y, c, cost))
 				}
 				_, err := Inspect(file)
-				if refused := cost > processingBudget; refused != errors.Is(err, ErrImageTooLarge) || !refused && err != nil {
+				if refused := cost > processingBudget; refused != errors.Is(err, ErrImageTooCostly) || !refused && err != nil {
 					wrong = append(wrong, fmt.Sprintf("Inspect(%dx%d) = %v where the estimate is %d", p.X, p.Y, err, cost))
 				}
 			}
@@ -1203,7 +1203,7 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 		}
 		for _, o := range k.turns {
 			for _, size := range []image.Point{{4_100_000, 1}, {1, 4_100_000}} {
-				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); !errors.Is(err, ErrImageTooLarge) {
+				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); !errors.Is(err, ErrImageTooCostly) {
 					t.Errorf("Inspect(%s, o%d, %dx%d, 1 KiB) = %v, want it refused", k.name, o, size.X, size.Y, err)
 				}
 			}

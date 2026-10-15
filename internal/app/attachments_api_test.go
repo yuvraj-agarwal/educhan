@@ -555,14 +555,68 @@ func pngDeepClaiming(t *testing.T, w, h uint32) []byte {
 	return data
 }
 
+// animatedWebP is an animated WebP of the given number of frames, each the
+// picture of internal/media's lossy.webp with pad bytes of an unknown chunk
+// beside it, on a canvas of that picture's size.
+func animatedWebP(t *testing.T, frames, pad int) []byte {
+	t.Helper()
+	still, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(still[12:16]) != "VP8 " {
+		t.Fatal("lossy.webp is not a simple-format lossy WebP")
+	}
+	picture := still[12:]
+	w := int(binary.LittleEndian.Uint16(still[26:28]) & 0x3FFF)
+	h := int(binary.LittleEndian.Uint16(still[28:30]) & 0x3FFF)
+	chunk := func(id string, payload []byte) []byte {
+		out := binary.LittleEndian.AppendUint32([]byte(id), uint32(len(payload)))
+		out = append(out, payload...)
+		if len(payload)%2 == 1 {
+			out = append(out, 0)
+		}
+		return out
+	}
+	put24 := func(b []byte, v int) []byte { return append(b, byte(v), byte(v>>8), byte(v>>16)) }
+	vp8x := put24(put24([]byte{0x02, 0, 0, 0}, w-1), h-1) // the animation flag
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBP"), chunk("VP8X", vp8x)...)
+	out = append(out, chunk("ANIM", make([]byte, 6))...)
+	for i := 0; i < frames; i++ {
+		frame := put24(put24(put24(put24(make([]byte, 0, 16), 0), 0), w-1), h-1)
+		frame = append(put24(frame, 100), 0) // a tenth of a second
+		frame = append(frame, picture...)
+		frame = append(frame, chunk("ZZZZ", make([]byte, pad))...)
+		out = append(out, chunk("ANMF", frame)...)
+	}
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
+// losslessWebPClaiming is the header of a lossless WebP of w×h and n bytes of
+// bitstream, which Go's decoder would hold Huffman tables for out of all
+// proportion to the picture (see the README's Formats).
+func losslessWebPClaiming(w, h, n int) []byte {
+	bits := uint32(w-1) | uint32(h-1)<<14
+	payload := binary.LittleEndian.AppendUint32([]byte{0x2F}, bits)
+	payload = append(payload, make([]byte, n-len(payload))...)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8L"), binary.LittleEndian.AppendUint32(nil, uint32(n))...)
+	out = append(out, payload...)
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
 // A file whose header shows it cannot be used, because it is not an accepted
-// image, has too many pixels, or is encoded in a way that would take more
-// memory to decode than the server has for it, is refused before flood
-// control, so the poster
-// can send the text on its own at once. An image whose header is sound but
-// whose pixels do not decode, or that would be stored many times larger than
-// it came in, is found only by decoding and encoding it, after the cooldowns
-// have started, which are the exceptions the README names.
+// image, has too many pixels, is encoded in a way that would take more
+// memory to decode than the server has for it, or is an animated WebP, which
+// nothing here can decode, is refused before flood control, so the poster
+// can send the text on its own at once. Each gets an answer that says which:
+// a picture of too many pixels is too large a resolution, one dear to decode
+// for its encoding is too large to process, and an animated WebP cannot be
+// decoded whatever its size. An image whose header is sound but whose pixels
+// do not decode, or that would be stored many times larger than it came in,
+// is found only by decoding and encoding it, after the cooldowns have
+// started, which are the exceptions the README names.
 func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	c := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
@@ -579,7 +633,10 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}{
 		{"not an image", "notes.png", []byte("#!/bin/sh\necho hello\n"), "unsupported image format"},
 		{"too many pixels", "huge.png", pngClaiming(t, 10000, 10000), "image resolution is too large"},
-		{"too costly to decode", "deep.png", pngDeepClaiming(t, 6000, 4000), "image resolution is too large"},
+		{"too costly to decode", "deep.png", pngDeepClaiming(t, 6000, 4000), "image too large to process"},
+		{"a lossless WebP too costly to decode", "screenshot.webp", losslessWebPClaiming(1920, 1080, 317<<10), "image too large to process"},
+		{"an animated WebP", "moving.webp", animatedWebP(t, 2, 0), "image could not be decoded"},
+		{"a long animated WebP", "longer.webp", animatedWebP(t, 6, 50<<10), "image could not be decoded"},
 	}
 
 	const poster = "198.51.100.21"

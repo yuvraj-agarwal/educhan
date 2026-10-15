@@ -216,11 +216,11 @@ func (c *gifCanvas) clear(r image.Rectangle) {
 // The canvas records which frame shows at each pixel in 16 bits, which holds
 // every frame a GIF Inspect admits can have: processingCost charges each
 // gifFrameOverhead, so the budget holds 16,384. playGIF refuses more with
-// ErrImageTooLarge.
+// ErrImageTooCostly.
 func playGIF(g *gif.GIF) error {
 	frames := g.Image
 	if len(frames) >= 1<<16 {
-		return ErrImageTooLarge
+		return ErrImageTooCostly
 	}
 	canvas := newGIFCanvas(frames, g.Config.Width, g.Config.Height)
 	var shown []gifShown

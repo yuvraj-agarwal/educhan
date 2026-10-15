@@ -25,9 +25,11 @@ import (
 // than stored.
 //
 // Animation chunks are kept, and the unknown chunks inside each frame dropped,
-// so the rewrite is complete for the whole format. Process still refuses an
-// animated WebP, as it did before stripping existed: x/image cannot decode one,
-// so there would be no thumbnail and no check that the frames decode at all.
+// so the rewrite is complete for the whole format. An animated WebP is still
+// refused, as it was before stripping existed: x/image cannot decode one, so
+// there would be no thumbnail and no check that the frames decode at all.
+// Inspect refuses it from its chunks (webpAnimated), before any cooldown and
+// whatever its size, and sanitizeWebP again should one get past that.
 
 const (
 	vp8xFlagICC       = 0x20
@@ -291,6 +293,37 @@ func stripFrame(payload []byte, canvas webpInfo) ([]byte, bool) {
 		out = appendChunk(out, c)
 	}
 	return out, true
+}
+
+// webpAnimated reports whether a WebP is an animation: its first chunk is a
+// VP8X with the animation flag, or a frame (ANMF) is among the chunks inside
+// its RIFF, as stripWebP reads them. Neither can be decoded here — a frame
+// outside an animation fails stillImage — so Inspect refuses such a file
+// as it would fail once processed, but from its header. The walk stops at the
+// first chunk it cannot follow, which stripWebP refuses anyway.
+func webpAnimated(data []byte) bool {
+	if len(data) < 12 {
+		return false
+	}
+	size := uint64(binary.LittleEndian.Uint32(data[4:8]))
+	if size < 4 || size > uint64(len(data)-8) {
+		return false
+	}
+	b := data[12 : 8+size]
+	for first := true; len(b) > 0; first = false {
+		c, rest, ok := nextChunk(b)
+		if !ok {
+			return false
+		}
+		switch {
+		case first && c.id == "VP8X" && len(c.payload) > 0 && c.payload[0]&vp8xFlagAnimation != 0:
+			return true
+		case c.id == "ANMF":
+			return true
+		}
+		b = rest
+	}
+	return false
 }
 
 // nextChunk reads the first RIFF chunk of b: a four-character code, a

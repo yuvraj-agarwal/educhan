@@ -949,11 +949,11 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 
 	over := gifOf(5)
-	if _, err := Inspect(over); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Inspect(five canvases of frames) = %v, want ErrImageTooLarge", err)
+	if _, err := Inspect(over); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(five canvases of frames) = %v, want ErrImageTooCostly", err)
 	}
-	if _, err := Process(context.Background(), over); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Process(five canvases of frames) = %v, want ErrImageTooLarge", err)
+	if _, err := Process(context.Background(), over); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Process(five canvases of frames) = %v, want ErrImageTooCostly", err)
 	}
 	many := gifOf(2000)
 	if allocs := testing.AllocsPerRun(10, func() { gifFramePixels(many, maxGIFFramePixels) }); allocs != 0 {
@@ -968,8 +968,8 @@ func TestGIFFrameBudget(t *testing.T) {
 	if err != nil || len(g.Image) != 3 || &g.Image[0].Palette[0] == &g.Image[1].Palette[0] {
 		t.Fatalf("the fixture does not decode to three frames with palettes of their own (%v)", err)
 	}
-	if _, err := Inspect(tinyFrames(20_000)); !errors.Is(err, ErrImageTooLarge) {
-		t.Errorf("Inspect(20,000 one-pixel frames) = %v, want ErrImageTooLarge", err)
+	if _, err := Inspect(tinyFrames(20_000)); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("Inspect(20,000 one-pixel frames) = %v, want ErrImageTooCostly", err)
 	}
 	if _, err := Inspect(tinyFrames(2_000)); err != nil {
 		t.Errorf("Inspect(2,000 one-pixel frames) = %v, want it within the budget", err)
@@ -1226,8 +1226,8 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 		if got, err := gifFramePixels(data, math.MaxInt64); counted(got) != framesDecoded(g) || !got.trailed || err != nil {
 			t.Errorf("%s: gifFramePixels = %+v, %v; the decoder read %+v", name, got, err, framesDecoded(g))
 		}
-		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooLarge) {
-			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooLarge", name, err)
+		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooCostly) {
+			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooCostly", name, err)
 		}
 	}
 
@@ -1697,8 +1697,10 @@ func TestFilesHiddenInsideWebPChunksAreNotStored(t *testing.T) {
 }
 
 // The rewrite understands animation, keeping ANIM and each frame's picture and
-// dropping everything else inside and around them. Process still refuses an
-// animated WebP, as it always has: x/image cannot decode one.
+// dropping everything else inside and around them. An animated WebP is still
+// refused, as it always has been, since x/image cannot decode one: by Inspect
+// from its header (TestAnimatedWebPIsRefusedFromItsHeader), and by
+// sanitizeWebP should one get that far.
 func TestAnimatedWebP(t *testing.T) {
 	bitstream := sampleBitstream(t)
 	unknown := riffChunk{id: "ZZZZ", payload: []byte(needleComment)}
@@ -1735,6 +1737,41 @@ func TestAnimatedWebP(t *testing.T) {
 
 	if _, err := Process(context.Background(), upload); !errors.Is(err, ErrCorruptImage) {
 		t.Errorf("Process(animated WebP) = %v, want ErrCorruptImage, as before stripping", err)
+	}
+	if _, err := sanitizeWebP(upload, 1<<20); !errors.Is(err, ErrCorruptImage) {
+		t.Errorf("sanitizeWebP(animated WebP) = %v, want ErrCorruptImage", err)
+	}
+}
+
+// An animated WebP is refused from its header, before anything is decoded
+// and before any cooldown, and with the same answer whatever its size: the
+// animation flag in its VP8X, or a frame among its chunks, is enough to know
+// that nothing here can decode it. A long one used to be charged as a
+// lossless picture of its whole length and refused as too large, a short one
+// let through to fail as it was decoded.
+func TestAnimatedWebPIsRefusedFromItsHeader(t *testing.T) {
+	bitstream := sampleBitstream(t) // 320×200
+	frames := func(n, pad int) []riffChunk {
+		var out []riffChunk
+		for i := 0; i < n; i++ {
+			out = append(out, anmfChunk(0, 0, 320, 200, bitstream, riffChunk{id: "ZZZZ", payload: make([]byte, pad)}))
+		}
+		return out
+	}
+	animated := func(flags byte, w, h int, chunks ...riffChunk) []byte {
+		return webpFile(append([]riffChunk{vp8xChunk(flags, w, h), {id: "ANIM", payload: make([]byte, 6)}}, chunks...)...)
+	}
+	for name, data := range map[string][]byte{
+		"two frames":                   animated(vp8xFlagAnimation, 320, 200, frames(2, 0)...),
+		"six frames of 300 KiB in all": animated(vp8xFlagAnimation, 320, 200, frames(6, 50<<10)...),
+		"a canvas past MaxPixels":      animated(vp8xFlagAnimation, 10000, 10000, frames(2, 0)...),
+		"the flag and no frames":       animated(vp8xFlagAnimation, 320, 200),
+		"frames without the flag":      animated(0, 320, 200, frames(2, 0)...),
+		"a picture, then a frame":      webpFile(vp8xChunk(0, 320, 200), bitstream, frames(1, 0)[0]),
+	} {
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Inspect = %v, want ErrCorruptImage before anything is decoded", name, err)
+		}
 	}
 }
 

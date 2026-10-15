@@ -278,9 +278,10 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 		return sub, 0, ""
 	}
 	// What the file says about itself, its format and its decoded size, is
-	// cheap to read, so a file that is not an accepted image, or one too large
-	// to decode, is refused here, before flood control starts a cooldown for
-	// it. Decoding, the cost the upload cooldown is there for, waits until
+	// cheap to read, so a file that is not an accepted image, one of too many
+	// pixels or too costly to process, or an animated WebP, which nothing
+	// here decodes, is refused here, before flood control starts a cooldown
+	// for it. Decoding, the cost the upload cooldown is there for, waits until
 	// after: an image whose pixels then fail to decode has started its
 	// cooldowns.
 	if _, err := media.Inspect(image); err != nil {
@@ -370,6 +371,7 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 	case errors.Is(err, media.ErrUnsupportedFormat),
 		errors.Is(err, media.ErrCorruptImage),
 		errors.Is(err, media.ErrImageTooLarge),
+		errors.Is(err, media.ErrImageTooCostly),
 		errors.Is(err, media.ErrStoredTooLarge):
 		writeError(w, http.StatusBadRequest, err.Error())
 	case tooBusy(err) && r.Context().Err() == nil:

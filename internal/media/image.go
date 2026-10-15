@@ -41,10 +41,16 @@ const MaxPixels = 25_000_000
 const thumbJPEGQuality = 82
 
 // Errors reported for rejected uploads. Handlers translate these into 4xx
-// responses, so their text is user-facing.
+// responses, so their text is user-facing, and each says what is true of the
+// file it refuses: ErrImageTooLarge is a picture of more than MaxPixels, and
+// ErrImageTooCostly one that would take more to process than the server sets
+// aside (processingCost), which depends on how it is encoded as much as on its
+// size, and a GIF's frames on their number and their area together
+// (gifFramePixels), so that a picture of a few megapixels can be one.
 var (
 	ErrUnsupportedFormat = errors.New("unsupported image format: use JPEG, PNG, WebP, or GIF")
 	ErrImageTooLarge     = errors.New("image resolution is too large")
+	ErrImageTooCostly    = errors.New("image too large to process")
 	ErrCorruptImage      = errors.New("image could not be decoded")
 	// ErrStoredTooLarge is a file that would be stored many times larger than
 	// it came in, which only encoding it can find (storedLimit).
@@ -127,11 +133,13 @@ type Processed struct {
 // enough to run before flood control, so a file that is not an accepted image,
 // or one too large to decode, can be refused without costing its poster a
 // cooldown. For a GIF it also walks the block structure to add up the frames
-// (gifFramePixels), and refuses a file that walk cannot follow to its end. A
-// file whose processing would hold more than the whole processing budget
-// (processingCost) is refused as too large too: that depends on how it is
-// encoded as well as on its resolution. Inspect cannot tell whether the pixels
-// decode; only Process can, and Process runs it first.
+// (gifFramePixels), and refuses a file that walk cannot follow to its end. An
+// animated WebP, which nothing here decodes, is refused as ErrCorruptImage
+// from its chunks (webpAnimated), whatever its size. A file whose processing
+// would hold more than the whole processing budget (processingCost) is
+// refused as ErrImageTooCostly: that depends on how it is encoded as well as
+// on its resolution, which ErrImageTooLarge is kept for. Inspect cannot tell
+// whether the pixels decode; only Process can, and Process runs it first.
 func Inspect(data []byte) (Format, error) {
 	in, err := inspect(data)
 	return in.format, err
@@ -152,6 +160,11 @@ func inspect(data []byte) (inspection, error) {
 	if !ok {
 		return inspection{}, ErrUnsupportedFormat
 	}
+	// Nothing here decodes an animated WebP, whatever its size, so one is
+	// refused as it would be once processed, but from its header.
+	if format == FormatWebP && webpAnimated(data) {
+		return inspection{}, ErrCorruptImage
+	}
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
@@ -165,8 +178,8 @@ func inspect(data []byte) (inspection, error) {
 	}
 	// Every frame of a GIF is decoded, so their sizes are added up as well.
 	// Skipping over the blocks is cheap enough to do here, and an animation
-	// too long to decode is refused like an image too large to; so is one
-	// whose blocks the decoder could not read to the end.
+	// too long to decode is refused as too costly to process; one whose
+	// blocks the decoder could not read to the end, as corrupt.
 	var frames gifFrames
 	if format == FormatGIF {
 		if frames, err = gifFramePixels(data, maxGIFFramePixels); err != nil {
@@ -175,7 +188,7 @@ func inspect(data []byte) (inspection, error) {
 	}
 	cost := processingCost(format, data, cfg, frames)
 	if cost > processingBudget {
-		return inspection{}, ErrImageTooLarge
+		return inspection{}, ErrImageTooCostly
 	}
 	return inspection{
 		format: format,

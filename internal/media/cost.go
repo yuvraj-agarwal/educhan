@@ -42,7 +42,7 @@ import (
 // processingBudget is the memory every upload being processed at once may
 // hold between them, by their estimates, from when it starts to be decoded
 // until both its renditions are stored (Save). An upload whose estimate alone
-// is over it is refused from its header (ErrImageTooLarge); the others wait
+// is over it is refused from its header (ErrImageTooCostly); the others wait
 // for their share, for as long as their post's deadline allows
 // (processingAllowance). The uploads' own bytes are not in the estimates:
 // UploadBudget (budget.go) counts them, from before they are read. Between
@@ -728,7 +728,9 @@ const vp8lAlphaHeader = 5
 // which are the ones stripWebP keeps and the decoder takes: a file with a
 // second is refused before it is decoded. A file it cannot follow is costed as
 // lossless, the dearer kind, with the whole file as its bitstream; the decoder
-// will have the last word.
+// will have the last word. An animated WebP, which has frames (ANMF) where a
+// still has its picture, never gets here: Inspect refuses it from its chunks
+// first (webpAnimated), so it is not charged as one long lossless picture.
 func webpPicture(data []byte) (lossless, alpha bool, vp8l int64) {
 	unknown := func() (bool, bool, int64) { return true, false, int64(len(data)) }
 	if len(data) < 12 {

@@ -617,7 +617,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   stripping (`TestFilesHiddenInsideWebPChunksAreNotStored`,
   `TestUploadedWebPIsServedAsAFileMadeFromItsPixels`). Do not go back to storing the
   stripped WebP to save the re-encode. An animated WebP is still refused as
-  `ErrCorruptImage`, as before stripping: x/image cannot decode one. A WebP stored before
+  `ErrCorruptImage`, as before stripping, since x/image cannot decode one, and now from
+  its header: `Inspect` refuses one whose VP8X has the animation flag or that has a frame
+  (ANMF) among its chunks (`webpAnimated`), before any cooldown and whatever its size;
+  it used to pass `Inspect` when short and fail after flood control, and when long be
+  charged as one lossless bitstream of its whole length and refused as too large
+  (`TestAnimatedWebPIsRefusedFromItsHeader`). A WebP stored before
   this change stays a `.webp` and is served as `image/webp` (`ContentTypeForExt`).
   `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's, the
   thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size` are of
@@ -730,14 +735,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `costFixtures` the whole. `peakOf` takes them phase by phase and counts each phase's
   first allocation on top of the previous phase's peak, because a collection that began
   before the boundary still holds that phase's scratch. An estimate over
-  `processingBudget` (256 MiB) is refused from the header as `ErrImageTooLarge`, before
-  any cooldown. Which kinds that refuses at 25 megapixels is listed in the README, and two
-  tests hold the lists to the model. `TestCostlyEncodingsAreRefusedFromTheirHeader` takes
-  each accepted kind as a square from an 8 MiB upload, each refused kind at its cheapest
-  (a wide picture from a small upload), and every kind at a quarter of the size. A square
-  is not the dearest shape, though: a JPEG's sides are rounded up to whole blocks, a turn
-  that cannot keep the subsampling copies at 4:4:4, and the thumbnail's weights grow with
-  the longer side, so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full
+  `processingBudget` (256 MiB) is refused from the header as `ErrImageTooCostly` (`image
+  too large to process`), before any cooldown, and so is a GIF whose frames pass
+  `maxGIFFramePixels`; `ErrImageTooLarge` (`image resolution is too large`) is kept for a
+  picture of more than `MaxPixels`, the one refusal that is about the resolution, so the
+  answer says which (`TestImagesRefusedByTheirHeaderStartNoCooldown`). Which kinds that
+  refuses at 25 megapixels is listed in the README, and two tests hold the lists to the
+  model. `TestCostlyEncodingsAreRefusedFromTheirHeader` takes each accepted kind as a
+  square from an 8 MiB upload, each refused kind at its cheapest (a wide picture from a
+  small upload), and every kind at a quarter of the size. A square is not the dearest
+  shape, though: a JPEG's sides are rounded up to whole blocks, a turn that cannot keep
+  the subsampling copies at 4:4:4, and the thumbnail's weights grow with the longer
+  side, so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full
   size each format allows (`eachShape`: for every shorter side, the four longest sides
   that fit, both ways round), at every orientation, and holds each kind to the shape the
   README gives for it. It reads `processingCost` with the frame header rewritten in place
@@ -849,7 +858,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   extreme measures inside it: 160 KiB of one-symbol groups that holds about 170 MiB, and
   215 KiB of full trees that holds about 43 MiB
   (`TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). A bitstream over 224 KiB is refused
-  from its header as `ErrImageTooLarge`, before any cooldown, and less in a larger
+  from its header as `ErrImageTooCostly`, before any cooldown, and less in a larger
   picture, about 203 KiB at a megapixel and 128 KiB at nine
   (`TestVP8LHuffmanMemoryIsCharged` pins the line the README gives). So the 320 MiB bound
   above holds for these files too; the cost of that bound is that large lossless WebPs,
@@ -1061,8 +1070,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   poster key, the body, a badge the poster cannot have, uploads switched off, a file its
   header shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted
   format, more than `media.MaxPixels`, a GIF whose frames come to too many pixels or whose
-  blocks do not reach the end, or one whose processing would hold more than the whole
-  budget — which turns on how it is encoded, not its size alone), and a reply the thread
+  blocks do not reach the end, an animated WebP, or one whose processing would hold more
+  than the whole budget — which turns on how it is encoded, not its size alone), and a
+  reply the thread
   would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it is the
   cost the upload cooldown limits, so an image that fails to decode, or whose re-encoded
   file would pass `storedLimit` (`ErrStoredTooLarge`), is refused by `storeUpload` after

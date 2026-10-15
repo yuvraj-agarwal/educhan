@@ -147,7 +147,9 @@ func transposedZig(k int) int {
 // one flat colour compresses to almost nothing: a few megabytes of GIF could
 // otherwise ask for gigabytes. Four
 // canvases' worth is a long animation at any ordinary size (a 640×480 GIF can
-// have 300 frames) and no more memory than the largest JPEG.
+// have 300 frames) and no more memory than the largest JPEG. A GIF past it is
+// refused as too costly to process (ErrImageTooCostly), not as too large a
+// picture: its canvas may be small, and each frame smaller.
 const maxGIFFramePixels = 4 * MaxPixels
 
 // storedBuffer collects an encoded original and refuses to hold more than
@@ -410,8 +412,9 @@ func clipGIF(g *gif.GIF, canvas image.Point) {
 // is not a JPEG's, so its own is no guide, and the lower it was the larger the
 // JPEG: measured on photos, up to 1.4 times the WebP's size from quality 90,
 // two to three times from 75, 3.5 to 5.5 from 25 and up to 8.5 from 5. An
-// animated WebP is refused as it always has been; x/image decodes still
-// images only.
+// animated WebP does not get here: x/image decodes still images only, so
+// Inspect refuses one from its chunks (webpAnimated), and one stripWebP finds
+// animated is refused here the same way.
 //
 // Stripping alone is not enough to store. A decoder stops reading a VP8, VP8L
 // or ALPH chunk once it has its picture and ignores whatever else the chunk
@@ -881,7 +884,7 @@ type gifFrames struct {
 // canvas to hold it, Firefox moves it to the corner and makes the canvas its
 // size), and so is a frame reaching past the 65,535 pixels a header can say.
 //
-// It returns ErrImageTooLarge as soon as the area passes limit, and
+// It returns ErrImageTooCostly as soon as the area passes limit, and
 // ErrCorruptImage when the walk does not end at the trailer or at the end of
 // a whole block: a file the decoder could not read to its end is refused
 // rather than half counted. TestGIFFramePixelsReadsWhatTheDecoderReads and
@@ -968,7 +971,7 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 			f.pixels += int64(w) * int64(h)
 			f.largest = max(f.largest, int64(w)*int64(h))
 			if f.pixels > limit {
-				return f, ErrImageTooLarge
+				return f, ErrImageTooCostly
 			}
 			i += descriptorLen
 			if flags&0x80 != 0 {

@@ -230,11 +230,11 @@ func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
 			want    error
 		}{
 			{64, 224 * kib, nil},
-			{64, 225 * kib, ErrImageTooLarge},
+			{64, 225 * kib, ErrImageTooCostly},
 			{1000, 200 * kib, nil},
-			{1000, 215 * kib, ErrImageTooLarge},
+			{1000, 215 * kib, ErrImageTooCostly},
 			{3000, 125 * kib, nil},
-			{3000, 145 * kib, ErrImageTooLarge},
+			{3000, 145 * kib, ErrImageTooCostly},
 		} {
 			if _, err := Inspect(webpOfBitstream(kind, c.side, c.side, c.n, 0)); !errors.Is(err, c.want) {
 				t.Errorf("%s, %d×%d, %d KiB of bitstream: Inspect = %v, want %v", kind, c.side, c.side, c.n/kib, err, c.want)
