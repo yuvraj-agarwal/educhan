@@ -10263,7 +10263,7 @@ type digitRun struct {
 	groups   []int
 	seps     []string
 	plus     bool
-	paren    bool // the first group is in brackets: "(415) 867-5309"
+	paren    bool // the first group is in brackets: "(495) 867-5309"
 	// apartAfter says that something the plain view leaves out comes straight
 	// after the run, so a letter there does not glue the run to a word.
 	apartAfter bool
@@ -10730,7 +10730,7 @@ var (
 			words(`number`, `no`, `num`, `nmbr`)+`(?:~`+words(`is`, `hai`)+`)?`,
 	)) + `[^\pL\pN]*$`)
 	// phoneLabel, with nothing but punctuation between it and a number, names
-	// the line it is: "Google Voice: 2154820174", "cell no. 2154820174".
+	// the line it is: "Google Voice: 2954820174", "cell no. 2954820174".
 	phoneLabel = newWindowSearch(`\b` + phrase(words(`phone`, `ph`, `cell`, `mobile`, `mob`, `tel`, `voice`,
 		`landline`)+`(?:~`+words(`no`, `number`, `num`)+`)?(?:~`+words(`is`, `hai`)+`)?`) + `[^\pL\pN]*$`)
 	// evasionCue says a number or an address is written oddly to get it past
@@ -11411,7 +11411,7 @@ func operandAfter(after string) bool {
 	case r == '<' && strings.HasPrefix(s, "<3") && !(len(s) > 2 && isASCIIDigit(s[2])):
 		return false
 	case r == '<' && strings.HasPrefix(s, "<-"):
-		// An arrow pointing back at it: "1-773-502-8814 <- text me".
+		// An arrow pointing back at it: "1-793-502-8814 <- text me".
 		return false
 	case r == '/' && spaced && strings.HasPrefix(s, "/s") &&
 		(len(s) == 2 || !unicode.IsLetter(rune(s[2])) && !isASCIIDigit(s[2])):
@@ -11754,10 +11754,10 @@ func dashed(seps []string) bool {
 	return true
 }
 
-// nanpPhone is a North American number written the North American way: (415)
-// 867-5309, 415-867-5309, 415.867.5309, 1 415 867 5309. Ten bare digits are not
+// nanpPhone is a North American number written the North American way: (495)
+// 867-5309, 495-867-5309, 495.867.5309, 1 495 867 5309. Ten bare digits are not
 // taken as one, and nor are three groups set off by spaces or commas alone
-// unless a word before them says it is a number to call ("call 415 867
+// unless a word before them says it is a number to call ("call 495 867
 // 5309"): "batch sizes 256 512 1024" is a list.
 func nanpPhone(v *view, run digitRun) bool {
 	d, g := string(run.digits), run.groups
@@ -11768,7 +11768,7 @@ func nanpPhone(v *view, run digitRun) bool {
 		return nanp(d[1:])
 	case len(d) == 10 && len(g) == 1:
 		// Ten bare digits, straight after a word naming the line or asking
-		// for a call: "Google Voice: 2154820174", "text me 2154820174".
+		// for a call: "Google Voice: 2954820174", "text me 2954820174".
 		near := windowBefore(v.text, run.from, 32)
 		return nanp(d) && (phoneLabel.matchIn(v, near) || contactCue.matchIn(v, near))
 	}

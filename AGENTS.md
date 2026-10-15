@@ -764,8 +764,13 @@ marked so. In the first two parts the UK, US and Australian phone numbers come f
 ranges set aside for drama, which the filter passes, so a post meant to be blocked uses
 an Indian or other number instead; in `_3` a number meant to be blocked is ordinary
 digits in a valid shape, and the three its writers took from a drama range or a voided
-SSN were regenerated so, as their `why` says. Such a number is never given with a name,
-a school or a handle; a tripcode secret holding a mobile uses a drama number, an exam
+SSN were regenerated so, as their `why` says. A North American number meant to be
+blocked is put in an area code the numbering plan never assigns (N9X, as 495 or 294;
+37X and 96X are held back too), which the filter blocks like any other and which can be
+no one's, in the unit tests as in the corpus ("(495) 867-5309");
+`TestFilterCorpusDetailsAreMadeUp` holds both to that, or to the fiction range or a
+toll-free line. A number meant to be blocked is never given with a name, a school or a
+handle; a tripcode secret holding a mobile uses a drama number, an exam
 roll, application or student number the filter should publish has zeroes for its serial,
 and an Aadhaar number fails its check digit wherever its label alone gets it blocked. An
 invented number or ID in a valid shape may still happen to be someone's, as

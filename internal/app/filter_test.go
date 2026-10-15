@@ -90,9 +90,9 @@ func TestFilterBlocks(t *testing.T) {
 		{"full-width digits", "９８７６５４３２１０", ruleContact, "９８７６５４３２１０"},
 		{"devanagari digits", "मेरा नंबर ९८७६५४३२१० है", ruleContact, "९८७६५४३२१०"},
 		{"zero-width characters", "98765​43210", ruleContact, "98765​43210"},
-		{"us number", "text (415) 867-5309 tonight", ruleContact, "(415) 867-5309"},
-		{"us number dashed", "415-867-5309", ruleContact, "415-867-5309"},
-		{"us international", "+1 415 867 5309", ruleContact, "+1 415 867 5309"},
+		{"us number", "text (495) 867-5309 tonight", ruleContact, "(495) 867-5309"},
+		{"us number dashed", "495-867-5309", ruleContact, "495-867-5309"},
+		{"us international", "+1 495 867 5309", ruleContact, "+1 495 867 5309"},
 		{"uk mobile", "07911 123456", ruleContact, "07911 123456"},
 		// Grouped so that the Indian reading leaves a group of one after the
 		// trunk zero, which only the UK rule reads.
@@ -203,10 +203,10 @@ func TestFilterBlocks(t *testing.T) {
 		{"uk landline elsewhere", "0161 234 5678 is the office", ruleContact, "0161 234 5678"},
 		{"international with 00", "0049 151 23456789", ruleContact, "0049 151 23456789"},
 		{"indian with 0091", "0091 98765 43210", ruleContact, "0091 98765 43210"},
-		{"us number with its 1", "1 415 867 5309", ruleContact, "1 415 867 5309"},
-		{"us number with a cue", "call 415 867 5309", ruleContact, "415 867 5309"},
-		{"us number dotted", "415.867.5309", ruleContact, "415.867.5309"},
-		{"us number with minus signs", "415−867−5309", ruleContact, "415−867−5309"},
+		{"us number with its 1", "1 495 867 5309", ruleContact, "1 495 867 5309"},
+		{"us number with a cue", "call 495 867 5309", ruleContact, "495 867 5309"},
+		{"us number dotted", "495.867.5309", ruleContact, "495.867.5309"},
+		{"us number with minus signs", "495−867−5309", ruleContact, "495−867−5309"},
 		{"en dash", "98765–43210", ruleContact, "98765–43210"},
 		{"em dash", "98765—43210", ruleContact, "98765—43210"},
 		{"short groups beside a long one", "98765 432 10", ruleContact, "98765 432 10"},
@@ -451,9 +451,9 @@ func TestFilterBlocks(t *testing.T) {
 		// National shapes.
 		{"country code after a word for a list", "WAEC past questions sharing, +234 803 123 4567 on whatsapp",
 			ruleContact, "+234 803 123 4567"},
-		{"local number with its area code apart", "Text me @ 482-0196 (area code 404) for the chem lab write up",
+		{"local number with its area code apart", "Text me @ 482-0196 (area code 494) for the chem lab write up",
 			ruleContact, "482-0196"},
-		{"bare US digits after a line's name", "Google Voice: 2154820174", ruleContact, "2154820174"},
+		{"bare US digits after a line's name", "Google Voice: 2954820174", ruleContact, "2954820174"},
 		{"Australian landline", "(07) 3221 3317 is my home number if mob is off", ruleContact, "(07) 3221 3317"},
 		{"poster's own office line", "my office (03) 9027 0100", ruleContact, "(03) 9027 0100"},
 		{"office line asked for the poster on", "call me at uni (08) 8313 4455", ruleContact, "(08) 8313 4455"},
@@ -847,7 +847,7 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"interest at the rate of 5 percent",
 		// Numbers that are data.
 		"salary 60000-80000 per month",
-		"415 867 5309",
+		"495 867 5309",
 		"data: 9 8 7 6 5 4 3 2 1 0",
 		"the file is 9876543210 bytes",
 		"9876543210 rupees is the budget",
@@ -2549,8 +2549,8 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"first 5 questions: 93104 marks? no", publish},
 		{"it starts with 76, then 1180, and ends in 5249. text me if ur also doing CA foundation", contact},
 		{"my marks are 65, then 70, then 78, then 84, then 91, call me consistent", publish},
-		{"1-773-5O2-88l4 <- text me, typed it weird so it doesnt get eaten", contact},
-		{"hmu 415 829 3361 i made a quizlet for the whole AP bio CED", contact},
+		{"1-793-5O2-88l4 <- text me, typed it weird so it doesnt get eaten", contact},
+		{"hmu 495 829 3361 i made a quizlet for the whole AP bio CED", contact},
 		{"need to fill this for the NSP portal, is this right: 8 3 4 1 2 9 0 6 7 5 2 9", id},
 		{"national insurance no. sh 71 58 20 d, the letter finally came today", id},
 		{"on 12 34 56 a the shop closed", publish},
@@ -3184,7 +3184,7 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"slashed pieces":     rep("98 / 1 / "),
 		"lookalike digits":   rep("8 l 2 O "),
 		"reversed":           rep("my number in reverse 0 1 2 3 4 5 6 7 8 1 "),
-		"area code after":    rep("482-0196 area code 404 "),
+		"area code after":    rep("482-0196 area code 494 "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
@@ -3369,7 +3369,9 @@ func logCorpusRates(t *testing.T, category string, items, misses, stopped, publi
 // at a domain RFC 2606 reserves, so none of them can be a real person's. A
 // number cannot be marked like that, since every range set aside for drama
 // passes the filter, so a number meant to be blocked is ordinary digits given
-// with no name, school or handle, and this test does not look at numbers.
+// with no name, school or handle; but a North American one can be put in an
+// area code the numbering plan never assigns (N9X, 37X and 96X) and still be
+// blocked, so it is, and this test holds the North American numbers to that.
 func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	// Blocked as a username, but a code that names no one.
 	codes := map[string]string{
@@ -3410,6 +3412,45 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 		return false
 	}
 
+	// A North American number, in digits and laid out the North American way
+	// (after a 1, with its area code in brackets, or with dashes or points),
+	// or in a post meant to be blocked laid out in threes and a four at all,
+	// is in an area code never assigned, in 555-0100 to 555-0199, which are
+	// set aside for fiction, or toll free, a public line's.
+	nanpNumber := regexp.MustCompile(`(?:^|[^\d+])(\+?1[-. ]?)?(\(\s*[2-9]\d\d\s*\)|[2-9]\d\d)([-.\s−]{1,8})` +
+		`([2-9OoIl][\dOoIl]{2})([-.\s−]{1,8})([\dOoIl]{4})(?:\D|$)`)
+	countryCode := regexp.MustCompile(`\+\d{1,3}[-. ]?$`)
+	lookalike := strings.NewReplacer("O", "0", "o", "0", "I", "1", "l", "1")
+	tollFree := setOf(`800 833 844 855 866 877 888`)
+	numbers := 0
+	noOnesNumbers := func(where, text string, spaced bool) {
+		for _, m := range nanpNumber.FindAllStringSubmatchIndex(text, -1) {
+			group := func(k int) string {
+				if m[2*k] < 0 {
+					return ""
+				}
+				return text[m[2*k]:m[2*k+1]]
+			}
+			start := m[4]
+			if m[2] >= 0 {
+				start = m[2]
+			}
+			area := strings.Trim(group(2), "() \t\n\r")
+			laidOut := group(1) != "" || strings.HasPrefix(group(2), "(") ||
+				strings.ContainsAny(group(3)+group(5), "-.−") || spaced
+			if countryCode.MatchString(text[:start]) || !laidOut {
+				continue
+			}
+			numbers++
+			exchange, line := lookalike.Replace(group(4)), lookalike.Replace(group(6))
+			if area[1] != '9' && area[:2] != "37" && area[:2] != "96" && !tollFree[area] &&
+				!(exchange == "555" && strings.HasPrefix(line, "01")) {
+				t.Errorf("%s: the North American number %q is in an area code that is assigned", where,
+					strings.TrimSpace(text[start:m[13]]))
+			}
+		}
+	}
+
 	paths, _ := filepath.Glob(filepath.Join("testdata", "filter_corpus", "*.jsonl"))
 	if len(paths) == 0 {
 		t.Fatal("no corpus files")
@@ -3426,6 +3467,9 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 				t.Fatalf("%s: %v", path, err)
 			}
 			post := it.Name + "\n" + it.Subject + "\n" + it.Body
+			for _, field := range []string{it.Name, it.Subject, it.Body} {
+				noOnesNumbers(it.ID, field, it.Expect != "publish")
+			}
 			in := contentInput{Subject: normalizeSubject(it.Subject), Name: displayedName(it.Name),
 				Body: normalizeBody(it.Body)}
 			if v := checkContent(in, false); v.Outcome == contentBlock && codes[it.ID] == "" &&
@@ -3474,7 +3518,11 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 					t.Errorf("%s:%d: the address %q is not marked made up", path, i+1, line[at[0]:at[1]])
 				}
 			}
+			noOnesNumbers(fmt.Sprintf("%s:%d", path, i+1), line, false)
 		}
+	}
+	if numbers < 40 {
+		t.Fatalf("only %d North American numbers found, want the corpus's and the tests' forty and more", numbers)
 	}
 }
 
