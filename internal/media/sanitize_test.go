@@ -1761,7 +1761,9 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 }
 
 // Whatever the bytes, the rewrite does not panic, and what it accepts it
-// would accept again unchanged: stripping is idempotent.
+// would accept again unchanged: stripping is idempotent. The seeds are
+// lossless and lossy, simple and extended, with and without an alpha plane,
+// metadata or animation.
 func FuzzStripWebP(f *testing.F) {
 	sample, err := os.ReadFile(filepath.Join("testdata", "sample.webp"))
 	if err != nil {
@@ -1770,6 +1772,27 @@ func FuzzStripWebP(f *testing.F) {
 	f.Add(sample)
 	f.Add(webpFile(vp8xChunk(vp8xFlagEXIF, 320, 200), riffChunk{id: "VP8L", payload: sample[20:]},
 		riffChunk{id: "EXIF", payload: []byte("Exif")}))
+	// lossy.webp is a VP8 chunk alone, and lossy-alpha.webp VP8X, ALPH and
+	// VP8, both 64×48.
+	lossy, lossyAlpha := readTestdata(f, "lossy.webp"), readTestdata(f, "lossy-alpha.webp")
+	f.Add(lossy)
+	f.Add(lossyAlpha)
+	var vp8, alph riffChunk
+	walkChunks(lossyAlpha[12:], func(c riffChunk) {
+		switch c.id {
+		case "VP8 ":
+			vp8 = c
+		case "ALPH":
+			alph = c
+		}
+	})
+	f.Add(webpFile(vp8, riffChunk{id: "EXIF", payload: []byte("Exif")}))
+	f.Add(webpFile(vp8xChunk(vp8xFlagICC|vp8xFlagAlpha|vp8xFlagEXIF|vp8xFlagXMP, 64, 48),
+		riffChunk{id: "ICCP", payload: []byte("profile")}, alph, vp8,
+		riffChunk{id: "EXIF", payload: []byte("Exif")}, riffChunk{id: "XMP ", payload: []byte("<x/>")},
+		riffChunk{id: "ZZZZ", payload: []byte("unknown")}))
+	f.Add(webpFile(vp8xChunk(vp8xFlagAnimation|vp8xFlagAlpha, 64, 48), riffChunk{id: "ANIM", payload: make([]byte, 6)},
+		anmfChunk(0, 0, 64, 48, alph, vp8, riffChunk{id: "ZZZZ", payload: []byte("unknown")})))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		out, info, err := stripWebP(data)
 		if err != nil {

@@ -366,7 +366,6 @@ func TestJPEGKeepsItsChromaSubsampling(t *testing.T) {
 		name  string
 		data  []byte
 		ratio image.YCbCrSubsampleRatio
-		w, h  int
 	}
 	var uploads []upload
 	// ycbcrJPEG encodes photo(w, h) at ratio with jpegenc, the subsampling
@@ -393,28 +392,38 @@ func TestJPEGKeepsItsChromaSubsampling(t *testing.T) {
 		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
 	}
 	for _, ratio := range ratios {
-		uploads = append(uploads, upload{ratio.String(), ycbcrJPEG(64, 48, ratio), ratio, 64, 48})
+		uploads = append(uploads, upload{ratio.String(), ycbcrJPEG(64, 48, ratio), ratio})
 	}
 	// An odd-sided 4:2:0 cannot keep its chroma grid through a turn that mirrors
 	// the odd side: its short last chroma sample would land first and shift the
 	// colour along that side, so the turned picture is stored at 4:4:4 instead
 	// (turnedSubsampling, orientYCbCr). Odd height, so the 180° and 90° turns
 	// here both promote it, while upright it stays 4:2:0.
-	uploads = append(uploads, upload{"4:2:0 odd side", ycbcrJPEG(64, 49, image.YCbCrSubsampleRatio420), image.YCbCrSubsampleRatio420, 64, 49})
-	// cost-prog444.jpg is 2400×1800 and already carries an EXIF orientation 6;
-	// at 4:4:4 a turn keeps the subsampling, so that baked-in turn is harmless
-	// here. cost-411.jpg is 2400×1800 with no orientation.
+	uploads = append(uploads, upload{"4:2:0 odd side", ycbcrJPEG(64, 49, image.YCbCrSubsampleRatio420), image.YCbCrSubsampleRatio420})
 	uploads = append(uploads,
-		upload{"progressive 4:4:4 from libjpeg", readTestdata(t, "cost-prog444.jpg"), image.YCbCrSubsampleRatio444, 2400, 1800},
-		upload{"4:1:1 from libjpeg", readTestdata(t, "cost-411.jpg"), image.YCbCrSubsampleRatio411, 2400, 1800},
+		upload{"progressive 4:4:4 from libjpeg", readTestdata(t, "cost-prog444.jpg"), image.YCbCrSubsampleRatio444},
+		upload{"4:1:1 from libjpeg", readTestdata(t, "cost-411.jpg"), image.YCbCrSubsampleRatio411},
 	)
 	for _, u := range uploads {
+		// The size is the file's own, and so is the subsampling, which has
+		// to be the one the upload is listed at for the test to mean anything.
+		cfg, err := jpeg.DecodeConfig(bytes.NewReader(u.data))
+		if err != nil {
+			t.Fatalf("%s: %v", u.name, err)
+		}
+		if f, _ := readJPEGFrame(u.data); f.subsampling() != u.ratio {
+			t.Fatalf("%s is %v, not %v", u.name, f.subsampling(), u.ratio)
+		}
 		for _, o := range []int{1, 3, 6} {
-			data := u.data
-			if o != 1 {
-				data = withSegments(data, exifSegment(orientationTIFF(binary.BigEndian, uint16(o))))
+			// Each orientation is given in an EXIF segment in front of any
+			// the file has, which is the one read: cost-prog444.jpg carries
+			// an orientation of 6 of its own, which would otherwise turn it
+			// at "1".
+			data := withSegments(u.data, exifSegment(orientationTIFF(binary.BigEndian, uint16(o))))
+			if got := jpegOrientation(data); got != o {
+				t.Fatalf("%s: orientation %d read as %d", u.name, o, got)
 			}
-			want, ok := turnedSubsampling(u.ratio, o, u.w, u.h)
+			want, ok := turnedSubsampling(u.ratio, o, cfg.Width, cfg.Height)
 			if !ok {
 				want = image.YCbCrSubsampleRatio444
 			}

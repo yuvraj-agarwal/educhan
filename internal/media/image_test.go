@@ -197,7 +197,12 @@ func TestProcessWebP(t *testing.T) {
 	if got.Width != 320 || got.Height != 200 {
 		t.Errorf("dimensions = %dx%d, want 320x200", got.Width, got.Height)
 	}
-	// WebP may carry alpha, so its thumbnail is PNG.
+	// sample.webp is lossless, so it is stored as a PNG, and a thumbnail
+	// follows the stored format: a PNG too. (A lossy, opaque WebP is stored
+	// as a JPEG and has a JPEG thumbnail: TestWebPIsStoredAsPNGOrJPEG.)
+	if got.Format != FormatPNG {
+		t.Errorf("stored format = %+v, want PNG", got.Format)
+	}
 	if got.Thumb.Format != FormatPNG {
 		t.Errorf("thumb format = %+v, want PNG", got.Thumb.Format)
 	}

@@ -240,9 +240,9 @@ func TestWebPChunkWalkDoesNotHoldAStructPerChunk(t *testing.T) {
 	// A riffChunk is forty bytes, so a slice of one per chunk is chunks*40
 	// before the doubling append does as it grows, which lands it at several
 	// times this; the walk instead holds the picture and a short id string per
-	// chunk as it goes. The bound is the file plus one struct's width a chunk:
-	// well over what the walk takes (about 2.4 MiB, or 4.8 under the race
-	// detector's own allocation) and well under the slice.
+	// chunk as it goes. The bound is the file plus one struct's width a chunk,
+	// 9.2 MiB: well over what the walk takes (about 2.3 MiB, or 4.6 MiB under
+	// the race detector's own allocation) and well under the slice.
 	limit := int64(len(data)) + chunks*40
 	if got > limit {
 		t.Errorf("stripWebP of a %d-chunk file allocated %d bytes, over %d: it is holding a struct per chunk", chunks, got, limit)
@@ -798,6 +798,88 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	// An uncompressed alpha plane needs no such limit: it is not decoded
 	// through vp8l, so a large upload of one is accepted at a small size.
 	check(kind{"lossy WebP, uncompressed alpha", headWebP("alpha"), 1}, 256, 256, large, nil)
+}
+
+// Inspect reads what an uploader wrote with walks of its own before any
+// decoder sees it, besides image.DecodeConfig's: the JPEG segment walk for the
+// frame header, the quantisation tables and the orientation (readJPEGFrame,
+// jpegOrientation), the PNG chunk walks (pngBytesPerPixel, pngHasTRNS,
+// pngOrientation), the GIF block walk (gifFramePixels, which
+// FuzzGIFFramePixels holds to the decoder) and webpPicture's walk over a
+// WebP's chunks. Whatever the bytes, each must read in bounds and answer
+// within its range; Inspect must refuse with one of its three errors, each a
+// 400; and what it admits must come with an estimate within the budget that
+// covers at least a byte for every pixel of its canvas, and a limit on the
+// stored file above four times the upload, so a walk that misreads a header
+// cannot let a large picture through as a cheap one. The seeds are a file of
+// every format and kind the cost model tells apart.
+func FuzzInspect(f *testing.F) {
+	var buf bytes.Buffer
+	_ = gif.EncodeAll(&buf, &gif.GIF{
+		Image: []*image.Paletted{image.NewPaletted(image.Rect(0, 0, 6, 4), palette.Plan9), image.NewPaletted(image.Rect(1, 1, 3, 3), palette.Plan9)},
+		Delay: []int{1, 2},
+	})
+	seeds := [][]byte{
+		headerUpload(jpegHeader(0xC0, 64, 48, 0x22, 0x11, 0x11), 6, 0),
+		headerUpload(jpegHeader(0xC0, 63, 47, 0x41, 0x11, 0x11), 3, 0),
+		headerUpload(jpegHeader(0xC2, 64, 48, 0x11, 0x11, 0x11), 1, 0),
+		headerUpload(jpegHeader(0xC2, 64, 48, 0x11, 0x11, 0x11, 0x11), 8, 0),
+		headerUpload(jpegHeader(0xC0, 64, 48, 0x11), 1, 0),
+		headerUpload(headRGBJPEG(0xC2)(64, 48), 1, 0),
+		readTestdata(f, "photo-q30.jpg")[:1024],
+		headerUpload(pngHeader(64, 48, 3, 8, false), 1, 0),
+		headerUpload(pngHeader(64, 48, 0, 16, true), 6, 0),
+		headerUpload(pngHeader(64, 48, 6, 16, true), 1, 0),
+		headerUpload(headPNGWithTRNS(0, 8, false)(64, 48), 5, 0),
+		buf.Bytes(),
+		readTestdata(f, "lossy.webp"),
+		readTestdata(f, "lossy-alpha.webp"),
+		readTestdata(f, "sample.webp"),
+		webpHeader("calpha", 64, 48),
+		webpFile(vp8xChunk(vp8xFlagAnimation, 64, 48), riffChunk{id: "ANIM", payload: make([]byte, 6)},
+			anmfChunk(0, 0, 64, 48, riffChunk{id: "VP8L", payload: make([]byte, 10)})),
+	}
+	for _, seed := range seeds {
+		f.Add(seed)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		if fr, framed := readJPEGFrame(data); framed && (fr.comps != 1 && fr.comps != 3 && fr.comps != 4 || fr.blocks < 0) {
+			t.Fatalf("readJPEGFrame read %d components in %d blocks", fr.comps, fr.blocks)
+		}
+		if o := jpegOrientation(data); o < 1 || o > 8 {
+			t.Fatalf("jpegOrientation = %d", o)
+		}
+		if o := pngOrientation(data); o < 1 || o > 8 {
+			t.Fatalf("pngOrientation = %d", o)
+		}
+		if bpp := pngBytesPerPixel(data); bpp != 1 && bpp != 2 && bpp != 4 && bpp != 8 {
+			t.Fatalf("pngBytesPerPixel = %d", bpp)
+		}
+		if _, _, n := webpPicture(data); n < 0 || n > int64(len(data))+vp8lAlphaHeader {
+			t.Fatalf("webpPicture charges %d bytes of bitstream in a %d-byte file", n, len(data))
+		}
+
+		in, err := inspect(data)
+		if err != nil {
+			if !errors.Is(err, ErrUnsupportedFormat) && !errors.Is(err, ErrCorruptImage) && !errors.Is(err, ErrImageTooLarge) {
+				t.Fatalf("Inspect refused with %v", err)
+			}
+			return
+		}
+		cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("Inspect admitted a file whose header does not decode: %v", err)
+		}
+		if format, _ := DetectFormat(data); in.format != format {
+			t.Fatalf("Inspect read %v from a %v file", in.format, format)
+		}
+		if px := int64(cfg.Width) * int64(cfg.Height); in.cost < px+processingSlack || in.cost > processingBudget {
+			t.Fatalf("Inspect admitted %dx%d at a cost of %d", cfg.Width, cfg.Height, in.cost)
+		}
+		if in.limit < 4*int64(len(data)) {
+			t.Fatalf("stored-file limit %d for a %d-byte upload", in.limit, len(data))
+		}
+	})
 }
 
 // shapeClaim is what the README says of one kind of file at the full size,

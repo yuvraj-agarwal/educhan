@@ -67,16 +67,16 @@ func frameSampling(t *testing.T, data []byte) []byte {
 
 // TestFourTwoZeroIsImageJPEGsOwn holds the copy to the encoder it came from:
 // a 4:2:0 picture and a grey one are written byte for byte as image/jpeg
-// writes them, at every quality, whatever their size. Those are the paths it
-// kept as they were, so this also covers what both share: the tables, the
-// transform, the Huffman coding and the headers.
+// writes them, at every quality from 1 to 100, whatever their size. Those are
+// the paths it kept as they were, so this also covers what both share: the
+// tables, the transform, the Huffman coding and the headers.
 func TestFourTwoZeroIsImageJPEGsOwn(t *testing.T) {
 	for _, size := range sizes {
 		ycc := pattern(size.X, size.Y, image.YCbCrSubsampleRatio420)
 		grey := image.NewGray(ycc.Rect)
 		copy(grey.Pix, ycc.Y)
 		for _, m := range []image.Image{ycc, grey} {
-			for q := 1; q <= 100; q += 11 {
+			for q := 1; q <= 100; q++ {
 				var ours, theirs bytes.Buffer
 				if err := Encode(&ours, m, &Options{Quality: q}); err != nil {
 					t.Fatal(err)
