@@ -4,7 +4,6 @@ import (
 	"regexp"
 	"strings"
 	"testing"
-	"time"
 	"unicode/utf8"
 )
 
@@ -1548,62 +1547,109 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 }
 
 // TestFilterCostIsBounded runs the filter over bodies built to be slow — as
-// long as a post can be, made of what the rules look for — at an eighth of the
-// length and at full length. Every pattern is a Go regexp, which runs in
-// linear time, and the scanners each make one pass, so eight times the text
-// should cost about eight times as much; anything quadratic would cost sixty-
-// four. The bound sits between the two, with slack for timer noise, so it
-// holds on a slow runner and under the race detector alike.
+// long as a post can be, made of what the rules look for, and in the subject
+// and name as well — and holds what it counts searching them to two bounds.
+// It counts work rather than time (checkContentCost: the places the searches
+// try, the characters they read, the steps their machines take, and each
+// check a match is put to), so the bounds are the same on every machine, and
+// under the race detector, and a timer's noise cannot fail or pass it.
+//
+// The first bound is per byte of the post, at full length: the most any of
+// these bodies costs is about 120 steps a byte, and none takes more than
+// about 15ms of one 2.1 GHz core (README, "Content rules"). A body that costs
+// much more than the rest has to be looked at, and the rule behind it
+// planned or rewritten, before the bound is raised. The second is that eight
+// times the text costs at most ten times as much: linear work costs eight
+// times, a fixed part a little less, and anything quadratic would cost
+// sixty-four.
+//
+// What is not counted is single passes: the scanners that make the views,
+// and the number scanner's own pass over the digits (the cues it looks for in
+// the 32 bytes either side of a number are searches, and are counted).
+// TestFilterReadsNoCharacterAsAPhrase caps how long a view can get.
 func TestFilterCostIsBounded(t *testing.T) {
+	const workPerByte = 160
+	rep := func(unit string) func(n int) string {
+		return func(n int) string { return strings.Repeat(unit, n/utf8.RuneCountInString(unit)) }
+	}
 	bodies := map[string]func(n int) string{
-		"digits":       func(n int) string { return strings.Repeat("9 ", n/2) },
-		"digit groups": func(n int) string { return strings.Repeat("98765 ", n/6) },
-		"spaced":       func(n int) string { return strings.Repeat("s n a p ", n/8) },
-		"leet":         func(n int) string { return strings.Repeat("1 ", n/2) },
-		"at signs":     func(n int) string { return strings.Repeat("a@", n/2) },
-		"dots":         func(n int) string { return strings.Repeat("a.", n/2) },
-		"words":        func(n int) string { return strings.Repeat("i will kill you at school ", n/26) },
-		"how many":     func(n int) string { return strings.Repeat("how many ", n/9) },
-		"my":           func(n int) string { return strings.Repeat("my snap ", n/8) },
-		"math":         func(n int) string { return strings.Repeat("[math]1[/math]", n/14) },
-		"wide":         func(n int) string { return strings.Repeat("９", n) },
-		"invisible":    func(n int) string { return strings.Repeat("\u200b", n) },
-		"keycaps":      func(n int) string { return strings.Repeat("9\ufe0f\u20e3", n/3) },
-		"line breaks":  func(n int) string { return strings.Repeat("98765\n", n/6) },
-		"spoilers":     func(n int) string { return strings.Repeat("9[spoiler]8[/spoiler]", n/21) },
-		"expanding":    func(n int) string { return strings.Repeat("\ufdfa1", n/2) },
+		"digits":       rep("9 "),
+		"digit groups": rep("98765 "),
+		"spaced":       rep("s n a p "),
+		"leet":         rep("1 "),
+		"at signs":     rep("a@"),
+		"dots":         rep("a."),
+		"words":        rep("i will kill you at school "),
+		"how many":     rep("how many "),
+		"my":           rep("my snap "),
+		"math":         rep("[math]1[/math]"),
+		"wide":         rep("９"),
+		"invisible":    rep("\u200b"),
+		"keycaps":      rep("9\ufe0f\u20e3"),
+		"line breaks":  rep("98765\n"),
+		"spoilers":     rep("9[spoiler]8[/spoiler]"),
+		"expanding":    rep("\ufdfa1"),
 		// One character that folds to as many as a character may, letters and
 		// dots both, alone and round the signs an address is read from.
-		"folds to four": func(n int) string { return strings.Repeat("\u33c2", n) },
-		"folds round a sign": func(n int) string {
-			return strings.Repeat("\u33c2@\u33d8", n/3)
-		},
-		"two scripts": func(n int) string { return strings.Repeat("1\u044f", n/2) },
-		"subject pairs": func(n int) string {
-			return strings.Repeat("shooting up the school. ", n/24)
-		},
+		"folds to four":      rep("\u33c2"),
+		"folds round a sign": rep("\u33c2@\u33d8"),
+		"two scripts":        rep("1\u044f"),
+		"subject pairs":      rep("shooting up the school. "),
+		// The openings and checks that cost the most, each over and over:
+		// an intent with nothing after it, words run together that read as
+		// one, leetspeak, a method question, an address round an at sign, a
+		// quoted or named or conditional threat, the excuses checked after
+		// a match, and numbers whose neighbours are read for a cue.
+		"intents":        rep("i will "),
+		"run together":   rep(" imaactually "),
+		"handle on app":  rep("python3 on discord\n"),
+		"leet threat":    rep("1'm g0nna sh00t up the sch00l "),
+		"how many pills": rep("how many pills "),
+		"how many to od": rep("how many to od "),
+		"at round dots":  rep("@ a.aa "),
+		"spelled at":     rep("attherateofa.aa "),
+		"quoted":         rep("\"i will kill you\" he said "),
+		"named":          rep("I will kill Rahul "),
+		"conditional":    rep("u'll die if "),
+		"event":          rep("We're going to kill CSK tonight "),
+		"wedding":        rep("I'm going to kill Rahul's wedding tomorrow. "),
+		"are you on":     rep(" you on insta "),
+		"support":        rep("I really want to die. "),
+		"dying hair":     rep("i'm thinking about dying my hair blue. "),
+		"snap lately":    rep("my snap is horrible lately. "),
+		"site":           rep("Q3 at leetcode.com. "),
+		"kms":            rep("kms per litre\n"),
+		"numbers":        rep("QQ 12 34 56 C "),
+		"ranges":         rep("96.123-97.456 percentile\n"),
+		"helpline":       rep("Trevor Project 1-866-488-7386. "),
+		"scores":         rep("mock scores 65-70-78-84-91\n"),
 	}
-	// The best of three runs, so a moment the scheduler gave to another
-	// package's tests is not read as the filter's cost; the bound below is
-	// unchanged.
-	cost := func(body string) time.Duration {
+	// The more either verdict costs, since a post that was shown the support
+	// message runs on to the holds.
+	cost := func(body string) (work, size int) {
 		in := contentInput{Subject: truncateRunes(body, maxSubjectLen), Name: truncateRunes(body, maxNameLen), Body: body}
-		best := time.Duration(1<<63 - 1)
-		for range 3 {
-			start := time.Now()
-			checkContent(in, true)
-			best = min(best, time.Since(start))
+		for _, supportSeen := range []bool{false, true} {
+			_, w := checkContentCost(in, supportSeen)
+			work = max(work, w)
 		}
-		return best
+		return work, len(in.Subject) + len(in.Name) + len(in.Body)
 	}
 	for name, build := range bodies {
-		small, full := cost(build(maxBodyLen/8)), cost(build(maxBodyLen))
-		if limit := 24*small + 50*time.Millisecond; full > limit {
-			t.Errorf("%s: %v at full length against %v at an eighth; more than linear", name, full, small)
+		small, _ := cost(build(maxBodyLen / 8))
+		full, size := cost(build(maxBodyLen))
+		if full > workPerByte*size {
+			t.Errorf("%s: %d steps for %d bytes, %.0f a byte, more than %d", name, full, size,
+				float64(full)/float64(size), workPerByte)
 		}
-		if full > 10*time.Second {
-			t.Errorf("%s: %v for one post", name, full)
+		if full > 10*small {
+			t.Errorf("%s: %d steps at full length against %d at an eighth; more than linear", name, full, small)
 		}
+	}
+	// Every character of ordinary words is read at least once, so a count
+	// below the length means the count has stopped counting and the bounds
+	// above hold of nothing.
+	if full, size := cost(bodies["words"](maxBodyLen)); full < size {
+		t.Errorf("%d steps counted for %d bytes of words", full, size)
 	}
 }
 

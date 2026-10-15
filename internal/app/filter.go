@@ -47,10 +47,13 @@ import (
 // child off the site; they do not prevent it.
 //
 // The cost is bounded and linear in the length of the post. Each field is
-// normalised once into two views, every pattern is a Go regexp (linear time,
-// no backtracking), the number scanner is one pass, and the checks that pair
-// matches up (a threat with a time, an age question with a contact cue) work
-// on the sorted match lists rather than rescanning.
+// normalised once into two views; every pattern is a Go regexp, run only from
+// the places a match can start by a copy of Go's own machine, which takes
+// linear time and never backtracks (filtersearch.go); the number scanner is
+// one pass, and looks for its cues in a few words either side of a number;
+// the checks a match is put to read a few words either side of it;
+// and the checks that pair matches up (a threat with a time, an age question
+// with a contact cue) work on the sorted match lists rather than rescanning.
 
 // contentOutcome is what the filter decided about a post.
 type contentOutcome int
@@ -178,7 +181,21 @@ func blockMessage(k findingKind, field string) string {
 // they have been shown the support message for this post, which lets it go on
 // to the holds.
 func checkContent(in contentInput, supportSeen bool) contentVerdict {
+	v, _ := checkContentCost(in, supportSeen)
+	return v
+}
+
+// checkContentCost is checkContent, and what searching the post cost, in the
+// steps searchIndex.work counts.
+func checkContentCost(in contentInput, supportSeen bool) (contentVerdict, int) {
 	fields := make([]*scannedField, 0, 3)
+	cost := func() int {
+		n := 0
+		for _, f := range fields {
+			n += f.work()
+		}
+		return n
+	}
 	// Form order, so a poster is told about the first problem they would
 	// come to.
 	if in.Subject != "" {
@@ -201,20 +218,20 @@ func checkContent(in contentInput, supportSeen bool) contentVerdict {
 				Match:      match,
 				Occurrence: matchOccurrence(f.src, found.from, searched),
 				Message:    blockMessage(found.kind, f.field),
-			}
+			}, cost()
 		}
 	}
 	if !supportSeen {
 		for _, f := range fields {
 			if f.anyMatch(supportRules, f.supportCheck) || f.asksForAMethod() {
-				return contentVerdict{Outcome: contentSupport, Message: supportMessage}
+				return contentVerdict{Outcome: contentSupport, Message: supportMessage}, cost()
 			}
 		}
 	}
 	if reason := holdReason(fields); reason != "" {
-		return contentVerdict{Outcome: contentHold, Hold: reason}
+		return contentVerdict{Outcome: contentHold, Hold: reason}, cost()
 	}
-	return contentVerdict{Outcome: contentPublish}
+	return contentVerdict{Outcome: contentPublish}, cost()
 }
 
 // holdReason picks the first hold that applies, most urgent first: a threat
@@ -357,6 +374,12 @@ type view struct {
 	text  string
 	start []int // start[i]: where the source character behind text[i] starts
 	end   []int // end[i]: where it ends
+	// index is what searching the view has found, per family of searches
+	// (filtersearch.go); work counts what reading it cost besides: the
+	// searches run over a few words of it (the number scanner's cues among
+	// them), and the checks matches are put to.
+	index [numFamilies]*searchIndex
+	work  int
 }
 
 // span maps text[a:b] back to the source.
@@ -446,6 +469,9 @@ func scanField(field, src string, readings []reading) *scannedField {
 // and maths, whose blank keeps the words either side of it apart.
 func plainView(src string, readings []reading) view {
 	b := newViewBuilder(len(src))
+	// What a character reads as is worked out once for each post: a post of
+	// one character over and over would otherwise decompose it every time.
+	var folds [64]foldMemo
 	k := 0
 	for i := 0; i < len(src); {
 		for k < len(readings) && readings[k].to <= i {
@@ -461,10 +487,36 @@ func plainView(src string, readings []reading) view {
 		}
 		r, size := utf8.DecodeRuneInString(src[i:])
 		from, to := i, i+size
-		foldRune(r, func(out rune) { b.add(out, from, to) })
+		if r < utf8.RuneSelf {
+			foldRune(r, func(out rune) { b.add(out, from, to) })
+		} else {
+			for _, out := range folds[uint32(r)*2654435761>>26].fold(r) {
+				b.add(out, from, to)
+			}
+		}
 		i = to
 	}
 	return b.view()
+}
+
+// foldMemo remembers what foldRune made of one character.
+type foldMemo struct {
+	r   rune
+	n   int
+	out [maxFoldRunes]rune
+}
+
+func (m *foldMemo) fold(r rune) []rune {
+	if m.n > 0 && m.r == r {
+		return m.out[:m.n-1]
+	}
+	var out []rune
+	foldRune(r, func(d rune) { out = append(out, d) })
+	if len(out) <= maxFoldRunes {
+		m.r, m.n = r, len(out)+1
+		copy(m.out[:], out)
+	}
+	return out
 }
 
 // foldRune emits what one source character reads as in the plain view: zero,
@@ -774,7 +826,7 @@ func closeUpSpacedLetters(runes []sourceRune) []sourceRune {
 // matters (an "@", an email's dots, a link's slashes) because the loose view
 // reads some of that as letters.
 type rule struct {
-	plain, loose *regexp.Regexp
+	plain, loose *search
 }
 
 // sep is what may separate two words of a phrase: any run of spaces and
@@ -792,11 +844,11 @@ func canon(src string) string { return strings.ReplaceAll(src, "l", "i") }
 
 func bothViews(src string) rule {
 	src = phrase(src)
-	return rule{plain: regexp.MustCompile(src), loose: regexp.MustCompile(canon(src))}
+	return rule{plain: newSearch(src, famPlain), loose: newSearch(canon(src), famLoose)}
 }
 
 func plainOnly(src string) rule {
-	return rule{plain: regexp.MustCompile(phrase(src))}
+	return rule{plain: newSearch(phrase(src), famPlainOnly)}
 }
 
 // words joins alternatives into one non-capturing group.
@@ -1180,8 +1232,9 @@ var linkRule = func() rule {
 		long("join.skype.com"), long("linktr.ee"))
 	// Compiled as written: a path may contain "~", which phrase would read
 	// as a separator.
-	return rule{plain: regexp.MustCompile(`\b(?:https?\W{0,3})?(?:www\s?\.\s?)?(` + hosts + `)` + linkSlash +
-		`(#?[\pL\pN_@~%+.\-]+(?:` + linkSlash + `[\pL\pN_@~%+.\-]*)*)`)}
+	src := `\b(?:https?\W{0,3})?(?:www\s?\.\s?)?(` + hosts + `)` + linkSlash +
+		`(#?[\pL\pN_@~%+.\-]+(?:` + linkSlash + `[\pL\pN_@~%+.\-]*)*)`
+	return rule{plain: newSearch(src, famPlainOnly)}
 }()
 
 // linkSlash is a slash in a link, written or spelled: "/", " / ", " slash ",
@@ -1671,10 +1724,10 @@ var (
 	dieNotThreat  = canonSetOf(`someday eventually old age`)
 	// conditionalPlace is a condition about being somewhere: "if you come to
 	// school tomorrow you will die" threatens; "you will die if you eat that
-	// canteen food" warns.
-	conditionalPlace = regexp.MustCompile(`\b(?:come|coming|go|going|show[^\pL\pN]*up|turn[^\pL\pN]*up|step|walk|enter|be)` +
+	// canteen food" warns. It is read in the sentence round each threat.
+	conditionalPlace = newWindowSearch(`\b(?:come|coming|go|going|show[^\pL\pN]*up|turn[^\pL\pN]*up|step|walk|enter|be)` +
 		`[^\pL\pN]+(?:(?:to|into|in|at|inside)[^\pL\pN]+)?(?:(?:the|my|our)[^\pL\pN]+)?` + phrase(threatPlaces) + `\b`)
-	conditionalPlaceLoose = regexp.MustCompile(canon(conditionalPlace.String()))
+	conditionalPlaceLoose = newWindowSearch(canon(conditionalPlace.String()))
 	// peopleShootPurpose is what makes a shoot of people a photo shoot.
 	peopleShootPurpose = canonSetOf(`photos photo pictures pics portraits headshots yearbook photoshoot film movie video
 		documentary photography`)
@@ -1725,8 +1778,8 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 			dieIdiom(next) || whenYouSee(next) || whenResults(next) || eventAfterPreposition(next) {
 			return false
 		}
-		if harmlessCondition(sentence) && !conditionalPlace.MatchString(sentence) &&
-			!conditionalPlaceLoose.MatchString(sentence) {
+		if harmlessCondition(sentence) && !conditionalPlace.matchIn(v, sentence) &&
+			!conditionalPlaceLoose.matchIn(v, sentence) {
 			return false
 		}
 	}
@@ -2311,47 +2364,52 @@ func setOf(list string) map[string]bool {
 // while a few small validators make the decisions a regular expression cannot.
 type matchCheck func(v *view, m []int) bool
 
-// viewRegexp is one view of a field and the regexp a rule has for it.
-type viewRegexp struct {
-	v  *view
-	re *regexp.Regexp
+// checkWork is what a check is counted as costing besides the match itself:
+// the most it reads round a match is a clause or a sentence each side, cut to
+// 64 bytes (clauseAfter, sentenceAround). The searches a check runs over
+// those count their own work.
+const checkWork = 2 * 64
+
+// checked puts match m to check, counting it in the view's work.
+func (v *view) checked(check matchCheck, m []int) bool {
+	v.work += checkWork + m[1] - m[0]
+	return check(v, m)
 }
 
-// views returns the field's views paired with the regexp a rule has for each,
+// viewSearch is one view of a field and the search a rule has for it.
+type viewSearch struct {
+	v  *view
+	re *search
+}
+
+// views returns the field's views paired with the search a rule has for each,
 // leaving out the plain view when the loose one stands for it.
-func (f *scannedField) views(r rule) []viewRegexp {
+func (f *scannedField) views(r rule) []viewSearch {
 	if r.loose == nil {
-		return []viewRegexp{{&f.plain, r.plain}}
+		return []viewSearch{{&f.plain, r.plain}}
 	}
 	if f.looseOnly {
-		return []viewRegexp{{&f.loose, r.loose}}
+		return []viewSearch{{&f.loose, r.loose}}
 	}
-	return []viewRegexp{{&f.plain, r.plain}, {&f.loose, r.loose}}
+	return []viewSearch{{&f.plain, r.plain}, {&f.loose, r.loose}}
 }
 
 // first returns the source span of the earliest match of r, in either view,
 // that check accepts.
 func (f *scannedField) first(r rule, check matchCheck) (int, int, bool) {
 	from, to, found := 0, 0, false
-	for _, vr := range f.views(r) {
-		if check == nil {
-			if m := vr.re.FindStringIndex(vr.v.text); m != nil && m[1] > m[0] {
-				if a, b := vr.v.span(m[0], m[1]); !found || a < from {
-					from, to, found = a, b, true
-				}
+	for _, vs := range f.views(r) {
+		vs.re.each(vs.v, func(m []int) bool {
+			if m[1] <= m[0] || check != nil && !vs.v.checked(check, m) {
+				// The first match is the leftmost one, so with no check
+				// there is nothing more to find in this view.
+				return check != nil
 			}
-			continue
-		}
-		for _, m := range vr.re.FindAllStringSubmatchIndex(vr.v.text, -1) {
-			if m[1] <= m[0] || !check(vr.v, m) {
-				continue
-			}
-			a, b := vr.v.span(m[0], m[1])
-			if !found || a < from {
+			if a, b := vs.v.span(m[0], m[1]); !found || a < from {
 				from, to, found = a, b, true
 			}
-			break
-		}
+			return false
+		})
 	}
 	return from, to, found
 }
@@ -2360,8 +2418,10 @@ func (f *scannedField) first(r rule, check matchCheck) (int, int, bool) {
 func (f *scannedField) anyMatch(rules []rule, check matchCheck) bool {
 	for _, r := range rules {
 		if check == nil {
-			for _, vr := range f.views(r) {
-				if vr.re.MatchString(vr.v.text) {
+			for _, vs := range f.views(r) {
+				found := false
+				vs.re.each(vs.v, func([]int) bool { found = true; return false })
+				if found {
 					return true
 				}
 			}
@@ -2379,17 +2439,33 @@ func (f *scannedField) anyMatch(rules []rule, check matchCheck) bool {
 func (f *scannedField) spans(rules []rule, check matchCheck) [][2]int {
 	var out [][2]int
 	for _, r := range rules {
-		for _, vr := range f.views(r) {
-			for _, m := range vr.re.FindAllStringSubmatchIndex(vr.v.text, -1) {
-				if m[1] > m[0] && (check == nil || check(vr.v, m)) {
-					a, b := vr.v.span(m[0], m[1])
+		for _, vs := range f.views(r) {
+			vs.re.each(vs.v, func(m []int) bool {
+				if m[1] > m[0] && (check == nil || vs.v.checked(check, m)) {
+					a, b := vs.v.span(m[0], m[1])
 					out = append(out, [2]int{a, b})
 				}
-			}
+				return true
+			})
 		}
 	}
 	sortSpans(out)
 	return out
+}
+
+// work is what searching the field has cost so far, in the steps
+// searchIndex counts.
+func (f *scannedField) work() int {
+	n := 0
+	for _, v := range []*view{&f.plain, &f.loose} {
+		n += v.work
+		for _, ix := range v.index {
+			if ix != nil {
+				n += ix.work
+			}
+		}
+	}
+	return n
 }
 
 // threatens reports a threat: an intent with a place or a time within
@@ -2950,9 +3026,9 @@ func methodCheck(v *view, m []int) bool {
 	case is(first, "how") && (is(ws[1], "many") || is(ws[1], "much")), is(first, "what"):
 		// The medicine may be named before the question: "paracetamol, how
 		// many to die?".
-		return namesAMedicine(sentenceAround(text, m[0], m[1])) || hasFirstPerson(ws)
+		return namesAMedicine(v, sentenceAround(text, m[0], m[1])) || hasFirstPerson(ws)
 	case is(first, "lethal") || is(first, "fatal") || is(first, "deadly"):
-		return namesAMedicine(text[m[1]:min(len(text), m[1]+48)]) || hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1])))
+		return namesAMedicine(v, text[m[1]:min(len(text), m[1]+48)]) || hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1])))
 	case is(first, "how") && is(ws[1], "deep"):
 		return len(next) == 0 || deepCutTargets[next[0]]
 	}
@@ -2960,13 +3036,14 @@ func methodCheck(v *view, m []int) bool {
 }
 
 var (
-	medicinePlain  = regexp.MustCompile(`\b` + phrase(medicines) + `\b`)
-	medicineLoose  = regexp.MustCompile(`\b` + canon(phrase(medicines)) + `\b`)
+	medicinePlain  = newWindowSearch(`\b` + phrase(medicines) + `\b`)
+	medicineLoose  = newWindowSearch(`\b` + canon(phrase(medicines)) + `\b`)
 	deepCutTargets = canonSetOf(`my myself to so for without wrist wrists arm arms thigh thighs leg legs skin`)
 )
 
-func namesAMedicine(s string) bool {
-	return medicinePlain.MatchString(s) || medicineLoose.MatchString(s)
+// namesAMedicine reports a medicine named in s, a stretch of v round a match.
+func namesAMedicine(v *view, s string) bool {
+	return medicinePlain.matchIn(v, s) || medicineLoose.matchIn(v, s)
 }
 
 /* Blocks ---------------------------------------------------------------------- */
@@ -3305,7 +3382,7 @@ func (f *scannedField) firstNumber() (digitRun, findingKind, bool) {
 		}
 		run := scanDigitRun(t, i)
 		run.apartAfter = run.to < len(t) && f.plain.apart(run.to)
-		if kind, ok := classifyNumber(t, run); ok {
+		if kind, ok := classifyNumber(&f.plain, run); ok {
 			return run, kind, true
 		}
 		i = max(run.to, i+1)
@@ -3466,7 +3543,7 @@ func helpline(d string) bool {
 // maths question or the result of one: "is 9999999967 prime?", "the answer is
 // 9876543210", "13! is 6227020800".
 var (
-	mathsContext = regexp.MustCompile(`\b(?:` + words(`prime`, `composite`, `divisib(?:le|ility)`, `divided`,
+	mathsContext = newWindowSearch(`\b(?:` + words(`prime`, `composite`, `divisib(?:le|ility)`, `divided`,
 		`divisors?`, `factors?`, `factori[sz](?:e|ed|ation)`, `factorial`, `modulo`, `mod`, `remainder`,
 		`quotient`, `gcd`, `hcf`, `lcm`, `multipl(?:y|ied|ies|ying|ication|es?)`, `fibonacci`, `power~of`,
 		`squared`, `cubed`, `square~roots?`, `cube~roots?`, `binary`, `hexadecimal`, `octal`, `sum`,
@@ -3475,23 +3552,23 @@ var (
 		`)\b|\bans(?:wer)?[ \t]*(?:[=:]|is\b|was\b)`)
 	// mathsResult is a calculation just before a number: "2^33 is", "13! =",
 	// and a comment after one in code: "print(2**33)  # 8589934592".
-	mathsResult = regexp.MustCompile(`[\d)][ \t]*(?:\^[ \t]*\d+|!|\*\*[ \t]*\d+)\)*[ \t]*(?:is|=|equals|\n?[ \t]*(?:#|//))?[ \t]*$`)
+	mathsResult = newWindowSearch(`[\d)][ \t]*(?:\^[ \t]*\d+|!|\*\*[ \t]*\d+)\)*[ \t]*(?:is|=|equals|\n?[ \t]*(?:#|//))?[ \t]*$`)
 	// dataWords, before a run of short groups, make it a set of values: "the
 	// mode of 7 9 6 8 ...", "batch sizes 256 512 1024", "scores 65-70-78".
-	dataWords = regexp.MustCompile(`\b(?:` + words(`mode`, `mean`, `median`, `average`, `avg`, `range`, `data`,
+	dataWords = newWindowSearch(`\b(?:` + words(`mode`, `mean`, `median`, `average`, `avg`, `range`, `data`,
 		`dataset`, `values`, `sequence`, `series`, `list`, `array`, `numbers`, `set`, `digits`, `dice`,
 		`rolls`, `scores`, `marks`, `readings`, `samples`, `observations`, `sizes`, `dims`, `dimensions`,
 		`shape`, `resolution`, `prices`, `fees`, `salaries`, `cutoffs?`, `percentiles?`, `ranks`, `rankings?`,
 		`mocks`, `sgpas?`, `cgpas?`, `gpas?`, `pointers?`, `grades`, `sections`, `exercises?`, `chapters?`,
 		`questions`, `problems`, `pages`, `percentages`) + `)\b`)
 	// phoneCue, shortly before a number, says it is one to call.
-	phoneCue = regexp.MustCompile(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `phone`, `ph`, `mob`, `mobile`,
+	phoneCue = newWindowSearch(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `phone`, `ph`, `mob`, `mobile`,
 		`cell`, `number`, `num`, `no`, `whatsapp`, `dial`, `contact`, `tel`, `sms`) + `)\b`)
 	// contactCue, with nothing but punctuation between it and a number, asks
 	// for the number to be called or says whose it is: "call me on", "text
 	// me", "wa:", "my number is". "The number" is not one: "is the number
 	// 9999999967 prime?".
-	contactCue = regexp.MustCompile(`\b` + phrase(words(
+	contactCue = newWindowSearch(`\b` + phrase(words(
 		words(`call`, `text`, `txt`, `ring`, `dial`, `sms`, `contact`, `msg`, `message`, `ping`, `dm`, `reach`, `hmu`,
 			whatsApp, `wa`, `telegram`, `signal`)+`(?:~`+words(`me`, `us`)+`)?(?:~`+words(`on`, `at`, `via`, `@`)+`)?`,
 		words(`my`, `mera`, `meri`)+`~(?:`+words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`)+`~)?`+
@@ -3508,12 +3585,12 @@ var (
 )
 
 // classifyNumber decides what a run is, in the context it sits in.
-func classifyNumber(t string, run digitRun) (findingKind, bool) {
+func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 	if len(run.digits) < 9 || len(run.digits) > 17 {
 		return 0, false
 	}
-	if !standsAlone(t, run) || formattedNumber(run) || dataSet(t, run) || roundRange(run) || decimalRange(t, run) ||
-		ipv4(t, run) {
+	if !standsAlone(v, run) || formattedNumber(run) || dataSet(v, run) || roundRange(run) || decimalRange(v, run) ||
+		ipv4(v, run) {
 		return 0, false
 	}
 	d := string(run.digits)
@@ -3529,7 +3606,7 @@ func classifyNumber(t string, run digitRun) (findingKind, bool) {
 		}
 	}
 	switch {
-	case indianMobile(d, run.groups, run.seps), nanpPhone(t, run), ukPhone(d, run.groups, run.seps),
+	case indianMobile(d, run.groups, run.seps), nanpPhone(v, run), ukPhone(d, run.groups, run.seps),
 		auMobile(d, run.groups, run.seps):
 		return kindPhone, true
 	case aadhaar(d, run.groups, run.seps):
@@ -3542,7 +3619,7 @@ func classifyNumber(t string, run digitRun) (findingKind, bool) {
 
 // dataSet reports a run of three or more short groups that a word just before
 // it says is a set of values, not a number spaced out to be read.
-func dataSet(t string, run digitRun) bool {
+func dataSet(v *view, run digitRun) bool {
 	if len(run.groups) < 3 {
 		return false
 	}
@@ -3551,7 +3628,7 @@ func dataSet(t string, run digitRun) bool {
 			return false
 		}
 	}
-	return dataWords.MatchString(windowBefore(t, run.from, 32))
+	return dataWords.matchIn(v, windowBefore(v.text, run.from, 32))
 }
 
 // roundRange reports two round amounts set off by a dash, the second the
@@ -3571,15 +3648,15 @@ func roundRange(run digitRun) bool {
 
 // decimalRange reports two decimals set off by a dash, with no phone cue
 // before them: "656.28-686.72 nm", "96.123 - 97.456".
-func decimalRange(t string, run digitRun) bool {
+func decimalRange(v *view, run digitRun) bool {
 	return len(run.groups) == 4 && run.seps[0] == "." && run.seps[2] == "." && strings.Trim(run.seps[1], " ") == "-" &&
-		!phoneCue.MatchString(windowBefore(t, run.from, 32))
+		!phoneCue.matchIn(v, windowBefore(v.text, run.from, 32))
 }
 
 // ipv4 reports an IPv4 address: four groups of up to three digits, each 255
 // or less, set off by points alone, with no phone cue before it ("ping
 // 93.184.216.34", not "call 98.123.145.67").
-func ipv4(t string, run digitRun) bool {
+func ipv4(v *view, run digitRun) bool {
 	if len(run.groups) != 4 || run.plus || run.paren {
 		return false
 	}
@@ -3599,7 +3676,7 @@ func ipv4(t string, run digitRun) bool {
 		}
 		at += g
 	}
-	return !phoneCue.MatchString(windowBefore(t, run.from, 32))
+	return !phoneCue.matchIn(v, windowBefore(v.text, run.from, 32))
 }
 
 // formattedNumber reports a number written the way a quantity is: a decimal,
@@ -3636,7 +3713,8 @@ func formattedNumber(run digitRun) bool {
 // standsAlone reports that a run is a number in its own right and not one side
 // of a sum, a decimal, a quantity, a function's argument or a labelled
 // reference.
-func standsAlone(t string, run digitRun) bool {
+func standsAlone(v *view, run digitRun) bool {
+	t := v.text
 	after := t[run.to:]
 	if r, _ := utf8.DecodeRuneInString(after); unicode.IsDigit(r) || unicode.IsLetter(r) && !run.apartAfter {
 		return false
@@ -3655,8 +3733,8 @@ func standsAlone(t string, run digitRun) bool {
 	// A request to call or text, straight before the number, says what it is
 	// whatever else is near it: "call me = 9876543210", "wa/9876543210", "text
 	// me 9876543210 if you can do the integers question".
-	cued := contactCue.MatchString(windowBefore(t, run.from, 32))
-	if !cued && operandBefore(before) {
+	cued := contactCue.matchIn(v, windowBefore(t, run.from, 32))
+	if !cued && operandBefore(v, before) {
 		return false
 	}
 	// A sign glued to an operand is arithmetic: "2+9876543210", "x-9876543210".
@@ -3697,7 +3775,7 @@ func standsAlone(t string, run digitRun) bool {
 		return false
 	}
 	near := windowBefore(t, run.from, 32)
-	if !cued && (mathsResult.MatchString(near) || mathsContext.MatchString(near+" "+windowAfter(t, run.to, 32))) {
+	if !cued && (mathsResult.matchIn(v, near) || mathsContext.matchIn(v, near+" "+windowAfter(t, run.to, 32))) {
 		return false
 	}
 	return true
@@ -3748,7 +3826,7 @@ func operandAfter(after string) bool {
 // quote link's ">>" at the start of a line has nothing before it, an arrow
 // ("->", "=>") points rather than compares, and a phone cue before an "="
 // ("number = 9876543210") is a label.
-func operandBefore(before string) bool {
+func operandBefore(v *view, before string) bool {
 	// An opening bracket after "=" still leaves the number the right-hand side
 	// of something: "x = (9876543210 + 1)", "arr = [9876543210, …]".
 	s := strings.TrimRight(before, " ([{")
@@ -3768,7 +3846,7 @@ func operandBefore(before string) bool {
 	if !(unicode.IsLetter(o) || unicode.IsDigit(o) || o == ')' || o == ']') {
 		return false
 	}
-	return !phoneCue.MatchString(lastWord(s))
+	return !phoneCue.matchIn(v, lastWord(s))
 }
 
 // labelled reports a label as the word just before a number, with the fillers
@@ -4052,11 +4130,11 @@ func dashed(seps []string) bool {
 // taken as one, and nor are three groups set off by spaces or commas alone
 // unless a word before them says it is a number to call ("call 415 867
 // 5309"): "batch sizes 256 512 1024" is a list.
-func nanpPhone(t string, run digitRun) bool {
+func nanpPhone(v *view, run digitRun) bool {
 	d, g := string(run.digits), run.groups
 	switch {
 	case len(d) == 10 && len(g) == 3 && g[0] == 3 && g[1] == 3 && g[2] == 4:
-		return nanp(d) && (nanpSeparators(run) || phoneCue.MatchString(windowBefore(t, run.from, 32)))
+		return nanp(d) && (nanpSeparators(run) || phoneCue.matchIn(v, windowBefore(v.text, run.from, 32)))
 	case len(d) == 11 && d[0] == '1' && len(g) == 4 && g[0] == 1 && g[1] == 3 && g[2] == 3 && g[3] == 4:
 		return nanp(d[1:])
 	}

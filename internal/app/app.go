@@ -186,6 +186,10 @@ func (a *App) Close() {
 
 // Routes returns the HTTP handler for the whole application.
 func (a *App) Routes() http.Handler {
+	// The content filter plans its searches once, which takes a moment of
+	// one core; a server starts on it now, so that the first post does not
+	// wait for all of it.
+	go prepareSearches()
 	mux := http.NewServeMux()
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
