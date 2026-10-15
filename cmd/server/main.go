@@ -2,8 +2,9 @@
 // embedded web UI that consumes it, backed by PostgreSQL.
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
-// archive_days have run out, with their media, and exits. That is the mode a
-// scheduled Cloud Run Job runs, from the same image.
+// archive_days have run out, with their media, and the spent captcha answers
+// past their day, and exits. That is the mode a scheduled Cloud Run Job runs,
+// from the same image.
 package main
 
 import (
@@ -39,7 +40,7 @@ func main() {
 func run(args []string, logs io.Writer) error {
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
 	sweep := flags.Bool("sweep", false,
-		"delete archived threads past their board's archive_days, with their media, then exit")
+		"delete archived threads past their board's archive_days, with their media, and spent captcha answers past their day, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

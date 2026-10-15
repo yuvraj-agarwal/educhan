@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -177,6 +178,34 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	}
 }
 
+// The spent captcha answers go last and on their own: a sweep whose captcha
+// cleanup fails still removes the files of the threads it deleted, and says
+// what failed.
+func TestSweepRemovesFilesWhenTheCaptchaCleanupFails(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("gone")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'gone'`)
+
+	thread := h.imageThread("gone", "an image to remove")
+	h.archiveThread("gone", thread.ThreadNo, time.Minute)
+	blobs := threadBlobs(t, h, "gone", thread.ThreadNo)
+	h.exec(`ALTER TABLE captcha_spent RENAME TO captcha_spent_elsewhere`)
+
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sweep spent captchas") {
+		t.Fatalf("a sweep whose captcha cleanup failed: error %v, want one saying so", err)
+	}
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsRemoved: 2}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, false)
+	}
+	if queued := h.countRows("media_deletions"); queued != 0 {
+		t.Errorf("%d files still queued, want none", queued)
+	}
+}
+
 // The sweeper is a separate process, and its media settings have to match the
 // server's. One that does not — a Job left on the local backend, a different
 // bucket, prefix or upload directory — finds every file missing. Deleting a
@@ -272,6 +301,11 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 
 	thread := h.imageThread("quietly", "gone without a trace in the log")
 	h.archiveThread("quietly", thread.ThreadNo, time.Minute)
+	// And a spent captcha answer two days past its day, which the sweep
+	// prunes and counts in the same record.
+	spentKey := sha256.Sum256([]byte("an answer long spent"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	lines, err := sweepLog(t)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -284,7 +318,7 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	delete(record, "level")
 	delete(record, "msg")
 	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0,
-		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "spent_captchas": 0.0}
+		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "spent_captchas": 1.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
 	}

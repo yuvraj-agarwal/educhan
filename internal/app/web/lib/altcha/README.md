@@ -21,9 +21,15 @@ challenge, runs this worker in up to four copies, and builds the answer in ALTCH
 payload format (see `internal/app/captcha.go`), so the widget could still be dropped in
 later without a server change.
 
-`app.js` starts the worker with `new Worker("/lib/altcha/pbkdf2.js")` when a reader
-moves into a box to write in, in a form that needs the captcha, never when a page is
-drawn, and stops every copy once one has found the answer.
+`app.js` starts the worker with `new Worker("/lib/altcha/pbkdf2.js")` when a puzzle
+starts, in a form that needs the captcha, and never when a page is drawn: when focus
+moves into a box to write in, however it gets there (a click or tap, Tab, quoting a
+post, or "Verify another address" or "Use a different address" on `/verify`); when the
+badge is unticked on a form whose tick stopped a puzzle, or that already has something
+written or attached; after a refusal that spent the answer, while its form is on
+screen; and on a press with no good answer held and none being solved. It stops every
+copy once one has found the answer or all have given up, when ticking the badge stops
+the puzzle, and when starting the copies fails part way.
 The CSP needs no change for it: `worker-src` falls back to `default-src 'self'`.
 
 To update, replace `pbkdf2.js` from the new package's `dist/workers/` and `LICENSE` from

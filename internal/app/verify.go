@@ -169,10 +169,11 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Next the captcha, checked before the address is parsed and spent below,
-	// once both cooldowns have let the request through, so every request that
-	// gets as far as sending mail has cost a puzzle of its own. A request
-	// refused before the spend, for its address or a cooldown, keeps its
-	// answer.
+	// once a first check of both cooldowns has let the request through, so
+	// every request that gets as far as sending mail has cost a puzzle of its
+	// own. A request refused before the spend, for its address or a cooldown,
+	// keeps its answer; one the cooldowns refuse after it, when they check
+	// again as they start, has spent it.
 	ticket, ok := a.checkCaptcha(w, r, req.Captcha, false)
 	if !ok {
 		return
@@ -194,13 +195,23 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// a loop, and one client cannot walk a list of addresses.
 	emailHash := a.emailHash(addr.Key)
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allowAction(w, "requesting codes", []cooldown{
+	cooldowns := []cooldown{
 		{limiter: a.verifyLimiter, key: "ip|" + clientKey},
 		{limiter: a.verifyLimiter, key: "email|" + hex.EncodeToString(emailHash)},
-	}) {
+	}
+	if !a.waitedOut(w, "requesting codes", cooldowns) {
 		return
 	}
+	// The cooldowns start once the answer is spent, as for a post, so a
+	// request refused as used starts none: one answer sent many times at once,
+	// each copy naming another email address, cannot hold all of those
+	// addresses out of codes. Starting them checks them again, in one step, so
+	// of a burst from one client, or for one address, that all passed the
+	// check above, one goes ahead.
 	if !a.spendCaptcha(w, r, ticket) {
+		return
+	}
+	if !a.allowAction(w, "requesting codes", cooldowns) {
 		return
 	}
 

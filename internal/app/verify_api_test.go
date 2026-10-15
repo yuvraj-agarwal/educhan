@@ -934,8 +934,9 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 		"media_deletions":   {"id", "key"},                     // storage keys the sweeper has still to remove
 		"schema_migrations": {"applied_at", "name", "version"}, // which migrations ran
 		// Captcha answers already used: a hash of a signature the server made
-		// at random, and when its challenge runs out. Nothing about who solved
-		// it, and nothing that points at the post it let through.
+		// at random, and the UTC midnight after its challenge runs out, so a
+		// row dates its use only to the day. Nothing about who solved it, and
+		// nothing that points at the post it let through.
 		"captcha_spent": {"expires_at", "signature_hash"},
 		// Board settings, nothing about posters.
 		"boards": {"archive_days", "bump_limit", "created_at", "description", "id",

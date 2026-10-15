@@ -1,8 +1,10 @@
 package app
 
 import (
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +123,110 @@ func TestAllowAllChargesNothingWhenRefused(t *testing.T) {
 	now = now.Add(24 * time.Second)
 	if _, ok := allowAll(cooldown{upload, "a"}); !ok {
 		t.Error("a refused attempt must not extend the upload cooldown")
+	}
+}
+
+// Requests from one client racing for the same cooldowns: exactly one is
+// admitted, because allowAll checks and starts them in one step, and a racer
+// the shared upload cooldown refuses starts nothing, so the reply cooldown is
+// held only on the board the winner posted to.
+func TestAllowAllAdmitsOneOfARace(t *testing.T) {
+	post := newCooldownLimiter(time.Hour)
+	upload := newCooldownLimiter(time.Hour)
+
+	const racers = 64
+	var admitted atomic.Int32
+	var winner atomic.Value
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range racers {
+		board := fmt.Sprint("board ", i%2)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, ok := allowAll(cooldown{post, board + "|a"}, cooldown{upload, "a"}); ok {
+				admitted.Add(1)
+				winner.Store(board)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if n := admitted.Load(); n != 1 {
+		t.Fatalf("%d of %d racing image posts admitted, want 1", n, racers)
+	}
+	won := winner.Load().(string)
+	for _, board := range []string{"board 0", "board 1"} {
+		held := post.peek(board+"|a") > 0
+		if held != (board == won) {
+			t.Errorf("reply cooldown on %s held %t after the race, want it held only where the post went (%s)", board, held, won)
+		}
+	}
+}
+
+// Requests from one client racing with different sets of cooldowns, text and
+// image replies to three boards: no two admitted requests share a cooldown,
+// and every refused request meets a cooldown an admitted one holds. A refusal
+// by a cooldown that nothing admitted holds would mean another request had
+// held it for an instant and let it go, refusing a post that could have gone
+// ahead.
+func TestAllowAllRefusesOnlyForACooldownAnAdmittedRequestHolds(t *testing.T) {
+	for round := range 1000 {
+		post := newCooldownLimiter(time.Hour)
+		upload := newCooldownLimiter(time.Hour)
+
+		const racers = 12
+		requests := make([][]cooldown, racers)
+		admitted := make([]bool, racers)
+		var wg sync.WaitGroup
+		start := make(chan struct{})
+		for i := range racers {
+			requests[i] = []cooldown{{post, fmt.Sprintf("board %d|a", (i+round)%3)}}
+			if (i+round)%2 == 0 {
+				requests[i] = append(requests[i], cooldown{upload, "a"})
+			}
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				<-start
+				_, admitted[i] = allowAll(requests[i]...)
+			}()
+		}
+		close(start)
+		wg.Wait()
+
+		held := map[*cooldownLimiter]map[string]int{post: {}, upload: {}}
+		for i, cooldowns := range requests {
+			if admitted[i] {
+				for _, c := range cooldowns {
+					held[c.limiter][c.key]++
+				}
+			}
+		}
+		for limiter, keys := range held {
+			for key, n := range keys {
+				if n > 1 {
+					t.Fatalf("round %d: %d admitted requests share the cooldown %q", round, n, key)
+				}
+				if limiter.peek(key) == 0 {
+					t.Fatalf("round %d: the admitted cooldown %q is not running", round, key)
+				}
+			}
+		}
+		for i, cooldowns := range requests {
+			if admitted[i] {
+				continue
+			}
+			met := false
+			for _, c := range cooldowns {
+				met = met || held[c.limiter][c.key] > 0
+			}
+			if !met {
+				t.Fatalf("round %d: request %d (%v) was refused, but no admitted request holds any of its cooldowns", round, i, cooldowns)
+			}
+		}
 	}
 }
 

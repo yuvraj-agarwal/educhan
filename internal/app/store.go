@@ -1451,8 +1451,10 @@ const (
 	// is still kept. An instance refuses a challenge once its own clock passes
 	// the expiry; an instance whose clock ran ahead must not delete the row
 	// while another, behind it, would still accept that answer as fresh. The
-	// stored expiry is already rounded up past the real one, so this only
-	// matters for a clock a day out.
+	// stored expiry is rounded up to the next midnight, which adds anything
+	// from a second to a day, so for a challenge that runs out just before
+	// midnight this margin is all the slack there is: it tolerates instance
+	// clocks up to a minute apart, far more than servers kept in time drift.
 	captchaPruneMargin = time.Minute
 	// captchaPruneBatch caps the spent answers one spend deletes. Each spend
 	// adds one, so a batch of more than one keeps up: the day's rows, which
@@ -1462,9 +1464,11 @@ const (
 )
 
 // CaptchaSpent reports whether a captcha challenge has been used. It is the
-// read that turns a replayed answer away before flood control, so a poster
-// resending an answer already used is charged no cooldown for it; the insert
-// in SpendCaptcha is still what settles two requests racing with one answer.
+// read that turns a replayed answer away before flood control, so a replay is
+// told "used" at once, even while a cooldown runs, rather than told to wait for
+// an answer that can never work. The insert in SpendCaptcha is what keeps a
+// replay from starting a cooldown, and what settles two requests racing with
+// one answer.
 func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 	var spent bool
 	if err := s.pool.QueryRow(ctx,
@@ -1479,13 +1483,13 @@ func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 // requests racing with the same answer exactly one gets true.
 //
 // The row's expiry is the challenge's rounded up to the next UTC midnight, as a
-// credential's is (nextDayBoundary): a row then dates the request it let
-// through, a code request included, only to the day, and the table holds a day
-// or two of answers. Each spend first deletes a batch of the rows past their
-// expiry, and the daily sweep the rest (PruneSpentCaptchas). The cut-off is by
-// the server's clock, the one that decided the challenge was still good. SKIP
-// LOCKED leaves rows another spend is already deleting to it, so posts
-// arriving together never queue behind each other's pruning.
+// credential's is (nextDayBoundary), so the only date a row stores is the day,
+// and the table holds a day or two of answers. Each spend first deletes a batch
+// of the rows past their expiry, and the daily sweep the rest
+// (PruneSpentCaptchas). The cut-off is by the server's clock, the one that
+// decided the challenge was still good. SKIP LOCKED leaves rows another spend
+// is already deleting to it, so posts arriving together never queue behind each
+// other's pruning.
 func (s *Store) SpendCaptcha(ctx context.Context, key []byte, expires, now time.Time) (bool, error) {
 	if _, err := s.pool.Exec(ctx, `
 		DELETE FROM captcha_spent WHERE signature_hash IN (

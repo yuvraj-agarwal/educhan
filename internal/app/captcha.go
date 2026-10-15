@@ -35,9 +35,9 @@ import (
 // The challenge is ALTCHA's "deterministic" kind. The server picks the counter
 // itself, derives its key, and publishes the first half of that key as the
 // prefix to find, together with an HMAC of the whole key. Checking an answer is
-// then two HMACs, never a key derivation, so an answer costs the server the
-// same whether it is right or wrong, and the work a challenge asks for is
-// exactly the counter the server chose, not a matter of luck.
+// then at most two HMACs, never a key derivation, so a wrong answer costs the
+// server no more than a right one, and the work a challenge asks for is set by
+// the counter the server chose, not a matter of luck.
 //
 // The challenge and the answer are in ALTCHA's own format (its "v2" challenge,
 // sent as base64 JSON), so its widget or any of its server libraries would
@@ -65,22 +65,24 @@ const (
 	// long post after the puzzle started when the reader moved into the box;
 	// the client solves a fresh one if its answer is about to run out.
 	captchaTTL = 30 * time.Minute
-	// defaultCaptchaWork is the average number of attempts a challenge asks
-	// for. At captchaCost that is about two seconds on a laptop in Chromium,
-	// which runs every worker's Web Crypto on one thread, and a few more on a
-	// slow phone, spent while the post is being written.
+	// defaultCaptchaWork is the work a challenge asks for: the average counter
+	// its answer is at, which takes one attempt more than that to reach
+	// (captchaCounter). At captchaCost that is about two seconds on a laptop
+	// in Chromium, which runs every worker's Web Crypto on one thread, and a
+	// few more on a slow phone, spent while the post is being written.
 	defaultCaptchaWork = 1500
 	// maxCaptchaWork caps the work a challenge asks for, scaled up for a busy
 	// address included, and EDUCHAN_CAPTCHA_WORK is held to an eighth of it
 	// (captchaMaxScale). A counter is drawn from up to just under twice the
-	// work, so the base puzzle, the one people are given, asks at most 14,999
-	// attempts: about twenty seconds on a laptop and under a minute on a slow
-	// phone, inside the two minutes app.js gives a puzzle before saying it
-	// could not finish. Only an address asking for challenges far faster than
-	// anyone posts is given more than that.
+	// work, and the worker tries every counter from zero up to it, so the base
+	// puzzle, the one people are given, asks at most 15,000 attempts: about
+	// twenty seconds on a laptop and under a minute on a slow phone, inside the
+	// two minutes app.js gives a puzzle before saying it could not finish. Only
+	// an address asking for challenges far faster than anyone posts is given
+	// more than that.
 	maxCaptchaWork = 60000
 	// maxCaptchaPayload bounds an answer before it is decoded. A real one is
-	// about six hundred bytes.
+	// about seven hundred bytes.
 	maxCaptchaPayload = 4096
 )
 
@@ -182,7 +184,8 @@ type altchaVerifier struct {
 	// keySignKey signs a challenge's derived key, so an answer can be checked
 	// without deriving it again.
 	keySignKey []byte
-	// work is the average number of attempts a challenge at scale 1 asks for.
+	// work is the work a challenge at scale 1 asks for: the average counter,
+	// one fewer than the average attempts.
 	work int
 }
 
@@ -230,11 +233,12 @@ func (v *altchaVerifier) issue(now time.Time, scale int) (captchaChallenge, erro
 
 // captchaCounter draws the counter a challenge's answer is at: uniformly from
 // one to just under twice the work asked for, so it averages the work and is
-// never the free counter zero. The worker counts up from zero, so the counter
-// is also the number of attempts the answer takes. Every counter in the range
-// is as likely as any other, so counting up from the bottom is the best anyone
-// can do: a script that knows the range saves nothing over a browser, as it
-// would if the range started above zero and the browser did not.
+// never the free counter zero. The worker counts up from zero, so the answer
+// takes the counter plus one attempts: the work plus one on average, and at
+// most twice the work. Every counter in the range is as likely as any other,
+// so counting up from the bottom is the best anyone can do: a script that
+// knows the range saves nothing over a browser, as it would if the range
+// started above zero and the browser did not.
 func captchaCounter(work, scale int) (uint32, error) {
 	mean := min(max(int64(work), 1)*int64(max(scale, 1)), maxCaptchaWork)
 	n, err := rand.Int(rand.Reader, big.NewInt(2*mean-1))
@@ -347,9 +351,11 @@ func decodeCaptchaPayload(payload string) (captchaPayload, error) {
 
 // wellFormedCaptcha reports whether parameters have the shape this server
 // issues, before anything is hashed: the algorithm and key length it uses, and
-// lowercase hex of the right length everywhere hex belongs. A value that could
-// be written two ways would let one challenge's signature cover two texts. The
-// cost and expiry need no check of their own: the signature covers them.
+// lowercase hex of the right length everywhere hex belongs, so anything not
+// shaped like a challenge this server issued is turned away before any HMAC
+// is computed. One spent key per challenge rests on the signature, not on
+// this (see decodeCaptchaPayload). The cost and expiry need no check of their
+// own: the signature covers them.
 func wellFormedCaptcha(p captchaParameters) bool {
 	return p.Algorithm == captchaAlgorithm &&
 		p.KeyLength == captchaKeyLength &&
@@ -382,10 +388,10 @@ func hmacBytes(key, data []byte) []byte {
 /* Adaptive difficulty -------------------------------------------------------- */
 
 // captchaMeter counts the challenges each client address has asked for in the
-// current window. It holds an address and a count, never a time: the window is
-// a number, and an entry from an earlier window is dropped by the cooldown
-// sweep that forgets the flood-control entries, within cooldownSweepInterval of
-// its window ending.
+// current window. It holds an address, a count, and the minute the count
+// started, nothing finer, and an entry from an earlier window is dropped by
+// the cooldown sweep that forgets the flood-control entries, within
+// cooldownSweepInterval of its window ending.
 type captchaMeter struct {
 	window time.Duration
 	now    func() time.Time
@@ -483,9 +489,9 @@ func (m *captchaMeter) sweepExpired() {
 
 func (a *App) captchaEnabled() bool { return a.captcha != nil }
 
-// handleCaptcha issues a challenge. The client asks for one when a reader moves
-// into a box to write in, in a posting form or the code request form, never
-// when a page is drawn, so a reader who never starts to write never asks.
+// handleCaptcha issues a challenge. The client asks for one only on something a
+// reader does in a posting form or the code request form, moving into a box to
+// write in most often, never when a page is drawn.
 func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 	if !a.captchaEnabled() {
 		writeError(w, http.StatusNotFound, "the captcha is not switched on here")
@@ -510,12 +516,16 @@ func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 }
 
 // checkCaptcha holds a request to the captcha, when it is on and the request is
-// not exempt, and answers the ticket to spend once flood control has let the
-// request through. A nil ticket with ok true means there is nothing to spend.
+// not exempt, and answers the ticket to spend once flood control's first check
+// has let the request through. A nil ticket with ok true means there is nothing
+// to spend.
 //
 // It refuses every answer it can before flood control: a missing, malformed,
 // wrong or expired one, and one already spent, so a captcha refusal costs no
-// cooldown. It writes nothing, so a request refused afterwards, by flood
+// cooldown. Looking up a spent one here, rather than leaving it to the spend,
+// tells a replay "used" at once, even while a cooldown runs, so the page
+// solves a fresh puzzle instead of waiting out a cooldown for an answer that
+// can never work. It writes nothing, so a request refused afterwards, by flood
 // control or anything else before the spend, leaves its answer for the retry.
 func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload string, exempt bool) (*captchaTicket, bool) {
 	if !a.captchaEnabled() || exempt {
@@ -547,15 +557,20 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 }
 
 // captchaSpentHeader is set, to "spent", on every response to a request whose
-// answer has been spent, a refusal written later included: an image that
-// cannot be read, or a thread that filled up while the post was on its way.
+// answer has been spent, a refusal written later included: a cooldown another
+// request from the same address started meanwhile, an image that cannot be
+// read, or a thread that filled up while the post was on its way.
 // The client keeps its answer through a refusal without it and solves the
 // next one as soon as a refusal with it arrives.
 const captchaSpentHeader = "Educhan-Captcha"
 
 // spendCaptcha marks a checked answer used, refusing a second use of it. It
-// comes after flood control, so an answer is spent only by a request that is
-// going ahead, and before anything costly or lasting is done for it.
+// comes once flood control's first check has found nothing to wait out and
+// before the request's cooldowns start, so a request refused here starts no
+// cooldown, and nothing costly or lasting has been done for it yet. A request
+// flood control then refuses on its second check, because another from the
+// same address started a cooldown in between, has spent its answer, and the
+// header says so.
 func (a *App) spendCaptcha(w http.ResponseWriter, r *http.Request, ticket *captchaTicket) bool {
 	if ticket == nil {
 		return true
@@ -567,7 +582,8 @@ func (a *App) spendCaptcha(w http.ResponseWriter, r *http.Request, ticket *captc
 	}
 	// Another request spent the same answer between this one's check and
 	// now: a replay racing its original, the one refusal as used that comes
-	// after flood control.
+	// after flood control's check. Its cooldowns have not started, so the
+	// replay costs nobody a wait.
 	if !fresh {
 		refuseCaptchaUsed(w)
 		return false

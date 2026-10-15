@@ -133,13 +133,29 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
   --member="serviceAccount:${BUILD_SA}" --role=roles/storage.objectViewer >/dev/null
 
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
-exists gcloud sql instances describe "$DB_INSTANCE" ||
+# Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
+# sweep (below), so a backup holds as little as possible of what the sweep
+# deletes. Point-in-time recovery stays off, the gcloud default for this
+# edition, and is never changed here. deploy/README.md section 2.2 says what
+# each of these keeps. An existing instance with backups on gets only the start
+# time moved, so a re-run never shortens a retention someone has raised and
+# never turns backups back on where someone turned them off.
+if exists gcloud sql instances describe "$DB_INSTANCE"; then
+  BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
+    --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
+  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *05:00 ]]; then
+    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null ||
+      echo "Could not move the backup window to 05:00 UTC; see deploy/README.md section 2.2." >&2
+  fi
+else
   gcloud sql instances create "$DB_INSTANCE" \
     --database-version=POSTGRES_16 \
     --edition=ENTERPRISE \
     --tier=db-f1-micro \
     --region="$REGION" \
-    --storage-size=10GB
+    --storage-size=10GB \
+    --backup --backup-start-time=05:00 --retained-backups-count=7
+fi
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"
 CLOUDSQL_INSTANCE="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
@@ -206,13 +222,20 @@ else
 fi
 
 step "Deploying the Cloud Run service"
+# --update-*, not --set-*: a re-run sets the values below and keeps any other
+# variable or secret added by hand since, where --set-* would drop it and switch
+# that feature off without a word. Two things are enforced on every run all the
+# same: uploads stay off, and verification stays off (its secret is removed,
+# whether it was set as a secret or a plain variable) until a mail sender exists.
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
+  --remove-secrets EDUCHAN_VERIFY_SECRET \
+  --update-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --remove-env-vars EDUCHAN_VERIFY_SECRET \
   --cpu 1 --memory 512Mi --concurrency 80 \
   --min-instances "$MIN_INSTANCES" --max-instances 4 \
   "${PUBLIC_ACCESS[@]}"
@@ -227,14 +250,15 @@ gcloud run jobs deploy "$SWEEP_JOB" \
   --service-account "$RUN_SA" \
   --args=-sweep \
   --set-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest" \
-  --set-env-vars "${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest" \
+  --update-env-vars "${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
   --tasks 1 --max-retries 1 --task-timeout 15m \
   --cpu 1 --memory 512Mi
 gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
   --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
 SCHEDULE_ARGS=(
   --location "$REGION"
+  # Done, retry included, before the database's backup window opens at 05:00 UTC.
   --schedule "17 3 * * *" --time-zone "Etc/UTC"
   --http-method POST
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${SWEEP_JOB}:run"
@@ -267,8 +291,8 @@ Moderation key (keep it private; it goes in the X-Mod-Key header):
 
 Image uploads and institutional verification are switched off.
 
-Expired archived threads are deleted daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run
-it now and see what it did:
+Expired archived threads, and spent captcha answers past their day, are deleted
+daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run it now and see what it did:
 
   gcloud run jobs execute ${SWEEP_JOB} --region ${REGION} --wait
 

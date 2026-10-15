@@ -67,6 +67,64 @@ func submitHandler(t *testing.T, script string) string {
 	return jsBlock(t, script, `el.main.addEventListener("submit", async (event) => {`, "});")
 }
 
+// squash collapses every run of white space to one space, so a test can name
+// a statement that spans lines, or has a comment line taken out of it, on one
+// line of its own.
+func squash(src string) string {
+	return strings.Join(strings.Fields(src), " ")
+}
+
+// jsBraced returns src from the one place opener occurs to the brace that
+// closes the brace opener ends with, or fails the test. Braces inside string
+// and template literals are skipped; app.js has none in a regular expression
+// in the code these tests read this way.
+func jsBraced(t *testing.T, src, opener string) string {
+	t.Helper()
+	if n := strings.Count(src, opener); n != 1 || !strings.HasSuffix(opener, "{") {
+		t.Fatalf("found %q %d times; this test reads exactly one, ending in {", opener, n)
+	}
+	start := strings.Index(src, opener)
+	depth := 0
+	for i := start + len(opener) - 1; i < len(src); i++ {
+		switch c := src[i]; c {
+		case '"', '\'', '`':
+			for i++; i < len(src) && src[i] != c; i++ {
+				if src[i] == '\\' {
+					i++
+				}
+			}
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				return src[start : i+1]
+			}
+		}
+	}
+	t.Fatalf("nothing closes the brace %q opens", opener)
+	return ""
+}
+
+// inOrder fails the test unless every one of steps occurs in src, each after
+// the one before it.
+func inOrder(t *testing.T, what, src string, steps ...string) {
+	t.Helper()
+	at := 0
+	for i, step := range steps {
+		n := strings.Index(src[at:], step)
+		if n < 0 {
+			if strings.Contains(src, step) {
+				t.Errorf("%s: %q comes before %q, not after it", what, step, steps[i-1])
+			} else {
+				t.Errorf("%s: no %q", what, step)
+			}
+			return
+		}
+		at += n + len(step)
+	}
+}
+
 // The poster key ties every unbadged post from a browser together, and the
 // credential is the badge; Verified Anonymity rests on each leaving the
 // browser only on a post, and never the two together. A refactor that moved
@@ -407,16 +465,36 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 			t.Errorf("%s handles the captcha; a draft carries what the poster wrote and nothing else", name)
 		}
 	}
-	// The two requests that carry an answer may keep other things, a post's
-	// name say, but nothing that mentions the answer.
-	keeps := regexp.MustCompile(`(` + strings.Join(append(banned, "captureDraft", "keepUnsentDraft"), "|") + `)[^;]*`)
-	for name, fn := range map[string]string{
-		"the submit handler": submitHandler(t, script),
-		"submitVerification": jsFunction(t, script, "submitVerification"),
+	// The two requests that carry an answer put it in their bodies in the
+	// closure they hand sendWithCaptcha, and that closure keeps nothing at
+	// all: no storage, no cookie, no draft. Around it, where the body that
+	// held the answer is still in reach, each keeps only what it is for: the
+	// submit handler the name of an unbadged post, and submitVerification the
+	// credential the server issued.
+	keepers := append(banned, "cookieStore", "caches", "storeCredential", "captureDraft", "restoreDraft", "keepUnsentDraft")
+	keeps := regexp.MustCompile(`\b(` + strings.Join(keepers, "|") + `)\b`)
+	for name, allowed := range map[string][]string{
+		"the submit handler": {"storageSet(NAME_STORAGE_KEY, name)", "storageGet(NAME_STORAGE_KEY)"},
+		"submitVerification": {"storeCredential(issued.credential)"},
 	} {
-		for _, call := range keeps.FindAllString(withoutComments(fn), -1) {
-			if lower := strings.ToLower(call); strings.Contains(lower, "answer") || strings.Contains(lower, "captcha") {
-				t.Errorf("%s keeps the captcha answer: %s", name, call)
+		code := withoutComments(submitHandler(t, script))
+		if name == "submitVerification" {
+			code = withoutComments(jsFunction(t, script, "submitVerification"))
+		}
+		send := jsBraced(t, code, "(answer) => {")
+		if !strings.Contains(send, "return api(") {
+			t.Errorf("%s's send closure no longer makes the request; this test reads it", name)
+		}
+		for _, call := range keeps.FindAllString(send, -1) {
+			t.Errorf("%s's send closure, which holds the answer, uses %s", name, call)
+		}
+		for _, at := range keeps.FindAllStringIndex(code, -1) {
+			ok := false
+			for _, call := range allowed {
+				ok = ok || strings.HasPrefix(code[at[0]:], call)
+			}
+			if !ok {
+				t.Errorf("%s keeps something besides %v: %s", name, allowed, strings.SplitN(code[at[0]:], "\n", 2)[0])
 			}
 		}
 	}
@@ -437,17 +515,26 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	}
 }
 
-// A reader who never starts to write never asks for a captcha: the challenge
-// is fetched in one place, and the only things that start a fetch before a
-// request needs it are a reader moving into a box to write in, or unticking
-// the badge in a form they are writing in, and a post or code request refused
-// after the server spent its answer, which the reader is about to send again.
+// A page that is drawn and read asks for no captcha. The challenge is fetched
+// in one place, and the only things that start a fetch before a request needs
+// it are focus moving into a box to write in, in a form that needs an answer
+// (however it gets there: a click or tap, Tab, a quote, "Use a different
+// address"), unticking the badge on a form whose tick stopped a puzzle or
+// that has something written or attached, and a post or code request refused
+// after the server spent its answer, which the reader, still on its form, is
+// about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 
 	if n := strings.Count(code, `"/api/captcha"`); n != 1 || !strings.Contains(jsFunction(t, script, "solveCaptcha"), `api("/api/captcha", { signal })`) {
 		t.Errorf(`"/api/captcha" appears %d times in app.js; want once, in solveCaptcha`, n)
+	}
+	// An answer held and still good is sent rather than a fresh one solved,
+	// and one past CAPTCHA_LIFETIME_MS is replaced.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "captchaAnswer")), "if (captcha.answer && Date.now() < captcha.goodUntil) {") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "solveCaptcha")), "captcha.goodUntil = fetched + CAPTCHA_LIFETIME_MS;") {
+		t.Error("captchaAnswer no longer reuses a held answer only while it is good")
 	}
 	calls := map[string]struct {
 		count int
@@ -467,19 +554,36 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 			}
 		}
 	}
-	focus := jsBlock(t, script, `el.main.addEventListener("focusin", (event) => {`, "});")
-	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
-	toggled := withoutComments(jsFunction(t, script, "captchaBadgeToggled"))
-	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 3 || !strings.Contains(focus, "prepareCaptcha()") ||
-		!strings.Contains(send, `=== "spent") {
-          dropCaptcha(answer);
-          if (needsIt()) prepareCaptcha();`) ||
-		!strings.Contains(toggled, `} else if (captchaFormNeedsIt(box.form)) {
-    prepareCaptcha();`) {
-		t.Errorf("prepareCaptcha() is called %d times in app.js; want three, from the focusin listener, on unticking the badge, and after a refusal that spent the answer", n)
+	focus := squash(withoutComments(jsBlock(t, script, `el.main.addEventListener("focusin", (event) => {`, "});")))
+	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
+	toggled := squash(withoutComments(jsFunction(t, script, "captchaBadgeToggled")))
+	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 3 ||
+		!strings.Contains(focus, `if (box.matches("textarea, input[type=text], input[type=email]") && captchaFormNeedsIt(box.form)) { prepareCaptcha(); }`) ||
+		!strings.Contains(send, `=== "spent") { dropCaptcha(answer); if (needsIt() && onScreen()) prepareCaptcha(); }`) ||
+		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) {
+		t.Errorf("prepareCaptcha() is called %d times in app.js; want three: from the focusin listener in a box to write "+
+			"in a form that needs an answer, on unticking the badge where the tick stopped a puzzle or something is "+
+			"written, and after a refusal that spent the answer of a form still on screen", n)
 	}
-	if !strings.Contains(focus, `box.matches("textarea, input[type=text], input[type=email]")`) {
-		t.Error("the focusin listener no longer starts the puzzle only from a box to write in")
+	// Unticking starts the puzzle again only where the tick stopped one, which
+	// stopCaptcha says, or where the form holds some of the post already.
+	if !strings.Contains(toggled, "if (box.checked) { if (stopCaptcha() && form) { captchaStoppedByBadge.add(form); } return; }") ||
+		!strings.Contains(toggled, "const stopped = Boolean(form) && captchaStoppedByBadge.delete(form);") {
+		t.Error("captchaBadgeToggled no longer remembers which forms' ticks stopped a puzzle")
+	}
+	stop := squash(withoutComments(jsFunction(t, script, "stopCaptcha")))
+	if !strings.Contains(stop, "captcha.stop = null; return true; } return false; }") {
+		t.Error("stopCaptcha no longer says whether it stopped a puzzle")
+	}
+	writing := squash(withoutComments(jsFunction(t, script, "captchaFormHasWriting")))
+	for _, want := range []string{`return Boolean(box && box.value.trim());`,
+		`return written("subject") || written("body") || Boolean(image && image.files && image.files.length);`} {
+		if !strings.Contains(writing, want) {
+			t.Errorf("captchaFormHasWriting no longer reads the subject, the message and the image: missing %s", want)
+		}
+	}
+	if strings.Contains(writing, `"name"`) {
+		t.Error("captchaFormHasWriting reads the name, which the form is drawn with")
 	}
 	for _, name := range []string{"render", "formHTML", "verifyViewHTML", "loadSite"} {
 		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(fn, "Captcha(") {
@@ -493,15 +597,21 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 // code request always needs one when the captcha is on.
 func TestCaptchaIsSkippedOnlyByABadgedPost(t *testing.T) {
 	script := appScript(t)
-	toggled := withoutComments(jsFunction(t, script, "captchaBadgeToggled"))
-	stop := withoutComments(jsFunction(t, script, "stopCaptcha"))
+	toggled := squash(withoutComments(jsFunction(t, script, "captchaBadgeToggled")))
+	stop := squash(withoutComments(jsFunction(t, script, "stopCaptcha")))
 	waits := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
 	change := withoutComments(jsBlock(t, script, `el.main.addEventListener("change", (event) => {`, "});"))
 	if !strings.Contains(change, "captchaBadgeToggled(event.target);") ||
-		!strings.Contains(toggled, "if (box.checked) {\n    stopCaptcha();") ||
+		!strings.Contains(toggled, "if (box.checked) { if (stopCaptcha() && form) {") ||
 		!strings.Contains(stop, "if (captcha.stop && captcha.waiting === 0) {") ||
 		!strings.Contains(waits, "captcha.waiting += 1;") || !strings.Contains(waits, "captcha.waiting -= 1;") {
 		t.Error("ticking the badge no longer stops a puzzle nobody is waiting for")
+	}
+	// Stopping it aborts the solve, which terminates every copy of the worker
+	// (TestCaptchaWorkersAreAlwaysStopped), and forgets it, so the next start
+	// solves afresh rather than waiting on the one stopped.
+	if !strings.Contains(stop, "{ captcha.stop.abort(); captcha.solving = null; captcha.stop = null; return true; }") {
+		t.Error("stopCaptcha no longer aborts the puzzle and forgets it")
 	}
 	submit := withoutComments(submitHandler(t, script))
 	if !strings.Contains(submit, "() => state.site.captcha && !held,") {
@@ -549,15 +659,48 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		t.Error(`runCaptchaWorkers no longer asks the worker for counterMode "uint32", the one captchaKey matches`)
 	}
 
+	// A worker gives up at CAPTCHA_TIMEOUT_MS, which has to leave a slow phone
+	// time for the hardest puzzle the server gives at the base work. The work
+	// is at most maxCaptchaWork/captchaMaxScale (EDUCHAN_CAPTCHA_WORK's
+	// ceiling) and the counter under twice the work (captchaCounter), so that
+	// puzzle takes fewer than 2*maxCaptchaWork/captchaMaxScale attempts.
+	// slowAttempt is what one attempt at captchaCost is allowed to cost a slow
+	// phone: three times the 1.3 ms or so a laptop's Chromium takes, by
+	// defaultCaptchaWork's two seconds for 1500.
+	const slowAttempt = 4 * time.Millisecond
+	m = regexp.MustCompile(`(?m)^const CAPTCHA_TIMEOUT_MS = ([0-9 *]+);$`).FindStringSubmatch(script)
+	if m == nil {
+		t.Fatal("app.js has no CAPTCHA_TIMEOUT_MS as a product of numbers; this test reads it")
+	}
+	timeout := time.Millisecond
+	for _, factor := range strings.Split(m[1], "*") {
+		n, err := strconv.Atoi(strings.TrimSpace(factor))
+		if err != nil {
+			t.Fatalf("CAPTCHA_TIMEOUT_MS = %s: %v", m[1], err)
+		}
+		timeout *= time.Duration(n)
+	}
+	if hardest := time.Duration(2*maxCaptchaWork/captchaMaxScale) * slowAttempt; hardest > timeout {
+		t.Errorf("a worker gives up after %s, but the hardest base puzzle can take a slow phone %s", timeout, hardest)
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), "timeout: CAPTCHA_TIMEOUT_MS,") {
+		t.Error("runCaptchaWorkers no longer gives the worker CAPTCHA_TIMEOUT_MS")
+	}
+
 	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
 	if !strings.Contains(send, "err.payload && err.payload.captcha") || !strings.Contains(send, `reason === "`+captchaMissing+`"`) {
 		t.Errorf("sendWithCaptcha no longer reads the refusal's captcha field, or no longer knows %q", captchaMissing)
+	}
+	// "required" means the server wants an answer this page did not know to
+	// send, so the page knows from then on, and the resend carries one.
+	if !strings.Contains(squash(send), `if (reason === "`+captchaMissing+`") { state.site.captcha = true; }`) {
+		t.Errorf("a %q refusal no longer turns the captcha on for a page drawn without knowing", captchaMissing)
 	}
 	// A refusal of the answer drops it and sends once more, once: a loop here
 	// would hammer /api/captcha. The answer is dropped after a success, on a
 	// captcha refusal, and on a refusal that says it was spent, and nowhere else.
 	if !strings.Contains(send, "for (let retried = false; ; retried = true) {") ||
-		!strings.Contains(send, "if (retried || !needsIt()) {") || strings.Count(send, "dropCaptcha(answer);") != 3 {
+		!strings.Contains(send, "if (retried || !needsIt() || !onScreen()) {") || strings.Count(send, "dropCaptcha(answer);") != 3 {
 		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
 	// Any other refusal keeps the answer unless the server says it spent it,
@@ -570,6 +713,245 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	if !strings.Contains(code, `const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";`) || strings.Count(code, "new Worker(") != 1 ||
 		!strings.Contains(code, "new Worker(CAPTCHA_WORKER_SRC)") {
 		t.Error("app.js starts a worker other than the vendored ALTCHA one")
+	}
+}
+
+// Every copy of the worker started for a puzzle is stopped when the puzzle
+// ends, however it ends: at the first answer, when the last copy gives up,
+// when the puzzle is stopped (the badge ticked), and when starting the copies
+// throws part way. A copy left running would hold a reader's processor for up
+// to CAPTCHA_TIMEOUT_MS for nothing.
+func TestCaptchaWorkersAreAlwaysStopped(t *testing.T) {
+	run := squash(withoutComments(jsFunction(t, appScript(t), "runCaptchaWorkers")))
+	for _, want := range []string{
+		// finish settles the puzzle once, and terminates every copy started.
+		"const finish = (settle, value) => { if (settled) return; settled = true; for (const worker of workers) worker.terminate(); settle(value); };",
+		// Stopping the puzzle ends it there.
+		`signal.addEventListener("abort", () => finish(reject, signal.reason), { once: true });`,
+		// A copy is in workers as soon as it exists, so finish reaches it.
+		"const worker = new Worker(CAPTCHA_WORKER_SRC); workers.push(worker);",
+		// The answer, the last copy giving up, and a throw all end in finish.
+		"finish(resolve, solution);",
+		"if (left === 0) finish(reject, ",
+	} {
+		if !strings.Contains(run, want) {
+			t.Errorf("runCaptchaWorkers no longer stops every copy of the worker: missing %s", want)
+		}
+	}
+	// Nothing settles the puzzle but finish, except a stop that came before
+	// any copy was started.
+	if strings.Count(run, "resolve(") != 0 || strings.Count(run, "reject(") != 1 ||
+		strings.Index(run, "reject(signal.reason); return;") > strings.Index(run, "new Worker(") {
+		t.Error("runCaptchaWorkers settles the puzzle outside finish, which terminates the copies")
+	}
+	// The whole loop that starts the copies is inside one try, so a throw at
+	// any point in it, after some copies are running, reaches finish.
+	try := jsBraced(t, run, "try {")
+	after := run[strings.Index(run, try)+len(try):]
+	if !strings.HasPrefix(try, "try { for (let i = 0; i < count; i++) {") || !strings.HasSuffix(try, "}); } }") ||
+		!strings.HasPrefix(after, " catch { finish(reject, failed()); }") {
+		t.Error("runCaptchaWorkers starts its copies outside a try whose catch stops them all")
+	}
+}
+
+// The puzzle is never worked on for nothing. A page that cannot run the
+// worker is told so before a challenge is fetched: one that is not a secure
+// context, which no browser gives Web Crypto, that the check needs https, and
+// one without Worker or Web Crypto that its browser could not finish it. And
+// a response that is not a challenge, a proxy's page say, is taken for a
+// server that could not make one before any worker is started on it.
+func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
+	script := appScript(t)
+	inOrder(t, "solveCaptcha", squash(withoutComments(jsFunction(t, script, "solveCaptcha"))),
+		"if (!window.isSecureContext) { throw new Error(CAPTCHA_INSECURE); }",
+		`if (typeof Worker !== "function" || !(window.crypto && crypto.subtle)) { throw new Error(CAPTCHA_FAILED); }`,
+		`challenge = await api("/api/captcha", { signal });`,
+		`if ( !challenge || !challenge.parameters || typeof challenge.parameters !== "object" || `+
+			`typeof challenge.signature !== "string" ) { throw new Error(CAPTCHA_UNAVAILABLE); }`,
+		"await runCaptchaWorkers(challenge, signal);",
+	)
+	// No browser passes the check on such a page, so the reader is not sent
+	// to try another.
+	insecure := jsString(t, script, "CAPTCHA_INSECURE")
+	if !strings.Contains(insecure, "needs a secure (https) connection") || !strings.Contains(insecure, "nothing was sent") ||
+		strings.Contains(insecure, "browser") {
+		t.Errorf("CAPTCHA_INSECURE should say the check needs https and nothing was sent, and nothing about browsers: %q", insecure)
+	}
+}
+
+// A post or a code request may wait seconds on its puzzle, and the reader can
+// leave meanwhile: go to another page, or press Update, which draws the form
+// again with the post still in it. A request whose form has gone by the time
+// its answer is ready is not sent, and its answer is kept for the next press.
+// Sent or not, a request whose form has gone neither navigates, resets nor
+// redraws anything, and says nothing on the page the reader went to.
+func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
+	script := appScript(t)
+	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on, "return form.isConnected && state.route === route;") {
+		t.Error("formOnScreen no longer asks that the form is in the document and its page still the one asked for")
+	}
+
+	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
+	inOrder(t, "sendWithCaptcha", send,
+		"async function sendWithCaptcha(needsIt, send, solving, onScreen) {",
+		"answer = await captchaAnswer();",
+		"if (!onScreen()) { throw new Error(",
+		"const result = await send(answer);",
+	)
+	if check, sent := strings.Index(send, "if (!onScreen()) { throw"), strings.Index(send, "await send(answer)"); check >= 0 && sent > check &&
+		strings.Contains(send[check:sent], "dropCaptcha") {
+		t.Error("sendWithCaptcha drops the answer of a request it does not send")
+	}
+	for _, want := range []string{
+		// No second send, and no next puzzle, for a form that has gone.
+		"if (retried || !needsIt() || !onScreen()) { throw err; }",
+		"if (needsIt() && onScreen()) prepareCaptcha();",
+	} {
+		if !strings.Contains(send, want) {
+			t.Errorf("sendWithCaptcha no longer stops for a form that has gone: missing %s", want)
+		}
+	}
+
+	submit := squash(withoutComments(submitHandler(t, script)))
+	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
+	for name, fn := range map[string]string{"the submit handler": submit, "submitVerification": verify} {
+		// The page is the one on screen at the press, and sendWithCaptcha
+		// checks against it.
+		inOrder(t, name, fn,
+			"const route = state.route; const onScreen = () => formOnScreen(form, route);",
+			"onScreen, );",
+			"} catch (err) { const shown = onScreen(); release(shown); button.textContent = label;",
+			"if (!shown) { return; }",
+		)
+		catch := fn[strings.Index(fn, "} catch (err) {"):]
+		before := catch[:max(strings.Index(catch, "if (!shown) { return; }"), 0)]
+		for _, banned := range []string{"showNotice(", "navigate(", "reset(", "el.main", "redrawThreadCounts(", "state.thread", "blockFileField("} {
+			if strings.Contains(before, banned) {
+				t.Errorf("%s's refusal uses %s before it knows the form is still on screen", name, banned)
+			}
+		}
+	}
+	// A post that went from a form since gone leaves the page the reader went
+	// to as it is, and a code request does not draw /verify over it.
+	inOrder(t, "the submit handler", submit, "onScreen, );", "if (!onScreen()) { return; }", "form.reset();", "await navigate(")
+	inOrder(t, "submitVerification", verify,
+		"onScreen, );", "if (!onScreen()) { return; }", "el.main.innerHTML = verifyViewHTML();",
+		`await api("/api/verify/confirm"`, "storeCredential(issued.credential);", "if (!onScreen()) {", "await renderVerify();",
+	)
+}
+
+// From the press until the answer, a post's or a code request's form is
+// held: its controls switched off, once it has been read, so nothing the
+// reader changes meanwhile (a badge ticked, an address corrected, a line
+// added) is left out of what is sent, or wiped by the reset after it. A
+// refusal switches back on what was switched off, and nothing else, before
+// the recovery that may switch the picker off for good, and gives the focus
+// that switching off took back to the form's button; and nothing writes into
+// a held form from outside it: not a quote, not a dropped image.
+func TestAPendingFormIsHeld(t *testing.T) {
+	script := appScript(t)
+	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))
+	for _, want := range []string{
+		"const controls = Array.from(form.elements).filter((control) => !control.disabled);",
+		"for (const control of controls) { control.disabled = true; }",
+		"return (refocus) => { for (const control of controls) { control.disabled = false; }",
+	} {
+		if !strings.Contains(hold, want) {
+			t.Errorf("holdForm no longer switches off exactly the controls that were on, and back: missing %s", want)
+		}
+	}
+	if strings.Count(hold, "form.elements") != 1 || strings.Count(hold, ".disabled = false") != 1 {
+		t.Error("holdForm switches on controls it did not switch off")
+	}
+	// Switching off the focused control leaves the focus nowhere; a form that
+	// had it at the press, refused while on screen, has it back on its button.
+	inOrder(t, "holdForm", hold,
+		"const focused = form.contains(document.activeElement);",
+		"control.disabled = true;",
+		`if (refocus && focused) { form.querySelector('button[type="submit"]')?.focus(); }`,
+	)
+	if n := strings.Count(withoutComments(script), "= holdForm(form);"); n != 2 {
+		t.Errorf("holdForm(form) is called %d times; want twice, in the submit handler and submitVerification", n)
+	}
+
+	submit := squash(withoutComments(submitHandler(t, script)))
+	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
+	inOrder(t, "the submit handler", submit, "const data = new FormData(form);", "const release = holdForm(form);",
+		"sendWithCaptcha(", "} catch (err) {", "release(shown);")
+	inOrder(t, "submitVerification", verify, "const data = new FormData(form);", "const release = holdForm(form);",
+		"sendWithCaptcha(", `await api("/api/verify/confirm"`, "} catch (err) {", "release(shown);")
+	for name, fn := range map[string]string{"the submit handler": submit, "submitVerification": verify} {
+		// The button is held with the rest, and released only on a refusal:
+		// after a success the form is replaced.
+		if strings.Count(fn, "release(") != 1 || strings.Contains(fn, "button.disabled") {
+			t.Errorf("%s switches its controls on somewhere besides its refusal, or its button apart from them", name)
+		}
+	}
+	if blocked, released := strings.Index(submit, "blockFileField("), strings.Index(submit, "release(shown);"); blocked < released {
+		t.Error("the submit handler switches its controls back on after switching the picker off, which turns the picker back on")
+	}
+
+	if quote := withoutComments(jsFunction(t, script, "quoteTarget")); !strings.Contains(quote, `textarea[name="body"]:not(:disabled)`) {
+		t.Error("quoteTarget writes a quote into a reply box held while its post is pending")
+	}
+	if set := squash(withoutComments(jsFunction(t, script, "setFile"))); !strings.Contains(set,
+		`if (input.disabled) { if (field.classList.contains("blocked")) { showNotice(field.querySelector(".file-blocked").textContent); } return false; }`) {
+		t.Error("setFile takes a file into a picker held while its post is pending, or says nothing for a blocked one")
+	}
+	drag := squash(withoutComments(jsBlock(t, script, `document.addEventListener("dragover", (event) => {`, "});")))
+	if !strings.Contains(drag, `if (field && !field.querySelector(".file-input").disabled) { field.classList.add("dragging"); }`) {
+		t.Error("a picker held while its post is pending is still shown as a place to drop an image")
+	}
+}
+
+// The FAQ's account of the check is the page's: the puzzle starts when focus
+// moves into a box to write in, which quoting a post does too, and a press
+// before it is solved waits with the button saying what the FAQ says it says.
+func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
+	script := appScript(t)
+	at := strings.Index(script, `id: "faq-check",`)
+	if at < 0 {
+		t.Fatal(`app.js has no FAQ entry "faq-check"; this test reads it`)
+	}
+	answer := script[at:]
+	answer = answer[strings.Index(answer, "answer: `")+len("answer: `"):]
+	answer = squash(answer[:strings.Index(answer, "`")])
+	for _, want := range []string{
+		"the puzzle starts when you move into a box to write in, or quote a post,",
+		"If the puzzle hasn't finished when you press the button, the button says <strong>Checking…</strong> until it has.",
+	} {
+		if !strings.Contains(answer, want) {
+			t.Errorf("the FAQ's answer on the anti-spam check no longer says %q", want)
+		}
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "insertQuote")), "textarea.focus();") {
+		t.Error("quoting a post no longer moves the focus into the reply box, which is what starts the puzzle")
+	}
+	for name, fn := range map[string]string{
+		"the submit handler": submitHandler(t, script),
+		"submitVerification": jsFunction(t, script, "submitVerification"),
+	} {
+		if !strings.Contains(fn, `button.textContent = solving ? "Checking…" : sending;`) {
+			t.Errorf("%s no longer says Checking… on its button while it waits for the puzzle", name)
+		}
+	}
+}
+
+// A post refused by the captcha keeps what was in its form, and the notice
+// says so in the terms of what was there: text in the box, or only an image.
+func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
+	script := appScript(t)
+	message := squash(withoutComments(jsFunction(t, script, "errorMessage")))
+	branch := jsBraced(t, message, "if (err.status === 403 && err.payload && err.payload.captcha) {")
+	m := regexp.MustCompile(`return hasText \? "([^"]*)" : "([^"]*)";`).FindStringSubmatch(branch)
+	if m == nil {
+		t.Fatalf("errorMessage no longer words a post the captcha refused by whether it had text: %s", branch)
+	}
+	if !strings.Contains(m[1], "Your text is still in the box") || strings.Contains(m[2], "text") || !strings.Contains(m[2], "image") {
+		t.Errorf("a refused post with text should hear its text is in the box, and one without, that its image is: %q, %q", m[1], m[2])
+	}
+	if !strings.Contains(squash(withoutComments(submitHandler(t, script))), `showNotice(errorMessage(err, { hasText: body.trim() !== "" }));`) {
+		t.Error("the submit handler no longer tells errorMessage whether the post had text")
 	}
 }
 
