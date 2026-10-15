@@ -415,8 +415,8 @@ server that would refuse what it sends.
     between them is played on eight bytes a pixel, for the frames it may put back (see the
     GIF bullet below): at this size it is accepted only when its frames come to about two
     thirds of a canvas or less, half of one from an upload of up to about 2.4 MiB, and
-    from an upload of 8 MiB, two whole frames are accepted up to about 17 megapixels and
-    four up to about 15.
+    none from an upload over about 3.9 MiB; from an upload of 8 MiB, two whole frames are
+    accepted up to about 17 megapixels and four up to about 15.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,
@@ -534,8 +534,12 @@ server that would refuse what it sends.
     too, which takes frames that jump across the canvas from one picture to the next; with
     a table a frame, a rectangle looked at for a way of disposing of a frame that is not
     taken counts as a frame, so that the work of looking is bounded as the work of writing
-    is. Comments and application data such as XMP are dropped, and the background colour,
-    which browsers never draw, is written as the first entry.
+    is. Neither refusal can be read from the header, only found by playing the GIF, so a
+    file the header check admits is turned away only after it has been decoded and its
+    thumbnail made, and after flood control: it costs the post its cooldown, and the
+    upload, stored while it is processed, is removed. Comments and application data such
+    as XMP are dropped, and the background colour, which browsers never draw, is written
+    as the first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a

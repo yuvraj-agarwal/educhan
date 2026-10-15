@@ -614,14 +614,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   what was there before it was drawn, which the player keeps for that (`saved`) and which
   has to be transparent wherever the next picture is. Every choice is a function of the
   pictures and the choices before it, so "shown alike, stored alike" still holds, and
-  every GIF stored before frames could be put back is stored as the same bytes, the way it
-  took then being still the first that does. Where no way will do, the GIF is refused
-  (`ErrImageTooCostly`), as is one whose stored frames, with what `choose` looked at for
-  ways it did not take (`tried`, so that looking is bounded as writing is), come to more
-  than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
+  every GIF stored before frames could be put back that `Inspect` still admits is stored
+  as the same bytes, the way it took then being still the first that does; an animation
+  whose tables give more than 255 colours is now charged for `saved` from its header
+  (`gifFrames.many`, `gifPlayScratch`), so one on a large canvas from a large upload may
+  be refused that was stored before (the README's bands). Where no way will do, the GIF
+  is refused (`ErrImageTooCostly`), as is one whose stored frames, with what `choose`
+  looked at for ways it did not take (`tried`, so that looking is bounded as writing is),
+  come to more than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
   `TestGIFOfManyColoursPutsAFrameBack`, `TestGIFWaysNotTakenAreCharged`; after flood
-  control, `TestImagesRefusedByTheirHeaderStartNoCooldown`). The choice is greedy, one
-  frame at a time, so some GIFs a file could store one frame to a picture are refused:
+  control, `TestImagesRefusedByTheirHeaderStartNoCooldown`). Both refusals are known only
+  by playing the GIF: `Inspect` reads the header, where `gifFramePixels` holds the
+  declared frames to `maxGIFFramePixels`, but the put-back, restore-chain and
+  widened-clear work shows only as the frames are played, so a GIF the header admits
+  can still be refused here, after it has been decoded and its first picture
+  thumbnailed, and after flood control, so the cooldown is charged and `discardUpload`
+  removes the stored upload and nothing is kept (put back on a 2000² canvas, `Inspect`
+  admits 49 frames where the player takes 14; a 1000² restore chain, 199 where the
+  player takes 34). The work is already spent, so the cap is held where it is found, not
+  moved earlier. The choice is greedy, one frame at a time, so some GIFs a file could
+  store one frame to a picture are refused:
   frames put back two in a row, the second to the picture before the first, after the
   stored file left the first in place; or a clear whose widened rectangle takes in too
   many colours. Only frames that clear or put back what earlier ones drew can bring that
@@ -643,7 +655,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`randomSpritesGIF`), at least 50 of which are stored with frames put back, six times
   each, in thirteen ways that change nothing Chromium shows (`gifRewrites`, each checked
   against the model first) and requires every form stored as the original's bytes;
-  `hidden_test.go` pins the channels found, each as two uploads stored alike
+  `hidden_test.go` pins the channels found, each as uploads differing only in that
+  channel, stored as the same bytes
   (`TestGIFFramesOfOnePictureCarryNothing`, `TestGIFPixelsThatChangeNothingCarryNothing`,
   `TestGIFDisposalPaintedOverCarriesNothing`,
   `TestGIFTimeSplitBetweenFramesCarriesNothing`,
@@ -855,9 +868,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   client is told apart from a busy server.** A post waits for room in the upload budget
   under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
   does not get room gives up `processingAllowance` (15 s: the slowest admitted upload
-  measured, a 25-megapixel PNG with transparency of nearly 8 MiB, took about seven and a
-  half seconds on one core, and the slowest GIF, of four 25-megapixel frames, about two
-  and a half, so it leaves margin) before that deadline, with `media.ErrBusy`, and room
+  measured, a 25-megapixel PNG with transparency of nearly 8 MiB, took about eight
+  seconds on one core, and the slowest GIF, of four 25-megapixel frames, about two and a
+  half, so it leaves margin) before that deadline, with `media.ErrBusy`, and room
   that is there is taken however near the deadline. Its body then has `uploadReadTimeout`
   (30 s) to arrive, counted from when the wait ends, so time spent waiting for room is not
   taken out of the body's: a read deadline set on the connection through an
@@ -876,6 +889,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   nothing once that processing deadline has passed, on either backend (`LocalStore.Put`
   honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
   removes a written original on a context that has not ended (`context.WithoutCancel`).
+  Decoding, re-encoding and playing a GIF each watch that context as they run — a reader
+  that fails once it is done, a stored-buffer write that refuses once it is done, and a
+  check before each GIF frame — so a cancelled or timed-out upload stops partway rather
+  than running to the end (`TestProcessStopsWhenTheContextIsAlreadyDone`,
+  `TestProcessStopsWhenCancelledWhilePlayingAGIF`).
   The database commit runs on the request's own context, never a deadline: a deadline
   passing mid-commit could otherwise leave a post made and its image removed. A budget
   wait or a processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503`

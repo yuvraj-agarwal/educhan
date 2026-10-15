@@ -1801,10 +1801,10 @@ func TestAnimatedWebP(t *testing.T) {
 
 // An animated WebP is refused from its header, before anything is decoded
 // and before any cooldown, and with the same answer whatever its size: the
-// animation flag in its VP8X, or a frame among its chunks, is enough to know
-// that nothing here can decode it. A long one used to be charged as a
-// lossless picture of its whole length and refused as too large, a short one
-// let through to fail as it was decoded.
+// animation flag in its VP8X, or, in an extended file, a frame among its
+// chunks, is enough to know that nothing here can decode it. A long one used
+// to be charged as a lossless picture of its whole length and refused as too
+// large, a short one let through to fail as it was decoded.
 func TestAnimatedWebPIsRefusedFromItsHeader(t *testing.T) {
 	bitstream := sampleBitstream(t) // 320×200
 	frames := func(n, pad int) []riffChunk {

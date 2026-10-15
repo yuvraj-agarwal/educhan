@@ -682,7 +682,7 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		"cut.png", pngBytes(t, 24, 24)[:33], &out); status != http.StatusBadRequest || !strings.Contains(out.Error, "image could not be decoded") {
 		t.Fatalf("reply with pixels missing: %d %q, want 400 %q", status, out.Error, "image could not be decoded")
 	}
-	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image that failed to decode: %d, want 429: decoding comes after flood control", status)
 	}
 
@@ -693,22 +693,24 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		t.Fatalf("read fixture: %v", err)
 	}
 	const third = "198.51.100.23"
+	out = createdPost{}
 	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {third}}, replies, map[string]string{"body": "look"},
 		"repeat.webp", repeat, &out); status != http.StatusBadRequest || out.Error != media.ErrStoredTooLarge.Error() {
 		t.Fatalf("reply with a file that outgrows its upload: %d %q, want 400 %q", status, out.Error, media.ErrStoredTooLarge.Error())
 	}
-	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image too large once re-encoded: %d, want 429: encoding comes after flood control", status)
 	}
 
 	// A GIF that cannot be stored one frame to a picture, which only playing
 	// it can find, is refused after flood control too.
 	const fourth = "198.51.100.24"
+	out = createdPost{}
 	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {fourth}}, replies, map[string]string{"body": "look"},
 		"colours.gif", gifOfTooManyColoursAtOnce(t), &out); status != http.StatusBadRequest || out.Error != media.ErrImageTooCostly.Error() {
 		t.Fatalf("reply with a GIF of too many colours at once: %d %q, want 400 %q", status, out.Error, media.ErrImageTooCostly.Error())
 	}
-	if status := c.postFrom(fourth, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+	if status := c.postFrom(fourth, replies, map[string]any{"body": "and no image"}, &createdPost{}); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after a GIF of too many colours at once: %d, want 429: playing a GIF comes after flood control", status)
 	}
 }

@@ -94,7 +94,7 @@ const gifFrameOverhead int64 = 16 << 10
 
 // gifFramePlay is what a GIF holds for each of its frames besides what
 // image/gif keeps (gifFrameOverhead) while it is played and written:
-// what the walk read of the frame (gifFrameHead), 40 bytes, kept from before
+// what the walk read of the frame (gifFrameHead), 48 bytes, kept from before
 // the frames are played until they all have been. playGIF keeps nothing
 // else of a frame: what it writes of each goes into the stored file, which
 // storedLimit bounds, and it lets each frame go once it has played it.
