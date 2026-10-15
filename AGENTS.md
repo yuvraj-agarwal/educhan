@@ -685,7 +685,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because the library's default
   is a 16 MiB buffer for every object, kept only for retries a write without
   preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`).
-  The uploads' own bytes have a budget of their own, `uploadBudget` (64 MiB), which
+  The uploads' own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
   `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
   as much as the request's `Content-Length` or the most the body may be, and which the
   handler gives back when the post is answered (`submission.release`). For that to be

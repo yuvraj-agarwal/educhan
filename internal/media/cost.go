@@ -45,7 +45,7 @@ import (
 // is over it is refused from its header (ErrImageTooLarge); the others wait
 // for their share, for as long as their post's deadline allows
 // (processingAllowance). The uploads' own bytes are not in the estimates:
-// uploadBudget (budget.go) counts them, from before they are read. Between
+// UploadBudget (budget.go) counts them, from before they are read. Between
 // them the two budgets hold at most 320 MiB, whatever number of requests an
 // instance is let take at once. The rest of a process is not budgeted: idle,
 // about 40 MiB. Eighty 8 MiB uploads sent at once to a server run with a

@@ -14,14 +14,17 @@ import (
 // upload's fault: the same upload may go through a few seconds later.
 var ErrBusy = errors.New("media: no room to take the image in time")
 
-// uploadBudget is the memory the uploads themselves may take between them,
+// UploadBudget is the memory the uploads themselves may take between them,
 // from before their bytes are read until their post has been answered
 // (ReserveUpload): the request bodies, which processingBudget does not count.
 // It holds about eight bodies carrying an image at the default size limit
 // (8 MiB), and more of smaller ones. Without it nothing bounded how many were
 // held at once: every request a host lets an instance take at once (Cloud
-// Run's containerConcurrency) could be holding one.
-const uploadBudget int64 = 64 << 20
+// Run's containerConcurrency) could be holding one. A body is reserved whole,
+// so none may be larger than this: a reservation is capped at the budget, and
+// a body past it would be read beyond what was reserved. The server refuses
+// to start with an upload size limit that allows one.
+const UploadBudget int64 = 64 << 20
 
 // processingAllowance is how long before its deadline an upload stops waiting
 // for room, in either budget, so that what is left is time to decode,
@@ -57,7 +60,7 @@ func newBudget(size int64) *budget { return &budget{size: size} }
 // them.
 var (
 	processing = newBudget(processingBudget)
-	uploads    = newBudget(uploadBudget)
+	uploads    = newBudget(UploadBudget)
 )
 
 // ReserveUpload waits until n bytes fit in the upload budget, for a request

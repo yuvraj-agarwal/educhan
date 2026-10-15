@@ -537,7 +537,7 @@ client can leave the image picker off a server that would refuse what it sends.
   (150 by default), the opening post included. Past it a reply with an image answers
   `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
   `images` and `at_image_limit` so a client can hide the picker before anyone tries.
-- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`).
+- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 63 MiB at most.
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. An image stored as a JPEG has a JPEG thumbnail; the
   formats that can carry transparency get PNG thumbnails.
@@ -780,7 +780,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the `local` backend writes originals and thumbnails to; ignored by `gcs` |
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
-| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
+| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment; at most `66060288` (63 MiB), so the request carrying one fits the 64 MiB the server sets aside for upload bodies, and a larger value stops the server starting |
 | `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |

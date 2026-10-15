@@ -67,6 +67,10 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
 		return nil, err
 	}
+	// ConfigFromEnv refuses it too; this is for a Config built in code.
+	if err := checkUploadLimit(cfg); err != nil {
+		return nil, err
+	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
 	if err != nil {
 		return nil, fmt.Errorf("parse DATABASE_URL: %w", err)
