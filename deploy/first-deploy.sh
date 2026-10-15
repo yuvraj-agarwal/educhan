@@ -133,7 +133,7 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
   --member="serviceAccount:${BUILD_SA}" --role=roles/storage.objectViewer >/dev/null
 
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
-# Daily backups, seven kept, in a window opening at 04:00 UTC: after the 03:17
+# Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
 # sweep (below), so a backup holds as little as possible of what the sweep
 # deletes or rewrites. Point-in-time recovery stays off, the gcloud default for
 # this edition. deploy/README.md section 2.2 says what each of these keeps.
@@ -144,7 +144,7 @@ exists gcloud sql instances describe "$DB_INSTANCE" ||
     --tier=db-f1-micro \
     --region="$REGION" \
     --storage-size=10GB \
-    --backup --backup-start-time=04:00 --retained-backups-count=7
+    --backup --backup-start-time=05:00 --retained-backups-count=7
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"
 CLOUDSQL_INSTANCE="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
@@ -240,7 +240,7 @@ gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
   --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
 SCHEDULE_ARGS=(
   --location "$REGION"
-  # Before the database's backup window, which opens at 04:00 UTC.
+  # Done, retry included, before the database's backup window opens at 05:00 UTC.
   --schedule "17 3 * * *" --time-zone "Etc/UTC"
   --http-method POST
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${SWEEP_JOB}:run"
