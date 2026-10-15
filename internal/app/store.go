@@ -1108,6 +1108,14 @@ func (s *Store) ConfirmVerification(ctx context.Context, in confirmVerification)
 		case attempts >= maxVerifyAttempts:
 			outcome = errVerifyAttempts
 		case subtle.ConstantTimeCompare(codeHash, in.CodeHash) != 1:
+			if attempts+1 >= maxVerifyAttempts {
+				// The wrong code that spends the last attempt ends the
+				// verification there and then, and says so. Answered as just
+				// a wrong code, it would leave the page offering a box that not
+				// even the right code could get through.
+				outcome = errVerifyAttempts
+				break
+			}
 			_, err := tx.Exec(ctx,
 				`UPDATE verification_pending SET attempts = attempts + 1 WHERE token_hash = $1`, in.TokenHash)
 			outcome = errVerifyCode

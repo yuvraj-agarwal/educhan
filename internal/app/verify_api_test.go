@@ -299,7 +299,10 @@ func TestVerificationRejectsAWrongCode(t *testing.T) {
 }
 
 // A short code is only safe while guesses are counted, so the count is what
-// this asserts: five wrong answers and the verification is destroyed.
+// this asserts: five wrong answers and the verification is destroyed. The
+// fifth is answered as the end of it, not as one more wrong code: a wrong code
+// tells the page to keep the code box up for the right one, and after the
+// fifth not even the right one gets through.
 func TestVerificationCapsWrongGuesses(t *testing.T) {
 	h := verifyServer(t, nil)
 
@@ -308,26 +311,42 @@ func TestVerificationCapsWrongGuesses(t *testing.T) {
 	}
 	sent := h.mail.last(t)
 
-	for i := 0; i < maxVerifyAttempts; i++ {
-		wrong := fmt.Sprintf("%0*d", verifyCodeDigits, i)
-		if wrong == sent.Code {
+	wrong := 0
+	for i := 0; wrong < maxVerifyAttempts; i++ {
+		guess := fmt.Sprintf("%0*d", verifyCodeDigits, i)
+		if guess == sent.Code {
 			continue
 		}
-		if status, _ := h.confirmCode(wrong); status != http.StatusBadRequest {
-			t.Fatalf("guess %d: status %d, want 400", i, status)
+		wrong++
+		status, out := h.confirmCode(guess)
+		if wrong < maxVerifyAttempts {
+			if status != http.StatusBadRequest || !strings.Contains(out.Error, "not right") {
+				t.Fatalf("wrong guess %d: %d %q, want 400 saying the code is not right", wrong, status, out.Error)
+			}
+			if n := h.countRows("verification_pending"); n != 1 {
+				t.Fatalf("after wrong guess %d: %d pending rows, want the one still waiting", wrong, n)
+			}
+			continue
 		}
-	}
-
-	// Even the right code is refused now, and the pending row is gone with it.
-	status, out := h.confirmCode(sent.Code)
-	if status != http.StatusTooManyRequests {
-		t.Fatalf("after %d wrong guesses: status %d, want 429", maxVerifyAttempts, status)
-	}
-	if !strings.Contains(out.Error, "too many") {
-		t.Errorf("error = %q, want it to name the attempt limit", out.Error)
+		if status != http.StatusTooManyRequests {
+			t.Fatalf("wrong guess %d, the last allowed: status %d (%s), want 429", wrong, status, out.Error)
+		}
+		if !strings.Contains(out.Error, "too many") {
+			t.Errorf("error = %q, want it to name the attempt limit", out.Error)
+		}
 	}
 	if n := h.countRows("verification_pending"); n != 0 {
 		t.Errorf("%d pending rows survived the attempt cap, want 0", n)
+	}
+
+	// Even the right code is refused now: there is nothing left to confirm.
+	status, out := h.confirmCode(sent.Code)
+	if status != http.StatusBadRequest || out.Credential != "" {
+		t.Fatalf("the right code after %d wrong guesses: status %d (%s), want a 400 and no credential",
+			maxVerifyAttempts, status, out.Error)
+	}
+	if n := h.countRows("verification_credentials"); n != 0 {
+		t.Errorf("the attempt cap let %d credentials through, want 0", n)
 	}
 }
 

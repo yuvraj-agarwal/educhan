@@ -432,7 +432,9 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 // never left typing codes into a box nothing is waiting on. It knows those
 // refusals by the server's words, so they are checked against what the server
 // actually answers, and a wrong code, which leaves the verification pending,
-// must not be among them.
+// must not be among them. That holds for the wrong code that spends the last
+// attempt too: the server answers it as the end, so a box left up after a
+// wrong code still takes the right one.
 func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -482,7 +484,7 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 	sent = h.mail.last(t)
 	wrong := 0
 	var wrongWords string
-	for i := 0; wrong < maxVerifyAttempts; i++ {
+	for i := 0; wrong < maxVerifyAttempts-1; i++ {
 		guess := fmt.Sprintf("%0*d", verifyCodeDigits, i)
 		if guess == sent.Code {
 			continue
@@ -494,8 +496,16 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 		}
 		wrongWords = out.Error
 	}
-	status, out = h.confirmCode(sent.Code)
+	// The wrong code that spends the last attempt ends the verification, and
+	// is answered so: after it not even the right code gets through.
+	last := "999999"
+	if last == sent.Code {
+		last = "999998"
+	}
+	status, out = h.confirmCode(last)
 	check("CODE_GUESSES_SPENT", http.StatusTooManyRequests, status, out.Error)
+	status, out = h.confirmCode(sent.Code)
+	check("NO_CODE_PENDING", http.StatusBadRequest, status, out.Error)
 
 	// A wrong code leaves the verification pending, so the box stays for the
 	// right one.
