@@ -274,7 +274,8 @@ func holdReason(fields []*scannedField, contactCue bool) string {
 		return holdThreat
 	}
 	for _, f := range fields {
-		if f.anyMatch(selfHarmRules, selfHarmCheck) || f.anyMatch(selfHarmUrgeRules, urgeCheck) || f.asksForAMethod() {
+		if f.anyMatch(selfHarmRules, selfHarmCheck) || f.anyMatch(selfHarmUrgeRules, urgeCheck) || f.asksForAMethod() ||
+			f.goads() {
 			return holdSelfHarm
 		}
 	}
@@ -510,8 +511,9 @@ type scannedField struct {
 	// text, in readingPositions: the lengths of the fields before it, plus
 	// one for the gap after each. threatens sets it.
 	offset int
-	// reading caches readingPositions.
+	// reading caches readingPositions, and words the plain view's words.
 	reading []int32
+	words   *wordReading
 	// method caches asksForAMethod, which both the support step and the
 	// holds ask: 0 not yet known, 1 no, 2 yes.
 	method int8
@@ -2601,7 +2603,7 @@ var selfHarmRules = []rule{bothViews(`\b` + words(
 	`mar~`+words(`ja`, `jaa`, `jao`),
 	words(`suicide`, `khud~?kushi`, `khud~?khushi`)+`~`+words(`kar~le`, `kar~lo`, `karle`, `karlo`, `kr~le`,
 		`kr~lo`, `krle`, `krlo`),
-	words(`jaake`, `ja~ke`)+`~mar`,
+	words(`jaake`, `ja~ke`, `jaa~ke`)+`~mar`,
 	// Pro-eating-disorder content.
 	`thinspo`, `thinspiration`, `meanspo`, `bonespo`, `skinnyspo`, `pro~?ana`, `pro~?mia`,
 	words(`ana`, `mia`)+`~`+words(`coach`, `buddy`, `tips?`),
@@ -2624,9 +2626,9 @@ var selfHarmUrgeRules = []rule{
 		`jump~in~front~of~`+words(`a`, `the`)+`~`+words(`train`, `bus`, `truck`, `car`, `metro`, `lorry`, `tram`),
 		`overdose`, `od`, `rope`, `die`, `jump`, `do~it`,
 		words(`stop`, `quit`)+`~`+words(`breathing`, `existing`, `living`), `cease~to~exist`,
-		`self~?harm`, words(`harm`, `drown`, `kill`, `hang`, `end`, `off`, `cut`, `neck`, `starve`, `unalive`)+`~`+
+		`self~?harm`, words(`harm`, `drown`, `kill`, `hang`, `end`, `off`, `cut`, `neck`, `starve`, `unalive`, `top`)+`~`+
 			words(`your`, `ur`)+`~sel(?:f|ves)`, `set~`+words(`your`, `ur`)+`~self~on~fire`,
-		`k+y+s+(?:ing|in|ed)`,
+		`k+y+s+(?:ing|in|ed)`, `commit~`+words(`sudoku`, `seppuku`, `toaster~bath`, `die`),
 	) + `\b`),
 	// "ending yourself would be the best thing you did all year".
 	bothViews(`\b` + words(`ending`, `killing`, `offing`, `hanging`, `roping`, `unaliving`, `necking`, `drowning`) +
@@ -5964,8 +5966,7 @@ func menace(fields []*scannedField, placesAndTimes func() nearSpans) bool {
 // drawn as an emoji.
 func (f *scannedField) menaceHints() []menaceHint {
 	v := &f.plain
-	r := newWordReading(v.text)
-	v.work += len(v.text)
+	r := f.wordReading()
 	pos := f.readingPositions()
 	var out []menaceHint
 	add := func(kind menaceKind, strong, placed bool, a, b int) {
@@ -6053,6 +6054,15 @@ func (r *wordReading) postHas(name string, set map[string]bool) bool {
 	}
 	r.has[name] = anyIn(r.ws, set)
 	return r.has[name]
+}
+
+// wordReading reads the plain view's words once, for menace and goads.
+func (f *scannedField) wordReading() *wordReading {
+	if f.words == nil {
+		f.plain.work += len(f.plain.text)
+		f.words = newWordReading(f.plain.text)
+	}
+	return f.words
 }
 
 func newWordReading(text string) *wordReading {
@@ -7159,7 +7169,8 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	last := ws[len(ws)-1]
 	next := wordsIn(clauseAfter(text, m[1]))
 	nextIn := func(k int, set map[string]bool) bool { return len(next) > k && set[next[k]] }
-	if aboutSomeoneElse(text, m, ws) || quotedNotSaid(v, m, next) || jokingCause(text, m) || shrugged(text, m, ws) {
+	if aboutSomeoneElse(text, m, ws) || quotedNotSaid(v, m, next) || jokingCause(text, m) || shrugged(text, m, ws) ||
+		inYourShoesBefore(text, m[0]) {
 		return false
 	}
 	first := ws[0]
@@ -7554,11 +7565,12 @@ var (
 		remember forget`)
 )
 
-// dieIdiom reports "die of embarrassment", "die from boredom" or "die
-// laughing" in the words after "die".
+// dieIdiom reports "die of embarrassment", "die from boredom", "die
+// laughing" or "die trying" in the words after "die".
 func dieIdiom(next []string) bool {
 	return len(next) > 1 && (is(next[0], "of") || is(next[0], "from")) && dieIdioms[next[1]] ||
-		len(next) > 0 && (is(next[0], "laughing") || is(next[0], "laughin"))
+		len(next) > 0 && (is(next[0], "laughing") || is(next[0], "laughin") || is(next[0], "trying") ||
+			is(next[0], "tryin"))
 }
 
 // hillToDieOn reports the idiom "a hill to die on", "die on this hill".
@@ -7817,7 +7829,7 @@ var (
 // no "you" ("drink bleach", "just die") that is not the start of what is said
 // ("i'd rather drink bleach", "i just die every time").
 func selfHarmCheck(v *view, m []int) bool {
-	if !notNegated(v, m) || calledOnSomeoneElse(v.text, m) {
+	if !notNegated(v, m) || calledOnSomeoneElse(v.text, m) || askedWhether(v.text, m) {
 		return false
 	}
 	text := v.text
@@ -7847,7 +7859,7 @@ func selfHarmCheck(v *view, m []int) bool {
 		}
 	case is(first, "take") && nextIn(0, pillRoutine) && !(is(next[0], "at") && len(next) > 1 && is(next[1], "once")):
 		return false // "take all your meds on time" is a reminder; "at once" is not
-	case is(last, "die") && (dyesSomething(next) || hillToDieOn(text, m, next)):
+	case is(last, "die") && (dyesSomething(next) || dieIdiom(next) || hillToDieOn(text, m, next)):
 		return false
 	case hasWord(ws, "cut") && !is(last, "deeper") && nextIn(0, cutIdioms):
 		return false
@@ -7866,10 +7878,14 @@ func selfHarmCheck(v *view, m []int) bool {
 		return false // "delete yourself from the group"
 	}
 	bare := jumpVerbs[first] || is(first, "drink") || is(first, "just") || is(first, "take") ||
-		is(first, "cut") && is(last, "deeper") || is(first, "mar") || is(first, "ja") || is(first, "jaake") ||
+		is(first, "cut") && is(last, "deeper") || is(first, "mar") || is(first, "ja") || is(first, "jaa") || is(first, "jaake") ||
 		is(first, "an") || is(first, "off") || is(first, "delete") || is(first, "fanda") || is(first, "phanda") ||
 		is(first, "fandaa") || is(first, "phandaa")
-	if bare && !saidFirst(clauseBefore(text, m[0])) {
+	before := clauseBefore(text, m[0])
+	if is(first, "just") {
+		before += " just" // read with the condition before it: "if you failed just end it"
+	}
+	if bare && !saidFirst(before) {
 		return false
 	}
 	return true
@@ -7995,6 +8011,349 @@ var (
 		unalive`)
 )
 
+// goads reports encouragement to self-harm in the phrasings selfHarmRules
+// and selfHarmUrgeRules leave to the grammar, read as menace reads the hints
+// of a threat: goadPhrases, each a wordRun read from its first word over the
+// plain view's words and vetted by its check, and a knot drawn as an emoji
+// with a nudge in the post ("you know what to do 🪢"). Like the rules, a goad
+// reported or negated is turned down.
+func (f *scannedField) goads() bool {
+	v := &f.plain
+	r := f.wordReading()
+	g := &goadReading{wordReading: r, v: v}
+	for i, w := range r.ws {
+		for _, p := range goadPhrasesAt[w] {
+			v.work += len(p.run)
+			hi := p.run.match(r.ws, i, r.sentenceEnd[i])
+			if hi < 0 {
+				continue
+			}
+			v.work += checkWork
+			m := []int{r.sp[i][0], r.sp[hi-1][1]}
+			if p.check(g, i, hi) && !v.reported(m) && notNegated(v, m) {
+				return true
+			}
+		}
+	}
+	v.work += len(v.text)
+	if k := strings.Index(v.text, "🪢"); k >= 0 {
+		m := []int{k, k + len("🪢")}
+		return g.nudged() && !r.postHas("knots", knotHobbies) && !v.reported(m)
+	}
+	return false
+}
+
+// goadReading is a field's words as goads reads them, with what is read of
+// the whole post read once: whether it nudges, and whether it says to finish.
+type goadReading struct {
+	*wordReading
+	v               *view
+	nudge, finisher int8
+}
+
+// nudged reports a nudge anywhere in the post, with nothing after it in its
+// sentence: "just saying", "you know what to do", "go on then", "what are
+// you waiting for", "nobody's stopping you"; not "go on then, apply".
+func (g *goadReading) nudged() bool { return g.anyRun(&g.nudge, nudgeRuns, true) }
+
+// finished reports words in the post that say to finish: "be done with it",
+// "get on with it", "a few won't do it".
+func (g *goadReading) finished() bool { return g.anyRun(&g.finisher, finishRuns, false) }
+
+// anyRun reports a match of any of runs anywhere in the words, ending its
+// sentence when final, read once and kept in *known: 0 not yet read, 1 no,
+// 2 yes.
+func (g *goadReading) anyRun(known *int8, runs []wordRun, final bool) bool {
+	if *known == 0 {
+		*known = 1
+		for i := range g.ws {
+			for _, run := range runs {
+				g.v.work += len(run)
+				if hi := run.match(g.ws, i, g.sentenceEnd[i]); hi >= 0 && (!final || g.endsSentence(hi)) {
+					*known = 2
+					return true
+				}
+			}
+		}
+	}
+	return *known == 2
+}
+
+// goadPhrase is one phrasing of goads: its words, and the check that reads
+// what is round them.
+type goadPhrase struct {
+	run   wordRun
+	check func(g *goadReading, lo, hi int) bool
+}
+
+var (
+	goadPhrases = []goadPhrase{
+		// "if I were you I'd have offed myself years ago".
+		{run: runOf(`if i were|was|had|got|looked|lived`), check: inYourShoes},
+		// "you'd be doing everyone a favour if you didn't wake up tomorrow".
+		{run: runOf(`doing|do|did everyone|everybody|us|the|all|world _2 favour|favor|service if you|u|ya`),
+			check: goneAsAFavour},
+		// "just take the whole bottle and be done with it".
+		{run: runOf(`take|swallow|down|neck the|a whole|entire|full bottle|pack|packet|box|strip|jar|tub|sheet`),
+			check: wholeSupply},
+		// "the top floor of the car park has no barrier. just saying".
+		{run: runOf(`no barrier|barriers|railing|railings|fence|fencing|net|nets|grille|guardrail|guardrails`),
+			check: openDrop},
+		// "then disappear. permanently."
+		{run: runOf(`disappear|vanish`), check: goneForGood},
+		// "should've jumped when you had the chance".
+		{run: runOf(`should've|shouldve|shoulda|should have? jumped|died|roped|hanged|offed|killed`),
+			check: tooLate},
+		// "if you actually meant any of it you'd have done it by now".
+		{run: runOf(`done|did it by now`), check: meantIt},
+		{run: runOf(`done|did it already`), check: meantIt},
+		// "khatam kar le apne aap ko", "apne aap ko khatam kar lo".
+		{run: runOf(`khatam|khatm|khtm kar|kr le|lo apne aap`), check: always},
+		{run: runOf(`khatam|khatm|khtm karle|krle|karlo|krlo apne aap`), check: always},
+		{run: runOf(`apne aap ko khatam|khatm|khtm kar|kr le|lo`), check: always},
+		{run: runOf(`apne aap ko khatam|khatm|khtm karle|krle|karlo|krlo`), check: always},
+	}
+	goadPhrasesAt = func() map[string][]*goadPhrase {
+		at := map[string][]*goadPhrase{}
+		for k := range goadPhrases {
+			p := &goadPhrases[k]
+			for w := range p.run[0].set {
+				at[w] = append(at[w], p)
+			}
+		}
+		return at
+	}()
+	nudgeRuns = []wordRun{runOf(`just saying`), runOf(`justsaying`), runOf(`hint hint`),
+		runOf(`you|u|ya know what to do`), runOf(`go on then`), runOf(`go ahead`), runOf(`get on with it`),
+		runOf(`what are|r you|u waiting for`), runOf(`nobody's|nobodys|nobody|noone stopping you|u`),
+		runOf(`nobody|noone is stopping you|u`)}
+	finishRuns = []wordRun{runOf(`done with it`), runOf(`get on with it`), runOf(`get it over with`),
+		runOf(`won't|wont do it`), runOf(`will not do it`), runOf(`won't|wont be enough`), runOf(`end it`)}
+	// knotHobbies make a knot drawn a knot: "knot practice for scouts".
+	knotHobbies = canonSetOf(`knot knots scouts scout guides sailing climbing macrame bracelet bracelets camping
+		tie tying lace laces`)
+)
+
+func always(*goadReading, int, int) bool { return true }
+
+// inYourShoes reads "if I were you", "if I had your marks" or "if I looked
+// like you" and then, in the same sentence, the poster saying they would
+// have killed themselves: "if I were you I'd have offed myself years ago",
+// "if i had your marks i'd jump off the roof". The words are a jab at the
+// reader, not the poster's crisis (supportCheck reads them so too).
+func inYourShoes(g *goadReading, lo, hi int) bool {
+	ws := g.ws[hi:min(g.sentenceEnd[lo], lo+readReach)]
+	if !readersShoes(g.ws[lo:min(g.sentenceEnd[lo], hi+3)]) {
+		return false
+	}
+	for j, w := range ws {
+		if !wouldWords[w] {
+			continue
+		}
+		k := j + 1
+		for k < len(ws) && wouldFillers[ws[k]] {
+			k++
+		}
+		return k < len(ws) && selfAct(ws[k:])
+	}
+	return false
+}
+
+// readersShoes reports words that open with the poster put in the reader's
+// place: "if i were you", "if i had your marks", "if i looked like u".
+func readersShoes(ws []string) bool {
+	return len(ws) >= 4 && is(ws[0], "if") && is(ws[1], "i") && shoesVerbs[ws[2]] &&
+		anyIn(ws[3:min(len(ws), 6)], readerWords)
+}
+
+// inYourShoesBefore reports that the sentence before offset i of text opens
+// with the poster in the reader's place, so that "I'd kill myself" after it
+// is said at the reader.
+func inYourShoesBefore(text string, i int) bool {
+	before := text[max(0, i-64):i]
+	ws := wordsIn(before[strings.LastIndexAny(before, ".!?\n")+1:])
+	for k := range ws {
+		if is(ws[k], "if") && readersShoes(ws[k:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// selfAct reports words that open with the poster's own death or harm, as
+// "I'd" goes on: "kill myself", "offed myself", "jump off". Not "end it",
+// which after "if I were you" is advice to end something else.
+func selfAct(ws []string) bool {
+	w, next := ws[0], ""
+	if len(ws) > 1 {
+		next = ws[1]
+	}
+	switch {
+	case selfActVerbs[w]:
+		return is(next, "myself") && !(len(ws) > 2 && strings.HasSuffix(ws[2], "ing") && !is(ws[2], "thing"))
+	case selfActBare[w]:
+		return next == "" || goadTails[next]
+	}
+	return false
+}
+
+var (
+	shoesVerbs   = canonSetOf(`were was had got looked lived`)
+	readerWords  = canonSetOf(`you u ya your ur yours`)
+	wouldWords   = canonSetOf(`i'd id would i'll`)
+	wouldFillers = canonSetOf(`have 've just already probably prolly literally definitely honestly genuinely
+		seriously simply actually of`)
+	selfActVerbs = canonSetOf(`kill killed off offed top topped hang hanged neck necked unalive unalived shoot shot
+		drown drowned`)
+	selfActBare = canonSetOf(`kms jump jumped rope roped die died overdose overdosed od`)
+	// goadTails may follow an act: "jump off", "died years ago".
+	goadTails = canonSetOf(`off from already years ago long back tbh lol lmao honestly fr ngl immediately instantly
+		ages then by now`)
+)
+
+// goneAsAFavour reads "doing everyone a favour if you" going on to the
+// reader's death and nothing after it but a time: "if you didn't wake up
+// tomorrow", "if you weren't here", "if you disappeared", "if you ended
+// it". Not "if you didn't wake up late" or "if you didn't come tomorrow".
+func goneAsAFavour(g *goadReading, lo, hi int) bool {
+	ws := g.ws[hi:min(g.sentenceEnd[lo], hi+10)]
+	at := func(k int, set map[string]bool) bool { return k < len(ws) && set[ws[k]] }
+	n := 0
+	switch {
+	case at(0, setOf(`didn't didnt never`)) && at(1, setOf(`wake`)) && at(2, setOf(`up`)):
+		n = 3
+	case len(ws) > 3 && is(ws[0], "did") && is(ws[1], "not") && is(ws[2], "wake") && is(ws[3], "up"):
+		n = 4
+	case at(0, canonSetOf(`weren't werent wasn't wasnt`)) && at(1, canonSetOf(`here around alive born`)):
+		n = 2
+	case at(0, canonSetOf(`were was`)) && at(1, canonSetOf(`dead gone`)):
+		n = 2
+	case at(0, canonSetOf(`died disappeared vanished jumped`)):
+		n = 1
+	case at(0, canonSetOf(`ended`)) && at(1, canonSetOf(`it`)):
+		n = 2
+	case at(0, canonSetOf(`killed offed hanged`)) && at(1, canonSetOf(`yourself urself`)):
+		n = 2
+	case at(0, canonSetOf(`stopped`)) && at(1, canonSetOf(`breathing existing living`)):
+		n = 2
+	default:
+		return false
+	}
+	for _, w := range ws[n:] {
+		if !goadTails[w] && !urgeTails[w] && !soonWords[w] && !is(w, "ever") && !is(w, "again") {
+			return false
+		}
+	}
+	return true
+}
+
+// wholeSupply reads the whole of a supply taken, said to the reader ("just
+// take the whole bottle", "you'd have to take the whole pack") in a post
+// that says to finish ("and be done with it", "a few won't do it"), and
+// not of food, notes or a course.
+func wholeSupply(g *goadReading, lo, hi int) bool {
+	if !urgeFramed(g.text, g.sp[lo][0]) && !haveTo(g.ws[max(g.clauseFrom(lo), lo-4):lo]) {
+		return false
+	}
+	sentence := g.sentenceWords(lo)
+	if anyIn(sentence, foodWords) || anyIn(sentence, supplyWords) || anyIn(sentence, studyWords) ||
+		anyIn(sentence, pillRoutine) && hasWord(sentence, "course") {
+		return false
+	}
+	// What it is a bottle or a pack of, when it says, is medicine or
+	// left unsaid: "of whatever's in your mum's cabinet".
+	if hi < g.sentenceEnd[lo] && is(g.ws[hi], "of") {
+		if of := g.ws[hi+1 : min(g.sentenceEnd[lo], hi+5)]; !anyIn(of, pillWords) && !anyIn(of, unsaidSupply) {
+			return false
+		}
+	}
+	return g.finished()
+}
+
+// unsaidSupply leave what a bottle holds unsaid, or say where it is kept.
+var unsaidSupply = canonSetOf(`whatever whatever's whatevers it them those these that cabinet medicine medicines
+	drugs`)
+
+// haveTo reports words that end in the reader's having to: "you'd have to",
+// "you need to", "u have to".
+func haveTo(ws []string) bool {
+	n := len(ws)
+	return n >= 3 && is(ws[n-1], "to") && urgeModalsTo[ws[n-2]] && youWords[ws[n-3]]
+}
+
+// youWords are the reader as the subject, with "would" run on: "you'd".
+var youWords = canonSetOf(`you u ya you'd youd u'd ud`)
+
+// openDrop reads a place to fall from said to have no barrier, with a nudge
+// in the post ("just saying") and nothing that asks for it to be made safe:
+// "the top floor of the car park has no barrier. just saying".
+func openDrop(g *goadReading, lo, hi int) bool {
+	return anyIn(g.sentenceWords(lo), heights) && g.nudged() && !g.postHas("safety", safetyWords)
+}
+
+// safetyWords make a drop with no barrier something to fix.
+var safetyWords = canonSetOf(`report reported council complain complained complaint dangerous unsafe safety careful
+	fix fixed fixing petition admin management accident accidents hazard warning fall falls falling fell slip`)
+
+// goneForGood reads "disappear" said to the reader, with "permanently",
+// "forever" or "for good" after it, in a sentence of its own or not, in a
+// post that names a death or that nobody would miss them: "then disappear.
+// permanently. nobody will miss your threads".
+func goneForGood(g *goadReading, lo, hi int) bool {
+	after := g.ws[hi:min(len(g.ws), hi+3)]
+	if !(len(after) > 0 && (is(after[0], "permanently") || is(after[0], "forever")) ||
+		len(after) > 1 && is(after[0], "for") && is(after[1], "good")) {
+		return false
+	}
+	return urgeFramed(g.text, g.sp[lo][0]) && (g.postHas("death", deathTopic) || g.postHas("miss", missWords))
+}
+
+// missWords say nobody would miss someone.
+var missWords = canonSetOf(`miss`)
+
+// tooLate reads "should've jumped when you had the chance": said of the
+// reader or of no one, with nothing after the act but the chance missed.
+// Not "should've jumped on that deal" or "I should've jumped".
+func tooLate(g *goadReading, lo, hi int) bool {
+	if subj := g.subjectBefore(lo); subj != "" && !secondPerson[subj] || anyIn(g.sentenceWords(lo), firstPersonSubjects) {
+		return false
+	}
+	ws := g.ws[hi:min(g.clauseEnd[lo], hi+10)]
+	act := g.ws[hi-1]
+	k := 0
+	switch {
+	case is(act, "killed") || is(act, "offed") || is(act, "hanged"):
+		if len(ws) == 0 || !is(ws[0], "yourself") && !is(ws[0], "urself") {
+			return false
+		}
+		k = 1
+	case is(act, "jumped") && len(ws) > 0 && is(ws[0], "off"):
+		return true
+	}
+	for i := k; i < len(ws); i++ {
+		switch w := ws[i]; {
+		case is(w, "at") && i+1 < len(ws) && is(ws[i+1], "birth"):
+			i++
+		case !chanceTails[w]:
+			return false
+		}
+	}
+	return true
+}
+
+// chanceTails may follow an act left too late: "when you had the chance",
+// "years ago".
+var chanceTails = canonSetOf(`when while you u had the a chance chances years ago back then already lol lmao tbh
+	honestly bro instead last year time`)
+
+// meantIt reads "you'd have done it by now" said to the reader of what they
+// said they meant, with a nudge in the post: "if you actually meant any of
+// it you'd have done it by now. go on then".
+func meantIt(g *goadReading, lo, hi int) bool {
+	sentence := g.sentenceWords(lo)
+	return hasWord(sentence, "meant") && anyIn(sentence, secondPerson) && g.nudged()
+}
+
 // calledOnSomeoneElse reports an act written as a method called in code on
 // someone other than the reader: in "me.die();" the receiver, "me", is who
 // dies, so it urges nothing on anyone, where "you.die()" would. Code is read
@@ -8038,9 +8397,72 @@ func urgeFramed(text string, i int) bool {
 		return true
 	case k >= 2 && (is(ws[k-1], "dont") || is(ws[k-1], "don't")) && is(ws[k-2], "why"):
 		return true
+	case askedWhen(ws):
+		return true // "when are you finally going to"
 	}
 	return false
 }
+
+// askedWhen reports words before an act that ask when the reader will do
+// it, which urges: "when are you finally going to", "are you ever gonna",
+// "when will you". Asked with neither "when" nor an adverb ("are you going
+// to") it asks after them (askedWhether).
+func askedWhen(ws []string) bool {
+	k, nudged := len(ws), false
+	skip := func() {
+		for k > 0 && whenAdverbs[ws[k-1]] {
+			nudged, k = true, k-1
+		}
+	}
+	skip()
+	going := false
+	switch {
+	case k >= 2 && is(ws[k-1], "to") && is(ws[k-2], "going"):
+		k, going = k-2, true
+	case k >= 1 && is(ws[k-1], "gonna"):
+		k, going = k-1, true
+	}
+	skip()
+	if k < 2 || !secondPerson[ws[k-1]] {
+		return false
+	}
+	if aux := ws[k-2]; !(going && (is(aux, "are") || is(aux, "r")) || !going && is(aux, "will")) {
+		return false
+	}
+	return nudged || k >= 3 && is(ws[k-3], "when")
+}
+
+// askedWhether reports a question whether the reader means to do it or has
+// done it, which asks after them rather than urging: "are you going to kill
+// yourself?", "do you want to hurt yourself?", "did you try to kill
+// yourself?". "When are you going to", "are you finally going to" and a
+// question that goes on ("or what") urge.
+func askedWhether(text string, m []int) bool {
+	ws := wordsIn(clauseBefore(text, m[0]))
+	k := len(ws)
+	switch {
+	case k >= 2 && intentTo[ws[k-2]] && (is(ws[k-1], "to") || is(ws[k-1], "of") || is(ws[k-1], "about") ||
+		is(ws[k-1], "on")):
+		k -= 2
+	case k >= 1 && (is(ws[k-1], "gonna") || is(ws[k-1], "wanna") || is(ws[k-1], "tryna")):
+		k--
+	default:
+		return false
+	}
+	if k < 2 || !secondPerson[ws[k-1]] || !whetherAux[ws[k-2]] || k >= 3 && (whyWords[ws[k-3]] || is(ws[k-3], "when")) {
+		return false
+	}
+	after := text[m[1]:min(len(text), m[1]+24)]
+	q := strings.IndexByte(after, '?')
+	return q >= 0 && !strings.ContainsAny(after[:q], ".!\n") && len(wordsIn(after[:q])) <= 2 &&
+		!hasWord(wordsIn(after[:q]), "or")
+}
+
+var (
+	whenAdverbs = canonSetOf(`finally ever even just actually already`)
+	intentTo    = canonSetOf(`going planning trying tried try want wanted thinking about`)
+	whetherAux  = canonSetOf(`are r do did have were will would`)
+)
 
 var (
 	urgeModals   = canonSetOf(`should shud must better gotta can could`)
@@ -8639,7 +9061,10 @@ func deathAround(text string, m []int) bool {
 // to the post it answers (">>51290"), or, after "and" or "then", what came
 // before is not about the poster: "stop threatening it and just off
 // yourself", "do us all a favour and jump off the roof", but not "i'd rather
-// drink bleach" or "i went home and just died".
+// drink bleach" or "i went home and just died". A condition said of the
+// reader, with "just" after it, opens the clause as a comma would: "if ur
+// that stressed just jump off the roof", "if you failed that badly just
+// end it".
 func saidFirst(before string) bool {
 	ws := wordsIn(quoteLink.ReplaceAllString(before, " "))
 	if anyIn(ws, firstPersonSubjects) {
@@ -8650,11 +9075,15 @@ func saidFirst(before string) bool {
 			return true
 		}
 		if !imperativeFillers[ws[i]] {
-			return false
+			return i+1 < len(ws) && is(ws[i+1], "just") && len(ws) > 2 && conditionWords[ws[0]] &&
+				anyIn(ws[1:i+1], secondPerson)
 		}
 	}
 	return true
 }
+
+// conditionWords open a condition: "if", "agar".
+var conditionWords = canonSetOf(`if agar`)
 
 var (
 	quoteLink           = regexp.MustCompile(`>>+\d+`)
@@ -8664,7 +9093,8 @@ var (
 	// argument or a game.
 	endItOthers = canonSetOf(`her him she he they them boyfriend girlfriend bf gf relationship partner ex crush
 		friendship marriage situationship cheating cheated cheats dating breakup thread debate argument discussion
-		convo conversation chat game match series show beef fight drama story subscription streak`)
+		convo conversation chat game match series show beef fight drama story subscription streak course courses
+		degree program programme coaching tuition membership internship job`)
 	pillRoutine = canonSetOf(`on with before after daily regularly every at as properly in for together`)
 	// mentionNouns, after encouragement, make it the name of a kind of post.
 	mentionNouns = canonSetOf(`comments comment jokes joke posts post thing stuff culture spam spammers replies reply
@@ -8674,8 +9104,8 @@ var (
 var (
 	deeperObjects     = canonSetOf(`into in through the a an on with than to`)
 	overworkModals    = canonSetOf(`you'll youll u'll ull will gonna gon`)
-	imperativeFillers = canonSetOf(`just go pls please plz now then lol lmao bro dude man honestly seriously ok okay so
-		and or yeah fr ngl also you u like literally really already oh omg tbh idc well yo hey bhai yaar abe chal`)
+	imperativeFillers = canonSetOf(`just go pls please plz now then lol lmao bro bruh dude man mate honestly seriously ok
+		okay so and or yeah fr ngl also you u like literally really already oh omg tbh idc well yo hey bhai yaar abe chal`)
 	deathWords   = canonSetOf(`die died dead disappear disappeared vanish vanished gone killed kill kys ended jumped hanged overdosed od`)
 	careFillers  = canonSetOf(`if when you u you're youre ur were was are just simply even all`)
 	trailFillers = canonSetOf(`lol lmao tbh honestly fr ngl bro anyway anyways though tho`)

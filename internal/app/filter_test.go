@@ -2265,6 +2265,69 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 	}
 }
 
+// TestFilterReadsEncouragementToldInOtherWords holds goads and the frames
+// urgeFramed and saidFirst read to both sides: encouragement to self-harm
+// put as the poster in the reader's place, as a favour, as the whole of a
+// supply, as a drop with no barrier, as a knot, as disappearing for good, as
+// a chance missed, as a test of whether the reader meant it, as a question of
+// when, after a condition on the reader, and in Hinglish, is held; the same
+// words as advice, a question that asks after the reader, an idiom or a
+// safety complaint are not.
+func TestFilterReadsEncouragementToldInOtherWords(t *testing.T) {
+	const (
+		publish  = "publish"
+		selfHarm = "hold:" + holdSelfHarm
+	)
+	for _, c := range []struct{ body, want string }{
+		{"if i were you i'd have roped years ago. what are you waiting for", selfHarm},
+		{"if i had your grades i'd jump off the roof", selfHarm},
+		{"if i looked like you i'd kill myself", selfHarm},
+		{"if i were you i'd kill myself laughing at that meme", publish},
+		{"if i were you i'd end it", publish},
+		{"if i were you i'd jump at the offer", publish},
+		{"you'd be doing the world a favour if you weren't around", selfHarm},
+		{"you'd be doing everyone a favour if you didn't wake up late tomorrow for once", publish},
+		{"just take the whole bottle and be done with it", selfHarm},
+		{"you'd have to take the whole strip, a few won't do it", selfHarm},
+		{"you'd have to take the whole pack to finish the course, the doctor said", publish},
+		{"take the whole box of chocolates and be done with it", publish},
+		{"the 4th floor balcony at our hostel has no railing. just saying", selfHarm},
+		{"the roof has no railing, just saying, someone could fall", publish},
+		{"nobody needs another failed NEET aspirant. you know what to do 🪢", selfHarm},
+		{"you know what to do 🪢 knot practice for scouts tomorrow", publish},
+		{">>123\n>i just want to vanish\nthen vanish. forever. nobody will miss your posts", selfHarm},
+		{"then disappear for a week and come back stronger, that's what i did before boards", publish},
+		{"you should've killed yourself when you had the chance", selfHarm},
+		{"should've jumped on that deal when you had the chance", publish},
+		{"you should've ended it when you had the chance", publish},
+		{"if you really meant it you'd have done it already. what are you waiting for", selfHarm},
+		{"if you meant it you'd have done it by now. go on then, apply", publish},
+		// askedWhen urges; askedWhether asks after the reader.
+		{"are you ever gonna off yourself lol", selfHarm},
+		{"are you going to kill yourself or what?", selfHarm},
+		{"are you going to kill yourself? please talk to me", publish},
+		{"did you try to kill yourself?", publish},
+		// saidFirst: a condition on the reader, then "just".
+		{"if you're that stressed about NEET just jump off the roof lol", selfHarm},
+		{"if you're bored just jump in the pool", publish},
+		{"if you hate the course just end it", publish},
+		{"if you want to win just die trying lol", publish},
+		// Acts and openings the rules did not list.
+		{"bro just top yourself already", selfHarm},
+		{"just top up your metro card at the station", publish},
+		{"go commit seppuku", selfHarm},
+		{"go commit to the gym, you won't regret it", publish},
+		{"apne aap ko khatam kar lo, kisi ko farak nahi padta", selfHarm},
+		{"khatam kar le apna homework pehle", publish},
+		{"jaa ke mar ja, koi nahi rokega", selfHarm},
+		{"jaa ke so ja, kal exam hai", publish},
+	} {
+		if got := verdictName(bodyVerdict(c.body)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
 // one reading of quoted and reported speech that every family uses. Words
 // the post gives to someone else, or says came to the poster, are not the
@@ -2756,6 +2819,17 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"lit up":         rep("light it up "),
 		"last time":      rep("will be the last time it ever does "),
 		"our sir monday": rep("our sir won't see monday "),
+		// The goads' openings, each read for what is round it, and the
+		// nudges and finishers read once for the whole post.
+		"in your shoes":  rep("if i were you i'd "),
+		"favour":         rep("do us a favour if you "),
+		"whole supply":   rep("take the whole bottle "),
+		"no barrier":     rep("roof no barrier "),
+		"knot":           rep("🪢 "),
+		"disappear":      rep("then disappear "),
+		"too late":       rep("should've jumped "),
+		"done it by now": rep("meant done it by now "),
+		"hinglish goad":  rep("apne aap ko khatam kar "),
 		// A threat told by implication: hints of every kind, close to a
 		// time and a place, and the words that open the most of them.
 		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),
