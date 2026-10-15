@@ -618,56 +618,62 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   as the same bytes, the way it took then being still the first that does; an animation
   whose tables give more than 255 colours is now charged for `saved` from its header
   (`gifFrames.many`, `gifPlayScratch`), so one on a large canvas from a large upload may
-  be refused that was stored before (the README's bands). Where no way will do, the GIF
-  is refused (`ErrImageTooCostly`), as is one whose stored frames, with what `choose`
-  looked at for ways it did not take (`tried`, so that looking is bounded as writing is),
-  come to more than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
+  be refused that was stored before (the README's bands). Where no way will do, the GIF is
+  refused (`ErrImageTooCostly`), as is one whose stored frames, with what `choose` looked
+  at for ways it did not take (`tried`, so that looking is bounded as writing is), are
+  charged more than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
   `TestGIFOfManyColoursPutsAFrameBack`, `TestGIFWaysNotTakenAreCharged`; after flood
-  control, `TestImagesRefusedByTheirHeaderStartNoCooldown`). Both refusals are known only
-  by playing the GIF: `Inspect` reads the header, where `gifFramePixels` holds the
-  declared frames to `maxGIFFramePixels`, but the put-back, restore-chain and
-  widened-clear work shows only as the frames are played, so a GIF the header admits
-  can still be refused here, after it has been decoded and its first picture
-  thumbnailed, and after flood control, so the cooldown is charged and `discardUpload`
-  removes the stored upload and nothing is kept (put back on a 2000² canvas, `Inspect`
-  admits 49 frames where the player takes 14; a 1000² restore chain, 199 where the
-  player takes 34). The work is already spent, so the cap is held where it is found, not
-  moved earlier. The choice is greedy, one frame at a time, so some GIFs a file could
-  store one frame to a picture are refused:
-  frames put back two in a row, the second to the picture before the first, after the
-  stored file left the first in place; or a clear whose widened rectangle takes in too
-  many colours. Only frames that clear or put back what earlier ones drew can bring that
-  about, since a frame alone draws from one table: none of 126 GIFs made with ffmpeg,
-  ImageMagick and Pillow is refused, nor any of the 1,500 many-coloured GIFs of the
-  Chromium comparison; 1 of 5,000 random GIFs of up to 256 colours a frame and every
-  disposal method is, and 75 of 2,000 random animations of sprites put back, cleared or
-  left over a background of 256 colours (`randomSpritesGIF`). The player keeps what the
-  frames before the one being played left (`under`) as a four-byte colour key a pixel,
-  with two bit sets over the canvas, and for an animation whose tables give more than 255
-  colours (`gifFrames.many`, read by the walk) four bytes a pixel more for `saved`
-  (`gifPlayScratch`, charged in `completedCost`, `TestGIFPlayScratchCoversThePlayer`); it
-  lets each decoded frame go once it has played it, and keeps the walk's head of each
-  until then (`gifFramePlay`). The thumbnail is of the first picture, made before playing
-  (`firstGIFPicture`). `TestGIFIsStoredAsItPlays` holds 2000 random GIFs to `browserPlay`
-  (`gifplay_test.go`), a model of Chromium's compositing written apart from `playGIF`, and
-  to storing the same bytes when processed again; `TestGIFsShownAlikeAreStoredAlike`
-  rewrites 1,100 random GIFs, 300 of them animations of sprites over many colours
-  (`randomSpritesGIF`), at least 50 of which are stored with frames put back, six times
-  each, in thirteen ways that change nothing Chromium shows (`gifRewrites`, each checked
-  against the model first) and requires every form stored as the original's bytes;
-  `hidden_test.go` pins the channels found, each as uploads differing only in that
-  channel, stored as the same bytes
+  control, `TestImagesRefusedByTheirHeaderStartNoCooldown`). A frame, a stored frame and a
+  rectangle looked at are each charged their pixels with every row counted as at least
+  `gifRowPixels` (64; `gifCharge`), by the walk, by `frame` and by `tried` alike, because
+  each row costs setting up whatever its width: charged by its pixels alone, a GIF of
+  1,525 frames a pixel wide and 65,535 tall took 21 seconds of CPU to play
+  (`TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels`,
+  `TestGIFStoredFramesAreChargedByTheirRows`, `TestGIFWaysNotTakenAreChargedByTheirRows`).
+  Both refusals are known only by playing the GIF: `Inspect` reads the header, where
+  `gifFramePixels` holds the declared frames to `maxGIFFramePixels`, but the put-back,
+  restore-chain and widened-clear work shows only as the frames are played, so a GIF the
+  header admits can still be refused here (put back on a 2000² canvas, `Inspect` admits 49
+  frames where the player takes 14; a 1000² restore chain, 199 where the player takes 34),
+  after it has been decoded and its first picture thumbnailed, and after flood control, so
+  the cooldown is charged and nothing is written (`Save` stores only after `processHeld`
+  succeeds, so `discardUpload` has nothing to remove). The work is already spent, so the
+  cap is held where it is found, not moved earlier. The choice is greedy, one frame at a
+  time, so some GIFs a file could store one frame to a picture are refused: frames put
+  back two in a row, the second to the picture before the first, after the stored file
+  left the first in place; or a clear whose widened rectangle takes in too many colours.
+  Only frames that clear or put back what earlier ones drew can bring that about, since a
+  frame alone draws from one table: none of 126 GIFs made with ffmpeg, ImageMagick and
+  Pillow is refused, nor any of the 1,500 many-coloured GIFs of the Chromium comparison; 1
+  of 5,000 random GIFs of up to 256 colours a frame and every disposal method is, and 75
+  of 2,000 random animations of sprites put back, cleared or left over a background of 256
+  colours (`randomSpritesGIF`). The player keeps what the frames before the one being
+  played left (`under`) as a four-byte colour key a pixel, with two bit sets over the
+  canvas, and for an animation whose tables give more than 255 colours (`gifFrames.many`,
+  read by the walk) four bytes a pixel more for `saved` (`gifPlayScratch`, charged in
+  `completedCost`, `TestGIFPlayScratchCoversThePlayer`); it lets each decoded frame go
+  once it has played it, and keeps the walk's head of each until then (`gifFramePlay`).
+  The thumbnail is of the first picture, made before playing (`firstGIFPicture`).
+  `TestGIFIsStoredAsItPlays` holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`),
+  a model of Chromium's compositing written apart from `playGIF`, and to storing the same
+  bytes when processed again; `TestGIFsShownAlikeAreStoredAlike` rewrites 1,100 random
+  GIFs, 300 of them animations of sprites over many colours (`randomSpritesGIF`), at least
+  50 of which are stored with frames put back, six times each, in thirteen ways that
+  change nothing Chromium shows (`gifRewrites`, each checked against the model first) and
+  requires every form stored as the original's bytes; `hidden_test.go` pins the channels
+  found, each as uploads differing only in that channel, stored as the same bytes
   (`TestGIFFramesOfOnePictureCarryNothing`, `TestGIFPixelsThatChangeNothingCarryNothing`,
   `TestGIFDisposalPaintedOverCarriesNothing`,
-  `TestGIFTimeSplitBetweenFramesCarriesNothing`,
-  `TestGIFFramesThatDrawNothingCarryNothing`). The model and the forms were compared with
-  Chromium (through WebCodecs' `ImageDecoder`, which `<img>` shares its GIF decoder with)
-  over some 9,000 GIFs, and again, once frames could be put back, over 8,550 stored ones
-  (the 126 made with real tools, the 1,500 of many colours, 4,999 random ones and 1,925
-  animations of sprites), every one showing alike; change the player and the model only
-  together, and only after checking Chromium again. The loop count is written back as
-  NETSCAPE2.0, from whichever loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as
-  browsers read them; `image/gif` reads only the first, so `gifFramePixels` reads both
+  `TestGIFTimeSplitBetweenFramesCarriesNothing`);
+  `TestGIFFramesThatDrawNothingCarryNothing` (`gifplay_test.go`) checks that frames which
+  draw nothing are not stored. The model and the forms were compared with Chromium
+  (through WebCodecs' `ImageDecoder`, which `<img>` shares its GIF decoder with) over some
+  9,000 GIFs, and again, once frames could be put back, over 8,550 stored ones (the 126
+  made with real tools, the 1,500 of many colours, 4,999 random ones and 1,925 animations
+  of sprites), every one showing alike; change the player and the model only together, and
+  only after checking Chromium again. The loop count is written back as NETSCAPE2.0, from
+  whichever loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them;
+  `image/gif` reads only the first, so `gifFramePixels` reads both
   (`TestGIFLoopCountIsReadFromEitherLoopExtension`). WebP cannot be encoded in Go, so a
   WebP upload is stored as another format (`sanitizeWebP`): a JPEG at `storedJPEGQuality`
   when it is lossy and opaque, from its own 4:2:0 planes taken to full range where they
@@ -694,21 +700,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   its header: `Inspect` refuses one whose VP8X has the animation flag or, after a VP8X,
   has a frame (ANMF) among its chunks (`webpAnimated`), before any cooldown, whatever its
   size and however much of it arrived — a file cut short is walked as far as it goes; it
-  used to pass `Inspect` when short and fail after flood control, and when long be
-  charged as one lossless bitstream of its whole length and refused as too large
+  used to pass `Inspect` when short and fail after flood control, and when long be charged
+  as one lossless bitstream of its whole length and refused as too large
   (`TestAnimatedWebPIsRefusedFromItsHeader`). A simple-format file is a still to
   `stripWebP` and to browsers whatever follows its picture, so a frame there does not
-  count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also
-  refuses any WebP whose RIFF runs past the end of the file (`webpRegion`), which
-  `stripWebP` would refuse once processed. A WebP stored before this change stays a
-  `.webp` and is served as `image/webp` (`ContentTypeForExt`).
-  `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's, the
-  thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size` are of
-  the stored bytes — the plan's `blocked_media` check on the re-encoded output (2.2)
-  depends on that. Tests build their fixtures in code (`fixtures_test.go`) and check every
-  needle is in the upload before checking it is gone from what is stored:
-  `TestJPEGIsStoredWithoutMetadata`, `TestEveryOrientationIsApplied`,
-  `TestPNGOrientationIsApplied`, `TestPNGIsStoredWithoutAncillaryChunks`,
+  count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also refuses
+  any WebP whose RIFF runs past the end of the file (`webpRegion`), which `stripWebP`
+  would refuse once processed. A WebP stored before this change stays a `.webp` and is
+  served as `image/webp` (`ContentTypeForExt`). `Processed.Data` is the stored file,
+  `Width`/`Height` are the upright picture's, the thumbnail is made from the upright
+  pixels, and `StoredImage.Checksum` and `Size` are of the stored bytes — the plan's
+  `blocked_media` check on the re-encoded output (2.2) depends on that. Tests build their
+  fixtures in code (`fixtures_test.go`) and check every needle is in the upload before
+  checking it is gone from what is stored: `TestJPEGIsStoredWithoutMetadata`,
+  `TestEveryOrientationIsApplied`, `TestPNGOrientationIsApplied`,
+  `TestPNGIsStoredWithoutAncillaryChunks`,
   `TestGIFKeepsItsAnimationAndDropsItsExtensions`, `TestWebPIsStrippedChunkByChunk`,
   `TestWebPIsStoredAsPNGOrJPEG`, the conformance suite's "save stores no metadata", and
   `TestUploadedPhotoKeepsNoMetadataOnEveryBackend` end to end over both backends. Every
@@ -788,18 +794,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   decodes to. A change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
   cameras save are taken whole (an iPhone's are 5712×4284, 24.5 million pixels;
-  `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not pass
-  `maxGIFFramePixels` (four times that), but neither is the memory bound: what an upload
-  holds while it is processed depends on how it is encoded as much as on its size.
-  `Inspect` estimates it from the header (`processingCost`, `cost.go`): the decoder's
-  buffers (a progressive JPEG keeps 256 bytes of coefficients for every 8×8 block until
-  its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel, and a 16-bit PNG to 8, or
-  to 2 when it is grey with no transparency, as `pngBytesPerPixel` reads its header;
-  `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
-  thousands of empty frames is not free, and `playGIF` four bytes and two bits a pixel of
-  the canvas, and four bytes more for an animation whose tables give more than 255
-  colours, `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the
-  encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
+  `TestTwentyFourMegapixelPhotosAreAccepted`), and a GIF's frames together may not be
+  charged more than `maxGIFFramePixels` (four times that, each row counted as at least 64
+  pixels), but neither is the memory bound: what an upload holds while it is processed
+  depends on how it is encoded as much as on its size. `Inspect` estimates it from the
+  header (`processingCost`, `cost.go`): the decoder's buffers (a progressive JPEG keeps
+  256 bytes of coefficients for every 8×8 block until its last scan; CMYK and RGB JPEGs
+  decode to 4 bytes a pixel, and a 16-bit PNG to 8, or to 2 when it is grey with no
+  transparency, as `pngBytesPerPixel` reads its header; `image/gif` keeps
+  `gifFrameOverhead` for every frame besides its pixels, so a GIF of thousands of empty
+  frames is not free, and `playGIF` four bytes and two bits a pixel of the canvas, and
+  four bytes more for an animation whose tables give more than 255 colours,
+  `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the encoder's
+  output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
   larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
@@ -814,7 +821,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   first allocation on top of the previous phase's peak, because a collection that began
   before the boundary still holds that phase's scratch. An estimate over
   `processingBudget` (256 MiB) is refused from the header as `ErrImageTooCostly` (`image
-  too large to process`), before any cooldown, and so is a GIF whose frames pass
+  too large to process`), before any cooldown, and so is a GIF whose frames' charge passes
   `maxGIFFramePixels`; `ErrImageTooLarge` (`image resolution is too large`) is kept for a
   picture of more than `MaxPixels`, the one refusal that is about the resolution, so the
   answer says which (`TestImagesRefusedByTheirHeaderStartNoCooldown`). Which kinds that
@@ -823,43 +830,42 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   square from an 8 MiB upload, each refused kind at its cheapest (a wide picture from a
   small upload), and every kind at a quarter of the size. A square is not the dearest
   shape, though: a JPEG's sides are rounded up to whole blocks, a turn that cannot keep
-  the subsampling copies at 4:4:4, and the thumbnail's weights grow with the longer
-  side, so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full size each
-  format allows (`eachShape`: for every shorter side, the four longest sides that fit,
-  both ways round), at every orientation, and holds each kind to the shape the README
-  gives for it. It reads `processingCost` with the frame header rewritten in place rather
-  than calling `Inspect` millions of times, and checks `Inspect` agrees at the shapes that
-  decide. A change to `cost.go` that moves a kind, or the shape a kind is refused at,
-  changes the README's lists in the same commit. The same model caps the upload size
-  limit: an upload is charged eight bytes for every byte of it whatever its picture (its
-  stored file may come to four times its size, and the encoder's buffer holds two of those
-  as it grows), so `media.MaxUploadBytes` (31 MiB), derived from `processingBudget` and
-  `storedLimit`'s terms in `cost.go`, is the largest size in whole MiB at which the
-  cheapest file of each format is admitted. `maxUploadLimit` (`config.go`) is that, and
-  the server refuses to start with a larger `EDUCHAN_MAX_UPLOAD_BYTES`;
-  `TestLargestAttachmentLimitIsReachable` posts the cheapest file of each format at that
-  size and holds one a MiB larger to a refusal. A change to the budget or to `storedLimit`
-  moves it, and the README's figure with it. `Save` then holds its estimate of the budget
-  from the start of decoding until both renditions are stored, because until then it holds
-  what it made (`acquireProcessing`, a first-come-first-served weighted semaphore in
-  `budget.go`, so a large upload is not starved by small ones;
-  `TestSaveHoldsItsShareUntilItIsStored`), and `processHeld` gives that share back by a
-  deferred call until it hands it over, because the server recovers from a panic in a
-  decoder or an encoder and goes on with whatever the panic left held
-  (`TestAPanicWhileProcessingGivesItsShareBack`). Nothing it writes is copied again on the
-  way out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because the library's
-  default is a 16 MiB buffer for every object, kept only for retries a write without
-  preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads' own
-  bytes have a budget of their own, `media.UploadBudget` (64 MiB), which `parseSubmission`
-  takes from (`media.ReserveUpload`) before it reads a multipart body, as much as the
-  request's `Content-Length` or the most the body may be, and which the handler gives back
-  when the post is answered (`submission.release`). For that to be what the body costs,
-  `readMultipart` reads the body itself rather than through `ParseMultipartForm`, which
-  keeps a file over its memory limit in a temporary file (memory again on Cloud Run) and
-  then hands it over to be copied: the image is read once into a buffer the size of what
-  is left of the body (`TestAnUploadIsReadOnce`). Its text fields may come to
-  `maxRequestBytes` between them, as a JSON post may, the first value of each name is the
-  one read, and parts past `maxFormParts` refuse the form
+  the subsampling copies at 4:4:4, and the thumbnail's weights grow with the longer side,
+  so `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full size each format
+  allows (`eachShape`: for every shorter side, the four longest sides that fit, both ways
+  round), at every orientation, and holds each kind to the shape the README gives for it.
+  It reads `processingCost` with the frame header rewritten in place rather than calling
+  `Inspect` millions of times, and checks `Inspect` agrees at the shapes that decide. A
+  change to `cost.go` that moves a kind, or the shape a kind is refused at, changes the
+  README's lists in the same commit. The same model caps the upload size limit: an upload
+  is charged eight bytes for every byte of it whatever its picture (its stored file may
+  come to four times its size, and the encoder's buffer holds two of those as it grows),
+  so `media.MaxUploadBytes` (31 MiB), derived from `processingBudget` and `storedLimit`'s
+  terms in `cost.go`, is the largest size in whole MiB at which the cheapest file of each
+  format is admitted. `maxUploadLimit` (`config.go`) is that, and the server refuses to
+  start with a larger `EDUCHAN_MAX_UPLOAD_BYTES`; `TestLargestAttachmentLimitIsReachable`
+  posts the cheapest file of each format at that size and holds one a MiB larger to a
+  refusal. A change to the budget or to `storedLimit` moves it, and the README's figure
+  with it. `Save` then holds its estimate of the budget from the start of decoding until
+  both renditions are stored, because until then it holds what it made
+  (`acquireProcessing`, a first-come-first-served weighted semaphore in `budget.go`, so a
+  large upload is not starved by small ones; `TestSaveHoldsItsShareUntilItIsStored`), and
+  `processHeld` gives that share back by a deferred call until it hands it over, because
+  the server recovers from a panic in a decoder or an encoder and goes on with whatever
+  the panic left held (`TestAPanicWhileProcessingGivesItsShareBack`). Nothing it writes is
+  copied again on the way out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because
+  the library's default is a 16 MiB buffer for every object, kept only for retries a write
+  without preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads'
+  own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
+  `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
+  as much as the request's `Content-Length` or the most the body may be, and which the
+  handler gives back when the post is answered (`submission.release`). For that to be what
+  the body costs, `readMultipart` reads the body itself rather than through
+  `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
+  (memory again on Cloud Run) and then hands it over to be copied: the image is read once
+  into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
+  fields may come to `maxRequestBytes` between them, as a JSON post may, the first value
+  of each name is the one read, and parts past `maxFormParts` refuse the form
   (`TestMultipartPostsAreReadAsTheFormSendsThem`). Between them the two budgets hold 320
   MiB at most, whatever `containerConcurrency` lets in; the rest of the process is about
   40 MiB idle, and eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB`
@@ -868,42 +874,42 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   client is told apart from a busy server.** A post waits for room in the upload budget
   under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
   does not get room gives up `processingAllowance` (15 s: the slowest admitted upload
-  measured, a 25-megapixel PNG with transparency of nearly 8 MiB, took about eight
-  seconds on one core, and the slowest GIF, of four 25-megapixel frames, about two and a
-  half, so it leaves margin) before that deadline, with `media.ErrBusy`, and room
-  that is there is taken however near the deadline. Its body then has `uploadReadTimeout`
-  (30 s) to arrive, counted from when the wait ends, so time spent waiting for room is not
-  taken out of the body's: a read deadline set on the connection through an
-  `http.ResponseController` once `ReserveUpload` has returned, whatever it returned (the
-  logging middleware's `statusRecorder` carries an `Unwrap` so the controller reaches the
-  connection underneath); a body slower than that is the client's doing, answered `408`
-  (`upload too slow`, `isReadTimeout`), not the `503` a server with no room gives, and a
-  body that waited for room is not answered `408` for the server's load. Once the body is
-  read, the image has a fresh `postDeadline` (25 s, `processContext`) to be processed and
-  both renditions stored — measured from after the body, not from the start of the
-  handler, so a slow body no longer spends the time the image has and is no longer
-  mistaken for a busy server (`TestSlowUploadBodyIsNotMistakenForABusyServer`);
-  `processContext` also resets the response's write deadline to cover that processing and
-  the answer, the body read having possibly used more than one `WriteTimeout` (30 s,
-  `app.WriteTimeout`, which `cmd/server` uses) from the end of the headers. `Save` writes
-  nothing once that processing deadline has passed, on either backend (`LocalStore.Put`
-  honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
-  removes a written original on a context that has not ended (`context.WithoutCancel`).
-  Decoding, re-encoding and playing a GIF each watch that context as they run — a reader
-  that fails once it is done, a stored-buffer write that refuses once it is done, a
-  check before each GIF frame, and one before the thumbnail — so a cancelled or timed-out
-  upload stops partway rather than running to the end; `cancel_test.go` pins each check
-  on its own by ending the context the moment that check asks (`askedContext`), so none
-  of it rests on timing.
-  The database commit runs on the request's own context, never a deadline: a deadline
-  passing mid-commit could otherwise leave a post made and its image removed. A budget
-  wait or a processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503`
-  with a `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request
-  log as a warning, not an error; the body of a post turned away for a full budget before
-  it was read is still read to its end and dropped, so the browser gets the answer rather
-  than a connection closed under its upload. Before the bound, a queued upload was stored
-  and its post made after its answer could no longer be sent, and the poster, told the
-  network had failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
+  measured, a 25-megapixel PNG with transparency of nearly 8 MiB, took about eight seconds
+  of CPU on one core, and the slowest GIF found, 25 frames of a 2000×2000 canvas each with
+  a table of its own and a pixel to clear, about four, so it leaves margin) before that
+  deadline, with `media.ErrBusy`, and room that is there is taken however near the
+  deadline. Its body then has `uploadReadTimeout` (30 s) to arrive, counted from when the
+  wait ends, so time spent waiting for room is not taken out of the body's: a read
+  deadline set on the connection through an `http.ResponseController` once `ReserveUpload`
+  has returned, whatever it returned (the logging middleware's `statusRecorder` carries an
+  `Unwrap` so the controller reaches the connection underneath); a body slower than that
+  is the client's doing, answered `408` (`upload too slow`, `isReadTimeout`), not the
+  `503` a server with no room gives, and a body that waited for room is not answered `408`
+  for the server's load. Once the body is read, the image has a fresh `postDeadline` (25
+  s, `processContext`) to be processed and both renditions stored — measured from after
+  the body, not from the start of the handler, so a slow body no longer spends the time
+  the image has and is no longer mistaken for a busy server
+  (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
+  response's write deadline to cover that processing and the answer, the body read having
+  possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which `cmd/server`
+  uses) from the end of the headers. `Save` writes nothing once that processing deadline
+  has passed, on either backend (`LocalStore.Put` honours an ended context as Cloud
+  Storage does, pinned in `testStoreContract`), and removes a written original on a
+  context that has not ended (`context.WithoutCancel`). Decoding, re-encoding and playing
+  a GIF each watch that context as they run — a reader that fails once it is done, a
+  stored-buffer write that refuses once it is done, a check before each GIF frame, and one
+  before the thumbnail — so a cancelled or timed-out upload stops partway rather than
+  running to the end; `cancel_test.go` pins each check on its own by ending the context
+  the moment that check asks (`askedContext`), so none of it rests on timing. The database
+  commit runs on the request's own context, never a deadline: a deadline passing
+  mid-commit could otherwise leave a post made and its image removed. A budget wait or a
+  processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503` with a
+  `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as
+  a warning, not an error; the body of a post turned away for a full budget before it was
+  read is still read to its end and dropped, so the browser gets the answer rather than a
+  connection closed under its upload. Before the bound, a queued upload was stored and its
+  post made after its answer could no longer be sent, and the poster, told the network had
+  failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
   `TestPostPastItsDeadlineIsNotMadeAndNotCharged`,
   `TestWaitingForRoomEndsInTimeForTheWork`). A cancelled wait reaches the handler as
   `context.Canceled`, which `fail` answers like any request whose client left.

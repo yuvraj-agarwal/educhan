@@ -373,20 +373,20 @@ server that would refuse what it sends.
   or the content type the client claims. Anything else (`unsupported image format: use
   JPEG, PNG, WebP, or GIF`), an image whose header claims more than 25 megapixels (room
   for the 24-megapixel photos phones and cameras save, an iPhone's 5712×4284 included;
-  `image resolution is too large`), a GIF whose frames add up to more than four times
-  that, or an image that would take more memory to process than the server sets aside for
-  all of them at once (`image too large to process`), and a GIF whose blocks cannot be
-  read through to its end or whose first frame reaches past its canvas (browsers disagree
-  on how to show that one), an animated WebP, or a WebP cut short, its RIFF running past
-  the end of the file (`image could not be decoded`), is refused with `400` before
-  anything is decoded and before flood control. A GIF that ends after its last frame
-  without the closing byte, or whose later frames reach past its canvas, is stored as
-  browsers show it: whole, and with each frame cut to the part on the canvas. The memory
-  depends on the encoding as well as the size, and on the shape: a longer, thinner picture
-  costs more for its pixels, because a JPEG's sides are rounded up to whole blocks and
-  making the thumbnail takes 64 bytes and more for every pixel of the longer side. At the
-  full 25 megapixels, from an upload of up to the default 8 MiB, at any shape the format
-  allows:
+  `image resolution is too large`), a GIF whose frames add up to more than four times that
+  (a frame narrower than 64 pixels counting as 64 wide), or an image that would take more
+  memory to process than the server sets aside for all of them at once (`image too large
+  to process`), and a GIF whose blocks cannot be read through to its end or whose first
+  frame reaches past its canvas (browsers disagree on how to show that one), an animated
+  WebP, or a WebP cut short, its RIFF running past the end of the file (`image could not
+  be decoded`), is refused with `400` before anything is decoded and before flood control.
+  A GIF that ends after its last frame without the closing byte, or whose later frames
+  reach past its canvas, is stored as browsers show it: whole, and with each frame cut to
+  the part on the canvas. The memory depends on the encoding as well as the size, and on
+  the shape: a longer, thinner picture costs more for its pixels, because a JPEG's sides
+  are rounded up to whole blocks and making the thumbnail takes 64 bytes and more for
+  every pixel of the longer side. At the full 25 megapixels, from an upload of up to the
+  default 8 MiB, at any shape the format allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
     a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
@@ -403,17 +403,17 @@ server that would refuse what it sends.
     progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
     turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
     with transparency, which are stored as PNGs (below) and so take four bytes a pixel.
-  - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn
-    stores at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at
-    4:1:1 and refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that
-    need no turning, accepted up to about 60:1; by its shape and the upload's size, a
-    16-bit colour PNG that is neither interlaced nor turned; and, by the upload's size, a
-    GIF, which is played on four bytes a pixel of its canvas while all its frames are
-    held: at any shape, one whose frames come to two canvases or less is accepted, three
-    from an upload of up to about 6.9 MiB, and four, the most a GIF's frames can come
-    to, up to about 3.9 MiB. An animation whose colour tables give more than 255 colours
-    between them is played on eight bytes a pixel, for the frames it may put back (see the
-    GIF bullet below): at this size it is accepted only when its frames come to about two
+  - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn stores
+    at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at 4:1:1 and
+    refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that need no
+    turning, accepted up to about 60:1; by its shape and the upload's size, a 16-bit
+    colour PNG that is neither interlaced nor turned; and, by the upload's size, a GIF,
+    which is played on four bytes a pixel of its canvas while all its frames are held: at
+    any shape, one whose frames come to two canvases or less is accepted, three from an
+    upload of up to about 6.9 MiB, and four, the most a GIF's frames can come to, up to
+    about 3.9 MiB. An animation whose colour tables give more than 255 colours between
+    them is played on eight bytes a pixel, for the frames it may put back (see the GIF
+    bullet below): at this size it is accepted only when its frames come to about two
     thirds of a canvas or less, half of one from an upload of up to about 2.4 MiB, and
     none from an upload over about 3.9 MiB; from an upload of 8 MiB, two whole frames are
     accepted up to about 17 megapixels and four up to about 15.
@@ -530,16 +530,17 @@ server that would refuse what it sends.
     of many colours made to test it; of 5,000 random GIFs of up to 256 colours a frame and
     every disposal method, one is, and of 2,000 random animations of sprites of up to 256
     colours each put back, cleared or left over a background of 256, 75 are. A GIF whose
-    stored frames would add up to more pixels than four 25-megapixel canvases is refused
-    too, which takes frames that jump across the canvas from one picture to the next; with
-    a table a frame, a rectangle looked at for a way of disposing of a frame that is not
-    taken counts as a frame, so that the work of looking is bounded as the work of writing
-    is. Neither refusal can be read from the header, only found by playing the GIF, so a
-    file the header check admits is turned away only after it has been decoded and its
-    thumbnail made, and after flood control: it costs the post its cooldown, and the
-    upload, stored while it is processed, is removed. Comments and application data such
-    as XMP are dropped, and the background colour, which browsers never draw, is written
-    as the first entry.
+    stored frames would add up to more pixels than four 25-megapixel canvases (a frame
+    narrower than 64 pixels counting as 64 wide) is refused too, which takes frames that
+    jump across the canvas from one picture to the next; with a table a frame, a rectangle
+    looked at for a way of disposing of a frame that is not taken counts as a frame, so
+    that the work of looking is bounded as the work of writing is. Neither refusal can be
+    read from the header, only found by playing the GIF, so a file the header check admits
+    is turned away only after it has been decoded and its thumbnail made, and after flood
+    control. It costs the post its cooldown, and nothing is stored: the renditions are
+    written only once processing has succeeded. Comments and application data such as XMP
+    are dropped, and the background colour, which browsers never draw, is written as the
+    first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
@@ -970,23 +971,24 @@ limits never compound.
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off.
 
-A post with an image the server is too busy to take in time — no room to read or
-process it within about ten seconds, or its image not stored within 25 seconds of
-its body arriving (see **Memory** under [Image attachments](#image-attachments)) —
-answers `503` the same way, with a `Retry-After` and `retry_after` of 10 seconds.
-Nothing is stored for it, and a cooldown it started is given back, so it can be sent
-again as soon as the wait is over. A post whose body takes longer than 30 seconds to
-arrive, counted from when there was room to read it, answers `408` with
-`{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
-connection faster; it is refused before flood control, so it starts no cooldown. A
-request rejected for any other reason — an empty body, an oversized image, a file
-that is not an accepted image or whose header shows it unusable (see **Formats**), a
-reply to a missing, locked or archived thread or an image past a thread's cap — does
-not start a cooldown, so a typo never costs a wait. Two refusals come only after the
-cooldowns have started: an image whose header reads but whose pixels do not decode,
-or whose rewritten file would be too large to store, which only decoding and
-encoding it can find, and those are the cost the upload cooldown is there for; and
-the loser of two replies racing for a thread's last image slot (see the HTTP API).
+A post with an image the server is too busy to take in time — no room to read or process
+it within about ten seconds, or its image not stored within 25 seconds of its body
+arriving (see **Memory** under [Image attachments](#image-attachments)) — answers `503`
+the same way, with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for
+it, and a cooldown it started is given back, so it can be sent again as soon as the wait
+is over. A post whose body takes longer than 30 seconds to arrive, counted from when there
+was room to read it, answers `408` with `{"error":"upload too slow"}` and no
+`Retry-After`, since waiting does not make a connection faster; it is refused before flood
+control, so it starts no cooldown. A request rejected for any other reason — an empty
+body, an oversized image, a file that is not an accepted image or whose header shows it
+unusable (see **Formats**), a reply to a missing, locked or archived thread or an image
+past a thread's cap — does not start a cooldown, so a typo never costs a wait. Three
+refusals come only after the cooldowns have started: an image whose header reads but whose
+pixels do not decode, or whose rewritten file would be too large to store, which only
+decoding and encoding it can find; a GIF refused while it is played (`image too large to
+process`, see **Formats** under [Image attachments](#image-attachments)), which only
+playing it can find, and those two are the cost the upload cooldown is there for; and the
+loser of two replies racing for a thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
