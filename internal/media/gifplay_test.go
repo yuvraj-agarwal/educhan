@@ -10,10 +10,12 @@ import (
 	"image"
 	"image/color"
 	"image/gif"
+	"math"
 	"math/rand"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 )
 
 // What a GIF shows is the frames drawn one on another, each for its delay,
@@ -1993,8 +1995,7 @@ func gifDisposals(t *testing.T, data []byte) []byte {
 // iterates every row of the bounding box of the three rectangles, so two
 // one-pixel rectangles at the top and the bottom of a tall canvas made it
 // iterate every row of the canvas though only two held a run. It is kept here
-// as the reference spans must still match call for call, and as what the
-// row-count test is measured against.
+// as the reference spans must still match call for call.
 func spansBoundingBox(a, b, c image.Rectangle, f func(y, x0, x1 int)) {
 	rects := [3]image.Rectangle{a, b, c}
 	bound := a.Union(b).Union(c)
@@ -2040,28 +2041,16 @@ func TestSpansVisitsEachPixelOnce(t *testing.T) {
 		x, y := rng.Intn(40), rng.Intn(40)
 		return image.Rect(x, y, x+rng.Intn(12), y+rng.Intn(12))
 	}
+	var want, got [][3]int
 	for i := 0; i < 100000; i++ {
 		a, b, c := rect(), rect(), rect()
-		var want, got []string
-		spansBoundingBox(a, b, c, func(y, x0, x1 int) { want = append(want, fmt.Sprint(y, x0, x1)) })
-		spans(a, b, c, func(y, x0, x1 int) { got = append(got, fmt.Sprint(y, x0, x1)) })
-		if fmt.Sprint(want) != fmt.Sprint(got) {
+		want, got = want[:0], got[:0]
+		spansBoundingBox(a, b, c, func(y, x0, x1 int) { want = append(want, [3]int{y, x0, x1}) })
+		spans(a, b, c, func(y, x0, x1 int) { got = append(got, [3]int{y, x0, x1}) })
+		if !slices.Equal(want, got) {
 			t.Fatalf("%v %v %v:\n want %v\n got  %v", a, b, c, want, got)
 		}
 	}
-}
-
-// walkedRows is how many rows spans iterates for the rectangles: the rows
-// coveredRows reports, which is its whole outer loop. It is a structural
-// count, not a time, so it holds on CI whatever the load.
-func walkedRows(a, b, c image.Rectangle) int {
-	rects := [3]image.Rectangle{a, b, c}
-	ys, m := coveredRows(&rects)
-	rows := 0
-	for _, iv := range ys[:m] {
-		rows += iv[1] - iv[0]
-	}
-	return rows
 }
 
 // TestSpansWalksOnlyCoveredRows pins that spans iterates only the rows a
@@ -2069,20 +2058,40 @@ func walkedRows(a, b, c image.Rectangle) int {
 // a one-pixel frame at the top and another at the bottom of a 1×65535 canvas:
 // spans walked all 65,535 rows per frame though only two held a pixel, and
 // nothing charged the gap (the walk charges the frames' pixels, playGIF's
-// area the stored frames'). Before the fix walkedRows returned the bounding
-// box's height; it now returns the covered rows. The count is structural, so
-// a revert to the bounding-box walk (spansBoundingBox) fails it without any
-// timing.
+// area the stored frames').
+//
+// It watches spans itself, not a helper: it hands it two one-pixel
+// rectangles at the two ends of int's range and requires it to return with
+// their two runs. Walking only the covered rows, spans visits two and returns
+// at once; walking the bounding box, as spansBoundingBox does, it would
+// iterate every int between them, nearly 2^64 rows, which no machine
+// finishes. So a revert fails on the deadline, ten seconds against a call
+// that takes well under a microsecond, and not on any timing of this
+// machine's. The walk a revert starts runs on until the test binary exits;
+// the failure is reported all the same.
 func TestSpansWalksOnlyCoveredRows(t *testing.T) {
-	top := image.Rect(0, 0, 1, 1)
-	bottom := image.Rect(0, 65534, 1, 65535)
-	if got := walkedRows(top, bottom, image.Rectangle{}); got != 2 {
-		t.Errorf("spans walks %d rows for two one-pixel rectangles 65,534 apart, want 2 (the bounding box is 65,535 rows)", got)
+	top := image.Rect(0, math.MinInt, 1, math.MinInt+1)
+	bottom := image.Rect(0, math.MaxInt-1, 1, math.MaxInt)
+	done := make(chan [][3]int, 1)
+	go func() {
+		var calls [][3]int
+		spans(top, image.Rectangle{}, bottom, func(y, x0, x1 int) { calls = append(calls, [3]int{y, x0, x1}) })
+		done <- calls
+	}()
+	select {
+	case calls := <-done:
+		if want := [][3]int{{math.MinInt, 0, 1}, {math.MaxInt - 1, 0, 1}}; !slices.Equal(calls, want) {
+			t.Errorf("spans of two one-pixel rectangles called f with %v, want %v", calls, want)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("spans did not return within 10 s for two one-pixel rectangles at the two ends of int's range: it is walking the rows between them, not only the two they cover")
 	}
+}
 
-	// Over random rectangles, spans never walks more rows than the rectangles
-	// cover between them, which is at most their heights added up — never the
-	// gaps between them, which nothing charges.
+// TestCoveredRowsAreTheRowsARectangleCovers holds coveredRows, the outer loop
+// of spans, to the rows at least one rectangle covers, each once: never the
+// gaps between them, which nothing charges.
+func TestCoveredRowsAreTheRowsARectangleCovers(t *testing.T) {
 	rng := rand.New(rand.NewSource(2))
 	rect := func() image.Rectangle {
 		if rng.Intn(5) == 0 {
@@ -2092,9 +2101,9 @@ func TestSpansWalksOnlyCoveredRows(t *testing.T) {
 		return image.Rect(x, y, x+rng.Intn(50), y+rng.Intn(50))
 	}
 	for i := 0; i < 20000; i++ {
-		a, b, c := rect(), rect(), rect()
+		rects := [3]image.Rectangle{rect(), rect(), rect()}
 		covered := map[int]bool{}
-		for _, r := range []image.Rectangle{a, b, c} {
+		for _, r := range rects {
 			if r.Empty() {
 				continue
 			}
@@ -2102,8 +2111,21 @@ func TestSpansWalksOnlyCoveredRows(t *testing.T) {
 				covered[y] = true
 			}
 		}
-		if got, want := walkedRows(a, b, c), len(covered); got != want {
-			t.Fatalf("%v %v %v: spans walks %d rows, want %d (the rows a rectangle covers)", a, b, c, got, want)
+		ys, m := coveredRows(&rects)
+		walked := 0
+		for k, iv := range ys[:m] {
+			if iv[0] >= iv[1] || k > 0 && iv[0] <= ys[k-1][1] {
+				t.Fatalf("%v: intervals %v are empty, out of order, overlapping or touching", rects, ys[:m])
+			}
+			for y := iv[0]; y < iv[1]; y++ {
+				if !covered[y] {
+					t.Fatalf("%v: row %d is in %v but no rectangle covers it", rects, y, ys[:m])
+				}
+			}
+			walked += iv[1] - iv[0]
+		}
+		if walked != len(covered) {
+			t.Fatalf("%v: coveredRows gives %d rows, want %d (the rows a rectangle covers)", rects, walked, len(covered))
 		}
 	}
 }
