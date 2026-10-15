@@ -41,7 +41,9 @@ type fakeStripe struct {
 	sessions []url.Values
 	headers  []http.Header
 	price    map[string]any
-	fail     bool
+	// priceReads counts the times the price was asked for.
+	priceReads int
+	fail       bool
 	// sessionURL, when set, is the page a new session is said to be on.
 	sessionURL string
 	// opening, when set, runs while a session is being created, with the
@@ -92,6 +94,7 @@ func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "url": page})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/prices/"+testPriceID:
+		f.priceReads++
 		_ = json.NewEncoder(w).Encode(f.price)
 	default:
 		w.WriteHeader(http.StatusNotFound)
@@ -103,6 +106,12 @@ func (f *fakeStripe) sessionCount() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return len(f.sessions)
+}
+
+func (f *fakeStripe) priceReadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.priceReads
 }
 
 func testPassConfig(f *fakeStripe) PassConfig {
@@ -549,13 +558,14 @@ func (p *passHarness) claimCookie() (string, bool) {
 	return "", false
 }
 
-// TestPassCollectsEveryOrderUnderOneClaim holds a browser's purchases
-// together: a second checkout gives the browser a new claim and moves the
-// first one's order to it, so a Stripe tab paid after another is collected
-// too, and paying twice buys a longer Pass rather than losing a payment or
-// showing a second code in place of the first.
-func TestPassCollectsEveryOrderUnderOneClaim(t *testing.T) {
-	p := passServer(t, nil)
+// TestPassCollectsOnlyThroughItsOwnClaim holds every order to the claim its
+// own checkout set: a second checkout gives the browser a new claim with only
+// its own order under it, and nothing from one checkout is ever added to what
+// another buys, whoever paid for it. A payment on an earlier checkout is no
+// longer collected by that browser; it is still its buyer's, and a reissue
+// link from its receipt makes it a Pass of its own.
+func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	if p.reportsClaim() {
 		t.Fatal("a browser that bought nothing has a claim")
 	}
@@ -566,74 +576,112 @@ func TestPassCollectsEveryOrderUnderOneClaim(t *testing.T) {
 	if again, _ := p.claimCookie(); again == cookie {
 		t.Fatal("a second checkout kept the browser's old claim token")
 	}
-	var claims int
-	if err := p.app.pool.QueryRow(context.Background(), `SELECT count(DISTINCT claim_hash) FROM pass_orders`).Scan(&claims); err != nil || claims != 1 {
-		t.Fatalf("two checkouts in one browser made %d claims (%v), want 1", claims, err)
+	var claims, orders int
+	if err := p.app.pool.QueryRow(context.Background(), `
+		SELECT count(DISTINCT claim_hash), count(*) FROM pass_orders`).Scan(&claims, &orders); err != nil || claims != 2 || orders != 2 {
+		t.Fatalf("two checkouts in one browser made %d orders under %d claims (%v), want one under each of 2", orders, claims, err)
 	}
 	if !p.reportsClaim() {
 		t.Fatal("GET /api/pass did not say the browser has a purchase to collect")
 	}
 
-	// The second tab is paid first: its Pass is issued, and the claim stays
-	// for the first.
+	// The second tab is paid: its Pass is issued, and nothing is left to
+	// collect here.
 	p.paid(second, "pi_second")
 	code, issued := p.claim()
-	if code != http.StatusOK || issued.Status != "issued" || !issued.Claim {
-		t.Fatalf("claim with one order paid and one waiting: status %d, %+v", code, issued)
+	if want := passExpiry(time.Now(), 365); code != http.StatusOK || issued.Status != "issued" || issued.Claim || !issued.ExpiresAt.Equal(want) {
+		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass to %v", code, issued, want)
 	}
-	if !p.reportsClaim() {
-		t.Fatal("the claim was cleared while an order was still waiting under it")
-	}
-	// The first tab, paid later, renews the Pass the second one made. The page
-	// still has the nonce the code came with, so it is told the same code
-	// again, now running a year longer.
+	// The first tab, paid later, is not collected here and changes nothing
+	// about the Pass the second one made.
 	p.paid(first, "pi_first")
-	code, renewed := p.claim()
-	if code != http.StatusOK || renewed.Status != "issued" || renewed.Pass != issued.Pass || renewed.Claim ||
-		!renewed.ExpiresAt.Equal(issued.ExpiresAt.AddDate(0, 0, 365)) {
-		t.Fatalf("claim of the tab paid last: status %d, %+v; want %s to %v", code, renewed, issued.Pass, issued.ExpiresAt.AddDate(0, 0, 365))
-	}
-	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(renewed.ExpiresAt) {
-		t.Fatalf("the Pass runs to %v, want %v", got, renewed.ExpiresAt)
-	}
 	if p.reportsClaim() {
-		t.Fatal("the claim outlived the last order under it")
+		t.Fatal("the browser is told to collect an earlier checkout's payment")
 	}
-	if code, _ := p.claim(); code != http.StatusBadRequest {
-		t.Fatalf("claim with nothing left: status %d", code)
+	if code, out := p.claim(); code != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("claim after the earlier tab was paid: status %d, %+v", code, out)
+	}
+	if _, ok := p.claimCookie(); !ok {
+		t.Fatal("a claim with nothing to collect took the claim cookie out of the browser")
+	}
+	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(issued.ExpiresAt) {
+		t.Fatalf("an earlier checkout's payment moved the Pass to %v, want %v", got, issued.ExpiresAt)
+	}
+	// It is still its buyer's: a link from its receipt makes it a Pass of its
+	// own, and the first Pass goes on as it was.
+	status, _, token := p.reissueLink("mod-key", "pi_first")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of the earlier tab's payment: status %d", status)
+	}
+	code, own := p.otherBrowser().redeem(token)
+	if code != http.StatusOK || own.Status != "issued" || own.Pass == issued.Pass || !own.ExpiresAt.Equal(passExpiry(time.Now(), 365)) {
+		t.Fatalf("redeem of the earlier tab's payment: status %d, %+v", code, own)
+	}
+	for _, c := range []string{issued.Pass, own.Pass} {
+		if status, _ := p.activate(c); status != http.StatusOK {
+			t.Fatalf("code %s after both were collected: status %d", c, status)
+		}
 	}
 
-	// Both paid before the browser collects: one Pass with two terms, each
-	// payment linked to it with its own, so a refund of either takes one off.
-	a, b := p.checkout(""), p.checkout("")
-	p.paid(a, "pi_both_a")
-	p.paid(b, "pi_both_b")
-	code, both := p.claim()
-	single := passExpiry(time.Now(), 365)
-	if code != http.StatusOK || both.Status != "issued" || both.Claim || !both.ExpiresAt.Equal(single.AddDate(0, 0, 365)) {
-		t.Fatalf("claim of two paid orders: status %d, %+v; want one Pass to %v", code, both, single.AddDate(0, 0, 365))
+	// At a shared computer, somebody starts a checkout, keeps its Stripe page
+	// and leaves; the next person buys there, and the first pays from
+	// elsewhere before the second collects. The buyer's Pass is made from the
+	// buyer's payment alone, and the first payment's receipt reissues a Pass
+	// of its own, never the buyer's.
+	shared := p.otherBrowser()
+	left := shared.checkout("")
+	bought := shared.checkout("")
+	shared.paid(left, "pi_left_open")
+	shared.paid(bought, "pi_buyer")
+	code, buyer := shared.claim()
+	if code != http.StatusOK || buyer.Status != "issued" || !buyer.ExpiresAt.Equal(passExpiry(time.Now(), 365)) {
+		t.Fatalf("the buyer's claim: status %d, %+v", code, buyer)
 	}
-	var origins, payments int
-	if err := p.app.pool.QueryRow(context.Background(), `
-		SELECT count(*) FILTER (WHERE origin), count(*) FROM pass_payments
-		WHERE pass_id = (SELECT id FROM passes WHERE token_hash = $1)`,
-		p.app.passTokenHash(strings.ReplaceAll(both.Pass, "-", ""))).Scan(&origins, &payments); err != nil || origins != 1 || payments != 2 {
-		t.Fatalf("the Pass has %d payments, %d of them its origin (%v); want 2 and 1", payments, origins, err)
-	}
-	// Which of the two made the Pass depends on the order they were collected
-	// in, which nothing fixes; refunding the other takes its year off.
-	renewal := "pi_both_b"
 	var origin bool
-	if err := p.app.pool.QueryRow(context.Background(), `SELECT origin FROM pass_payments WHERE payment_hash = $1`,
-		p.app.passPaymentHash(renewal)).Scan(&origin); err != nil {
-		t.Fatal(err)
+	var payments int
+	if err := p.app.pool.QueryRow(context.Background(), `
+		SELECT bool_and(origin AND payment_hash = $2), count(*) FROM pass_payments
+		WHERE pass_id = (SELECT id FROM passes WHERE token_hash = $1)`,
+		p.app.passTokenHash(strings.ReplaceAll(buyer.Pass, "-", "")), p.app.passPaymentHash("pi_buyer")).Scan(&origin, &payments); err != nil ||
+		!origin || payments != 1 {
+		t.Fatalf("the buyer's Pass has %d payments, the buyer's its only origin: %v (%v)", payments, origin, err)
 	}
-	if origin {
-		renewal = "pi_both_a"
+	status, _, token = p.reissueLink("mod-key", "pi_left_open")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of the payment left open: status %d", status)
 	}
-	p.refund(renewal)
-	if got, _ := p.passExpiresAt(both.Pass); !got.Equal(single) {
-		t.Fatalf("refunding the second payment left the Pass at %v, want %v", got, single)
+	if code, out := p.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" || out.Pass == buyer.Pass {
+		t.Fatalf("redeem of the payment left open: status %d, %+v", code, out)
+	}
+	if status, _ := p.activate(buyer.Pass); status != http.StatusOK {
+		t.Fatalf("another payment's reissue stopped the buyer's code: status %d", status)
+	}
+	if status, _, _ := p.reissueLink("mod-key", "pi_buyer"); status != http.StatusOK {
+		t.Fatalf("the buyer's own receipt: status %d", status)
+	}
+
+	// A bank debit is still clearing when the next person buys at the same
+	// browser. Its money renews nobody's Pass: once cleared, its receipt
+	// reissues a Pass of its own, and the next person's is as they bought it.
+	library := p.otherBrowser()
+	slow := map[string]any{"id": library.checkout(""), "object": "checkout.session", "mode": "payment",
+		"payment_status": "unpaid", "payment_intent": "pi_debit_clearing"}
+	library.webhook(stripeCheckoutCompleted, slow)
+	next := library.buy("pi_next_person")
+	slow["payment_status"] = "paid"
+	library.webhook(stripeCheckoutAsyncSuccess, slow)
+	if library.reportsClaim() {
+		t.Fatal("the next person is told to collect the cleared debit")
+	}
+	status, _, token = p.reissueLink("mod-key", "pi_debit_clearing")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of the cleared debit: status %d", status)
+	}
+	if code, out := p.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" || out.Pass == next.Pass {
+		t.Fatalf("redeem of the cleared debit: status %d, %+v", code, out)
+	}
+	if got, _ := p.passExpiresAt(next.Pass); !got.Equal(next.ExpiresAt) {
+		t.Fatalf("the cleared debit moved the next person's Pass to %v, want %v", got, next.ExpiresAt)
 	}
 
 	// A cookie this server could not have made is no claim, and a checkout
@@ -742,16 +790,15 @@ func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
 	if status, set := p.claimSetCookie(); status != http.StatusAccepted || set != nil {
 		t.Fatalf("claim while the payment clears: status %d, cookie %v", status, set)
 	}
-	// Another checkout from the browser carries the claim on for as long as
-	// any order under it is held, however far that is.
-	far := dayCeil(time.Now().AddDate(0, 0, 60))
-	p.exec(`UPDATE pass_orders SET expires_at = $1`, far)
-	_, again := p.checkoutSetCookie("")
-	if again == nil || time.Now().Add(time.Duration(again.MaxAge)*time.Second).Before(far.Add(-time.Minute)) {
-		t.Fatalf("a second checkout cut the claim short of the order held until %v: %v", far.UTC(), again)
+	// Only forgetting the claim clears it: a claim told to wait, or refused
+	// for its body, leaves it in the browser to collect with.
+	var refused passResponse
+	if status := p.post("/api/pass/claim", map[string]any{}, &refused); status != http.StatusBadRequest {
+		t.Fatalf("claim with no nonce: status %d", status)
 	}
-	p.exec(`DELETE FROM pass_orders WHERE payment_hash IS NULL AND expires_at < $1`, far)
-	p.exec(`UPDATE pass_orders SET expires_at = $1`, held)
+	if value, ok := p.claimCookie(); !ok || value != cookie.Value {
+		t.Fatal("a claim answered 202 or 400 took the claim cookie out of the browser")
+	}
 	// A week and a day on, the debit has not cleared yet and the order stays.
 	if err := p.app.store.prunePasses(context.Background(), time.Now().AddDate(0, 0, 8)); err != nil {
 		t.Fatal(err)
@@ -782,7 +829,7 @@ func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
 
 // TestPassExpiredCheckoutIsDropped holds an order to its Stripe session: one
 // Stripe closed unpaid is dropped, so the browser stops waiting for it, and
-// nothing else under the claim goes with it.
+// no other order goes with it.
 func TestPassExpiredCheckoutIsDropped(t *testing.T) {
 	p := passServer(t, nil)
 	expired := func(session string) {
@@ -795,6 +842,9 @@ func TestPassExpiredCheckoutIsDropped(t *testing.T) {
 	abandoned := p.checkout("")
 	open := p.checkout("")
 	expired(abandoned)
+	if n := p.count("pass_orders"); n != 1 {
+		t.Fatalf("%d orders left after one of two checkouts expired, want 1", n)
+	}
 	if status, out := p.claim(); status != http.StatusAccepted || !out.Claim {
 		t.Fatalf("claim with one checkout expired and one open: status %d, %+v", status, out)
 	}
@@ -1375,7 +1425,8 @@ func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 	}
 
 	// A badged post is the credential's request: the Pass header is not read,
-	// so even a bad one does not stand in its way.
+	// so a bad one does not stand in its way, and a good one is not looked up
+	// or counted against its hour.
 	mail := &captureSender{}
 	v := passServer(t, func(cfg *Config) {
 		cfg.VerifySecret = "test-verification-secret"
@@ -1385,20 +1436,30 @@ func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
 	})
 	v.addBoard("pass-board")
 	credential := (&verifyHarness{harness: v.harness, mail: mail}).verify("ana@iitb.ac.in").Credential
-	var badged createdPost
-	if status := v.postWithHeaders(http.Header{credentialHeader: {credential}, passHeader: {"not a pass"}},
-		"/api/boards/pass-board/threads", map[string]any{"body": "badged", "badge": true}, &badged); status != http.StatusCreated {
-		t.Fatalf("badged post with a Pass header: status %d (%s)", status, badged.Error)
+	held := v.buy("pi_beside_a_badge")
+	heldCode, _ := parsePassCode(held.Pass)
+	for name, code := range map[string]string{"a bad": "not a pass", "a good": held.Pass} {
+		var badged passResponse
+		if status := v.postWithHeaders(http.Header{credentialHeader: {credential}, passHeader: {code}},
+			"/api/boards/pass-board/threads", map[string]any{"body": "badged", "badge": true}, &badged); status != http.StatusCreated || badged.Pass != "" {
+			t.Fatalf("badged post with %s Pass header: status %d, %+v", name, status, badged)
+		}
+	}
+	v.app.pass.budget.mu.Lock()
+	_, counted := v.app.pass.budget.hours[v.app.passBudgetKey(heldCode)]
+	v.app.pass.budget.mu.Unlock()
+	if counted {
+		t.Fatal("a badged post counted the Pass beside it against its hour")
 	}
 
 	// A deployment that has retired the Pass ignores Passes rather than
-	// refusing posts.
+	// refusing posts, or answering for them.
 	off := testServer(t, nil)
 	off.addBoard("pass-board")
-	var created createdPost
+	var created passResponse
 	if status := off.postWithHeaders(http.Header{passHeader: {"not a pass"}},
-		"/api/boards/pass-board/threads", map[string]any{"body": "hi"}, &created); status != http.StatusCreated {
-		t.Fatalf("posting with a Pass header where the Pass is off: status %d (%s)", status, created.Error)
+		"/api/boards/pass-board/threads", map[string]any{"body": "hi"}, &created); status != http.StatusCreated || created.Pass != "" {
+		t.Fatalf("posting with a Pass header where the Pass is off: status %d, %+v", status, created)
 	}
 }
 
@@ -1541,6 +1602,7 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	p := passServerLogging(t, func(cfg *Config) { cfg.ModKey = "mod-key" }, &logs)
 	p.addBoard("scan")
 	p.paid(p.checkout(""), "pi_scan_payment")
+	claimToken, _ := p.claimCookie()
 	nonce := p.collectNonce()
 	_, issued := p.claim()
 	code, _ := parsePassCode(issued.Pass)
@@ -1603,6 +1665,7 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the reissued code":        []byte(reissued.Pass),
 		"the canonical new code":   []byte(newCode),
 		"the reissue link token":   []byte(linkToken),
+		"the claim token":          []byte(claimToken),
 		"the claim's nonce":        []byte(nonce),
 		"the reissue's nonce":      []byte(linkNonce),
 		"the stored hash":          stored,
@@ -1634,6 +1697,7 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the reissued code":  reissued.Pass,
 		"the new code":       newCode,
 		"the reissue link":   linkToken,
+		"the claim token":    claimToken,
 		"the claim's nonce":  nonce,
 		"the reissue nonce":  linkNonce,
 		"the stored hash":    hex.EncodeToString(stored),
@@ -1718,11 +1782,11 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 			// on sale here has none), and needs none.
 			h.exec(`INSERT INTO pass_orders (session_hash, claim_hash, payment_hash, days, expires_at) VALUES
 				('\xa1', '\xc1', NULL, 365, $1),
-				('\xa2', '\xc1', NULL, 365, $2),
-				('\xa3', '\xc2', '\xb3', 365, $3),
-				('\xa4', '\xc2', '\xb4', 365, $4),
-				('\xa5', '\xc3', '\xb5', 730, $5),
-				('\xa6', '\xc3', '\xb6', 30, $6)`,
+				('\xa2', '\xc2', NULL, 365, $2),
+				('\xa3', '\xc3', '\xb3', 365, $3),
+				('\xa4', '\xc4', '\xb4', 365, $4),
+				('\xa5', '\xc5', '\xb5', 730, $5),
+				('\xa6', '\xc6', '\xb6', 30, $6)`,
 				now.Add(-time.Hour), days(1), days(-10), days(-366), days(-400), days(-31))
 			h.exec(`INSERT INTO pass_revocations (payment_hash, expires_at) VALUES
 				('\xb7', $1), ('\xb8', $2)`, now.Add(-time.Hour), days(1))
@@ -2146,10 +2210,12 @@ func (p *passHarness) twin(tune func(*PassConfig)) *passHarness {
 }
 
 // TestPassClaimCanBeAskedAgain holds collecting to being safe to repeat: a
-// page whose answer never arrived asks again with the nonce it kept and is
-// given the same code, where it was once told there was nothing to collect
-// and the paid code was lost for good. Only that nonce is: another, or the
-// claim cookie copied without it, gets nothing.
+// page whose answer never arrived asks again with the cookie and the nonce it
+// kept and is given the same code, where it was once told there was nothing
+// to collect and the paid code was lost for good. Only both together are: the
+// cookie copied without the nonce, or the nonce copied, planted or left
+// behind and sent with any other cookie or link, gets nothing, and a code
+// refunded away or replaced by a reissue does not come back.
 func TestPassClaimCanBeAskedAgain(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	p.paid(p.checkout(""), "pi_lost_answer")
@@ -2184,6 +2250,41 @@ func TestPassClaimCanBeAskedAgain(t *testing.T) {
 	if status, out := thief.claim(); status != http.StatusBadRequest || out.Pass != "" {
 		t.Fatalf("the claim cookie copied without the nonce: status %d, %+v", status, out)
 	}
+	madeUp, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceThief := p.otherBrowser()
+	if status, out := nonceThief.claimWith(nonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the nonce copied without the cookie: status %d, %+v", status, out)
+	}
+	nonceThief.setClaimCookie(madeUp)
+	if status, out := nonceThief.claimWith(nonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the nonce copied with a made-up cookie: status %d, %+v", status, out)
+	}
+
+	// A nonce planted in a shared browser by somebody who started a checkout
+	// there: the next person is told to wait, buys and collects with it, and
+	// the planter, with the nonce and the cookie of their own checkout or one
+	// made up, gets nothing of what was bought.
+	shared := p.otherBrowser()
+	shared.checkout("")
+	plantersCookie, _ := shared.claimCookie()
+	planted := shared.collectNonce()
+	if status, out := shared.claim(); status != http.StatusAccepted || !out.Claim {
+		t.Fatalf("the next person's first claim: status %d, %+v", status, out)
+	}
+	shared.paid(shared.checkout(""), "pi_shared")
+	if status, out := shared.claimWith(planted); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the next person's purchase: status %d, %+v", status, out)
+	}
+	planter := p.otherBrowser()
+	for name, c := range map[string]string{"their own checkout's": plantersCookie, "a made-up": madeUp} {
+		planter.setClaimCookie(c)
+		if status, out := planter.claimWith(planted); status == http.StatusOK || out.Pass != "" {
+			t.Fatalf("the planted nonce with %s cookie: status %d, %+v", name, status, out)
+		}
+	}
 
 	// A reissue link spent by a request whose answer was lost is answered
 	// again the same way, and only to that nonce.
@@ -2201,18 +2302,51 @@ func TestPassClaimCanBeAskedAgain(t *testing.T) {
 	if status, out := buyer.redeemWith(token, other); status != http.StatusForbidden || out.Pass != passInvalid {
 		t.Fatalf("the spent link with another nonce: status %d, %+v", status, out)
 	}
+	if status, out := buyer.redeemWith(madeUp, linkNonce); status != http.StatusForbidden || out.Pass != passInvalid {
+		t.Fatalf("the link's nonce with a made-up link: status %d, %+v", status, out)
+	}
 	if status, _ := p.activate(first.Pass); status != http.StatusForbidden {
 		t.Fatalf("the replaced code still works: status %d", status)
 	}
 	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
 		t.Fatalf("the reissued code: status %d", status)
 	}
+	// The claim that collected the replaced code, asked again, does not bring
+	// it back.
+	if status, out := p.claimWith(nonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the claim asked again after a reissue: status %d, %+v", status, out)
+	}
+
+	// A nonce left behind in a browser by a link whose answer was lost, sent
+	// with another link, gets that link's own code and leaves the first alone.
+	p.otherBrowser().buy("pi_second_lost")
+	_, _, second := p.reissueLink("mod-key", "pi_second_lost")
+	status, leftover := buyer.redeemWith(second, linkNonce)
+	if status != http.StatusOK || leftover.Status != "issued" || leftover.Pass == fresh.Pass {
+		t.Fatalf("another link with the nonce left behind: status %d, %+v", status, leftover)
+	}
+	for _, code := range []string{fresh.Pass, leftover.Pass} {
+		if status, _ := p.activate(code); status != http.StatusOK {
+			t.Fatalf("code %s after a second link with the same nonce: status %d", code, status)
+		}
+	}
+
+	// A claim asked again after its Pass was refunded away gets nothing.
+	refunded := p.otherBrowser()
+	refunded.paid(refunded.checkout(""), "pi_refunded_away")
+	refundedNonce := refunded.collectNonce()
+	if status, out := refunded.claimWith(refundedNonce); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("claim before the refund: status %d, %+v", status, out)
+	}
+	refunded.refund("pi_refunded_away")
+	if status, out := refunded.claimWith(refundedNonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the claim asked again after a refund: status %d, %+v", status, out)
+	}
 }
 
 // TestPassCheckoutGivesANewClaim holds every checkout to a claim token only
 // that browser has: a token copied off a shared browser, or planted in it,
-// before somebody buys there collects nothing of what they buy, while the
-// browser still collects the earlier checkout it moved to its new claim.
+// before somebody buys there collects nothing of what they buy.
 func TestPassCheckoutGivesANewClaim(t *testing.T) {
 	p := passServer(t, nil)
 	// Somebody starts a checkout on a shared computer, copies its claim
@@ -2226,12 +2360,17 @@ func TestPassCheckoutGivesANewClaim(t *testing.T) {
 	if now, _ := p.claimCookie(); now == copied {
 		t.Fatal("the checkout kept the claim token that was copied before it")
 	}
-	if status, out := thief.claim(); status != http.StatusBadRequest || out.Pass != "" {
-		t.Fatalf("the copied token collected the buyer's Pass: status %d, %+v", status, out)
+	// The copied token still reaches the checkout it was copied from, which
+	// nobody paid, and nothing else.
+	if status, out := thief.claim(); status != http.StatusAccepted || out.Pass != "" {
+		t.Fatalf("the copied token: status %d, %+v; want the abandoned checkout still waiting", status, out)
 	}
 	status, bought := p.claim()
-	if status != http.StatusOK || bought.Status != "issued" || !bought.Claim {
-		t.Fatalf("the buyer's claim: status %d, %+v; want the Pass, and the abandoned checkout still waiting", status, bought)
+	if status != http.StatusOK || bought.Status != "issued" || bought.Claim {
+		t.Fatalf("the buyer's claim: status %d, %+v", status, bought)
+	}
+	if status, out := thief.claim(); status != http.StatusAccepted || out.Pass != "" {
+		t.Fatalf("the copied token after the buyer collected: status %d, %+v", status, out)
 	}
 
 	// A token chosen elsewhere and planted in a browser covers nothing that
@@ -2253,9 +2392,10 @@ func TestPassCheckoutGivesANewClaim(t *testing.T) {
 	}
 }
 
-// TestPassForgetDropsTheClaim holds Forget this browser and Remove the Pass
-// to forgetting a purchase still being collected: whoever uses the browser
-// next collects nothing of it, and the buyer gets it from their receipt
+// TestPassForgetDropsTheClaim holds Forget this browser, Remove the Pass and
+// Stop collecting it here to forgetting a purchase still being collected:
+// whoever uses the browser next collects nothing of it, even with a copy of
+// the claim cookie taken before, and the buyer gets it from their receipt
 // through a reissue.
 func TestPassForgetDropsTheClaim(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
@@ -2266,6 +2406,12 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 	if !p.reportsClaim() {
 		t.Fatal("no purchase to collect before forgetting")
 	}
+	// The page has asked once, and been told to wait.
+	nonce := p.collectNonce()
+	if status, out := p.claimWith(nonce); status != http.StatusAccepted || !out.Claim {
+		t.Fatalf("claim before forgetting: status %d, %+v", status, out)
+	}
+	copied, _ := p.claimCookie()
 	if status, out := p.forget(); status != http.StatusOK || out.Claim {
 		t.Fatalf("forget: status %d, %+v", status, out)
 	}
@@ -2280,6 +2426,20 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 	}
 	if status, out := p.claim(); status != http.StatusBadRequest || out.Pass != "" {
 		t.Fatalf("the next person collected the forgotten purchase: status %d, %+v", status, out)
+	}
+	fresh, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := p.otherBrowser()
+	replay.setClaimCookie(copied)
+	for name, n := range map[string]string{"the nonce it had": nonce, "a fresh nonce": fresh} {
+		if status, out := replay.claimWith(n); status != http.StatusBadRequest || out.Pass != "" {
+			t.Fatalf("the claim cookie copied before forgetting, with %s: status %d, %+v", name, status, out)
+		}
+	}
+	if n := p.count("passes"); n != 0 {
+		t.Fatalf("a forgotten purchase was collected: %d Passes", n)
 	}
 	// The buyer writes in with their receipt.
 	_, _, token := p.reissueLink("mod-key", "pi_forgotten")
@@ -2330,6 +2490,35 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 	}
 	if res, err := q.app.store.revokePassPayment(context.Background(), q.app.passPaymentHash("pi_second_year"), later); err != nil || res != revokedPass {
 		t.Fatalf("refund of the renewal part way through: %v, %v", res, err)
+	}
+
+	// Bought and renewed twice, a year each. The purchase refunded with 265
+	// and a half days of it left takes 266 off, and moves the renewals' terms
+	// back by as much: the first now ends 99 days past the purchase's end,
+	// not 365. Refunded ten days later, that renewal takes off the 355 days
+	// left of it and no more, and the last renewal keeps its whole year.
+	r := passServer(t, nil)
+	first := r.buy("pi_three_terms")
+	end := first.ExpiresAt
+	r.renew(first.Pass, "pi_three_terms_second")
+	r.renew(first.Pass, "pi_three_terms_third")
+	refundedAt := end.Add(-(265*24 + 12) * time.Hour)
+	if res, err := r.app.store.revokePassPayment(context.Background(), r.app.passPaymentHash("pi_three_terms"), refundedAt); err != nil || res != revokedTerm {
+		t.Fatalf("refund of the purchase: %v, %v", res, err)
+	}
+	if got, ok := r.passExpiresAt(first.Pass); !ok || !got.Equal(end.AddDate(0, 0, 464)) {
+		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 464))
+	}
+	if res, err := r.app.store.revokePassPayment(context.Background(), r.app.passPaymentHash("pi_three_terms_second"), refundedAt.AddDate(0, 0, 10)); err != nil || res != revokedTerm {
+		t.Fatalf("refund of the first renewal: %v, %v", res, err)
+	}
+	if got, ok := r.passExpiresAt(first.Pass); !ok || !got.Equal(end.AddDate(0, 0, 109)) {
+		t.Fatalf("after refunding the first renewal the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 109))
+	}
+	var lastEnds time.Time
+	if err := r.app.pool.QueryRow(context.Background(), `SELECT ends_at FROM pass_payments WHERE payment_hash = $1`,
+		r.app.passPaymentHash("pi_three_terms_third")).Scan(&lastEnds); err != nil || !lastEnds.Equal(end.AddDate(0, 0, 109)) {
+		t.Fatalf("the last renewal's term ends %v (%v), want with the Pass at %v", lastEnds, err, end.AddDate(0, 0, 109))
 	}
 }
 
@@ -2417,6 +2606,7 @@ func TestPassSalesPaused(t *testing.T) {
 	pending := p.checkout("")
 
 	q := p.twin(func(c *PassConfig) { c.SalesPaused = true })
+	prices := q.stripe.priceReadCount()
 	var paused passResponse
 	if q.get("/api/pass", &paused); !paused.Enabled || !paused.Paused || paused.Price != nil || !paused.Claim {
 		t.Fatalf("paused: %+v", paused)
@@ -2425,14 +2615,32 @@ func TestPassSalesPaused(t *testing.T) {
 	for name, body := range map[string]map[string]any{
 		"a purchase": {"adult": true},
 		"a renewal":  {"adult": true, "renew": held.Pass},
+		// Refused before the body is read: a body that would be refused for
+		// itself is told sales are paused, the reason that will not change
+		// by asking again.
+		"no box":           {},
+		"the box unticked": {"adult": false},
+		"an unknown field": {"adult": true, "email": "buyer@example.com"},
 	} {
 		var out passResponse
 		if status := q.post("/api/pass/checkout", body, &out); status != http.StatusForbidden || out.Error != passNotOnSale {
 			t.Errorf("%s while paused: status %d, %+v", name, status, out)
 		}
 	}
+	malformed, err := http.NewRequest(http.MethodPost, q.base+"/api/pass/checkout", strings.NewReader(`{"adult":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed.Header.Set("Content-Type", "application/json")
+	var out passResponse
+	if status := q.send(malformed, &out); status != http.StatusForbidden || out.Error != passNotOnSale {
+		t.Errorf("a malformed body while paused: status %d, %+v", status, out)
+	}
 	if n := q.stripe.sessionCount() - sessions; n != 0 {
 		t.Fatalf("Stripe opened %d sessions while sales were paused", n)
+	}
+	if n := q.stripe.priceReadCount() - prices; n != 0 {
+		t.Fatalf("the price was asked for %d times while sales were paused", n)
 	}
 
 	// Webhooks are still checked, and still recorded.
@@ -2487,9 +2695,8 @@ func TestPassRefusedCheckoutTakesNoLock(t *testing.T) {
 }
 
 // TestPassOrderTakesTheLock holds the write a checkout makes after Stripe
-// answers, the order and the move of the browser's earlier orders to its new
-// claim, to the Pass lock: taken while Stripe is opening the session, the
-// lock holds the order back.
+// answers, its order, to the Pass lock: taken while Stripe is opening the
+// session, the lock holds the order back.
 func TestPassOrderTakesTheLock(t *testing.T) {
 	p := passServer(t, nil)
 	p.checkout("")
@@ -2515,8 +2722,8 @@ func TestPassOrderTakesTheLock(t *testing.T) {
 	}
 	var claims, orders int
 	if err := p.app.pool.QueryRow(context.Background(), `
-		SELECT count(DISTINCT claim_hash), count(*) FROM pass_orders`).Scan(&claims, &orders); err != nil || claims != 1 || orders != 2 {
-		t.Fatalf("%d orders under %d claims (%v), want 2 under 1", orders, claims, err)
+		SELECT count(DISTINCT claim_hash), count(*) FROM pass_orders`).Scan(&claims, &orders); err != nil || claims != 2 || orders != 2 {
+		t.Fatalf("%d orders under %d claims (%v), want one under each of 2", orders, claims, err)
 	}
 }
 

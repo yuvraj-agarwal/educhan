@@ -14,21 +14,37 @@ import (
 
 func TestPassCodes(t *testing.T) {
 	a := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret}}}
+	other := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret + "-rotated"}}}
 	seen := map[string]bool{}
 	for range 200 {
-		nonce, err := randomToken()
-		if err != nil {
-			t.Fatal(err)
+		var tokens [3]string
+		for i := range tokens {
+			var err error
+			if tokens[i], err = randomToken(); err != nil {
+				t.Fatal(err)
+			}
 		}
-		code := a.passNonceCode(nonce)
-		// The same nonce gives the same code, which is what makes asking
-		// again safe; another secret gives another.
-		if again := a.passNonceCode(nonce); again != code {
-			t.Fatalf("nonce %q gave %q, then %q", nonce, code, again)
+		token, nonce, another := tokens[0], tokens[1], tokens[2]
+		code := a.passClaimCode(token, nonce)
+		// The same claim and nonce give the same code, which is what makes
+		// asking again safe. Either half alone gives another, and so do a
+		// reissue link with the same token and another secret.
+		if again := a.passClaimCode(token, nonce); again != code {
+			t.Fatalf("claim %q and nonce %q gave %q, then %q", token, nonce, code, again)
 		}
-		other := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret + "-rotated"}}}
-		if other.passNonceCode(nonce) == code {
-			t.Fatalf("two secrets gave nonce %q the same code", nonce)
+		if a.passReissueCode(token, nonce) != a.passReissueCode(token, nonce) {
+			t.Fatalf("link %q and nonce %q gave two codes", token, nonce)
+		}
+		for name, c := range map[string]string{
+			"another nonce":  a.passClaimCode(token, another),
+			"another claim":  a.passClaimCode(another, nonce),
+			"the two halves": a.passClaimCode(nonce, token),
+			"a reissue link": a.passReissueCode(token, nonce),
+			"another secret": other.passClaimCode(token, nonce),
+		} {
+			if c == code {
+				t.Fatalf("%s gave claim %q and nonce %q's code", name, token, nonce)
+			}
 		}
 		if len(code) != passCodeLen || strings.Trim(code, passAlphabet) != "" {
 			t.Fatalf("code %q is not %d characters of the alphabet", code, passCodeLen)
@@ -149,6 +165,8 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"public url with a path":         {"EDUCHAN_PUBLIC_URL": "https://educhan.example/board"},
 		"public url with a query":        {"EDUCHAN_PUBLIC_URL": "https://educhan.example?x=1"},
 		"public url with a user":         {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
+		"public url with an empty hash":  {"EDUCHAN_PUBLIC_URL": "https://educhan.example#"},
+		"public url with a fragment":     {"EDUCHAN_PUBLIC_URL": "https://educhan.example#x"},
 		"not a url":                      {"EDUCHAN_PUBLIC_URL": "educhan"},
 		"zero days":                      {"EDUCHAN_PASS_DAYS": "0"},
 		"days past a hundred years":      {"EDUCHAN_PASS_DAYS": "36501"},
@@ -247,6 +265,7 @@ func TestPassConfigInCodeIsValidated(t *testing.T) {
 		names  string
 	}{
 		"trailing slash":      {func(c *PassConfig) { c.PublicURL = testPublicURL + "/" }, "EDUCHAN_PUBLIC_URL"},
+		"trailing hash":       {func(c *PassConfig) { c.PublicURL = testPublicURL + "#" }, "EDUCHAN_PUBLIC_URL"},
 		"publishable key":     {func(c *PassConfig) { c.StripeSecretKey = "pk_test_key" }, "EDUCHAN_STRIPE_SECRET_KEY"},
 		"a century and a day": {func(c *PassConfig) { c.Days = maxPassDays + 1 }, "EDUCHAN_PASS_DAYS"},
 		"paused without the secret": {func(c *PassConfig) { *c = PassConfig{SalesPaused: true} },

@@ -229,7 +229,8 @@ func validatePassConfig(c PassConfig) error {
 // checkout, where Stripe's test mode allows it.
 func checkPublicURL(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+	// An empty fragment parses to nothing, so the raw value is checked too.
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || strings.ContainsAny(raw, "?#") {
 		return fmt.Errorf("EDUCHAN_PUBLIC_URL: want the site's origin with no path or trailing slash, like https://educhan.example, got %q", raw)
 	}
 	switch u.Scheme {

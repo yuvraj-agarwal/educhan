@@ -63,9 +63,9 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- The buyer's browser holds the claim token in a cookie scoped to
     -- /api/pass; this is its hash. Collecting the Pass needs it, so a Pass is
     -- handed to the browser that paid for it and to nobody else. Every
-    -- checkout gives the browser a new token and moves the orders under its
-    -- old one to it, so one claim can have several orders, all collected
-    -- together, and a token copied before a checkout collects none of them.
+    -- checkout gives the browser a new token with only its own order under
+    -- it, so a claim collects one order, and a token copied before a checkout
+    -- collects nothing that checkout buys.
     claim_hash    BYTEA NOT NULL,
     -- Set when the processor reports the payment complete. NULL means the
     -- buyer has not paid yet, or the webhook has not arrived.
@@ -81,7 +81,7 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     expires_at    TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS pass_orders_claim_idx ON pass_orders (claim_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS pass_orders_claim_idx ON pass_orders (claim_hash);
 CREATE INDEX IF NOT EXISTS pass_orders_expires_idx ON pass_orders (expires_at);
 
 -- Payments refunded or disputed: the processor can deliver a refund ahead of
