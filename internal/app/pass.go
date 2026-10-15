@@ -18,8 +18,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 )
 
-// The educhan Pass, after 4chan's: a year of posting without the captcha,
-// bought for a small fee that helps keep the site running.
+// The educhan Pass, after 4chan's: a term (a year by default) of posting
+// without the captcha, bought for a small fee that helps keep the site running.
 //
 // It gives exactly one thing. A post that presents a valid Pass skips the
 // captcha, up to an hourly budget of posts; past that it solves the captcha
@@ -64,8 +64,10 @@ const (
 	passPendingPaymentTTL = 30 * 24 * time.Hour
 	// stripeCheckoutTTL is how long a Stripe checkout stays open to be paid:
 	// Stripe's default for a session created without expires_at, as
-	// createCheckout's are. A slow payment's order can be held only once its
-	// checkout is completed, so no later than this after it started.
+	// createCheckout's are. A slow payment's order is held from when Stripe's
+	// report that its checkout completed arrives, which is no later than this
+	// after the checkout started unless Stripe delivers the report late
+	// (passClaimCookieUntil).
 	stripeCheckoutTTL = 24 * time.Hour
 	// passRevocationTTL is how long a refunded payment is remembered after its
 	// order is gone, longer than Stripe goes on retrying an event.
@@ -518,8 +520,9 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// The cookie outlives the order's deadline, and the hold it could yet be
-	// given for a slow payment, which only a webhook can give and so cannot
-	// extend the cookie itself (passClaimCookieUntil).
+	// given for a slow payment when Stripe reports the checkout completed as it
+	// happens. Only a webhook gives the hold, and it cannot reach the cookie
+	// (passClaimCookieUntil).
 	a.setCookie(w, r, passClaimCookie, claim, passCookiePath, time.Until(passClaimCookieUntil(now)))
 	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL})
 }
@@ -753,9 +756,10 @@ type passGrant struct {
 // the zero passGrant.
 //
 // A badged post never reads the header: it is the credential's request, and a
-// payment and an institution are not to meet in one. With sales switched off a
-// presented Pass is ignored, so a deployment that stops selling does not stop
-// its holders posting.
+// payment and an institution are not to meet in one. With the Pass switched
+// off (no secret, which the README calls retiring it) a presented Pass is
+// ignored, so the post goes on as one without a Pass; paused sales honour it
+// as usual.
 //
 // A Pass that is presented and no good, because it was refunded, replaced or
 // has run out, is treated as no Pass at all rather than refused. A refusal of
@@ -824,9 +828,9 @@ func (a *App) spendPassBudget(g passGrant) {
 // passBudget counts the posts each Pass has made in the current hour, counted
 // in UTC (clockHour), so that it skips the captcha for at most HourlyPosts of
 // them. The hour turns on the hour in UTC, which is half past the hour, or a
-// quarter past, in a zone that differs from UTC by part of an hour, India's
-// for one; the README and the page say so. Sharing a Pass shares its budget:
-// everyone using one code draws on the same count.
+// quarter to, in a zone that differs from UTC by part of an hour, India's for
+// one; the README and the page give India's. Sharing a Pass shares its
+// budget: everyone using one code draws on the same count.
 //
 // It is kept in memory, per process like flood control, keyed on
 // passBudgetKey. What it holds about a Pass is which clock hour its count is
@@ -1061,8 +1065,11 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "invalid payment")
 			return
 		}
-		// A partial refund is a goodwill gesture, not a cancellation; only a
-		// full refund or a dispute ends the Pass.
+		// A partial refund is a goodwill gesture and changes nothing; a full
+		// refund or a dispute takes back what that payment bought. Any
+		// charge.dispute.created does, an inquiry included, since no dispute's
+		// status is read, and nothing handles how a dispute closes, so winning
+		// one does not bring the term back (the README says so).
 		if p.PaymentIntent == nil || *p.PaymentIntent == "" || (ev.Type == stripeChargeRefunded && !p.Refunded) {
 			break
 		}
@@ -1094,9 +1101,9 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 // interleaving of a payment, a refund and a collection: no refund can miss a
 // Pass being collected beside it, no "paid" can slip past a refund recorded at
 // the same moment, and no two of them can deadlock over rows taken in
-// different orders. Reading a Pass to post with
-// it (passByToken) takes no lock, and no locked transaction makes a network
-// call, so the lock is never held for longer than a few statements.
+// different orders. Reading a Pass to post with it (passByToken) takes no
+// lock, and no locked transaction makes a network call, so the lock is never
+// held for longer than a few statements.
 //
 // The second key is the schema, so the Pass tables of two schemas in one
 // database (a staging copy beside production, or the tests' schemas) are not

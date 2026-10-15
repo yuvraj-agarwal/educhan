@@ -1834,14 +1834,15 @@ function forgetCredential() {
   state.verification.badge = null;
 }
 
-// forgetBrowser removes everything this browser keeps that ties posts to it:
-// the badge, the Pass, the poster key every unbadged post's ID is made from — the next
-// person at a shared computer would otherwise get the same ID in the same
-// threads, and see which posts there were yours — and the remembered name,
-// with its tripcode secret. The age answer stays: it says nothing about any
-// post. All of that is local. A Pass bought here and not yet collected is
-// not: the claim on it is a cookie only the server can drop, so it is asked
-// to (forgetPassClaim), and what that comes to is returned.
+// forgetBrowser removes everything this browser keeps that ties it to posts
+// or to a purchase: the badge, the Pass, the poster key every unbadged post's
+// ID is made from (which would otherwise give the next person at a shared
+// computer the same ID in the same threads, and show them which posts there
+// were yours) and the remembered name, with its tripcode secret. The age
+// answer stays: it says nothing about any post. All of that is local. A Pass
+// bought here and not yet collected is not: the claim on it is a cookie only
+// the server can drop, so it is asked to (forgetPassClaim), and what that
+// comes to is returned.
 function forgetBrowser() {
   forgetCredential();
   forgetPass();

@@ -33,8 +33,8 @@ const (
 	stripeAPIBase = "https://api.stripe.com"
 	// stripeAPIVersion pins the shape of what the API returns. Webhook payloads
 	// follow the version the endpoint was created with instead, so the
-	// README's "Setting it up" says to create it with this one. Only fields that have
-	// been stable across versions are read either way.
+	// README's "Setting it up" says to create it with this one. Only fields
+	// that have been stable across versions are read either way.
 	stripeAPIVersion = "2024-06-20"
 	// stripeSignatureTolerance is how old a webhook's signed timestamp may be,
 	// Stripe's own recommended default. It bounds how long a captured delivery
@@ -129,7 +129,8 @@ type passPrice struct {
 }
 
 // price reads the Pass's Price. A recurring Price is refused, because the
-// Pass is bought once a year by hand, as 4chan's is, and never renews itself.
+// Pass is bought by hand for each term, as 4chan's is, and never renews
+// itself.
 func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	var p struct {
 		Active     bool   `json:"active"`

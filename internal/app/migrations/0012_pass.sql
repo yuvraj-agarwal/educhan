@@ -1,4 +1,5 @@
--- The educhan Pass: a year of skipping the captcha, bought for a fee.
+-- The educhan Pass: a term (a year by default) of skipping the captcha,
+-- bought for a fee.
 --
 -- The privacy property these tables hold up is that a Pass can never be traced
 -- to a post, and a payment can be traced to a Pass only by someone holding the
@@ -70,8 +71,8 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- Set when the processor reports the payment complete. NULL means the
     -- buyer has not paid yet, or the webhook has not arrived.
     payment_hash  BYTEA UNIQUE,
-    -- The Pass this purchase renews, when the buyer renewed one from a browser
-    -- holding it. NULL buys a new Pass.
+    -- The Pass this purchase renews, when the checkout was sent its code. NULL
+    -- buys a new Pass, and so does a renewal whose Pass has gone since.
     renew_pass_id BIGINT REFERENCES passes (id) ON DELETE SET NULL,
     -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
     -- started. Collecting, renewing and pruning the order all use this, so a
