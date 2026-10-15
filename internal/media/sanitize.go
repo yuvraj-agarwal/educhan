@@ -38,8 +38,11 @@ import (
 //     WebP (sanitizeWebP says why it is not kept as it came).
 //
 // So the stored file is always one Go encoded from decoded pixels, and holds
-// nothing of the upload's own bytes. It is the one decoded for the thumbnail
-// and hashed for the checksum, so all three describe the same picture.
+// nothing of the upload's own bytes. The thumbnail is made from those same
+// pixels as they were handed to the encoder (sanitized.pic), not from the
+// stored file decoded again, and the checksum is of the stored file, so all
+// three describe the same picture: exactly when it is stored as a PNG or a
+// GIF, and within what the re-encoding loses when it is stored as a JPEG.
 //
 // A decoded picture can still hold what nobody sees, in channels a re-encode
 // would carry through untouched: the colour of a fully transparent pixel,

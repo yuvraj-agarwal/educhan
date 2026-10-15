@@ -33,11 +33,11 @@ not.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
-- `internal/media` — image validation, metadata stripping (`sanitize.go`, with the EXIF
-  orientation reader in `orient.go` and the WebP chunk check in `webp.go`), the
-  header-based cost estimate (`cost.go`) and the two memory budgets it is held to
-  (`budget.go`), thumbnailing, and the blob-storage interface
-  with its two implementations: the local filesystem (`local.go`) and Google Cloud
+- `internal/media` — image validation and thumbnailing (`image.go`), metadata stripping
+  (`sanitize.go`, with the EXIF orientation readers and the lossless turns in `orient.go`,
+  the WebP RIFF rewrite in `webp.go`, and the application of a PNG's gamma in `gamma.go`),
+  the header-based cost estimate (`cost.go`) and the two memory budgets it is held to
+  (`budget.go`), and the blob-storage interface with its two implementations: the local filesystem (`local.go`) and Google Cloud
   Storage (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one
   suite run against both. `internal/media/mediatest` starts an in-process Cloud Storage
   emulator and is imported only by tests. `internal/media/jpegenc` is Go's own JPEG
@@ -642,7 +642,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - Besides the decoders, educhan reads structures an uploader controls in a few
   places of its own: the EXIF reader, the JPEG segment walks (`jpegOrientation`, and
   `readJPEGFrame` with its frame header and quantisation tables), the PNG chunk walks,
-  the GIF block walk and the WebP RIFF rewrite. Each reads in place and bounds-checks
+  the GIF block walk, the WebP RIFF rewrite, and the cost model's walk over a WebP's
+  chunks (`webpPicture`). Each reads in place and bounds-checks
   every offset and length before use. None collects what it walks into a list: the WebP
   rewrite reads its chunks one at a time (`nextChunk`/`walkChunks`) and keeps only the
   ones that make the picture, so a file of a million empty chunks costs it the picture it
@@ -654,8 +655,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   file. The EXIF reader follows no offset but IFD0's (no IFD chain, so no loop).
   Whether the file is an image is the decoder's call alone (`TestHostileEXIF`,
   `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`,
-  `FuzzGIFFramePixels`; `FuzzStripWebP` does the same for the RIFF rewrite and checks
-  it is idempotent). No EXIF library is needed and none should be added.
+  `FuzzGIFFramePixels`; `FuzzInspect` runs every walk `Inspect` makes over files of
+  every format, and checks that what it admits is estimated at no less than a byte a
+  pixel and no more than the budget; `FuzzStripWebP` runs the RIFF rewrite over lossless
+  and lossy WebPs and checks it is idempotent). No EXIF library is needed and none should be added.
 - **No filename is kept.** A camera's or a phone's filename can name a date and a
   person, so `parseSubmission` reads only the file's bytes, and an attachment's name
   is `attachmentName(stored path)`: `image` plus the stored format's extension
@@ -686,7 +689,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   holds while it is processed depends on how it is encoded as much as on its size.
   `Inspect` estimates it from the header (`processingCost`, `cost.go`): the decoder's
   buffers (a progressive JPEG keeps 256 bytes of coefficients for every 8×8 block until
-  its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel and 16-bit PNGs to 8;
+  its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel, and a 16-bit PNG to 8, or
+  to 2 when it is grey with no transparency, as `pngBytesPerPixel` reads its header;
   `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
   thousands of empty frames is not free), the copy `orient` makes, the encoder's output
   buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
@@ -746,8 +750,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   **Every wait is bounded, and a slow client is told apart from a busy server.** A
   post waits for room in the upload budget under `reserveContext` (`postDeadline`, 25 s,
   from when its handler starts); a wait that does not get room gives up
-  `processingAllowance` (15 s, about what the dearest upload takes on one core, with
-  margin) before that deadline, with `media.ErrBusy`, and room that is there is taken
+  `processingAllowance` (15 s: the slowest admitted upload measured, a GIF of four
+  25-megapixel frames, took about six seconds on one core, so it leaves margin) before
+  that deadline, with `media.ErrBusy`, and room that is there is taken
   however near the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive,
   counted from when the wait ends, so time spent waiting for room is not taken out of
   the body's: a read deadline set on the connection through an
@@ -1032,7 +1037,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   The exception is a post the server turns away as busy after `allow` (`tooBusy`: no
   room to process its image in time, or its deadline passing before the image is
   stored): `allow` hands back the refund `chargeAll` makes, which takes back the
-  cooldowns that post started and leaves alone any another post has started since
+  cooldowns that post started and leaves alone any that another post has started since
   (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of room to read it
   is turned away before `allow`, so it has nothing to refund.
   State is per process and in memory — a shared backend means replacing

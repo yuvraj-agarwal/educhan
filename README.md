@@ -408,16 +408,17 @@ client can leave the image picker off a server that would refuse what it sends.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,
-  however narrow it is. A GIF of many thousands of frames is
-  refused however small they are. An animated WebP is refused with `400`
-  (`image could not be decoded`) once it is decoded: nothing in Go can decode one to
-  thumbnail it. So, once it is encoded, is an image whose rewritten file would come to
-  more than four times the upload plus half a byte a pixel
-  (`image would be too large once re-encoded for storage`), which only a file made to
-  compress in a way Go's encoders cannot follow reaches. A lossy WebP with
-  transparency is held instead to what a PNG of its size can come to, because stored
-  losslessly it is meant to be many times the size it came in at; it is refused from
-  its header when that is too large to process.
+  however narrow it is. A GIF of many thousands of frames is refused however small they
+  are. An animated WebP passes those checks and is refused with `400` (`image could not
+  be decoded`) once it is processed, after flood control: nothing in Go can decode one
+  to thumbnail it, so the animation flag in its header turns it away as the file is
+  rewritten, before any of it is decoded. An image whose rewritten file would come to
+  more than four times the upload plus half a byte a pixel is refused after flood
+  control too, once it is encoded (`image would be too large once re-encoded for
+  storage`), which only a file made to compress in a way Go's encoders cannot follow
+  reaches. A lossy WebP with transparency is held instead to what a PNG of its size can
+  come to, because stored losslessly it is meant to be many times the size it came in
+  at; it is refused from its header when that is too large to process.
 
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is
@@ -466,10 +467,11 @@ client can leave the image picker off a server that would refuse what it sends.
     colours first, so that it shows as it did (see below). Every opaque pixel otherwise
     keeps the value it decodes to, and a transparent or partly transparent one only as
     much colour as it shows (see the bullet on hidden channels below), though not always
-    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour with a transparent colour key is
-    stored as colour with an alpha channel (or with none, if no pixel has the key's
-    colour), and a palette keeps only the colours its pixels use. An animated PNG keeps
-    its still image.
+    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour
+    with a transparent colour key is stored as colour with an alpha channel (or with
+    none, if no pixel has the key's colour), and a palette keeps only the colours its
+    pixels use, written at as few bits a pixel (1, 2, 4 or 8) as that many colours need.
+    16-bit pictures stay 16-bit. An animated PNG keeps its still image.
   - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
     count (from either of the two extensions browsers read it from), and dropping
     comments and application data such as XMP. Its colour tables keep only the colours
@@ -570,8 +572,10 @@ client can leave the image picker off a server that would refuse what it sends.
   `images` and `at_image_limit` so a client can hide the picker before anyone tries.
 - **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 63 MiB at most.
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
-  preserved and never upscaled. An image stored as a JPEG has a JPEG thumbnail; the
-  formats that can carry transparency get PNG thumbnails.
+  preserved and never upscaled. A thumbnail follows the stored format, not the uploaded
+  one: an image stored as a JPEG (a JPEG upload, or a lossy, opaque WebP) has a JPEG
+  thumbnail, and one stored as a PNG or a GIF (any other WebP included) has a PNG
+  thumbnail, so its transparency survives.
 - **Storage**: originals and thumbnails are keyed
   `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and `thumbs/{board}/{YYYY}/{MM}/…`, under a
   generated random filename. Two backends implement that key layout — the local filesystem
@@ -1025,10 +1029,12 @@ refused inside the transaction, after its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
-plus an `image` file. Errors are `{"error": "..."}`, and `429` and `503` responses
-add `retry_after` plus a `Retry-After` header. An image post whose body does not
-arrive within 30 seconds of there being room to read it answers `408`
-(`upload too slow`).
+plus an `image` file. Errors are `{"error": "..."}`. A request refused by flood
+control (`429`) and a post turned away because the server is too busy (`503`) add
+`retry_after` plus a `Retry-After` header; the other `429` and `503`, too many wrong
+verification codes and `/healthz` with the database down, carry neither. An image
+post whose body does not arrive within 30 seconds of there being room to read it
+answers `408` (`upload too slow`).
 
 ```bash
 curl -s localhost:8080/api/boards

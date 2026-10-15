@@ -23,15 +23,18 @@ const ThumbMaxDim = 250
 // 24-megapixel photos phones and cameras save at their full size, which are
 // not all 24 million pixels: an iPhone's are 5712×4284, 24.5 million, and a
 // Nikon's 6048×4024. It is not the memory bound on its own: what an image
-// holds while it is processed depends on its encoding as much as its size. At
-// 25 megapixels a baseline 4:2:0 JPEG is estimated to hold 80–165 MiB while it
-// is decoded, re-encoded and thumbnailed, depending on its shape and the size
-// of the upload; a progressive 4:4:4 one 360–370 MiB, a progressive CMYK one
-// nearly 600 MiB, and an interlaced 16-bit colour PNG nearly 400 MiB. So each
-// upload's cost is estimated from its header as well (processingCost in
-// cost.go) and held to processingBudget, which refuses those last three, and
-// a few others (TestCostlyEncodingsAreRefusedFromTheirHeader), at this size
-// and lets every kind in at a quarter of it.
+// holds while it is processed depends on its encoding as much as its size.
+// At 25 megapixels, and from an upload of up to the default 8 MiB, the
+// estimate of what it holds while it is decoded, re-encoded and thumbnailed
+// (processingCost in cost.go) runs for a baseline 4:2:0 JPEG from about
+// 70 MiB, for a long strip from a small upload, to about 200 MiB, for a square
+// from a large one that a turn stores at 4:4:4; but it is over 360 MiB for a
+// progressive 4:4:4 one at any shape, over 575 MiB for a progressive CMYK
+// one, and over 380 MiB for an interlaced 16-bit colour PNG. So each upload's
+// cost is estimated from its header as well and held to processingBudget,
+// which refuses those last three, and a few others
+// (TestCostlyEncodingsAreRefusedFromTheirHeader), at this size and lets every
+// kind in at a quarter of it.
 const MaxPixels = 25_000_000
 
 // thumbJPEGQuality is used when a thumbnail is encoded as JPEG.
