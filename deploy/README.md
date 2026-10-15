@@ -538,7 +538,9 @@ failed in the console (`gcloud run jobs executions list --job educhan-sweep
 --region "$REGION"`). The file's key stays in `media_deletions` and the next run,
 or the Job's own retry, tries it again, so a retry is always safe. In the log,
 `blobs_missing` above zero means the media settings are wrong; `blob_failures`
-means the store refused or was unreachable.
+means the store refused or was unreachable. `spent_captchas` counts the spent captcha
+answers past their expiry that the run deleted, the ones no later post pruned;
+the Job needs no captcha secret to do it.
 
 ---
 
@@ -607,7 +609,7 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_POSTER_ID_SALT` | random per process | from Secret Manager | Set it locally too, or poster IDs change on every restart. Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | unset; export a throwaway | from Secret Manager | Unset means every moderation endpoint answers `403` |
 | `EDUCHAN_CAPTCHA_SECRET` | unset unless testing the captcha | from Secret Manager | Keys the posting captcha's challenges. Unset switches the captcha off; under 32 characters refuses to start. Same value on every instance; rotating it fails only challenges from the last half hour |
-| `EDUCHAN_CAPTCHA_WORK` | `1500` (default) | `1500` (default) | Average attempts a challenge asks for, raised for an address asking for challenges quickly. Between `1` and `2097152` |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` (default) | `1500` (default) | Average attempts a challenge asks for, raised for an address asking for challenges quickly. Between `1` and `7500` |
 | `EDUCHAN_VERIFY_SECRET` | unset unless testing verification | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
 | `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
