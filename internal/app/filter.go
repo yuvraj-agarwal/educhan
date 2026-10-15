@@ -1,6 +1,7 @@
 package app
 
 import (
+	"math/bits"
 	"regexp"
 	"slices"
 	"strconv"
@@ -5716,11 +5717,12 @@ type matchCheck func(v *view, m []int) bool
 // side; deathAround, quotationAround, closingMark, quotesTheReply and the "end
 // it" readings in selfHarmCheck 120; appFrame's readOn 96; imagineNot and
 // ageRuleAfter 80; reported 64 round a quotation and before the words, as
-// well as quotationAround; gameNamed 64 before the sentence; and privateCue
-// the sentence after a visit as well as the one round it. Each is a constant per
-// check, so the count stays linear in the post, but a counted step stands
-// for more time in a body whose matches take those checks
-// (TestFilterCostIsBounded says how much).
+// well as quotationAround; menace's hints readReach words each way;
+// gameNamed 64 before the sentence; and privateCue the sentence after a
+// visit as well as the one round it. Each is a constant per check, so the
+// count stays linear in the post, but a counted step stands for more time
+// in a body whose matches take those checks (TestFilterCostIsBounded says
+// how much).
 const checkWork = 2 * 64
 
 // checked puts match m to check, counting it in the view's work.
@@ -5821,6 +5823,866 @@ func (f *scannedField) work() int {
 	return n
 }
 
+/* Threats by implication ------------------------------------------------------ */
+
+// A threat can be told with no act in it: by what will be left after it ("he's
+// leaving in an ambulance", "nobody walks out of the gym alive", "gonna make
+// the news tomorrow"), by what the poster has ready ("bringing what i need",
+// "I've got enough for every single one of them", "there will be a device
+// under one of the desks"), by a weapon named with no verb ("the boys and the
+// iron rods"), by a verdict ("he's done", "it's happening", "they gon learn",
+// "you have until friday"), by a warning to stay away ("don't come", "leave
+// early") or that it is one ("this is a warning", "remember i said it first",
+// "you know who you are"), or by the wrong it answers ("the teacher who
+// failed me", "everybody who ever said a word about me"). Each of them is said
+// innocently every day, so menace holds a post only for hints of two kinds
+// close together and close to a place or a time (threatPlaceOrTimeRules), or
+// for one of the few hints that are a threat by themselves (strong): someone
+// leaving in an ambulance, nobody walking out of a place alive, enough for
+// every single one of them, a device hidden under the desks, a list of names
+// kept for no reason given. A grievance with only a warning that it is one is
+// a callout, not a threat: "whoever took my charger, you know who you are". A
+// hint in a story, a dream or a game, in a sentence about exams or results
+// (schoolHyperbole), said of something that happens again and again, said
+// with the poster as its subject where the hint is about someone else, or
+// reported as someone else's words, is no hint.
+
+// menaceKind is a kind of hint that a post threatens.
+type menaceKind uint8
+
+const (
+	menaceAfter     menaceKind = 1 << iota // what will be left: a hospital bed, nobody alive, the news
+	menaceReady                            // what the poster has ready: what I need, a list, a device
+	menaceArmed                            // a weapon, or a crew with a club, named with no verb
+	menaceVerdict                          // a sentence passed: he's done, they'll learn, you have until friday
+	menaceStayAway                         // a warning to stay away: don't come, stay inside, leave early
+	menaceWarned                           // a warning that it is one: this is a warning, mark my words
+	menaceGrievance                        // the wrong it answers: who failed me, said a word about me
+)
+
+// menacing reports that hints of kinds, read together, threaten: two kinds,
+// unless they are only a grievance and a warning that it is one.
+func menacing(kinds menaceKind) bool {
+	return bits.OnesCount8(uint8(kinds)) >= 2 && kinds != menaceGrievance|menaceWarned
+}
+
+// menaceHint is a hint found in a field, placed in the post in
+// readingPositions.
+type menaceHint struct {
+	kind   menaceKind
+	strong bool
+	at     [2]int
+}
+
+// menace reports a threat told by implication: hints that are menacing
+// together, or one strong one, within threatWindow of each other and of a
+// place or a time. The places and times are asked for only when the hints
+// call for them.
+func menace(fields []*scannedField, placesAndTimes func() nearSpans) bool {
+	var hs []menaceHint
+	for _, f := range fields {
+		hs = append(hs, f.menaceHints()...)
+	}
+	slices.SortFunc(hs, func(a, b menaceHint) int { return a.at[0] - b.at[0] })
+	lo := 0
+	for _, h := range hs {
+		for hs[lo].at[0] < h.at[0]-2*threatWindow {
+			lo++
+		}
+		kinds := h.kind
+		for j := lo; j < len(hs) && hs[j].at[0] <= h.at[1]+threatWindow; j++ {
+			if hs[j].at[1] >= h.at[0]-threatWindow {
+				kinds |= hs[j].kind
+			}
+		}
+		if (h.strong || menacing(kinds)) && placesAndTimes().near(h.at, threatWindow) {
+			return true
+		}
+	}
+	return false
+}
+
+// menaceHints reads the field's plain view for hints of a threat: the
+// phrasings of menacePhrases, each read from its first word, and a weapon
+// drawn as an emoji.
+func (f *scannedField) menaceHints() []menaceHint {
+	v := &f.plain
+	r := newWordReading(v.text)
+	v.work += len(v.text)
+	pos := f.readingPositions()
+	var out []menaceHint
+	add := func(kind menaceKind, strong bool, a, b int) {
+		if v.reported([]int{a, b}) {
+			return
+		}
+		s, e := v.span(a, b)
+		out = append(out, menaceHint{kind, strong, [2]int{int(pos[s]) + f.offset, int(pos[e]) + f.offset}})
+	}
+	for i, w := range r.ws {
+		for _, p := range menacePhrasesAt[w] {
+			// A run is a few words compared; a match is read in windows
+			// of a few dozen words round it, as a check reads its clause.
+			v.work += len(p.run)
+			hi := p.run.match(r.ws, i, r.sentenceEnd[i])
+			if hi < 0 || p.final && !r.endsSentence(hi) {
+				continue
+			}
+			v.work += checkWork
+			strong, ok := p.strong, true
+			if p.check != nil {
+				strong, ok = p.check(r, i, hi)
+			}
+			if ok && !r.excused(p.kind, i) {
+				add(p.kind, strong, r.sp[i][0], r.sp[hi-1][1])
+			}
+		}
+	}
+	for k := 0; k < len(v.text); {
+		c, size := utf8.DecodeRuneInString(v.text[k:])
+		if weaponEmoji[c] {
+			v.work += checkWork
+			ws := wordsIn(sentenceAround(v.text, k, k+size))
+			if !unnegatedIn(ws, gameWords, toyWeapon, festivalWords) && !storyNamed(ws) {
+				add(menaceArmed, false, k, k+size)
+			}
+		}
+		k += size
+	}
+	return out
+}
+
+// weaponEmoji are the weapons drawn as emoji that arm a hint.
+var weaponEmoji = map[rune]bool{'🔫': true, '🔪': true, '💣': true, '🧨': true, '🗡': true, '🪓': true}
+
+// wordReading is a text split into words, with apostrophes that open or
+// close a quotation taken off them, and where each word's sentence and
+// clause start and end. What it reads round a word is cut to readReach
+// words each way, and what it reads of the whole text is read once
+// (postHas), so reading a hint costs the same in a post of any length.
+type wordReading struct {
+	text                   string
+	sp                     [][2]int
+	ws                     []string
+	sentence, sentenceEnd  []int
+	clauseStart, clauseEnd []int
+	has                    map[string]bool
+}
+
+// readReach is how many words a hint is read for round it.
+const readReach = 24
+
+// postHas reports a word of set anywhere in the text, read once for each
+// name.
+func (r *wordReading) postHas(name string, set map[string]bool) bool {
+	if r.has == nil {
+		r.has = map[string]bool{}
+	}
+	if found, ok := r.has[name]; ok {
+		return found
+	}
+	r.has[name] = anyIn(r.ws, set)
+	return r.has[name]
+}
+
+func newWordReading(text string) *wordReading {
+	r := &wordReading{text: text}
+	for _, s := range wordSpans(text) {
+		for s[0] < s[1] && text[s[0]] == '\'' {
+			s[0]++
+		}
+		for s[1] > s[0] && text[s[1]-1] == '\'' {
+			s[1]--
+		}
+		if s[0] < s[1] {
+			r.sp = append(r.sp, s)
+			r.ws = append(r.ws, text[s[0]:s[1]])
+		}
+	}
+	n := len(r.ws)
+	r.sentence, r.sentenceEnd = make([]int, n), make([]int, n)
+	r.clauseStart, r.clauseEnd = make([]int, n), make([]int, n)
+	for k := range r.ws {
+		r.sentence[k], r.clauseStart[k] = k, k
+		if k == 0 {
+			continue
+		}
+		gap := text[r.sp[k-1][1]:r.sp[k][0]]
+		if !strings.ContainsAny(gap, ".!?\n") {
+			r.sentence[k] = r.sentence[k-1]
+			if !strings.ContainsAny(gap, ",;:—–") && !strings.Contains(gap, " - ") {
+				r.clauseStart[k] = r.clauseStart[k-1]
+			}
+		}
+	}
+	for k := n - 1; k >= 0; k-- {
+		r.sentenceEnd[k], r.clauseEnd[k] = n, n
+		if k+1 < n {
+			if r.sentence[k+1] == r.sentence[k] {
+				r.sentenceEnd[k] = r.sentenceEnd[k+1]
+			} else {
+				r.sentenceEnd[k] = k + 1
+			}
+			if r.clauseStart[k+1] == r.clauseStart[k] {
+				r.clauseEnd[k] = r.clauseEnd[k+1]
+			} else {
+				r.clauseEnd[k] = k + 1
+			}
+		}
+	}
+	return r
+}
+
+// endsSentence reports that nothing but fillers follows word i in its
+// sentence: "he's done.", "he's done lol".
+func (r *wordReading) endsSentence(i int) bool {
+	if i == 0 {
+		return true
+	}
+	if r.sentenceEnd[i-1]-i > 3 {
+		return false
+	}
+	for k := i; k < r.sentenceEnd[i-1]; k++ {
+		if !trailFillers[r.ws[k]] && !laughs[r.ws[k]] {
+			return false
+		}
+	}
+	return true
+}
+
+// sentenceWords are the words of the sentence word i is in.
+func (r *wordReading) sentenceWords(i int) []string {
+	return r.ws[max(r.sentence[i], i-readReach):min(r.sentenceEnd[i], i+readReach)]
+}
+
+// clauseFrom is where word i's clause starts, or readReach words back.
+func (r *wordReading) clauseFrom(i int) int { return max(r.clauseStart[i], i-readReach) }
+
+// subjectBefore is the word before i, in its clause, that heads what it is
+// said of: the first going back past auxiliaries and adverbs ("he'll
+// definitely be"), or "" at the clause's start.
+func (r *wordReading) subjectBefore(i int) string {
+	for k := i - 1; k >= r.clauseFrom(i); k-- {
+		if !auxWords[r.ws[k]] {
+			return r.ws[k]
+		}
+	}
+	return ""
+}
+
+// excused reports a hint of kind starting at word i that its sentence makes
+// no hint: a story, a dream or a game; something habitual; exams or results
+// for what will be left after or a verdict; and the poster as the subject of
+// what is said of someone else ("I'll be in hospital", "I'm done", "I don't
+// go to the gym").
+func (r *wordReading) excused(kind menaceKind, i int) bool {
+	ws := r.sentenceWords(i)
+	if storyNamed(ws) || anyIn(ws, dreamWords) || gameIn(ws) {
+		return true
+	}
+	switch kind {
+	case menaceAfter, menaceVerdict:
+		if schoolHyperbole(ws) || untimed(ws, eventWords) {
+			return true
+		}
+	case menaceStayAway:
+	default:
+		return false
+	}
+	return habitual(ws) || posterSubject[r.subjectBefore(i)]
+}
+
+// gameIn reports a game in ws, none of them denied ("this is not a game"),
+// where a "final warning" or a "final chance" is none.
+func gameIn(ws []string) bool {
+	for k, w := range ws {
+		if gameWords[w] && !(k+1 < len(ws) && (is(w, "final") || is(w, "finals")) && lastThings[ws[k+1]]) {
+			return !anyIn(ws[max(0, k-3):k], excuseNegators)
+		}
+	}
+	return false
+}
+
+// notAsked reads words that are not a question: "he's done." and not "is he
+// done?".
+func notAsked(r *wordReading, lo, hi int) (strong, ok bool) {
+	end := r.sentenceEnd[lo]
+	rest := r.text[r.sp[end-1][1]:]
+	if end < len(r.sp) {
+		rest = r.text[r.sp[end-1][1]:r.sp[end][0]]
+	}
+	return false, !strings.Contains(rest, "?")
+}
+
+var (
+	// auxWords stand between a subject and what is said of it.
+	auxWords = canonSetOf(`will 'll wil shall is are am was were be been being 's 're gonna gunna finna going to
+		gotta got have has had do does did not never just really definitely def prob probably literally actually
+		all so then also still finally soon even ever totally officially better`)
+	// posterSubject are the poster as a subject.
+	posterSubject = canonSetOf(`i i'm im i'll i've ive i'd we we're we'll we've us`)
+)
+
+// menacePhrase is a hint's phrasing: a run of words, which must end its
+// sentence when final, and a check of what is round it, which says too
+// whether it is strong.
+type menacePhrase struct {
+	kind   menaceKind
+	strong bool
+	final  bool
+	run    wordRun
+	check  func(r *wordReading, lo, hi int) (strong, ok bool)
+}
+
+// wordRun is a run of words: each step one of a few words ("will|'ll"),
+// "?" after a step making it optional, and "_n" standing for up to n words
+// of any kind. A step of the form "$name" is the words of runWords[name].
+type wordRun []runStep
+
+type runStep struct {
+	set map[string]bool // nil for a gap
+	opt bool
+	gap int
+}
+
+func runOf(src string) wordRun {
+	var run wordRun
+	for _, t := range strings.Fields(runBreak.ReplaceAllString(src, "|")) {
+		var s runStep
+		if strings.HasSuffix(t, "?") {
+			s.opt, t = true, strings.TrimSuffix(t, "?")
+		}
+		if t[0] == '_' {
+			s.gap = int(t[1] - '0')
+			run = append(run, s)
+			continue
+		}
+		s.set = map[string]bool{}
+		for _, w := range strings.Split(t, "|") {
+			if strings.HasPrefix(w, "$") {
+				for x := range runWords[w[1:]] {
+					s.set[x] = true
+				}
+				continue
+			}
+			s.set[w] = true
+		}
+		run = append(run, s)
+	}
+	return run
+}
+
+// runBreak is a run's line broken after a "|", which joins the words on
+// either side.
+var runBreak = regexp.MustCompile(`\|\s+`)
+
+// match reports where the run ends when it starts at ws[i] and goes no
+// further than ws[end-1], or -1. A gap takes as few words as it can.
+func (p wordRun) match(ws []string, i, end int) int {
+	if len(p) == 0 {
+		return i
+	}
+	s := p[0]
+	if s.set == nil {
+		for k := 0; k <= s.gap && i+k <= end; k++ {
+			if j := p[1:].match(ws, i+k, end); j >= 0 {
+				return j
+			}
+		}
+		return -1
+	}
+	if i < end && s.set[ws[i]] {
+		if j := p[1:].match(ws, i+1, end); j >= 0 {
+			return j
+		}
+	}
+	if s.opt {
+		return p[1:].match(ws, i, end)
+	}
+	return -1
+}
+
+// runWords are the sets a wordRun may name with "$".
+var runWords = map[string]map[string]bool{
+	// Someone else as a subject, and with "is" or "are" joined on.
+	"they":   setOf(`he she they you u ya y'all yall everyone everybody`),
+	"theyre": setOf(`he's hes she's shes they're theyre you're youre ur u're`),
+	"theyll": setOf(`he'll she'll they'll you'll u'll theyll youll`),
+	"will":   setOf(`will 'll wil gonna gunna finna shall gon`),
+	"have":   setOf(`got have has 've had bringing bring brought bought carrying carry packed packing grabbed`),
+	"people": setOf(`them you u y'all yall everyone everybody every1 him her`),
+	"wrong": setOf(`fail failed failing report reported reporting kick kicked kicking bully bullied bullying
+		hit hitting punch punched punching slap slapped slapping insult insulted insulting dump dumped dumping
+		snitch snitched snitching complain complained complaining laugh laughed laughing mock mocked mocking
+		humiliate humiliated humiliating embarrass embarrassed embarrassing betray betrayed betraying rat ratted
+		ratting expose exposed exposing beat beating flog flogged flogging rag ragged ragging cheat cheated
+		cheating lie lied lying reject rejected rejecting expel expelled expelling suspend suspended suspending
+		disrespect disrespected disrespecting push pushed pushing shove shoved trip tripped tease teased teasing
+		troll trolled trolling roast roasted diss dissed shame shamed blame blamed frame framed accuse accused
+		harass harassed harassing threaten threatened abuse abused attack attacked jump jumped spit spat rob
+		robbed scam scammed wrong wronged screw screwed`),
+	"damage": setOf(`key keyed keying steal stole stolen stealing nick nicked broke break breaking smash smashed
+		scratch scratched ruin ruined ruining wreck wrecked trash trashed burn burnt burned take took taken`),
+}
+
+// menacePhrases are the hints' phrasings, and menacePhrasesAt the same
+// listed by the words that can start them.
+var (
+	menacePhrases = []menacePhrase{
+		// What will be left after: an ambulance, a hospital, a body bag.
+		{kind: menaceAfter, run: runOf(`$will|be|end|ends|ending|leave|leaves|leaving|wake|wakes|land|lands|go|goes|
+			going|come|comes|coming|up|out _2 in|into|on an|a|the|their|his|her|ur|your? hospital|icu|ambulance|
+			ambulances|morgue|coffin|coffins|stretcher|stretchers|wheelchair|bodybag|bodybags|body`), check: leftIn},
+		{kind: menaceAfter, run: runOf(`nobody|noone|nobody's|nobodys|none|no|not`), check: nobodyLeaves},
+		{kind: menaceAfter, run: runOf(`won't|wont|never|not make|making|reach|get it? to|home|there|back|out`),
+			check: notMakingIt},
+		{kind: menaceAfter, run: runOf(`bloodbath|massacre|carnage|bodycount|warzone`), check: notPast},
+		{kind: menaceAfter, run: runOf(`body count`), check: notPast},
+		{kind: menaceAfter, run: runOf(`make|makes|making|be|hit|hits _2 the news|headlines|headline|papers`),
+			check: newsOfIt},
+		{kind: menaceAfter, run: runOf(`news|akhbaar|akhbar|tv mein|me|pe dekhenge|dekhoge|dekhna|aayega|ayega|
+			aayegi|ayegi|aaega|hoga|dikhega|chhapega|chapega|aaenge`)},
+		{kind: menaceAfter, run: runOf(`won't|wont|will|there'll|isn't|isnt|ain't|aint|gonna _1 be any|no|nothing|
+			nobody|noone|anyone|anything _3 left`), check: nothingLeft},
+		{kind: menaceAfter, final: true, run: runOf(`his|her|their|your|ur|its last one|day|week|weekend|breath|
+			class|lesson|ride|trip|chance`), check: notALeaving},
+		{kind: menaceAfter, run: runOf(`last time it|they|he|she|anyone|you|u|we|this|that _2 ever`),
+			check: notALeaving},
+		{kind: menaceAfter, run: runOf(`carry|carrying|carried|carries|drag|dragging|dragged people|bodies|them|
+			kids|students|everyone|everybody|ppl|someone|somebody _1 out`), check: notFainting},
+		{kind: menaceAfter, run: runOf(`see|seeing who's|whos|who|whoever is|'s? still? standing|alive|breathing|
+			left`)},
+		{kind: menaceAfter, run: runOf(`ghar _1 nahi|nhi|na _1 pahuchega|pahunchega|pahuchegi|pahunchegi|pohchega|
+			pohochega|pahuchenge|pahunchenge|lautega|lautegi`)},
+		{kind: menaceAfter, run: runOf(`zinda nahi|nhi bachega|bachegi|bachenge|jayega|jaayega|rahega|lautega`)},
+
+		// What the poster has ready.
+		{kind: menaceReady, final: true, run: runOf(`$have|ready|sorted|arranged what|everything|all i|we
+			need|needed`)},
+		{kind: menaceReady, run: runOf(`$have enough for every|each|all|everyone|everybody|every1`),
+			check: enoughForAll},
+		{kind: menaceReady, run: runOf(`list`), check: listOfNames},
+		{kind: menaceReady, run: runOf(`there'll|there|will|i've|i|i'll|ive|we've|we'll|we _2 leave|left|leaving|
+			plant|planted|planting|hide|hid|hidden|put|placed|place|placing|be a|the|some|my device|devices|
+			package|parcel|something|thing under|beneath|inside|behind|in`), check: hiddenThing},
+		{kind: menaceReady, run: runOf(`putting|put|slip|slipping|slipped|spike|spiking|adding|add|mix|mixing|
+			drop|dropping|lace|lacing something|stuff|smth|sth|it in|into the|their|his|her|ur|your|everyone's|
+			everyones? _2 tea|coffee|food|water|drink|drinks|lunch|juice|bottle|bottles|tiffin|chai|dinner|meal|
+			cooler|biryani|lunchbox|snacks|cake|soup|dal|curry`)},
+		{kind: menaceReady, final: true, run: runOf(`made|make|making sure of it|that`)},
+		{kind: menaceReady, run: runOf(`i'll|i|ill see to it|that`)},
+		{kind: menaceReady, run: runOf(`been|i've|ive|was|am|i'm|im planning|plotting|preparing it|this|that
+			since|for|all`)},
+		{kind: menaceReady, run: runOf(`i'm|im|i am? the one doing|behind it|this`)},
+		{kind: menaceReady, run: runOf(`built|building|made|making something|smth in|at|over`)},
+		{kind: menaceReady, run: runOf(`found|find|know|knows|figured out? where|which he|she|they|you|u|ur|his|her|
+			their _2 live|lives|stay|stays|staying|living|sleeps|parks|room|hostel|house|class|flat`)},
+		{kind: menaceReady, run: runOf(`know|knows which|what hostel|room|class|house|flat|floor|bus|batch
+			you're|youre|ur|you|u|he's|hes|she's|shes|he|she|they're|they _1 in|at|on|take|takes`)},
+
+		// A weapon, or a club and a crew.
+		{kind: menaceArmed, run: runOf(`gun|guns|knife|knives|blade|blades|machete|machetes|sword|swords|axe|
+			dagger|rifle|rifles|pistol|pistols|revolver|shotgun|explosive|explosives|grenade|grenades|taser|
+			firearm|firearms|ak47|ar15|glock|katta|tamancha|cutlass|cutlasses|ammo|bullets|petrol|kerosene|
+			gasoline`), check: armedWith},
+		{kind: menaceArmed, run: runOf(`full|extended|loaded mag|mags|clip|magazine`), check: armedWith},
+		{kind: menaceArmed, run: runOf(`with|bringing|the|my|a the|my|a? strap|straps`), check: armedWith},
+		{kind: menaceArmed, run: runOf(`something|smth worse|sharper|deadlier|heavier than`)},
+		{kind: menaceArmed, run: runOf(`bat|bats|stick|sticks|rod|rods|hammer|crowbar|pipe|pipes|brick|bricks|
+			chain|chains`), check: clubAndCrew},
+
+		// A verdict.
+		{kind: menaceVerdict, final: true, run: runOf(`$theyre|$they|that is|are|'s|r? so|really|officially|
+			actually|literally|totally? done|finished|toast|history|deadmeat`), check: notAsked},
+		{kind: menaceVerdict, final: true, run: runOf(`$they|$theyll $will? learn|pay`)},
+		{kind: menaceVerdict, run: runOf(`$they|$theyll $will|are|is|r? regret|regrets`)},
+		{kind: menaceVerdict, final: true, run: runOf(`it's|its|it|this|shit's is? happening`)},
+		{kind: menaceVerdict, final: true, run: runOf(`it's|its|it|this|shit's is? going down`)},
+		{kind: menaceVerdict, final: true, run: runOf(`is|are|'s|r so|really|officially|actually|literally|totally?
+			done|finished|toast|history|deadmeat`), check: personBefore},
+		{kind: menaceVerdict, final: true, run: runOf(`$theyll|will|gon|gonna see|learn`)},
+		{kind: menaceVerdict, run: runOf(`get|gets|getting|got what's|whats coming`)},
+		{kind: menaceVerdict, run: runOf(`it|this|it'll|this'll all? ends|end|ending today|tomorrow|tonight|here|
+			now|on|this|monday|tuesday|wednesday|thursday|friday|saturday|sunday`)},
+		{kind: menaceVerdict, run: runOf(`find|finds|found|finding|see|sees|learn|learns|show|showing|teach out?
+			what happens`)},
+		{kind: menaceVerdict, run: runOf(`what happens when|if you|u|people|anyone|someone|they|ppl mess|messes|
+			cross|crosses|snitch|snitches|step|steps|play|plays|disrespect|disrespects|test|tests`)},
+		{kind: menaceVerdict, run: runOf(`$they|you've|youve|they've|theyve|he's|she's have|has|got|'ve? got?
+			until|till|til|untill`), check: ultimatum},
+		{kind: menaceVerdict, run: runOf(`i'm|im|imma|we're|i'll|we'll|ill be? coming|come for|after you|u|them|
+			him|her|every|all|each|everyone|everybody|y'all|yall|ya`), check: comingFor},
+		{kind: menaceVerdict, run: runOf(`say|kiss|wave your|ur? goodbye|goodbyes|bye to? them|him|her`)},
+		{kind: menaceVerdict, run: runOf(`nahi|nhi|na chhodunga|chodunga|chhodenge|chodenge|chhodungi|chodungi|
+			bakshunga|bakhshunga|bakshenge`)},
+		{kind: menaceVerdict, run: runOf(`sabak|sabaq sikhaunga|sikhayenge|sikhaenge|sikha|sikhana`)},
+		{kind: menaceVerdict, run: runOf(`dekh lunga|lenge|lungi`)},
+		{kind: menaceVerdict, final: true, run: runOf(`go|goin collect`)},
+		{kind: menaceVerdict, run: runOf(`go|goin hear|see|feel am`)},
+		{kind: menaceVerdict, run: runOf(`better|betta watch|pray|run|hide|enjoy|sleep|count|kiss|make|say`),
+			check: someoneElseBetter},
+		{kind: menaceVerdict, run: runOf(`gets|get|getting it`), check: getsIt},
+		{kind: menaceVerdict, run: runOf(`i'll|ill|imma|we'll|i|we will|gonna|'ll? find you|u|him|her|them`)},
+		{kind: menaceVerdict, run: runOf(`won't|wont|can't|cant|nothing|nobody|noone will|can? help|save|protect
+			you|u|them|him|her`)},
+
+		// A warning to stay away.
+		{kind: menaceStayAway, run: runOf(`don't|dont|never|shouldn't|shouldnt|not come|go|show|turn|be|step|
+			bother|attend|enter`), check: stayAway},
+		{kind: menaceStayAway, run: runOf(`stay|staying|keep home|inside|indoors|away|clear|out`), check: stayAway},
+		{kind: menaceStayAway, run: runOf(`leave|get out? early|now|before|while`), check: stayAway},
+		{kind: menaceStayAway, run: runOf(`skip|bunk|miss school|class|college|assembly|it|tomorrow|today`),
+			check: stayAway},
+		{kind: menaceStayAway, run: runOf(`avoid|steer _1 the|that`), check: stayAway},
+
+		// A warning that it is one.
+		{kind: menaceWarned, run: runOf(`this|that's|thats|it's|its|here's is? a|my|your|ur|the? last|final|only|first|fair|
+			friendly? warning`)},
+		{kind: menaceWarned, run: runOf(`last|final warning`)},
+		{kind: menaceWarned, run: runOf(`been warned`)},
+		{kind: menaceWarned, run: runOf(`consider|considered yourself|yourselves|urself|this|it warned`)},
+		{kind: menaceWarned, run: runOf(`didn't|didnt|never warn|warned`)},
+		{kind: menaceWarned, run: runOf(`i'm|im warning you|u|everyone|y'all|yall|ya`)},
+		{kind: menaceWarned, run: runOf(`not|no a? joke|joking|kidding|kiddin`)},
+		{kind: menaceWarned, run: runOf(`remember i|we said|asked|told|warned|called|predicted`)},
+		{kind: menaceWarned, run: runOf(`i|we warned you|u|them|y'all|yall|ya|everyone`)},
+		{kind: menaceWarned, run: runOf(`mark my words`)},
+		{kind: menaceWarned, run: runOf(`you|u know who|what you|u|ur|you're|youre are|did?`)},
+		{kind: menaceWarned, run: runOf(`that's|thats all i'm|im|i'll|ill saying|say`)},
+		{kind: menaceWarned, run: runOf(`asked|told you? nicely|politely`)},
+		{kind: menaceWarned, run: runOf(`swear down|to|on god|my|everything? life|mum|mom|mother?`)},
+		{kind: menaceWarned, run: runOf(`yaad rakhna|rakhiyo|rakhiye`)},
+		{kind: menaceWarned, run: runOf(`dekhna tum|sab|sabko|ab`)},
+		{kind: menaceWarned, run: runOf(`last chance`)},
+
+		// The wrong it answers.
+		{kind: menaceGrievance, run: runOf(`$wrong at|about|on|off|out|over? me|us`), check: wrongedBy},
+		{kind: menaceGrievance, run: runOf(`$damage my|our`), check: wrongedBy},
+		{kind: menaceGrievance, run: runOf(`said|says|saying|say|talked|talking|talk|talks|spread|spreading|
+			posted|posting|wrote|telling|told _2 about|behind me|us|my`), check: wrongedBy},
+		{kind: menaceGrievance, run: runOf(`made|make|makes|making me|us cry|suffer`), check: wrongedBy},
+		{kind: menaceGrievance, run: runOf(`mess|messes|messed|messing|cross|crossed|crossing with? me|us`),
+			check: wrongedBy},
+	}
+	menacePhrasesAt = func() map[string][]*menacePhrase {
+		at := map[string][]*menacePhrase{}
+		for k := range menacePhrases {
+			p := &menacePhrases[k]
+			for w := range p.run[0].set {
+				at[w] = append(at[w], p)
+			}
+		}
+		return at
+	}()
+)
+
+// leftIn reads where someone will be left: in hospital, in an ambulance, in
+// a body bag. A stay for an illness, an injury or a birth is not one, and an
+// ambulance, a stretcher, a coffin, a morgue or a body bag is strong.
+func leftIn(r *wordReading, lo, hi int) (strong, ok bool) {
+	last := r.ws[hi-1]
+	if is(last, "body") {
+		if hi >= len(r.ws) || !is(r.ws[hi], "bag") && !is(r.ws[hi], "bags") {
+			return false, false
+		}
+		last = "bodybag"
+	}
+	return leftInStrong[last], !anyIn(r.sentenceWords(lo), medicalWords)
+}
+
+// nobodyLeaves reads "nobody walks out of the gym alive", "not everyone's
+// going home from that hall" and "nobody in our form room is making it to
+// the holidays": nobody, or not everyone, said to come out alive, to go
+// home, or to make it to a time. Alive, or not going home from somewhere, is
+// strong; going home early, sober or tonight is no death.
+func nobodyLeaves(r *wordReading, lo, hi int) (strong, ok bool) {
+	ws, end := r.ws, min(r.clauseEnd[lo], lo+readReach)
+	k := lo + 1
+	switch w := ws[lo]; {
+	case is(w, "no"):
+		if k >= end || !is(ws[k], "one") && !is(ws[k], "one's") {
+			return false, false
+		}
+		k++
+	case is(w, "not"):
+		if k >= end || !notEveryone[ws[k]] {
+			return false, false
+		}
+		k++
+	}
+	for ; k < end && k < lo+12; k++ {
+		verb := ws[k]
+		if !survivalVerbs[verb] {
+			continue
+		}
+		after := ws[k+1 : min(r.sentenceEnd[lo], k+7)]
+		for j, a := range after {
+			switch {
+			case is(a, "alive"):
+				return true, true
+			case j == 0 && is(a, "home") && homeVerbs[verb]:
+				if len(after) > 1 && notForGood[after[1]] {
+					return false, false
+				}
+				return len(after) > 1 && (is(after[1], "from") || is(after[1], "after")) || r.endsSentence(k+2), true
+			case j == 0 && is(a, "it") && makingVerbs[verb] && len(after) > 1 && reachWords[after[1]]:
+				return false, !hasWord(after, "time")
+			}
+		}
+		return false, false
+	}
+	return false, false
+}
+
+// notMakingIt reads a vehicle or people said not to make it somewhere: "the
+// trip bus won't make it to the zoo". In time, on time and a phone are not
+// one.
+func notMakingIt(r *wordReading, lo, hi int) (strong, ok bool) {
+	after := r.ws[hi:min(r.clauseEnd[lo], hi+4)]
+	return false, !hasWord(after, "time") && !anyIn(r.sentenceWords(lo), deviceWords)
+}
+
+// notPast reads a bloodbath or a massacre still to come, not one that was,
+// and not in the markets.
+func notPast(r *wordReading, lo, hi int) (strong, ok bool) {
+	before := r.ws[max(r.clauseFrom(lo), lo-3):lo]
+	return false, !anyIn(before, pastBe) && !anyIn(r.sentenceWords(lo), marketWords)
+}
+
+// newsOfIt reads making the news for something that is not an achievement.
+func newsOfIt(r *wordReading, lo, hi int) (strong, ok bool) {
+	return false, !anyIn(r.sentenceWords(lo), achievementWords)
+}
+
+// nothingLeft reads a place or people said to have none of it left: "won't
+// be any school left", not "won't be any pizza left".
+func nothingLeft(r *wordReading, lo, hi int) (strong, ok bool) {
+	for _, w := range r.ws[lo:hi] {
+		if placeHeads[w] || rolePeople[w] {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// notALeaving reads someone's last day, weekend or time, or the last time
+// something ever happens, where no one is retiring, moving or leaving.
+func notALeaving(r *wordReading, lo, hi int) (strong, ok bool) {
+	return false, !r.postHas("leaving", leavingWords)
+}
+
+// notFainting reads people carried out where nobody fainted from the heat.
+func notFainting(r *wordReading, lo, hi int) (strong, ok bool) {
+	return false, !r.postHas("faint", faintWords)
+}
+
+// enoughForAll reads "I've got enough for every single one of them", with
+// nothing named that there is enough of, and nothing a crowd is given
+// (supplyWords, foodWords) in the post: strong for every single one, or
+// every one of them.
+func enoughForAll(r *wordReading, lo, hi int) (strong, ok bool) {
+	if r.postHas("supply", supplyWords) || r.postHas("food", foodWords) {
+		return false, false
+	}
+	after := r.ws[hi:min(r.clauseEnd[lo], hi+4)]
+	return hasWord(after, "single") || everyOne[r.ws[hi-1]] && hasWord(after, "one"), true
+}
+
+// listOfNames reads a list of names or people the poster has: strong when
+// the post gives it no purpose (listPurposes).
+func listOfNames(r *wordReading, lo, hi int) (strong, ok bool) {
+	before := r.ws[max(r.clauseFrom(lo), lo-2):lo]
+	if !anyIn(before, listKeepers) {
+		return false, false
+	}
+	for _, w := range r.ws[hi:min(len(r.ws), hi+10)] {
+		if is(w, "names") || is(w, "people") {
+			return !r.postHas("purposes", listPurposes), true
+		}
+	}
+	return false, false
+}
+
+// hiddenThing reads a device or a package hidden under, inside or behind
+// something, which is strong, or "something" put in a place, which is not.
+func hiddenThing(r *wordReading, lo, hi int) (strong, ok bool) {
+	noun, prep := r.ws[hi-2], r.ws[hi-1]
+	if hasWord(r.sentenceWords(lo), "for") {
+		return false, false // "a box under each desk for your phones"
+	}
+	return hiddenDevices[noun] && !is(prep, "in"), hiddenDevices[noun] || is(noun, "something") || is(noun, "thing")
+}
+
+// armedWith reads a weapon named in a sentence that names no toy, prop,
+// festival, range, camp or study of it.
+func armedWith(r *wordReading, lo, hi int) (strong, ok bool) {
+	ws := r.sentenceWords(lo)
+	return false, !unnegatedIn(ws, toyWeapon, festivalWords, propWords) && !shootingRange(ws) &&
+		!anyIn(ws, outdoorWords) && !anyIn(ws, studyWords)
+}
+
+// clubAndCrew reads a club named with a crew: "my brother's bat and his
+// mates", "the boys and the iron rods", not at a ground or a game.
+func clubAndCrew(r *wordReading, lo, hi int) (strong, ok bool) {
+	ws := r.sentenceWords(lo)
+	return false, anyIn(ws, crewWords) && !anyIn(ws, pitchHeads)
+}
+
+// ultimatum reads "you have until friday" with no task to do by then: not
+// "you have until friday to submit".
+func ultimatum(r *wordReading, lo, hi int) (strong, ok bool) {
+	rest := r.ws[hi:min(r.clauseEnd[lo], hi+6)]
+	return false, !hasWord(rest, "to") && !hasWord(rest, "for") && len(rest) <= 5
+}
+
+// comingFor reads coming for someone that is not collecting them: strong for
+// every one of them or all of them.
+func comingFor(r *wordReading, lo, hi int) (strong, ok bool) {
+	after := r.ws[hi:min(r.sentenceEnd[lo], hi+6)]
+	if anyIn(after, pickUpWords) || anyIn(r.sentenceWords(lo), rankWords) {
+		return false, false
+	}
+	return everyWords[r.ws[hi-1]], true
+}
+
+// someoneElseBetter reads "the vice principal better enjoy his weekend" and
+// "you better watch your back", not "you better enjoy the holidays".
+func someoneElseBetter(r *wordReading, lo, hi int) (strong, ok bool) {
+	s := r.subjectBefore(lo)
+	if is(s, "you") || is(s, "u") || is(s, "ya") {
+		return false, !is(r.ws[hi-1], "enjoy") && !is(r.ws[hi-1], "make") && !is(r.ws[hi-1], "say")
+	}
+	return false, s != ""
+}
+
+// personBefore reads someone said to be done: a person named before it in its
+// clause, "the senior who ragged me is done", not "the hostel is done".
+func personBefore(r *wordReading, lo, hi int) (strong, ok bool) {
+	for _, w := range r.ws[r.clauseFrom(lo):lo] {
+		if rolePeople[w] || kinPeople[w] {
+			return notAsked(r, lo, hi)
+		}
+	}
+	return false, false
+}
+
+// getsIt reads "the school gets it on sports day": at the end of its
+// sentence, or with a time straight after.
+func getsIt(r *wordReading, lo, hi int) (strong, ok bool) {
+	return false, r.endsSentence(hi) || hi < r.sentenceEnd[lo] && (soonWords[r.ws[hi]] || timePrepositions[r.ws[hi]])
+}
+
+// stayAway reads a warning to stay away from a place or at a time: said as
+// an instruction to someone else, with the place or the time, or ending its
+// sentence, and with no reason given for it (stayAwayReasons).
+func stayAway(r *wordReading, lo, hi int) (strong, ok bool) {
+	ws := r.sentenceWords(lo)
+	if anyIn(ws, stayAwayReasons) {
+		return false, false
+	}
+	// Said to someone ("pls don't come", "better stay inside"), not of
+	// them ("he never comes to class", "the bus doesn't go there").
+	for k := lo - 1; k >= r.clauseFrom(lo); k-- {
+		if insistWords[r.ws[k]] {
+			break
+		}
+		if !auxWords[r.ws[k]] {
+			return false, false
+		}
+	}
+	if r.endsSentence(hi) {
+		return false, true
+	}
+	for _, w := range r.ws[hi:min(r.clauseEnd[lo], hi+6)] {
+		if placeHeads[w] || soonWords[w] || is(w, "weekend") {
+			return false, true
+		}
+	}
+	return false, false
+}
+
+// wrongedBy reads a wrong done to the poster by someone else: not "I failed
+// my exam", "hit me up" or "posted about my trip", and a person, not a song,
+// that made them cry.
+func wrongedBy(r *wordReading, lo, hi int) (strong, ok bool) {
+	s := r.subjectBefore(lo)
+	if posterSubject[s] {
+		return false, false
+	}
+	last := r.ws[hi-1]
+	switch first := r.ws[lo]; {
+	case is(first, "hit") && hi < len(r.ws) && is(r.ws[hi], "up"):
+		return false, false
+	case sayingVerbs[first] || is(first, "talked") || is(first, "talking") || is(first, "talk") ||
+		is(first, "talks") || is(first, "spread") || is(first, "spreading") || is(first, "posted") ||
+		is(first, "posting") || is(first, "wrote") || is(first, "telling") || is(first, "told"):
+		if is(last, "my") {
+			return false, hi < len(r.ws) && is(r.ws[hi], "back")
+		}
+	case is(first, "made") || is(first, "make") || is(first, "makes") || is(first, "making"):
+		return false, rolePeople[s] || kinPeople[s] || subjectPronouns[s] || relativeWords[s]
+	}
+	return false, true
+}
+
+var (
+	leftInStrong = canonSetOf(`ambulance ambulances stretcher stretchers coffin coffins morgue bodybag bodybags`)
+	medicalWords = canonSetOf(`sick ill illness fever surgery operation checkup appointment injury injured injuries
+		broke broken fractured fracture sprain sprained accident fainted fainting asthma allergy allergic covid
+		dengue malaria typhoid jaundice flu infection admitted discharged born birth baby delivery pregnant volunteer
+		volunteering internship duty shift nurse doctor doctors treatment chemo therapy recovering recovery appendix
+		stitches xray mri vaccine dentist`)
+	// notEveryone, after "not", say not all of them: "not everyone's
+	// going home".
+	notEveryone   = canonSetOf(`everyone everyone's everybody everybody's all every many one`)
+	survivalVerbs = canonSetOf(`walk walks walking come comes coming get gets getting make makes making go goes going
+		leave leaves leaving survive survives surviving live lives living`)
+	homeVerbs   = canonSetOf(`go goes going get gets getting make makes making come comes coming walk walks walking`)
+	makingVerbs = canonSetOf(`make makes making`)
+	reachWords  = canonSetOf(`to through past out home till until`)
+	// notForGood, after "going home", make it an evening's end: "nobody's
+	// going home early tonight".
+	notForGood = canonSetOf(`early sober yet tonight till until before without for on by with alone happy empty
+		hungry tired late`)
+	deviceWords = canonSetOf(`phone phones laptop laptops battery charger plant plants marks grade grades attendance
+		pen printer wifi internet car bike scooty`)
+	pastBe           = canonSetOf(`was were got had been`)
+	achievementWords = canonSetOf(`win won winning wins champion champions championship award awards prize trophy
+		record rank topper toppers selected selection viral famous trending scholarship medal gold`)
+	leavingWords = canonSetOf(`retire retiring retirement retires leaving farewell transfer transferred transferring
+		graduating graduation graduate moving shifting resign resigning resigned quit quitting promotion
+		vacation`)
+	faintWords = canonSetOf(`heat hot heatstroke faint fainted fainting exhausted tired drunk passed asleep sleeping
+		dehydrated`)
+	supplyWords = canonSetOf(`snacks snack food foods cake cakes sweets sweet chocolates chocolate candy candies
+		pizza pizzas samosa samosas biscuits cookies cupcakes chips drinks juice notes copies copy handouts sheets
+		tickets ticket passes gifts gift presents chairs seats pens pencils masks money cash ladoo laddoo mithai
+		boxes plates cups shirts jerseys badges stickers popcorn sandwiches books`)
+	everyOne     = canonSetOf(`every each`)
+	listKeepers  = canonSetOf(`got have made making wrote writing keeping keep kept started i've ive 've a my`)
+	listPurposes = canonSetOf(`team quiz trip party invite invites invited invitation guest guests rsvp attendance
+		register registration signup shortlist shortlisted selection selected merit rank results award awards prize
+		vote votes voting election elections nominate nominations cast audition auditions roll reading songs movies
+		grocery shopping todo wishlist playlist birthday bday wedding farewell passed toppers scholarship santa fees
+		dues submitted submit duty recommend recommendations`)
+	hiddenDevices = canonSetOf(`device devices package packages parcel parcels`)
+	studyWords    = canonSetOf(`essay history debate project assignment law laws control policy ban banned research
+		article documentary museum exhibit class syllabus chapter`)
+	crewWords   = canonSetOf(`boys lads mates gang crew squad homies bros boyz goons`)
+	pickUpWords = canonSetOf(`pick picking drop dropping lift ride dinner lunch party birthday visit visiting`)
+	rankWords   = canonSetOf(`rank ranks ranking leaderboard title crown spot top position record trophy`)
+	everyWords  = canonSetOf(`every all each everyone everybody y'all yall`)
+	// insistWords may come before an instruction to stay away: "better
+	// stay inside", "pls don't come".
+	insistWords     = canonSetOf(`better should gotta pls please just so then seriously and but i'd id`)
+	lastThings      = canonSetOf(`warning warnings chance call notice`)
+	stayAwayReasons = canonSetOf(`sick ill fever unwell cold flu covid virus rain raining rains storm cyclone flood
+		floods weather heat heatwave hot snow snowing holiday holidays vacation off closed closure cancelled
+		canceled bandh strike protest hartal curfew pollution smog aqi traffic jam crowd crowded queue queues
+		rush construction repair repairs maintenance renovation drill fumigation exam exams test results revision
+		study sale`)
+	relativeWords = canonSetOf(`who whoever that wey jo jisne`)
+)
+
 // threatens reports a threat: an intent with a place or a time within
 // threatWindow of it, a warning with a cue that it is one, or "school
 // shooting" with a time still to come close by. The fields are read as one
@@ -5874,7 +6736,8 @@ func threatens(fields []*scannedField) bool {
 		pair(threatUnseenRules, of(threatUnseenRules), func(f *scannedField) matchCheck { return f.threatComingCheck }, 0) ||
 		pair(threatSymbolRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatSymbolCheck }, threatWindow) ||
 		pair(threatWarningRules, of(threatWarningCues), byField(nil), threatWindow) ||
-		pair(schoolShootingRules, of(futureTimeRules), byField(schoolShootingCheck), schoolShootingWindow)
+		pair(schoolShootingRules, of(futureTimeRules), byField(schoolShootingCheck), schoolShootingWindow) ||
+		menace(fields, placesAndTimes)
 }
 
 // nearSpans are spans in reading positions, ordered by where they start,

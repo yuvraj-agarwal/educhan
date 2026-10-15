@@ -2142,6 +2142,71 @@ func verdictName(v contentVerdict) string {
 	return "publish"
 }
 
+// TestFilterReadsAThreatToldByImplication holds menace to both sides: two
+// kinds of hint, or one strong one, beside a place or a time, are a threat,
+// and the same hints said of an exam, a party, a leaving, an illness, a
+// game or a callout are not.
+func TestFilterReadsAThreatToldByImplication(t *testing.T) {
+	const (
+		publish = "publish"
+		threat  = "hold:" + holdThreat
+	)
+	for _, c := range []struct{ body, want string }{
+		// One hint that is a threat by itself.
+		{"the warden is going home in a body bag tomorrow night", threat},
+		{"the physics teacher who gave me detention will be leaving in an ambulance on friday", threat},
+		{"nobody walks out of the canteen alive on monday", threat},
+		{"not everyone is going home from the auditorium after assembly tomorrow", threat},
+		{"assembly hall, 10am thursday. i've got enough for every single one of you.", threat},
+		{"there'll be a package under the stage at the farewell on saturday. enjoy", threat},
+		{"got a list. 9 names. all from 12C. starting friday", threat},
+		// Two kinds together.
+		{"the staff room on wednesday will be a bloodbath. stay home.", threat},
+		{"don't come to the library tomorrow. this is not a joke", threat},
+		{"9C. friday. it's happening. remember i warned you", threat},
+		{"my ex who cheated on me better watch her back on monday. mark my words", threat},
+		{"the guys who jumped me last week are getting what's coming. friday after school. you know who you are", threat},
+		{"the coach who kicked me off the team won't make it to the weekend. made sure of it", threat},
+		{"west block canteen at lunch tomorrow. they gon learn. i've been planning this since january", threat},
+		{"whoever reported me to the principal: you have until friday. i know where you live", threat},
+		{"the senior who ragged me in the hostel is done. tonight.", threat},
+		{"gonna be all over the news on monday, the school will see. i warned them", threat},
+		{"the lab on friday. bringing the lads and some rods. you know who you are", threat},
+		{"kal college ke baad tera dost ghar nahi pahuchega. yaad rakhna", threat},
+		// The same hints with nothing to make them one.
+		{"the physics teacher fainted in assembly and is leaving in an ambulance, hope she's ok", publish},
+		{"my grandpa will be in hospital till friday after his surgery", publish},
+		{"nobody is getting out of this physics exam alive tomorrow lol", publish},
+		{"nobody is going home early tonight, the farewell party goes till 2", publish},
+		{"i've got enough sweets for every single one of you at the party on friday", publish},
+		{"i've got enough for all of you, don't bring lunch to the trip tomorrow", publish},
+		{"there'll be a box under each desk for your phones during the exam tomorrow", publish},
+		{"there will be a device check at the exam hall gate tomorrow, no phones allowed", publish},
+		{"got a list of 10 people for secret santa on friday, message me if you want in", publish},
+		{"the people who stole my charger in the library today, you know who you are", publish},
+		{"don't come to school tomorrow, it's a holiday for the election", publish},
+		{"the cricket match on sunday is going to be a bloodbath, our bowlers are on fire", publish},
+		{"the 9B trip bus won't make it to the museum on time, we're stuck in traffic", publish},
+		{"our school made the news today for winning the robotics nationals", publish},
+		{"it's happening!! farewell party is on friday at the hall", publish},
+		{"you have until friday to submit the lab report", publish},
+		{"i'm coming for you at 5 to pick you up from tuition tomorrow", publish},
+		{"say goodbye to them at the farewell on friday, they're leaving for uni", publish},
+		{"stay home tomorrow if you're sick, the flu is going around school", publish},
+		{"it's his last day at school tomorrow, he's moving to Pune", publish},
+		{"remember i said it first: our class will top the boards this year", publish},
+		{"the seniors better enjoy their last weekend before boards", publish},
+		{"he's done with his boards tomorrow, finally free", publish},
+		{"i'm coming for all of you in the class leaderboard this week", publish},
+		{"the coach who kicked me off the team apologised today in the gym, we're good now", publish},
+		{"my brother's classmate wrote 'you won't make it to monday, you know who you are' on his desk. we told the school", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, true)); got != c.want {
+			t.Errorf("%q: %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
 // one reading of quoted and reported speech that every family uses. Words
 // the post gives to someone else, or says came to the poster, are not the
@@ -2628,6 +2693,10 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"pronoun then time": rep("kal sabko "),
 		"urged":             rep("bro just rope "),
 		"grade then cue":    rep("what grade are you in? come alone "),
+		// A threat told by implication: hints of every kind, close to a
+		// time and a place, and the words that open the most of them.
+		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),
+		"hint openings": rep("i will be not the one "),
 		// An app named over and over, each time read for an ask or a handle
 		// on either side; a crisis line quoted from the reply above, said of
 		// someone else, or put as a conditional; an address spelled out round
