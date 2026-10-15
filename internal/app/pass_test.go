@@ -13,11 +13,22 @@ import (
 )
 
 func TestPassCodes(t *testing.T) {
+	a := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret}}}
 	seen := map[string]bool{}
 	for range 200 {
-		code, err := newPassCode()
+		nonce, err := randomToken()
 		if err != nil {
 			t.Fatal(err)
+		}
+		code := a.passNonceCode(nonce)
+		// The same nonce gives the same code, which is what makes asking
+		// again safe; another secret gives another.
+		if again := a.passNonceCode(nonce); again != code {
+			t.Fatalf("nonce %q gave %q, then %q", nonce, code, again)
+		}
+		other := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret + "-rotated"}}}
+		if other.passNonceCode(nonce) == code {
+			t.Fatalf("two secrets gave nonce %q the same code", nonce)
 		}
 		if len(code) != passCodeLen || strings.Trim(code, passAlphabet) != "" {
 			t.Fatalf("code %q is not %d characters of the alphabet", code, passCodeLen)
@@ -390,6 +401,26 @@ func TestPassExpiryArithmetic(t *testing.T) {
 		}
 		if back := c.expiry.AddDate(0, 0, -termDays(c.base, c.expiry)); back.After(c.base) {
 			t.Errorf("taking the term off %v lands at %v, after the base %v", c.expiry, back, c.base)
+		}
+	}
+
+	// A refund takes off the days of a term still to come, rounded up so
+	// none of it is left, and nothing of a term that has run.
+	for _, c := range []struct {
+		end, now time.Time
+		want     int
+	}{
+		{midnight, afternoon, 0},
+		{midnight, midnight, 0},
+		{midnight.AddDate(0, 0, 10), midnight, 10},
+		{midnight.AddDate(0, 0, 10), afternoon, 10},
+		{midnight.AddDate(0, 0, 10), midnight.Add(time.Nanosecond), 10},
+	} {
+		if got := daysOff(c.end, c.now); got != c.want {
+			t.Errorf("daysOff(%v, %v) = %d, want %d", c.end, c.now, got, c.want)
+		}
+		if c.want > 0 && c.end.AddDate(0, 0, -daysOff(c.end, c.now)).After(c.now) {
+			t.Errorf("taking %d days off a term ending %v leaves some of it after %v", c.want, c.end, c.now)
 		}
 	}
 }

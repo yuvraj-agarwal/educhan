@@ -10,16 +10,16 @@
 --     against a post either.
 --   * No email, name, card or address. The processor keeps those; educhan keeps
 --     HMAC(EDUCHAN_PASS_SECRET, payment id), which exists only so a refund or a
---     chargeback can cancel the Pass it paid for.
---   * No created_at. expires_at is the one timestamp in every table, rounded
---     up to a UTC day boundary, so it dates a purchase to the day and not the
---     minute.
+--     chargeback can take back the time that payment bought.
+--   * No created_at. Every timestamp (expires_at in each table, and the day a
+--     payment's term ends) is rounded up to a UTC day boundary, so it dates a
+--     purchase to the day and not the minute.
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
 -- there lives from checkout until the Pass is collected, and is deleted the
 -- moment it is. Unpaid, it is deleted at its deadline, a week after checkout
 -- (longer while a slow payment confirms); paid and never collected, it is
--- kept for a term past that, so the owner can still reissue it.
+-- kept for its own term past that, so the owner can still reissue it.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,
@@ -34,15 +34,23 @@ CREATE TABLE IF NOT EXISTS passes (
 CREATE INDEX IF NOT EXISTS passes_expires_idx ON passes (expires_at);
 
 -- The payments behind a Pass: the first purchase and every renewal. Refunding
--- or disputing one takes its term off the Pass's expiry and deletes its row;
--- a Pass left with no time to come goes too, and these rows with it.
+-- or disputing one takes the part of its term still to come off the Pass's
+-- expiry and deletes its row; a Pass left with no time to come goes too, and
+-- these rows with it.
 CREATE TABLE IF NOT EXISTS pass_payments (
     payment_hash BYTEA PRIMARY KEY,
     pass_id      BIGINT NOT NULL REFERENCES passes (id) ON DELETE CASCADE,
     -- The term this payment bought: how many days it moved the expiry on,
-    -- rounded up. A refund takes exactly this off again.
+    -- rounded up. A refund takes off no more than this.
     days         INTEGER NOT NULL,
-    -- True for the payment that created the Pass, false for a renewal.
+    -- The day that term ends: the Pass's expiry just after the payment was
+    -- applied, moved back with it when an earlier term is refunded. A refund
+    -- takes off only the part of the term still to come, and the earliest
+    -- term left is the one that becomes the origin.
+    ends_at      TIMESTAMPTZ NOT NULL,
+    -- True for the payment that created the Pass, false for a renewal. When
+    -- the origin is refunded and the Pass goes on, the earliest payment left
+    -- becomes its origin, so the Pass can always be reissued.
     origin       BOOLEAN NOT NULL
 );
 
@@ -54,9 +62,10 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     session_hash  BYTEA PRIMARY KEY,
     -- The buyer's browser holds the claim token in a cookie scoped to
     -- /api/pass; this is its hash. Collecting the Pass needs it, so a Pass is
-    -- handed to the browser that paid for it and to nobody else. A browser
-    -- that starts a second checkout keeps its token, so one claim can have
-    -- several orders, all collected together.
+    -- handed to the browser that paid for it and to nobody else. Every
+    -- checkout gives the browser a new token and moves the orders under its
+    -- old one to it, so one claim can have several orders, all collected
+    -- together, and a token copied before a checkout collects none of them.
     claim_hash    BYTEA NOT NULL,
     -- Set when the processor reports the payment complete. NULL means the
     -- buyer has not paid yet, or the webhook has not arrived.
@@ -64,6 +73,10 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- The Pass this purchase renews, when the buyer renewed one from a browser
     -- holding it. NULL buys a new Pass.
     renew_pass_id BIGINT REFERENCES passes (id) ON DELETE SET NULL,
+    -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
+    -- started. Collecting, renewing and pruning the order all use this, so a
+    -- change to the setting never changes what was already sold.
+    days          INTEGER NOT NULL,
     -- The claim deadline, rounded up to a UTC midnight.
     expires_at    TIMESTAMPTZ NOT NULL
 );
@@ -74,7 +87,7 @@ CREATE INDEX IF NOT EXISTS pass_orders_expires_idx ON pass_orders (expires_at);
 -- Payments refunded or disputed: the processor can deliver a refund ahead of
 -- a retried "paid" event, and this is what stops that late event from turning
 -- a refunded purchase into a Pass. Kept for a month, longer than the processor
--- retries an event.
+-- retries an event, rounded up to a UTC midnight.
 CREATE TABLE IF NOT EXISTS pass_revocations (
     payment_hash BYTEA PRIMARY KEY,
     expires_at   TIMESTAMPTZ NOT NULL
