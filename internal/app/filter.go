@@ -3414,7 +3414,10 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 	case is(first, "ko"):
 		return hinglishNotTarget[prev]
 	case hinglishFire.MatchString(cm):
-		if anyIn(sws, stageWords) || anyIn(sws, lampWords) || anyIn(sws, examWords) {
+		// "aag laga denge" in a performance or an event is the idiom for
+		// doing it brilliantly: "presentation mein aag laga denge".
+		if anyIn(sws, stageWords) || anyIn(sws, lampWords) || anyIn(sws, examWords) ||
+			anyIn(sws, eventWords) && !anyIn(sws, fuelWords) {
 			return true
 		}
 		// "jala" is lighting a lamp as often as burning: only a person or
@@ -6086,7 +6089,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	last := ws[len(ws)-1]
 	next := wordsIn(clauseAfter(text, m[1]))
 	nextIn := func(k int, set map[string]bool) bool { return len(next) > k && set[next[k]] }
-	if aboutSomeoneElse(text, m, ws) || quotedNotSaid(v, m, next) || jokingCause(text, m) {
+	if aboutSomeoneElse(text, m, ws) || quotedNotSaid(v, m, next) || jokingCause(text, m) || shrugged(text, m, ws) {
 		return false
 	}
 	first := ws[0]
@@ -6218,6 +6221,73 @@ func jokingCause(text string, m []int) bool {
 	around := text[lo:min(len(text), m[1]+48)]
 	return strings.ContainsAny(around, "💀☠😂🤣") || anyIn(wordsIn(around), laughs)
 }
+
+// shrugged reports crisis words said as an exclamation at a mishap the post
+// names and makes light of, as jokingCause does for "makes me": "kms" opening
+// its sentence with what happened straight after it ("kms the wifi died right
+// as I hit submit … it went through thank god"), or "I wanted to die" in the
+// simple past about a moment named in its sentence ("forgot my lines in front
+// of the whole year, I wanted to die 💀"). A laugh, a 💀 or relief ("thank
+// god", "phew", "it went through") has to be within the sentence or just
+// after it; a crying face is not one. Life itself, a serious cause, or a time
+// that makes it an episode rather than a moment ("last night", "again",
+// "still", "every day") keeps the words as meant.
+func shrugged(text string, m []int, ws []string) bool {
+	lo := max(0, m[0]-64)
+	lo += strings.LastIndexAny(text[lo:m[0]], ".!?\n") + 1
+	before := wordsIn(text[lo:m[0]])
+	if len(ws) > 1 && is(ws[0], "i") {
+		before, ws = append(before, ws[0]), ws[1:]
+	}
+	switch {
+	case len(ws) == 1 && is(ws[0], "kms") && len(before) == 0:
+		// What happened, straight after it: a verb in the past within
+		// its first four words.
+		next := nextWords(text[m[1]:min(len(text), m[1]+48)], 4)
+		if len(next) == 0 || strings.ContainsAny(text[m[1]:min(len(text), m[1]+2)], ".!?,;:") {
+			return false
+		}
+		past := false
+		for _, w := range next {
+			past = past || pastVerb(w)
+		}
+		if !past {
+			return false
+		}
+	case len(ws) >= 3 && is(ws[0], "wanted") && len(before) > 0 && is(before[len(before)-1], "i") &&
+		is(ws[len(ws)-1], "die"):
+		// A moment named before it in the sentence.
+		if len(before) < 4 {
+			return false
+		}
+	default:
+		return false
+	}
+	around := text[lo:min(len(text), m[1]+120)]
+	aw := wordsIn(around)
+	if anyIn(aw, lifeItself) || anyIn(aw, seriousCauses) || anyIn(aw, episodeWords) {
+		return false
+	}
+	return strings.ContainsAny(around, "💀☠😂🤣") || anyIn(aw, laughs) || anyIn(aw, reliefWords) ||
+		strings.Contains(around, "thank god") || strings.Contains(around, "went through") ||
+		strings.Contains(around, "all good")
+}
+
+// pastVerb reports a verb in the simple past: a regular "-ed", or one of
+// pastIrregulars.
+func pastVerb(w string) bool {
+	return len(w) > 3 && strings.HasSuffix(w, "ed") || pastIrregulars[w]
+}
+
+var (
+	pastIrregulars = canonSetOf(`died went forgot said hit got came ate fell broke lost left saw told made did had was
+		were froze spilt ran sent wrote took gave thought felt`)
+	// episodeWords make crisis words an episode, not a moment: a time, or
+	// a habit.
+	episodeWords = canonSetOf(`night yesterday today tonight again still always every everyday since weeks months
+		lately recently often sometimes constantly anymore`)
+	reliefWords = canonSetOf(`thankfully phew nvm jk`)
+)
 
 var (
 	causeVerbs = canonSetOf(`make makes making made`)
@@ -6677,7 +6747,7 @@ var (
 // no "you" ("drink bleach", "just die") that is not the start of what is said
 // ("i'd rather drink bleach", "i just die every time").
 func selfHarmCheck(v *view, m []int) bool {
-	if !notNegated(v, m) {
+	if !notNegated(v, m) || calledOnSomeoneElse(v.text, m) {
 		return false
 	}
 	text := v.text
@@ -6746,7 +6816,7 @@ func selfHarmCheck(v *view, m []int) bool {
 func urgeCheck(v *view, m []int) bool {
 	text := v.text
 	ws := wordsIn(text[m[0]:m[1]])
-	if len(ws) == 0 {
+	if len(ws) == 0 || calledOnSomeoneElse(text, m) {
 		return false
 	}
 	first, last := ws[0], ws[len(ws)-1]
@@ -6854,6 +6924,18 @@ var (
 	deathTopic = canonSetOf(`funeral grave coffin die dying dead death suicide kys rope noose bridge jump overdose
 		unalive`)
 )
+
+// calledOnSomeoneElse reports an act written as a method called in code on
+// someone other than the reader: in "me.die();" the receiver, "me", is who
+// dies, so it urges nothing on anyone, where "you.die()" would. Code is read
+// like any other text otherwise: "bring(\"gun\")" is still carrying a gun.
+func calledOnSomeoneElse(text string, m []int) bool {
+	if m[0] < 2 || text[m[0]-1] != '.' || !alnum(rune(text[m[0]-2])) || m[1] >= len(text) || text[m[1]] != '(' {
+		return false
+	}
+	receiver := wordsBefore(text, m[0], 1)
+	return len(receiver) == 1 && !secondPerson[receiver[0]]
+}
 
 // urgeFramed reports an act said to someone, in the clause that ends at
 // offset i of text: an imperative opening the clause, with only fillers
@@ -8385,10 +8467,51 @@ const (
 // 9876543210", and "got" after "expected": "expected 9876543210 got
 // 9876543211").
 var numberLabels = setOf(`isbn issn doi arxiv pnr utr roll order invoice transaction txn ticket serial
+	receipt receipts challan voucher bill booking confirmation ack acknowledgement acknowledgment token complaint
+	docket consignment shipment parcel courier membership customer
 	application app form registration reg enrol enroll enrolment enrollment account acc acct a/c policy
 	jee neet cuet seat rank imei tracking awb reference ref
 	rs inr usd eur gbp salary stipend fee fees price cost costs budget revenue profit turnover population
 	output outputs print prints printed return returns returned stdout expected result`)
+
+// labelledSubject reports a number given as what a label is, in a sentence
+// whose subject the label heads: "the ISBN on my copy is 9353501989", "the
+// order ID from the refund mail was …". After "is", "was" or "hai" straight
+// before the number, up to four words may stand between the label and it,
+// none of them a way of being reached (contactWords) or a person, and no
+// clause break.
+func labelledSubject(t string, from int) bool {
+	clause := t[max(0, from-64):from]
+	clause = clause[strings.LastIndexAny(clause, ".!?\n,;")+1:]
+	ws := wordsIn(clause)
+	k := len(ws) - 1
+	for k >= 0 && numberFillers[ws[k]] && !copulas[ws[k]] {
+		k--
+	}
+	if k < 0 || !copulas[ws[k]] {
+		return false
+	}
+	for j, n := k-1, 0; j >= 0 && n <= 4; j-- {
+		w := ws[j]
+		switch {
+		case numberLabels[w]:
+			return true
+		case contactWords[w] || otherSpeakers[w] || strings.HasSuffix(w, "'s"):
+			return false // "the parcel guy's number is …" is his phone
+		case !numberFillers[w]:
+			n++
+		}
+	}
+	return false
+}
+
+var (
+	copulas = setOf(`is was hai`)
+	// contactWords are the ways of being reached, which no label's phrase
+	// names: "the order guy's whatsapp is …" is a phone number.
+	contactWords = canonSetOf(`call text txt whatsapp wa phone mobile cell contact dm reach ping msg message telegram
+		snap insta signal me`)
+)
 
 // labelLinks may stand between a reference's label and its number, up to
 // three of them: "PNR status for 8177091875", "order id for 7834567890",
@@ -8555,7 +8678,7 @@ func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 // numberShape reports the kind of number a run's digits and grouping make.
 func numberShape(v *view, run digitRun) (findingKind, bool) {
 	d := string(run.digits)
-	if dramaNumber(d) || helpline(d) || freephone(d, run.groups) || nanpFiction(d, run.groups) {
+	if dramaNumber(d) || helpline(d) || freephone(d, run.groups) || nanpFiction(d, run.groups) || repdigit(d) {
 		return 0, false
 	}
 	switch {
@@ -8904,19 +9027,35 @@ func dataSet(v *view, run digitRun) bool {
 	return dataWords.matchIn(v, windowBefore(v.text, run.from, 32))
 }
 
-// roundRange reports two round amounts set off by a dash, the second the
-// larger: "60000-80000 per month" is a salary, not a phone number.
+// roundRange reports two amounts set off by one dash, the second the larger,
+// each of them round or written with thousands separators: "60000-80000 per
+// month" is a salary and "~70,000–80,000 killed" a count, not a phone number.
 func roundRange(run digitRun) bool {
-	if len(run.groups) != 2 || !dashed(run.seps) {
+	k := -1
+	for i, s := range run.seps {
+		if strings.Trim(s, " ") == "-" {
+			if k >= 0 {
+				return false
+			}
+			k = i
+		}
+	}
+	if k < 0 {
 		return false
 	}
-	a, b := string(run.digits[:run.groups[0]]), string(run.digits[run.groups[0]:])
-	if !strings.HasSuffix(a, "00") || !strings.HasSuffix(b, "00") {
-		return false
+	split := 0
+	for _, g := range run.groups[:k+1] {
+		split += g
 	}
-	x, errA := strconv.ParseUint(a, 10, 64)
-	y, errB := strconv.ParseUint(b, 10, 64)
-	return errA == nil && errB == nil && y > x
+	side := func(digits []byte, groups []int, seps []string) (uint64, bool) {
+		amount := len(seps) == 0 && strings.HasSuffix(string(digits), "00") ||
+			len(seps) > 0 && seps[0] == "," && formattedNumber(digitRun{digits: digits, groups: groups, seps: seps})
+		n, err := strconv.ParseUint(string(digits), 10, 64)
+		return n, amount && err == nil
+	}
+	x, okA := side(run.digits[:split], run.groups[:k+1], run.seps[:k])
+	y, okB := side(run.digits[split:], run.groups[k+1:], run.seps[k+1:])
+	return okA && okB && y > x
 }
 
 // decimalRange reports two decimals set off by a dash, with no phone cue
@@ -9128,6 +9267,9 @@ func operandBefore(v *view, before string) bool {
 // edition ("ISBN-10: 8177091875", "ISBN13 9789351199465"), and a few
 // labelLinks may come between ("PNR status for 8177091875").
 func labelled(t string, from int) bool {
+	if labelledSubject(t, from) {
+		return true
+	}
 	ws := wordsBefore(t, from, 6)
 	links := 0
 	for k, w := range ws {
@@ -9448,6 +9590,16 @@ func nanpFiction(d string, g []int) bool {
 // start 2-9, and 555-0100 to 555-0199, which are reserved for fiction, pass.
 func nanp(d string) bool {
 	return len(d) == 10 && d[0] >= '2' && d[3] >= '2' && !(d[3:6] == "555" && d[6:8] == "01")
+}
+
+// repdigit reports a number that is one digit over and over, alone or after
+// a country code or a trunk zero: "9999999999" is a placeholder, a test value
+// or a joke, and no one's number.
+func repdigit(d string) bool {
+	if len(d) > 10 {
+		d = d[len(d)-10:]
+	}
+	return len(d) > 0 && strings.Count(d, d[:1]) == len(d)
 }
 
 // dramaNumber reports the numbers set aside for drama, which no one can be

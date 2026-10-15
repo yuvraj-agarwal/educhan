@@ -2076,6 +2076,42 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		// forAPurpose: only a purpose named excuses medicines put by.
 		{"i've been saving up my meds for the trip", publish},
 		{"I've been saving up pills for when I'm ready", support},
+		// roundRange: two amounts, round or with thousands separators, the
+		// second the larger; not a number split by commas and a dash.
+		{"Hiroshima 6 Aug 1945: ~70,000–80,000 killed instantly", publish},
+		{"between 1,20,000-1,50,000 people applied", publish},
+		{"98,450-12,345 call me", contact},
+		// labelledSubject: a label heading the sentence that gives the
+		// number, but not a person's number in it.
+		{"the ISBN on my copy is 9353501989, is that the 2023 reprint?", publish},
+		{"the order ID from the refund mail was 4049223177", publish},
+		{"receipt no. 0049-2231-7781 from the exam fee payment", publish},
+		{"the parcel guy's number is 9876543210", contact},
+		{"the ISBN on my whatsapp is 9876543210", contact},
+		// repdigit: one digit over and over is no one's number.
+		{"for t in ['9999999999', '5999999999']:", publish},
+		{"my number is 9999999999 lol", publish},
+		{"my number is 9999999990", contact},
+		// calledOnSomeoneElse: a method called on someone other than the
+		// reader urges nothing; code is otherwise read like any text.
+		{"[code]if (grade < 'A') {\n  parents.disappointment += 100;\n  me.die(); // jk\n}[/code]", publish},
+		{"[code]you.die();[/code]", "hold:" + holdSelfHarm},
+		{"[code]\nwhile (day == MONDAY) {\n  target = \"chem lab\";\n  bring(\"gun\");\n}\n[/code]\nnot a joke btw",
+			threat},
+		// "aag laga denge" in an event is doing it brilliantly; with fuel
+		// it is a fire.
+		{"bhai kal ki presentation mein toh aag laga denge 🔥 slides ready hain", publish},
+		{"kal presentation ke baad lab mein petrol daal ke aag laga dunga", threat},
+		// shrugged: crisis words as an exclamation at a mishap the post
+		// makes light of; not one with no mishap, no laugh, a serious cause
+		// or a time.
+		{"kms the wifi died right as I hit submit on my UCAS application 😭😭 it went through thank god", publish},
+		{"forgot my lines in the school play in front of the whole year, I wanted to die 💀 anyway", publish},
+		{"kms the exam went so badly", support},
+		{"kms. i can't do this anymore lol", support},
+		{"kms my parents found out lol", support},
+		{"I wanted to die last night 💀", support},
+		{"my parents found out, I wanted to die lol", support},
 	} {
 		v := bodyVerdict(c.body)
 		got := publish
