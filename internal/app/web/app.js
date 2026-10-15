@@ -2206,7 +2206,9 @@ function renderRules() {
         <li>A post that might be a threat, that might hurt someone who is struggling (by
           telling them to hurt or kill themselves, say, or by talking about ways to do it), or
           that asks someone's age or where they live and also asks to talk privately, waits
-          until a moderator has checked it. It only appears if they approve it.</li>
+          until a moderator has checked it, and so does one that asks their age or where they
+          live and has contact details in it, instead of being sent back. It only appears if
+          they approve it.</li>
         <li>If your post talks about wanting to hurt yourself or to die, you'll see
           <a href="#help">where to get help</a> first. You can still post it.</li>
       </ul>
@@ -2299,7 +2301,9 @@ const FAQ_SECTIONS = [
           that might hurt someone who is struggling (by telling them to hurt or kill
           themselves, say, or by talking about ways to do it), or that asks someone's age or
           where they live, or looks for someone of a certain age, and also asks to talk
-          privately or meet, is kept back until a moderator has checked it. It only appears if they approve it.</li>
+          privately or meet, is kept back until a moderator has checked it. So is one that asks
+          someone's age or where they live and has contact details in it, instead of being
+          sent back to you. It only appears if they approve it.</li>
         <li><strong>If you're having a hard time.</strong> If your post talks about wanting to
           hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
           it goes up. You can still post it.</li>
@@ -3503,12 +3507,14 @@ function posterKey() {
 // The server reads every post before it keeps it (filter.go), and answers in
 // one of three ways besides publishing it. A post with contact details or an
 // ID number is sent back with the text to take out (422, "block"), and the
-// form says what and selects it. A post with crisis language in the poster's
-// own voice is sent back once (422, "support") so the poster sees where to get
-// help; "Post anyway" sends it again and it goes on. A post a moderator has to
-// read first is kept but not shown (202, held), and the form says so. None of
-// it is a feature to sell: the checks are word patterns that miss plenty, and
-// the copy here and on the rules and FAQ says no more than that.
+// form says what and selects it; contact details beside a question about the
+// reader's age or whereabouts are held instead. A post with crisis language in
+// the poster's own voice is sent back once (422, "support") so the poster sees
+// where to get help; "Post anyway" sends it again and it goes on. A post a
+// moderator has to read first is kept but not shown (202, held), and the form
+// says so. None of it is a feature to sell: the checks are word patterns that
+// miss plenty, and the copy here and on the rules and FAQ says no more than
+// that.
 
 // showFormNotice puts a message in the form's notice, above its buttons. html
 // is markup the caller has built with esc(); info is for news that is not a

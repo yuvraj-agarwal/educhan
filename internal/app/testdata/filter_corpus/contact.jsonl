@@ -19,7 +19,7 @@
 {"id": "contact-19", "body": "number: 9 eight 3 one 0 four 2 2 7 seven, text only", "subject": "", "name": "", "expect": "block", "why": "mixed words and digits"}
 {"id": "contact-20", "body": "[code]const num = '9871203456';[/code]\n^ thats my real one, msg me if u want to collab on the hackathon", "subject": "", "name": "", "expect": "block", "why": "mobile hidden in code block"}
 {"id": "contact-21", "body": "[spoiler]81307 22468[/spoiler] whatsapp only no calls", "subject": "", "name": "", "expect": "block", "why": "mobile inside spoiler"}
-{"id": "contact-22", "body": "split it so the mods dont catch: 98 / 1 / 67 / 45 / 231", "subject": "", "name": "", "expect": "block", "why": "mobile split with slashes", "known_miss": true, "note": "a one-digit group and slashes, with nothing before it asking to be called: reading a slash between digits as a separator would read dates, fractions and page ranges"}
+{"id": "contact-22", "body": "split it so the mods dont catch: 98 / 1 / 67 / 45 / 231", "subject": "", "name": "", "expect": "block", "why": "mobile split with slashes"}
 {"id": "contact-23", "body": "my num is 9 9 1 0 2 3 4 5 6 7 text only", "subject": "", "name": "", "expect": "block", "why": "space per digit mobile"}
 {"id": "contact-24", "body": "anyone doing A level further maths wanna do past papers together over facetime? text 07700 900382", "subject": "", "name": "", "expect": "publish", "why": "UK mobile, an Ofcom drama number, which no one can be called on, so it passes by design (dramaNumber); relabelled from block"}
 {"id": "contact-25", "body": "+44 7700 900917 whatsapp me for the AQA chem required practicals write ups", "subject": "", "name": "", "expect": "block", "why": "UK mobile +44"}
@@ -81,7 +81,7 @@
 {"id": "contact-81", "body": "tg: @mumbai_ka_topper", "subject": "", "name": "", "expect": "block", "why": "Telegram handle"}
 {"id": "contact-82", "body": "lol same. hmu on tg", "subject": "", "name": "", "expect": "block", "why": "ask to move to Telegram"}
 {"id": "contact-83", "body": "t . me / jeeadvleaks (not actually leaks, just notes)", "subject": "", "name": "", "expect": "block", "why": "spaced Telegram link"}
-{"id": "contact-84", "body": "telegram id same as here, search 'kotafactoryreal'", "subject": "", "name": "", "expect": "block", "why": "Telegram username", "known_miss": true, "note": "a username with no underscore, digit or @ beside the app is a word to the filter; reading any word after an app name as a handle would stop posts that name what they search for"}
+{"id": "contact-84", "body": "telegram id same as here, search 'kotafactoryreal'", "subject": "", "name": "", "expect": "block", "why": "Telegram username"}
 {"id": "contact-85", "body": "chat.whatsapp.com/HkL2xq9ZpBv7Rt3Mn0Wsa CA foundation group", "subject": "", "name": "", "expect": "block", "why": "WhatsApp group invite"}
 {"id": "contact-86", "body": "wa.me/919845612370 msg for the hostel mess menu group", "subject": "", "name": "", "expect": "block", "why": "wa.me link with number"}
 {"id": "contact-87", "body": "lets make a whatsapp group for 12th commerce, comment ur number", "subject": "", "name": "", "expect": "block", "why": "asks for numbers"}
@@ -91,13 +91,13 @@
 {"id": "contact-91", "body": "join our whatsapp community for UCAT prep: chat.whatsapp.com/invite/Lm4pZ8qTr2", "subject": "", "name": "", "expect": "block", "why": "WhatsApp community invite"}
 {"id": "contact-92", "body": "if you want to talk privately my signal is quietfox.27", "subject": "", "name": "", "expect": "block", "why": "Signal username"}
 {"id": "contact-93", "body": "signal.me/#eu/Zm9vYmFyYmF6cXV4 thats my signal link", "subject": "", "name": "", "expect": "block", "why": "Signal username link"}
-{"id": "contact-94", "body": "do you have signal? would rather not do this on a public board", "subject": "", "name": "", "expect": "block", "why": "ask to move to Signal", "known_miss": true, "note": "\"do you have signal\" is asked about phone signal as often as about the app; the move is only implied by the next sentence"}
+{"id": "contact-94", "body": "do you have signal? would rather not do this on a public board", "subject": "", "name": "", "expect": "block", "why": "ask to move to Signal"}
 {"id": "contact-95", "body": "add me on snap: kiwi.byte", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
 {"id": "contact-96", "body": "sc: ananya_xo21 👻", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle with ghost"}
 {"id": "contact-97", "body": "snapchat.com/add/rahul.vibes07", "subject": "", "name": "", "expect": "block", "why": "Snapchat add link"}
 {"id": "contact-98", "body": "👻 = meme_lord_2k9 add me i send good memes", "subject": "", "name": "", "expect": "block", "why": "ghost emoji for Snapchat handle"}
 {"id": "contact-99", "body": "snap me @lowkey.laziz", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
-{"id": "contact-100", "body": "my sc is my name here with no spaces lol", "subject": "", "name": "Grey Pigeon", "expect": "block", "why": "Snapchat handle via name field", "known_miss": true, "note": "the handle is the poster's name field, pointed to in words; no rule reads one field through another"}
+{"id": "contact-100", "body": "my sc is my name here with no spaces lol", "subject": "", "name": "Grey Pigeon", "expect": "block", "why": "Snapchat handle via name field"}
 {"id": "contact-101", "body": "snap streak anyone? sc dhruv.0612", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
 {"id": "contact-102", "body": "s n a p : coldcoffee.exe", "subject": "", "name": "", "expect": "block", "why": "spaced-out snap label"}
 {"id": "contact-103", "body": "dm me on insta @cheemsdraws, I do commissions", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
@@ -107,7 +107,7 @@
 {"id": "contact-107", "body": "my art account: insta → inkyfox.art", "subject": "", "name": "", "expect": "block", "why": "Instagram handle with arrow"}
 {"id": "contact-108", "body": "follow me on ig for daily NEET bio mcqs @biobyte.neet", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
 {"id": "contact-109", "body": "i[n]sta: hollow_moon_17", "subject": "", "name": "", "expect": "block", "why": "obfuscated insta label"}
-{"id": "contact-110", "body": "check my profile on insta, username is the subject of this post", "subject": "parth.codes", "name": "", "expect": "block", "why": "Instagram handle in subject", "known_miss": true, "note": "the handle is the subject, pointed to in words; no rule reads one field through another"}
+{"id": "contact-110", "body": "check my profile on insta, username is the subject of this post", "subject": "parth.codes", "name": "", "expect": "block", "why": "Instagram handle in subject"}
 {"id": "contact-111", "body": "anyone know good youtube channels for the NID art entrance exam?", "subject": "", "name": "ig: @mehak.draws", "expect": "block", "why": "Instagram handle in name field"}
 {"id": "contact-112", "body": "kik me: velvetbyte09", "subject": "", "name": "", "expect": "block", "why": "Kik username"}
 {"id": "contact-113", "body": "line id: soraa_14, add me if you're into anime", "subject": "", "name": "", "expect": "block", "why": "LINE app id"}

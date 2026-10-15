@@ -416,6 +416,67 @@ func TestFilterBlocks(t *testing.T) {
 		{"steam username", "steam username quiet_fox27", ruleContact, "steam username quiet_fox27"},
 		{"snapchat ghost", "👻: quiet.fox_27", ruleContact, "👻: quiet.fox_27"},
 		{"my signal is a handle", "my signal is quietfox.27", ruleContact, "my signal is quietfox.27"},
+		// Digits spaced one at a time with a dash or a point among them,
+		// read in the groups the marks make.
+		{"spaced digits with a dash group", "call karna 8 4 3 2 - 1 0 9 7 6 5", ruleContact, "8 4 3 2 - 1 0 9 7 6 5"},
+		{"spaced US number with dashes", "my cell: 9 1 7 - 4 8 2 - 0 1 6 8", ruleContact, "9 1 7 - 4 8 2 - 0 1 6 8"},
+		{"spaced SSN with dashes", "ssn: 6 1 4 - 3 9 - 2 8 5 7 (spaced so it doesnt autofill lol)", ruleIDNumber,
+			"6 1 4 - 3 9 - 2 8 5 7"},
+		// A letter for a digit with no digit beside it.
+		{"lone letters between spaced digits", "num: 8 l 2 O 3 3 4 5 6 1", ruleContact, "8 l 2 O 3 3 4 5 6 1"},
+		{"letters in a group of digits", "my mobile: 07911 4OO 133 (o's are zeros obvs)", ruleContact, "07911 4OO 133"},
+		// Backwards, in pieces, and in code.
+		{"reversed after saying so", "My number in reverse so bots can't read it: 0 1 2 6 5 4 8 7 9 9", ruleContact,
+			"0 1 2 6 5 4 8 7 9 9"},
+		{"pieces joined by then", "my num starts with 99 then 30 then 412 then 875", ruleContact,
+			"99 then 30 then 412 then 875"},
+		{"pieces split to get past the filter", "split it so the mods dont catch: 98 / 1 / 67 / 45 / 231", ruleContact,
+			"98 / 1 / 67 / 45 / 231"},
+		{"strings joined in code", "[code]PHONE = '+91' + '98450' + '17723'[/code] use this to reach me", ruleContact,
+			"'+91' + '98450' + '17723'"},
+		// National shapes.
+		{"country code after a word for a list", "WAEC past questions sharing, +234 803 123 4567 on whatsapp",
+			ruleContact, "+234 803 123 4567"},
+		{"local number with its area code apart", "Text me @ 482-0196 (area code 404) for the chem lab write up",
+			ruleContact, "482-0196"},
+		{"bare US digits after a line's name", "Google Voice: 2154820174", ruleContact, "2154820174"},
+		{"Australian landline", "(07) 3221 3317 is my home number if mob is off", ruleContact, "(07) 3221 3317"},
+		// Addresses spelled out a character at a time, or in two halves.
+		{"spaced-out address", "email (remove spaces): s h r e y a s . 0 9 @ g m a i l . c o m", ruleContact,
+			"s h r e y a s . 0 9 @ g m a i l . c o m"},
+		{"address in two halves", "[at] gmail [dot] com — prefix is quietstorm2007, you figure it out", ruleContact,
+			"[at] gmail [dot] com — prefix is quietstorm2007"},
+		// Asks read from the app outwards: a verb of moving or talking with
+		// its object and preposition, a question about the reader's account,
+		// messages there, Hinglish either way round, a group set up there.
+		{"come to an app", "come to tg, the board is too slow for doubt solving", ruleContact, "come to tg"},
+		{"switch to an app that is also a word", "can we switch to signal? i'll explain the situation there",
+			ruleContact, "switch to signal"},
+		{"follow back on an app", "follow me back on insta pls", ruleContact, "follow me back on insta"},
+		{"got an account", "u got insta?", ruleContact, "u got insta"},
+		{"have an app that is also a word, off the board", "do you have signal? would rather not do this on a public board",
+			ruleContact, "do you have signal"},
+		{"messages there", "slide into my dms on insta if u wanna rant about kota", ruleContact, "into my dms on insta"},
+		{"Hinglish verb before the app", "dm kar insta pe, sab bata dunga", ruleContact, "dm kar insta pe"},
+		{"Hinglish verb after the app", "insta pe aaja baat karte", ruleContact, "insta pe aaja"},
+		{"Hinglish join", "telegram pe join karo, link maang lo comment me", ruleContact, "telegram pe join"},
+		{"Hinglish ask for an address", "apna gmail id bata, drive link share kar dunga", ruleContact, "apna gmail id bata"},
+		{"Hinglish ask for numbers", "WhatsApp number do sab, group bana rahe hain", ruleContact, "WhatsApp number do"},
+		{"a call set up on an app", "can someone make a discord vc for the mock tonight?", ruleContact,
+			"make a discord vc"},
+		{"text instead of posting", "anyone want to text instead of posting here? easier", ruleContact,
+			"instead of posting"},
+		{"talk there after a link", "instagram.com/p/C7xYz123/ — this is my post, comment there so we can talk",
+			ruleContact, "comment there"},
+		// Handles a few words after the app.
+		{"come to an app, in Hinglish, with a handle", "snap pe aaja: aarav.0p", ruleContact,
+			"snap pe aaja: aarav.0p"},
+		{"handle after the ghost", "my 👻 is sunset.sprinkles add me", ruleContact, "👻 is sunset.sprinkles"},
+		{"handle on another app", "threema id 7KX2PQ9M, add me if you care about privacy", ruleContact,
+			"threema id 7KX2PQ9M"},
+		{"handle spelled out", "telegram: mridul underscore jee", ruleContact, "telegram: mridul underscore jee"},
+		{"quoted handle after search", "telegram id same as here, search 'kotafactoryreal'", ruleContact,
+			"telegram id same as here, search 'kotafactoryreal'"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -1143,6 +1204,49 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"are you usually by yourself at lunch? join our table at the canteen",
 		"do your parents know about the fee hike? the circular came today",
 		"u 14? the competition is for 14 and above, ask your teacher",
+		// Crisis lines written the way they are dialled, and numbers set
+		// aside for fiction in every layout the rules read.
+		"PAPYRUS HOPELINE247 is 0800 068 4141 in the UK, for under-35s. my sixth form put it on every noticeboard",
+		"NSPCC helpline 0808 800 5000 if something's happening at home",
+		"Mind's infoline is 0300 123 3393",
+		"RAINN is 800-656-4673 any time, and SAMHSA is 1-800-662-4357",
+		"The Mix is 0808 808 4994, free for under 25s",
+		"from outside the UK, PAPYRUS is +44 800 068 4141 and the NSPCC +44 808 800 5000",
+		"my # is 5 5 5 - 0 1 3 9 area code 7 1 8",
+		"need someone to split the cost of a used AP Calc textbook? text 773 555 0142",
+		"(07) 5550 3317 is my home number if mob is off",
+		"my landline is (03) 7010 4482 lol yes we still have one",
+		// Spaced digits, pieces and reversals that are not a number to call.
+		"MCQ key: 3 1 4 2 - 2 4 1 3 - 1 2",
+		"how do i reverse a number like 1029384756 in python",
+		"the number went 99 then 98 then 97 then 96 then 95",
+		"x = 99 + 30 + 412 + 875",
+		"s = '9' + '8' + '7' + '6' + '5' + '4' + '3' + '2' + '1' + '0'",
+		"call 482-0196 for the canteen",
+		"02 2024 1130 deadline for the form",
+		"lol @ g m a i l being down again",
+		"x = a @ b . c",
+		// A channel is one-way: no one on it can message anyone.
+		"whatsapp channel for daily current affairs: whatsapp.com/channel/0029VaB7xKc3MplQ",
+		// Apps named, not asked to move to; a full stop is not a handle's.
+		"my average screen time is like 5 hours, mostly instagram and youtube shorts. should i delete them and use reddit instead.",
+		"come on insta is so boring now",
+		"go to tg for counselling updates",
+		"switch to whatsapp web, it's easier on a laptop",
+		"should i make a whatsapp group for the class?",
+		// Mentioned, quoted or reported, not said: a line quoted from the
+		// post being answered, a word asked about, someone else's words.
+		">>77703 suicidal thoughts aren't a character flaw. please talk to a GP or a helpline. you deserve help",
+		"kys = keep yourself safe? no?? that's not what it means on here??",
+		"teacher: 'what's your number?' me: 'roll no 23, ma'am' — the attendance call at 8am is pain",
+		">>88412\n>i want to die\nanon please don't. one bad semester is not your whole life. tell your parents or a professor tomorrow morning",
+		"my mum said 'add me on whatsapp' and now the family group is chaos",
+		">>12345\n>dm me on insta\nlol no",
+		"he said he wants to die after that exam lol",
+		"my friend keeps saying she wants to hurt herself, what do i do",
+		// Hyperbole with its cause named and a laugh beside it, and a game.
+		"this group project is going to make me kms 💀",
+		"if i died in minecraft nobody would care lol",
 	}
 	for _, body := range posts {
 		if v := bodyVerdict(body); v.Outcome != contentPublish {
@@ -1235,6 +1339,22 @@ func TestFilterSupport(t *testing.T) {
 		"jeene ka mann nahi karta",
 		"khud ko khatam karne ka soch raha hu",
 		"khud ko hurt karta hu",
+		// Any first-person statement of wanting to die or to hurt oneself,
+		// in any tense: a wish, a thought, a feeling, no reason left, a
+		// world without the poster, an act done or stockpiled for.
+		"I keep thinking everyone would be happier if I just wasn't alive anymore",
+		"i feel like ending it all. everything is too much",
+		"I don't see any reason to keep living. I just go through the motions",
+		"nobody would care if I died. I've started thinking about how I'd do it",
+		"hurt myself last night after the fight with my mum. first time in months",
+		"I'm self harming again. 2 years clean and I relapsed",
+		"I've been saving up pills for a while now. I think tonight might be the night",
+		"i wish i could just disappear and never wake up",
+		"thinking of ending my life tonight",
+		"i want to stop existing",
+		"khud ko khatam kar lunga agar is baar bhi selection nahi hua",
+		"zindagi se thak gaya hoon. marna chahta hoon bas",
+		"marne ke baare mein bahut sochta hoon aajkal",
 	} {
 		v := bodyVerdict(body)
 		if v.Outcome != contentSupport || v.Message != supportMessage || v.Rule != "" || v.Match != "" {
@@ -1685,6 +1805,9 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 		"how can i end it all",
 		"how to make myself throw up",
 		"how to purge after eating",
+		// "For me to", and not surviving.
+		"is there a way for me to overdose that won't hurt",
+		"how high does a building have to be for me to not survive the fall",
 	} {
 		if v := bodyVerdict(body); v.Outcome != contentSupport || v.Message != supportMessage {
 			t.Errorf("%q: got %+v, want support first", body, v)
@@ -1789,6 +1912,26 @@ func TestFilterPrecedence(t *testing.T) {
 	if v.Match != "add me on snap" {
 		t.Fatalf("the earliest block should be named: %+v", v)
 	}
+	// Contact details beside a question that places the reader are the
+	// private-contact half of a grooming cue: sending the post back would
+	// say which half to take out, so it is held instead, support_seen or not.
+	for _, body := range []string{
+		"how old are you? add me on snap",
+		"which school are you in? my insta is quiet_fox27",
+		"kahan rehte ho? insta pe aao",
+		"how old are you? call me 9876543210",
+	} {
+		for _, seen := range []bool{false, true} {
+			if v := checkContent(contentInput{Body: body}, seen); v.Outcome != contentHold || v.Hold != holdGrooming {
+				t.Fatalf("%q (support_seen %v): got %+v, want it held for grooming", body, seen, v)
+			}
+		}
+	}
+	// An ID number is not a contact cue, and is still sent back.
+	aadhaar := withCheckDigit(t, "23456789012")
+	if v := bodyVerdict("how old are you? my aadhaar is " + aadhaar); v.Outcome != contentBlock || v.Rule != ruleIDNumber {
+		t.Fatalf("an ID number beside a grooming question should still be blocked: %+v", v)
+	}
 }
 
 func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
@@ -1810,6 +1953,26 @@ func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
 	v = checkContent(contentInput{Subject: "how old are you", Body: "dm me"}, false)
 	if v.Outcome != contentHold || v.Hold != holdGrooming {
 		t.Fatalf("a cue split across fields: %+v", v)
+	}
+	// A handle pointed to in words is another field of the post: blocked
+	// when that field is filled in, and nothing when it is empty.
+	for _, c := range []struct {
+		in    contentInput
+		match string
+	}{
+		{contentInput{Name: "nightjar88", Body: "my sc is my name here with no spaces lol"}, "sc is my name"},
+		{contentInput{Subject: "orbital_panda", Body: "check my profile on insta, username is the subject of this post"},
+			"insta, username is the subject"},
+		{contentInput{Name: "orbitalpanda", Body: "my email is my name here + @gmail.com"}, "email is my name"},
+	} {
+		v := checkContent(c.in, false)
+		if v.Outcome != contentBlock || v.Rule != ruleContact || v.Field != fieldBody || v.Match != c.match {
+			t.Fatalf("%+v: got %+v, want a contact block of %q", c.in, v, c.match)
+		}
+		empty := contentInput{Body: c.in.Body}
+		if v := checkContent(empty, false); v.Outcome != contentPublish {
+			t.Fatalf("%+v: got %+v, want it published with the field empty", empty, v)
+		}
 	}
 	// The tripcode secret is never read: displayedName drops it.
 	if got := displayedName("ana#9876543210"); got != "ana" {
@@ -1900,7 +2063,7 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 		"appLabelHandle": {appLabelHandle}, "spacedInviteRule": {spacedInviteRule},
 		"atAskRule": {atAskRule}, "myMailRule": {myMailRule}, "mailColonHandle": {mailColonHandle},
 		"hindiHandle": {hindiHandle}, "handleBeforeApp": {handleBeforeApp}, "namedTargetRules": namedTargetRules,
-		"myAmbiguousAppRule": {myAmbiguousAppRule}, "appThenAtHandle": {appThenAtHandle},
+		"myAmbiguousAppRule": {myAmbiguousAppRule}, "appNameRule": {appNameRule}, "offBoardRule": {offBoardRule},
 		"discTagHandle": {discTagHandle}, "labelledAppHandle": {labelledAppHandle},
 		"threatFrameRules": threatFrameRules, "threatComingRules": threatComingRules,
 		"threatSymbolRules": threatSymbolRules, "selfHarmUrgeRules": selfHarmUrgeRules,
@@ -2066,6 +2229,28 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"pronoun then time": rep("kal sabko "),
 		"urged":             rep("bro just rope "),
 		"grade then cue":    rep("what grade are you in? come alone "),
+		// An app named over and over, each time read for an ask or a handle
+		// on either side; a crisis line quoted from the reply above, said of
+		// someone else, or put as a conditional; an address spelled out round
+		// an at sign or with a bracketed one; and numbers split by words,
+		// slashes, quotes and lookalike letters, given backwards, or after
+		// their area code.
+		"app alone":          rep("ig "),
+		"app then a word":    rep("ig there "),
+		"app emoji":          rep("👻 "),
+		"quoted crisis":      rep(">>1\n>i want to die\n"),
+		"said crisis":        rep("she said \"i want to die\" "),
+		"for me to die":      rep("for me to die "),
+		"conditional crisis": rep("if i died nobody would care "),
+		"spaced address":     rep("a b @ c d "),
+		"bracketed at":       rep("[at] gmail "),
+		"provider label":     rep("@ gmail prefix is "),
+		"joined pieces":      rep("my num 9 then "),
+		"quoted pieces":      rep("'9' + "),
+		"slashed pieces":     rep("98 / 1 / "),
+		"lookalike digits":   rep("8 l 2 O "),
+		"reversed":           rep("my number in reverse 0 1 2 3 4 5 6 7 8 1 "),
+		"area code after":    rep("482-0196 area code 404 "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.

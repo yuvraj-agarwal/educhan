@@ -37,10 +37,12 @@ import (
 //
 // Blocks come first, so a poster fixes what they can before anything else;
 // then support, unless the poster has seen it; then holds; then publication.
+// The one exception is contact details beside a question that places the
+// reader, which are held as grooming rather than sent back (placesTheReader).
 //
 // Be honest about what this is. These are word and number patterns. They are
-// easy to get round — a number spelled out in words, a username with no app
-// named beside it, contact details written inside [math], which is skipped
+// easy to get round — a number in words other than one digit at a time, a
+// username with no app named beside it, contact details written inside [math], which is skipped
 // because TeX has a use for every character — and they catch posts that are
 // fine, which is why a block says exactly what it matched and a hold waits
 // for a person instead of deleting anything. They raise the cost of moving a
@@ -209,7 +211,25 @@ func checkContentCost(in contentInput, supportSeen bool) (contentVerdict, int) {
 	}
 
 	for _, f := range fields {
+		f.nameShown, f.subjectShown = in.Name != "", in.Subject != ""
+	}
+	// Contact details in a post that also asks where the reader is, how old
+	// they are or which school they go to are the private-contact half of a
+	// grooming cue. Sending the post back would say which half to take out,
+	// so it is held for a moderator instead.
+	places, placed := false, false
+	contactCue := false
+	for _, f := range fields {
 		if found, ok := f.firstBlock(); ok {
+			if found.kind.rule() == ruleContact {
+				if !placed {
+					places, placed = placesTheReader(fields), true
+				}
+				if places {
+					contactCue = true
+					continue
+				}
+			}
 			match, searched := quoteSource(f.src, found.from, found.to)
 			return contentVerdict{
 				Outcome:    contentBlock,
@@ -228,15 +248,27 @@ func checkContentCost(in contentInput, supportSeen bool) (contentVerdict, int) {
 			}
 		}
 	}
-	if reason := holdReason(fields); reason != "" {
+	if reason := holdReason(fields, contactCue); reason != "" {
 		return contentVerdict{Outcome: contentHold, Hold: reason}, cost()
 	}
 	return contentVerdict{Outcome: contentPublish}, cost()
 }
 
+// placesTheReader reports a question in the post that places the reader: an
+// age, a school year, a school or where they live.
+func placesTheReader(fields []*scannedField) bool {
+	for _, f := range fields {
+		if f.anyMatch(ageQuestionRules, ageCheck) || f.anyMatch(aslRules, aslCheck) {
+			return true
+		}
+	}
+	return false
+}
+
 // holdReason picks the first hold that applies, most urgent first: a threat
-// is what a moderator most needs to see quickly.
-func holdReason(fields []*scannedField) string {
+// is what a moderator most needs to see quickly. contactCue says the post
+// holds contact details, which are a private-contact cue.
+func holdReason(fields []*scannedField, contactCue bool) string {
 	if threatens(fields) {
 		return holdThreat
 	}
@@ -247,12 +279,11 @@ func holdReason(fields []*scannedField) string {
 	}
 	// A grooming cue is the pair: an age, school or location question and a
 	// private-contact or meet-up cue, anywhere in the same post.
-	asks, cues := false, false
+	cues := contactCue
 	for _, f := range fields {
-		asks = asks || f.anyMatch(ageQuestionRules, ageCheck) || f.anyMatch(aslRules, aslCheck)
 		cues = cues || f.anyMatch(privateCueRules, cueCheck)
 	}
-	if asks && cues {
+	if cues && placesTheReader(fields) {
 		return holdGrooming
 	}
 	return ""
@@ -380,6 +411,11 @@ type view struct {
 	// them), and the checks matches are put to.
 	index [numFamilies]*searchIndex
 	work  int
+	// link caches where the first reply link (">>123") starts, plus one:
+	// 0 when not yet looked for, -1 when there is none. lineAt and line
+	// cache lineStart: the line holding offset lineAt starts at line.
+	link         int
+	lineAt, line int
 }
 
 // span maps text[a:b] back to the source.
@@ -443,6 +479,9 @@ type scannedField struct {
 	// method caches asksForAMethod, which both the support step and the
 	// holds ask: 0 not yet known, 1 no, 2 yes.
 	method int8
+	// nameShown and subjectShown say the post has a name or a subject, for
+	// a handle given as one of them ("my insta is my name").
+	nameShown, subjectShown bool
 }
 
 // asksForAMethod reports a selfHarmMethodRules match.
@@ -1010,7 +1049,7 @@ func askCheck(v *view, m []int) bool {
 	}
 	// "never send your number to anyone", and the "'add me on snap' guys":
 	// a warning, or the ask quoted as a kind of post.
-	if !notNegated(v, m) || quotedAsk(text, m) {
+	if !notNegated(v, m) || quotedAsk(text, m) || attributedQuote(text, m[0]) || v.quotesTheReply(m[0]) {
 		return false
 	}
 	if ws := wordsIn(text[m[0]:m[1]]); len(ws) > 0 && numberWords[ws[0]] {
@@ -1146,16 +1185,13 @@ var (
 		words(`on`, `is~my`, `on~my`, `in~my`, `-+>`, `=>`, `→`, `\(`) + `)[ \t]*` + handleApps + `\b`)
 )
 
-// More ways a handle is written beside its app: an "@" handle up to three
-// short words after the app ("telegram pe aao: @x_y"), words that lead to a
-// handle rather than any word, which would make every app name a costly
-// start; a Discord tag after "disc" or "dc" ("disc: name#1234"); an app that
-// is also a word with a label before the handle ("line id: x_y", "steam
-// username x_y"); and Snapchat's ghost ("👻 = x_y"). The same three groups.
+// More ways a handle is written beside its app: a Discord tag after "disc"
+// or "dc" ("disc: name#1234"); an app that is also a word with a label
+// before the handle ("line id: x_y", "steam username x_y"); and Snapchat's
+// ghost ("👻 = x_y"). An "@" handle a few short words after the app
+// ("telegram pe aao: @x_y") is appFrame's (handleAfterApp). The same three
+// groups.
 var (
-	appThenAtHandle = bothViews(`\b` + handleApps + `(?:~` + words(`pe`, `par`, `pr`, `pa`, `aao`, `aaja`, `aajao`, `aa`,
-		`me`, `mujhe`, `add`, `karo`, `kar`, `follow`, `dm`, `msg`, `hmu`, `at`, `its`, `it's`, `is`, `id`, `hai`,
-		`h`, `username`, `handle`, `mera`, `meri`, `my`) + `){1,3}[^\pL\pN@]*(@)([\pL\pN._]{2,30})(#\d{4})?`)
 	discTagHandle = bothViews(`\b` + words(`disc`, `dsc`, `dc`) + `\s*` + handleSeparator +
 		`\s*(@?)([\pL\pN._]{2,30})(#\d{4})`)
 	labelledAppHandle = bothViews(`\b` + words(`line`, `signal`, `steam`, `epic`, `kik`) + `~` +
@@ -1170,7 +1206,923 @@ var (
 
 // handleRules are the rules above that end at the handle.
 var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandle, handleBeforeApp,
-	appThenAtHandle, discTagHandle, labelledAppHandle, ghostHandle}
+	discTagHandle, labelledAppHandle, ghostHandle}
+
+/* Apps named in a sentence ---------------------------------------------------- */
+
+// appNameRule finds every app's name, and Snapchat's ghost, for appFrame to
+// read the words round it. The rules above are phrasings; appFrame reads the
+// grammar they are instances of, from the app outwards:
+//
+//   - a verb of moving or talking, with its object, a particle and a
+//     preposition, said as an ask: an imperative or a "let's", a "can we",
+//     a "wanna" ("come to tg", "follow me back on insta pls", "can we switch
+//     to signal?", "i'll dm you on insta");
+//   - a question about the reader's account ("u got insta?", "do you have
+//     signal?", "anyone here on discord?");
+//   - messages on an app ("slide into my dms on insta", "my insta dms are
+//     open");
+//   - the Hinglish forms, either way round ("insta pe aaja baat karte",
+//     "telegram pe join karo", "dm kar insta pe", "WhatsApp number do",
+//     "apna gmail id bata");
+//   - a handle a few lead words after the app ("snap pe aaja: aarav.0p",
+//     "my 👻 is sunset.sprinkles", "telegram: mridul underscore jee"), or
+//     quoted after "search" where an account is meant;
+//   - talking "there" once an app, or a link to it, has been named
+//     ("instagram.com/p/… comment there so we can talk");
+//   - a group or a call set up on one ("can someone make a discord vc");
+//   - a handle that is another field of the post ("my insta is my name",
+//     "username is the subject of this post"), when that field is filled in.
+//
+// The apps that are also words ("signal", "dc", "steam") count only after a
+// verb of talking, or in a "we" frame with nothing after them, or asked
+// about where the post says it wants to leave the board.
+var appNameRule = bothViews(`(?:\b` + words(anyApps, `threema`) + `\b|👻)`)
+
+// offBoardRule is talking off the board with no app named: "anyone want to
+// text instead of posting here?", "let's dm somewhere else". offBoardCheck
+// wants a verb of talking said as an ask before it.
+var offBoardRule = bothViews(`\b` + words(
+	words(`instead~of`, `rather~than`)+`~`+words(`posting`, `commenting`, `replying`, `here`, `on~here`,
+		`this~board`, `the~board`, `this~thread`, `this~site`, `educhan`),
+	`off~`+words(`here`, `this~board`, `the~board`, `this~site`, `educhan`),
+	`outside~(?:of~)?`+words(`here`, `this~board`, `the~board`, `this~site`, `educhan`),
+	`somewhere~else`, `elsewhere`,
+) + `\b`)
+
+// aWord is a word of a view and where it is: letters, digits, apostrophes
+// and underscores, an "@" before them, and a dot only inside it, so that
+// "aarav.0p" is one word and "instead." is "instead". quoted says a
+// quotation mark opened just before it and closed just after it.
+type aWord struct {
+	w        string
+	from, to int
+	quoted   bool
+}
+
+// readWords reads up to n words of text from offset i on, within limit
+// bytes and its sentence, and returns them and how far it read. A sentence
+// ends at a "!", "?" or line break, or a full stop with a space or nothing
+// after it.
+func readWords(text string, i, n, limit int) ([]aWord, int) {
+	ws, j, _ := readOn(text, i, n, limit, 0)
+	return ws, j
+}
+
+// readOn is readWords going on past as many as crossings sentence ends. It
+// also returns where the first sentence ended, or -1.
+func readOn(text string, i, n, limit, crossings int) ([]aWord, int, int) {
+	hi := min(len(text), i+limit)
+	var out []aWord
+	j, firstEnd := i, -1
+	for j < hi && len(out) < n {
+		r, size := utf8.DecodeRuneInString(text[j:hi])
+		if sentenceEnd(text, j, r) {
+			if firstEnd < 0 {
+				firstEnd = j
+			}
+			if crossings == 0 {
+				break
+			}
+			crossings--
+			j += size
+			continue
+		}
+		if !inWord(r) && r != '@' {
+			j += size
+			continue
+		}
+		k := j + size
+		for k < hi {
+			r, size := utf8.DecodeRuneInString(text[k:hi])
+			if inWord(r) {
+				k += size
+				continue
+			}
+			if r == '.' && k+size < hi {
+				if n, _ := utf8.DecodeRuneInString(text[k+size : hi]); inWord(n) && n != '\'' {
+					k += size
+					continue
+				}
+			}
+			break
+		}
+		if w, ok := makeWord(text, j, k); ok {
+			out = append(out, w)
+		}
+		j = k
+	}
+	return out, j, firstEnd
+}
+
+// readBack reads up to n words before offset i, within limit bytes and its
+// sentence, in order, and returns them and where it stopped.
+func readBack(text string, i, n, limit int) ([]aWord, int) {
+	lo := max(0, i-limit)
+	var out []aWord
+	end := -1
+	j := i
+	for j > lo && len(out) < n {
+		r, size := utf8.DecodeLastRuneInString(text[lo:j])
+		if inWord(r) || r == '.' && end >= 0 && j-size > lo && inWord(lastRune(text[lo:j-size])) {
+			if end < 0 {
+				end = j
+			}
+			j -= size
+			continue
+		}
+		if end >= 0 {
+			from := j
+			if r == '@' {
+				from = j - size
+			}
+			if w, ok := makeWord(text, from, end); ok {
+				out = append(out, w)
+			}
+			end = -1
+			if len(out) == n {
+				break
+			}
+		}
+		if sentenceEnd(text, j-size, r) {
+			break
+		}
+		j -= size
+	}
+	if end >= 0 && len(out) < n {
+		if w, ok := makeWord(text, j, end); ok {
+			out = append(out, w)
+		}
+	}
+	slices.Reverse(out)
+	return out, j
+}
+
+func inWord(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '\'' }
+
+func lastRune(s string) rune {
+	r, _ := utf8.DecodeLastRuneInString(s)
+	return r
+}
+
+// sentenceEnd reports that the character r at offset j of text ends a
+// sentence.
+func sentenceEnd(text string, j int, r rune) bool {
+	switch r {
+	case '!', '?', '\n':
+		return true
+	case '.':
+		return j+1 >= len(text) || text[j+1] == ' '
+	}
+	return false
+}
+
+// makeWord is the word at text[from:to], with quotation marks round it
+// taken off and noted.
+func makeWord(text string, from, to int) (aWord, bool) {
+	w := aWord{w: text[from:to], from: from, to: to}
+	if len(w.w) > 2 && strings.HasPrefix(w.w, "'") && strings.HasSuffix(w.w, "'") {
+		w.w, w.from, w.to, w.quoted = w.w[1:len(w.w)-1], w.from+1, w.to-1, true
+	} else {
+		for strings.HasPrefix(w.w, "'") {
+			w.w, w.from = w.w[1:], w.from+1
+		}
+		for strings.HasSuffix(w.w, "'") {
+			w.w, w.to = w.w[:len(w.w)-1], w.to-1
+		}
+		if w.from > 0 && w.to < len(text) && strings.ContainsRune(`"“`, rune(text[w.from-1])) &&
+			strings.ContainsRune(`"”`, rune(text[w.to])) {
+			w.quoted = true
+		}
+	}
+	return w, w.w != ""
+}
+
+// clauseOpening is the index of the first of ws in the clause that ends
+// at ws[k]: after the last comma, semicolon, colon or sentence end between
+// them.
+func clauseOpening(text string, ws []aWord, k int) int {
+	for i := k; i > 0; i-- {
+		if strings.ContainsAny(text[ws[i-1].to:ws[i].from], ",;:.!?\n") {
+			return i
+		}
+	}
+	return 0
+}
+
+// appFrame reads the words round the app's name at m (see appNameRule) and
+// returns what to quote and what it is.
+func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) {
+	text := v.text
+	app := strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, text[m[0]:m[1]])
+	if app == "" {
+		app = "snap" // the ghost
+	}
+	mail := mailWords[app]
+	ambiguous := ambiguousAppWords[app]
+	// Part of an abbreviation, as in "M.Sc", "B.Sc".
+	if m[0] >= 2 && text[m[0]-1] == '.' && unicode.IsLetter(rune(text[m[0]-2])) {
+		return 0, 0, 0, false
+	}
+	// Seven words before it and twelve after, in its sentence: enough for
+	// the longest frame, and no more, since an app may be named in every
+	// other word ("ig ig ig").
+	before, lo := readBack(text, m[0], 7, 64)
+	following, end, firstEnd := readOn(text, m[1], 12, 96, 0)
+	v.work += end - lo
+	hi := end
+	after := following
+	if firstEnd >= 0 {
+		hi = firstEnd
+		for k, w := range following {
+			if w.from > firstEnd {
+				after = following[:k]
+				break
+			}
+		}
+	}
+	if len(after) > 8 {
+		after = after[:8]
+	}
+	ws := func(list []aWord) []string {
+		out := make([]string, len(list))
+		for i, w := range list {
+			out[i] = w.w
+		}
+		return out
+	}
+	next := ws(after)
+	question := strings.HasPrefix(text[hi:], "?")
+	// What comes after the app makes it a topic: "my snap score", "come to
+	// insta live", "tg eamcet counselling".
+	if len(next) > 0 && topicWords[next[0]] {
+		return 0, 0, 0, false
+	}
+	// The app ends its clause, but for a word or two that do not change
+	// it: "come to tg, the board is too slow", "can we switch to signal
+	// instead?".
+	clause := after
+	for k := range after {
+		if k > 0 && strings.ContainsAny(text[after[k-1].to:after[k].from], ",;:") {
+			clause = after[:k]
+			break
+		}
+	}
+	if len(after) > 0 && strings.ContainsAny(text[m[1]:after[0].from], ",;:") {
+		clause = nil
+	}
+	ends := allIn(ws(clause), askTails)
+	// An ask quoted from someone else, or answered with a no, is not the
+	// poster's: ">>123 >dm me on insta lol no", "my mum said 'add me on
+	// whatsapp'".
+	ask := func(a, b int) (int, int, findingKind, bool) {
+		if v.quotesTheReply(a) || attributedQuote(text, a) || quotedAsk(text, []int{a, b}) {
+			return 0, 0, 0, false
+		}
+		return a, b, kindAsk, true
+	}
+
+	handleKind := kindHandle
+	if mail {
+		handleKind = kindEmail
+	}
+	// A handle after an ask is part of what to take out, and the whole of
+	// it is named: "telegram pe aao: @x_y".
+	withHandle := func(a, b int, k findingKind, ok bool) (int, int, findingKind, bool) {
+		if hb, hok := f.handleAfterApp(v, after, m, mail); ok && hok && hb > b {
+			return min(a, m[0]), hb, handleKind, true
+		}
+		return a, b, k, ok
+	}
+
+	if a, ok := f.asksToMove(v, before, next, app, ambiguous, ends); ok {
+		return withHandle(ask(a, m[1]))
+	}
+	if a, ok := asksForAccount(text, before, ambiguous, ends && question, m); ok {
+		return ask(a, m[1])
+	}
+	if a, b, ok := messagesThere(before, after, m); ok {
+		return withHandle(ask(a, b))
+	}
+	if a, b, ok := hinglishAsk(before, after, m); ok {
+		return withHandle(ask(a, b))
+	}
+	if a, ok := setsUpAGroup(before, next, m); ok {
+		return ask(a, after[0].to)
+	}
+	if b, ok := f.handleAfterApp(v, after, m, mail); ok {
+		return m[0], b, handleKind, true
+	}
+	if mail {
+		if a, b, ok := splitAddress(text, before, following, m); ok {
+			return a, b, kindEmail, true
+		}
+	}
+	if b, ok := f.otherFieldNamed(text, after, m); ok {
+		return m[0], b, handleKind, true
+	}
+	if a, b, ok := talksThere(text, following); ok {
+		return ask(a, b)
+	}
+	return 0, 0, 0, false
+}
+
+func allIn(ws []string, set map[string]bool) bool {
+	for _, w := range ws {
+		if !set[w] {
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	mailWords         = canonSetOf(`gmail email mail`)
+	ambiguousAppWords = canonSetOf(`signal sc dc wa wp steam epic monkey`)
+	// shortApps are as often a place as an app ("tg" is Telangana, "wa"
+	// Western Australia): moving to one is an ask only with nothing after it.
+	shortApps = canonSetOf(`tg ig fb dc sc wa wp tele`)
+	// askTails may end an ask after the app: "come to tg pls", "can we
+	// switch to signal instead?".
+	askTails = canonSetOf(`pls plz please instead then now rn tho though bro yaar na naa bhai anon op guys too also
+		asap lol tonight today later there quickly`)
+	moveVerbs = canonSetOf(`come move switch shift hop head migrate jump go continue take bring get`)
+	// onVerbs move onto an app with "on": "hop on discord", "continue on
+	// insta".
+	onVerbs = canonSetOf(`hop jump get continue`)
+	// appProducts after the app make it the software: "switch to whatsapp
+	// web".
+	appProducts = canonSetOf(`web desktop app apk business beta update version premium plus lite`)
+	talkVerbs   = canonSetOf(`talk chat text txt dm pm msg message ping call ring add follow find reach hmu contact
+		inbox snap hit join speak facetime vc`)
+	movePreps = canonSetOf(`to onto into`)
+	talkPreps = canonSetOf(`on at in via over thru through`)
+	appDets   = canonSetOf(`my our the your ur a this that`)
+	objects   = canonSetOf(`me us you u ya`)
+	particles = canonSetOf(`back up over`)
+	// askFillers come before an imperative without changing it: "pls just
+	// come to tg", "bro add me on snap".
+	askFillers = canonSetOf(`just pls plz please bro bhai yaar so ok okay then yo lol and also kindly do maybe guys
+		everyone all sab anon op hey btw fr ngl now quickly`)
+)
+
+// askMood reports that the words ws[:k], in the clause before a verb, make
+// it an ask: nothing but fillers (an imperative), or a "let's", "we can",
+// "can we", "wanna", "anyone want to", "you can", "feel free to"; or, when
+// the poster offers ("i'll dm you on insta"), an "I" with "you" after the
+// verb, which offer says is there.
+func askMood(text string, ws []aWord, k int, offer bool) bool {
+	start := clauseOpening(text, ws, k)
+	lead := make([]string, 0, k-start)
+	for _, w := range ws[start:k] {
+		lead = append(lead, w.w)
+	}
+	for len(lead) > 0 && askFillers[lead[len(lead)-1]] {
+		lead = lead[:len(lead)-1]
+	}
+	n := len(lead)
+	last := func(i int) string {
+		if n-i >= 0 {
+			return lead[n-i]
+		}
+		return ""
+	}
+	switch {
+	case n == 0:
+		return true
+	case is(last(1), "let's") || is(last(1), "lets") || is(last(1), "us") && is(last(2), "let"):
+		return true
+	case is(last(1), "wanna") || is(last(1), "to") && (is(last(2), "want") || is(last(2), "free")):
+		return true
+	case canModals[last(1)] && (is(last(2), "we") || is(last(2), "you") || is(last(2), "u")):
+		return true // "we can", "you could"
+	case (is(last(1), "we") || is(last(1), "you") || is(last(1), "u")) && canModals[last(2)]:
+		return true // "can we", "could you"
+	case offer && (firstPersonSubjects[last(1)] || canModals[last(1)] && is(last(2), "i") || is(last(1), "imma") ||
+		is(last(1), "gonna")):
+		return true // "i'll dm you", "i can add you"
+	}
+	return false
+}
+
+var canModals = canonSetOf(`can could should shall will would may`)
+
+// asksToMove reads a verb of moving or talking before the app: "come to
+// tg", "follow me back on insta", "can we switch to signal", "join our
+// discord". It returns where the verb starts.
+func (f *scannedField) asksToMove(v *view, before []aWord, next []string, app string, ambiguous, ends bool) (int, bool) {
+	i := len(before) - 1
+	det := i >= 0 && appDets[before[i].w]
+	if det {
+		i--
+	}
+	prep := ""
+	if i >= 0 && (movePreps[before[i].w] || talkPreps[before[i].w]) {
+		prep = before[i].w
+		i--
+		if i >= 0 && (is(before[i].w, "over") || is(before[i].w, "on")) && movePreps[prep] {
+			i-- // "over to", "on to"
+		}
+	}
+	for i >= 0 && particles[before[i].w] {
+		i--
+	}
+	object := ""
+	if i >= 0 && objects[before[i].w] {
+		object = before[i].w
+		i--
+	}
+	if i < 0 {
+		return 0, false
+	}
+	verb := before[i].w
+	switch {
+	case moveVerbs[verb]:
+		// "come to tg", "hop on discord", not "come on insta is so boring",
+		// "go to tg for counselling" or "switch to whatsapp web".
+		if !movePreps[prep] && !(onVerbs[verb] && talkPreps[prep]) {
+			return 0, false
+		}
+		if shortApps[app] && !ends || len(next) > 0 && appProducts[next[0]] {
+			return 0, false
+		}
+	case talkVerbs[verb]:
+		if prep == "" && !(is(verb, "join") && det) {
+			return 0, false
+		}
+	default:
+		return 0, false
+	}
+	if ambiguous && (!ends || !talkVerbs[verb] && !weFrame(before, i)) {
+		return 0, false
+	}
+	if !askMood(v.text, before, i, object != "" && !is(object, "me") && !is(object, "us")) {
+		return 0, false
+	}
+	if !notNegated(v, []int{before[i].from, before[len(before)-1].to}) {
+		return 0, false
+	}
+	return before[i].from, true
+}
+
+// weFrame reports a suggestion made to the reader before the verb at ws[k]:
+// a "let's", or a "we" with a modal beside it ("can we switch to signal",
+// "we should move to steam", "let's move to steam"). "We want to move to SC"
+// is news, not a suggestion.
+func weFrame(ws []aWord, k int) bool {
+	for i := k - 1; i >= max(0, k-3); i-- {
+		switch {
+		case is(ws[i].w, "let's") || is(ws[i].w, "lets"):
+			return true
+		case is(ws[i].w, "we"):
+			return i > 0 && canModals[ws[i-1].w] || i+1 < k && canModals[ws[i+1].w]
+		}
+	}
+	return false
+}
+
+// asksForAccount reads a question about the reader's account on the app:
+// "u got insta?", "do you have signal?", "anyone here on discord?", "got
+// snap?". An app that is also a word ("do you have signal?" is asked of a
+// phone too) needs the post to say it wants off the board as well.
+func asksForAccount(text string, before []aWord, ambiguous, question bool, m []int) (int, bool) {
+	if !question {
+		return 0, false
+	}
+	i := len(before) - 1
+	if i >= 0 && (is(before[i].w, "a") || is(before[i].w, "an")) {
+		i--
+	}
+	if i < 0 || !accountVerbs[before[i].w] {
+		return 0, false
+	}
+	verb := i
+	i--
+	for i >= 0 && (is(before[i].w, "still") || is(before[i].w, "even") || is(before[i].w, "also") ||
+		is(before[i].w, "here")) {
+		i--
+	}
+	switch {
+	case i >= 0 && askedOfReader[before[i].w]:
+		i--
+	case i < 0 && is(before[verb].w, "got"):
+	default:
+		return 0, false
+	}
+	for i >= 0 && (askFillers[before[i].w] || is(before[i].w, "do") || is(before[i].w, "does") ||
+		is(before[i].w, "d")) {
+		i--
+	}
+	if i >= 0 && clauseOpening(text, before, len(before)-1) <= i {
+		return 0, false
+	}
+	if ambiguous && !leavingTheBoard(text, m) {
+		return 0, false
+	}
+	return before[max(0, i+1)].from, true
+}
+
+var (
+	accountVerbs  = canonSetOf(`got have has on`)
+	askedOfReader = canonSetOf(`you u ya yu anyone anybody someone somebody any1 ppl people`)
+)
+
+// leavingTheBoard reports a post that says it wants to talk somewhere other
+// than here, within 200 bytes of m: "would rather not do this on a public
+// board", "not here", "instead".
+func leavingTheBoard(text string, m []int) bool {
+	around := text[max(0, m[0]-200):min(len(text), m[1]+200)]
+	for _, cue := range offBoardCues {
+		if strings.Contains(around, cue) || strings.Contains(around, canon(cue)) {
+			return true
+		}
+	}
+	return false
+}
+
+var offBoardCues = []string{"public board", "on here", "this board", "not here", "instead", "rather not",
+	"in private", "privately", "off here", "off the board", "somewhere else", "elsewhere"}
+
+// messagesThere reads messages on the app: "slide into my dms on insta",
+// "my insta dms are open". The poster's or the reader's messages, or a verb
+// sending someone to them; "insta dms are toxic" is about the app.
+func messagesThere(before, after []aWord, m []int) (int, int, bool) {
+	n := len(before)
+	i := n - 1
+	if i >= 0 && talkPreps[before[i].w] {
+		i--
+		if i >= 1 && is(before[i].w, "open") && (is(before[i-1].w, "are") || is(before[i-1].w, "r")) {
+			i -= 2
+		}
+		if i >= 0 && dmWords[before[i].w] && i < n-1 {
+			if i >= 1 && (is(before[i-1].w, "my") || is(before[i-1].w, "your") || is(before[i-1].w, "ur")) ||
+				i >= 1 && dmVerbs[before[i-1].w] || i >= 2 && dmVerbs[before[i-2].w] {
+				if len(after) > 0 && dmStatements[after[0].w] {
+					return 0, 0, false
+				}
+				return before[max(0, i-2)].from, m[1], true
+			}
+		}
+	}
+	if len(after) > 0 && dmWords[after[0].w] && n > 0 && (is(before[n-1].w, "my") || is(before[n-1].w, "your") ||
+		is(before[n-1].w, "ur")) {
+		rest := after[1:]
+		if len(rest) > 0 && dmStatements[rest[0].w] && !(len(rest) > 1 && is(rest[1].w, "open")) {
+			return 0, 0, false
+		}
+		return before[n-1].from, after[0].to, true
+	}
+	return 0, 0, false
+}
+
+var (
+	dmWords      = canonSetOf(`dms dm inbox pms messages msgs`)
+	dmVerbs      = canonSetOf(`slide into check send hit drop come`)
+	dmStatements = canonSetOf(`are is r were was have has get got keep`)
+)
+
+// hinglishAsk reads the Hinglish asks: the app, "pe", and a verb of coming
+// or talking ("insta pe aaja baat karte", "telegram pe join karo",
+// "discord pe aao na"); a verb, "kar" and the app ("dm kar insta pe"); the
+// app's number or id asked for ("WhatsApp number do sab"); and "apna"
+// before it ("apna gmail id bata").
+func hinglishAsk(before, after []aWord, m []int) (int, int, bool) {
+	n := len(before)
+	if len(after) >= 2 && hindiOn[after[0].w] {
+		for j := 1; j < min(len(after), 3); j++ {
+			if hindiComeTalk[after[j].w] {
+				if j+1 < len(after) && hindiPast[after[j+1].w] {
+					return 0, 0, false
+				}
+				return m[0], after[j].to, true
+			}
+		}
+	}
+	if len(after) > 0 && hindiOn[after[0].w] && n > 0 {
+		i := n - 1
+		if karWords[before[i].w] && i > 0 {
+			i--
+		}
+		if hindiTalkVerbs[before[i].w] && (i < n-1 || n == 1 || !is(before[i].w, "baat")) {
+			return before[i].from, after[0].to, true
+		}
+	}
+	if len(after) >= 2 && idWords[after[0].w] && hindiGiveWords[after[1].w] {
+		if is(after[1].w, "do") || is(after[1].w, "de") {
+			if len(after) > 2 && englishAfterDo[after[2].w] {
+				return 0, 0, false
+			}
+		}
+		from := m[0]
+		if n > 0 && hindiYour[before[n-1].w] {
+			from = before[n-1].from
+		}
+		return from, after[1].to, true
+	}
+	if n > 0 && hindiYour[before[n-1].w] && len(after) > 0 {
+		j := 0
+		if idWords[after[0].w] {
+			j++
+		}
+		if j < len(after) && hindiGiveWords[after[j].w] {
+			return before[n-1].from, after[j].to, true
+		}
+	}
+	return 0, 0, false
+}
+
+var (
+	hindiOn        = canonSetOf(`pe par pr pa`)
+	hindiComeTalk  = canonSetOf(`aaja aaj aajao aao aana aaiye aajaiye join mil milo milte milna baat chat add follow dm msg message text ping connect judo judiye`)
+	hindiPast      = canonSetOf(`kiya kia kiye diya diye gaya gayi gaye hua hui tha thi the`)
+	karWords       = canonSetOf(`kar karo kr kro karna krna karlo karle krlo krle`)
+	hindiTalkVerbs = canonSetOf(`dm msg message text ping add follow call baat contact connect`)
+	idWords        = canonSetOf(`number no num nmbr id account username`)
+	hindiGiveWords = canonSetOf(`do de dedo bhejo bhej batao bata bta dena share`)
+	hindiYour      = canonSetOf(`apna apni tera teri tumhara tumhari aapka aapki apka apki`)
+	englishAfterDo = canonSetOf(`you u i we they it not this that the a your ur my he she`)
+)
+
+// setsUpAGroup reads a group or a call on the app asked for or offered:
+// "can someone make a discord vc", "let's start a whatsapp group", "i'll
+// create a telegram channel". "Our school made a whatsapp group" reports
+// one.
+func setsUpAGroup(before []aWord, next []string, m []int) (int, bool) {
+	if len(next) == 0 || !appGroups[next[0]] {
+		return 0, false
+	}
+	i := len(before) - 1
+	if i >= 0 && (appDets[before[i].w] || is(before[i].w, "one") || is(before[i].w, "ek")) {
+		i--
+	}
+	if i >= 1 && is(before[i].w, "up") && is(before[i-1].w, "set") {
+		i--
+	}
+	if i < 0 || !makeVerbs[before[i].w] {
+		return 0, false
+	}
+	k := i
+	for k > 0 && askFillers[before[k-1].w] {
+		k--
+	}
+	switch {
+	case k == 0:
+	case k >= 1 && (groupAskers[before[k-1].w] || is(before[k-1].w, "let's") || is(before[k-1].w, "lets")):
+	case k >= 2 && canModals[before[k-2].w] && groupAskers[before[k-1].w],
+		k >= 2 && (is(before[k-2].w, "can") || is(before[k-2].w, "could")) && is(before[k-1].w, "i"):
+	case k >= 2 && is(before[k-1].w, "should") && is(before[k-2].w, "we"):
+	case k >= 1 && (is(before[k-1].w, "i'll") || is(before[k-1].w, "imma")):
+	default:
+		return 0, false
+	}
+	return before[i].from, true
+}
+
+var (
+	appGroups   = canonSetOf(`vc voice call group gc grp server chat channel room meet meeting community`)
+	makeVerbs   = canonSetOf(`make create start set setup open host form`)
+	groupAskers = canonSetOf(`someone somebody anyone anybody you u we`)
+)
+
+// handleAfterApp reads a handle a few lead words after the app: "snap pe
+// aaja: aarav.0p", "follow karo insta pe: kota_ki_kahani", "my 👻 is
+// sunset.sprinkles", "threema id 7KX2PQ9M"; one spelled with "underscore"
+// or "dot" after a separator ("telegram: mridul underscore jee"); and a
+// quoted word after "search" where the sentence says an account is meant
+// ("telegram id same as here, search 'kotafactoryreal'"). It returns where
+// the handle ends.
+func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool) (int, bool) {
+	text := v.text
+	j := 0
+	for j < len(after) && j < 3 && leadWords[after[j].w] {
+		j++
+	}
+	// "=", "=>" and ">" after a mail word are code ("email = user.email",
+	// "email => email.length"), as they are to mailColonHandle.
+	marks := ":=>|→"
+	if mail {
+		marks = ":|→"
+	}
+	separated := len(after) > j && strings.ContainsAny(text[m[1]:after[j].from], marks)
+	labelled := separated
+	for _, w := range after[:j] {
+		labelled = labelled || handleLabels[w.w]
+	}
+	if j < len(after) && (j > 0 || separated) {
+		h := after[j]
+		a, b := v.span(h.from, h.to)
+		handle := f.src[a:b]
+		if strings.Contains(handle[1:], "@") {
+			return 0, false // an address, which the address rules judge
+		}
+		if strings.HasPrefix(text[h.to:], "(") {
+			return 0, false // a call in code: "ig = ig_client(token)"
+		}
+		at := strings.HasPrefix(handle, "@")
+		word := strings.ToLower(strings.TrimPrefix(handle, "@"))
+		switch {
+		case at && notHandles[word]:
+		case plausibleHandle(strings.TrimPrefix(handle, "@"), at) &&
+			(labelled || at || !toolNames.MatchString(word) && !dottedAbbreviation(word)):
+			if h.quoted && h.to < len(text) && strings.IndexByte(quoteMarks, text[h.to]) >= 0 {
+				return h.to + 1, true // and the closing quote
+			}
+			return h.to, true
+		case separated && j+2 < len(after) && spelledMarks[after[j+1].w]:
+			return after[j+2].to, true
+		}
+	}
+	for k, w := range after {
+		if !searchWords[w.w] {
+			continue
+		}
+		for _, q := range after[k+1 : min(len(after), k+3)] {
+			if q.quoted && anyIn(wordsIn(text[m[0]:q.from]), accountWords) {
+				if q.to < len(text) && strings.IndexByte(quoteMarks, text[q.to]) >= 0 {
+					return q.to + 1, true // and the closing quote
+				}
+				return q.to, true
+			}
+		}
+	}
+	return 0, false
+}
+
+var (
+	leadWords = canonSetOf(`pe par pr pa aa aaja aao aajao join karo kar kr search me mujhe is hai h id username
+		handle naam name on as under follow add dm msg hmu mera meri my its it's at se`)
+	spelledMarks = canonSetOf(`underscore dot period dash`)
+	searchWords  = canonSetOf(`search find dhundo dhoondo lookup`)
+	accountWords = canonSetOf(`id username handle account acc page profile naam`)
+)
+
+// otherFieldNamed reads a handle given as another field of the post: "my
+// insta is my name", "snapchat = same as my name", "username is the subject
+// of this post", "my email is my name here + @gmail.com". The field has to
+// be filled in, and something has to say the app's account is it: a "is",
+// an "=" or a ":", or "same as".
+func (f *scannedField) otherFieldNamed(text string, after []aWord, m []int) (int, bool) {
+	for k, w := range after {
+		if k > 12 {
+			break
+		}
+		// "my name", or "my username here", is the Name field.
+		named := is(w.w, "name") || is(w.w, "naam") ||
+			is(w.w, "username") && k+1 < len(after) && is(after[k+1].w, "here")
+		if !named && !is(w.w, "subject") && !is(w.w, "title") || k == 0 {
+			continue
+		}
+		if !pointerWords[after[k-1].w] {
+			continue
+		}
+		if named && !f.nameShown || !named && !f.subjectShown {
+			continue
+		}
+		between := text[m[1]:after[k-1].from]
+		if strings.ContainsAny(between, "=:") || anyIn(wordsIn(between), linkWords) {
+			return w.to, true
+		}
+	}
+	return 0, false
+}
+
+// splitAddress reads an address given in two halves: the provider with an
+// "@" and no name before it, and the name labelled apart, after it or before
+// it: "[at] gmail [dot] com — prefix is quietstorm2007", "username:
+// quietstorm2007, then @gmail.com". The name has to look like one
+// (nameLike), since "prefix is your name" gives nothing away.
+func splitAddress(text string, before, following []aWord, m []int) (int, int, bool) {
+	at := addressAt(text, m[0])
+	if at < 0 {
+		return 0, 0, false
+	}
+	for k := 0; k+1 < len(following); k++ {
+		if b, ok := labelledLocal(text, following, k); ok {
+			return at, b, true
+		}
+	}
+	var ws []aWord
+	for _, w := range before {
+		if w.to <= at {
+			ws = append(ws, w)
+		}
+	}
+	for k := 0; k+1 < len(ws); k++ {
+		if _, ok := labelledLocal(text, ws, k); ok {
+			return ws[k].from, m[1], true
+		}
+	}
+	return 0, 0, false
+}
+
+// addressAt returns where the "@" before a provider's name at text[i] starts,
+// when it has no name glued before it: "@gmail", "[at] gmail", "(@) gmail".
+// It returns -1 otherwise, and for a bare "at", which is English.
+func addressAt(text string, i int) int {
+	back := func(j int) int {
+		for j > 0 && text[j-1] == ' ' {
+			j--
+		}
+		return j
+	}
+	j := back(i)
+	switch {
+	case j > 0 && text[j-1] == '@':
+		j--
+		if j > 0 && (inWord(rune(text[j-1])) || text[j-1] == '.') {
+			return -1
+		}
+		return j
+	case j > 0 && strings.IndexByte(")]}>", text[j-1]) >= 0:
+		j = back(j - 1)
+		switch {
+		case j > 0 && text[j-1] == '@':
+			j--
+		case j > 1 && text[j-2:j] == "at" && (j == 2 || !inWord(rune(text[j-3]))):
+			j -= 2
+		default:
+			return -1
+		}
+		if j = back(j); j > 0 && strings.IndexByte("([{<", text[j-1]) >= 0 {
+			return j - 1
+		}
+	}
+	return -1
+}
+
+// labelledLocal reads a name labelled as an address's first half from ws[k]
+// on: a label, perhaps "is", "hai", ":" or "=", and the name.
+func labelledLocal(text string, ws []aWord, k int) (int, bool) {
+	if !localLabels[ws[k].w] {
+		return 0, false
+	}
+	n := k + 1
+	if n < len(ws) && (is(ws[n].w, "is") || is(ws[n].w, "hai")) {
+		n++
+	}
+	if n >= len(ws) || n == k+1 && !strings.ContainsAny(text[ws[k].to:ws[n].from], ":=") && !is(ws[k].w, "prefix") {
+		return 0, false
+	}
+	name := ws[n].w
+	return ws[n].to, nameLike(name) && !versionShape.MatchString(name)
+}
+
+// localLabels name the half of an address before the "@".
+var localLabels = canonSetOf(`prefix username user userid id handle`)
+
+var (
+	pointerWords = canonSetOf(`my the this mera meri`)
+	linkWords    = canonSetOf(`is hai h same as`)
+)
+
+// talksThere reads talking "there" after an app or a link to it has been
+// named, in the words ws after it, said as an ask or an offer: "instagram.com
+// /p/… — this is my post, comment there so we can talk", "check my snap,
+// i'll explain there".
+func talksThere(text string, ws []aWord) (int, int, bool) {
+	for t, w := range ws {
+		if !is(w.w, "there") {
+			continue
+		}
+		purpose := t+3 < len(ws) && is(ws[t+1].w, "so") && is(ws[t+2].w, "we") || t+1 < len(ws) &&
+			(is(ws[t+1].w, "talk") || is(ws[t+1].w, "chat"))
+		for k := t - 1; k >= max(0, t-3); k-- {
+			if thereVerbs[ws[k].w] && (purpose || askMood(text, ws, k, true)) {
+				return ws[k].from, w.to, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
+var thereVerbs = canonSetOf(`comment reply dm message msg text talk chat explain tell continue discuss reach find hmu
+	meet ask`)
+
+// offBoardCheck wants a verb of talking said as an ask before talking off
+// the board: "anyone want to text instead of posting here", "let's chat
+// off here". Talking "somewhere else" or "elsewhere" is as often another
+// thread, so there the verb has to be a private one ("text", "dm").
+func offBoardCheck(v *view, m []int) bool {
+	text := v.text
+	ws, lo := readBack(text, m[0], 6, 64)
+	v.work += m[0] - lo
+	matched := wordsIn(text[m[0]:m[1]])
+	private := is(matched[0], "somewhere") || is(matched[0], "elsewhere")
+	for k := len(ws) - 1; k >= max(0, len(ws)-4); k-- {
+		w := ws[k].w
+		if privateVerbs[w] || !private && (talkVerbs[w] || is(w, "continue") || is(w, "move") || is(w, "take")) {
+			return askMood(text, ws, k, true) && notNegated(v, []int{ws[k].from, m[1]})
+		}
+	}
+	return false
+}
+
+var privateVerbs = canonSetOf(`text txt dm pm msg message call whatsapp snap`)
 
 // toolNames, with a version or a number after them, name a thing talked about
 // on an app before it, not an account: "python3 on discord", "ps5 on reddit",
@@ -1418,8 +2370,24 @@ func validNIPrefix(a, b byte) bool {
 
 // selfHurt is hurting oneself, as the poster says it of themselves, and
 // jumpOff is one way of dying that is said of oneself and of others alike.
+// crisisActs are what a crisis statement wants, plans or wishes, in the
+// base form ("i used to want to die", "i wish i could disappear forever");
+// crisisGerunds what it feels like or thinks about ("i feel like ending it
+// all", "thinking about not existing"); and gone what "if i …" imagines
+// ("if i wasn't alive", "if i killed myself"), which counterfactualCheck
+// wants other people's reaction to.
 var (
-	selfHurt = words(`hurt~myself`, `cut~myself`, `harm~myself`, `self~harm`, `starve~myself`, `burn~myself`)
+	selfHurt   = words(`hurt~myself`, `cut~myself`, `harm~myself`, `self~harm`, `starve~myself`, `burn~myself`)
+	crisisActs = words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `not~wake~up`, `never~wake~up`,
+		`sleep~and~never~wake~up`, `not~be~here`, `disappear`, `end~it~all`, `end~my~life`, `end~it`, `end~myself`,
+		`end~everything`, `kill~my~self`, `stop~existing`, `commit~suicide`, `take~my~(?:own~)?life`, selfHurt)
+	crisisGerunds = words(words(`hurting`, `cutting`, `harming`, `killing`, `starving`, `burning`)+`~my~self`,
+		`ending~`+words(`it~all`, `it`, `my~life`, `everything`, `things`, `myself`), `taking~my~(?:own~)?life`,
+		`suicide`, `dying`, `not~existing`, `not~being~alive`, `not~waking~up`, `overdosing`)
+	gone = words(`died`, `was~dead`, `were~dead`, `was~gone`, `were~gone`, words(`wasn'?t`, `weren'?t`, `was~not`,
+		`were~not`)+`~`+words(`alive`, `here`, `around`, `born`), words(`didn'?t`, `did~not`)+`~`+words(`exist`,
+		`wake~up`), `never~existed`, `never~woke~up`, `stopped~existing`, `disappeared`, `killed~my~self`,
+		`ended~it(?:~all)?`, `ended~my~life`, `took~my~(?:own~)?life`, `was~never~born`, `had~never~been~born`)
 	// jumpOff is jumping, or a dive or a flip, off somewhere high, with up
 	// to two words naming it: "the hostel roof", "the 4th floor".
 	jumpOff = words(`jump`, `leap`, `dive`, `flip`, `backflip`, `do~a~flip`, `do~a~backflip`, `swan~dive`) +
@@ -1434,12 +2402,13 @@ var (
 // want to live in the hostel", an idiom in "die of embarrassment".
 var supportRules = []rule{bothViews(`\b` + words(
 	`i~(?:(?:really|just|honestly|kinda|actually|literally|seriously|so)~)*`+
-		words(`want`, `wanna`, `wana`, `wish`, `need`)+
-		`~(?:(?:to|2)~)?`+words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `not~wake~up`, `not~be~here`,
-		`disappear`, `end~it~all`, `end~my~life`, `end~it`, `end~myself`, `end~everything`,
-		`kill~my~self`, `stop~existing`, `commit~suicide`, `take~my~(?:own~)?life`, selfHurt, jumpOff),
-	// Wherever the "i" is: "I hate myself and want to self harm".
-	words(`want`, `wanna`, `wana`, `need`)+`~(?:(?:to|2)~)?`+selfHurt,
+		words(`want`, `wanna`, `wana`, `wish`, `need`)+`~(?:(?:to|2)~)?`+words(crisisActs, jumpOff),
+	// Wherever the "i" is, in any tense, which ownSubject reads: "I hate
+	// myself and want to self harm", "i used to want to die and now i do
+	// again", "still want to die tbh". Others wanting it are aboutSomeoneElse.
+	words(`want`, `wanted`, `wanting`, `wanna`, `wana`, `need`, `wish`, `wished`, `wishing`)+`~(?:(?:to|2)~)?`+crisisActs,
+	`i~wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?`+words(crisisActs, `never~been~born`),
+	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+words(`so`, `just`, `honestly`, `really`)+`~)?ready~to~die`,
 	`i~(?:'?m|am|m)?~`+words(`going~to`, `gonna`, `gunna`, `about~to`, `ready~to`, `thinking~about`,
 		`thinking~of`, `planning~to`, `planning~on`)+`~`+words(`kill(?:ing)?~my~self`, `end(?:ing)?~it~all`,
 		`end(?:ing)?~my~life`, `end(?:ing)?~myself`, `end(?:ing)?~it`, `commit(?:ting)?~suicide`,
@@ -1467,13 +2436,37 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// somewhere high in the sentence, or "off" after it.
 	words(`think`, `thinking`, `thought`)+`~`+words(`about`, `of`)+`~jumping`,
 	`i~(?:'?ve~been~|have~been~|keep~|still~)?self~harm(?:ing)?`,
-	`feel~like~`+words(words(`hurting`, `cutting`, `harming`, `killing`, `starving`, `burning`)+`~myself`, `dying`),
-	words(`thinking`, `think`)+`~`+words(`about`, `of`)+`~`+words(
-		words(`hurting`, `cutting`, `harming`, `killing`, `starving`, `burning`)+`~myself`,
-		`ending~`+words(`it~all`, `it`, `my~life`, `everything`, `things`, `myself`), `suicide`, `dying`),
+	words(`feel`, `feeling`, `felt`)+`~like~`+crisisGerunds,
+	words(`thinking`, `think`, `thought`)+`~`+words(`about`, `of`)+`~`+crisisGerunds,
+	words(`considering`, `contemplating`)+`~`+crisisGerunds,
 	words(`done`, `finished`)+`~with~`+words(`life`, `living`),
-	words(`no`, `nothing`)+`~`+words(`reason`, `point`)+`~`+words(`to`, `in`)+`~`+
-		words(`live`, `living`, `go~on`, `going~on`),
+	// "no reason to live", "i don't see any reason to keep living", "what's
+	// the point of going on": with "any", "a" or "the", only after a "not"
+	// or a "what's" (futile).
+	words(`no`, `nothing`, `any`, `a`, `the`, `zero`)+`~(?:`+words(`real`, `good`, `single`)+`~)?`+
+		words(`reason`, `reasons`, `point`, `purpose`)+`~(?:left~)?(?:for~me~)?`+words(`to`, `in`, `of`)+`~(?:`+
+		words(`keep`, `keep~on`, `continue`, `go~on`, `carry~on`, `even`)+`~)?`+words(`live`, `living`, `go~on`,
+		`going~on`, `carry~on`, `carrying~on`, `be~alive`, `being~alive`, `stay~alive`, `staying~alive`,
+		`exist`, `existing`, `wake~up`, `waking~up`, `keep~going`),
+	// "if i died nobody would care", "everyone would be happier if i just
+	// wasn't alive anymore": counterfactualCheck wants the others' reaction.
+	`if~i~(?:`+words(`just`, `simply`, `ever`, `suddenly`, `really`)+`~)?`+gone,
+	// "the easiest way out is to just not be alive anymore", "the only way
+	// out for me is to end it", with the poster in the sentence.
+	`way~out~(?:for~me~)?`+words(`is`, `was`, `would~be`, `'?s`, `seems~to~be`, `might~be`)+`~(?:to~)?(?:just~)?`+
+		words(crisisActs, `death`, `dying`, `suicide`),
+	// "I've been saving up pills", "been hoarding paracetamol for weeks":
+	// ownSubject wants the poster to be the one doing it.
+	words(`saving`, `saved`, `stockpiling`, `stockpiled`, `hoarding`, `hoarded`, `stashing`, `stashed`,
+		`collecting`, `collected`)+`~(?:up~)?(?:`+words(`my`, `all~my`, `some`, `a~few`, `enough`, `extra`, `the`,
+		`these`, `\d+`)+`~)?(?:`+words(`old`, `leftover`, `spare`, `prescription`)+`~)?`+medicines,
+	// Hurting oneself in any tense, with or without the "I": "hurt myself
+	// last night", "I'm self harming again", "relapsed and cut again". The
+	// matches with an "I" before them are found from it by the rules above.
+	words(`hurt`, `hurting`, `harmed`, `harming`, `harm`, `cut`, `cutting`, `burned`, `burnt`, `burning`, `burn`,
+		`starved`, `starving`, `starve`)+`~my~self`,
+	`self~harm(?:ing|ed)`,
+	words(`cutting`, `cut`)+`~again`,
 	`nothing~(?:left~)?to~live~for`,
 	`better~off~dead`,
 	`i~wish~i~`+words(`was`, `were`)+`~dead`,
@@ -1493,7 +2486,16 @@ var supportRules = []rule{bothViews(`\b` + words(
 	`khud~ko~`+words(`hurt`, `cut`, `kaat`, `kaatta`, `kaatti`, `maarta`, `maarti`, `jalata`, `jalati`)+`~(?:`+
 		words(`karta`, `karti`, `krta`, `krti`)+`~)?`+words(`hoon`, `hu`, `hun`, `hai`, `h`),
 	words(`mar~jana`, `mar~jaana`, `marna`)+`~(?:hai|h)~mujhe`,
-	words(`main`, `mai`, `me`)+`~`+words(`marna`, `mar~jana`)+`~`+words(`chahta`, `chahti`),
+	// "marna chahta hoon", "marne ke baare mein sochta hoon", "khud ko
+	// khatam kar lunga", "zinda nahi rehna".
+	words(`marna`, `mar~jana`, `mar~jaana`, `marne`)+`~`+words(`chahta`, `chahti`, `chahte`, `chahata`, `chahu`,
+		`chahun`),
+	words(`marne`, `suicide~karne`, `suicide~krne`, `khud~?kushi~karne`)+`~`+words(`ka`, `ki`,
+		`ke~(?:baare|bare)~(?:mein|me|mai|main)`)+`~(?:\pL+~){0,2}?`+words(`soch`, `sochta`, `sochti`, `sochte`,
+		`vichar`, `khayal`, `khyal`, `irada`, `plan`),
+	`khud~ko~`+words(`khatam`, `khatm`, `khtm`, `maar`, `mar`, `hurt`, `kaat`)+`~(?:`+words(`kar`, `kr`)+`~)?`+
+		words(`lunga`, `lungi`, `loonga`, `loongi`, `dunga`, `dungi`, `doonga`, `doongi`),
+	words(`zinda`, `jinda`)+`~`+words(`nahi`, `nhi`, `nai`)+`~`+words(`rehna`, `rahna`),
 	words(`suicide`, `khud~?kushi`, `khud~?khushi`)+`~`+words(`karna`, `krna`, `kar~lunga`, `kar~lungi`,
 		`karunga`, `karungi`)+
 		`(?:~`+words(`chahta`, `chahti`, `hai`, `h`)+`)?`,
@@ -1662,6 +2664,14 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 	`suicide~`+words(`method`, `methods`, `guide`, `instructions`, `tips`),
 	// "how deep should i cut"
 	`how~deep~`+words(`should`, `do`, `can`, `would`, `to`, `must`)+`~(?:`+words(`i`, `you`, `u`, `one`)+`~)?cut`,
+	// The poster's own death as what a question is about: "is there a way
+	// for me to overdose", "how high does a building have to be for me to
+	// not survive the fall", "how many pills would i need to not wake up";
+	// methodCheck wants a question round it.
+	`for~me~to~(?:just~)?`+words(`die`, `overdose`, `od`, `end~it(?:~all)?`, `end~my~life`, `kill~my~self`,
+		words(`not`, `never`)+`~`+words(`survive`, `wake~up`)),
+	words(`i`, `it`)+`~(?:`+words(`would`, `will`, `'?d`, `does`, `do`)+`~)?`+words(`need`, `take`, `takes`)+
+		`~to~`+words(`not`, `never`)+`~`+words(`survive`, `wake~up`),
 ) + `\b`)}
 
 // medicines are what an overdose question names.
@@ -4791,8 +5801,53 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	last := ws[len(ws)-1]
 	next := wordsIn(clauseAfter(text, m[1]))
 	nextIn := func(k int, set map[string]bool) bool { return len(next) > k && set[next[k]] }
-	if aboutSomeoneElse(text, m, ws) {
+	if aboutSomeoneElse(text, m, ws) || quotedNotSaid(v, m, next) || jokingCause(text, m) {
 		return false
+	}
+	first := ws[0]
+	switch {
+	case is(first, "if"):
+		return counterfactualCheck(text, m, ws, next)
+	case is(first, "way") || len(ws) > 1 && is(ws[1], "way"):
+		// "the only way out is to die" is the poster's only with the poster
+		// in the sentence; "the only way out for me" says so itself.
+		if !hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1]))) {
+			return false
+		}
+	case stockpileWords[first]:
+		// "saving up pills", not "collecting pill bottles", and only the
+		// poster doing it.
+		return ownSubject(text, m[0]) && !(len(next) > 0 && pillContainers[next[0]]) && !forAPurpose(next)
+	case ownActs[first] || is(last, "again") && (is(first, "cut") || is(first, "cutting")):
+		// Hurting oneself without an "I" before it, in any tense: the
+		// poster has to be the one doing it, and a bare "self harming" or
+		// "cut again" has to be something done, not a topic ("self-harming
+		// teens", "cut again by the selectors").
+		if !ownSubject(text, m[0]) || !notNegated(v, m) {
+			return false
+		}
+		if (is(first, "self") || is(last, "again")) && !doneAgain(text, m, next) {
+			return false
+		}
+		if is(last, "self") || is(last, "myself") {
+			if hurtByAccident(next) {
+				return false
+			}
+		}
+	case wantWords[first] && unicode.IsLetter(rune(text[m[0]])):
+		if !ownSubject(text, m[0]) {
+			return false
+		}
+	case is(first, "suicidal") && len(ws) == 2 && !is(last, "again"):
+		// "suicidal thoughts aren't a character flaw" says what they are,
+		// not that the poster has them.
+		if len(next) > 0 && genericVerbs[next[0]] && !hasFirstPerson(wordsIn(clauseBefore(text, m[0]))) {
+			return false
+		}
+	case reasonWords[first] && !is(first, "no") && !is(first, "nothing") && !is(first, "zero"):
+		if !futile(text, m[0]) {
+			return false
+		}
 	}
 	switch {
 	case is(last, "kms"):
@@ -4808,12 +5863,16 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return livingCheck(text, m, ws, next)
 	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && nextIn(0, cutIdioms):
 		return false
-	case len(ws) >= 2 && is(ws[0], "i") && simplePast[ws[1]] && nextIn(0, accidents):
+	case len(ws) >= 2 && is(ws[0], "i") && simplePast[ws[1]] && hurtByAccident(next):
 		// "I burned myself on the Bunsen burner", "i cut myself shaving".
 		return false
 	case is(last, "myself") && anyIn(ws, burnWords) && nextIn(0, canonSetOf(`out`)):
 		return false // "burning myself out studying"
 	case is(last, "die"):
+		// "ready to die for my country"; not "want to die for real".
+		if len(next) > 0 && is(next[0], "for") && !(len(next) > 1 && (is(next[1], "real") || is(next[1], "good"))) {
+			return false
+		}
 		return !dieIdiom(next) && !hillToDieOn(text, m, next)
 	case is(last, "disappear") && nextIn(0, setOf(`from for`)):
 		return anyIn(next[1:min(len(next), 3)], canonSetOf(`world earth existence life everyone everything good ever forever`))
@@ -4833,6 +5892,184 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	}
 	return true
 }
+
+var (
+	stockpileWords = canonSetOf(`saving saved stockpiling stockpiled hoarding hoarded stashing stashed collecting collected`)
+	pillContainers = canonSetOf(`bottle bottles box boxes packet packets case cases organiser organizer wrapper wrappers strip strips`)
+	ownActs        = canonSetOf(`hurt hurting harmed harming harm cut cutting burned burnt burning burn starved starving starve self`)
+	wantWords      = canonSetOf(`want wanted wanting wanna wana need wish wished wishing`)
+	reasonWords    = canonSetOf(`no nothing any a the zero`)
+	// genericVerbs, straight after "suicidal thoughts", make it a statement
+	// about them: "suicidal thoughts are more common than people think".
+	genericVerbs = canonSetOf(`are aren't arent is isn't isnt can can't cant cannot don't dont do does doesn't may might
+		affect affects happen happens mean means make makes come comes should shouldn't need needs among`)
+)
+
+// jokingCause reports crisis words as the hyperbole they are when something
+// is said to cause them and the poster laughs: "statistics homework making
+// me want to die lol", "this group project is going to make me kms 💀". The
+// cause is named, it is not life itself ("life makes me want to die"), and
+// a laugh or a skull is in the sentence. Without them the same words are
+// read as meant: "i want to die lol" can be distress written lightly.
+func jokingCause(text string, m []int) bool {
+	before := wordsIn(clauseBefore(text, m[0]))
+	n := len(before)
+	if n < 3 || !is(before[n-1], "me") || !causeVerbs[before[n-2]] || anyIn(before[:n-2], lifeItself) {
+		return false
+	}
+	// From the start of the sentence to a little past the match, where a
+	// laugh or an emoji after a full stop still belongs to it.
+	lo := max(0, m[0]-64)
+	lo += strings.LastIndexAny(text[lo:m[0]], ".!?\n") + 1
+	around := text[lo:min(len(text), m[1]+48)]
+	return strings.ContainsAny(around, "💀☠😂🤣😭") || anyIn(wordsIn(around), laughs)
+}
+
+var (
+	causeVerbs = canonSetOf(`make makes making made`)
+	lifeItself = canonSetOf(`life living existing existence everything myself`)
+	laughs     = canonSetOf(`lol lmao lmfao rofl haha hahaha hahahaha hehe xd bruh ded`)
+)
+
+// ownSubject reports that the poster is the one doing what starts at offset
+// i: the nearest subject before it in its clause is "I" ("I've been",
+// "i used to", "I relapsed and"), or there is none and the clause opens
+// with it or with words that only carry it ("been", "started",
+// "honestly"). Another person turns it down ("she's been", "we"), and so
+// does any other word, which could be someone else ("the editor cut again",
+// "doctors are stockpiling"), unless "and" or "then" comes after it, joining
+// a second verb to the first one's subject.
+func ownSubject(text string, i int) bool {
+	ws := wordsIn(quoteLink.ReplaceAllString(clauseBefore(text, i), " "))
+	joined := false
+	for k := len(ws) - 1; k >= 0; k-- {
+		switch w := ws[k]; {
+		case firstPersonSingular[w] || hindiFirstPerson[w]:
+			return true
+		case otherPeople[w] || otherSubjects[w] || hindiOtherPeople[w]:
+			return false
+		case joiners[w]:
+			joined = true
+		case carriers[w]:
+		case !joined:
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	firstPersonSingular = canonSetOf(`i i'm im i'll i'd i've ive me my myself`)
+	otherSubjects       = canonSetOf(`we we're we've we'll we'd us our they'd their his her its it who`)
+	joiners             = canonSetOf(`and then n &`)
+	// carriers carry a verb without being its subject: "been",
+	// "started", "still", "honestly".
+	carriers = canonSetOf(`been have has had keep kept keeps still started start starting again just really
+		honestly literally actually also always often sometimes lowkey finally secretly basically even already
+		now today yesterday tonight lately recently back to used am was 'm do did so ngl tbh fr like ok okay
+		anyway anyways yeah well because cause cuz bc but tho though lol idk`)
+)
+
+// doneAgain reads a bare "self harming" or "cut again" as something the
+// poster does: an "I" or a verb that carries it before it ("i'm", "been",
+// "started"), or "again" or a time after it; and not "by" or "from" after
+// it, which make it something done to them ("cut again by the selectors").
+func doneAgain(text string, m []int, next []string) bool {
+	if len(next) > 0 && (is(next[0], "by") || is(next[0], "from")) {
+		return false
+	}
+	if is(lastWord(text[m[0]:m[1]]), "again") || len(next) > 0 && againTimes[next[0]] {
+		return true
+	}
+	before := wordsIn(clauseBefore(text, m[0]))
+	return len(before) > 0 && (firstPersonSingular[before[len(before)-1]] || carriers[before[len(before)-1]])
+}
+
+var againTimes = canonSetOf(`again since for every daily last yesterday today tonight lately recently now`)
+
+// hurtByAccident reads the words after "hurt myself" or "cut myself" for
+// an accident or an activity: "on the stove" (but not "on purpose"),
+// "while cooking", "shaving", "lifting weights", "at football".
+func hurtByAccident(next []string) bool {
+	if len(next) == 0 {
+		return false
+	}
+	w := next[0]
+	switch {
+	case is(w, "on"):
+		return !(len(next) > 1 && is(next[1], "purpose"))
+	case accidents[w]:
+		return true
+	case is(w, "at") || is(w, "in") || is(w, "during"):
+		return anyIn(next[1:min(len(next), 4)], activities)
+	}
+	return strings.HasSuffix(w, "ing") && len(w) > 4 && !feelingWords[w]
+}
+
+var (
+	// activities, after "at" or "in", make hurting oneself an accident.
+	activities = canonSetOf(`football cricket basketball volleyball hockey tennis badminton kabaddi practice
+		training gym match game pe sports sport nets workout lab kitchen work rehearsal`)
+	// feelingWords after "cut myself" or "hurt myself" are why, not how.
+	feelingWords = canonSetOf(`hoping thinking wishing wanting feeling crying nothing something everything again`)
+)
+
+// forAPurpose reports "for" and what something is for after a match, not
+// how long: "saving my meds for the trip", but not "for weeks".
+func forAPurpose(next []string) bool {
+	return len(next) > 1 && is(next[0], "for") && !anyIn(next[1:min(len(next), 4)], durations)
+}
+
+var durations = canonSetOf(`while weeks week months month days day years year ages long time`)
+
+// futile reports a "not" or a "what's" in the clause before offset i,
+// which makes "any reason to keep living" or "the point of going on"
+// hopeless: "i don't see any reason", "what's the point", "is there any
+// point". "I found a reason to live" has none.
+func futile(text string, i int) bool {
+	ws := wordsIn(clauseBefore(text, i))
+	for k, w := range ws {
+		if futileWords[w] || strings.HasSuffix(w, "n't") || is(w, "there") && k > 0 && (is(ws[k-1], "is") ||
+			is(ws[k-1], "isn't")) {
+			return true
+		}
+	}
+	return false
+}
+
+var futileWords = canonSetOf(`no not never dont cant cannot couldnt doesnt isnt without lost losing hardly barely
+	what's whats wats what`)
+
+// counterfactualCheck reads "if i died" and the like for what it imagines:
+// other people's reaction to the poster's death or absence, in the same
+// sentence ("nobody would care", "everyone would be happier", "would
+// anyone even notice"); not a game ("if i died in minecraft"), an absence
+// for a while ("if i was gone for a week"), or anything else that would
+// follow ("if i wasn't here, who would answer your questions").
+func counterfactualCheck(text string, m []int, ws, next []string) bool {
+	if gameDeath(next) || len(next) > 0 && (is(next[0], "for") || is(next[0], "from") || is(next[0], "to")) &&
+		!(len(next) > 1 && is(next[1], "good")) {
+		return false
+	}
+	sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+	others := false
+	for k, w := range sentence {
+		if reactors[w] || is(w, "one") && k > 0 && is(sentence[k-1], "no") {
+			others = true
+			break
+		}
+	}
+	return others && anyIn(sentence, reactions)
+}
+
+var (
+	// reactors are who a counterfactual imagines reacting.
+	reactors = canonSetOf(`nobody noone anyone anybody everyone everybody people family parents mum mom dad mummy
+		papa friends world who nobody'd everyone'd they`)
+	// reactions are what they would do.
+	reactions = canonSetOf(`care cares notice miss happier better relieved mourn cry sad upset matter funeral
+		remember forget`)
+)
 
 // dieIdiom reports "die of embarrassment", "die from boredom" or "die
 // laughing" in the words after "die".
@@ -4884,7 +6121,7 @@ var (
 	dontWords     = canonSetOf(`don't dont dnt do`)
 	dontSubjects  = canonSetOf(`just really honestly seriously literally so and but lol tbh ngl man bro yaar rn now today tonight anymore okay ok also still kinda like yeah i`)
 	cutIdioms     = canonSetOf(`off a an some slack short loose out free`)
-	simplePast    = canonSetOf(`cut burned burnt`)
+	simplePast    = canonSetOf(`cut burned burnt hurt`)
 	accidents     = canonSetOf(`on while shaving cooking ironing accidentally by during making opening chopping slicing playing when trying`)
 	dieIdioms     = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand shock fright cold heatstroke stress exhaustion tiredness dehydration hypothermia tension`)
 	endItTimes    = canonSetOf(`tonight today now soon all tomorrow already finally forever here this`)
@@ -4909,7 +6146,7 @@ func aboutSomeoneElse(text string, m []int, ws []string) bool {
 		switch w := before[i]; {
 		case firstPerson[w] || hindiFirstPerson[w]:
 			return false
-		case otherPeople[w]:
+		case otherPeople[w] || hindiOtherPeople[w]:
 			return true
 		}
 	}
@@ -4918,6 +6155,7 @@ func aboutSomeoneElse(text string, m []int, ws []string) bool {
 
 var (
 	hindiFirstPerson = canonSetOf(`mujhe main mai mein mera meri mere hum humko`)
+	hindiOtherPeople = canonSetOf(`woh wo vo voh usko use unko usne unhone dost`)
 	otherPeople      = canonSetOf(`they they're theyre he he's hes she she's shes someone somebody friend friends
 		people you you're youre u ur everyone he'll she'll they'll kids students others brother sister`)
 	heights = canonSetOf(`balcony roof rooftop terrace bridge building window floor ledge cliff tower edge`)
@@ -5321,6 +6559,203 @@ func imagineNot(text string, i int) bool {
 	return n >= 2 && is(ws[n-1], "not") && hasWord(ws, "imagine")
 }
 
+// quotedNotSaid reports words the poster quotes or talks about rather than
+// says, for the rules that read the poster's own voice (crisis language,
+// asks to talk elsewhere): a greentext line quoting the post being answered
+// (quotesTheReply), a quotation given to someone else (attributedQuote), a
+// word explained ("what does kms mean"), or one reported as someone else's
+// ("someone posted kms under my pic", "the kms jokes"). The holds read
+// their own reports (reportedThreat, mentioned): a threat quoted back is
+// still shown to a moderator.
+func quotedNotSaid(v *view, m []int, next []string) bool {
+	return v.quotesTheReply(m[0]) || attributedQuote(v.text, m[0]) || glossed(v.text, m) || mentioned(v.text, m, next)
+}
+
+// quotesTheReply reports that offset i is on a greentext line quoting the
+// post being answered: the line opens with one ">", a reply link (">>123")
+// comes before it in the post, and the poster's own words round the quote do
+// not take it up as theirs ("same", "me too", "mood"). Without a reply link,
+// or with "be me", "tfw" or "mfw" opening it, a greentext line is the
+// poster's own story.
+func (v *view) quotesTheReply(i int) bool {
+	text := v.text
+	start := v.lineStart(i)
+	if !strings.HasPrefix(text[start:], ">") || strings.HasPrefix(text[start:], ">>") {
+		return false
+	}
+	if link := v.firstReplyLink(); link < 0 || link >= start {
+		return false
+	}
+	opening := nextWords(text[start+1:min(len(text), start+24)], 2)
+	if len(opening) > 0 && narration[opening[0]] || len(opening) == 2 && is(opening[0], "be") && is(opening[1], "me") {
+		return false
+	}
+	// The poster's own words: the line before the quote, and the first line
+	// after it that is not quoted, a few quoted lines on at most, each cut to
+	// a short reply's length.
+	before := text[max(0, start-121):max(0, start-1)]
+	before = before[strings.LastIndexByte(before, '\n')+1:]
+	read := len(before) + 24
+	after := ""
+	for j, lines := i, 0; j < len(text) && lines < 4; lines++ {
+		line := text[j:min(len(text), j+160)]
+		end := strings.IndexByte(line, '\n')
+		read += len(line)
+		if end < 0 {
+			break
+		}
+		j += end + 1
+		if !strings.HasPrefix(text[j:], ">") || strings.HasPrefix(text[j:], ">>") {
+			after = text[j:min(len(text), j+120)]
+			if k := strings.IndexByte(after, '\n'); k >= 0 {
+				after = after[:k]
+			}
+			read += len(after)
+			break
+		}
+	}
+	v.work += read
+	return !agrees(wordsIn(before)) && !agrees(wordsIn(after))
+}
+
+// lineStart is where the line holding offset i starts. Matches are read in
+// order, so the view keeps the last answer and reads back only to it.
+func (v *view) lineStart(i int) int {
+	from := 0
+	if v.lineAt <= i {
+		from = v.lineAt
+	}
+	start := from + strings.LastIndexByte(v.text[from:i], '\n') + 1
+	if start == from && from > 0 {
+		start = v.line
+	}
+	v.work += i - from
+	v.lineAt, v.line = i, start
+	return start
+}
+
+// firstReplyLink is where the view's first reply link starts, or -1.
+func (v *view) firstReplyLink() int {
+	if v.link == 0 {
+		v.work += len(v.text)
+		v.link = -1
+		if loc := quoteLink.FindStringIndex(v.text); loc != nil {
+			v.link = loc[0] + 1
+		}
+	}
+	if v.link < 0 {
+		return -1
+	}
+	return v.link - 1
+}
+
+// agrees reports a reply that takes a quote up as the poster's own: "same",
+// "me too", "mood", "this is me".
+func agrees(ws []string) bool {
+	for k, w := range ws {
+		if agreement[w] || k > 0 && is(ws[k-1], "me") && (is(w, "too") || is(w, "2") || is(w, "as")) ||
+			k > 0 && is(w, "me") && (is(ws[k-1], "literally") || is(ws[k-1], "is")) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	narration = canonSetOf(`tfw mfw mrw be`)
+	agreement = canonSetOf(`same samee sameee mood relatable relate felt ditto metoo`)
+)
+
+// attributedQuote reports that offset i is inside a quotation the poster
+// gives to someone else: a speaker's label before it ("teacher: 'what's your
+// number?'"), or a verb of saying or asking next to it whose subject is not
+// the poster ("she said \"…\"", "\"…\" my mum asked"). The poster quoting
+// themselves ("me: '…'", "i told him '…'") is still the poster.
+func attributedQuote(text string, i int) bool {
+	open, end := quotationAround(text, i)
+	if open < 0 {
+		return false
+	}
+	lead := strings.TrimRight(text[max(0, open-48):open], " ")
+	if strings.HasSuffix(lead, ":") {
+		ws := wordsIn(lead[:len(lead)-1])
+		return len(ws) > 0 && !firstPersonSubjects[ws[len(ws)-1]] && !is(ws[len(ws)-1], "me") &&
+			!is(ws[len(ws)-1], "my")
+	}
+	before := wordsIn(lead)
+	after := wordsIn(text[end:min(len(text), end+48)])
+	for k := len(before) - 1; k >= max(0, len(before)-4); k-- {
+		if sayingWords[before[k]] || askingWords[before[k]] {
+			return !anyIn(before[:k], firstPersonSubjects) && !anyIn(before[:k], selfWords)
+		}
+	}
+	for k := 0; k < min(len(after), 4); k++ {
+		if sayingWords[after[k]] || askingWords[after[k]] {
+			return !anyIn(after[:k+1], firstPersonSubjects) && !anyIn(after[:k], selfWords)
+		}
+	}
+	return false
+}
+
+var (
+	askingWords = canonSetOf(`asked asks asking goes went`)
+	selfWords   = canonSetOf(`me`)
+)
+
+// quotationAround finds the quotation offset i is in, within 120 bytes
+// either side: where its opening mark starts and where its closing mark
+// ends, or -1. An apostrophe opens a quotation only after something that is
+// not a letter or a digit, and closes one only before such a thing, so the
+// ones inside "what's" and "ma'am" are neither.
+func quotationAround(text string, i int) (int, int) {
+	lo := max(0, i-120)
+	for j := i; j > lo; {
+		r, size := utf8.DecodeLastRuneInString(text[lo:j])
+		j -= size
+		switch r {
+		case '\n':
+			return -1, -1
+		case '"', '“', '«', '‘':
+			return j, closingMark(text, i, r)
+		case '”', '»', '’':
+			return -1, -1
+		case '\'':
+			prev, _ := utf8.DecodeLastRuneInString(text[:j])
+			next, _ := utf8.DecodeRuneInString(text[j+size:])
+			if j == 0 || !alnum(prev) {
+				return j, closingMark(text, i, r)
+			}
+			if !alnum(next) {
+				return -1, -1 // a closing one: the quotation ended before i
+			}
+		}
+	}
+	return -1, -1
+}
+
+// closingMark is where the mark closing a quotation opened with open ends,
+// searching from offset i, or -1.
+func closingMark(text string, i int, open rune) int {
+	closes := map[rune]string{'"': `"`, '“': `”"`, '«': `»`, '‘': `’'`, '\'': `'`}[open]
+	hi := min(len(text), i+120)
+	for j := i; j < hi; {
+		r, size := utf8.DecodeRuneInString(text[j:hi])
+		if r == '\n' {
+			return -1
+		}
+		if strings.ContainsRune(closes, r) {
+			next, _ := utf8.DecodeRuneInString(text[j+size:])
+			if r != '\'' || j+size >= len(text) || !alnum(next) {
+				return j + size
+			}
+		}
+		j += size
+	}
+	return -1
+}
+
+func alnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+
 // glossed reports a word being explained rather than said: "kys = keep
 // yourself safe?", "kys means", "what does kys mean".
 func glossed(text string, m []int) bool {
@@ -5488,11 +6923,30 @@ func methodCheck(v *view, m []int) bool {
 		return namesAMedicine(v, text[m[1]:min(len(text), m[1]+48)]) || hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1])))
 	case is(first, "how") && is(ws[1], "deep"):
 		return len(next) == 0 || deepCutTargets[next[0]]
+	case is(first, "for") || is(ws[len(ws)-1], "survive") || is(ws[len(ws)-1], "up"):
+		// "for me to die" asks how only in a question: "which bridge is
+		// high enough for me to die", not "time for me to die (in this exam)".
+		if is(ws[len(ws)-1], "die") && (dieIdiom(next) || len(next) > 0 && is(next[0], "for")) {
+			return false
+		}
+		return anyIn(wordsIn(sentenceAround(text, m[0], m[1])), methodAsks) || questionAfter(text, m[1])
 	case is(ws[len(ws)-1], "it") || is(ws[len(ws)-1], "all"):
 		// "the best way to end it with my girlfriend"
 		return len(next) == 0 || !is(next[0], "with") && !is(next[0], "between")
 	}
 	return true
+}
+
+// methodAsks make a sentence ask how: "how", "which bridge", "is there a
+// way", "high enough".
+var methodAsks = canonSetOf(`how which what where enough way ways method methods`)
+
+// questionAfter reports a question mark ending the sentence that runs on
+// from offset i.
+func questionAfter(text string, i int) bool {
+	after := text[i:min(len(text), i+64)]
+	j := strings.IndexAny(after, ".!?\n")
+	return j >= 0 && after[j] == '?'
 }
 
 var (
@@ -5557,6 +7011,10 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[11]:])
 	})
 	consider(from, to, ok, kindEmail)
+	if from, to, ok := f.firstSpacedEmail(); ok {
+		from, to = f.plain.span(from, to)
+		consider(from, to, true, kindEmail)
+	}
 	for _, r := range []rule{myMailRule, mailColonHandle} {
 		from, to, ok = f.first(r, f.handleCheck)
 		consider(from, to, ok, kindEmail)
@@ -5572,6 +7030,11 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 	for _, r := range askRules {
 		from, to, ok = f.first(r, askCheck)
 		consider(from, to, ok, kindAsk)
+	}
+	from, to, ok = f.first(offBoardRule, offBoardCheck)
+	consider(from, to, ok, kindAsk)
+	if from, to, kind, ok := f.firstAppFrame(); ok {
+		consider(from, to, ok, kind)
 	}
 	from, to, ok = f.first(atAskRule, func(v *view, m []int) bool {
 		r, _ := utf8.DecodeRuneInString(v.text[m[1]:])
@@ -5602,6 +7065,35 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 	}
 
 	return best, found
+}
+
+// firstAppFrame is the earliest ask or handle appFrame reads round an app's
+// name, as a source span, and what it is.
+func (f *scannedField) firstAppFrame() (int, int, findingKind, bool) {
+	from, to, found := 0, 0, false
+	var kind findingKind
+	// Only the loose view is read: it has every name the plain view has,
+	// spaced or in leetspeak too, and the handles are judged from the
+	// source.
+	vs := viewSearch{&f.loose, appNameRule.loose}
+	{
+		// appFrame counts what it reads itself, which for most names is a
+		// few short words, where a check is counted as reading a clause.
+		vs.re.each(vs.v, func(m []int) bool {
+			if m[1] <= m[0] {
+				return true
+			}
+			a, b, k, ok := f.appFrame(vs.v, m)
+			if !ok {
+				return true
+			}
+			if sa, sb := vs.v.span(a, b); !found || sa < from {
+				from, to, kind, found = sa, sb, k, true
+			}
+			return false
+		})
+	}
+	return from, to, kind, found
 }
 
 // upperInSource reports whether every letter of the source behind text[a:b]
@@ -5695,6 +7187,8 @@ func (f *scannedField) myAppCheck(v *view, m []int) bool {
 // digit, dot or underscore in it, and not the shape of a time, a count, a
 // version or an exponent ("3h", "2nd", "9am", "1.5k", "v2.0", "1.5e-3").
 func plausibleHandle(handle string, at bool) bool {
+	// A full stop after the word ends the sentence: "on reddit instead.".
+	handle = strings.TrimRight(handle, ".")
 	letters, marked := 0, at
 	for _, r := range handle {
 		switch {
@@ -5807,6 +7301,100 @@ func spelledDomain(domain string) string {
 
 var spelledDotPattern = regexp.MustCompile(`\s*[(\[{<]\s*(?:d[o0]t|\.)\s*[)\]}>]\s*|[\s_]+d[o0]t[\s_]+`)
 
+// firstSpacedEmail finds an address written a character at a time with a
+// space after each, "s h r e y a s . 0 9 @ g m a i l . c o m", in the plain
+// view: the loose view closes up spaced letters, but not the digits, dots and
+// "@" among them. The word next to the "@" may be written whole
+// ("shreyas09 @ g m a i l . c o m"), and four characters at least must be
+// spaced out. One pass from each "@" each way, which stops at the "@" before.
+func (f *scannedField) firstSpacedEmail() (int, int, bool) {
+	v := &f.plain
+	t := v.text
+	for i := 0; i < len(t); {
+		at := strings.IndexByte(t[i:], '@')
+		if at < 0 {
+			break
+		}
+		at += i
+		i = at + 1
+		lo, local, left := spacedPart(t, at, -1)
+		hi, domain, right := spacedPart(t, at+1, 1)
+		v.work += hi - lo
+		if left+right < 4 || local == "" || strings.IndexFunc(local, unicode.IsLetter) < 0 {
+			continue
+		}
+		name, tld, dotted := strings.Cut(domain, ".")
+		if dotted {
+			k := strings.LastIndexByte(domain, '.')
+			name, tld = domain[:k], domain[k+1:]
+		}
+		// A provider with no ending needs a name before it that is spaced
+		// out too, or shaped like one: "lol @ g m a i l" is a reaction.
+		if dotted && emailAddress(local, name, readTLD(tld), false) ||
+			!dotted && mailProviders[domain] && (left >= 2 || nameLike(local)) {
+			return lo, hi, true
+		}
+	}
+	return 0, 0, false
+}
+
+// spacedPart reads one half of a spaced-out address from the "@" outwards,
+// backwards from t[i] when dir is -1 and on from it when 1: single characters
+// with a space between each, or one whole word next to the "@". It returns
+// how far it read, the half closed up, and how many single characters it
+// read.
+func spacedPart(t string, i, dir int) (int, string, int) {
+	addressByte := func(c byte) bool {
+		return 'a' <= c && c <= 'z' || isASCIIDigit(c) || strings.IndexByte("._%+-", c) >= 0
+	}
+	var parts []string
+	singles, edge := 0, i
+	j := i
+	if dir < 0 && j > 0 && t[j-1] == ' ' {
+		j--
+	} else if dir > 0 && j < len(t) && t[j] == ' ' {
+		j++
+	}
+	for len(parts) < 64 {
+		k := j
+		if dir < 0 {
+			for k > 0 && j-k < 64 && addressByte(t[k-1]) {
+				k--
+			}
+		} else {
+			for k < len(t) && k-j < 64 && addressByte(t[k]) {
+				k++
+			}
+		}
+		a, b := min(j, k), max(j, k)
+		if a == b || len(parts) > 0 && b-a > 1 {
+			break
+		}
+		parts = append(parts, t[a:b])
+		edge = k
+		if b-a > 1 {
+			break // a whole word, next to the "@"
+		}
+		singles++
+		// On past one space to the next character, if there is one.
+		if dir < 0 {
+			if k < 2 || t[k-1] != ' ' || !addressByte(t[k-2]) {
+				break
+			}
+			j = k - 1
+		} else {
+			if k+1 >= len(t) || t[k] != ' ' || !addressByte(t[k+1]) {
+				break
+			}
+			j = k + 1
+		}
+	}
+	if dir < 0 {
+		slices.Reverse(parts)
+	}
+	return edge, strings.Join(parts, ""), singles
+}
+
 /* Numbers --------------------------------------------------------------------- */
 
 // digitRun is a number as written: digit groups separated by spaces, line
@@ -5856,6 +7444,9 @@ func (f *scannedField) firstNumber() (digitRun, findingKind, bool) {
 		run.apartAfter = run.to < len(t) && f.plain.apart(run.to)
 		if kind, ok := classifyNumber(&f.plain, run); ok {
 			return run, kind, true
+		}
+		if from, to, ok := piecedNumber(&f.plain, i); ok {
+			return digitRun{from: from, to: to}, kindPhone, true
 		}
 		i = max(run.to, i+1)
 	}
@@ -6038,7 +7629,8 @@ func scanDigitRun(t string, i int) digitRun {
 		}
 		run.to = i
 		j := groupSeparator(t, i)
-		next := j < len(t) && (isASCIIDigit(t[j]) || t[j] == '(' && j+1 < len(t) && isASCIIDigit(t[j+1]))
+		_, lookalike := digitLookalike(t, j)
+		next := j < len(t) && (isASCIIDigit(t[j]) || lookalike || t[j] == '(' && j+1 < len(t) && isASCIIDigit(t[j+1]))
 		if !next || (j == i && !closed) {
 			break
 		}
@@ -6051,22 +7643,59 @@ func scanDigitRun(t string, i int) digitRun {
 	return run
 }
 
-// digitLookalike reads the letter at t[i] as the digit it is written for in a
-// number — o for 0, l and i for 1 — when a digit is beside it.
-func digitLookalike(t string, i int) (byte, bool) {
-	var d byte
-	switch t[i] {
+// lookalikeDigit is the digit a letter is written for in a number: o for 0, l
+// and i for 1.
+func lookalikeDigit(c byte) (byte, bool) {
+	switch c {
 	case 'o':
-		d = '0'
+		return '0', true
 	case 'l', 'i':
-		d = '1'
-	default:
-		return 0, false
-	}
-	if i > 0 && isASCIIDigit(t[i-1]) || i+1 < len(t) && isASCIIDigit(t[i+1]) {
-		return d, true
+		return '1', true
 	}
 	return 0, false
+}
+
+// maxLookalikeWord is as far either way as digitLookalike reads the word a
+// letter is in, longer than any group of a phone number.
+const maxLookalikeWord = 16
+
+// digitLookalike reads the letter at t[i] as the digit it is written for, in
+// a word that is otherwise digits and has one ("98765 4321O", "07911 4OO
+// 133"), or standing alone between two digits spaced out one at a time ("8 l
+// 2 O 3 3 4 5 6 1"). A word with any other letter in it is a word.
+func digitLookalike(t string, i int) (byte, bool) {
+	if i >= len(t) {
+		return 0, false
+	}
+	d, ok := lookalikeDigit(t[i])
+	if !ok {
+		return 0, false
+	}
+	inNumber := func(c byte) bool {
+		_, ok := lookalikeDigit(c)
+		return ok || isASCIIDigit(c)
+	}
+	digit := false
+	lo := i
+	for lo > 0 && i-lo < maxLookalikeWord && inNumber(t[lo-1]) {
+		lo--
+		digit = digit || isASCIIDigit(t[lo])
+	}
+	hi := i + 1
+	for hi < len(t) && hi-i < maxLookalikeWord && inNumber(t[hi]) {
+		digit = digit || isASCIIDigit(t[hi])
+		hi++
+	}
+	letter := func(c byte) bool { return 'a' <= c && c <= 'z' || c >= utf8.RuneSelf || c == '_' }
+	switch {
+	case lo > 0 && letter(t[lo-1]) || hi < len(t) && letter(t[hi]):
+		return 0, false
+	case digit:
+		return d, true
+	}
+	alone := lo == i && hi == i+1 && i >= 2 && hi+1 < len(t) && t[i-1] == ' ' && t[hi] == ' ' &&
+		isASCIIDigit(t[i-2]) && isASCIIDigit(t[hi+1])
+	return d, alone
 }
 
 // groupSeparator returns where the separator after a digit group ending at i
@@ -6123,13 +7752,16 @@ var quantityWords = setOf(`bytes byte kb mb gb tb kib mib gib bits bit
 
 // helplineNumbers are crisis lines whose numbers look like phone numbers to the
 // rules, so that a reader passing one on to someone who needs it is not told
-// to take it out. Each is the ten-digit national number, a toll-free number's
-// leading 1 aside: in India iCall, the Vandrevala Foundation, AASRA and
-// Tele-MANAS (1-800-891-4416); in the US the old National Suicide Prevention
+// to take it out. Each is the national number without its trunk zero or a
+// toll-free number's leading 1: in India iCall, the Vandrevala Foundation,
+// AASRA and Tele-MANAS (1-800-891-4416); in the UK PAPYRUS HOPELINE247 (0800
+// 068 4141), the NSPCC (0808 800 5000), The Mix (0808 808 4994) and Mind's
+// infoline (0300 123 3393); in the US the old National Suicide Prevention
 // Lifeline number (it still connects to 988), the Trevor Project, the National
-// Domestic Violence Hotline and Childhelp.
-var helplineNumbers = setOf(`9152987821 9999666555 9820466726 8008914416 8002738255 8664887386 8007997233
-	8004224453`)
+// Domestic Violence Hotline, Childhelp, RAINN (800-656-4673) and SAMHSA's
+// helpline (800-662-4357).
+var helplineNumbers = setOf(`9152987821 9999666555 9820466726 8008914416 8000684141 8088005000 8088084994
+	3001233393 8002738255 8664887386 8007997233 8004224453 8006564673 8006624357`)
 
 // indianNational is an Indian number without its country code or trunk zero.
 func indianNational(d string) string {
@@ -6145,8 +7777,11 @@ func indianNational(d string) string {
 // helpline reports a run of digits that is one of helplineNumbers, with or
 // without the country code or trunk prefix it is dialled with.
 func helpline(d string) bool {
-	if len(d) == 11 && d[0] == '1' { // a North American number with its 1, or an Indian 1800 one
+	switch {
+	case len(d) == 11 && d[0] == '1': // a North American number with its 1, or an Indian 1800 one
 		d = d[1:]
+	case len(d) == 12 && strings.HasPrefix(d, "44"): // a UK one with its country code
+		d = d[2:]
 	}
 	return helplineNumbers[indianNational(d)]
 }
@@ -6179,7 +7814,7 @@ var (
 	// callCue, shortly before a number, asks for the poster to be called or
 	// says the number is theirs: "call me", "text me", "hmu", "my number".
 	callCue = newWindowSearch(phrase(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `dial`, `sms`, `msg`,
-		`message`, `ping`, `whatsapp`, `wa`) + `~` + words(`me`, `us`) + `|` + words(`my`, `mera`, `meri`) +
+		`message`, `ping`, `whatsapp`, `wa`, `reach`) + `~` + words(`me`, `us`) + `|` + words(`my`, `mera`, `meri`) +
 		`~(?:` + words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`) + `~)?` +
 		words(`number`, `no`, `num`, `nmbr`) + `|hmu)\b`))
 	// contactCue, with nothing but punctuation between it and a number, asks
@@ -6192,6 +7827,24 @@ var (
 		words(`my`, `mera`, `meri`)+`~(?:`+words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`)+`~)?`+
 			words(`number`, `no`, `num`, `nmbr`)+`(?:~`+words(`is`, `hai`)+`)?`,
 	)) + `[^\pL\pN]*$`)
+	// phoneLabel, with nothing but punctuation between it and a number, names
+	// the line it is: "Google Voice: 2154820174", "cell no. 2154820174".
+	phoneLabel = newWindowSearch(`\b` + phrase(words(`phone`, `ph`, `cell`, `mobile`, `mob`, `tel`, `voice`,
+		`landline`)+`(?:~`+words(`no`, `number`, `num`)+`)?(?:~`+words(`is`, `hai`)+`)?`) + `[^\pL\pN]*$`)
+	// evasionCue says a number or an address is written oddly to get it past
+	// a filter: "split it so the mods dont catch", "spaced so it doesnt
+	// autofill", "so bots can't read it".
+	evasionCue = newWindowSearch(`\b` + phrase(words(`so`, `that`)+`~(?:the~)?`+words(`mods?`, `moderators?`,
+		`admins?`, `bots?`, `filters?`, `scrapers?`, `spammers?`, `it`, `they`, `nobody`, `no~one`, `ai`)+`~`+
+		words(`don'?t`, `do~not`, `can'?t`, `cannot`, `can~not`, `won'?t`, `will~not`, `doesn'?t`, `does~not`)+`~`+
+		words(`catch`, `read`, `see`, `detect`, `find`, `flag`, `notice`, `scrape`, `autofill`, `block`, `ban`,
+			`pick`)) + `\b`)
+	// reverseCue says the digits are written backwards: "my number in
+	// reverse", "backwards", "ulta".
+	reverseCue = newWindowSearch(`\b` + words(`reverse`, `reversed`, `backwards?`, `ulta`, `ulte`, `ulti`) + `\b`)
+	// areaCode gives a North American number's area code apart from the
+	// rest of it: "482-0196 (area code 404)".
+	areaCode = newWindowSearch(phrase(`\barea~code~(?:is~)?`) + `(\d[ \t]?\d[ \t]?\d)\b`)
 	// accountApp is an app whose account is a phone number: the messaging
 	// apps, and the payment apps an Indian account is opened with a number on.
 	// Before "acc" or "account", it makes the number after them that phone
@@ -6202,17 +7855,47 @@ var (
 	payBrands     = setOf(`google amazon samsung phone`)
 )
 
-// classifyNumber decides what a run is, in the context it sits in.
+// classifyNumber decides what a run is, in the context it sits in. Digits
+// spaced out one at a time are read in the groups any dashes or points among
+// them make (regrouped), and a run said to be written backwards is read the
+// right way round too.
 func classifyNumber(v *view, run digitRun) (findingKind, bool) {
-	if len(run.digits) < 9 || len(run.digits) > 17 {
+	n := len(run.digits)
+	if n < 7 || n > 17 {
+		return 0, false
+	}
+	shaped := regrouped(run)
+	local := n == 7 && localNumber(shaped)
+	if n < 9 && !local {
 		return 0, false
 	}
 	if !standsAlone(v, run) || formattedNumber(run) || dataSet(v, run) || roundRange(run) || decimalRange(v, run) ||
 		ipv4(v, run) {
 		return 0, false
 	}
+	if local {
+		return kindPhone, areaCoded(v, shaped)
+	}
+	if kind, ok := numberShape(v, shaped); ok {
+		return kind, true
+	}
+	if !run.plus {
+		near := windowBefore(v.text, run.from, 64)
+		if reverseCue.matchIn(v, near) && callCue.matchIn(v, near) {
+			if back := reversed(shaped); !counting(string(back.digits)) {
+				if kind, ok := numberShape(v, back); ok && kind == kindPhone {
+					return kindPhone, true
+				}
+			}
+		}
+	}
+	return 0, false
+}
+
+// numberShape reports the kind of number a run's digits and grouping make.
+func numberShape(v *view, run digitRun) (findingKind, bool) {
 	d := string(run.digits)
-	if dramaNumber(d) || helpline(d) {
+	if dramaNumber(d) || helpline(d) || freephone(d, run.groups) || nanpFiction(d, run.groups) {
 		return 0, false
 	}
 	switch {
@@ -6225,7 +7908,7 @@ func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 	}
 	switch {
 	case indianMobile(d, run.groups, run.seps), nanpPhone(v, run), ukPhone(d, run.groups, run.seps),
-		auMobile(d, run.groups, run.seps), calledMobile(v, run):
+		auMobile(d, run.groups, run.seps), auLandline(d, run.groups), calledMobile(v, run):
 		return kindPhone, true
 	case aadhaar(d, run.groups, run.seps), idLabelled(v, run, aadhaarLabels) && aadhaarShape(d, run.groups, run.seps):
 		return kindAadhaar, true
@@ -6233,6 +7916,216 @@ func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 		return kindSSN, true
 	}
 	return 0, false
+}
+
+// regrouped reads digits spaced out one at a time, with a dash or a point
+// between some of them, in the groups those marks set off: "8 4 3 2 - 1 0 9 7
+// 6 5" is 8432-109765, and "6 1 4 - 3 9 - 2 8 5 7" is 614-39-2857. Any other
+// run is returned as it is.
+func regrouped(run digitRun) digitRun {
+	if len(run.groups) < 3 {
+		return run
+	}
+	for _, g := range run.groups {
+		if g != 1 {
+			return run
+		}
+	}
+	mark := ""
+	groups, seps := []int{1}, []string(nil)
+	for _, s := range run.seps {
+		m := strings.Trim(s, " \n")
+		switch {
+		case m == "":
+			groups[len(groups)-1]++
+			continue
+		case len(m) > 1 || mark != "" && m != mark:
+			return run
+		}
+		mark = m
+		groups = append(groups, 1)
+		seps = append(seps, m)
+	}
+	if mark == "" || len(groups) == len(run.groups) {
+		return run
+	}
+	out := run
+	out.groups, out.seps = groups, seps
+	return out
+}
+
+// reversed is a run read backwards.
+func reversed(run digitRun) digitRun {
+	out := run
+	out.digits = slices.Clone(run.digits)
+	slices.Reverse(out.digits)
+	out.groups = slices.Clone(run.groups)
+	slices.Reverse(out.groups)
+	out.seps = slices.Clone(run.seps)
+	slices.Reverse(out.seps)
+	out.paren = false
+	return out
+}
+
+// localNumber is a North American number without its area code, written to
+// be dialled: 482-0196, 482.0196.
+func localNumber(run digitRun) bool {
+	g := run.groups
+	if len(g) != 2 || g[0] != 3 || g[1] != 4 || run.digits[0] < '2' {
+		return false
+	}
+	sep := strings.Trim(run.seps[0], " ")
+	return sep == "-" || sep == "."
+}
+
+// areaCoded reports a local number with its area code given apart, just
+// after it or just before: "482-0196 (area code 404)", "area code 718, my # is
+// 482-0139". The two make a North American number.
+func areaCoded(v *view, run digitRun) bool {
+	for _, w := range []string{windowAfter(v.text, run.to, 32), windowBefore(v.text, run.from, 40)} {
+		if m := areaCode.findIn(v, w); m != nil {
+			area := strings.ReplaceAll(strings.ReplaceAll(w[m[2]:m[3]], " ", ""), "\t", "")
+			return nanp(area + string(run.digits))
+		}
+	}
+	return false
+}
+
+// piecedNumber reads a phone number given in pieces from t[i], where the
+// post says whose number it is or that it is written to get past the
+// filter: three or more runs of digits joined by a word ("my num starts
+// with 99 then 30 then 412 then 875"), by a slash, a bar or a comma ("split
+// it so the mods dont catch: 98 / 1 / 67 / 45 / 231"), or quoted strings
+// joined by "+" ("PHONE = '+91' + '98450' + '17723' use this to reach me").
+// An unquoted "+" is a sum, and a list of values is a list, so a word that
+// only says a number is near ("number", "phone") will do only for the quoted
+// strings, which are put together rather than added.
+func piecedNumber(v *view, i int) (int, int, bool) {
+	t := v.text
+	quoted := i > 0 && strings.IndexByte(quoteMarks, t[i-1]) >= 0
+	var digits []byte
+	plus, pieces, end := false, 0, i
+	for j := i; pieces < maxPieces; pieces++ {
+		k := j
+		if quoted && pieces > 0 {
+			if k >= len(t) || t[k] != t[i-1] {
+				break
+			}
+			k++
+		}
+		if pieces == 0 && k < len(t) && t[k] == '+' {
+			plus = true
+			k++
+		}
+		s := k
+		for k < len(t) && k-s < 6 && isASCIIDigit(t[k]) {
+			k++
+		}
+		if k == s || k < len(t) && (isASCIIDigit(t[k]) || 'a' <= t[k] && t[k] <= 'z' || t[k] >= utf8.RuneSelf) {
+			break
+		}
+		digits = append(digits, t[s:k]...)
+		if quoted {
+			if k >= len(t) || t[k] != t[i-1] {
+				break
+			}
+			k++
+		}
+		end = k
+		j = pieceJoiner(t, k, quoted)
+		if j < 0 {
+			pieces++
+			break
+		}
+	}
+	v.work += end - i
+	if pieces < 3 || !piecedPhone(string(digits), plus) {
+		return 0, 0, false
+	}
+	before, after := windowBefore(t, i, 64), windowAfter(t, end, 48)
+	if callCue.matchIn(v, before) || callCue.matchIn(v, after) || evasionCue.matchIn(v, before) ||
+		evasionCue.matchIn(v, after) || quoted && phoneCue.matchIn(v, before) {
+		if quoted {
+			i-- // the opening quote
+		}
+		return i, end, true
+	}
+	return 0, 0, false
+}
+
+// quoteMarks are the quotes a string in code or a word in a sentence is put
+// in.
+const quoteMarks = `'"` + "`"
+
+// maxPieces is the most pieces piecedNumber reads, more than a phone number
+// is ever cut into.
+const maxPieces = 8
+
+// pieceJoiners are the words a number given in pieces is joined with: "99
+// then 30 then 412", "98450 aur 17723", "followed by".
+var pieceJoiners = setOf(`then and plus aur phir fir followed`)
+
+// pieceJoiner reads what joins one piece of a number to the next, from
+// t[k]: a space or two, then "+" between quoted strings, or a slash, a bar,
+// a comma or a joining word ("and then", "followed by") between bare ones,
+// then a space or two. It returns where the next piece starts, or -1.
+func pieceJoiner(t string, k int, quoted bool) int {
+	skip := func(k int) int {
+		for n := 0; n < 2 && k < len(t) && t[k] == ' '; n++ {
+			k++
+		}
+		return k
+	}
+	k = skip(k)
+	if k >= len(t) {
+		return -1
+	}
+	switch {
+	case quoted:
+		if t[k] != '+' {
+			return -1
+		}
+		k++
+	case strings.IndexByte("/|,", t[k]) >= 0:
+		k++
+	default:
+		for n := 0; n < 2; n++ {
+			w := firstWordAfter(t, k)
+			if !pieceJoiners[w] {
+				if n == 0 {
+					return -1
+				}
+				break
+			}
+			k = skip(k + len(w))
+			if w == "followed" {
+				if !strings.HasPrefix(t[k:], "by") {
+					return -1
+				}
+				k += 2
+			}
+		}
+	}
+	k = skip(k)
+	if k == len(t) {
+		return -1
+	}
+	return k
+}
+
+// piecedPhone reports digits put together from pieces that make a phone
+// number, the North American kind included, since a word has already said
+// they are one.
+func piecedPhone(d string, plus bool) bool {
+	if dramaNumber(d) || helpline(d) || counting(d) {
+		return false
+	}
+	if plus {
+		return internationalPhone(d)
+	}
+	one := []int{len(d)}
+	return indianMobile(d, one, nil) || ukPhone(d, one, nil) || auMobile(d, one, nil) || nanp(d) ||
+		len(d) == 11 && d[0] == '1' && nanp(d[1:])
 }
 
 // calledMobile is an Indian mobile in any grouping of two or more digits at a
@@ -6279,9 +8172,11 @@ func idLabelled(v *view, run digitRun, labels map[string]bool) bool {
 }
 
 // dataSet reports a run of three or more short groups that a word just before
-// it says is a set of values, not a number spaced out to be read.
+// it says is a set of values, not a number spaced out to be read. A run that
+// starts with "+" starts with a country code, which no set of values does:
+// "past questions sharing, +234 803 123 4567".
 func dataSet(v *view, run digitRun) bool {
-	if len(run.groups) < 3 {
+	if len(run.groups) < 3 || run.plus {
 		return false
 	}
 	for _, g := range run.groups {
@@ -6798,6 +8693,11 @@ func nanpPhone(v *view, run digitRun) bool {
 		return nanp(d) && (nanpSeparators(run) || phoneCue.matchIn(v, windowBefore(v.text, run.from, 32)))
 	case len(d) == 11 && d[0] == '1' && len(g) == 4 && g[0] == 1 && g[1] == 3 && g[2] == 3 && g[3] == 4:
 		return nanp(d[1:])
+	case len(d) == 10 && len(g) == 1:
+		// Ten bare digits, straight after a word naming the line or asking
+		// for a call: "Google Voice: 2154820174", "text me 2154820174".
+		near := windowBefore(v.text, run.from, 32)
+		return nanp(d) && (phoneLabel.matchIn(v, near) || contactCue.matchIn(v, near))
 	}
 	return false
 }
@@ -6820,6 +8720,16 @@ func nanpSeparators(run digitRun) bool {
 	return true
 }
 
+// nanpFiction reports a number grouped the North American way, 3-3-4, in
+// 555-0100 to 555-0199, which are set aside for fiction: "917-555-0168"
+// would otherwise read as an Indian mobile.
+func nanpFiction(d string, g []int) bool {
+	if len(d) == 11 && d[0] == '1' && len(g) == 4 && g[0] == 1 {
+		d, g = d[1:], g[1:]
+	}
+	return len(d) == 10 && len(g) == 3 && g[0] == 3 && g[1] == 3 && g[2] == 4 && d[3:6] == "555" && d[6:8] == "01"
+}
+
 // nanp checks a ten-digit North American number: area code and exchange
 // start 2-9, and 555-0100 to 555-0199, which are reserved for fiction, pass.
 func nanp(d string) bool {
@@ -6828,9 +8738,10 @@ func nanp(d string) bool {
 
 // dramaNumber reports the numbers set aside for drama, which no one can be
 // called on: Ofcom's UK ranges, 07700 900000-900999, 020 7946 0000-0999 and
-// the 01xx 496 ones, with or without +44; and the Australian mobiles ACMA
-// lists for the same use (0491 570 006 and the rest of acmaDramaMobiles), with
-// or without +61. The NANP's 555-0100 to 555-0199 are nanp's.
+// the 01xx 496 ones, with or without +44; and the Australian numbers ACMA
+// sets aside for the same use, the mobiles in acmaDramaMobiles (0491 570 006
+// and the rest) and the landlines (0X) 5550 xxxx and (0X) 7010 xxxx in each
+// area code, with or without +61. The NANP's 555-0100 to 555-0199 are nanp's.
 func dramaNumber(d string) bool {
 	if strings.HasPrefix(d, "00") {
 		d = d[2:]
@@ -6838,7 +8749,8 @@ func dramaNumber(d string) bool {
 	if strings.HasPrefix(d, "61") && len(d) == 11 {
 		d = "0" + d[2:]
 	}
-	if acmaDramaMobiles[d] {
+	if acmaDramaMobiles[d] || len(d) == 10 && d[0] == '0' && strings.IndexByte("2378", d[1]) >= 0 &&
+		(d[2:6] == "5550" || d[2:6] == "7010") {
 		return true
 	}
 	if strings.HasPrefix(d, "44") {
@@ -6874,6 +8786,23 @@ func ukPhone(d string, g []int, seps []string) bool {
 // more digits: 0412 345 678.
 func auMobile(d string, g []int, seps []string) bool {
 	return len(d) == 10 && strings.HasPrefix(d, "04") && mobileGrouping(g, seps)
+}
+
+// auLandline is an Australian landline written the national way, its area
+// code (02, 03, 07 or 08) set apart and the eight digits after it in fours:
+// (07) 3221 3317, 02 9876 5432. Local numbers start 3 to 9, which leaves out
+// a date ("02 2024 1130").
+func auLandline(d string, g []int) bool {
+	return len(d) == 10 && d[0] == '0' && strings.IndexByte("2378", d[1]) >= 0 && d[2] >= '3' &&
+		len(g) == 3 && g[0] == 2 && g[1] == 4 && g[2] == 4
+}
+
+// freephone reports a UK freephone number written the UK way, 0800 or 0808 as
+// a group of its own: 0800 068 4141. A freephone line is a service's, which
+// no one has as their own phone; written as one block the same digits read
+// as an Indian mobile with its trunk zero, and are left to that.
+func freephone(d string, g []int) bool {
+	return len(d) == 11 && (strings.HasPrefix(d, "0800") || strings.HasPrefix(d, "0808")) && len(g) > 1 && g[0] == 4
 }
 
 // aadhaar is a twelve-digit Aadhaar number, as one block or as 4-4-4, whose
