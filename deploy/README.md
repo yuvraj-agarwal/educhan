@@ -528,14 +528,18 @@ support email: it is printed on every receipt, and a buyer who lost their code
 writes there to have it reissued. Then make a restricted key (*Developers → API
 keys → Create restricted key*) with **Checkout Sessions: Write** and **Prices:
 Read** and nothing else. Those are the only two calls the server makes. A full
-secret key also works but can do far more than the server needs.
+secret key also works but can do far more than the server needs; the server
+refuses to start with anything but an `sk_…` or `rk_…` key. Turn on Stripe's
+email receipts for successful payments, and set up no custom domain for
+Checkout: the server sends buyers only to `https://checkout.stripe.com` and
+refuses any other address Stripe hands back.
 
 In Cloud Shell, keep the key out of your shell history:
 
 ```bash
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the two setup calls only): ' STRIPE_ADMIN; echo
-export PUBLIC_URL=https://YOUR-DOMAIN   # the site's origin, no trailing slash
+export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin: any path, even "/", is refused
 
 # The product and its one-time price: USD 20.00, a year of the Pass. The amount
 # is in the currency's smallest unit (2000 = USD 20.00). A new price later is a
@@ -552,6 +556,8 @@ WEBHOOK_SECRET=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STR
   -d url="${PUBLIC_URL}/api/pass/stripe-webhook" -d api_version=2024-06-20 \
   -d "enabled_events[]=checkout.session.completed" \
   -d "enabled_events[]=checkout.session.async_payment_succeeded" \
+  -d "enabled_events[]=checkout.session.async_payment_failed" \
+  -d "enabled_events[]=checkout.session.expired" \
   -d "enabled_events[]=charge.refunded" \
   -d "enabled_events[]=charge.dispute.created" \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])')
@@ -576,7 +582,10 @@ gcloud run services update educhan --region "$REGION" \
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price. To have Stripe Tax add sales tax, VAT or GST, switch Stripe Tax on in the
-account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars.
+account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars; the page then
+says "plus any tax" beside the price. Three more settings have working defaults
+and need no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
+`EDUCHAN_PASS_COOLDOWN` (section 4).
 
 **Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
 payment record is a hash under it, so rotating it cancels every Pass that was
@@ -665,7 +674,11 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 | `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off. Set together with the four below, or the server refuses to start (section 2.10) |
 | `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
-| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back |
+| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (a path or trailing slash refuses to start) |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe adds the tax at checkout and the page says "plus any tax" |
+| `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts; at least `1` |
+| `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
+| `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |
 
 `EDUCHAN_TRUST_PROXY` is the one worth getting right. It is a hop count, and a
 value higher than the real chain lets a client pick its own rate-limit bucket by
