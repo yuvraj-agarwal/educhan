@@ -24,7 +24,8 @@ not.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `pass.go` — the educhan Pass: its handlers, code format and SQL; `pass_stripe.go`
     — Stripe over plain HTTPS (hosted checkout, the price, webhook signatures);
-    `pass_config.go` — its settings, off unless `EDUCHAN_PASS_SECRET` is set.
+    `pass_config.go` — its settings: off unless `EDUCHAN_PASS_SECRET` is set, every
+    other one refused without it, and `EDUCHAN_PASS_SALES` to pause sales.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
@@ -134,7 +135,7 @@ field, and everything else stays the same. Uploads are off unless
 `GET /api/site` says which, with the size limit:
 
 ```bash
-curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608,"pass":false}
 
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
@@ -253,9 +254,13 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 `ignoreDefaultArgs: ["--hide-scrollbars"]`; a check on the board row's scrollbar needs it.
 
 The Pass is off unless `EDUCHAN_PASS_SECRET` and the four Stripe settings are set
-(`pass_config.go`), and a whole purchase needs Stripe to call the webhook, so its
-end-to-end checks live in `pass_api_test.go` against a fake Stripe (`fakeStripe`) rather
-than in curl. A real checkout uses Stripe's test mode: test keys, a test Price, and
+(`pass_config.go`); any other Pass setting given without the secret refuses to start.
+A whole purchase needs Stripe to call the webhook, so its end-to-end checks live in
+`pass_api_test.go` against a fake Stripe (`fakeStripe`) rather than in curl, and they
+cover `EDUCHAN_PASS_SALES=paused` beside the default `open` (`TestPassSalesPaused`).
+Paused, checkout answers `403 the Pass is not on sale right now` and `GET /api/pass`
+says `"paused": true`; every other Pass endpoint and the webhook go on as usual. A real
+checkout uses Stripe's test mode: test keys, a test Price, and
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
 with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued with
 `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H 'Content-Type:
@@ -265,10 +270,12 @@ application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a one-ti
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass
 only in `submit` (the Pass also in the Pass page's own requests), the Pass never beside the
-credential, a reissue token out of the address before anything else, the age screen
-storing its outcome alone and sending nothing, the badge's 18+ box and the Pass's never
-ticked in advance or kept, `/api/site` fetched only past the age screen, KaTeX's options,
-and the highlighting cap. They are a floor, not a proof; a change that trips one has changed one of those properties and
+credential, a reissue token out of the address before anything else, what a claim brings
+stored before anything looks at the page, a claim's nonce and the forgetting of a claim,
+the age screen storing its outcome alone and sending nothing, the badge's 18+ box and the
+Pass's never ticked in advance or kept, `/api/site` fetched only past the age screen, the
+header's Pass link only where there is a Pass, the paused wording the server's own,
+KaTeX's options, and the highlighting cap. They are a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
 ### Front end conventions
@@ -460,13 +467,29 @@ needs a browser check before the test changes.
   and renewing leave for Stripe's hosted page by `location.assign`: no Stripe script,
   frame or stylesheet ever loads on this origin, and the CSP has no exception for Stripe.
   While `GET /api/pass` says `"claim"`, the page draws a collecting state with no form to
-  pay with and asks `/api/pass/claim` on every visit, with a growing pause while it is
-  open (`collectPass`); what a claim brings is stored (`keepClaimed`) before anything asks
-  whether the reader is still on the page, because the server hands a code over once. A
-  reissue link's token rides in the fragment (`/pass#reissue=…`), leaves the address
-  first thing in `render` (`takePassReissueToken`), and goes once in a claim's body. A
-  post refused for its Pass (`"pass": "invalid"` or `"expired"`) forgets it or marks it
-  run out without a date, and says to solve the captcha and post again.
+  pay with (or, with a Pass already here, says another checkout is still open and keeps
+  Renew) and asks `/api/pass/claim` on every visit, with a pause that grows while it is
+  open (`collectPass`). Every claim carries the collection's nonce
+  (`educhan:pass-nonce`, kept until an answer says nothing more is waiting): the server
+  derives the code from it, so a claim whose answer was lost is asked again and handed
+  the same code. What a claim brings is stored (`keepClaimed`) before anything asks
+  whether the reader is still on the page, and a code just handed over stays in
+  `passJustIssued`, drawn on every drawing, until the reader leaves the Pass page,
+  beside any code it took the place of. A reissue link's token rides in the fragment
+  (`/pass#reissue=…`), leaves the address first thing in `render`
+  (`takePassReissueToken`), waits for "Use the link here" in a browser that holds a
+  Pass, and goes once in a claim's body with a nonce of its own
+  (`educhan:pass-reissue-nonce`). Remove the Pass, Forget this browser and Stop
+  collecting it here drop the claim (`forgetPassClaim`, `{"forget": true}`), so the
+  next person at a shared computer collects nothing. A post whose Pass was no good is
+  a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page forgets
+  the first, marks the second run out without a date, and says the post was sent. A
+  code typed in after it ran out is kept with the date the server gives. While sales are
+  paused the page says `PASS_PAUSED` where Buy and Renew were; `PASS_NOT_ON_SALE` is
+  the server's `passNotOnSale` word for word (`TestPassPageWhileSalesArePaused`). A
+  browser that keeps no cookies or storage is not sent to Stripe (`passCanBeKept`). The
+  header's Pass link (`data-pass-link`) stays hidden until `GET /api/site` says `"pass"`
+  or the browser holds one (`showPassLink`).
   `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
   code; the Pass page's other promises have their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
@@ -477,10 +500,11 @@ needs a browser check before the test changes.
   values; `submit` sets the field after `form.reset()`).
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
-  the credential, the Pass, the poster key and the remembered name, and leaves the age
-  answer. It
+  the credential, the Pass, the poster key and the remembered name, drops any Pass
+  purchase still being collected, and leaves the age answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
-  next person at the computer the same IDs in the same threads.
+  next person at the computer the same IDs in the same threads, and a claim left behind
+  would hand them the buyer's Pass.
 
 ### Child safety
 
@@ -508,7 +532,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   in the body of the requests that check or renew it on the Pass page. A badged post
   sends the credential instead. Nothing about a Pass is written on a post or used in a
   poster ID, and nothing identifying a Pass is logged. Its hourly budget is kept in
-  memory, keyed on a hash of the token, and forgotten when the hour ends. The Pass skips
+  memory, keyed on a hash of the token, and forgotten when the hour ends. A Pass that
+  is no good on a post is treated as no Pass, never refused with a status of its own,
+  because a request-log line only a Pass can cause would tie its holder to the thread
+  (`TestPassNoGoodOnPostsIsNoPass`). The Pass skips
   the captcha only, never the rules, a refusal limit or a cooldown.
   `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts` and
   `TestPassSharesOneHourlyBudget` hold it there.
@@ -649,7 +676,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   it means.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
   board's `archive_days` have passed, and prunes the Pass tables (`prunePasses`), on
-  sale or not (`TestSweepPrunesThePassTables`). It is a one-shot mode rather than a timer because
+  sale or not (`TestSweepPrunesThePassTables`), with no Pass setting: each order keeps
+  the term it was sold with (`pass_orders.days`, `TestPassOrderKeepsItsTerm`), so
+  nothing about the Pass has to be given to the Job. It is a one-shot mode rather than a timer because
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
   on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
@@ -735,7 +764,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
   `EDUCHAN_VERIFY_DOMAINS`, `EDUCHAN_UPLOADS_ENABLED`, `EDUCHAN_MAIL_DEV`,
-  `EDUCHAN_DB_MAX_CONNS`. See `.env.example` and the README table.
+  `EDUCHAN_DB_MAX_CONNS`, and the Pass's: `EDUCHAN_PASS_SECRET`,
+  `EDUCHAN_STRIPE_SECRET_KEY`, `EDUCHAN_STRIPE_WEBHOOK_SECRET`, `EDUCHAN_STRIPE_PRICE_ID`,
+  `EDUCHAN_STRIPE_AUTOMATIC_TAX`, `EDUCHAN_PUBLIC_URL`, `EDUCHAN_PASS_DAYS` (1 to 36500,
+  stored on each order at checkout), `EDUCHAN_PASS_HOURLY_POSTS`, `EDUCHAN_PASS_COOLDOWN`
+  and `EDUCHAN_PASS_SALES` (`open` or `paused`). See `.env.example` and the README
+  table.
   `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
   when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
@@ -754,7 +788,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   State is per process and in memory — a shared backend means replacing
   `cooldownLimiter`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
+  builds a `cooldownSweep` over every limiter (thread, post, upload, verification code,
+  and the Pass's checkout and code check) and the Pass's hourly budget, and starts its
+  timer, which drops
   every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
   **While the process has CPU, an address is held in memory no longer than the
   longest cooldown that applies to it plus one minute**, counted from its last action
