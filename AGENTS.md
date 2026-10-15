@@ -485,26 +485,27 @@ one of those properties and needs a browser check before the test changes.
   now: `confirmRenewal` checks the held code with `/api/pass/activate`, stores what that
   says unless the Pass held changed meanwhile, and says the Pass is renewed only when the
   date it checks is the renewal's and later than the one it had; a renewal a reissue link
-  brought is said to come from the link, not from a payment in this browser. A reissue link's token rides in the fragment
-  (`/pass#reissue=…`), leaves the address first thing in `render`
-  (`takePassReissueToken`), waits for "Use the link here" in a browser that holds a Pass,
-  and goes once in a claim's body with a nonce of its own (`educhan:pass-reissue-nonce`),
-  the code derived from the two. Remove the Pass, Forget this browser and Stop collecting
-  it here stop the collection under way (`passVisit`) and drop both nonces before they
-  drop the claim (`forgetPassClaim`, `{"forget": true}`), and an answer to a claim or a
-  reissue link that arrives after one of them is dropped unstored (`passForgets`), so the
-  next person at a shared computer collects nothing. A page brought back from the back-forward cache is drawn
-  again through `render` (the `pageshow` listener), so the age screen still comes first. A
-  post whose Pass was no good is a `201` like any other, carrying `"pass": "invalid"` or
-  `"expired"`: the page forgets the first, marks the second run out without a date, and
-  says the post was sent. A code typed in after it ran out is kept with the date the
-  server gives. While sales are paused the page says `PASS_PAUSED` where Buy and Renew
-  were; `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
-  (`TestPassPageWhileSalesArePaused`). A browser that keeps no cookies or storage is not
-  sent to Stripe (`passCanBeKept`). The header's Pass link (`data-pass-link`) stays hidden
-  until `GET /api/site` says `"pass"` or the browser holds one (`showPassLink`).
-  `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
-  code; the Pass page's other promises have their own tests beside it.
+  brought is said to come from the link, not from a payment in this browser. A reissue
+  link's token rides in the fragment (`/pass#reissue=…`), leaves the address first thing
+  in `render` (`takePassReissueToken`), waits for "Use the link here" in a browser that
+  holds a Pass, and goes once in a claim's body with a nonce of its own
+  (`educhan:pass-reissue-nonce`), the code derived from the two. Remove the Pass, Forget
+  this browser and Stop collecting it here stop the collection under way (`passVisit`) and
+  drop both nonces before they drop the claim (`forgetPassClaim`, `{"forget": true}`), and
+  an answer to a claim or a reissue link that arrives after one of them is dropped
+  unstored (`passForgets`), so the next person at a shared computer collects nothing. A
+  page brought back from the back-forward cache is drawn again through `render` (the
+  `pageshow` listener), so the age screen still comes first. A post whose Pass was no good
+  is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page forgets
+  the first, marks the second run out without a date, and says the post was sent. A code
+  typed in after it ran out is kept with the date the server gives. While sales are paused
+  the page says `PASS_PAUSED` where Buy and Renew were; `PASS_NOT_ON_SALE` is the server's
+  `passNotOnSale` word for word (`TestPassPageWhileSalesArePaused`). A browser that keeps
+  no cookies or storage is not sent to Stripe (`passCanBeKept`). The header's Pass link
+  (`data-pass-link`) stays hidden until `GET /api/site` says `"pass"` or the browser holds
+  one (`showPassLink`). `TestOnlyThePostingRequestCarriesThePass` pins the header and
+  every read of the held code; the Pass page's other promises have their own tests
+  beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the

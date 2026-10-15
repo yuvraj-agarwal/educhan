@@ -258,9 +258,9 @@ func passClaimDeadline(now time.Time) time.Time {
 // (holdPassOrder) when Stripe reports the checkout completed as it happens.
 // Only a checkout sets the cookie, so a buyer who leaves before the hold and
 // comes back when the bank debit clears must still have it. The hold counts
-// from when that report arrives, so one Stripe delivers late, on a retry,
-// holds the order a few days past the cookie, and its buyer collects it with
-// a reissue link instead.
+// from when that report arrives, so one Stripe delivers late, on a retry, can
+// hold the order past the cookie, by at most as long as it was late rounded
+// up to whole days, and its buyer then collects it with a reissue link.
 func passClaimCookieUntil(now time.Time) time.Time {
 	return dayCeil(now.Add(stripeCheckoutTTL + passPendingPaymentTTL))
 }
@@ -930,7 +930,9 @@ type passReissueBody struct {
 // moderation key: a link the owner sends to the address the buyer wrote in
 // from, which works once, until a deadline like an order's. Whoever opens it
 // on the Pass page is given a new code for the Pass, and the old one stops
-// working; for a purchase paid and never collected, it collects it.
+// working. For a purchase or a renewal paid and never collected, it collects
+// it instead: a renewal's link renews the Pass it was for and hands over no
+// code, or makes a new Pass if that one has gone.
 //
 // The owner never sees a code, so reading Stripe's records beside the Pass
 // tables gives them nothing to post with. Only a Pass's origin, the payment
