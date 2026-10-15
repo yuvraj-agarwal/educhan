@@ -226,13 +226,15 @@ the instance's flags, and should print nothing about it:
 gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
 ```
 
-**Backups.** The three backup flags spell out what the instance keeps rather
-than leaning on defaults. It keeps a daily backup, the last seven of them, so a
+**Backups.** The three backup flags spell out the backup schedule and how many
+backups are kept, rather than leaning on defaults. The instance keeps a daily backup, the last seven of them, so a
 deleted row can sit in a backup for about a week. Each backup starts somewhere
 in a four-hour window opening at 05:00 UTC, well after the archive sweeper's
 run at 03:17 and its one retry (section 2.9). A backup therefore holds as little
-as possible of what the sweep deletes or rewrites, and if you move either time,
-move the other with it.
+as possible of what the sweep deletes, and if you move either time, move the
+other with it. Re-running `first-deploy.sh` moves an existing instance's window to
+05:00 and leaves its retention alone.
+
 Point-in-time recovery is off: `gcloud sql instances create` leaves it off for
 the Enterprise edition, where the Console would have turned it on. It would keep
 seven days of write-ahead log, and every commit record in that log carries its

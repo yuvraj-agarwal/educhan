@@ -135,9 +135,13 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
 # Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
 # sweep (below), so a backup holds as little as possible of what the sweep
-# deletes or rewrites. Point-in-time recovery stays off, the gcloud default for
-# this edition. deploy/README.md section 2.2 says what each of these keeps.
-exists gcloud sql instances describe "$DB_INSTANCE" ||
+# deletes. Point-in-time recovery stays off, the gcloud default for this
+# edition, and is never changed here. deploy/README.md section 2.2 says what
+# each of these keeps. An existing instance gets only the start time, so a
+# re-run never shortens a retention someone has raised.
+if exists gcloud sql instances describe "$DB_INSTANCE"; then
+  gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null
+else
   gcloud sql instances create "$DB_INSTANCE" \
     --database-version=POSTGRES_16 \
     --edition=ENTERPRISE \
@@ -145,6 +149,7 @@ exists gcloud sql instances describe "$DB_INSTANCE" ||
     --region="$REGION" \
     --storage-size=10GB \
     --backup --backup-start-time=05:00 --retained-backups-count=7
+fi
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"
 CLOUDSQL_INSTANCE="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
