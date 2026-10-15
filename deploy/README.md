@@ -75,9 +75,14 @@ project that has billing linked, one script does every step in this section:
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
 the build, the deploy, the request-log exclusion, and the archive sweeper Job
 with its daily schedule. Re-running it from a newer checkout is how an update
-ships: it moves the service and the Job onto the new image together. It leaves image uploads
-and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
-the environment turns that off), prints the service URL, and is safe to re-run.
+ships: it moves the service and the Job onto the new image together, sets the
+variables and secrets it names, and keeps any others added by hand since. Every
+run still turns image uploads and verification off, and sets the warm instance
+count: one, for a demo, unless `MIN_INSTANCES=0` is in the environment. It
+prints the service URL and is safe to re-run. To take a setting off on purpose,
+use `gcloud run services update educhan --region "$REGION"` with
+`--remove-env-vars NAME` or, for a secret, `--remove-secrets NAME`; the sweeper
+takes the same flags through `gcloud run jobs update educhan-sweep`.
 
 ```bash
 git clone https://github.com/yuvraj-agarwal/educhan.git && cd educhan
@@ -194,7 +199,8 @@ gcloud sql instances create educhan-db \
   --edition=ENTERPRISE \
   --tier=db-f1-micro \
   --region="$REGION" \
-  --storage-size=10GB
+  --storage-size=10GB \
+  --backup --backup-start-time=05:00 --retained-backups-count=7
 
 gcloud sql databases create educhan --instance=educhan-db
 
@@ -211,6 +217,41 @@ export CLOUDSQL_INSTANCE="$(gcloud sql instances describe educhan-db \
 Cloud SQL defaults to Enterprise Plus, which has no shared-core tiers, and the
 create fails without it. Shared-core tiers carry no SLA and allow about 25
 connections; section 3 covers how the pool size and `maxScale` add up.
+
+**Leave `track_commit_timestamp` off.** It is off by default, in PostgreSQL and
+in Cloud SQL, and none of the commands here set it. Switched on, it records when
+each transaction committed, and `pg_xact_commit_timestamp(xmin)` turns that into
+the time any row was last written, to well under a second. Anyone holding the
+database could then date every verification credential written while it was on,
+which defeats storing the expiry rounded to a day so that an issuance cannot be
+matched to the posts around it. Never add it to `--database-flags`; this shows
+the instance's flags, and should print nothing about it:
+
+```bash
+gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
+```
+
+**Backups.** The three backup flags spell out the backup schedule and how many
+backups are kept, rather than leaning on defaults. The instance keeps a daily
+backup, the last seven of them, so a deleted row can sit in a backup for about a
+week. Each backup starts somewhere in a four-hour window opening at 05:00 UTC,
+well after the archive sweeper's run at 03:17 and its one retry (section 2.9). A
+backup therefore holds as little as possible of what the sweep deletes, and if
+you move either time, move the other with it. On an instance that already has
+backups on, re-running `first-deploy.sh` moves the window to 05:00 and changes
+nothing else; it leaves alone an instance whose backups were turned off.
+
+Point-in-time recovery is off: `gcloud sql instances create` leaves it off for
+the Enterprise edition, where the Console would have turned it on. It would keep
+seven days of write-ahead log, and every commit record in that log carries its
+commit time, which would date each write exactly within those seven days,
+whatever `track_commit_timestamp` (above) says. Turning it on is a trade between
+recovery and that record, so it is a decision, not a default. To check what an
+instance keeps:
+
+```bash
+gcloud sql instances describe educhan-db --format='yaml(settings.backupConfiguration)'
+```
 
 ### 2.3 The media bucket
 
@@ -512,6 +553,10 @@ gcloud scheduler jobs create http educhan-sweep-daily \
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/educhan-sweep:run" \
   --oauth-service-account-email "$SCHEDULER_SA"
 ```
+
+03:17 UTC leaves the sweep and its one retry time to finish before the
+database's backup window opens at 05:00 (section 2.2). Keep it that way if you
+move either.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
