@@ -2,6 +2,7 @@ package app
 
 import (
 	"io/fs"
+	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
@@ -360,5 +361,89 @@ func TestPassAttestationIsNeverPreselectedOrKept(t *testing.T) {
 	}
 	if !strings.Contains(script, `const PASS_AGE_REFUSED = "`+passAdultRequired+`";`) {
 		t.Errorf("PASS_AGE_REFUSED in app.js is not the server's refusal %q", passAdultRequired)
+	}
+}
+
+// GET /api/site says what this server takes, and like the board list it is
+// asked for only once the age screen has its answer: from loadSite, which
+// render calls once, past the screen. It goes out with nothing of the
+// reader's on it, no header or body, because it is the same answer for
+// everyone.
+func TestSiteSettingsAreFetchedOnlyPastTheAgeScreen(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	load := withoutComments(jsFunction(t, script, "loadSite"))
+
+	if n := strings.Count(code, `"/api/site"`); n != 1 || !strings.Contains(load, `api("/api/site")`) {
+		t.Errorf(`"/api/site" appears %d times in app.js; want once, as api("/api/site") in loadSite`, n)
+	}
+	// The definition, and one call.
+	if n := strings.Count(code, "loadSite()"); n != 2 {
+		t.Errorf("loadSite() appears %d times in app.js; want its definition and one call, in render", n)
+	}
+	render := withoutComments(jsFunction(t, script, "render"))
+	gate := strings.Index(render, "renderAgeGate(age);")
+	passed := strings.Index(render, `if (age === "ok") {`)
+	call := strings.Index(render, "await loadSite();")
+	if gate < 0 || passed < 0 || call < 0 || !(gate < passed && passed < call) {
+		t.Error(`render no longer calls loadSite only past the age screen, inside if (age === "ok")`)
+	}
+}
+
+// jsString returns the value of a top-level string constant in app.js.
+func jsString(t *testing.T, script, name string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?m)^const ` + name + ` = "([^"\\]*)";$`).FindStringSubmatch(script)
+	if m == nil {
+		t.Fatalf("app.js has no string constant %s; this test reads it", name)
+	}
+	return m[1]
+}
+
+// The posting form recovers from two refusals of an image by taking the image
+// off and keeping the text, and it knows them by the server's own words. If
+// those words drifted apart, a page would show the raw refusal and leave the
+// image on the form to be refused again, so they are checked against what the
+// server actually answers.
+func TestClientKnowsTheServersImageRefusals(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	limitReached := jsString(t, script, "IMAGE_LIMIT_REACHED")
+	switchedOff := jsString(t, script, "UPLOADS_SWITCHED_OFF")
+	for name, words := range map[string]string{"IMAGE_LIMIT_REACHED": limitReached, "UPLOADS_SWITCHED_OFF": switchedOff} {
+		if n := strings.Count(code, `"`+words+`"`); n != 1 {
+			t.Errorf("app.js spells out %q %d times; want once, as %s", words, n, name)
+		}
+		if n := strings.Count(code, "err.message === "+name); n != 2 {
+			t.Errorf("app.js compares a refusal with %s %d times; want twice, in errorMessage and in the submit handler", name, n)
+		}
+	}
+
+	on := testServer(t, nil)
+	on.addBoard("words")
+	on.exec(`UPDATE boards SET image_limit = 0 WHERE slug = 'words'`)
+	thread := on.createThread("words", "", "", "a text thread")
+	if status, msg := on.imageReply("words", thread.ThreadNo, "an image"); status != http.StatusForbidden || msg != limitReached {
+		t.Errorf("image reply past the cap: %d %q, want 403 %q", status, msg, limitReached)
+	}
+
+	off := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = false })
+	off.addBoard("words")
+	var refused createdPost
+	if status := off.upload("/api/boards/words/threads", map[string]string{"body": "pic"},
+		"pic.png", pngBytes(t, 24, 24), &refused); status != http.StatusForbidden || refused.Error != switchedOff {
+		t.Errorf("image post with uploads off: %d %q, want 403 %q", status, refused.Error, switchedOff)
+	}
+}
+
+// Forget this browser is the FAQ's advice for a shared computer, and its
+// links land on /verify#forget-browser whatever state the page is in, so
+// every state the page can draw carries the control.
+func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
+	view := withoutComments(jsFunction(t, appScript(t), "verifyViewHTML"))
+	returns := strings.Count(view, "return `")
+	offers := strings.Count(view, "${forgetBrowserHTML()}`;")
+	if returns < 4 || offers != returns {
+		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
 	}
 }

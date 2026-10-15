@@ -24,6 +24,17 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleSite reports the server's posting settings: whether images are
+// accepted, and how large one may be. It answers every caller the same way and
+// reads nothing from the request, so it says nothing about who is asking, and
+// asking tells the server nothing either.
+func (a *App) handleSite(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, Site{
+		Uploads:        a.cfg.UploadsEnabled,
+		MaxUploadBytes: a.cfg.MaxUploadBytes,
+	})
+}
+
 func (a *App) handleListBoards(w http.ResponseWriter, r *http.Request) {
 	boards, err := a.store.Boards(r.Context())
 	if err != nil {
@@ -275,6 +286,16 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	}
 	passKey, ok := a.postPass(w, r, sub.Badge)
 	if !ok {
+		return
+	}
+	// A reply the thread would refuse anyway — gone, archived, locked, or an
+	// image for a thread at its cap — is turned away here, before flood
+	// control starts a cooldown for it and before its upload is stored. The
+	// poster told to send the text on its own can then do so at once. This
+	// read takes no lock: CreateReply checks again under the board's row, and
+	// that is the check that holds when replies race for the last slot.
+	if err := a.store.ReplyRefusal(r.Context(), board, no, sub.Upload != nil); err != nil {
+		a.fail(w, r, err, "could not add post")
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)

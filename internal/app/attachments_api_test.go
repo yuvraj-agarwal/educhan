@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/jpeg"
@@ -13,10 +15,13 @@ import (
 	"io"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
+	"time"
 )
 
 /* Fixtures ----------------------------------------------------------------- */
@@ -319,6 +324,78 @@ func TestUploadRejections(t *testing.T) {
 	})
 }
 
+// pngClaiming is a one-pixel PNG whose header claims to be w×h. IHDR follows
+// the 8-byte signature: its length, its type, the width and the height, and
+// after the rest of its data a CRC over the type and the data.
+func pngClaiming(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	data := pngBytes(t, 1, 1)
+	binary.BigEndian.PutUint32(data[16:20], w)
+	binary.BigEndian.PutUint32(data[20:24], h)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+// A file whose header shows it cannot be used, because it is not an accepted
+// image or has too many pixels, is refused before flood control, so the poster
+// can send the text on its own at once. An image whose header is sound but
+// whose pixels do not decode is found only by decoding, after the cooldowns
+// have started, which is the one exception the README names.
+func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
+	c := testServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.ThreadCooldown = time.Minute
+		cfg.PostCooldown = time.Minute
+		cfg.UploadCooldown = time.Minute
+	})
+	c.addBoard("general")
+	threads := "/api/boards/general/threads"
+	unusable := []struct {
+		name, filename string
+		data           []byte
+		want           string
+	}{
+		{"not an image", "notes.png", []byte("#!/bin/sh\necho hello\n"), "unsupported image format"},
+		{"too many pixels", "huge.png", pngClaiming(t, 10000, 10000), "image resolution is too large"},
+	}
+
+	const poster = "198.51.100.21"
+	from := http.Header{"X-Forwarded-For": {poster}}
+	for _, tc := range unusable {
+		var out createdPost
+		if status := c.uploadWithHeaders(from, threads, map[string]string{"body": "look"}, tc.filename, tc.data, &out); status != http.StatusBadRequest || !strings.Contains(out.Error, tc.want) {
+			t.Errorf("thread with %s: %d %q, want 400 %q", tc.name, status, out.Error, tc.want)
+		}
+	}
+	var thread createdPost
+	if status := c.postFrom(poster, threads, map[string]any{"body": "look, no image"}, &thread); status != http.StatusCreated {
+		t.Fatalf("text thread after the refusals: %d %q, want 201: a refused image started the thread cooldown", status, thread.Error)
+	}
+
+	replies := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+	for _, tc := range unusable {
+		var out createdPost
+		if status := c.uploadWithHeaders(from, replies, map[string]string{"body": "look"}, tc.filename, tc.data, &out); status != http.StatusBadRequest || !strings.Contains(out.Error, tc.want) {
+			t.Errorf("reply with %s: %d %q, want 400 %q", tc.name, status, out.Error, tc.want)
+		}
+	}
+	var reply createdPost
+	if status := c.postFrom(poster, replies, map[string]any{"body": "and no image"}, &reply); status != http.StatusCreated {
+		t.Errorf("text reply after the refusals: %d %q, want 201: a refused image started the reply cooldown", status, reply.Error)
+	}
+
+	// The header of a PNG and none of its pixels.
+	const another = "198.51.100.22"
+	var out createdPost
+	if status := c.uploadWithHeaders(http.Header{"X-Forwarded-For": {another}}, replies, map[string]string{"body": "look"},
+		"cut.png", pngBytes(t, 24, 24)[:33], &out); status != http.StatusBadRequest || !strings.Contains(out.Error, "image could not be decoded") {
+		t.Fatalf("reply with pixels missing: %d %q, want 400 %q", status, out.Error, "image could not be decoded")
+	}
+	if status := c.postFrom(another, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
+		t.Errorf("text reply after an image that failed to decode: %d, want 429: decoding comes after flood control", status)
+	}
+}
+
 // TestUploadsSwitchedOff covers the default deployment: a post carrying an
 // image is refused before anything is stored, and text posts are unaffected,
 // including multipart ones whose file input was left empty.
@@ -332,8 +409,8 @@ func TestUploadsSwitchedOff(t *testing.T) {
 		"pic.png", image, &refused); status != http.StatusForbidden {
 		t.Fatalf("thread with image: status %d, want 403", status)
 	}
-	if !strings.Contains(refused.Error, "switched off") {
-		t.Errorf("error = %q, want it to say uploads are switched off", refused.Error)
+	if refused.Error != "image uploads are switched off on this server" {
+		t.Errorf("error = %q, want the exact switched-off refusal clients match on", refused.Error)
 	}
 
 	var thread createdPost
@@ -371,6 +448,209 @@ func TestUploadsSwitchedOff(t *testing.T) {
 		if files, _ := os.ReadDir(filepath.Join(c.app.cfg.UploadDir, e.Name())); len(files) > 0 {
 			t.Errorf("upload dir %s has %d files, want none", e.Name(), len(files))
 		}
+	}
+}
+
+// countingReader counts what the server reads of a request body.
+type countingReader struct {
+	r io.Reader
+	n int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// With uploads switched off an image post is refused for that reason however
+// large its file: a file over the size limit is a 403 that names the switch,
+// not a 413 that sends the poster off to find a smaller one, and the server
+// stops reading once the body is past what text alone could be. A refusal
+// stores nothing and starts no cooldown, so the text can go straight away on
+// its own, and the longest legal post still fits under the smaller limit.
+func TestUploadsSwitchedOffRefusesALargeFileUnread(t *testing.T) {
+	const limit = 1 << 20
+	// Past what even a server taking images reads before it gives up.
+	big := make([]byte, limit+multipartOverhead+1)
+	if _, err := rand.Read(big); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	small := pngBytes(t, 64, 64)
+
+	// The control: a server taking images refuses this file for its size.
+	on := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = limit })
+	on.addBoard("general")
+	var tooBig createdPost
+	if status := on.upload("/api/boards/general/threads", map[string]string{"body": "big"},
+		"big.png", big, &tooBig); status != http.StatusRequestEntityTooLarge {
+		t.Fatalf("uploads on: status %d (%s), want 413", status, tooBig.Error)
+	}
+
+	c := testServer(t, func(cfg *Config) {
+		cfg.UploadsEnabled = false
+		cfg.MaxUploadBytes = limit
+		cfg.ThreadCooldown = time.Minute
+		cfg.PostCooldown = time.Minute
+		cfg.UploadCooldown = time.Minute
+	})
+	c.addBoard("general")
+	refuse := func(what, path string, file []byte) {
+		t.Helper()
+		var out createdPost
+		status := c.upload(path, map[string]string{"body": what}, "pic.png", file, &out)
+		if status != http.StatusForbidden || out.Error != uploadsSwitchedOff {
+			t.Errorf("%s: status %d %q, want 403 %q", what, status, out.Error, uploadsSwitchedOff)
+		}
+	}
+
+	refuse("thread with a small image", "/api/boards/general/threads", small)
+	refuse("thread with an image over the size limit", "/api/boards/general/threads", big)
+	// The thread cooldown is a minute, so this goes through only if neither
+	// refusal started it.
+	var thread createdPost
+	if status := c.upload("/api/boards/general/threads", map[string]string{"body": "the text alone"},
+		"", nil, &thread); status != http.StatusCreated {
+		t.Fatalf("text-only thread after the refusals: status %d (%s)", status, thread.Error)
+	}
+
+	replies := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+	refuse("reply with a small image", replies, small)
+	refuse("reply with an image over the size limit", replies, big)
+	// The longest post the rules allow, written in four-byte characters, with
+	// the empty file part a browser sends for an untouched input.
+	line := strings.Repeat("𝑥", 79)
+	longest := map[string]string{
+		"name": strings.Repeat("𝑥", maxNameLen),
+		"body": strings.TrimSuffix(strings.Repeat(line+"\r\n", maxBodyLines), "\r\n"),
+	}
+	var reply createdPost
+	if status := c.upload(replies, longest, "blank.png", nil, &reply); status != http.StatusCreated {
+		t.Fatalf("the longest legal reply after the refusals: status %d (%s)", status, reply.Error)
+	}
+	if got := fetchThread(t, c, "general", thread.ThreadNo).Posts[1].Body; got != strings.ReplaceAll(longest["body"], "\r\n", "\n") {
+		t.Errorf("the longest legal reply came back as %d characters, want it whole", len([]rune(got)))
+	}
+
+	c.app.uploadLimiter.mu.Lock()
+	uploadKeys := len(c.app.uploadLimiter.seen)
+	c.app.uploadLimiter.mu.Unlock()
+	if uploadKeys != 0 {
+		t.Errorf("the upload cooldown holds %d clients, want none: nothing was uploaded", uploadKeys)
+	}
+	var count int
+	if err := c.app.pool.QueryRow(context.Background(),
+		`SELECT count(*) FROM attachments`).Scan(&count); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if count != 0 {
+		t.Errorf("stored %d attachments, want 0", count)
+	}
+	if files := filesUnder(t, c.app.cfg.UploadDir); len(files) != 0 {
+		t.Errorf("upload directory holds %v, want nothing", files)
+	}
+
+	// How much of the file the server read: no more than a text post may be.
+	var body bytes.Buffer
+	form := multipart.NewWriter(&body)
+	_ = form.WriteField("body", "counted")
+	part, err := form.CreateFormFile(uploadFieldName, "big.png")
+	if err != nil {
+		t.Fatalf("create file part: %v", err)
+	}
+	if _, err := part.Write(big); err != nil {
+		t.Fatalf("write file part: %v", err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatalf("close form: %v", err)
+	}
+	sent := &countingReader{r: &body}
+	req := httptest.NewRequest(http.MethodPost, "/api/boards/general/threads", sent)
+	req.Header.Set("Content-Type", form.FormDataContentType())
+	rec := httptest.NewRecorder()
+	c.app.Routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("counted request: status %d (%s), want 403", rec.Code, rec.Body)
+	}
+	if sent.n > maxRequestBytes+1 {
+		t.Errorf("the server read %d bytes of a %d-byte image post, want at most %d", sent.n, len(big), maxRequestBytes+1)
+	}
+}
+
+// GET /api/site tells a client what the posting form can offer before anyone
+// fills one in: whether images are taken at all, and the size limit behind the
+// 413. It is configuration, so it carries those two fields and nothing about
+// the caller.
+func TestSiteReportsTheUploadSettings(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		uploads bool
+		limit   int64
+	}{
+		{"uploads on", true, 3 << 20},
+		{"uploads off", false, defaultMaxUploadBytes},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := testServer(t, func(cfg *Config) {
+				cfg.UploadsEnabled = tc.uploads
+				cfg.MaxUploadBytes = tc.limit
+			})
+
+			res, payload := c.fetch("/api/site", nil)
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("status %d (%s), want 200", res.StatusCode, payload)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(payload, &fields); err != nil {
+				t.Fatalf("decode %s: %v", payload, err)
+			}
+			var keys []string
+			for key := range fields {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			if got := strings.Join(keys, ","); got != "max_upload_bytes,uploads" {
+				t.Errorf("fields = %s, want exactly max_upload_bytes,uploads", got)
+			}
+			var site Site
+			if err := json.Unmarshal(payload, &site); err != nil {
+				t.Fatalf("decode %s: %v", payload, err)
+			}
+			if site.Uploads != tc.uploads {
+				t.Errorf("uploads = %v, want %v", site.Uploads, tc.uploads)
+			}
+			if site.MaxUploadBytes != tc.limit {
+				t.Errorf("max_upload_bytes = %d, want the configured %d", site.MaxUploadBytes, tc.limit)
+			}
+			if cookies := res.Header.Values("Set-Cookie"); len(cookies) != 0 {
+				t.Errorf("GET /api/site set cookies %v, want none", cookies)
+			}
+
+			// Whatever a request carries, the answer is the same bytes.
+			_, again := c.fetch("/api/site", http.Header{
+				"X-Forwarded-For":      {"198.51.100.23"},
+				"X-Educhan-Poster-Key": {"AAAAAAAAAAAAAAAAAAAAAA"},
+				"Cookie":               {"educhan_verify=whatever"},
+			})
+			if !bytes.Equal(payload, again) {
+				t.Errorf("answered differently to a request carrying headers:\n without: %s\n with:    %s", payload, again)
+			}
+		})
+	}
+
+	// The limit reported is the limit enforced: one byte over it is a 413.
+	c := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = 1 << 20 })
+	c.addBoard("general")
+	var site Site
+	c.get("/api/site", &site)
+	big := noisyPNGBytes(t, 800, 800)
+	if int64(len(big)) <= site.MaxUploadBytes {
+		t.Fatalf("fixture is %d bytes, expected it to exceed the reported %d", len(big), site.MaxUploadBytes)
+	}
+	var out createdPost
+	if status := c.upload("/api/boards/general/threads", map[string]string{"body": "big"},
+		"big.png", big, &out); status != http.StatusRequestEntityTooLarge {
+		t.Errorf("an image over the reported limit: status %d (%s), want 413", status, out.Error)
 	}
 }
 

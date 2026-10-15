@@ -2,7 +2,9 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
+	"hash/crc32"
 	"image"
 	"image/color"
 	"image/color/palette"
@@ -234,6 +236,54 @@ func TestProcessRejectsBadInput(t *testing.T) {
 	corrupt := append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, []byte("nonsense")...)
 	if _, err := Process(corrupt); !errors.Is(err, ErrCorruptImage) {
 		t.Fatalf("Process(corrupt) error = %v, want ErrCorruptImage", err)
+	}
+}
+
+// pngClaiming is a one-pixel PNG whose header claims to be w×h, so a check that
+// reads only the header sees an image of that size.
+func pngClaiming(t *testing.T, w, h uint32) []byte {
+	t.Helper()
+	data := encodePNG(t, 1, 1)
+	// IHDR follows the 8-byte signature: its length, its type, then the width
+	// and the height. Its CRC, over the type and the data, comes after.
+	binary.BigEndian.PutUint32(data[16:20], w)
+	binary.BigEndian.PutUint32(data[20:24], h)
+	binary.BigEndian.PutUint32(data[29:33], crc32.ChecksumIEEE(data[12:29]))
+	return data
+}
+
+// Inspect refuses what an upload's header alone shows to be unusable, for the
+// same reasons Process gives, and nothing more: an image whose header is sound
+// but whose pixels are missing passes it, and only Process finds out.
+func TestInspectReadsOnlyTheHeader(t *testing.T) {
+	cases := []struct {
+		name string
+		data []byte
+		want error
+	}{
+		{"not an image", []byte("#!/bin/sh\necho hello\n"), ErrUnsupportedFormat},
+		{"a signature and junk", append([]byte{0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A}, []byte("nonsense")...), ErrCorruptImage},
+		{"too many pixels", pngClaiming(t, 10000, 10000), ErrImageTooLarge},
+	}
+	for _, tc := range cases {
+		if _, err := Inspect(tc.data); !errors.Is(err, tc.want) {
+			t.Errorf("Inspect(%s) error = %v, want %v", tc.name, err, tc.want)
+		}
+		if _, err := Process(tc.data); !errors.Is(err, tc.want) {
+			t.Errorf("Process(%s) error = %v, want %v", tc.name, err, tc.want)
+		}
+	}
+
+	whole := encodePNG(t, 24, 24)
+	if format, err := Inspect(whole); err != nil || format != FormatPNG {
+		t.Errorf("Inspect(png) = %v, %v; want png and no error", format, err)
+	}
+	headerOnly := whole[:33] // the signature and IHDR, and no pixels
+	if _, err := Inspect(headerOnly); err != nil {
+		t.Errorf("Inspect(header only) error = %v, want none: the header is sound", err)
+	}
+	if _, err := Process(headerOnly); !errors.Is(err, ErrCorruptImage) {
+		t.Errorf("Process(header only) error = %v, want ErrCorruptImage", err)
 	}
 }
 

@@ -95,23 +95,37 @@ type Processed struct {
 	Thumb  Thumbnail
 }
 
-// Process validates the raw upload and derives its thumbnail. Animated GIFs are
-// thumbnailed from their first frame.
-func Process(data []byte) (Processed, error) {
+// Inspect checks what an upload says about itself without decoding it: its
+// format, by magic bytes, and its dimensions, from its header. That is cheap
+// enough to run before flood control, so a file that is not an accepted image,
+// or one too large to decode, can be refused without costing its poster a
+// cooldown. It cannot tell whether the pixels decode; only Process can, and
+// Process runs it first.
+func Inspect(data []byte) (Format, error) {
 	format, ok := DetectFormat(data)
 	if !ok {
-		return Processed{}, ErrUnsupportedFormat
+		return Format{}, ErrUnsupportedFormat
 	}
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
 	if err != nil {
-		return Processed{}, ErrCorruptImage
+		return Format{}, ErrCorruptImage
 	}
 	if cfg.Width <= 0 || cfg.Height <= 0 {
-		return Processed{}, ErrCorruptImage
+		return Format{}, ErrCorruptImage
 	}
 	if int64(cfg.Width)*int64(cfg.Height) > MaxPixels {
-		return Processed{}, ErrImageTooLarge
+		return Format{}, ErrImageTooLarge
+	}
+	return format, nil
+}
+
+// Process validates the raw upload and derives its thumbnail. Animated GIFs are
+// thumbnailed from their first frame.
+func Process(data []byte) (Processed, error) {
+	format, err := Inspect(data)
+	if err != nil {
+		return Processed{}, err
 	}
 
 	src, _, err := image.Decode(bytes.NewReader(data))

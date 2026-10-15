@@ -484,6 +484,43 @@ type NewReply struct {
 	Attachment *newAttachment
 }
 
+// ReplyRefusal reports what CreateReply would refuse a reply for, as far as the
+// thread can say right now: errNotFound, errThreadArchived, errThreadLocked,
+// and, for a reply bringing an image, errImageLimit, in CreateReply's order.
+// It takes no lock and decides nothing. It lets the handler turn away a reply
+// that cannot land before flood control charges for it and before its upload
+// is stored, which is what a poster told to send the text on its own needs;
+// CreateReply makes the same checks under the board and thread locks, and
+// that is what enforces them when replies race. Like that check, the image
+// count is taken from the posts, not from threads.image_count.
+func (s *Store) ReplyRefusal(ctx context.Context, board Board, threadNo int64, withImage bool) error {
+	var (
+		archived, locked bool
+		images           int
+	)
+	err := s.pool.QueryRow(ctx, `
+		SELECT t.archived_at IS NOT NULL, t.locked,
+		       CASE WHEN $3 THEN (
+		           SELECT count(*) FROM posts p JOIN attachments a ON a.post_id = p.id
+		           WHERE p.thread_id = t.id)
+		       ELSE 0 END
+		FROM threads t
+		WHERE t.board_id = $1 AND t.no = $2`, board.ID, threadNo, withImage).Scan(&archived, &locked, &images)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return errNotFound
+	case err != nil:
+		return err
+	case archived:
+		return errThreadArchived
+	case locked:
+		return errThreadLocked
+	case withImage && images >= board.ImageLimit:
+		return errImageLimit
+	}
+	return nil
+}
+
 // CreateReply appends a post to a thread. The thread is bumped unless the reply
 // is saged or the thread has reached its board's bump limit. It returns
 // errNotFound for a missing thread, errThreadArchived for an archived one,
