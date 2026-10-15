@@ -649,8 +649,12 @@ loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost dow
   to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
   post (the slowest is about 120), and eight times the text at most ten times the
-  steps. A new rule that trips it is planned or rewritten, not given a bigger bound;
-  add the body that tripped it to the table.
+  steps. A step is not a fixed time: `checkWork` charges a check 128 bytes, and the
+  checks that read wider fixed windows (its comment lists them) are not charged the
+  rest, so across those bodies a millisecond is about 25,000 to 120,000 steps, and the
+  README's timing is measured, not derived from the bound. A new rule that trips it is
+  planned or rewritten, not given a bigger bound; add the body that tripped it to the
+  table.
 - `TestFilterSearchesMatchTheirRegexps` and `FuzzFilterSearches` hold every search to
   what Go's regexp finds with the same pattern, groups included, on every view, and
   `TestFilterSearchesAreAllPlanned` fails if a pattern cannot be planned and would run
@@ -724,8 +728,7 @@ rules fit these posts and are no measurement of anything else. The README says s
 a claim about how well the filter works needs posts it was not fitted to. Relabelled
 posts carry the reason in `why`: drama-range and 555-01xx numbers labelled `block`
 were relabelled `publish`, as was a WhatsApp channel link (one-way, so no private
-conversation), and a joking "kms" labelled `publish` was relabelled `support`, as the
-README's rules have them. Eight known misses are left, each with its note: an address
+conversation), as the README's rules have them. Eight known misses are left, each with its note: an address
 in base64, and seven risky posts whose harm is implied or written as code.
 
 **API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting

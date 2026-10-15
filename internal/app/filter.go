@@ -5783,9 +5783,17 @@ func setOf(list string) map[string]bool {
 type matchCheck func(v *view, m []int) bool
 
 // checkWork is what a check is counted as costing besides the match itself:
-// the most it reads round a match is a clause or a sentence each side, cut to
-// 64 bytes (clauseAfter, sentenceAround). The searches a check runs over
-// those count their own work.
+// what most checks read round a match, a clause or a sentence each side, cut
+// to 64 bytes (clauseAfter, sentenceAround). The searches a check runs over
+// those count their own work. Some checks read further, in windows of a
+// fixed width that this does not count: leavingTheBoard 200 bytes each side;
+// deathAround, quotationAround, closingMark, quotesTheReply and the "end it"
+// readings in selfHarmCheck 120; appFrame's readOn 96; imagineNot and
+// ageRuleAfter 80; gameNamed 64 before the sentence; and privateCue the
+// sentence after a visit as well as the one round it. Each is a constant per
+// check, so the count stays linear in the post, but a counted step stands
+// for more time in a body whose matches take those checks
+// (TestFilterCostIsBounded says how much).
 const checkWork = 2 * 64
 
 // checked puts match m to check, counting it in the view's work.

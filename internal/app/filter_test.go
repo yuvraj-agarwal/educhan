@@ -2033,6 +2033,66 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 	}
 }
 
+// TestFilterReadsBothSidesOfItsReadings pins both sides of readings that the
+// corpus alone covered: each pair is a post a reading lets through and a
+// post it must not, so that a reading forced either way fails here.
+func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
+	const (
+		publish = "publish"
+		support = "support"
+		contact = "block:contact"
+		threat  = "hold:" + holdThreat
+	)
+	for _, c := range []struct{ body, want string }{
+		// threatSymbolRules and threatSymbolCheck: a weapon drawn at a
+		// school, unless a game, a toy, a festival or a story is named.
+		{"🔫🏫 tomorrow", threat},
+		{"💣🏫 monday", threat},
+		{"🔪🏫 at lunch tomorrow", threat},
+		{"🔫🏫 tomorrow, not a game", threat},
+		{"🔫🏫 game night at school tomorrow", publish},
+		{"🔫🏫 nerf war at school tomorrow", publish},
+		{"💣🏫 diwali at school tomorrow, bring crackers", publish},
+		{"🔫🏫 the play at school tomorrow has a shootout scene", publish},
+		// futile: a reason found is not a reason missing.
+		{"i don't see any reason to live", support},
+		{"what's the point of living", support},
+		{"I found a reason to live", publish},
+		{"finally found a reason to keep going", publish},
+		// agrees: a quoted line taken up as the poster's own, and not.
+		{">>123\n>i want to die\nsame", support},
+		{">>123\n>i want to die\nme too", support},
+		{">>123\n>i want to die\nplease talk to someone, you matter", publish},
+		// freephone: a UK freephone number is an organisation's.
+		{"call 0800 123 4567 for help", publish},
+		{"ring 0808 800 5000 any time", publish},
+		{"call 07911 123456", contact},
+		{"call 0161 234 5678", contact},
+		// ownSubject: someone else stockpiling is not the poster.
+		{"doctors are stockpiling paracetamol", publish},
+		{"the pharmacies are hoarding meds before the strike", publish},
+		{"been stockpiling paracetamol", support},
+		{"I've been hoarding my meds", support},
+		// forAPurpose: only a purpose named excuses medicines put by.
+		{"i've been saving up my meds for the trip", publish},
+		{"I've been saving up pills for when I'm ready", support},
+	} {
+		v := bodyVerdict(c.body)
+		got := publish
+		switch v.Outcome {
+		case contentSupport:
+			got = support
+		case contentBlock:
+			got = "block:" + v.Rule
+		case contentHold:
+			got = "hold:" + v.Hold
+		}
+		if got != c.want {
+			t.Errorf("%q: got %+v, want %s", c.body, v, c.want)
+		}
+	}
+}
+
 // TestFilterPairsAThreatAcrossTheSubjectAndTheBody pins that the subject and
 // the body are read as one text for a threat: the subject is the thread's
 // title, shown right above the body.
@@ -2347,10 +2407,14 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // under the race detector, and a timer's noise cannot fail or pass it.
 //
 // The first bound is per byte of the post, at full length: the most any of
-// these bodies costs is about 120 steps a byte, and none takes more than
-// about 15ms of one 2.1 GHz core (README, "Content rules"). A body that costs
-// much more than the rest has to be looked at, and the rule behind it
-// planned or rewritten, before the bound is raised. The second is that eight
+// these bodies costs is about 120 steps a byte. A step is not a fixed time —
+// across these bodies a millisecond is anything from about 25,000 steps to
+// about 120,000, and the body that costs the most steps is not the slowest —
+// so the bound holds the work linear and caps it, and the time is the
+// README's to state, from timing the bodies ("Content rules": no more than
+// about 17 ms of one 2.1 GHz core). A body that costs much more than the
+// rest has to be looked at, and the rule behind it planned or rewritten,
+// before the bound is raised. The second is that eight
 // times the text costs at most ten times as much: linear work costs eight
 // times, a fixed part a little less, and anything quadratic would cost
 // sixty-four.
