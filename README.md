@@ -462,28 +462,36 @@ cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
 What it does with posts like the ones it is written for is pinned by a corpus:
-1,804 made-up posts in `internal/app/testdata/filter_corpus`, in eight files,
-two for each kind of post: `academic.jsonl` and `academic_2.jsonl` (440 posts),
-`life.jsonl` and `life_2.jsonl` (461, student life), `contact.jsonl` and
-`contact_2.jsonl` (462, contact details) and `risk.jsonl` and `risk_2.jsonl`
-(441, risky posts), each labelled with what the filter should do.
+2,867 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
+three for each kind of post: `academic.jsonl`, `academic_2.jsonl` and
+`academic_3.jsonl` (700 posts), the same three for `life` (715, student life),
+for `contact` (743, contact details) and for `risk` (709, risky posts), each
+labelled with what the filter should do.
 `TestFilterCorpus` runs every one through the filter and fails on any it gets
 wrong, except those marked as known misses, each with a note saying why the
 miss is accepted, and logs how many ordinary posts were stopped and how much of
 each kind was caught (`go test -run TestFilterCorpus -v ./internal/app`).
-**The rules were fitted to all 1,804 posts.** They were first written against
-the files without `_2`; the `_2` files were written apart from them and then
-used to rewrite the threat, self-harm and grooming rules (which first held 55
-of their 135 risky posts) and then the contact and support rules (which first
-blocked 98 of their 131 contact details, showed support for 17 of their 30
-crisis posts, and stopped 7 of their 613 ordinary posts). So the rates the test
-logs — no ordinary post stopped, and all but one contact detail, every crisis
-post and all but seven risky posts caught — say how closely the rules fit
-these posts. They are not a measurement, and say nothing of what the filter
-does with posts no one has written yet. The eight posts left as known misses
-are an address in base64, which is not decoded because text like it is
-ordinary in code posts, and seven risky posts whose harm is only implied or
-written as code, with no act, weapon or harm named.
+**The rules were fitted to all 2,867 posts.** They were first written against
+the files without `_2` or `_3`; the `_2` files were written apart from them and
+then used to rewrite the threat, self-harm and grooming rules (which first held
+55 of their 135 risky posts) and then the contact and support rules (which
+first blocked 98 of their 131 contact details, showed support for 17 of their
+30 crisis posts, and stopped 7 of their 613 ordinary posts). The `_3` files
+were written apart from the rules as well, and measured as first written and
+labelled, before they were read: the filter stopped 18 of their 667 ordinary
+posts, blocked 146 of their 183 contact details, showed support for 24 of their
+41 crisis posts and held 85 of their 172 risky posts. They were then used to
+put those wrong stops right and to widen every kind of rule, cause by cause,
+and three posts whose numbers the filter passes on purpose (two drama numbers
+and a voided SSN) were given ordinary digits. So the rates the test logs — no
+ordinary post stopped, and all but three contact details, all but one crisis
+post and all but eight risky posts caught — say how closely the rules fit these
+posts. They are not a measurement, and say nothing of what the filter does with
+posts no one has written yet. The twelve posts left as known misses are an
+address in base64, which is not decoded because text like it is ordinary in
+code posts, a number given as the value of a sum in `[math]`, a request in
+Bengali, eight risky posts whose harm is only implied or written as code, with
+no act, weapon or harm named, and a crisis post that never names the act.
 
 Nothing the filter reads or matches is logged, and nothing of a post it sends
 back is stored: not the text, not what matched, and not which rule. A refused

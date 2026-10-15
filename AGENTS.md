@@ -734,8 +734,8 @@ number, a dose question held, a twelve-digit reference that passes the Verhoeff 
 joke about dying with no cause or laugh beside it shown the support message). That is why a block quotes exactly what it
 matched and a hold waits for a person.
 
-**The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2}.jsonl`) is
-1,804 made-up posts in two halves, one JSON object a line: `id` (unique across the files), `body`,
+**The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
+2,867 made-up posts in three parts, one JSON object a line: `id` (unique across the files), `body`,
 `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a method question
 that shows support and is then held meets `hold`), `why`, and, only together,
 `known_miss: true` and a `note` saying why the miss is accepted rather than fixed.
@@ -746,23 +746,34 @@ and on an unknown field or a repeated id; with `-v` it logs per file how many or
 posts were stopped and how much of each kind was caught. To add a post, append a line
 to the file for its kind with the next id. The text is invented, never copied: no
 real person's number, address, handle or invite (the public helplines are the
-exception, as in `helplineNumbers`). The UK, US and Australian phone numbers in it come
-from the ranges set aside for drama, which the filter passes, so a post meant to be
-blocked uses an Indian or other number instead; an invented number, ID or handle in a
-valid shape may still happen to be someone's, as with the unit tests' examples. Label a post by what the filter should do, not by what
+exception, as in `helplineNumbers`). In the first two parts the UK, US and Australian
+phone numbers come from the ranges set aside for drama, which the filter passes, so a
+post meant to be blocked uses an Indian or other number instead; in `_3` a number meant
+to be blocked is ordinary digits in a valid shape, and the three its writers took from a
+drama range or a voided SSN were regenerated so, as their `why` says. An invented
+number, ID or handle in a valid shape may still happen to be someone's, as with the unit
+tests' examples. Label a post by what the filter should do, not by what
 it does. A rule change that turns a labelled post wrong is a regression to fix, or a
 label to correct with the reason in `why`; a `known_miss` is for a miss whose fix
 would cost more than it buys, and its `note` says what. **The rules have been fitted
-to all 1,804 posts**, both halves: the `_2` half was written apart from the rules, then
+to all 2,867 posts**, all three parts: the `_2` part was written apart from the rules, then
 used to rewrite the hold rules to read grammar and, after that, the contact and support
 rules to read verb classes, apps with their objects, the poster's own voice in any
-tense, number layouts and quotation; so the rates `-v` logs describe how closely the
-rules fit these posts and are no measurement of anything else. The README says so, and
+tense, number layouts and quotation; the `_3` part was written apart from them too,
+measured unseen (the README gives the figures), and then used to put right the ordinary
+posts it stopped and to widen each family cause by cause; so the rates `-v` logs describe
+how closely the rules fit these posts and are no measurement of anything else. The README says so, and
 a claim about how well the filter works needs posts it was not fitted to. Relabelled
 posts carry the reason in `why`: drama-range and 555-01xx numbers labelled `block`
 were relabelled `publish`, as was a WhatsApp channel link (one-way, so no private
-conversation), as the README's rules have them. Eight known misses are left, each with its note: an address
-in base64, and seven risky posts whose harm is implied or written as code.
+conversation), as the README's rules have them. In `_3`, a bare "inbox me" was relabelled
+`publish` (it names no way to reach anyone, as a bare "dm me" does not), and each doubt
+about a label that was settled the other way says so with "kept": a Zoom meeting ID with
+its passcode and a Meet link stay `block`, a plan or a time in the poster's own voice
+stays `support` (only a method question goes on to a hold), and "kms" over a mishap got
+over stays `publish`. Twelve known misses are left, each with its note: an address in
+base64, a number given as a sum in `[math]`, a request in Bengali, eight risky posts
+whose harm is implied or written as code, and a crisis post that never names the act.
 
 **API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
 endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
