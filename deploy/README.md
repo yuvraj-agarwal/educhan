@@ -537,13 +537,13 @@ read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the two setup calls only): ' STRIPE_ADMIN; echo
 export PUBLIC_URL=https://YOUR-DOMAIN   # the site's origin, no trailing slash
 
-# The product and its one-time price. The currency and amount below are only an
-# example: pick your own. The amount is in the currency's smallest unit (19900 =
-# INR 199.00). A new price later is a new Price and EDUCHAN_STRIPE_PRICE_ID.
+# The product and its one-time price: USD 20.00, a year of the Pass. The amount
+# is in the currency's smallest unit (2000 = USD 20.00). A new price later is a
+# new Price and a new EDUCHAN_STRIPE_PRICE_ID, not a code change.
 PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
   -d name="educhan Pass" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
-  -d product="$PRODUCT" -d currency=inr -d unit_amount=19900 \
+  -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
 # The webhook endpoint, pinned to the API version the server is written
