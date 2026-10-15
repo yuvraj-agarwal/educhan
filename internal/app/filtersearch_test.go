@@ -26,6 +26,27 @@ func TestFilterSearchesAreAllPlanned(t *testing.T) {
 	}
 }
 
+// TestFilterPlanIsBounded holds the programs planning compiles to a size.
+// Every branch compiles its own copy of what follows its start, so a pattern
+// split many ways in front of a long tail keeps that tail many times over,
+// for the life of the process, and more while it is planned (maxSplitTail).
+func TestFilterPlanIsBounded(t *testing.T) {
+	const maxInstructions = 800_000
+	prepareSearches()
+	n := 0
+	for _, s := range searches.all {
+		for _, b := range s.branches {
+			n += len(b.prog.Inst)
+			if b.rest != nil && b.rest.prog != nil {
+				n += len(b.rest.prog.prog.Inst)
+			}
+		}
+	}
+	if n > maxInstructions {
+		t.Errorf("the searches compile to %d instructions, more than %d", n, maxInstructions)
+	}
+}
+
 // searchSampler writes text a pattern was written to match, chosen at random
 // from what it allows.
 type searchSampler struct {
@@ -183,7 +204,7 @@ func compareSearches(t testing.TB, text string, found map[*search]int) {
 
 func TestFilterSearchesMatchTheirRegexps(t *testing.T) {
 	found := map[*search]int{}
-	for _, text := range filterSearchTexts(t, 4) {
+	for _, text := range filterSearchTexts(t, 5) {
 		compareSearches(t, text, found)
 		if t.Failed() {
 			return

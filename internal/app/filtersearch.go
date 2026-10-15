@@ -159,6 +159,7 @@ func planSearches() {
 		}
 		s.numSubexp = re.MaxCap()
 		s.branches = p.plan(re, s.family)
+		p.forget()
 	}
 	searches.classList = p.list
 	for _, tb := range p.tries {
@@ -258,6 +259,12 @@ type planner struct {
 	singles map[*syntax.Regexp]*runeClass
 	covers  map[*syntax.Regexp][]entry
 	firsts  map[*syntax.Regexp]firstSet
+	sizes   map[*syntax.Regexp]int
+	// runeSets are the ranges of the programs' character classes, one
+	// copy of each (shareRunes), found by a hash of them or by the slice
+	// the parser made.
+	runeSets map[uint64][][]rune
+	runesAt  map[*rune][]rune
 	// maxInst and maxCap are the largest program and the most groups of
 	// any branch.
 	maxInst, maxCap int
@@ -270,17 +277,29 @@ type firstSet struct {
 
 func newPlanner(families int) *planner {
 	p := &planner{
-		classes: map[string]*runeClass{},
-		tries:   make([]*trieBuilder, families),
-		groups:  make([]int, families),
-		singles: map[*syntax.Regexp]*runeClass{},
-		covers:  map[*syntax.Regexp][]entry{},
-		firsts:  map[*syntax.Regexp]firstSet{},
+		classes:  map[string]*runeClass{},
+		tries:    make([]*trieBuilder, families),
+		groups:   make([]int, families),
+		runeSets: map[uint64][][]rune{},
 	}
 	for f := range p.tries {
 		p.tries[f] = &trieBuilder{nodes: []buildNode{{}}, slots: map[int]int32{}}
 	}
+	p.forget()
 	return p
+}
+
+// forget lets go of what was worked out about the nodes of one pattern,
+// once it is planned. No two patterns share a node, and holding on to every
+// pattern's tree until the last was planned more than doubled the heap a
+// server needs as it starts: a "[^\pL\pN]" alone is some 11 kB of ranges,
+// and the patterns have thousands.
+func (p *planner) forget() {
+	p.singles = map[*syntax.Regexp]*runeClass{}
+	p.covers = map[*syntax.Regexp][]entry{}
+	p.firsts = map[*syntax.Regexp]firstSet{}
+	p.sizes = map[*syntax.Regexp]int{}
+	p.runesAt = map[*rune][]rune{}
 }
 
 // class interns a character class.
@@ -404,6 +423,15 @@ func minRunes(re *syntax.Regexp) int {
 // maxBranches bounds how many branches one pattern is split into.
 const maxBranches = 256
 
+// maxSplitTail bounds what splitting copies: an alternation is split only
+// when what follows it in the pattern compiles to at most this many
+// instructions (as size estimates them), since every branch compiles its
+// own copy. Splitting the subjects of "i will" and "someone should" in
+// front of the threat patterns' long list of acts would compile the list
+// once for every subject, two dozen times over, and find no place worth
+// running a branch from that the unsplit branch does not find.
+const maxSplitTail = 4096
+
 // split splits a pattern into branches: at an alternation, into the
 // alternatives, each with what comes before and after it in the pattern, as
 // often as maxBranches allows. At any one place the pattern matches what its
@@ -445,6 +473,13 @@ func (p *planner) splitOnce(re *syntax.Regexp) []*syntax.Regexp {
 	case re.Op == syntax.OpConcat:
 		for h, sub := range re.Sub {
 			if splittable(sub) && p.forced(re.Sub, h) {
+				tail := 0
+				for _, t := range re.Sub[h+1:] {
+					tail += p.size(t)
+				}
+				if tail > maxSplitTail {
+					break
+				}
 				var out []*syntax.Regexp
 				for _, a := range sub.Sub {
 					subs := slices.Clone(re.Sub[:h])
@@ -461,6 +496,27 @@ func (p *planner) splitOnce(re *syntax.Regexp) []*syntax.Regexp {
 		}
 	}
 	return []*syntax.Regexp{re}
+}
+
+// size estimates how many instructions re compiles to, as syntax.Compile
+// compiles it once simplified: a bounded repetition is that many copies.
+func (p *planner) size(re *syntax.Regexp) int {
+	if n, ok := p.sizes[re]; ok {
+		return n
+	}
+	n := 1
+	switch re.Op {
+	case syntax.OpLiteral:
+		n = len(re.Rune)
+	case syntax.OpRepeat:
+		n = (p.size(re.Sub[0]) + 1) * max(re.Max, re.Min, 1)
+	default:
+		for _, sub := range re.Sub {
+			n += p.size(sub)
+		}
+	}
+	p.sizes[re] = n
+	return n
 }
 
 // forced reports whether subs[:h] can match only one way in front of
@@ -628,10 +684,40 @@ func (p *planner) compile(b *branch, t *syntax.Regexp) *branch {
 	if err != nil {
 		return nil
 	}
+	for i := range prog.Inst {
+		if r := prog.Inst[i].Rune; len(r) > 2 {
+			prog.Inst[i].Rune = p.shareRunes(r)
+		}
+	}
 	b.prog, b.cond = prog, prog.StartCond()
 	p.maxInst = max(p.maxInst, len(prog.Inst))
 	p.maxCap = max(p.maxCap, prog.NumCap)
 	return b
+}
+
+// shareRunes is one copy of the ranges r, for every program whose
+// instructions match them. A compiled instruction keeps the slice the parser
+// made, and the parser makes one for every "[^\pL\pN]" in every pattern:
+// thousands of copies of the same thousands of ranges, most of what the
+// programs would otherwise keep alive.
+func (p *planner) shareRunes(r []rune) []rune {
+	if s, ok := p.runesAt[&r[0]]; ok && len(s) == len(r) {
+		return s
+	}
+	h := uint64(14695981039346656037)
+	for _, x := range r {
+		h = (h ^ uint64(x)) * 1099511628211
+	}
+	for _, s := range p.runeSets[h] {
+		if slices.Equal(s, r) {
+			p.runesAt[&r[0]] = s
+			return s
+		}
+	}
+	s := slices.Clone(r)
+	p.runeSets[h] = append(p.runeSets[h], s)
+	p.runesAt[&r[0]] = s
+	return s
 }
 
 // delimited plans (?:^|[D])[S]*rest.

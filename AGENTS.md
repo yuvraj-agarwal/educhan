@@ -636,6 +636,13 @@ What holds the cost down:
   of many phrasings, is made with `newWindowSearch`, as `conditionalPlace`, the
   medicine names and the number scanner's cues (`contactCue`, `phoneCue` and the rest)
   are, so that it is planned and counted like the rest.
+- What planning keeps and how far its heap climbs grow with the patterns. Every branch
+  compiles its own copy of what follows its start, so the planner splits an
+  alternation only when that tail is at most `maxSplitTail` instructions (a pattern's
+  subjects, "i will", "someone should", may sit in front of a whole list of acts),
+  shares one copy of each class's ranges among the programs (`shareRunes`), and drops
+  each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded` holds
+  the compiled programs to 800,000 instructions.
 
 **Student-ID formats** (2.9's "configurable student-ID formats") are not built; the
 extension point is the comment at the end of `filter.go` — a validator beside `aadhaar`
