@@ -2138,6 +2138,20 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"our physics ma'am won't see friday 🙂", threat},
 		{"our class teacher won't see monday, she's in hospital", publish},
 		{"my grandpa won't see monday", publish},
+		// gameWords: a sport after "at", "in" or "on" makes a kill one in
+		// the game, as football does; a place named first does not, and a
+		// sport whose bat is a weapon is not one of them.
+		{"we're going to murder them at dodgeball on friday", publish},
+		{"we'll kill them at netball in the gym tomorrow", publish},
+		{"I'm going to murder everyone at school tomorrow, then dodgeball", threat},
+		{"I'm bringing a baseball bat to school tomorrow and he's getting it", threat},
+		// operandBefore: R's assignment arrow assigns, as "=" does, unless a
+		// request or a phone cue before it says the number is one to call.
+		{"[code]x <- 9876543210[/code]", publish},
+		{"in R: x <- 9876543210; x %% 1000", publish},
+		{"why does x <- 9876543210 print as 9.876543e+09 in R?", publish},
+		{"num <- 9123456780", contact},
+		{"call me <- 9123456780", contact},
 	} {
 		v := bodyVerdict(c.body)
 		got := publish

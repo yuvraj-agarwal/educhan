@@ -4110,10 +4110,14 @@ var (
 	gameVerb = regexp.MustCompile(canon(`\b` + words(`kill`, `killing`, `murder`, `murdering`, `slaughter`,
 		`slaughtering`, `massacre`, `massacring`, `destroy`, `destroying`, `beat`, `beating`, `attack`,
 		`attacking`) + `\b`))
+	// gameWords are games and their occasions. A sport played with a bat or
+	// a club that is also a weapon ("baseball", "golf") is left out, since a
+	// game word in the sentence excuses carrying one: "bringing a baseball
+	// bat to school tomorrow and he's getting it" holds.
 	gameWords = canonSetOf(`match matches game games chess football soccer cricket basketball volleyball hockey
 		tennis badminton kabaddi tournament finals final semis semifinal semifinals quiz debate competition race
 		fifa fortnite valorant pubg bgmi minecraft roblox cod league olympiad hackathon contest sports carrom
-		ludo uno mock battle bands`)
+		ludo uno mock battle bands dodgeball netball rugby handball rounders futsal kickball frisbee pickleball`)
 )
 
 // nextWords splits the start of s into at most n words of letters, digits
@@ -11334,24 +11338,30 @@ func operandAfter(after string) bool {
 }
 
 // operandBefore reports an operator before a number with an operand before it:
-// "x = 9876543210", "x >= 9876543210", "1/9876543210". A greentext ">" or a
-// quote link's ">>" at the start of a line has nothing before it, an arrow
-// ("->", "=>") points rather than compares, and a phone cue before an "="
-// ("number = 9876543210") is a label.
+// "x = 9876543210", "x >= 9876543210", "1/9876543210", and R's assignment
+// arrow, "x <- 9876543210" or "x <<- 9876543210", which assigns as "=" does.
+// A greentext ">" or a quote link's ">>" at the start of a line has nothing
+// before it, an arrow ("->", "=>") points rather than compares, and a phone
+// cue before an "=" or an arrow ("number = 9876543210", "num <- 9876543210")
+// is a label.
 func operandBefore(v *view, before string) bool {
 	// An opening bracket after "=" still leaves the number the right-hand side
 	// of something: "x = (9876543210 + 1)", "arr = [9876543210, …]".
 	s := strings.TrimRight(before, " ([{")
-	r, size := utf8.DecodeLastRuneInString(s)
-	if !strings.ContainsRune(mathsBefore, r) {
-		return false
-	}
-	s = s[:len(s)-size]
-	if r == '>' && len(s) > 0 && (s[len(s)-1] == '-' || s[len(s)-1] == '=') {
-		return false
-	}
-	if len(s) > 0 && strings.IndexByte("=*/<>!", s[len(s)-1]) >= 0 {
-		s = s[:len(s)-1]
+	if strings.HasSuffix(s, "<-") {
+		s = strings.TrimSuffix(s[:len(s)-2], "<")
+	} else {
+		r, size := utf8.DecodeLastRuneInString(s)
+		if !strings.ContainsRune(mathsBefore, r) {
+			return false
+		}
+		s = s[:len(s)-size]
+		if r == '>' && len(s) > 0 && (s[len(s)-1] == '-' || s[len(s)-1] == '=') {
+			return false
+		}
+		if len(s) > 0 && strings.IndexByte("=*/<>!", s[len(s)-1]) >= 0 {
+			s = s[:len(s)-1]
+		}
 	}
 	s = strings.TrimRight(s, " ")
 	o, _ := utf8.DecodeLastRuneInString(s)
