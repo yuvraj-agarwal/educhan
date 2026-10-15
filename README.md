@@ -963,14 +963,15 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
 
 The first deploy is longer, because it is what establishes the configuration that
 later deploys inherit — the runtime service account, the Cloud SQL instance, and
-the secrets:
+the secrets. `bash deploy/first-deploy.sh PROJECT_ID`, run in Cloud Shell, does
+all of it, the archive sweeper Job included; by hand it is:
 
 ```bash
 gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_LOG_FORMAT=json" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false" \
   --allow-unauthenticated
 ```
 
@@ -991,12 +992,15 @@ Anywhere without that mount — a VM, a laptop — the [Cloud SQL Auth
 Proxy](https://cloud.google.com/sql/docs/postgres/sql-proxy) opens a local port
 and `DATABASE_URL` becomes an ordinary TCP connection string.
 
-Three things need setting for a real deployment, and the deploy guide covers
+Four things need setting for a real deployment, and the deploy guide covers
 each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
-between instances, `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end, and
+between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end;
 media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
-`EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
-container.
+`EDUCHAN_GCS_BUCKET` and `EDUCHAN_GCS_PREFIX`, which the sweeper Job must match
+exactly, because the container filesystem does not outlive the container; and
+Cloud Run's request logs, which carry every visitor's IP, must be excluded from
+Cloud Logging before the service takes traffic (deploy guide section 2.8), or
+the promise that IPs are not logged does not hold.
 
 ### The archive sweeper
 
