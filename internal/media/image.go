@@ -201,34 +201,42 @@ func Process(ctx context.Context, data []byte) (Processed, error) {
 
 // processHeld is Process, leaving its share of the budget held: the caller
 // gives it back with release once it no longer holds what was made, which
-// processingCost counts until then.
+// processingCost counts until then. Until it is handed over, the share is
+// given back on every way out, a panic in a decoder or an encoder included:
+// the server recovers from one and goes on, and a share nothing gave back
+// would leave the budget that much smaller until the process restarted.
 func processHeld(ctx context.Context, data []byte) (_ Processed, release func(), _ error) {
 	in, err := inspect(data)
 	if err != nil {
 		return Processed{}, nil, err
 	}
 
-	release, err = acquireProcessing(ctx, in.cost)
+	give, err := acquireProcessing(ctx, in.cost)
 	if err != nil {
 		return Processed{}, nil, err
 	}
+	handed := false
+	defer func() {
+		if !handed {
+			give()
+		}
+	}()
 	out, err := sanitize(in, data)
 	if err != nil {
-		release()
 		return Processed{}, nil, err
 	}
 	thumb, err := makeThumbnail(out.pic, out.canvas, out.format)
 	if err != nil {
-		release()
 		return Processed{}, nil, err
 	}
+	handed = true
 	return Processed{
 		Format: out.format,
 		Data:   out.data,
 		Width:  out.canvas.Dx(),
 		Height: out.canvas.Dy(),
 		Thumb:  thumb,
-	}, release, nil
+	}, give, nil
 }
 
 // ThumbSize scales w×h to fit within max on the longest side, preserving the

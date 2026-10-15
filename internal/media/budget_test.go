@@ -3,6 +3,8 @@ package media
 import (
 	"context"
 	"errors"
+	"image"
+	"image/color"
 	"io"
 	"strings"
 	"testing"
@@ -153,6 +155,57 @@ func TestSaveHoldsItsShareUntilItIsStored(t *testing.T) {
 	}
 	if n := b.held(); n != 0 {
 		t.Errorf("%d bytes of the budget held after Save returned, want 0", n)
+	}
+}
+
+// A panic while an upload is decoded or encoded is recovered by the server,
+// which goes on serving, so the upload's share of the processing budget is
+// given back on the way out, by Process and by Save alike. Kept, it would
+// leave every upload after it that much less room until the process
+// restarted, and a few such uploads would leave none. The panic is made by
+// giving a cleaned palette a nil entry, which the PNG encoder calls RGBA on.
+func TestAPanicWhileProcessingGivesItsShareBack(t *testing.T) {
+	m := image.NewPaletted(image.Rect(0, 0, 8, 8), color.Palette{color.RGBA{}, color.RGBA{200, 30, 30, 255}})
+	for i := range m.Pix {
+		m.Pix[i] = uint8(i % 2)
+	}
+	upload := pngOf(t, m)
+	b := narrowBudget(t, processingBudget)
+	local, err := NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewLocalStore: %v", err)
+	}
+	runs := []struct {
+		name string
+		run  func() error
+	}{
+		{"Process", func() error { _, err := Process(context.Background(), upload); return err }},
+		{"Save", func() error { _, err := Save(context.Background(), local, "general", upload, time.Now()); return err }},
+	}
+
+	// The control: without the nil entry the upload is stored, and its share
+	// given back as usual.
+	for _, r := range runs {
+		if err := r.run(); err != nil {
+			t.Fatalf("%s: %v", r.name, err)
+		}
+	}
+
+	old := transparentEntry
+	transparentEntry = nil
+	t.Cleanup(func() { transparentEntry = old })
+	for _, r := range runs {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("%s did not panic, so nothing here was tested", r.name)
+				}
+			}()
+			_ = r.run()
+		}()
+		if n := b.held(); n != 0 {
+			t.Errorf("%s panicked holding %d bytes of the budget, and kept them", r.name, n)
+		}
 	}
 }
 

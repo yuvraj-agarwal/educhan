@@ -678,7 +678,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   budget from the start of decoding until both renditions are stored, because until
   then it holds what it made (`acquireProcessing`, a first-come-first-served weighted
   semaphore in `budget.go`, so a large upload is not starved by small ones;
-  `TestSaveHoldsItsShareUntilItIsStored`). Nothing it writes is copied again on the way
+  `TestSaveHoldsItsShareUntilItIsStored`), and `processHeld` gives that share back by a
+  deferred call until it hands it over, because the server recovers from a panic in a
+  decoder or an encoder and goes on with whatever the panic left held
+  (`TestAPanicWhileProcessingGivesItsShareBack`). Nothing it writes is copied again on the way
   out: `GCSStore.Put` sets the writer's `ChunkSize` to 0, because the library's default
   is a 16 MiB buffer for every object, kept only for retries a write without
   preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`).
