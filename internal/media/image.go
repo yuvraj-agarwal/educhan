@@ -135,11 +135,13 @@ type Processed struct {
 // cooldown. For a GIF it also walks the block structure to add up the frames
 // (gifFramePixels), and refuses a file that walk cannot follow to its end. An
 // animated WebP, which nothing here decodes, is refused as ErrCorruptImage
-// from its chunks (webpAnimated), whatever its size. A file whose processing
-// would hold more than the whole processing budget (processingCost) is
-// refused as ErrImageTooCostly: that depends on how it is encoded as well as
-// on its resolution, which ErrImageTooLarge is kept for. Inspect cannot tell
-// whether the pixels decode; only Process can, and Process runs it first.
+// from its chunks (webpAnimated), whatever its size, and so is a WebP cut
+// short, whose RIFF runs past the end of the file (webpRegion). A file whose
+// processing would hold more than the whole processing budget
+// (processingCost) is refused as ErrImageTooCostly: that depends on how it is
+// encoded as well as on its resolution, which ErrImageTooLarge is kept for.
+// Inspect cannot tell whether the pixels decode; only Process can, and
+// Process runs it first.
 func Inspect(data []byte) (Format, error) {
 	in, err := inspect(data)
 	return in.format, err
@@ -160,10 +162,13 @@ func inspect(data []byte) (inspection, error) {
 	if !ok {
 		return inspection{}, ErrUnsupportedFormat
 	}
-	// Nothing here decodes an animated WebP, whatever its size, so one is
+	// Nothing here decodes an animated WebP, whatever its size, and stripWebP
+	// refuses a WebP whose RIFF runs past the end of the file, so either is
 	// refused as it would be once processed, but from its header.
-	if format == FormatWebP && webpAnimated(data) {
-		return inspection{}, ErrCorruptImage
+	if format == FormatWebP {
+		if _, whole := webpRegion(data); !whole || webpAnimated(data) {
+			return inspection{}, ErrCorruptImage
+		}
 	}
 
 	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))

@@ -628,6 +628,11 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	})
 	c.addBoard("general")
 	threads := "/api/boards/general/threads"
+	lossyWebP, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	cutShort := func(b []byte) []byte { return b[:len(b)-len(b)/10] }
 	unusable := []struct {
 		name, filename string
 		data           []byte
@@ -639,6 +644,10 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		{"a lossless WebP too costly to decode", "screenshot.webp", losslessWebPClaiming(1920, 1080, 317<<10), "image too large to process"},
 		{"an animated WebP", "moving.webp", animatedWebP(t, 2, 0), "image could not be decoded"},
 		{"a long animated WebP", "longer.webp", animatedWebP(t, 6, 50<<10), "image could not be decoded"},
+		// Files cut short in transfer: each RIFF runs past the end of its file.
+		{"an animated WebP cut short", "moving-cut.webp", cutShort(animatedWebP(t, 2, 0)), "image could not be decoded"},
+		{"a long animated WebP cut short", "longer-cut.webp", cutShort(animatedWebP(t, 6, 50<<10)), "image could not be decoded"},
+		{"a WebP cut short", "still-cut.webp", cutShort(lossyWebP), "image could not be decoded"},
 	}
 
 	const poster = "198.51.100.21"

@@ -1761,14 +1761,24 @@ func TestAnimatedWebPIsRefusedFromItsHeader(t *testing.T) {
 	animated := func(flags byte, w, h int, chunks ...riffChunk) []byte {
 		return webpFile(append([]riffChunk{vp8xChunk(flags, w, h), {id: "ANIM", payload: make([]byte, 6)}}, chunks...)...)
 	}
+	twoFrames := animated(vp8xFlagAnimation, 320, 200, frames(2, 0)...)
+	sixFrames := animated(vp8xFlagAnimation, 320, 200, frames(6, 50<<10)...)
 	for name, data := range map[string][]byte{
-		"two frames":                   animated(vp8xFlagAnimation, 320, 200, frames(2, 0)...),
-		"six frames of 300 KiB in all": animated(vp8xFlagAnimation, 320, 200, frames(6, 50<<10)...),
+		"two frames":                   twoFrames,
+		"six frames of 300 KiB in all": sixFrames,
 		"a canvas past MaxPixels":      animated(vp8xFlagAnimation, 10000, 10000, frames(2, 0)...),
 		"the flag and no frames":       animated(vp8xFlagAnimation, 320, 200),
 		"frames without the flag":      animated(0, 320, 200, frames(2, 0)...),
 		"a picture, then a frame":      webpFile(vp8xChunk(0, 320, 200), bitstream, frames(1, 0)[0]),
+		// Cut short, as a partly sent file is: the RIFF size runs past the
+		// end, and the first chunk still says what the file is.
+		"two frames, cut short":              twoFrames[:len(twoFrames)-100],
+		"six frames, cut short":              sixFrames[:len(sixFrames)-100],
+		"frames without the flag, cut short": animated(0, 320, 200, frames(2, 0)...)[:len(twoFrames)-100],
 	} {
+		if !webpAnimated(data) {
+			t.Errorf("%s: webpAnimated = false", name)
+		}
 		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
 			t.Errorf("%s: Inspect = %v, want ErrCorruptImage before anything is decoded", name, err)
 		}
@@ -1807,6 +1817,11 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 				t.Error("Process accepted it")
 			}
 		})
+	}
+	// A RIFF that runs past the end is known from the header, so it is
+	// refused before any cooldown, as it would be once processed.
+	if _, err := Inspect(longer); !errors.Is(err, ErrCorruptImage) {
+		t.Errorf("Inspect(RIFF size past the end) = %v, want ErrCorruptImage", err)
 	}
 
 	huge := webpFile(vp8xChunk(0, 10000, 10000), bitstream)

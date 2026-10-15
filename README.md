@@ -369,23 +369,24 @@ empty file part a browser sends for an untouched input, posts as usual.
 `{"uploads","max_upload_bytes"}`, so a client can leave the image picker off a
 server that would refuse what it sends.
 
-- **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by
-  filename or the content type the client claims. Anything else (`unsupported image
-  format: use JPEG, PNG, WebP, or GIF`), an image whose header claims more than 25
-  megapixels (room for the 24-megapixel photos phones and cameras save, an iPhone's
-  5712×4284 included; `image resolution is too large`), a GIF whose frames add up to
-  more than four times that, or an image that would take more memory to process than the
-  server sets aside for all of them at once (`image too large to process`), and a GIF
-  whose blocks cannot be read through to its end or whose first frame reaches past its
-  canvas (browsers disagree on how to show that one), or an animated WebP (`image could
-  not be decoded`), is refused with `400` before anything is decoded and before flood
-  control. A GIF that ends after its last frame without the closing byte, or whose later
-  frames reach past its canvas, is stored as browsers show it: whole, and with each
-  frame cut to the part on the canvas. The memory depends on the encoding as well as the
-  size, and on the shape: a longer, thinner picture costs more for its pixels, because a
-  JPEG's sides are rounded up to whole blocks and making the thumbnail takes 64 bytes
-  and more for every pixel of the longer side. At the full 25 megapixels, from an upload
-  of up to the default 8 MiB, at any shape the format allows:
+- **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
+  or the content type the client claims. Anything else (`unsupported image format: use
+  JPEG, PNG, WebP, or GIF`), an image whose header claims more than 25 megapixels (room
+  for the 24-megapixel photos phones and cameras save, an iPhone's 5712×4284 included;
+  `image resolution is too large`), a GIF whose frames add up to more than four times
+  that, or an image that would take more memory to process than the server sets aside for
+  all of them at once (`image too large to process`), and a GIF whose blocks cannot be
+  read through to its end or whose first frame reaches past its canvas (browsers disagree
+  on how to show that one), an animated WebP, or a WebP cut short, its RIFF running past
+  the end of the file (`image could not be decoded`), is refused with `400` before
+  anything is decoded and before flood control. A GIF that ends after its last frame
+  without the closing byte, or whose later frames reach past its canvas, is stored as
+  browsers show it: whole, and with each frame cut to the part on the canvas. The memory
+  depends on the encoding as well as the size, and on the shape: a longer, thinner picture
+  costs more for its pixels, because a JPEG's sides are rounded up to whole blocks and
+  making the thumbnail takes 64 bytes and more for every pixel of the longer side. At the
+  full 25 megapixels, from an upload of up to the default 8 MiB, at any shape the format
+  allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
     a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
@@ -411,15 +412,15 @@ server that would refuse what it sends.
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,
   however narrow it is. A GIF of many thousands of frames is refused however small they
-  are. An animated WebP is refused whatever its size, because nothing in Go can decode
-  one to thumbnail it: the animation flag in its header, or a frame among its chunks, is
-  enough to turn it away. An image whose rewritten file would come to more than four
-  times the upload plus half a byte a pixel is refused after flood control too, once it
-  is encoded (`image would be too large once re-encoded for storage`), which only a file
-  made to compress in a way Go's encoders cannot follow reaches. A lossy WebP with
-  transparency is held instead to what a PNG of its size can come to, because stored
-  losslessly it is meant to be many times the size it came in at; it is refused from its
-  header when that is too large to process.
+  are. An animated WebP is refused whatever its size and however much of it arrived,
+  because nothing in Go can decode one to thumbnail it: the animation flag in its header,
+  or a frame among its chunks, is enough to turn it away. An image whose rewritten file
+  would come to more than four times the upload plus half a byte a pixel is refused after
+  flood control too, once it is encoded (`image would be too large once re-encoded for
+  storage`), which only a file made to compress in a way Go's encoders cannot follow
+  reaches. A lossy WebP with transparency is held instead to what a PNG of its size can
+  come to, because stored losslessly it is meant to be many times the size it came in at;
+  it is refused from its header when that is too large to process.
 
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is

@@ -28,8 +28,9 @@ import (
 // so the rewrite is complete for the whole format. An animated WebP is still
 // refused, as it was before stripping existed: x/image cannot decode one, so
 // there would be no thumbnail and no check that the frames decode at all.
-// Inspect refuses it from its chunks (webpAnimated), before any cooldown and
-// whatever its size, and sanitizeWebP again should one get past that.
+// Inspect refuses it from its chunks (webpAnimated), before any cooldown,
+// whatever its size and however much of it arrived, and sanitizeWebP again
+// should one get past that.
 
 const (
 	vp8xFlagICC       = 0x20
@@ -62,11 +63,10 @@ func stripWebP(data []byte) ([]byte, webpInfo, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
-	size := uint64(binary.LittleEndian.Uint32(data[4:8]))
-	if size < 4 || size > uint64(len(data)-8) {
+	region, ok := webpRegion(data)
+	if !ok {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
-	region := data[12 : 8+size]
 
 	// The chunks are walked in place rather than read into a list, so a file of
 	// a million empty chunks costs one chunk's memory, not a million structs
@@ -295,6 +295,22 @@ func stripFrame(payload []byte, canvas webpInfo) ([]byte, bool) {
 	return out, true
 }
 
+// webpRegion returns the chunks inside a WebP's RIFF: the bytes after its
+// "WEBP" tag, up to the end its header declares. It is false for a file whose
+// declared size cannot hold the tag or runs past the end of the file, as a
+// file cut short in transfer does; stripWebP refuses such a file, and so
+// Inspect refuses it before any cooldown.
+func webpRegion(data []byte) ([]byte, bool) {
+	if len(data) < 12 {
+		return nil, false
+	}
+	size := uint64(binary.LittleEndian.Uint32(data[4:8]))
+	if size < 4 || size > uint64(len(data)-8) {
+		return nil, false
+	}
+	return data[12 : 8+size], true
+}
+
 // webpAnimated reports whether a WebP is an animation: its first chunk is a
 // VP8X with the animation flag, or a frame (ANMF) is among the chunks inside
 // its RIFF, as stripWebP reads them. Neither can be decoded here — a frame
@@ -306,10 +322,12 @@ func webpAnimated(data []byte) bool {
 		return false
 	}
 	size := uint64(binary.LittleEndian.Uint32(data[4:8]))
-	if size < 4 || size > uint64(len(data)-8) {
+	if size < 4 {
 		return false
 	}
-	b := data[12 : 8+size]
+	// A file cut short is walked as far as it goes: its first chunk says
+	// whether it is animated however much of the rest arrived.
+	b := data[12:min(8+size, uint64(len(data)))]
 	for first := true; len(b) > 0; first = false {
 		c, rest, ok := nextChunk(b)
 		if !ok {

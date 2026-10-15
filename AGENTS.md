@@ -619,11 +619,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   stripped WebP to save the re-encode. An animated WebP is still refused as
   `ErrCorruptImage`, as before stripping, since x/image cannot decode one, and now from
   its header: `Inspect` refuses one whose VP8X has the animation flag or that has a frame
-  (ANMF) among its chunks (`webpAnimated`), before any cooldown and whatever its size;
-  it used to pass `Inspect` when short and fail after flood control, and when long be
-  charged as one lossless bitstream of its whole length and refused as too large
-  (`TestAnimatedWebPIsRefusedFromItsHeader`). A WebP stored before
-  this change stays a `.webp` and is served as `image/webp` (`ContentTypeForExt`).
+  (ANMF) among its chunks (`webpAnimated`), before any cooldown, whatever its size and
+  however much of it arrived — a file cut short is walked as far as it goes; it used to
+  pass `Inspect` when short and fail after flood control, and when long be charged as one
+  lossless bitstream of its whole length and refused as too large
+  (`TestAnimatedWebPIsRefusedFromItsHeader`). `Inspect` also refuses any WebP whose RIFF
+  runs past the end of the file (`webpRegion`), which `stripWebP` would refuse once
+  processed. A WebP stored before this change stays a `.webp` and is served as
+  `image/webp` (`ContentTypeForExt`).
   `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's, the
   thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size` are of
   the stored bytes — the plan's `blocked_media` check on the re-encoded output (2.2)
@@ -1080,42 +1083,41 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   poster key, the body, a badge the poster cannot have, uploads switched off, a file its
   header shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted
   format, more than `media.MaxPixels`, a GIF whose frames come to too many pixels or whose
-  blocks do not reach the end, an animated WebP, or one whose processing would hold more
-  than the whole budget — which turns on how it is encoded, not its size alone), and a
-  reply the thread
-  would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it is the
-  cost the upload cooldown limits, so an image that fails to decode, or whose re-encoded
-  file would pass `storedLimit` (`ErrStoredTooLarge`), is refused by `storeUpload` after
-  `allow`, its cooldown kept (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both
-  sides, `ErrStoredTooLarge` among them). The exception is a post the server turns away as
-  busy after `allow` (`tooBusy`: no room to process its image in time, or its deadline
-  passing before the image is stored): `allow` hands back the refund `chargeAll` makes,
-  which takes back the cooldowns that post started and leaves alone any that another post
-  has started since (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of
-  room to read it is turned away before `allow`, so it has nothing to refund.
-  State is per process and in memory — a shared backend means replacing
-  `cooldownLimiter`, which nothing else depends on.
-  The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
-  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
-  **While the process has CPU, an address is held in memory no longer than the
-  longest cooldown that applies to it plus one minute**, counted from its last action
-  that started one, busy server or quiet. A host that gives CPU only during requests,
-  which is Cloud Run's default (request-based billing), holds the timer back on an
-  idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
-  request is handled; until a request arrives or the instance stops, an idle instance
-  still holds what it last saw, and on Cloud Run the one-minute bound needs CPU always
-  allocated (`--no-cpu-throttling`). The README's Flood control section states the
-  bound with that condition, and anything the client says about addresses rests on
-  it, which is why the FAQ promises no time limit. A longer interval, a new limiter
-  left out of the sweep, a limiter keyed on something that outlives its cooldown, or
-  the request-path sweep dropped from `Routes` breaks it
-  (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
+  blocks do not reach the end, an animated WebP or one cut short, or one whose processing
+  would hold more than the whole budget — which turns on how it is encoded, not its size
+  alone), and a reply the thread would refuse (`ReplyRefusal`). Decoding the pixels is not
+  up front, because it is the cost the upload cooldown limits, so an image that fails to
+  decode, or whose re-encoded file would pass `storedLimit` (`ErrStoredTooLarge`), is
+  refused by `storeUpload` after `allow`, its cooldown kept
+  (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides, `ErrStoredTooLarge`
+  among them). The exception is a post the server turns away as busy after `allow`
+  (`tooBusy`: no room to process its image in time, or its deadline passing before the
+  image is stored): `allow` hands back the refund `chargeAll` makes, which takes back the
+  cooldowns that post started and leaves alone any that another post has started since
+  (`TestChargeAllRefundsWhatItStarted`). A post turned away for want of room to read it is
+  turned away before `allow`, so it has nothing to refund. State is per process and in
+  memory — a shared backend means replacing `cooldownLimiter`, which nothing else depends
+  on. The keys carry client addresses, so the limiters are also a privacy surface: `New`
+  builds a `cooldownSweep` over all four limiters and starts its timer, which drops every
+  expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it. **While
+  the process has CPU, an address is held in memory no longer than the longest cooldown
+  that applies to it plus one minute**, counted from its last action that started one,
+  busy server or quiet. A host that gives CPU only during requests, which is Cloud Run's
+  default (request-based billing), holds the timer back on an idle instance, so
+  `beforeEachRequest` (in `Routes`) runs an overdue sweep before a request is handled;
+  until a request arrives or the instance stops, an idle instance still holds what it last
+  saw, and on Cloud Run the one-minute bound needs CPU always allocated
+  (`--no-cpu-throttling`). The README's Flood control section states the bound with that
+  condition, and anything the client says about addresses rests on it, which is why the
+  FAQ promises no time limit. A longer interval, a new limiter left out of the sweep, a
+  limiter keyed on something that outlives its cooldown, or the request-path sweep dropped
+  from `Routes` breaks it (`TestSweepExpiredKeepsOnlyLiveCooldowns`,
+  `TestSweepCooldownsRunsUntilStopped`,
   `TestCooldownSweepRunsBeforeARequestOnceItIsOverdue`, and
   `TestFloodControlForgetsAddressesOnAQuietServer` and
-  `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period
-  through `Config.cooldownSweepEvery`). The record-time sweep past
-  `cooldownSweepThreshold` only bounds a burst between two ticks.
+  `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period through
+  `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
+  bounds a burst between two ticks.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
