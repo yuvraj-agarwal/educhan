@@ -659,6 +659,15 @@ button.link:hover { text-decoration: underline; }
   overflow-wrap: anywhere;
 }
 
+/* The code of a Pass a new one took the place of, in a sentence. */
+.pass-code-old {
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--text);
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
 /* The credential outlives the tab now, so the way to get rid of it is called
    out on its own rather than sitting in the row of other actions. */
 .verify-forget {
