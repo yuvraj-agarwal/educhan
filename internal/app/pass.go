@@ -696,7 +696,14 @@ func (a *App) handlePassActivate(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not read the Pass")
 		return
 	case !time.Now().Before(expires):
-		refusePass(w, passExpired, "this Pass has run out; you can renew it on the Pass page")
+		// The code goes back as the server writes it, with its date, so the
+		// page can keep a Pass typed in after it ran out, to renew it.
+		writeJSON(w, http.StatusForbidden, map[string]any{
+			"error":      "this Pass has run out; you can renew it on the Pass page",
+			"pass":       passExpired,
+			"code":       formatPassCode(code),
+			"expires_at": expires,
+		})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"pass": formatPassCode(code), "expires_at": expires})

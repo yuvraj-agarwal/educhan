@@ -179,6 +179,7 @@ type passResponse struct {
 	Pass         string     `json:"pass"`
 	ExpiresAt    time.Time  `json:"expires_at"`
 	Claim        bool       `json:"claim"`
+	Code         string     `json:"code"`
 	Error        string     `json:"error"`
 }
 
@@ -956,8 +957,14 @@ func TestPassRenewal(t *testing.T) {
 	}
 
 	// An expired Pass can still be renewed within its grace month, from now.
-	p.exec(`UPDATE passes SET expires_at = $1`, time.Now().Add(-48*time.Hour))
-	if status, out := p.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passExpired {
+	// Checked as typed, in lower case and without its dashes, it is refused
+	// with the code as the server writes it and the day it ran out, so the
+	// page can keep it to renew.
+	ranOut := dayCeil(time.Now().Add(-72 * time.Hour))
+	p.exec(`UPDATE passes SET expires_at = $1`, ranOut)
+	typed := strings.ToLower(strings.ReplaceAll(issued.Pass, "-", ""))
+	if status, out := p.activate(typed); status != http.StatusForbidden || refusalState(t, out) != passExpired ||
+		out.Code != issued.Pass || !out.ExpiresAt.Equal(ranOut) {
 		t.Fatalf("an expired Pass: status %d, %+v", status, out)
 	}
 	p.paid(p.checkout(issued.Pass), "pi_late_renewal")
