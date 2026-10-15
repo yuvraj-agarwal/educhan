@@ -139,8 +139,8 @@ func TestBlockedPostsAreRefusedWithWhatToRemove(t *testing.T) {
 	requireBlock(t, status, out, ruleIDNumber, fieldBody, "AB 12 34 56 C")
 
 	// The subject and the shown part of the name are read too.
-	status, out = h.postJSON(threadsPath("blk"), map[string]any{"subject": "mail me ana.k@gmail.com", "body": "hi"})
-	requireBlock(t, status, out, ruleContact, fieldSubject, "ana.k@gmail.com")
+	status, out = h.postJSON(threadsPath("blk"), map[string]any{"subject": "mail me madeup.ana@gmail.com", "body": "hi"})
+	requireBlock(t, status, out, ruleContact, fieldSubject, "madeup.ana@gmail.com")
 	// An earlier copy the rules allow comes before the refused one, and the
 	// refusal says which copy it means.
 	status, out = h.postJSON(repliesPath("blk", thread.ThreadNo),
@@ -153,8 +153,8 @@ func TestBlockedPostsAreRefusedWithWhatToRemove(t *testing.T) {
 	// Both ways in: a new thread's opening post and a reply each pass the
 	// name through displayedName on their own.
 	for _, path := range []string{threadsPath("blk"), repliesPath("blk", thread.ThreadNo)} {
-		status, out = h.postJSON(path, map[string]any{"name": "insta: x_y_z", "body": "hi"})
-		requireBlock(t, status, out, ruleContact, fieldName, "insta: x_y_z")
+		status, out = h.postJSON(path, map[string]any{"name": "insta: madeup_x_y_z", "body": "hi"})
+		requireBlock(t, status, out, ruleContact, fieldName, "insta: madeup_x_y_z")
 
 		// The tripcode secret is not: it is never shown, so it is nobody's
 		// contact detail, and it is never quoted back.
@@ -222,8 +222,8 @@ func TestRefusedPostsCostNoCooldownAndStoreNoFile(t *testing.T) {
 	}
 
 	// The same holds for replies.
-	status, out = h.uploadMap(repliesPath("cool", created.ThreadNo), map[string]string{"body": "my snap is ana_23"}, "", nil)
-	requireBlock(t, status, out, ruleContact, fieldBody, "my snap is ana_23")
+	status, out = h.uploadMap(repliesPath("cool", created.ThreadNo), map[string]string{"body": "my snap is madeup_ana23"}, "", nil)
+	requireBlock(t, status, out, ruleContact, fieldBody, "my snap is madeup_ana23")
 	if status, out := h.postJSON(repliesPath("cool", created.ThreadNo), map[string]any{"body": "clean reply"}); status != http.StatusCreated {
 		t.Fatalf("the clean reply after the refusal: status %d (%v)", status, out)
 	}
@@ -266,7 +266,7 @@ func TestRefusalsAreBudgetedPerClient(t *testing.T) {
 	refused := []map[string]any{
 		{"body": "wa.me/919876543210"},
 		{"body": "i want to die"},
-		{"body": "my snap is ana_23"},
+		{"body": "my snap is madeup_ana23"},
 	}
 	for i, body := range refused {
 		var out map[string]any
@@ -1339,7 +1339,7 @@ func TestBidiControlsAreNotStored(t *testing.T) {
 func TestBadgedPostsAreFilteredAlike(t *testing.T) {
 	h := verifyServer(t, func(cfg *Config) { cfg.ModKey = testModKey })
 	h.addBoard("bdg")
-	cred := h.verify("ana@iitb.ac.in").Credential
+	cred := h.verify("madeup.ana@iitb.ac.in").Credential
 
 	status, out := h.postWithCredentialMap(cred, threadsPath("bdg"), map[string]any{"body": "dm me on insta", "badge": true})
 	requireBlock(t, status, out, ruleContact, fieldBody, "dm me on insta")
@@ -1359,7 +1359,7 @@ func TestTheFilterLogsNothingItRead(t *testing.T) {
 
 	posts := []map[string]any{
 		{"body": "call 9876543210"},
-		{"name": "snap: zebra_quokka", "body": "hi"},
+		{"name": "snap: madeup_zebra_quokka", "body": "hi"},
 		{"body": "i want to die quietmarkerone"},
 		{"body": "how old are you? dm me quietmarkertwo"},
 		{"body": "go die quietmarkerthree"},
@@ -1368,7 +1368,7 @@ func TestTheFilterLogsNothingItRead(t *testing.T) {
 	for _, p := range posts {
 		h.postJSON(repliesPath("log", thread.ThreadNo), p)
 	}
-	h.postJSON(threadsPath("log"), map[string]any{"subject": "ana@gmail.com", "body": "hi"})
+	h.postJSON(threadsPath("log"), map[string]any{"subject": "madeup.ana@gmail.com", "body": "hi"})
 	for _, p := range h.heldQueue() {
 		h.approve("log", p.ThreadNo, p.No)
 	}
@@ -1379,7 +1379,7 @@ func TestTheFilterLogsNothingItRead(t *testing.T) {
 		!strings.Contains(text, `"action":"approve"`) {
 		t.Fatalf("the log is missing the requests it should have: %s", text)
 	}
-	for _, secret := range []string{"9876543210", "zebra_quokka", "quietmarker", "ana@gmail.com", "die",
+	for _, secret := range []string{"9876543210", "madeup_zebra_quokka", "quietmarker", "madeup.ana@gmail.com", "die",
 		"how old", "self_harm", "grooming", "contact", "support"} {
 		if strings.Contains(text, secret) {
 			t.Errorf("the log contains %q", secret)

@@ -26,9 +26,9 @@
 {"id": "acad-526", "body": "student finance form wants my National Insurance number, mine's JT 48 22 91 B. is it ok to type it with spaces or will it reject", "subject": "", "name": "", "expect": "block", "why": "UK National Insurance number"}
 {"id": "acad-527", "body": "UT Austin out-of-state (~$42k) vs Texas A&M in-state (~$13k) for engineering. honestly a no brainer?", "subject": "", "name": "", "expect": "publish", "why": "fees choice"}
 {"id": "acad-528", "body": "k = 8.99 × 10⁹ N m² C⁻². two 1 μC charges 1 m apart: F = 8.99 × 10⁻³ N. tiny", "subject": "", "name": "", "expect": "publish", "why": "electrostatics"}
-{"id": "acad-529", "body": "CUET application no. 263510123456 — correction window closes tomorrow 11:50 PM. changing category, do I need a new certificate?", "subject": "", "name": "", "expect": "publish", "why": "application number labelled"}
+{"id": "acad-529", "body": "CUET application no. 263510000000 — correction window closes tomorrow 11:50 PM. changing category, do I need a new certificate?", "subject": "", "name": "", "expect": "publish", "why": "application number labelled"}
 {"id": "acad-530", "body": "C: printf(\"%zu\", sizeof(long)) gives 8 on linux and 4 on windows (MSVC). LP64 vs LLP64. exam answer is 'implementation defined' apparently", "subject": "", "name": "", "expect": "publish", "why": "C types"}
-{"id": "acad-531", "body": "TS EAMCET hall ticket no. 2501234567 — rank card portal says 'not found'. anyone else?", "subject": "", "name": "", "expect": "publish", "why": "hall ticket number labelled"}
+{"id": "acad-531", "body": "TS EAMCET hall ticket no. 2500000000 — rank card portal says 'not found'. anyone else?", "subject": "", "name": "", "expect": "publish", "why": "hall ticket number labelled"}
 {"id": "acad-532", "body": "how old are you? 14? we should meet up this weekend, I'll help you with algebra at my place", "subject": "", "name": "", "expect": "hold", "why": "age question + meet-up"}
 {"id": "acad-533", "body": ">>77120\nif you can't do class 10 trig you should honestly kill yourself", "subject": "", "name": "", "expect": "hold", "why": "encourages suicide"}
 {"id": "acad-534", "body": "selling HC Verma + DC Pandey set, ₹600, Delhi pickup only. call or text 70114 82937", "subject": "", "name": "", "expect": "block", "why": "phone number"}
@@ -71,7 +71,7 @@
 {"id": "acad-571", "body": ">>70331\ncan we talk on telegram instead? easier to explain the integration with pics. what's your @", "subject": "", "name": "", "expect": "block", "why": "ask to move to Telegram"}
 {"id": "acad-572", "body": "electrostatics will be the death of me fr. gauss law qs make zero sense", "subject": "", "name": "", "expect": "publish", "why": "everyday hyperbole"}
 {"id": "acad-573", "body": "Bayes: prevalence 1%, sensitivity 99%, specificity 95%. P(disease | +) = 0.0099/(0.0099 + 0.0495) ≈ 16.7%. this is why one positive test means little", "subject": "", "name": "", "expect": "publish", "why": "Bayes theorem"}
-{"id": "acad-574", "body": "kik me for the AP Chem FRQ answers before the exam: apchem_frq22", "subject": "", "name": "", "expect": "block", "why": "Kik username"}
+{"id": "acad-574", "body": "kik me for the AP Chem FRQ answers before the exam: madeup_apchem_frq22", "subject": "", "name": "", "expect": "block", "why": "Kik username"}
 {"id": "acad-575", "body": "row 10 of pascal's triangle: 1 10 45 120 210 252 210 120 45 10 1. sum = 1024 = 2^10", "subject": "", "name": "", "expect": "publish", "why": "binomial coefficients"}
 {"id": "acad-576", "body": "ports to memorise for CN: HTTP 80, HTTPS 443, SSH 22, FTP 20/21, DNS 53, SMTP 25, MySQL 3306, PostgreSQL 5432, Redis 6379", "subject": "", "name": "", "expect": "publish", "why": "port numbers"}
 {"id": "acad-577", "body": "electron: m = 9.109 × 10⁻³¹ kg, e = 1.602 × 10⁻¹⁹ C, e/m = 1.759 × 10¹¹ C/kg. Thomson measured e/m in 1897 with a cathode ray tube", "subject": "", "name": "", "expect": "publish", "why": "constants, history of science"}
@@ -80,7 +80,7 @@
 {"id": "acad-580", "body": "monty hall sim in python, 100000 runs: switch wins 0.6671, stay 0.3329. still feels wrong", "subject": "", "name": "", "expect": "publish", "why": "probability simulation"}
 {"id": "acad-581", "body": "ACT 33 (E 34, M 35, R 31, S 32). superscore with my 34 from June?", "subject": "", "name": "", "expect": "publish", "why": "ACT scores"}
 {"id": "acad-582", "body": "baby Rudin 3rd ed, ISBN 9780070542358 — analysis prof says read ch 1–7, skip 8–11 for now", "subject": "", "name": "", "expect": "publish", "why": "ISBN-13 without dashes"}
-{"id": "acad-583", "body": "need a CLRS study buddy who's actually serious. my snapchat is ved.codes, text me there", "subject": "", "name": "", "expect": "block", "why": "Snapchat username"}
+{"id": "acad-583", "body": "need a CLRS study buddy who's actually serious. my snapchat is madeup.ved.codes, text me there", "subject": "", "name": "", "expect": "block", "why": "Snapchat username"}
 {"id": "acad-584", "body": "1/7 = 0.142857 recurring, 1/13 = 0.076923 recurring, 1/17 has period 16: 0.0588235294117647. full reptend primes are neat", "subject": "", "name": "", "expect": "publish", "why": "repeating decimals"}
 {"id": "acad-585", "body": "NIT fees: ₹62,500/sem tuition + hostel ~₹30k/sem. family income < ₹1 lakh = full tuition waiver, 1–5 lakh = 2/3 waiver", "subject": "", "name": "", "expect": "publish", "why": "fees"}
 {"id": "acad-586", "body": "ISC class 12: 96.25% best four. English 95, Physics 97, Chem 96, Maths 97. CS 99 not counted because English is compulsory 🥲", "subject": "", "name": "", "expect": "publish", "why": "marks"}
@@ -109,12 +109,12 @@
 {"id": "acad-609", "body": "Mughals in order: Babur 1526, Humayun 1530, Akbar 1556, Jahangir 1605, Shah Jahan 1628, Aurangzeb 1658. is there a mnemonic that actually works", "subject": "", "name": "", "expect": "publish", "why": "history dates"}
 {"id": "acad-610", "body": "pressure at 10 m depth = 101325 + 1000 × 9.81 × 10 = 199,425 Pa ≈ 2 atm", "subject": "", "name": "", "expect": "publish", "why": "fluid pressure"}
 {"id": "acad-611", "body": "ICSE 2027 timetable: English Paper 1 on 17 Feb, Physics 2 March, Maths 9 March? or am I looking at last year's", "subject": "", "name": "", "expect": "publish", "why": "exam dates"}
-{"id": "acad-612", "body": "2^10 = 1024, 2^20 = 1048576, 2^30 = 1073741824, 2^32 = 4294967296. CS people just know these", "subject": "", "name": "bitshift#9198765432", "expect": "publish", "why": "powers of two"}
+{"id": "acad-612", "body": "2^10 = 1024, 2^20 = 1048576, 2^30 = 1073741824, 2^32 = 4294967296. CS people just know these", "subject": "", "name": "bitshift#7700900247", "expect": "publish", "why": "powers of two"}
 {"id": "acad-613", "body": "OCR A chem: rate = k[A]²[B], units of k = mol⁻² dm⁶ s⁻¹. trick: overall order n → mol^(1−n) dm^(3(n−1)) s⁻¹", "subject": "", "name": "", "expect": "publish", "why": "rate equations"}
 {"id": "acad-614", "body": "astronomy club session tonight from 12.9716° N, 77.5946° E. Saturn should be ~42° up at 9 pm. clouds pls go away", "subject": "", "name": "stargazer#addmeonsnap", "expect": "publish", "why": "coordinates"}
 {"id": "acad-615", "body": "IPv4 has 2^32 = 4,294,967,296 addresses. IPv6 has 2^128 ≈ 3.4 × 10^38. enough for every grain of sand lol", "subject": "", "name": "", "expect": "publish", "why": "address space"}
 {"id": "acad-616", "body": "python: 1e16 + 1 == 1e16 → True. float64 has a 53-bit significand, 2^53 = 9007199254740992", "subject": "", "name": "", "expect": "publish", "why": "floating point"}
-{"id": "acad-617", "body": "Year 12 physics revision group, add me on discord: quarkqueen_ (or search quarkqueen in friends)", "subject": "", "name": "", "expect": "block", "why": "Discord username, move off-site"}
+{"id": "acad-617", "body": "Year 12 physics revision group, add me on discord: madeup_quarkqueen_ (or search madeup_quarkqueen in friends)", "subject": "", "name": "", "expect": "block", "why": "Discord username, move off-site"}
 {"id": "acad-618", "body": "255.255.255.224 = /27 → 32 addresses, 30 usable. 255.255.255.240 = /28 → 14 usable", "subject": "", "name": "", "expect": "publish", "why": "subnet masks"}
 {"id": "acad-619", "body": "is ragging still a thing at NITs in 2026? anti-ragging affidavit and all, but seniors still talk about 'intro' sessions", "subject": "", "name": "", "expect": "publish", "why": "safety discussion"}
 {"id": "acad-620", "body": "SQL: LEFT JOIN gives 1,203 rows, INNER JOIN gives 987. the 216 extra are students with no enrolment rows, NULL course_id. correct reasoning?", "subject": "", "name": "", "expect": "publish", "why": "SQL joins"}
@@ -173,7 +173,7 @@
 {"id": "acad-673", "body": "private IPv4 ranges: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16. so 172.32.5.1 is public? yes since the /12 ends at 172.31.255.255", "subject": "", "name": "", "expect": "publish", "why": "IP ranges"}
 {"id": "acad-674", "body": "FIITJEE 2-year classroom ~₹3.6 lakh. Physics Wallah online ~₹4,000. results are mostly about you anyway", "subject": "", "name": "", "expect": "publish", "why": "coaching fees"}
 {"id": "acad-675", "body": "my prof's regex example: ^\\d{3}-\\d{3}-\\d{4}$ — he asked what format it validates without telling us. I said US-style numbers with dashes. right?", "subject": "", "name": "", "expect": "publish", "why": "regex discussion, no actual number"}
-{"id": "acad-676", "body": "send your filled lab report template to sanya.labhelp@outlook.com and I'll check the formatting before you submit", "subject": "", "name": "", "expect": "block", "why": "personal email address"}
+{"id": "acad-676", "body": "send your filled lab report template to madeup.sanya.labhelp@outlook.com and I'll check the formatting before you submit", "subject": "", "name": "", "expect": "block", "why": "personal email address"}
 {"id": "acad-677", "body": "UniMelb commerce: studio in Carlton ~AUD 350/week, or share house in Brunswick for AUD 220?", "subject": "", "name": "", "expect": "publish", "why": "accommodation costs"}
 {"id": "acad-678", "body": "SSC CGL tier 1: 156.5/200. cutoff for general ~150? starting tier 2 prep", "subject": "", "name": "", "expect": "publish", "why": "exam score"}
 {"id": "acad-679", "body": "international student: do I need an SSN to apply to US unis? no, you only get one if you work on campus. FAFSA is for citizens anyway", "subject": "", "name": "", "expect": "publish", "why": "mentions SSN, none given"}
@@ -202,7 +202,7 @@
 {"id": "acad-702", "body": "library hours during exams (10 Nov – 12 Dec): 8:00 am – 2:00 am. 24×7 reading room in the basement", "subject": "", "name": "", "expect": "publish", "why": "library hours"}
 {"id": "acad-703", "body": "PSG Tech Coimbatore hostel mess — is it veg only? i'm from Kerala and will die without fish", "subject": "", "name": "", "expect": "publish", "why": "hostel, hyperbole"}
 {"id": "acad-704", "body": "bhai koi batao, HC Verma ke solutions ka sabse acha source kya hai? DC Pandey wale bahut lambe hai", "subject": "", "name": "", "expect": "publish", "why": "Hinglish study resources"}
-{"id": "acad-705", "body": "BITS ID 2024A7PS0123P — library card not working at the gate. same for anyone else from the 2024 batch?", "subject": "", "name": "", "expect": "publish", "why": "student ID"}
+{"id": "acad-705", "body": "BITS ID 2024A7PS0000P — library card not working at the gate. same for anyone else from the 2024 batch?", "subject": "", "name": "", "expect": "publish", "why": "student ID"}
 {"id": "acad-706", "body": "Lenz demo: neodymium magnet through a copper pipe took 2.3 s vs 0.45 s for a steel ball. eddy currents are magic", "subject": "", "name": "", "expect": "publish", "why": "physics demo"}
 {"id": "acad-707", "body": "since 2019 the kelvin is defined by fixing k_B = 1.380649 × 10⁻²³ J/K exactly, and the kg by fixing h. no more metal cylinder in Paris", "subject": "", "name": "", "expect": "publish", "why": "SI redefinition"}
 {"id": "acad-708", "body": "AP exam schedule: is Calc AB/BC the Monday morning of week 2 this year? I have Physics C the next day and want to plan", "subject": "", "name": "", "expect": "publish", "why": "exam scheduling"}

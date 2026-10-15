@@ -744,15 +744,27 @@ that shows support and is then held meets `hold`), `why`, and, only together,
 that is not its label, on a known miss that now comes out right (take the mark off),
 and on an unknown field or a repeated id; with `-v` it logs per file how many ordinary
 posts were stopped and how much of each kind was caught. To add a post, append a line
-to the file for its kind with the next id. The text is invented, never copied: no
-real person's number, address, handle or invite (the public helplines are the
-exception, as in `helplineNumbers`). In the first two parts the UK, US and Australian
-phone numbers come from the ranges set aside for drama, which the filter passes, so a
-post meant to be blocked uses an Indian or other number instead; in `_3` a number meant
-to be blocked is ordinary digits in a valid shape, and the three its writers took from a
-drama range or a voided SSN were regenerated so, as their `why` says. An invented
-number, ID or handle in a valid shape may still happen to be someone's, as with the unit
-tests' examples. Label a post by what the filter should do, not by what
+to the file for its kind with the next id. The text is invented, never copied: no real
+person's number, address, handle or invite, and no name with a real school (the public
+helplines are the exception, as in `helplineNumbers`). Every address, username and
+profile in it says "madeup" — in the local part, the handle or the path
+(`madeup.rohan2008@gmail.com`, `@madeup_organicchem`, `instagram.com/madeup.sketchy`, a
+Name field's `madeupmint#k92`), in letters that still read "madeup" when the post spells
+it out or splits it with markup — or is at a domain RFC 2606 reserves, and a student
+number at an institution's domain moves to a made-up one (`s2214587@madeup-uni.ac.uk`),
+so none can be a real person's. `TestFilterCorpusDetailsAreMadeUp` holds the corpus, and
+the addresses in this package's tests, to that; a group's invite code, a Session ID and
+a friend code are random and name no one, and stay as they are. A number cannot be
+marked so. In the first two parts the UK, US and Australian phone numbers come from the
+ranges set aside for drama, which the filter passes, so a post meant to be blocked uses
+an Indian or other number instead; in `_3` a number meant to be blocked is ordinary
+digits in a valid shape, and the three its writers took from a drama range or a voided
+SSN were regenerated so, as their `why` says. Such a number is never given with a name,
+a school or a handle; a tripcode secret holding a mobile uses a drama number, an exam
+roll, application or student number the filter should publish has zeroes for its serial,
+and an Aadhaar number fails its check digit wherever its label alone gets it blocked. An
+invented number or ID in a valid shape may still happen to be someone's, as
+with the unit tests' examples. Label a post by what the filter should do, not by what
 it does. A rule change that turns a labelled post wrong is a regression to fix, or a
 label to correct with the reason in `why`; a `known_miss` is for a miss whose fix
 would cost more than it buys, and its `note` says what. **The rules have been fitted

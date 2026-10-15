@@ -466,7 +466,11 @@ What it does with posts like the ones it is written for is pinned by a corpus:
 three for each kind of post: `academic.jsonl`, `academic_2.jsonl` and
 `academic_3.jsonl` (700 posts), the same three for `life` (715, student life),
 for `contact` (743, contact details) and for `risk` (709, risky posts), each
-labelled with what the filter should do.
+labelled with what the filter should do. Every address, username and profile in
+them says "madeup" or is at a reserved domain, so none is a real person's
+(`TestFilterCorpusDetailsAreMadeUp`); a number meant to be blocked is ordinary
+digits given with no name, school or handle, since the filter passes the ranges
+set aside for drama.
 `TestFilterCorpus` runs every one through the filter and fails on any it gets
 wrong, except those marked as known misses, each with a note saying why the
 miss is accepted, and logs how many ordinary posts were stopped and how much of

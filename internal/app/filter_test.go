@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -118,14 +119,14 @@ func TestFilterBlocks(t *testing.T) {
 			"98765[/spoiler] [spoiler]43210"},
 		{"number after a word in a spoiler", "call me[spoiler]9876543210[/spoiler]", ruleContact, "9876543210"},
 		{"app split by a spoiler", "add me on sn[spoiler]ap[/spoiler]", ruleContact, "add me on sn[spoiler]ap"},
-		{"handle split by a spoiler", "my snap is cool[spoiler]kid_12[/spoiler]", ruleContact,
-			"my snap is cool[spoiler]kid_12"},
-		{"email split by a spoiler", "coolkid12@g[spoiler]mail.com[/spoiler]", ruleContact,
-			"coolkid12@g[spoiler]mail.com"},
+		{"handle split by a spoiler", "my snap is madeup[spoiler]kid_12[/spoiler]", ruleContact,
+			"my snap is madeup[spoiler]kid_12"},
+		{"email split by a spoiler", "madeupkid12@g[spoiler]mail.com[/spoiler]", ruleContact,
+			"madeupkid12@g[spoiler]mail.com"},
 		{"link split by a spoiler", "disc[spoiler]ord.gg/abc123[/spoiler]", ruleContact, "disc[spoiler]ord.gg/abc123"},
 		{"app in a code block", "add me on [code]snap[/code]", ruleContact, "add me on [code]snap"},
-		{"handle in a code block", "my snap is [code]coolkid_12[/code]", ruleContact, "my snap is [code]coolkid_12"},
-		{"handle's digits in a spoiler", "ig: coolkid[spoiler]2009[/spoiler]", ruleContact, "ig: coolkid[spoiler]2009"},
+		{"handle in a code block", "my snap is [code]madeupkid_12[/code]", ruleContact, "my snap is [code]madeupkid_12"},
+		{"handle's digits in a spoiler", "ig: madeupkid[spoiler]2009[/spoiler]", ruleContact, "ig: madeupkid[spoiler]2009"},
 		{"leet app split by a spoiler", "whats ur sn[spoiler]4[/spoiler]p", ruleContact,
 			"whats ur sn[spoiler]4[/spoiler]p"},
 		{"app's first letter in a spoiler", "add me on 1[spoiler]nsta[/spoiler]", ruleContact,
@@ -134,28 +135,28 @@ func TestFilterBlocks(t *testing.T) {
 		{"number after an invisible character", "call me\u200b9876543210", ruleContact, "9876543210"},
 
 		// Email addresses.
-		{"email", "mail priya.sharma@gmail.com for notes", ruleContact, "priya.sharma@gmail.com"},
-		{"email spaced", "priya @ gmail . com", ruleContact, "priya @ gmail . com"},
-		{"email spelled out", "priya.sharma at gmail dot com", ruleContact, "priya.sharma at gmail dot com"},
-		{"email bracketed", "priya [at] outlook [dot] com", ruleContact, "priya [at] outlook [dot] com"},
-		{"email at an institution", "priya at iitb dot ac dot in", ruleContact, "priya at iitb dot ac dot in"},
-		{"email in code", "[code]ADMIN = \"rahul.k@yahoo.co.in\"[/code]", ruleContact, "rahul.k@yahoo.co.in"},
-		{"email bracketed dot", "coolkid12@gmail[.]com", ruleContact, "coolkid12@gmail[.]com"},
-		{"email bracketed at", "coolkid12[@]gmail.com", ruleContact, "coolkid12[@]gmail.com"},
-		{"email with no tld", "coolkid12@gmail", ruleContact, "coolkid12@gmail"},
-		{"email with at and dot spelled", "coolkid@gmail dot com", ruleContact, "coolkid@gmail dot com"},
-		{"email spaced at and spelled dot", "mail coolkid12 @ gmail dot com", ruleContact, "coolkid12 @ gmail dot com"},
-		{"email digit in tld", "coolkid12@gmail.c0m", ruleContact, "coolkid12@gmail.c0m"},
+		{"email", "mail madeup.priya@gmail.com for notes", ruleContact, "madeup.priya@gmail.com"},
+		{"email spaced", "madeup.priya @ gmail . com", ruleContact, "madeup.priya @ gmail . com"},
+		{"email spelled out", "madeup.priya at gmail dot com", ruleContact, "madeup.priya at gmail dot com"},
+		{"email bracketed", "madeuppriya [at] outlook [dot] com", ruleContact, "madeuppriya [at] outlook [dot] com"},
+		{"email at an institution", "madeuppriya at iitb dot ac dot in", ruleContact, "madeuppriya at iitb dot ac dot in"},
+		{"email in code", "[code]ADMIN = \"madeup.rahul@yahoo.co.in\"[/code]", ruleContact, "madeup.rahul@yahoo.co.in"},
+		{"email bracketed dot", "madeupkid12@gmail[.]com", ruleContact, "madeupkid12@gmail[.]com"},
+		{"email bracketed at", "madeupkid12[@]gmail.com", ruleContact, "madeupkid12[@]gmail.com"},
+		{"email with no tld", "madeupkid12@gmail", ruleContact, "madeupkid12@gmail"},
+		{"email with at and dot spelled", "madeupkid@gmail dot com", ruleContact, "madeupkid@gmail dot com"},
+		{"email spaced at and spelled dot", "mail madeupkid12 @ gmail dot com", ruleContact, "madeupkid12 @ gmail dot com"},
+		{"email digit in tld", "madeupkid12@gmail.c0m", ruleContact, "madeupkid12@gmail.c0m"},
 
 		// Links to profiles and invites.
 		{"discord invite", "join discord.gg/abc123", ruleContact, "discord.gg/abc123"},
 		{"discord invite spelled", "discord dot gg/abc123", ruleContact, "discord dot gg/abc123"},
-		{"instagram profile", "https://www.instagram.com/some_user", ruleContact, "https://www.instagram.com/some_user"},
-		{"telegram", "t.me/someone", ruleContact, "t.me/someone"},
+		{"instagram profile", "https://www.instagram.com/madeup_user", ruleContact, "https://www.instagram.com/madeup_user"},
+		{"telegram", "t.me/madeup_someone", ruleContact, "t.me/madeup_someone"},
 		{"whatsapp link", "wa.me/919876543210", ruleContact, "wa.me/919876543210"},
-		{"snapchat add", "snapchat.com/add/cool_guy", ruleContact, "snapchat.com/add/cool_guy"},
+		{"snapchat add", "snapchat.com/add/madeup_guy", ruleContact, "snapchat.com/add/madeup_guy"},
 		{"bracketed dot in a link", "discord(.)gg/abc123", ruleContact, "discord(.)gg/abc123"},
-		{"spaced short host", "t . me/coolkid", ruleContact, "t . me/coolkid"},
+		{"spaced short host", "t . me/madeupkid", ruleContact, "t . me/madeupkid"},
 		{"host spelled letter by letter", "d i s c o r d . g g / abc123", ruleContact, "d i s c o r d . g g / abc123"},
 		{"whatsapp short link", "https://wa.link/abc123", ruleContact, "https://wa.link/abc123"},
 		{"whatsapp web", "https://web.whatsapp.com/send?phone=919876543210", ruleContact,
@@ -175,16 +176,16 @@ func TestFilterBlocks(t *testing.T) {
 		{"whats your number", "whats ur number", ruleContact, "whats ur number"},
 		{"join my discord", "join my discord for jee prep", ruleContact, "join my discord"},
 		{"lets move", "lets talk on telegram", ruleContact, "lets talk on telegram"},
-		{"insta colon handle", "insta: x_y_z", ruleContact, "insta: x_y_z"},
-		{"snap at handle", "snap @cool.guy", ruleContact, "snap @cool.guy"},
-		{"my snap is", "my snap is ana_23", ruleContact, "my snap is ana_23"},
+		{"insta colon handle", "insta: madeup_x_y_z", ruleContact, "insta: madeup_x_y_z"},
+		{"snap at handle", "snap @madeup.guy", ruleContact, "snap @madeup.guy"},
+		{"my snap is", "my snap is madeup_ana23", ruleContact, "my snap is madeup_ana23"},
 		{"whatsapp me", "whatsapp me", ruleContact, "whatsapp me"},
 		{"steam", "add me on steam", ruleContact, "add me on steam"},
-		{"dotted app and handle", "s.n.a.p: coolkid_12", ruleContact, "s.n.a.p: coolkid_12"},
-		{"leetspeak app and handle", "sn4pch4t: coolkid_12", ruleContact, "sn4pch4t: coolkid_12"},
-		{"discord discriminator", "discord: coolkid#1234", ruleContact, "discord: coolkid#1234"},
-		{"app id without a colon", "insta id coolkid_12", ruleContact, "insta id coolkid_12"},
-		{"snap me handle", "snap me coolkid_12", ruleContact, "snap me coolkid_12"},
+		{"dotted app and handle", "s.n.a.p: madeupkid_12", ruleContact, "s.n.a.p: madeupkid_12"},
+		{"leetspeak app and handle", "sn4pch4t: madeupkid_12", ruleContact, "sn4pch4t: madeupkid_12"},
+		{"discord discriminator", "discord: madeupkid#1234", ruleContact, "discord: madeupkid#1234"},
+		{"app id without a colon", "insta id madeupkid_12", ruleContact, "insta id madeupkid_12"},
+		{"snap me handle", "snap me madeupkid_12", ruleContact, "snap me madeupkid_12"},
 
 		// ID numbers.
 		{"aadhaar", "aadhaar " + aadhaar, ruleIDNumber, aadhaar},
@@ -246,26 +247,26 @@ func TestFilterBlocks(t *testing.T) {
 		// Links to every kind of profile the link rule knows.
 		{"discord invite path", "discord.com/invite/abc123", ruleContact, "discord.com/invite/abc123"},
 		{"discord user", "discord.com/users/123456789", ruleContact, "discord.com/users/123456789"},
-		{"tiktok profile", "tiktok.com/@coolkid", ruleContact, "tiktok.com/@coolkid"},
-		{"twitter profile", "twitter.com/coolkid", ruleContact, "twitter.com/coolkid"},
-		{"x profile", "x.com/coolkid", ruleContact, "x.com/coolkid"},
-		{"reddit user", "reddit.com/u/coolkid", ruleContact, "reddit.com/u/coolkid"},
-		{"facebook profile", "facebook.com/coolkid", ruleContact, "facebook.com/coolkid"},
-		{"messenger", "messenger.com/t/coolkid", ruleContact, "messenger.com/t/coolkid"},
+		{"tiktok profile", "tiktok.com/@madeupkid", ruleContact, "tiktok.com/@madeupkid"},
+		{"twitter profile", "twitter.com/madeupkid", ruleContact, "twitter.com/madeupkid"},
+		{"x profile", "x.com/madeupkid", ruleContact, "x.com/madeupkid"},
+		{"reddit user", "reddit.com/u/madeupkid", ruleContact, "reddit.com/u/madeupkid"},
+		{"facebook profile", "facebook.com/madeupkid", ruleContact, "facebook.com/madeupkid"},
+		{"messenger", "messenger.com/t/madeupkid", ruleContact, "messenger.com/t/madeupkid"},
 
 		// Email addresses written out.
-		{"bracketed at, spelled dot", "priya (at) somecollege dot com", ruleContact, "priya (at) somecollege dot com"},
-		{"name-like local part", "priya_k at somecollege dot com", ruleContact, "priya_k at somecollege dot com"},
-		{"provider spelled", "priya at gmail dot com", ruleContact, "priya at gmail dot com"},
-		{"at the rate", "coolkid12 at the rate gmail dot com", ruleContact, "coolkid12 at the rate gmail dot com"},
-		{"attherate", "coolkid12attherategmail.com", ruleContact, "coolkid12attherategmail.com"},
-		{"spaced at before a provider", "coolkid12 @ gmail", ruleContact, "coolkid12 @ gmail"},
-		{"at a provider with a handle", "coolkid12 at gmail", ruleContact, "coolkid12 at gmail"},
-		{"double at", "coolkid12@@gmail.com", ruleContact, "coolkid12@@gmail.com"},
-		{"d0t", "coolkid12 at gmail d0t com", ruleContact, "coolkid12 at gmail d0t com"},
-		{"underscored dot", "coolkid12@gmail_dot_com", ruleContact, "coolkid12@gmail_dot_com"},
-		{"my gmail is", "my gmail is coolkid12", ruleContact, "my gmail is coolkid12"},
-		{"gmail colon", "gmail: coolkid12", ruleContact, "gmail: coolkid12"},
+		{"bracketed at, spelled dot", "madeuppriya (at) somecollege dot com", ruleContact, "madeuppriya (at) somecollege dot com"},
+		{"name-like local part", "madeuppriya_k at somecollege dot com", ruleContact, "madeuppriya_k at somecollege dot com"},
+		{"provider spelled", "madeuppriya at gmail dot com", ruleContact, "madeuppriya at gmail dot com"},
+		{"at the rate", "madeupkid12 at the rate gmail dot com", ruleContact, "madeupkid12 at the rate gmail dot com"},
+		{"attherate", "madeupkid12attherategmail.com", ruleContact, "madeupkid12attherategmail.com"},
+		{"spaced at before a provider", "madeupkid12 @ gmail", ruleContact, "madeupkid12 @ gmail"},
+		{"at a provider with a handle", "madeupkid12 at gmail", ruleContact, "madeupkid12 at gmail"},
+		{"double at", "madeupkid12@@gmail.com", ruleContact, "madeupkid12@@gmail.com"},
+		{"d0t", "madeupkid12 at gmail d0t com", ruleContact, "madeupkid12 at gmail d0t com"},
+		{"underscored dot", "madeupkid12@gmail_dot_com", ruleContact, "madeupkid12@gmail_dot_com"},
+		{"my gmail is", "my gmail is madeupkid12", ruleContact, "my gmail is madeupkid12"},
+		{"gmail colon", "gmail: madeupkid12", ruleContact, "gmail: madeupkid12"},
 
 		// Asking, in more words and more apps.
 		{"curly apostrophe", "what’s your snap", ruleContact, "what’s your snap"},
@@ -278,17 +279,17 @@ func TestFilterBlocks(t *testing.T) {
 		{"are you on", "are you on snap?", ruleContact, "are you on snap"},
 		{"drop your at", "drop ur @", ruleContact, "drop ur @"},
 		{"what's your at", "what's your @ there", ruleContact, "what's your @"},
-		{"handle before the app", "@coolkid on snap", ruleContact, "@coolkid on snap"},
-		{"handle is my app", "coolkid_12 is my snap", ruleContact, "coolkid_12 is my snap"},
-		{"arrow", "snap -> coolkid_12", ruleContact, "snap -> coolkid_12"},
-		{"fat arrow", "insta => coolkid_12", ruleContact, "insta => coolkid_12"},
-		{"unicode arrow", "snap → coolkid_12", ruleContact, "snap → coolkid_12"},
-		{"discriminator without a colon", "discord coolkid#1234", ruleContact, "discord coolkid#1234"},
-		{"app and handle", "snap coolkid_12", ruleContact, "snap coolkid_12"},
-		{"sc colon", "sc: coolkid_12", ruleContact, "sc: coolkid_12"},
-		{"app arrow handle", "snapchat -> coolkid_12", ruleContact, "snapchat -> coolkid_12"},
-		{"handle on my app", "add coolkid_12 on my insta", ruleContact, "coolkid_12 on my insta"},
-		{"handle and app in brackets", "coolkid_12 (snap)", ruleContact, "coolkid_12 (snap"},
+		{"handle before the app", "@madeupkid on snap", ruleContact, "@madeupkid on snap"},
+		{"handle is my app", "madeupkid_12 is my snap", ruleContact, "madeupkid_12 is my snap"},
+		{"arrow", "snap -> madeupkid_12", ruleContact, "snap -> madeupkid_12"},
+		{"fat arrow", "insta => madeupkid_12", ruleContact, "insta => madeupkid_12"},
+		{"unicode arrow", "snap → madeupkid_12", ruleContact, "snap → madeupkid_12"},
+		{"discriminator without a colon", "discord madeupkid#1234", ruleContact, "discord madeupkid#1234"},
+		{"app and handle", "snap madeupkid_12", ruleContact, "snap madeupkid_12"},
+		{"sc colon", "sc: madeupkid_12", ruleContact, "sc: madeupkid_12"},
+		{"app arrow handle", "snapchat -> madeupkid_12", ruleContact, "snapchat -> madeupkid_12"},
+		{"handle on my app", "add madeupkid_12 on my insta", ruleContact, "madeupkid_12 on my insta"},
+		{"handle and app in brackets", "madeupkid_12 (snap)", ruleContact, "madeupkid_12 (snap"},
 		{"doubled letter in the app", "add me on snapp", ruleContact, "add me on snapp"},
 		{"ur snap?", "ur snap?", ruleContact, "ur snap?"},
 		{"stranger-chat app", "add me on omegle", ruleContact, "add me on omegle"},
@@ -296,10 +297,10 @@ func TestFilterBlocks(t *testing.T) {
 		{"steam after add me", "add me on steam pls", ruleContact, "add me on steam"},
 		{"find me on insta", "find me on insta", ruleContact, "find me on insta"},
 		{"can we move to snap", "can we move to snap", ruleContact, "can we move to snap"},
-		{"my insta is a name", "my insta is priya", ruleContact, "my insta is priya"},
-		{"my email is", "my email is coolkid12", ruleContact, "my email is coolkid12"},
-		{"spaced at with a dotted name", "priya.k at gmail.com", ruleContact, "priya.k at gmail.com"},
-		{"at a provider's site", "priya at gmail.com", ruleContact, "priya at gmail.com"},
+		{"my insta is a name", "my insta is madeuppriya", ruleContact, "my insta is madeuppriya"},
+		{"my email is", "my email is madeupkid12", ruleContact, "my email is madeupkid12"},
+		{"spaced at with a dotted name", "madeuppriya.k at gmail.com", ruleContact, "madeuppriya.k at gmail.com"},
+		{"at a provider's site", "madeuppriya at gmail.com", ruleContact, "madeuppriya at gmail.com"},
 		// The look-alikes of what TestFilterLeavesOrdinaryPostsAlone lets
 		// through, still caught.
 		{"bare ask for a number", "what's your no.", ruleContact, "what's your no"},
@@ -310,29 +311,29 @@ func TestFilterBlocks(t *testing.T) {
 		{"mixed separators", "98.76-54.32.10", ruleContact, "98.76-54.32.10"},
 		{"decimal-range shape after a cue", "call 98.765-432.10", ruleContact, "98.765-432.10"},
 		{"phone after call me for", "call me for 9876543210", ruleContact, "9876543210"},
-		{"handle with digits on snap", "coolkid12 on snap", ruleContact, "coolkid12 on snap"},
-		{"handle with digits on insta", "rahul99 on insta", ruleContact, "rahul99 on insta"},
-		{"name-like at a site", "coolkid12 at somesite.com", ruleContact, "coolkid12 at somesite.com"},
+		{"handle with digits on snap", "madeupkid12 on snap", ruleContact, "madeupkid12 on snap"},
+		{"handle with digits on insta", "madeuprahul99 on insta", ruleContact, "madeuprahul99 on insta"},
+		{"name-like at a site", "madeupkid12 at somesite.com", ruleContact, "madeupkid12 at somesite.com"},
 		{"code-shaped name at a provider", "ab12 at gmail.com", ruleContact, "ab12 at gmail.com"},
-		{"code-shaped name at a university", "ana23 at iitb.ac.in", ruleContact, "ana23 at iitb.ac.in"},
+		{"code-shaped name at a university", "ana23 at madeup.ac.in", ruleContact, "ana23 at madeup.ac.in"},
 		{"degree-shaped name at a provider", "B.Tech at gmail.com", ruleContact, "B.Tech at gmail.com"},
-		{"address at a country's university", "email me at ali@ogrenci.edu.tr", ruleContact, "ali@ogrenci.edu.tr"},
-		{"address at an academic subdomain", "x.y@mail.tau.ac.il", ruleContact, "x.y@mail.tau.ac.il"},
-		{"mail provider and a dash", "email - priya.k12", ruleContact, "email - priya.k12"},
-		{"mail provider and an arrow", "gmail -> priya.k12", ruleContact, "gmail -> priya.k12"},
-		{"mail label and a dash", "email id - priya.k12", ruleContact, "email id - priya.k12"},
-		{"my mail provider and a dash", "my gmail - priya.k12", ruleContact, "my gmail - priya.k12"},
+		{"address at a country's university", "email me at ali@madeup-uni.edu.tr", ruleContact, "ali@madeup-uni.edu.tr"},
+		{"address at an academic subdomain", "x.y@mail.madeup.ac.il", ruleContact, "x.y@mail.madeup.ac.il"},
+		{"mail provider and a dash", "email - madeuppriya.k12", ruleContact, "email - madeuppriya.k12"},
+		{"mail provider and an arrow", "gmail -> madeuppriya.k12", ruleContact, "gmail -> madeuppriya.k12"},
+		{"mail label and a dash", "email id - madeuppriya.k12", ruleContact, "email id - madeuppriya.k12"},
+		{"my mail provider and a dash", "my gmail - madeuppriya.k12", ruleContact, "my gmail - madeuppriya.k12"},
 		{"you on an app", "u on snap?", ruleContact, "u on snap?"},
 		{"you on insta", "you on insta?", ruleContact, "you on insta?"},
 		{"gimme your app", "gimme ur snap", ruleContact, "gimme ur snap"},
 		{"lemme get your app", "lemme get ur insta", ruleContact, "lemme get ur insta"},
 		{"hmu and an app", "hmu snap", ruleContact, "hmu snap"},
-		{"app, a chevron and a handle", "insta > priya.k12", ruleContact, "insta > priya.k12"},
-		{"app, two chevrons and a handle", "ig >> priya_k12", ruleContact, "ig >> priya_k12"},
-		{"app, a bar and a handle", "insta | priya_k12", ruleContact, "insta | priya_k12"},
+		{"app, a chevron and a handle", "insta > madeuppriya.k12", ruleContact, "insta > madeuppriya.k12"},
+		{"app, two chevrons and a handle", "ig >> madeuppriya_k12", ruleContact, "ig >> madeuppriya_k12"},
+		{"app, a bar and a handle", "insta | madeuppriya_k12", ruleContact, "insta | madeuppriya_k12"},
 		{"the gram", "add me on the gram", ruleContact, "add me on the gram"},
-		{"discord tag and a discriminator", "discord tag priya#1234", ruleContact, "discord tag priya#1234"},
-		{"label before a tool-shaped handle", "insta id python3", ruleContact, "insta id python3"},
+		{"discord tag and a discriminator", "discord tag madeuppriya#1234", ruleContact, "discord tag madeuppriya#1234"},
+		{"label before a tool-shaped handle", "insta id madeup3", ruleContact, "insta id madeup3"},
 		{"tera snap kya hai", "tera snap kya hai", ruleContact, "tera snap kya hai"},
 		{"teri insta id kya h", "teri insta id kya h", ruleContact, "teri insta id kya h"},
 		{"tera number kya hai", "tera number kya hai", ruleContact, "tera number kya hai"},
@@ -346,8 +347,8 @@ func TestFilterBlocks(t *testing.T) {
 			"https://signal.group/#CjQKIGabcdef"},
 		{"signal number link", "signal.me/#p/+919876543210", ruleContact, "signal.me/#p/+919876543210"},
 		{"slash spelled out", "discord dot gg slash abcdef", ruleContact, "discord dot gg slash abcdef"},
-		{"forward slash spelled out", "t.me forward slash priya_k12", ruleContact, "t.me forward slash priya_k12"},
-		{"slash spelled in a path", "instagram.com slash priya_k12", ruleContact, "instagram.com slash priya_k12"},
+		{"forward slash spelled out", "t.me forward slash madeuppriya_k12", ruleContact, "t.me forward slash madeuppriya_k12"},
+		{"slash spelled in a path", "instagram.com slash madeuppriya_k12", ruleContact, "instagram.com slash madeuppriya_k12"},
 		{"bracketed slash", "discord.gg(/)abcdef", ruleContact, "discord.gg(/)abcdef"},
 		{"spelled slash after a spaced host", "d i s c o r d . g g slash abcdef", ruleContact,
 			"d i s c o r d . g g slash abcdef"},
@@ -373,8 +374,8 @@ func TestFilterBlocks(t *testing.T) {
 		{"apna number bhejo", "apna number bhejo", ruleContact, "apna number bhejo"},
 		{"tera number de", "tera number de", ruleContact, "tera number de"},
 		{"pe baat karte", "whatsapp pe baat karte hain", ruleContact, "whatsapp pe baat karte"},
-		{"handle with hai", "mera insta coolkid_12 hai", ruleContact, "mera insta coolkid_12 hai"},
-		{"copula before the handle", "insta id hai coolkid_12", ruleContact, "insta id hai coolkid_12"},
+		{"handle with hai", "mera insta madeupkid_12 hai", ruleContact, "mera insta madeupkid_12 hai"},
+		{"copula before the handle", "insta id hai madeupkid_12", ruleContact, "insta id hai madeupkid_12"},
 
 		// Read since the posts in testdata/filter_corpus were measured.
 		// Numbers: a "+" inside the bracket, any grouping after a request to
@@ -398,8 +399,8 @@ func TestFilterBlocks(t *testing.T) {
 		{"a stray word before the words", "pls do nine eight seven six five four three two two one", ruleContact,
 			"nine eight seven six five four three two two one"},
 		// A letter in brackets inside an app's name.
-		{"letter in brackets", "i[n]sta: hollow_moon_17", ruleContact, "i[n]sta: hollow_moon_17"},
-		{"letter in round brackets", "sn(a)p: hollow_moon_17", ruleContact, "sn(a)p: hollow_moon_17"},
+		{"letter in brackets", "i[n]sta: madeup_moon_17", ruleContact, "i[n]sta: madeup_moon_17"},
+		{"letter in round brackets", "sn(a)p: madeup_moon_17", ruleContact, "sn(a)p: madeup_moon_17"},
 		// Asking to move, or to swap accounts.
 		{"move this to an app", "let's move this to discord", ruleContact, "let's move this to discord"},
 		{"take this to an app", "can we take this to telegram?", ruleContact, "can we take this to telegram"},
@@ -409,13 +410,13 @@ func TestFilterBlocks(t *testing.T) {
 		{"number bhejo", "number bhejo", ruleContact, "number bhejo"},
 		// Handles: an "@" a few words after the app, a Discord tag after
 		// "disc", a label after an app that is also a word, the ghost.
-		{"@ a few words after the app", "telegram pe aao: @organicchem_aditya", ruleContact,
-			"telegram pe aao: @organicchem_aditya"},
-		{"discord tag after disc", "disc: quietfox#1234", ruleContact, "disc: quietfox#1234"},
-		{"line id", "line id: quiet_fox27", ruleContact, "line id: quiet_fox27"},
-		{"steam username", "steam username quiet_fox27", ruleContact, "steam username quiet_fox27"},
-		{"snapchat ghost", "👻: quiet.fox_27", ruleContact, "👻: quiet.fox_27"},
-		{"my signal is a handle", "my signal is quietfox.27", ruleContact, "my signal is quietfox.27"},
+		{"@ a few words after the app", "telegram pe aao: @madeup_organicchem", ruleContact,
+			"telegram pe aao: @madeup_organicchem"},
+		{"discord tag after disc", "disc: madeupfox#1234", ruleContact, "disc: madeupfox#1234"},
+		{"line id", "line id: madeup_fox27", ruleContact, "line id: madeup_fox27"},
+		{"steam username", "steam username madeup_fox27", ruleContact, "steam username madeup_fox27"},
+		{"snapchat ghost", "👻: madeup.fox_27", ruleContact, "👻: madeup.fox_27"},
+		{"my signal is a handle", "my signal is madeup.quietfox.27", ruleContact, "my signal is madeup.quietfox.27"},
 		// Digits spaced one at a time with a dash or a point among them,
 		// read in the groups the marks make.
 		{"spaced digits with a dash group", "call karna 8 4 3 2 - 1 0 9 7 6 5", ruleContact, "8 4 3 2 - 1 0 9 7 6 5"},
@@ -461,10 +462,10 @@ func TestFilterBlocks(t *testing.T) {
 		{"UK landline past the drama range", "call me on 0161 496 1234", ruleContact, "0161 496 1234"},
 		{"UK landline in an area code with no drama range", "call me on 0170 496 0123", ruleContact, "0170 496 0123"},
 		// Addresses spelled out a character at a time, or in two halves.
-		{"spaced-out address", "email (remove spaces): s h r e y a s . 0 9 @ g m a i l . c o m", ruleContact,
-			"s h r e y a s . 0 9 @ g m a i l . c o m"},
-		{"address in two halves", "[at] gmail [dot] com — prefix is quietstorm2007, you figure it out", ruleContact,
-			"[at] gmail [dot] com — prefix is quietstorm2007"},
+		{"spaced-out address", "email (remove spaces): m a d e u p . 0 9 @ g m a i l . c o m", ruleContact,
+			"m a d e u p . 0 9 @ g m a i l . c o m"},
+		{"address in two halves", "[at] gmail [dot] com — prefix is madeup.quietstorm2007, you figure it out", ruleContact,
+			"[at] gmail [dot] com — prefix is madeup.quietstorm2007"},
 		// Asks read from the app outwards: a verb of moving or talking with
 		// its object and preposition, a question about the reader's account,
 		// messages there, Hinglish either way round, a group set up there.
@@ -492,14 +493,14 @@ func TestFilterBlocks(t *testing.T) {
 		{"talk there after a link", "instagram.com/p/C7xYz123/ — this is my post, comment there so we can talk",
 			ruleContact, "comment there"},
 		// Handles a few words after the app.
-		{"come to an app, in Hinglish, with a handle", "snap pe aaja: aarav.0p", ruleContact,
-			"snap pe aaja: aarav.0p"},
-		{"handle after the ghost", "my 👻 is sunset.sprinkles add me", ruleContact, "👻 is sunset.sprinkles"},
-		{"handle on another app", "threema id 7KX2PQ9M, add me if you care about privacy", ruleContact,
-			"threema id 7KX2PQ9M"},
-		{"handle spelled out", "telegram: mridul underscore jee", ruleContact, "telegram: mridul underscore jee"},
-		{"quoted handle after search", "telegram id same as here, search 'kotafactoryreal'", ruleContact,
-			"telegram id same as here, search 'kotafactoryreal'"},
+		{"come to an app, in Hinglish, with a handle", "snap pe aaja: madeup.0p", ruleContact,
+			"snap pe aaja: madeup.0p"},
+		{"handle after the ghost", "my 👻 is madeup.sprinkles add me", ruleContact, "👻 is madeup.sprinkles"},
+		{"handle on another app", "threema id MADEUP42, add me if you care about privacy", ruleContact,
+			"threema id MADEUP42"},
+		{"handle spelled out", "telegram: madeup underscore jee", ruleContact, "telegram: madeup underscore jee"},
+		{"quoted handle after search", "telegram id same as here, search 'madeupkotafactory'", ruleContact,
+			"telegram id same as here, search 'madeupkotafactory'"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -612,7 +613,7 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		// Code.
 		"[code]user = User(email=\"test@example.com\")[/code]",
 		"[code]git clone git@github.com:owner/repo.git[/code]",
-		"[code]ssh deploy@host.sh[/code]",
+		"[code]ssh deploy@madeup.sh[/code]",
 		"[code]const d = {tg: 1}[/code]",
 		"[code]my_snap = snap(x)[/code]",
 		"[code]arr = [9876543210, 1234567890][/code]",
@@ -2513,11 +2514,11 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"my mum will whatsapp me tonight about the fees", publish},
 		{"is there somewhere more private we could talk? this board is way too public", contact},
 		{"is there somewhere private to study on campus?", publish},
-		{"reddit u/quietbiochem, pm me there for the full spreadsheet", contact},
-		{"follow me on X @tunde_builds i post leetcode solutions", contact},
+		{"reddit u/madeup_biochem, pm me there for the full spreadsheet", contact},
+		{"follow me on X @madeup_tunde_builds i post leetcode solutions", contact},
 		{"who wants to be my snap streak buddy", contact},
 		{"my snap streak buddy ghosted me after 300 days", publish},
-		{"riot id: baingan#IND1 val pe aaja shaam ko", contact},
+		{"riot id: madeupbaingan#IND1 val pe aaja shaam ko", contact},
 		{"steam friend code 412877305, add me we need a 4th", contact},
 		{"session id 0515cee4fa0394e660be657b7e4033b7f26b6da202de62ebd149d552f228b8a721 if u want to talk", contact},
 		{"Tele me or whatsapp 9137 2684, got the O level chem TYS worked solutions", contact},
@@ -2557,7 +2558,7 @@ func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
 	for _, c := range []struct{ body, want string }{
 		{"study w me rn zoom.us/j/84522196630", contact},
 		{"https://us05web.zoom.us/j/84522196630?pwd=abc123 cam optional", contact},
-		{"my room is zoom.us/my/priya.s, drop in whenever", contact},
+		{"my room is zoom.us/my/madeup.priya, drop in whenever", contact},
 		{"meet.google.com/qvx-trmk-hpd study w me rn, cam optional", contact},
 		{"join https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0 at 8", contact},
 		{"teams.live.com/meet/9381726450 after school", contact},
@@ -2566,7 +2567,7 @@ func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
 		{"join here https://acme.webex.com/acme/j.php?MTID=m1234567890abcdef", contact},
 		{"acme dot webex dot com slash join slash madeup.room7", contact},
 		{"https://acme.webex.com/wbxmjs/joinservice/sites/acme/meeting/download/1a2b3c4d", contact},
-		{"connect with me on linkedin: linkedin.com/in/ade-o-27b, happy to help with internships", contact},
+		{"connect with me on linkedin: linkedin.com/in/madeup-ade-27b, happy to help with internships", contact},
 		{"zoom id 845 2219 6630 pass: physics. group study at 8", contact},
 		{"meeting ID: 845-2219-6630, same time tomorrow", contact},
 		{"google meet code: qvx-trmk-hpd, study w me", contact},
@@ -2741,7 +2742,7 @@ func TestFilterThreatWindowCountsWhatIsRead(t *testing.T) {
 
 func TestFilterPrecedence(t *testing.T) {
 	// A block comes first, so the poster fixes what they can.
-	v := bodyVerdict("i want to die, my snap is ana_23, kys")
+	v := bodyVerdict("i want to die, my snap is madeup_ana23, kys")
 	if v.Outcome != contentBlock || v.Rule != ruleContact {
 		t.Fatalf("block should come before support and holds: %+v", v)
 	}
@@ -2774,7 +2775,7 @@ func TestFilterPrecedence(t *testing.T) {
 	// say which half to take out, so it is held instead, support_seen or not.
 	for _, body := range []string{
 		"how old are you? add me on snap",
-		"which school are you in? my insta is quiet_fox27",
+		"which school are you in? my insta is madeup_fox27",
 		"kahan rehte ho? insta pe aao",
 		"how old are you? call me 9876543210",
 	} {
@@ -2797,12 +2798,12 @@ func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
 		!strings.Contains(v.Message, "the subject") {
 		t.Fatalf("subject: %+v", v)
 	}
-	v = checkContent(contentInput{Name: "snap: cool_guy99", Body: "hello"}, false)
+	v = checkContent(contentInput{Name: "snap: madeup_guy99", Body: "hello"}, false)
 	if v.Outcome != contentBlock || v.Field != fieldName || !strings.Contains(v.Message, "the Name field") {
 		t.Fatalf("name: %+v", v)
 	}
 	// Form order: the subject is named before the body.
-	v = checkContent(contentInput{Subject: "a@gmail.com", Body: "9876543210"}, false)
+	v = checkContent(contentInput{Subject: "madeup@gmail.com", Body: "9876543210"}, false)
 	if v.Field != fieldSubject {
 		t.Fatalf("the subject should be reported first: %+v", v)
 	}
@@ -2817,10 +2818,10 @@ func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
 		in    contentInput
 		match string
 	}{
-		{contentInput{Name: "nightjar88", Body: "my sc is my name here with no spaces lol"}, "sc is my name"},
+		{contentInput{Name: "madeupjar88", Body: "my sc is my name here with no spaces lol"}, "sc is my name"},
 		{contentInput{Subject: "orbital_panda", Body: "check my profile on insta, username is the subject of this post"},
 			"insta, username is the subject"},
-		{contentInput{Name: "orbitalpanda", Body: "my email is my name here + @gmail.com"}, "email is my name"},
+		{contentInput{Name: "madeup_orbitalpanda", Body: "my email is my name here + @gmail.com"}, "email is my name"},
 	} {
 		v := checkContent(c.in, false)
 		if v.Outcome != contentBlock || v.Rule != ruleContact || v.Field != fieldBody || v.Match != c.match {
@@ -2895,7 +2896,7 @@ func TestFilterSaysWhichCopyItRefused(t *testing.T) {
 		{"aaaa aaa", 5, "aaa", 2},
 		{"ab\u00a0cd ab cd", 7, "ab cd", 1},
 		{"ab\u3000cd ab cd", 8, "ab cd", 1},
-		{"x  https://t.me/abc https://t.me/abcdef", 20, "https://t.me/abc", 1},
+		{"x  https://t.me/madeup https://t.me/madeupabc", 23, "https://t.me/madeup", 1},
 		{"no copy before", 3, "copy", 0},
 		{"   ", 0, "", 0},
 	} {
@@ -3336,6 +3337,122 @@ func logCorpusRates(t *testing.T, category string, items, misses, stopped, publi
 	t.Logf("%-8s %3d items, %2d known misses: ordinary posts stopped %s, contact details blocked %s, "+
 		"support shown %s, risky posts held %s", category, items, misses, rate(stopped, publish), rate(blocked, block),
 		rate(supported, support), rate(held, hold))
+}
+
+// TestFilterCorpusDetailsAreMadeUp keeps anybody's real details out of the
+// corpus and out of this package's tests. Every address, username and profile
+// in them that is anyone's says "madeup", in the letters of the post, so an
+// address spelled out a letter at a time or split by markup still does, or is
+// at a domain RFC 2606 reserves, so none of them can be a real person's. A
+// number cannot be marked like that, since every range set aside for drama
+// passes the filter, so a number meant to be blocked is ordinary digits given
+// with no name, school or handle, and this test does not look at numbers.
+func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
+	// Blocked as a username, but a code that names no one.
+	codes := map[string]string{
+		"c2-7":   "a Discord invite code",
+		"c2-29":  "a Session ID, random hex",
+		"c2-122": "a Steam friend code, digits",
+	}
+	madeUp := func(s string) bool {
+		letters := strings.Map(func(r rune) rune {
+			if unicode.IsLetter(r) {
+				return unicode.ToLower(r)
+			}
+			return -1
+		}, s)
+		return strings.Contains(letters, "madeup")
+	}
+	email := regexp.MustCompile(`[\pL\pN._%+-]+@[\pL\pN-]+(?:\.[\pL\pN-]+)+`)
+	// An address is fine at a reserved domain, as git's user on a forge, at a
+	// version ("react@18.3.1") or an IP address, or as the tail of a malformed
+	// one a test refuses ("ana@a@iitb.ac.in").
+	fineAddress := func(text string, at []int) bool {
+		addr := text[at[0]:at[1]]
+		local, domain, _ := strings.Cut(addr, "@")
+		return madeUp(addr) || exampleDomain(strings.ToLower(domain)) || local == "git" ||
+			!strings.ContainsFunc(domain, unicode.IsLetter) || at[0] > 0 && text[at[0]-1] == '@'
+	}
+	handle := regexp.MustCompile(`(?:^|[^\pL\pN_.@])@([\pL\pN_][\pL\pN_.]*)`)
+	profile := regexp.MustCompile(`(?i)\b(?:instagram\.com|snapchat\.com|linktr\.ee|linkedin\.com|t\.me|telegram\.me|` +
+		`tiktok\.com|twitter\.com|x\.com|reddit\.com|facebook\.com|messenger\.com|zoom\.us)` +
+		`\s*(?:/|\s(?:forward\s+)?slash\s)\s*(\S*)`)
+	// A group's invite and a post's address are codes, not anybody's name.
+	notAProfile := func(path string) bool {
+		for _, p := range []string{"+", "joinchat", "p/"} {
+			if strings.HasPrefix(path, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	paths, _ := filepath.Glob(filepath.Join("testdata", "filter_corpus", "*.jsonl"))
+	if len(paths) == 0 {
+		t.Fatal("no corpus files")
+	}
+	checked := 0
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			var it corpusItem
+			if err := json.Unmarshal([]byte(line), &it); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			post := it.Name + "\n" + it.Subject + "\n" + it.Body
+			in := contentInput{Subject: normalizeSubject(it.Subject), Name: displayedName(it.Name),
+				Body: normalizeBody(it.Body)}
+			if v := checkContent(in, false); v.Outcome == contentBlock && codes[it.ID] == "" &&
+				(v.Message == blockMessage(kindEmail, v.Field) || v.Message == blockMessage(kindHandle, v.Field)) {
+				checked++
+				if !madeUp(post) {
+					t.Errorf("%s: the address or username %q is not marked made up", it.ID, v.Match)
+				}
+			}
+			for _, text := range []string{post, it.Why, it.Note} {
+				for _, at := range email.FindAllStringIndex(text, -1) {
+					if !fineAddress(text, at) {
+						t.Errorf("%s: the address %q is not marked made up", it.ID, text[at[0]:at[1]])
+					}
+				}
+				for _, m := range profile.FindAllStringSubmatch(text, -1) {
+					if !madeUp(m[1]) && !notAProfile(m[1]) {
+						t.Errorf("%s: the profile %q is not marked made up", it.ID, m[0])
+					}
+				}
+			}
+			if it.Expect == "publish" {
+				continue // a decorator in code, "@staticmethod", is no one's
+			}
+			for _, m := range handle.FindAllStringSubmatch(post, -1) {
+				provider, _, _ := strings.Cut(strings.ToLower(m[1]), ".")
+				if !madeUp(m[1]) && !mailProviders[provider] {
+					t.Errorf("%s: the username %q is not marked made up", it.ID, "@"+m[1])
+				}
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("only %d posts blocked for an address or a username, want the corpus's hundred and more", checked)
+	}
+
+	tests, _ := filepath.Glob("*_test.go")
+	for _, path := range tests {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, at := range email.FindAllStringIndex(line, -1) {
+				if !fineAddress(line, at) {
+					t.Errorf("%s:%d: the address %q is not marked made up", path, i+1, line[at[0]:at[1]])
+				}
+			}
+		}
+	}
 }
 
 func BenchmarkCheckContent(b *testing.B) {
