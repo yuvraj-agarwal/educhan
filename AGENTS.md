@@ -561,10 +561,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   or with none when no pixel has the key's colour
   (`TestPNGIsStoredInTheFormItDecodesTo`). `orient`
   keeps every pixel exactly, in a picture of the kind it was given: YCbCr in its
-  planes where the chroma samples line up with the turned picture, and otherwise (an
-  odd side mirrored at 4:2:0, 4:1:1 on its side) at 4:4:4 a pixel at a time, because
-  turning a plane whose last sample covers fewer pixels shifts every colour along that
-  side (`TestOrientKeepsEverySubsamplingExact`, `TestOrientKeepsEveryPixelKindExact`). GIF goes through `gif.DecodeAll` and `EncodeAll`, which keep frames,
+  planes where the chroma samples line up with the turned picture, and otherwise at
+  4:4:4 a pixel at a time, because turning a plane whose last sample covers fewer pixels
+  shifts every colour along that side. `turnedSubsampling` is the rule: 4:4:4 when the
+  turn reverses a side that is not a whole number of chroma samples long — the width
+  (reversed at orientations 2, 3, 7 and 8) when it is odd at 4:2:2 or 4:2:0 or not a
+  multiple of four at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is
+  odd at 4:4:0, 4:2:0 or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8),
+  which no ratio in the image package can hold (`TestOrientKeepsEverySubsamplingExact`,
+  `TestOrientKeepsEveryPixelKindExact`). GIF goes through `gif.DecodeAll` and `EncodeAll`, which keep frames,
   positions, delays and disposal and drop comments and every application extension.
   The loop count is written back as NETSCAPE2.0, from whichever loop extension came
   last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them; `image/gif` reads only the

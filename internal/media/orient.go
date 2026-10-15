@@ -243,16 +243,18 @@ func orientedRect(w, h, o int) image.Rectangle {
 // the decoded size again, 1.5 bytes a pixel for an ordinary 4:2:0 photo, and
 // hands the encoder the planes it would have computed.
 //
-// They do not line up when the picture is mirrored along a side that is not a
-// whole number of chroma samples long, an odd width or height at 4:2:0. The
-// last sample then covers fewer pixels than the others, and turned within its
-// plane it would land first, covering the wrong ones: every colour along that
-// side would shift by a pixel. Nor has a quarter-width chroma (4:1:1, 4:1:0)
-// any counterpart in the image package once turned on its side. Either way
-// every pixel takes the chroma it was decoded with into a picture with chroma
-// at full resolution (4:4:4), 3 bytes a pixel, and jpegenc stores it at 4:4:4:
-// finer chroma than the upload carried and a larger file, but no colour lost,
-// not the subsampling it came in at.
+// They do not line up when the turn reverses a side that is not a whole
+// number of chroma samples long, whatever the ratio: an odd width at 4:2:2 or
+// 4:2:0, an odd height at 4:4:0, 4:2:0 or 4:1:0, a width that is not a
+// multiple of four at 4:1:1 or 4:1:0 (turnedSubsampling says which sides each
+// orientation reverses). The last sample then covers fewer pixels than the
+// others, and turned within its plane it would land first, covering the wrong
+// ones: every colour along that side would shift by a pixel. Nor has a
+// quarter-width chroma (4:1:1, 4:1:0) any counterpart in the image package
+// once turned on its side. Either way every pixel takes the chroma it was
+// decoded with into a picture with chroma at full resolution (4:4:4), 3 bytes
+// a pixel, and jpegenc stores it at 4:4:4, not the subsampling it came in at:
+// finer chroma than the upload carried and a larger file, but no colour lost.
 func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
 	w, h := src.Rect.Dx(), src.Rect.Dy()
 	if ratio, ok := turnedSubsampling(src.SubsampleRatio, o, w, h); ok && src.Rect.Min == (image.Point{}) {

@@ -430,9 +430,14 @@ client can leave the image picker off a server that would refuse what it sends.
     photo stored on its side is upright everywhere, thumbnail included, and its reported
     width and height are the upright ones. It keeps its chroma subsampling, so colour
     saved at full resolution (4:4:4, as editors save screenshots and diagrams at high
-    quality) stays sharp; the exception is a picture whose sampling grid a turn cannot
-    line up — an odd-sided 4:2:0, or any 4:1:1 or 4:1:0 turned on its side — which is
-    stored at finer 4:4:4 instead, a larger file with its colour kept rather than lost.
+    quality) stays sharp. The exception is a picture whose sampling grid a turn cannot
+    line up, which is stored at finer 4:4:4 instead, a larger file with its colour kept
+    rather than lost: one that the turn mirrors along a side that is not a whole number
+    of colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height at 4:4:0,
+    4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or 4:1:0), and a
+    4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses depends on
+    the turn, so an odd-sided picture can keep its subsampling through one turn and not
+    through another.
     It is re-encoded at the lowest quality that compresses no
     detail more coarsely than the upload did, and at 90 at most: a photo saved at
     quality 30 by most software is stored at 30, at about the size it came in at and
