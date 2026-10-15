@@ -1464,9 +1464,11 @@ const (
 )
 
 // CaptchaSpent reports whether a captcha challenge has been used. It is the
-// read that turns a replayed answer away before flood control, so a poster
-// resending an answer already used is charged no cooldown for it; the insert
-// in SpendCaptcha is still what settles two requests racing with one answer.
+// read that turns a replayed answer away before flood control, so a replay is
+// told "used" at once, even while a cooldown runs, rather than told to wait for
+// an answer that can never work. The insert in SpendCaptcha is what keeps a
+// replay from starting a cooldown, and what settles two requests racing with
+// one answer.
 func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 	var spent bool
 	if err := s.pool.QueryRow(ctx,
@@ -1482,11 +1484,12 @@ func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 //
 // The row's expiry is the challenge's rounded up to the next UTC midnight, as a
 // credential's is (nextDayBoundary), so the only date a row stores is the day,
-// and the table holds a day or two of answers. Each spend first deletes a batch of the rows past their
-// expiry, and the daily sweep the rest (PruneSpentCaptchas). The cut-off is by
-// the server's clock, the one that decided the challenge was still good. SKIP
-// LOCKED leaves rows another spend is already deleting to it, so posts
-// arriving together never queue behind each other's pruning.
+// and the table holds a day or two of answers. Each spend first deletes a batch
+// of the rows past their expiry, and the daily sweep the rest
+// (PruneSpentCaptchas). The cut-off is by the server's clock, the one that
+// decided the challenge was still good. SKIP LOCKED leaves rows another spend
+// is already deleting to it, so posts arriving together never queue behind each
+// other's pruning.
 func (s *Store) SpendCaptcha(ctx context.Context, key []byte, expires, now time.Time) (bool, error) {
 	if _, err := s.pool.Exec(ctx, `
 		DELETE FROM captcha_spent WHERE signature_hash IN (

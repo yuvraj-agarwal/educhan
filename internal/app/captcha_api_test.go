@@ -275,9 +275,18 @@ func TestARefusalSaysWhetherTheAnswerWasSpent(t *testing.T) {
 			status, refused.Captcha, refused.Error, h.lastHeader.Get(captchaSpentHeader))
 	}
 	// The refused image started general's cooldown, as any post let through
-	// flood control does, so the answer is tried on another board. It is
-	// refused as used before flood control, so the fresh answer that follows
-	// posts there at once.
+	// flood control does. The spent answer sent there again is told it was
+	// used, not to wait: the lookup comes before flood control, so the page
+	// solves a fresh puzzle rather than waiting out a cooldown for an answer
+	// that can never work.
+	status, refused = h.attempt("/api/boards/general/threads", map[string]any{"body": "again", "captcha": answer})
+	expectCaptchaRefusal(t, "the spent answer inside a cooldown", status, refused, captchaUsed)
+	if h.lastHeader.Get("Retry-After") != "" || spent() {
+		t.Errorf("the spent answer inside a cooldown: Retry-After %q, spent header %q; want neither",
+			h.lastHeader.Get("Retry-After"), h.lastHeader.Get(captchaSpentHeader))
+	}
+	// On another board, with no cooldown running, it is refused as used too,
+	// and the fresh answer that follows posts there at once.
 	status, refused = h.attempt("/api/boards/third/threads", map[string]any{"body": "text alone", "captcha": answer})
 	expectCaptchaRefusal(t, "the answer an image refusal spent", status, refused, captchaUsed)
 	if spent() {
@@ -623,6 +632,11 @@ func TestCodeRequestCaptchaAndFloodControl(t *testing.T) {
 	if n := h.mail.count(); n != 2 {
 		t.Errorf("%d codes sent, want 2", n)
 	}
+
+	// That answer is spent now, and both of the second address's cooldowns
+	// are running. Sent again, it is told it was used, not to wait.
+	status, refused = request("203.0.113.2", "ana@iitb.ac.in", answer)
+	expectCaptchaRefusal(t, "a spent answer inside both cooldowns", status, refused, captchaUsed)
 }
 
 // Every instance behind the load balancer spends answers in the same table, so
@@ -1109,13 +1123,16 @@ func meterHolds(m *captchaMeter) []string {
 // The captcha meter holds client addresses, so it is swept with the cooldowns:
 // an address that asked for a challenge is gone within a minute of its window
 // ending, with nothing else sent, and an idle instance's next request clears
-// it before it is handled.
+// it before it is handled. The meter's clock is pinned fifteen seconds into a
+// window, so a sweep cannot find the window over before the test looks.
 func TestCaptchaMeterForgetsAddresses(t *testing.T) {
 	t.Run("on a quiet server", func(t *testing.T) {
 		h := captchaServer(t, func(cfg *Config) {
 			cfg.TrustedProxyHops = 1
 			cfg.cooldownSweepEvery = time.Millisecond
 		})
+		now := time.Unix(1_800_000_000, 0).Add(15 * time.Second)
+		meterAt(h.app.captchaMeter, &now)
 		const address = "198.51.100.9"
 		req, _ := http.NewRequest(http.MethodGet, h.base+"/api/captcha", nil)
 		req.Header.Set("X-Forwarded-For", address)
@@ -1125,16 +1142,18 @@ func TestCaptchaMeterForgetsAddresses(t *testing.T) {
 		if got := meterHolds(h.app.captchaMeter); len(got) != 1 || got[0] != address {
 			t.Fatalf("the meter holds %v, want the address", got)
 		}
-		later := time.Now().Add(captchaWindow)
+		later := now.Add(captchaWindow)
 		meterAt(h.app.captchaMeter, &later)
 		waitUntil(t, "the meter forgets the address", func() bool { return len(meterHolds(h.app.captchaMeter)) == 0 })
 	})
 	t.Run("before the next request", func(t *testing.T) {
 		const every = 20 * time.Millisecond
 		h := captchaServer(t, func(cfg *Config) { cfg.cooldownSweepEvery = every })
+		now := time.Unix(1_800_000_000, 0).Add(15 * time.Second)
+		meterAt(h.app.captchaMeter, &now)
 		h.solveCaptcha()
 		h.app.stopCooldownSweep()
-		later := time.Now().Add(captchaWindow)
+		later := now.Add(captchaWindow)
 		meterAt(h.app.captchaMeter, &later)
 		time.Sleep(every)
 		if got := meterHolds(h.app.captchaMeter); len(got) != 1 {

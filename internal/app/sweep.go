@@ -13,10 +13,11 @@ import (
 )
 
 // The sweeper deletes archived threads once their board's archive_days have
-// passed, media included. It runs as `educhan -sweep`, a one-shot mode Cloud
-// Scheduler starts as a Cloud Run Job: Cloud Run gives a service CPU only
-// while it answers a request, so an in-process timer would fire whenever it
-// happened to, and a Job leaves no sweep endpoint to protect.
+// passed, media included, and spent captcha answers once their day has passed.
+// It runs as `educhan -sweep`, a one-shot mode Cloud Scheduler starts as a
+// Cloud Run Job: Cloud Run gives a service CPU only while it answers a request,
+// so an in-process timer would fire whenever it happened to, and a Job leaves
+// no sweep endpoint to protect.
 //
 // Rows go first, and the storage keys of their files are queued in
 // media_deletions in the same transaction; the files go after, each key

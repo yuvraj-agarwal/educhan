@@ -439,10 +439,12 @@ needs a browser check before the test changes.
   `allowAction`) check again and start the cooldowns, before any upload is processed.
   So a request refused as used, which only a replay racing its original can be at that
   point, starts no cooldown (`TestALostSpendStartsNoCooldown`), and of a burst from one
-  address that all passed the first check, one goes ahead
-  (`TestABurstFromOneAddressPostsOnce`); the others are refused with the spent header. In the posting handlers the check is the last
-  refusal before flood control; in `handleVerifyRequest` it comes straight after the 18+
-  attestation, before the address is parsed.
+  address that all passed the first check and need the same cooldown (new threads or
+  replies on one board, or images anywhere), one goes ahead
+  (`TestABurstFromOneAddressPostsOnce`, `TestABadgedBurstFromOneAddressPostsOnce`); the
+  others are refused, with the spent header when they carried an answer. In the posting
+  handlers the check is the last refusal before flood control; in `handleVerifyRequest` it
+  comes straight after the 18+ attestation, before the address is parsed.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -768,13 +770,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   post refused as used starts none. Thread and reply cooldowns are keyed per board and
   client, the upload cooldown per client across the whole server. A submission clears
   every cooldown that applies to it or none is started, so a post refused by one limit is
-  not charged for the other; `allowAll` is what enforces that. Each limiter checks and
-  starts a cooldown in one step under its lock (`take`), so of simultaneous requests for
-  one key exactly one is admitted, and a cooldown taken before a later one refuses is
-  given back (`forget`) (`TestAllowAllAdmitsOneOfARace`). Nothing is refunded once an
-  action is admitted, so every refusal that can be known up front comes before `allow`: a
-  malformed poster key, the body, a badge the poster cannot have, uploads switched off, a
-  file its header shows to be unusable (`media.Inspect` in `parseSubmission`: not an
+  not charged for the other; `allowAll` is what enforces that. It checks every cooldown
+  and starts them all while holding one lock that every admission takes (`admission`), so
+  of simultaneous requests for one key exactly one is admitted, and a request is refused
+  only by a cooldown an admitted action started (`TestAllowAllAdmitsOneOfARace`,
+  `TestAllowAllRefusesOnlyForACooldownAnAdmittedRequestHolds`). Nothing is refunded once
+  an action is admitted, so every refusal that can be known up front comes before `allow`:
+  a malformed poster key, the body, a badge the poster cannot have, uploads switched off,
+  a file its header shows to be unusable (`media.Inspect` in `parseSubmission`: not an
   accepted format, or more than `media.MaxPixels`), a reply the thread would refuse
   (`ReplyRefusal`), and a captcha answer that is missing, wrong, expired or already spent
   (`checkCaptcha`). Decoding the pixels is not up front, because it is the cost the upload

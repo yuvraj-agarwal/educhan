@@ -93,8 +93,9 @@ type Config struct {
 	// instance, since any of them may check an answer another issued, and
 	// rotating it only invalidates the challenges out at the time.
 	CaptchaSecret string
-	// CaptchaWork is the average number of attempts a challenge asks of the
-	// browser at the base difficulty. Raising it makes every post dearer for a
+	// CaptchaWork is the work a challenge asks of the browser at the base
+	// difficulty: the average counter its answer is at, one fewer than the
+	// attempts it takes on average. Raising it makes every post dearer for a
 	// script and slower for a person. Zero means defaultCaptchaWork.
 	CaptchaWork int
 

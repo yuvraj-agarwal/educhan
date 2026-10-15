@@ -5,8 +5,9 @@
 -- shared fact, because the instances behind the load balancer would each
 -- accept the same answer otherwise. A post or a code request looks its
 -- challenge up here before flood control, so a replay is turned away before it
--- costs anything, and inserts it once flood control lets it through; of two
--- requests racing with one answer, the insert lets exactly one through.
+-- costs anything, and inserts it once flood control's first check lets it
+-- through; of two requests racing with one answer, the insert lets exactly
+-- one through.
 --
 -- A row holds a hash of the challenge's signature, a value the server made at
 -- random, and the challenge's expiry rounded up to the next UTC midnight, as a

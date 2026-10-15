@@ -40,7 +40,7 @@ func main() {
 func run(args []string, logs io.Writer) error {
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
 	sweep := flags.Bool("sweep", false,
-		"delete archived threads past their board's archive_days, with their media, then exit")
+		"delete archived threads past their board's archive_days, with their media, and spent captcha answers past their day, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil

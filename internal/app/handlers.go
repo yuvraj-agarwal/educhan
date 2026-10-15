@@ -208,13 +208,15 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// Flood control in two halves around the spend. A post that has to wait
-	// is told so with its answer unspent. The answer is spent before the image
-	// is processed, and the cooldowns start only once it is, so a post refused
-	// as used, racing another that carried the same answer, starts none: one
-	// answer cannot be sent to many boards at once to hold them all. The
-	// second half checks again as it starts them, so of a burst of posts from
-	// one address that all passed the first, one goes ahead.
+	// Flood control in two halves around the spend. A post the first half
+	// refuses is told so with its answer unspent. The answer is spent before
+	// the image is processed, and the cooldowns start only once it is, so a
+	// post refused as used, racing another that carried the same answer,
+	// starts none: one answer cannot be sent to many boards at once to hold
+	// them all. The second half checks again as it starts them, in one step,
+	// so of a burst of posts from one address needing the same cooldown (new
+	// threads on this board, or images anywhere) that all passed the first,
+	// one goes ahead.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	cooldowns := a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)
 	if !a.notCoolingDown(w, cooldowns) {
@@ -444,9 +446,11 @@ func (a *App) waitedOut(w http.ResponseWriter, action string, cooldowns []cooldo
 // allow applies posting flood control and starts its cooldowns, answering 429
 // with a Retry-After when the caller must wait: the second half, which checks
 // again because another post from the same address may have gone ahead since
-// the first. A post refused here has had its answer spent, and the refusal
-// says so (Educhan-Captcha: spent), so the page solves the next one; only a
-// client racing itself meets it.
+// the first. Only a client racing itself meets a refusal here. A post refused
+// here that carried an answer has spent it, and the refusal says so
+// (Educhan-Captcha: spent), so the page solves the next one; a badged post,
+// or any post with the captcha off, had none to spend, and its refusal says
+// nothing about one.
 func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
 	return a.allowAction(w, "posting", cooldowns)
 }

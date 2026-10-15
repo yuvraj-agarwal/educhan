@@ -643,7 +643,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 | `EDUCHAN_CAPTCHA_SECRET` | empty | Keys the [captcha](#captcha): the signature on every challenge. **Unset switches the captcha off**, so posts and code requests need no answer. At least 32 characters (`openssl rand -hex 32`), the same on every instance; rotating it only invalidates the challenges out at the time |
-| `EDUCHAN_CAPTCHA_WORK` | `1500` | Average number of PBKDF2 attempts a challenge asks of the browser, before an address asking fast is given harder ones; 1 to 7500. At the default a laptop takes about two seconds and a slow phone a few more; above a few thousand a slow phone waits a long while before every post |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` | Work a challenge asks of the browser: the average counter its answer is at, so about this many PBKDF2 attempts (one more on average), before an address asking fast is given harder ones; 1 to 7500. At the default a laptop takes about two seconds and a slow phone a few more; above a few thousand a slow phone waits a long while before every post |
 
 ### Storage backends
 
@@ -710,9 +710,10 @@ boards at once. Uploads are counted across the whole server instead, because
 decoding, thumbnailing, and storing an image costs the same wherever the post
 lands. A post with an image has to clear both its posting cooldown and the
 upload cooldown; when it is refused, neither cooldown is started, so the two
-limits never compound. Each cooldown is checked and started in one step, so of
-several posts sent at the same moment from one address, one goes ahead and the
-others are refused.
+limits never compound. The cooldowns are checked and started in one step, so of
+several posts sent at the same moment from one address that need the same
+cooldown (new threads on one board, replies on one board, or images anywhere),
+one goes ahead and the others are refused.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
@@ -786,8 +787,8 @@ script from anywhere else runs on the page, and no cookie is set.
    `"captcha"`. The server checks the signature, the expiry and an HMAC of the
    key, at most two HMACs and never a key derivation, so a wrong answer costs it
    no more than a right one. It looks up that the challenge is not spent yet,
-   and once flood control has let the post through it records it as spent, so
-   it works once.
+   and once flood control's first check has let the post through it records it
+   as spent, so it works once.
 
 A **badged post skips the captcha**: the credential has already cost its holder
 more than a puzzle would. Holding one is not enough; only a post that asks for
@@ -808,15 +809,16 @@ boards at once holds none of them back. A refusal answers `403` with `"captcha":
 "required" | "invalid" | "expired" | "used"` beside the message; the page solves
 a fresh puzzle and sends the post once more, so the reader presses the button
 once (unless they have left the form meanwhile: a request goes only from a form
-still on screen). A `used` answer was spent by an earlier request, which started
-its cooldowns, so the resend can meet one of them; the page then says how long
-to wait and keeps the fresh answer for the next press. Every response to a
-request whose answer was spent carries `Educhan-Captcha: spent`, a refusal
-written after the spend included (a cooldown another request from the same
-address started meanwhile, an image whose pixels fail to decode, or a thread
-that filled up meanwhile). The page keeps its answer through any refusal without
-that header, so the next press goes straight out, and starts the next puzzle as
-soon as one with it arrives, while its form is on screen.
+still on screen). A `used` answer was spent by an earlier request, which, like
+others from the same address, may have started cooldowns, so the resend can meet
+one of them; the page then says how long to wait and keeps the fresh answer for
+the next press. Every response to a request whose answer was spent carries
+`Educhan-Captcha: spent`, a refusal written after the spend included (a cooldown
+another request from the same address started meanwhile, an image whose pixels
+fail to decode, or a thread that filled up meanwhile). The page keeps its answer
+through any refusal without that header, so the next press goes straight out,
+and starts the next puzzle as soon as one with it arrives, while its form is on
+screen.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, so what is sent is what the form
@@ -1192,7 +1194,7 @@ Two things remain per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
-make sweep   # go run ./cmd/server -sweep: delete expired archived threads once
+make sweep   # go run ./cmd/server -sweep: delete expired archived threads and spent captcha answers once
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test

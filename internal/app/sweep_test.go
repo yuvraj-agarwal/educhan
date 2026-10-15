@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -300,6 +301,11 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 
 	thread := h.imageThread("quietly", "gone without a trace in the log")
 	h.archiveThread("quietly", thread.ThreadNo, time.Minute)
+	// And a spent captcha answer two days past its day, which the sweep
+	// prunes and counts in the same record.
+	spentKey := sha256.Sum256([]byte("an answer long spent"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	lines, err := sweepLog(t)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -312,7 +318,7 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	delete(record, "level")
 	delete(record, "msg")
 	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0,
-		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "spent_captchas": 0.0}
+		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "spent_captchas": 1.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
 	}
