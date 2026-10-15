@@ -599,8 +599,14 @@ gcloud run services update educhan --region "$REGION" \
   --remove-env-vars EDUCHAN_STRIPE_PRICE_ID,EDUCHAN_PUBLIC_URL
 ```
 
-Passes already sold stop working while the Pass is off, and come back when it
-is turned on again with the same `educhan-pass-secret`.
+Passes already sold stop skipping the captcha while the Pass is off, and work
+again when it is turned back on with the same `educhan-pass-secret`. While it is
+off, the webhook answers 404, and Stripe gives up on an event after about three
+days. So turn it off only once open checkouts have closed (Stripe keeps one open
+for up to a day), and if you refund anyone while it is off, turn it back on
+within three days, or that refunded Pass stays valid until it expires. Before
+turning it on again, check in the Stripe Dashboard that the webhook endpoint is
+still enabled: Stripe can disable one that keeps failing.
 
 **Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
 payment record is a hash under it, so rotating it cancels every Pass that was
