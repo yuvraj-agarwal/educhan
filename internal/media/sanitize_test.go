@@ -1785,6 +1785,27 @@ func TestAnimatedWebPIsRefusedFromItsHeader(t *testing.T) {
 	}
 }
 
+// A simple-format WebP (its first chunk the picture) is a still whatever
+// follows its picture: stripWebP keeps the picture and drops the rest, and
+// browsers show the picture alone. A frame after it is not an animation.
+func TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill(t *testing.T) {
+	bitstream := sampleBitstream(t) // 320×200, lossless
+	data := webpFile(bitstream, riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(0, 0, 320, 200, bitstream))
+	if webpAnimated(data) {
+		t.Error("webpAnimated = true for a simple-format still")
+	}
+	if _, err := Inspect(data); err != nil {
+		t.Fatalf("Inspect = %v, want nil", err)
+	}
+	out, err := Process(context.Background(), data)
+	if err != nil {
+		t.Fatalf("Process = %v", err)
+	}
+	if out.Format != FormatPNG || out.Width != 320 || out.Height != 200 {
+		t.Errorf("stored %s %d×%d, want a 320×200 PNG", out.Format.Name, out.Width, out.Height)
+	}
+}
+
 // A WebP whose structure does not hold together is refused, whatever a
 // lenient decoder would have made of it.
 func TestMalformedWebPIsRefused(t *testing.T) {

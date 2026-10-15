@@ -312,11 +312,14 @@ func webpRegion(data []byte) ([]byte, bool) {
 }
 
 // webpAnimated reports whether a WebP is an animation: its first chunk is a
-// VP8X with the animation flag, or a frame (ANMF) is among the chunks inside
-// its RIFF, as stripWebP reads them. Neither can be decoded here — a frame
-// outside an animation fails stillImage — so Inspect refuses such a file
-// as it would fail once processed, but from its header. The walk stops at the
-// first chunk it cannot follow, which stripWebP refuses anyway.
+// VP8X with the animation flag, or it is an extended file (its first chunk a
+// VP8X) with a frame (ANMF) among its chunks, as stripWebP reads them. Neither
+// can be decoded here — a frame in an extended still fails stillImage — so
+// Inspect refuses such a file as it would fail once processed, but from its
+// header. A simple-format file (its first chunk the picture) is a still
+// whatever follows its picture, to stripWebP and to browsers alike, so a frame
+// there does not count. The walk stops at the first chunk it cannot follow,
+// which stripWebP refuses anyway.
 func webpAnimated(data []byte) bool {
 	if len(data) < 12 {
 		return false
@@ -328,15 +331,19 @@ func webpAnimated(data []byte) bool {
 	// A file cut short is walked as far as it goes: its first chunk says
 	// whether it is animated however much of the rest arrived.
 	b := data[12:min(8+size, uint64(len(data)))]
+	extended := false
 	for first := true; len(b) > 0; first = false {
 		c, rest, ok := nextChunk(b)
 		if !ok {
 			return false
 		}
-		switch {
-		case first && c.id == "VP8X" && len(c.payload) > 0 && c.payload[0]&vp8xFlagAnimation != 0:
-			return true
-		case c.id == "ANMF":
+		if first && c.id == "VP8X" {
+			if len(c.payload) > 0 && c.payload[0]&vp8xFlagAnimation != 0 {
+				return true
+			}
+			extended = true
+		}
+		if extended && c.id == "ANMF" {
 			return true
 		}
 		b = rest

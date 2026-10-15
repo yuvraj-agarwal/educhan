@@ -618,15 +618,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `TestUploadedWebPIsServedAsAFileMadeFromItsPixels`). Do not go back to storing the
   stripped WebP to save the re-encode. An animated WebP is still refused as
   `ErrCorruptImage`, as before stripping, since x/image cannot decode one, and now from
-  its header: `Inspect` refuses one whose VP8X has the animation flag or that has a frame
-  (ANMF) among its chunks (`webpAnimated`), before any cooldown, whatever its size and
-  however much of it arrived — a file cut short is walked as far as it goes; it used to
-  pass `Inspect` when short and fail after flood control, and when long be charged as one
-  lossless bitstream of its whole length and refused as too large
-  (`TestAnimatedWebPIsRefusedFromItsHeader`). `Inspect` also refuses any WebP whose RIFF
-  runs past the end of the file (`webpRegion`), which `stripWebP` would refuse once
-  processed. A WebP stored before this change stays a `.webp` and is served as
-  `image/webp` (`ContentTypeForExt`).
+  its header: `Inspect` refuses one whose VP8X has the animation flag or, after a VP8X,
+  has a frame (ANMF) among its chunks (`webpAnimated`), before any cooldown, whatever its
+  size and however much of it arrived — a file cut short is walked as far as it goes; it
+  used to pass `Inspect` when short and fail after flood control, and when long be
+  charged as one lossless bitstream of its whole length and refused as too large
+  (`TestAnimatedWebPIsRefusedFromItsHeader`). A simple-format file is a still to
+  `stripWebP` and to browsers whatever follows its picture, so a frame there does not
+  count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also
+  refuses any WebP whose RIFF runs past the end of the file (`webpRegion`), which
+  `stripWebP` would refuse once processed. A WebP stored before this change stays a
+  `.webp` and is served as `image/webp` (`ContentTypeForExt`).
   `Processed.Data` is the stored file, `Width`/`Height` are the upright picture's, the
   thumbnail is made from the upright pixels, and `StoredImage.Checksum` and `Size` are of
   the stored bytes — the plan's `blocked_media` check on the re-encoded output (2.2)

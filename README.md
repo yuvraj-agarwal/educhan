@@ -414,13 +414,15 @@ server that would refuse what it sends.
   however narrow it is. A GIF of many thousands of frames is refused however small they
   are. An animated WebP is refused whatever its size and however much of it arrived,
   because nothing in Go can decode one to thumbnail it: the animation flag in its header,
-  or a frame among its chunks, is enough to turn it away. An image whose rewritten file
-  would come to more than four times the upload plus half a byte a pixel is refused after
-  flood control too, once it is encoded (`image would be too large once re-encoded for
-  storage`), which only a file made to compress in a way Go's encoders cannot follow
-  reaches. A lossy WebP with transparency is held instead to what a PNG of its size can
-  come to, because stored losslessly it is meant to be many times the size it came in at;
-  it is refused from its header when that is too large to process.
+  or a frame among the chunks of an extended file, is enough to turn it away; a frame
+  after the picture of a simple-format file is not an animation, since browsers show the
+  picture alone, and it is stored as a still. An image whose rewritten file would come to
+  more than four times the upload plus half a byte a pixel is refused after flood control
+  too, once it is encoded (`image would be too large once re-encoded for storage`), which
+  only a file made to compress in a way Go's encoders cannot follow reaches. A lossy WebP
+  with transparency is held instead to what a PNG of its size can come to, because stored
+  losslessly it is meant to be many times the size it came in at; it is refused from its
+  header when that is too large to process.
 
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is
