@@ -349,9 +349,11 @@ func TestCreateThreadWithImage(t *testing.T) {
 
 // A camera's or a phone's filename can name its owner, so whatever the file
 // was called, the image is shown as "image" and the extension of the format it
-// was stored in, and the name sent is written nowhere.
+// was stored in, and the name sent is written nowhere: not in the database
+// and not in the log, for an upload refused as for one stored.
 func TestUploadedFilenameIsNotKept(t *testing.T) {
-	c := testServer(t, nil)
+	var logs syncBuffer
+	c := testServerLogging(t, func(cfg *Config) { cfg.MaxUploadBytes = 1 << 20 }, &logs)
 	c.addBoard("general")
 	const marker = "body-marker-for-the-filename-scan"
 
@@ -375,6 +377,23 @@ func TestUploadedFilenameIsNotKept(t *testing.T) {
 			t.Fatalf("reply with %q: status %d (%s)", u.filename, status, out.Error)
 		}
 	}
+	// Each way an upload is refused once its part has been read: not an
+	// image, an image that does not decode, and a file over the size limit.
+	refused := []struct {
+		filename string
+		file     []byte
+		status   int
+	}{
+		{"Priya's notes.png", []byte("these are not the pixels you are looking for"), http.StatusBadRequest},
+		{"Priya_broken.jpg", jpegBytes(t, 64, 48)[:300], http.StatusBadRequest},
+		{"Priya_huge.png", make([]byte, 3<<20), http.StatusRequestEntityTooLarge},
+	}
+	for _, u := range refused {
+		var out createdPost
+		if status := c.upload(path, map[string]string{"body": ""}, u.filename, u.file, &out); status != u.status {
+			t.Fatalf("reply with %q: status %d (%s), want %d", u.filename, status, out.Error, u.status)
+		}
+	}
 
 	posts := fetchThread(t, c, "general", thread.ThreadNo).Posts
 	if len(posts) != len(uploads)+1 {
@@ -393,8 +412,8 @@ func TestUploadedFilenameIsNotKept(t *testing.T) {
 		}
 	}
 
-	// The scan has to be able to find what is there before its silence about
-	// the filename means anything.
+	// The scans have to be able to find what is there before their silence
+	// about the filename means anything.
 	if n := c.rowsContaining("posts", []byte(marker)); n != 1 {
 		t.Fatalf("the scan found the body marker in %d posts, want 1; it cannot be trusted", n)
 	}
@@ -405,6 +424,16 @@ func TestUploadedFilenameIsNotKept(t *testing.T) {
 		if n := c.rowsContaining(table, []byte("Priya")); n != 0 {
 			t.Errorf("%d rows of %s contain the uploaded filename", n, table)
 		}
+	}
+	out := logs.String()
+	for _, status := range []int{http.StatusCreated, http.StatusBadRequest, http.StatusRequestEntityTooLarge} {
+		line := fmt.Sprintf(`"path":%q,"status":%d`, path, status)
+		if !strings.Contains(out, line) {
+			t.Fatalf("the log has no request line with %s; it cannot be trusted:\n%s", line, out)
+		}
+	}
+	if strings.Contains(out, "Priya") {
+		t.Errorf("the log contains the uploaded filename:\n%s", out)
 	}
 }
 
