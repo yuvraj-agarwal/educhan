@@ -890,10 +890,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
   removes a written original on a context that has not ended (`context.WithoutCancel`).
   Decoding, re-encoding and playing a GIF each watch that context as they run — a reader
-  that fails once it is done, a stored-buffer write that refuses once it is done, and a
-  check before each GIF frame — so a cancelled or timed-out upload stops partway rather
-  than running to the end (`TestProcessStopsWhenTheContextIsAlreadyDone`,
-  `TestProcessStopsWhenCancelledWhilePlayingAGIF`).
+  that fails once it is done, a stored-buffer write that refuses once it is done, a
+  check before each GIF frame, and one before the thumbnail — so a cancelled or timed-out
+  upload stops partway rather than running to the end; `cancel_test.go` pins each check
+  on its own by ending the context the moment that check asks (`askedContext`), so none
+  of it rests on timing.
   The database commit runs on the request's own context, never a deadline: a deadline
   passing mid-commit could otherwise leave a post made and its image removed. A budget
   wait or a processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503`

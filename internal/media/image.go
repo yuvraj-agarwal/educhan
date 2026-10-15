@@ -210,7 +210,10 @@ func inspect(data []byte) (inspection, error) {
 // The decoding and encoding wait until the upload's estimated cost fits in
 // the processing budget (acquireProcessing): if ctx ends first the wait ends
 // with its error, and if ctx has a deadline it ends with ErrBusy once too
-// little of it is left to do the work (processingAllowance).
+// little of it is left to do the work (processingAllowance). Once the work
+// has begun it stops where it has got to when ctx ends — reading the
+// upload, writing the stored file, before a GIF's next frame, or before the
+// thumbnail (sanitize, processHeld) — and Process returns ctx's error.
 func Process(ctx context.Context, data []byte) (Processed, error) {
 	out, release, err := processHeld(ctx, data)
 	if err != nil {
