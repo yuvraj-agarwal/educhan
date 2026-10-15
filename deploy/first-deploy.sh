@@ -222,13 +222,16 @@ else
 fi
 
 step "Deploying the Cloud Run service"
+# --update-*, not --set-*: a re-run sets the values below and keeps any other
+# variable or secret added since (the Pass, deploy/README.md section 2.10), where
+# --set-* would drop it and switch that feature off without a word.
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --update-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
   --cpu 1 --memory 512Mi --concurrency 80 \
   --min-instances "$MIN_INSTANCES" --max-instances 4 \
   "${PUBLIC_ACCESS[@]}"
@@ -243,8 +246,8 @@ gcloud run jobs deploy "$SWEEP_JOB" \
   --service-account "$RUN_SA" \
   --args=-sweep \
   --set-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest" \
-  --set-env-vars "${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest" \
+  --update-env-vars "${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
   --tasks 1 --max-retries 1 --task-timeout 15m \
   --cpu 1 --memory 512Mi
 gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
