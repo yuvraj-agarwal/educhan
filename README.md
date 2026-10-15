@@ -424,9 +424,11 @@ server that would refuse what it sends.
   more than four times the upload plus half a byte a pixel is refused with `400` after
   flood control, once it is encoded (`image would be too large once re-encoded for
   storage`), which only a file made to compress in a way Go's encoders cannot follow
-  reaches. A lossy WebP with transparency is held instead to what a PNG of its size can
-  come to, because stored losslessly it is meant to be many times the size it came in at;
-  it is refused from its header when that is too large to process.
+  reaches, and so, once it is played, is a GIF that cannot be stored one frame to a
+  picture (`image too large to process`; see the GIF bullet below). A lossy WebP with
+  transparency is held instead to what a PNG of its size can come to, because stored
+  losslessly it is meant to be many times the size it came in at; it is refused from its
+  header when that is too large to process.
 
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is
@@ -483,28 +485,43 @@ server that would refuse what it sends.
     none, if no pixel has the key's colour), and a palette keeps only the colours its
     pixels use, written at as few bits a pixel (1, 2, 4 or 8) as that many colours need.
     16-bit pictures stay 16-bit. An animated PNG keeps its still image.
-  - *GIF* is re-encoded as it plays: each picture it shows, for as long as it shows, and
-    the loop count (from either of the two extensions browsers read it from), and nothing
-    else. It is read as Chromium reads it where Go's decoder reads it otherwise: a frame
-    with no graphic control extension is left in place, a frame's transparent colour is
-    the one the last extension before it names, and an index past the end of a frame's
-    colour table shows opaque black, but for the transparent one. A frame that changes
-    nothing on screen — one that draws only transparent pixels, or pixels in the colour
-    already under them, and whose disposal changes nothing either — is not kept, and its
-    time is added to the frame's before it; otherwise frames of one transparent pixel
-    could carry whatever their positions, delays and disposal methods spell out, under the
-    same picture shown for the same time. Each frame kept is cut to the part of it that
-    changes something, and given the disposal method that does what browsers do with its
-    own: the values the format leaves undefined are written as what browsers read them as,
-    and the last frame's, which never shows, as none. Its delay is written as browsers
-    show it — 0 and 1 show for a tenth of a second and are written as 10 — and time past
-    the 655 seconds one delay can say is held by frames of one transparent pixel after it.
-    The last frame of a GIF that plays once is given no delay, because it stays on screen,
-    and a GIF whose frames come down to one is stored as a still, with no loop count.
-    Comments and application data such as XMP are dropped, and the background colour,
-    which browsers never draw, is written as the first entry. Its colour tables keep only
-    the colours its frames show, and which frames share the global table is decided from
-    those colours, not taken from the upload.
+  - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
+    shows one after another, each for as long as it shows, and the loop count (from either
+    of the two extensions browsers read it from), and nothing else. It is read as Chromium
+    reads it where Go's decoder reads it otherwise: a frame with no graphic control
+    extension is left in place, a frame's transparent colour is the one the last extension
+    before it names, and an index past the end of a frame's colour table shows opaque
+    black, but for the transparent one. How the frames make those pictures shows nothing,
+    so it could carry anything: frames that draw nothing, or draw the same picture again
+    after clearing it, could spell a message in their positions, delays and disposal
+    methods, and the pixels a frame repaints in the colour already under them, rather than
+    leaving them transparent, could hold a file of tens of kilobytes. So the stored file
+    is written from the pictures by one rule, and two GIFs that show the same pictures for
+    the same times, played as many times over, are stored as the same bytes. Each picture
+    is one frame, which draws exactly the pixels that differ from what the frame before it
+    left, cut to the rectangle around them and around any the next picture has transparent
+    where this one does not; it is cleared once its time is over when there are such
+    pixels, and left in place otherwise. A delay is written as browsers show it — 0 and 1
+    show for a tenth of a second and are written as 10 — and time past the 655 seconds one
+    delay can say is held by frames after it that draw nothing. The last picture of a GIF
+    that plays once is given no delay, because it stays on screen, and a GIF of one
+    picture is stored as a still, with no loop count. The colours are the ones the
+    pictures show, in order of their values: one global table when there are 255 or fewer,
+    and otherwise a table for each frame of the colours it draws. A frame that draws 256
+    has no room for a transparent entry, so the pixels it leaves as they were are written
+    in the colour they already show; a GIF where that cannot be done, or where the frame
+    of one picture would have to draw more than 256 colours, cannot be stored one frame to
+    a picture and is refused (`image too large to process`). Only a frame that clears or
+    puts back what an earlier one drew can bring that about, since a frame on its own
+    draws from one table. None of 1,500 GIFs of many colours made to test it was refused,
+    but 4 of 126 made with ffmpeg, ImageMagick and Pillow were: ImageMagick's frame
+    optimisation (`-layers OptimizeFrame` or `OptimizePlus`) of one animation with a table
+    of 256 colours a frame, which puts back a frame and so leaves the picture after it
+    more than 256 colours to change. A GIF whose stored frames would add up to more pixels
+    than four 25-megapixel canvases is refused too, which takes frames that jump across
+    the canvas from one picture to the next. Comments and application data such as XMP are
+    dropped, and the background colour, which browsers never draw, is written as the first
+    entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
@@ -535,11 +552,10 @@ server that would refuse what it sends.
     (but for a PNG's gamma, applied as above, which changes the values so that the
     picture shows as it did). So data hidden in the low bits of a visible picture, as
     classic steganography does, survives — the aim is to strip the metadata and the
-    channels that do not show, not to alter the picture a reader sees. The same holds
-    for how a GIF's pictures are made of frames, which is kept as the poster made them:
-    a frame that clears or puts back what the one before it drew while the next draws it
-    again, and with it how long each of the two shows the same picture for; and the
-    pixels a frame repaints in the colour already under them, beside those it changes.
+    channels that do not show, not to alter the picture a reader sees. Nothing of how a
+    GIF's pictures were made of frames is kept (above), so none of that can carry
+    anything; what a GIF keeps is what it shows: its pictures, how long each shows, and
+    how many times they play.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can

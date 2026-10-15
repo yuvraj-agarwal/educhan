@@ -30,13 +30,13 @@ const UploadBudget int64 = 64 << 20
 // processingAllowance is how long before its deadline an upload stops waiting
 // for room, in either budget, so that what is left is time to decode,
 // re-encode and thumbnail it and to store both renditions. The slowest
-// uploads measured of those Inspect admits from an 8 MiB limit, a GIF of four
+// upload measured of those Inspect admits from an 8 MiB limit, a 25-megapixel
+// PNG with transparency of nearly 8 MiB, took about seven and a half seconds
+// to process on one core of a development machine; the slowest GIF, four
 // 25-megapixel frames (as many pixels as maxGIFFramePixels lets its frames
-// come to) each changing every pixel, and a 25-megapixel PNG with
-// transparency, took about three and a half seconds each to process on one
-// core of a development machine.
-// A slower core, or other uploads beside it, makes that longer, so the
-// deadline still has the last word: Save stores nothing once it has passed.
+// come to) each changing every pixel, about two and a half. A slower core,
+// or other uploads beside it, makes that longer, so the deadline still has
+// the last word: Save stores nothing once it has passed.
 // A context without a deadline waits for as long as it lasts.
 const processingAllowance = 15 * time.Second
 

@@ -522,26 +522,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `image/gif` refuses are read as browsers read them, and `sanitizeGIF` has the decoder
   read them so too (`gifReader`): one that ends after its last block without the
   trailer, which gets one, and one with a frame after the first reaching past the
-  canvas, for which the decoder is told the screen takes in every frame, and which
-  `clipGIF` then cuts to the canvas, a frame wholly off it becoming one transparent
-  pixel, which shows nothing and which `playGIF` folds into the frame before it
-  (`TestGIFIsStoredAsBrowsersShowIt`). A first frame
-  past the canvas is refused: Chromium widens the canvas, Firefox moves the frame to
-  the corner. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
-  hold the walk to the decoder: whatever `gif.DecodeAll` decodes from what `gifReader`
-  makes of a file, the walk must have read exactly its frames, their area, the largest
-  of them (charged again for an interlaced frame's reordering, as the canvas was) and,
-  short of an ANIMEXTS1.0 extension, its loop count; and whatever it decodes of a file
-  the walk refused is a disagreement. Change the two together. Where the decoder reads a
-  frame's fields otherwise than Chromium, the walk's record of each frame
-  (`gifFrameHead`, from `walkGIF`) corrects it (`browserFrames`): a frame with no graphic
-  control extension has disposal 0, where `image/gif` carries over the last one's; its
-  transparent index is the last extension's alone, where `image/gif` keeps one an
-  earlier extension before the same frame named; and an index past the end of its
-  colour table is opaque black but for the transparent one, where `image/gif` makes all
-  of them up to a transparent index past the table transparent.
-  `TestGIFIsReadAsChromiumReadsIt` holds files to the pictures Chromium was seen to show
-  of them, and `chromiumReads` in the tests is that reading.
+  canvas, for which the decoder is told the screen takes in every frame, and of which
+  `playGIF` plays only the part on the canvas, so that a frame wholly off it changes
+  nothing and folds away, as any frame that changes nothing does
+  (`TestGIFIsStoredAsBrowsersShowIt`). A first frame past the canvas is refused: Chromium
+  widens the canvas, Firefox moves the frame to the corner.
+  `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels` hold the walk to
+  the decoder: whatever `gif.DecodeAll` decodes from what `gifReader` makes of a file, the
+  walk must have read exactly its frames, their area, the largest of them (charged again
+  for an interlaced frame's reordering, as the canvas was) and, short of an ANIMEXTS1.0
+  extension, its loop count; and whatever it decodes of a file the walk refused is a
+  disagreement. Change the two together. Where the decoder reads a frame's fields
+  otherwise than Chromium, the frames are played from the walk's record of each
+  (`gifFrameHead`, from `walkGIF`, its colours through `gifFrameHead.keys`) and take only
+  their pixels from the decoder: a frame with no graphic control extension has disposal 0,
+  where `image/gif` carries over the last one's; its transparent index is the last
+  extension's alone, where `image/gif` keeps one an earlier extension before the same
+  frame named; and an index past the end of its colour table is opaque black but for the
+  transparent one, where `image/gif` makes all of them up to a transparent index past the
+  table transparent. `TestGIFIsReadAsChromiumReadsIt` holds files to the pictures Chromium
+  was seen to show of them, and `chromiumReads` in the tests is that reading.
 - **What is stored is never the upload.** `media.Process` rewrites every image without its
   metadata before `Save` hands it to a backend, so both backends store the same file
   (`internal/media/sanitize.go`). Files stored before this release are the exception: they
@@ -578,32 +578,63 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is odd at 4:4:0, 4:2:0
   or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8), which no ratio in the
   image package can hold (`TestOrientKeepsEverySubsamplingExact`,
-  `TestOrientKeepsEveryPixelKindExact`). GIF goes through `gif.DecodeAll` and `EncodeAll`,
-  which drop comments and every application extension, and between them `playGIF`
-  (`gifplay.go`) rewrites the frames as the GIF plays in Chromium and Firefox, because a
-  frame that draws nothing carries its position, delay and disposal method unseen —
-  fifteen one-pixel transparent frames after a picture spelled sixty bytes under the same
-  picture shown for the same time. A frame that changes nothing on screen, with a
-  disposal that changes nothing either, is folded into the time of the frame before it
-  (into a frame of one transparent pixel at the corner when that one is disposed of, or
-  when it is the first); each frame kept is cut to the pixels it changes (and, when it is
-  cleared afterwards, the ones clearing changes); disposals are written as browsers carry
-  them out (`browserDisposal`: 4 as 3, 0, 1, 5, 6 and 7 as 1, a restore over nothing as a
-  clear, the last frame's as 1, since it never shows); delays as browsers show them
-  (`shownDelay`: 0 and 1 as 10), with time past 65,535 hundredths held by one-pixel frames
-  after it; the last frame of a GIF played once gets delay 0; and a GIF that comes down
-  to one frame is a still, with no delay, disposal or loop count. The canvas records which
-  frame shows at each pixel in 16 bits, not colours, so it costs two bytes a pixel
-  (`gifFramePlay` per frame besides, in `decodingPhases`). `TestGIFIsStoredAsItPlays`
-  holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`), a model of the two
-  browsers' compositing written apart from `playGIF`, and to storing the same bytes when
-  processed again; change the two only together, and only after checking the browsers.
-  What playing leaves is how the pictures are made of frames — a frame that clears what
-  the one before drew while the next draws it again, how long each shows that picture,
-  the pixels a frame repaints in the colour under them — which the README states.
-  The loop count is written back as NETSCAPE2.0, from whichever
-  loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as browsers read them; `image/gif`
-  reads only the first, so `gifFramePixels` reads both
+  `TestOrientKeepsEveryPixelKindExact`). GIF is decoded by `gif.DecodeAll`, which reads
+  past comments and every application extension, and written by `playGIF` (`gifplay.go`)
+  from what it shows rather than from its frames: the run of pictures Chromium composites,
+  equal neighbours merged, each with the time it shows (`shownDelay`: 0 and 1 show as 10),
+  and the loop count. How frames make those pictures is bits nobody sees — fifteen
+  one-pixel transparent frames after a picture spelled sixty bytes in their positions,
+  delays and disposals; frames redrawing a picture after a clear or a put-back spelled a
+  message in their delays; pixels a frame repainted in the colour under them, rather than
+  left transparent, carried a 32 KiB file in a 512×512 GIF; a disposal the next frame
+  painted over, and the split of a picture's time between its frames, carried more — so
+  the stored file is written by one rule from the pictures, and two GIFs Chromium shows
+  alike are stored as the same bytes. Each picture is one frame, drawing exactly the
+  pixels that differ from what the frame before it left and transparent elsewhere, cut to
+  the rectangle around those pixels and the ones the next picture has transparent where
+  this one does not; it is cleared after its time when there are such pixels, since only a
+  clear makes a pixel transparent again, and left in place otherwise, the last always in
+  place. Time past 65,535 hundredths goes into one-pixel frames that draw nothing after it
+  (the last of them cleared, of the picture's rectangle, when the picture is), none given
+  a delay of 1. A GIF played once gets delay 0 on its last picture, and a GIF of one
+  picture is a still: one frame, no delay, disposal or loop count, and a control extension
+  only for transparent pixels. The header has background and aspect 0. Colours: when the
+  pictures show 255 or fewer, one global table, transparent black at 0 and then the
+  colours in order of their values, with 0 the transparent index of every frame of an
+  animation; otherwise each frame has a table of the colours it draws, in order, after a
+  transparent 0 when a pixel of its rectangle is not drawn (`frameColours`). A frame of
+  256 colours has no room for that entry, so it writes each pixel it does not draw in the
+  colour already showing there, which has to be one of its 256; where it is not, or a
+  frame would need more than 256, the GIF is refused (`ErrImageTooCostly`), as is one
+  whose stored frames come to more than `maxGIFFramePixels`
+  (`TestGIFOfManyColoursHasATableAFrame`; after flood control,
+  `TestImagesRefusedByTheirHeaderStartNoCooldown`). Only a frame that clears or puts back
+  what an earlier one drew can leave a stored frame needing more colours than that, since
+  a frame alone draws from one table: 0 of the 1,500 many-coloured GIFs of the Chromium
+  comparison were refused, and 7 of 5,000 random GIFs of up to 256 colours a frame and
+  every disposal method; of 126 made with ffmpeg, ImageMagick and Pillow, the 4 refused
+  were ImageMagick's `-layers OptimizeFrame` and `OptimizePlus` of one animation of 256
+  colours a frame, where a put-back leaves the next picture 304 colours to change, and the
+  other 122 showed alike in Chromium. The player keeps what the frames before the one
+  being played left (`under`) as a four-byte colour key a pixel, with two bit sets over
+  the canvas (`gifPlayScratch`, charged in `completedCost`), lets each decoded frame go
+  once it has played it, and keeps the walk's head of each until then (`gifFramePlay`).
+  The thumbnail is of the first picture, made before playing (`firstGIFPicture`).
+  `TestGIFIsStoredAsItPlays` holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`),
+  a model of Chromium's compositing written apart from `playGIF`, and to storing the same
+  bytes when processed again; `TestGIFsShownAlikeAreStoredAlike` rewrites 800 random GIFs,
+  six times each, in a dozen ways that change nothing Chromium shows (`gifRewrites`, each
+  checked against the model first) and requires every form stored as the original's bytes;
+  `hidden_test.go` pins the channels found, each as two uploads stored alike
+  (`TestGIFFramesOfOnePictureCarryNothing`, `TestGIFPixelsThatChangeNothingCarryNothing`,
+  `TestGIFDisposalPaintedOverCarriesNothing`,
+  `TestGIFTimeSplitBetweenFramesCarriesNothing`,
+  `TestGIFFramesThatDrawNothingCarryNothing`). The model and the forms were compared with
+  Chromium (through WebCodecs' `ImageDecoder`, which `<img>` shares its GIF decoder with)
+  over some 9,000 GIFs, every one showing alike; change the player and the model only
+  together, and only after checking Chromium again. The loop count is written back as
+  NETSCAPE2.0, from whichever loop extension came last, NETSCAPE2.0 or ANIMEXTS1.0, as
+  browsers read them; `image/gif` reads only the first, so `gifFramePixels` reads both
   (`TestGIFLoopCountIsReadFromEitherLoopExtension`). WebP cannot be encoded in Go, so a
   WebP upload is stored as another format (`sanitizeWebP`): a JPEG at `storedJPEGQuality`
   when it is lossy and opaque, from its own 4:2:0 planes taken to full range where they
@@ -662,22 +693,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   precision its alpha can show — `reduce8`/`unpremul8` and `unpremul16`, a
   premultiply/unpremultiply round trip, zero under alpha 0 — across `NRGBA` and
   `NRGBA64` (and `lossyWebPToNRGBA` does the same per pixel for a lossy WebP with
-  alpha), and `cleanPaletted` (PNG) and `cleanGIF` rebuild a palette through a
-  `colourFolder`: one entry per distinct colour its pixels show, in first-use order, a
-  single transparent entry, every pixel remapped to it. Whether a GIF frame uses the
-  global table is not taken from the upload, since it shows nothing: `cleanGIF` lets the
-  frames take the global table in turn, each while the colours it adds still fit in 256,
-  and gives a frame that would overflow it a table of its own, and writes the
-  background index as 0 (`TestGIFFieldsBrowsersDoNotShowAreWrittenTheSame`). Both fold a
-  frame's palette indices in the order its pixels first use them (`firstUses`,
-  `foldPaletted`), which is the same table as folding pixel by pixel at a map lookup a
-  palette entry rather than a pixel; a crafted overflow in a lone picture never happens,
-  so `cleanPaletted` ignores it. What is left is the picture, kept exactly, and that is
-  the whole guarantee: it is not that nothing unseen survives. A fully opaque pixel keeps its exact value,
-  including the low byte of a 16-bit channel (`TestPNGKeepsSixteenBitPixels`), so low-bit
-  steganography in a visible picture survives by design; removing it would change the
-  picture. The one exception is a PNG's gamma, applied so that the picture shows as it
-  did (below). `hidden_test.go` holds each path —
+  alpha), and `cleanPaletted` rebuilds a PNG's palette through a `colourFolder`: one entry
+  per distinct colour its pixels show, in first-use order, a single transparent entry,
+  every pixel remapped to it. It folds the palette indices in the order the pixels first
+  use them (`firstUses`, `foldPaletted`), which is the same table as folding pixel by
+  pixel at a map lookup a palette entry rather than a pixel; a lone picture never
+  overflows, so `cleanPaletted` ignores it. A GIF's tables are written from the colours
+  its pictures show (above), never taken from the upload, and so is whether its frames
+  share one, which shows nothing either (`TestGIFColourTablesKeepOnlyWhatIsShown`,
+  `TestGIFFieldsBrowsersDoNotShowAreWrittenTheSame`). What is left is the picture, kept
+  exactly, and that is the whole guarantee: it is not that nothing unseen survives. A
+  fully opaque pixel keeps its exact value, including the low byte of a 16-bit channel
+  (`TestPNGKeepsSixteenBitPixels`), so low-bit steganography in a visible picture survives
+  by design; removing it would change the picture. The one exception is a PNG's gamma,
+  applied so that the picture shows as it did (below). `hidden_test.go` holds each path —
   `TestPartlyTransparentColourIsReducedToItsAlpha` the alpha-precision cut and
   `TestFlatPaletteCannotHideAFileInItsPixels` the index channel of a flat palette — with
   the needles checked present in the upload first.
@@ -734,9 +763,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   its last scan; CMYK and RGB JPEGs decode to 4 bytes a pixel, and a 16-bit PNG to 8, or
   to 2 when it is grey with no transparency, as `pngBytesPerPixel` reads its header;
   `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
-  thousands of empty frames is not free, and `playGIF` a canvas of two bytes a pixel and
-  `gifFramePlay` a frame), the copy `orient` makes, the encoder's output
-  buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
+  thousands of empty frames is not free, and `playGIF` four bytes and two bits a pixel of
+  the canvas, `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the
+  encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
   larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
@@ -805,16 +834,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   needs that limit, which this code does not set. **Every wait is bounded, and a slow
   client is told apart from a busy server.** A post waits for room in the upload budget
   under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
-  does not get room gives up `processingAllowance` (15 s: the slowest admitted uploads
-  measured, a GIF of four 25-megapixel frames and a 25-megapixel PNG with transparency,
-  took about three and a half seconds each on one core, so it leaves margin) before that
-  deadline, with `media.ErrBusy`, and room that is there is
-  taken however near the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive,
-  counted from when the wait ends, so time spent waiting for room is not taken out of the
-  body's: a read deadline set on the connection through an `http.ResponseController` once
-  `ReserveUpload` has returned, whatever it returned (the logging middleware's
-  `statusRecorder` carries an `Unwrap` so the controller reaches the connection
-  underneath); a body slower than that is the client's doing, answered `408`
+  does not get room gives up `processingAllowance` (15 s: the slowest admitted upload
+  measured, a 25-megapixel PNG with transparency of nearly 8 MiB, took about seven and a
+  half seconds on one core, and the slowest GIF, of four 25-megapixel frames, about two
+  and a half, so it leaves margin) before that deadline, with `media.ErrBusy`, and room
+  that is there is taken however near the deadline. Its body then has `uploadReadTimeout`
+  (30 s) to arrive, counted from when the wait ends, so time spent waiting for room is not
+  taken out of the body's: a read deadline set on the connection through an
+  `http.ResponseController` once `ReserveUpload` has returned, whatever it returned (the
+  logging middleware's `statusRecorder` carries an `Unwrap` so the controller reaches the
+  connection underneath); a body slower than that is the client's doing, answered `408`
   (`upload too slow`, `isReadTimeout`), not the `503` a server with no room gives, and a
   body that waited for room is not answered `408` for the server's load. Once the body is
   read, the image has a fresh `postDeadline` (25 s, `processContext`) to be processed and
@@ -1102,8 +1131,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   would hold more than the whole budget — which turns on how it is encoded, not its size
   alone), and a reply the thread would refuse (`ReplyRefusal`). Decoding the pixels is not
   up front, because it is the cost the upload cooldown limits, so an image that fails to
-  decode, or whose re-encoded file would pass `storedLimit` (`ErrStoredTooLarge`), is
-  refused by `storeUpload` after `allow`, its cooldown kept
+  decode, whose re-encoded file would pass `storedLimit` (`ErrStoredTooLarge`), or, for a
+  GIF, that cannot be stored one frame to a picture (`ErrImageTooCostly` from `playGIF`),
+  is refused by `storeUpload` after `allow`, its cooldown kept
   (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides, `ErrStoredTooLarge`
   among them). The exception is a post the server turns away as busy after `allow`
   (`tooBusy`: no room to process its image in time, or its deadline passing before the
