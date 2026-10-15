@@ -485,9 +485,9 @@ func (m *captchaMeter) sweepExpired() {
 
 func (a *App) captchaEnabled() bool { return a.captcha != nil }
 
-// handleCaptcha issues a challenge. The client asks for one when a reader moves
-// into a box to write in, in a posting form or the code request form, never
-// when a page is drawn, so a reader who never starts to write never asks.
+// handleCaptcha issues a challenge. The client asks for one only on something a
+// reader does in a posting form or the code request form, moving into a box to
+// write in most often, never when a page is drawn.
 func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 	if !a.captchaEnabled() {
 		writeError(w, http.StatusNotFound, "the captcha is not switched on here")

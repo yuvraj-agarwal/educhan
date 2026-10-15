@@ -435,7 +435,8 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 The UI is three files served from the Go binary — `index.html`, `app.css`, `app.js` in
 `internal/app/web/` — with no build step and no framework, plus a vendored highlight.js
 and KaTeX, each fetched only when a post that needs it is on screen, and ALTCHA's PBKDF2
-worker, started only when a reader moves into a box to write in. `app.js` renders the
+worker, started only by something a reader does in a form that needs it (see
+[Captcha](#captcha)), never when a page is drawn. `app.js` renders the
 JSON API into routes that mirror it (`/`, `/{slug}/`, `/{slug}/catalog`,
 `/{slug}/archive`, `/{slug}/thread/{no}`), so every view is a shareable link and the back
 button works. `/{slug}/post/{no}` names a post by number alone: it asks the server which
@@ -473,10 +474,11 @@ view.
   disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
   born, why there are no accounts or private messages, what anonymity here does and does
   not hide, the badge, the anti-spam check, tripcodes, per-thread IDs, markup, and the
-  bump limit, image cap, and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
-  Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view; its invitation to
-  verify an address shows only on a server with verification switched on.
+  bump limit, image cap, and archive. Both end with the same fixed list of helplines (US,
+  UK and Ireland, India, Australia, and Find A Helpline for everyone else), which is
+  static text: nothing works out where the reader is. The footer links to both on every
+  view; its invitation to verify an address shows only on a server with verification
+  switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -759,12 +761,16 @@ plan 2.6). educhan issues and checks the puzzles itself, in
 [ALTCHA](https://altcha.org)'s protocol: no third party sees the request, no
 script from anywhere else runs on the page, and no cookie is set.
 
-1. When a reader first moves into a box to write in, the page asks
-   `GET /api/captcha` for a challenge: a random salt and nonce, a PBKDF2-SHA-256
-   cost, the first half of a key, an expiry half an hour away, and the server's
-   HMAC over all of it. The server made the key by choosing a counter at
-   random, from one to just under twice the work, and deriving PBKDF2 over the
-   nonce with that counter appended.
+1. When focus moves into a box to write in, in a form that needs an answer,
+   however it gets there (a click or tap, Tab, quoting a post), the page asks
+   `GET /api/captcha` for a challenge, unless it already holds a good answer or
+   is solving one. Unticking the badge, a refusal that spent the answer and a
+   press with no answer ready can start one too (the full list heads
+   `/* Captcha */` in `app.js`); drawing a page never does. A challenge is a
+   random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
+   expiry half an hour away, and the server's HMAC over all of it. The server
+   made the key by choosing a counter at random, from one to just under twice
+   the work, and deriving PBKDF2 over the nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
    copies and tries counters until a key starts with that half. That is about
    1500 attempts on average at the default work and never more than 3000, about
@@ -772,8 +778,8 @@ script from anywhere else runs on the page, and no cookie is set.
    is being written. (Chromium runs every copy's Web Crypto on one thread, so
    there the copies take turns.) The worker needs Web Crypto, which a browser
    gives only to a page on HTTPS or `localhost`; anywhere else, with the captcha
-   on, the page sends no unbadged post and no code request, and says the check
-   could not finish.
+   on, the page fetches no challenge, sends no unbadged post and no code
+   request, and says the check needs a secure (https) connection.
 3. The post carries the answer, the challenge and the key it found, as
    `"captcha"`. The server checks the signature, the expiry and an HMAC of the
    key, at most two HMACs and never a key derivation, so a wrong answer costs it
@@ -796,14 +802,22 @@ through and refuses the other as used, with no cooldown started for it, so one
 answer sent to many boards at once holds none of them back. A refusal answers
 `403` with `"captcha": "required" | "invalid" | "expired" | "used"` beside the
 message; the page solves a fresh puzzle and sends the post once more, so the
-reader presses the button once. A `used` answer was spent by an earlier request,
-which started its cooldowns, so the resend can meet one of them; the page then
-says how long to wait and keeps the fresh answer for the next press. Every
-response to a request whose answer was spent carries `Educhan-Captcha: spent`, a
-refusal written after the spend included (an image whose pixels fail to decode,
-or a thread that filled up meanwhile). The page keeps its answer through any
-refusal without that header, so the next press goes straight out, and starts the
-next puzzle as soon as one with it arrives.
+reader presses the button once (unless they have left the form meanwhile: a
+request goes only from a form still on screen). A `used` answer was spent by an
+earlier request, which started its cooldowns, so the resend can meet one of
+them; the page then says how long to wait and keeps the fresh answer for the
+next press. Every response to a request whose answer was spent carries
+`Educhan-Captcha: spent`, a refusal written after the spend included (an image
+whose pixels fail to decode, or a thread that filled up meanwhile). The page
+keeps its answer through any refusal without that header, so the next press goes
+straight out, and starts the next puzzle as soon as one with it arrives, while
+its form is on screen.
+
+While a post or a code request waits for its puzzle and its answer, its form is
+held: its boxes and buttons are switched off, so what is sent is what the form
+shows. A reader who leaves the form before the answer is ready, for another page
+or with Update, sends nothing, and the answer is kept for the next press; a
+request that had already gone is not reported on the page they went to.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to

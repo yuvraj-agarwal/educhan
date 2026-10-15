@@ -260,8 +260,9 @@ that read `app.js` (`web_invariants_test.go`): the poster key and the credential
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
 KaTeX's options, the highlighting cap, and the captcha's (its answer in memory only, its
-puzzle started only by a reader moving into a box to write in, and skipped only by a
-badged post). They are
+puzzle started only by something a reader does in a form that needs it and never on
+render, its request sent only from a form still on screen and held while it waits, and
+skipped only by a badged post). They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
@@ -394,35 +395,52 @@ needs a browser check before the test changes.
   its own.
 - **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
   reads `captcha` from `GET /api/site` into `state.site.captcha`. The puzzle starts only
-  when a reader focuses a box to write in (the `focusin` listener, never on render or
-  on the badge box) or unticks the badge, and ticking the badge stops it unless a
-  request is waiting for it (`captchaBadgeToggled`, `stopCaptcha`). It runs ALTCHA's
-  vendored worker in up to `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side
-  by side where the browser allows; Chromium runs their Web Crypto on one thread), and
-  only in a secure context with `Worker` and `crypto.subtle`, failing before any fetch
-  otherwise. The answer is kept in the `captcha` object in memory only, never in
-  storage or a draft, and read only by `captchaAnswer`, `dropCaptcha` and
-  `solveCaptcha`. `sendWithCaptcha` sends a post or a code
-  request, solving first when needed. The answer is dropped when the request succeeds;
-  a refusal carrying `"captcha"` drops it and sends once more with a fresh one, and
-  `"required"` also turns `state.site.captcha` on for a page drawn without knowing. Any
-  other refusal keeps the answer, unless it carries `Educhan-Captcha: spent`
-  (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`), which drops it and starts the next
-  puzzle at once. A badged post never waits for or sends an answer
-  (`() => state.site.captcha && !held`), and a code request always does. `CAPTCHA_LIFETIME_MS` must be no more than the
-  server's `captchaTTL` less a minute. `TestCaptchaAnswerStaysInMemory`,
-  `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`, `TestCaptchaIsSkippedOnlyByABadgedPost`
-  and `TestClientAndServerAgreeOnTheCaptcha` pin these; the worker needs no CSP change
-  (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the answer
-  is checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not
-  already spent) before flood control. Flood control comes in two halves: the
-  check (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429`
-  and starts nothing, then the answer is spent (`spendCaptcha`) and only then are
-  the cooldowns started (`startAll`), before any upload is processed. So a request
-  refused as used, which only a replay racing its original can be at that point,
-  starts no cooldown (`TestALostSpendStartsNoCooldown`). In the posting handlers the
-  check is the last refusal before flood control; in `handleVerifyRequest` it comes
-  straight after the 18+ attestation, before the address is parsed.
+  on something done in a form that needs it, never on render: focus moving into a box to
+  write in, however it gets there (the `focusin` listener; a quote and the `/verify`
+  buttons put the focus there too; the badge box is not one), unticking the badge on a
+  form whose tick stopped a puzzle or that already has something written or attached
+  (`captchaBadgeToggled`, `captchaFormHasWriting`), a refusal that spent the answer while
+  its form is on screen, and a press with no good answer held. Ticking the badge stops it
+  unless a request is waiting for it (`stopCaptcha`, which says whether it stopped one).
+  It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS` copies with interleaved
+  counters (side by side where the browser allows; Chromium runs their Web Crypto on one
+  thread), and only in a secure context (`CAPTCHA_INSECURE` otherwise) with `Worker` and
+  `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing before any fetch, and only on a
+  response shaped like a challenge (`CAPTCHA_UNAVAILABLE` otherwise). Every copy is
+  terminated when the puzzle ends, a throw while starting them included. The answer is
+  kept in the `captcha` object in memory only, never in storage or a draft, and read only
+  by `captchaAnswer`, `dropCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or
+  a code request, solving first when needed, and only from a form still on screen
+  (`formOnScreen`: in the document, with `state.route` unchanged since the press). One
+  whose form has gone is dropped unsent with its answer kept, and the caller shows,
+  navigates, resets and redraws nothing for it, sent or not. From the press to the answer
+  the form is held (`holdForm`: controls switched off after `FormData` has read them, and
+  switched back on after a refusal, with the focus on the button if the form had it). The
+  answer is dropped when the request succeeds; a refusal carrying `"captcha"` drops it
+  and, while the form is on screen, sends once more with a fresh one, and `"required"`
+  also turns `state.site.captcha` on for a page drawn without knowing. Any other refusal
+  keeps the answer, unless it carries `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`,
+  set by `spendCaptcha`), which drops it and starts the next puzzle at once if the form is
+  on screen. A badged post never waits for or sends an answer
+  (`() => state.site.captcha && !held`), and a code request always does.
+  `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
+  `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
+  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
+  also holds `CAPTCHA_TIMEOUT_MS` to the hardest base puzzle at 4 ms an attempt),
+  `TestCaptchaWorkersAreAlwaysStopped`, `TestCaptchaIsNotWorkedOnForNothing`,
+  `TestARequestGoesOnlyFromAFormOnScreen`, `TestAPendingFormIsHeld`,
+  `TestCaptchaRefusalSaysWhatTheFormStillHolds` and `TestTheCaptchaFAQSaysWhatThePageDoes`
+  pin these; the worker needs no CSP change
+  (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the answer is
+  checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not
+  already spent) before flood control. Flood control comes in two halves: the check
+  (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429` and starts
+  nothing, then the answer is spent (`spendCaptcha`) and only then are the cooldowns
+  started (`startAll`), before any upload is processed. So a request refused as used,
+  which only a replay racing its original can be at that point, starts no cooldown
+  (`TestALostSpendStartsNoCooldown`). In the posting handlers the check is the last
+  refusal before flood control; in `handleVerifyRequest` it comes straight after the 18+
+  attestation, before the address is parsed.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is

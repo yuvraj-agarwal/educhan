@@ -3435,7 +3435,7 @@ const CAPTCHA_LIFETIME_MS = 25 * 60 * 1000;
 // A copy of the worker gives up after this long, so a puzzle that cannot be
 // solved, which a working server never sends, stops using the processor. The
 // hardest puzzle a server gives a reader posting at a person's pace asks at
-// most 14,999 attempts (maxCaptchaWork and captchaMaxScale in captcha.go):
+// most 15,000 attempts (maxCaptchaWork and captchaMaxScale in captcha.go):
 // under a minute for a slow phone at 4 ms an attempt, half of this
 // (TestClientAndServerAgreeOnTheCaptcha).
 const CAPTCHA_TIMEOUT_MS = 2 * 60 * 1000;
