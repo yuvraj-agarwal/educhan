@@ -30,9 +30,10 @@ import (
 //     storedJPEGQuality.
 //   - PNG is decoded, turned upright by the EXIF orientation of an eXIf chunk,
 //     and re-encoded, which keeps none of its ancillary chunks.
-//   - GIF is decoded frame by frame and re-encoded with its frames, delays,
-//     disposal and loop count, and none of its comments or other application
-//     data.
+//   - GIF is decoded frame by frame and re-encoded as it plays: each picture
+//     it shows, for as long as it shows, and its loop count, and none of its
+//     comments, its other application data, or the frames, positions, delays
+//     and disposal methods that show nothing (playGIF).
 //   - WebP is decoded and stored as a PNG, or as a JPEG when it is lossy and
 //     opaque, because nothing in the standard library or x/image can encode
 //     WebP (sanitizeWebP says why it is not kept as it came).
@@ -304,14 +305,18 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	return sanitized{format: FormatPNG, data: stored, pic: pic, canvas: pic.Bounds()}, nil
 }
 
-// sanitizeGIF decodes every frame of a GIF and encodes them again. The frames
-// and their pixels, positions, transparency, delays and disposal, and the loop
-// count all survive; comment extensions and every application extension (XMP,
-// for one) do not, because image/gif reads past them and never writes them,
-// but for the loop count, which it writes as NETSCAPE2.0 whichever of the two
-// loop extensions it came in (gifFramePixels reads it). The colour tables keep
-// only the colours the pixels use (cleanGIF). The thumbnail is of the first
-// frame.
+// sanitizeGIF decodes every frame of a GIF and encodes again what they show.
+// What a browser plays survives — each picture, for as long as it shows, and
+// the loop count — and nothing else does (playGIF): a frame that changes
+// nothing on screen is folded into the time of the one before it, a frame
+// kept is cut to what it changes, and disposal methods and delays are written
+// as browsers carry them out. Comment extensions and every application
+// extension (XMP, for one) are dropped, because image/gif reads past them and
+// never writes them, but for the loop count, which it writes as NETSCAPE2.0
+// whichever of the two loop extensions it came in (gifFramePixels reads it).
+// The colour tables keep only the colours the pixels show, and which frames
+// share the global table is decided from those (cleanGIF). The thumbnail is
+// of the first frame stored.
 //
 // It is stored as browsers show it where that and image/gif part ways. A
 // file that ends after its last block without a trailer plays in a browser,
@@ -330,6 +335,9 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 		g.LoopCount = frames.loop
 	}
 	clipGIF(g, frames.canvas)
+	if err := playGIF(g); err != nil {
+		return sanitized{}, err
+	}
 	cleanGIF(g)
 	buf := newStoredBuffer(len(data), limit)
 	stored, err := buf.encoded(FormatGIF, gif.EncodeAll(buf, g))
@@ -369,7 +377,8 @@ func gifReader(data []byte, frames gifFrames) io.Reader {
 // clipGIF holds a decoded GIF to its canvas, as browsers draw one: a frame
 // reaching past the canvas is cut to the part on it, and a frame wholly off
 // it, which shows nothing for its delay, becomes a single transparent pixel
-// that is left in place, which shows the same nothing for the same time.
+// that is left in place, which shows the same nothing for the same time and
+// which playGIF then folds into the time of the frame before it.
 func clipGIF(g *gif.GIF, canvas image.Point) {
 	g.Config.Width, g.Config.Height = canvas.X, canvas.Y
 	r := image.Rectangle{Max: canvas}
@@ -728,130 +737,96 @@ func paletteEntryAt(pal color.Palette, v uint8) color.Color {
 // indices hid a second file keeps one entry and pixels that all point at it.
 func cleanPaletted(m *image.Paletted) {
 	f := newColourFolder()
-	b := m.Rect
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		row := m.Pix[m.PixOffset(b.Min.X, y):m.PixOffset(b.Max.X, y)]
-		for j, v := range row {
-			i, _ := f.fold(paletteEntryAt(m.Palette, v)) // a lone picture never overflows
-			row[j] = uint8(i)
-		}
-	}
+	foldPaletted(m, firstUses(m), f) // a lone picture never overflows
 	if len(f.palette) == 0 {
 		f.palette = color.Palette{transparentEntry} // a picture of no pixels
 	}
 	m.Palette = f.palette
 }
 
-// cleanGIF cleans the colour tables of a decoded GIF as cleanPaletted cleans
-// one palette, and keeps the frames that shared the global table sharing it.
-//
-// image/gif gives a frame with a colour table of its own that table, and a
-// frame without one the global table itself, or a copy of it with the frame's
-// transparent entry made transparent (and lengthened with transparent entries
-// when that lies past its end). Its encoder writes the global table from
-// Config.ColorModel and lets a frame use it whenever the frame's palette is
-// that same slice, or a copy differing only at the transparent index. So the
-// frames that copy the global table are rebuilt together through one
-// colourFolder into a single union table — one entry per distinct colour any
-// of them shows, in first-use order, with every transparent entry folded onto
-// one — and each is given that table and has its pixels remapped to it, so
-// image/gif writes it once as the global table and nothing of a flat frame's
-// duplicate entries, palette order or pixel indices survives. Any other frame
-// carries its own table and is cleaned by itself (cleanPaletted). A GIF none
-// of whose frames copies the global table, or whose shared colours do not fit
-// one 256-entry table, is stored with every frame's table its own. The
-// background colour, which browsers do not draw, is remapped to its colour's
-// new index, or the first entry.
-func cleanGIF(g *gif.GIF) {
-	global, _ := g.Config.ColorModel.(color.Palette)
-	background := int(g.BackgroundIndex)
-	var sharers []int
-	for k, frame := range g.Image {
-		if copiesPalette(frame.Palette, global) {
-			sharers = append(sharers, k)
-		} else {
-			cleanPaletted(frame)
+// firstUses is the palette indices m's pixels use, each once, in the order
+// its pixels first use them.
+func firstUses(m *image.Paletted) []uint8 {
+	var seen [256]bool
+	var uses []uint8
+	b := m.Rect
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		for _, v := range m.Pix[m.PixOffset(b.Min.X, y):m.PixOffset(b.Max.X, y)] {
+			if !seen[v] {
+				seen[v] = true
+				uses = append(uses, v)
+			}
 		}
 	}
-	noGlobalTable := func() {
-		for _, k := range sharers {
-			cleanPaletted(g.Image[k])
-		}
-		g.Config.ColorModel = nil
-		g.BackgroundIndex = 0
-	}
-	if len(sharers) == 0 {
-		g.Config.ColorModel = nil
-		g.BackgroundIndex = 0
-		return
-	}
+	return uses
+}
 
-	// Fold every sharer frame's colours into one table first, so an overflow
-	// (more distinct colours than one table holds, which only a crafted GIF
-	// reaches) is found before any frame's pixels are touched.
-	f := newColourFolder()
-	framePixels := func(k int, visit func(off int)) {
-		m := g.Image[k]
-		b := m.Rect
-		for y := b.Min.Y; y < b.Max.Y; y++ {
-			off := m.PixOffset(b.Min.X, y)
-			for x := b.Min.X; x < b.Max.X; x++ {
-				visit(off)
-				off++
-			}
-		}
+// foldPaletted folds the colours of the indices m's pixels use (uses, in
+// first-use order) into f, and remaps the pixels to their colours' indices
+// there. It leaves m's palette as it was: the caller gives it f's. Folding
+// the indices in the order the pixels first use them adds their colours in
+// the order the pixels first show them, so the table comes out the same as
+// folding pixel by pixel would make it.
+func foldPaletted(m *image.Paletted, uses []uint8, f *colourFolder) {
+	var to [256]uint8
+	for _, v := range uses {
+		i, _ := f.fold(paletteEntryAt(m.Palette, v))
+		to[v] = uint8(i)
 	}
-	for _, k := range sharers {
-		frame := g.Image[k]
-		overflow := false
-		framePixels(k, func(off int) {
-			if _, ok := f.fold(paletteEntryAt(frame.Palette, frame.Pix[off])); !ok {
-				overflow = true
-			}
-		})
-		if overflow {
-			noGlobalTable()
-			return
-		}
-	}
-	for _, k := range sharers {
-		frame := g.Image[k]
-		framePixels(k, func(off int) {
-			i, _ := f.fold(paletteEntryAt(frame.Palette, frame.Pix[off]))
-			frame.Pix[off] = uint8(i)
-		})
-	}
-	for _, k := range sharers {
-		g.Image[k].Palette = f.palette
-	}
-	g.Config.ColorModel = f.palette
-	g.BackgroundIndex = 0
-	if background < len(global) {
-		if i, ok := f.index[visibleNRGBA(global[background])]; ok {
-			g.BackgroundIndex = uint8(i)
+	b := m.Rect
+	for y := b.Min.Y; y < b.Max.Y; y++ {
+		row := m.Pix[m.PixOffset(b.Min.X, y):m.PixOffset(b.Max.X, y)]
+		for j, v := range row {
+			row[j] = to[v]
 		}
 	}
 }
 
-// copiesPalette reports whether p is global, or image/gif's copy of it for a
-// frame with a transparent entry: the same colours, but for transparent
-// entries, which may run past global's end.
-func copiesPalette(p, global color.Palette) bool {
-	if len(global) == 0 || len(p) < len(global) {
-		return false
-	}
-	if &p[0] == &global[0] {
-		return true
-	}
-	for i, c := range p {
-		if i < len(global) && c == global[i] {
+// cleanGIF rebuilds the colour tables of a decoded GIF from the colours its
+// frames show, as cleanPaletted rebuilds one palette, and decides for itself
+// which frames share the global table.
+//
+// Whether a frame carries a colour table of its own or uses the global one is
+// a bit a browser shows nothing of, and the order of a table, its unused and
+// duplicate entries and which of two equal entries a pixel names are bytes it
+// shows nothing of; so none of them is taken from the upload. The frames take
+// the global table in turn, the first one first: each that shows no more
+// colours than the global table, with the colours of the frames before it
+// that took it, still has room for (256) takes it, and each of its colours
+// the table does not have yet is added after the others, in the order its
+// pixels first show them, with every transparent entry folded onto one. A
+// frame that would overflow the table carries one of its own, rebuilt the
+// same way from its colours alone. image/gif writes the global table once,
+// and a frame given that very palette as using it. The background colour,
+// which browsers never draw, is written as the table's first entry.
+func cleanGIF(g *gif.GIF) {
+	shared := newColourFolder()
+	var sharers []*image.Paletted
+	for _, m := range g.Image {
+		uses := firstUses(m)
+		own := newColourFolder()
+		for _, v := range uses {
+			own.fold(paletteEntryAt(m.Palette, v)) // a lone frame never overflows
+		}
+		fresh := 0
+		for _, c := range own.palette {
+			if _, ok := shared.index[visibleNRGBA(c)]; !ok {
+				fresh++
+			}
+		}
+		if len(shared.palette)+fresh > 256 {
+			foldPaletted(m, uses, own)
+			m.Palette = own.palette
 			continue
 		}
-		if !isTransparent(c) {
-			return false
-		}
+		foldPaletted(m, uses, shared)
+		sharers = append(sharers, m)
 	}
-	return true
+	for _, m := range sharers {
+		m.Palette = shared.palette
+	}
+	g.Config.ColorModel = shared.palette
+	g.BackgroundIndex = 0
 }
 
 // gifFrames is what a GIF's frames come to: their area together, and how

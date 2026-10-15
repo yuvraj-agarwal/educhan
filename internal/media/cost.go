@@ -68,6 +68,15 @@ const processingSlack int64 = 4 << 20
 // few megabytes could decode to gigabytes of frames of no pixels at all.
 const gifFrameOverhead int64 = 16 << 10
 
+// gifFramePlay is what playGIF holds for each frame of a GIF while it plays
+// them, besides its canvas: the colour of each of the 256 indices the frame's
+// pixels can name, 1 KiB, and its record of what is stored of the frame; and
+// what it makes of each frame and keeps until the GIF is encoded: the
+// header of the frame cut to what it changes, its place in the stored frames,
+// delays and disposals, and the frame of one transparent pixel that holds
+// time a delay cannot say, which there are no more of than frames.
+const gifFramePlay int64 = 2 << 10
+
 // phase is one step of processing an upload. It allocates first as it
 // begins, goes on to allocate the rest of alloc (which includes first) on
 // top of what the step before it left held, and leaves after held once it is
@@ -180,8 +189,14 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		// until all of them are encoded again. An interlaced frame is
 		// decoded once more while its rows are put in order: at most the
 		// canvas, or a frame reaching past it (gifReader) if that is larger.
+		// The frames are then played (playGIF) on a canvas of two bytes a
+		// pixel, which is let go once they have been.
 		kept := frames.pixels + frames.count*gifFrameOverhead
-		return []phase{{alloc: kept + max(px, frames.largest), after: kept}}
+		play := 2*px + frames.count*gifFramePlay
+		return []phase{
+			{alloc: kept + max(px, frames.largest), after: kept},
+			{first: play, alloc: play, after: kept + frames.count*gifFramePlay},
+		}
 	case FormatWebP.Name:
 		return webpPhases(data, w, h)
 	}

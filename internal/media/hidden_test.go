@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"compress/lzw"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -374,8 +375,9 @@ func gifTables(t *testing.T, data []byte) (global []byte, local []bool) {
 // sentence, the global table's entry for a frame's transparent colour holds a
 // colour nobody draws, and two one-pixel frames carry a camera's JPEG, EXIF
 // and GPS position and all, in tables they use one entry of. None of it is
-// stored; every frame shows the same pixels, and the frames that used the
-// global table still do, rather than each getting a table of its own.
+// stored; every frame shows the same pixels, and every frame uses the one
+// global table, which holds the colours they show between them, in the order
+// they first show them, rather than each getting a table of its own.
 func TestGIFColourTablesKeepOnlyWhatIsShown(t *testing.T) {
 	seen := []color.Color{
 		color.RGBA{220, 30, 30, 255}, color.RGBA{30, 200, 30, 255},
@@ -450,10 +452,24 @@ func TestGIFColourTablesKeepOnlyWhatIsShown(t *testing.T) {
 		requireSamePixels(t, original.Image[i], stored.Image[i])
 	}
 	table, local := gifTables(t, got.Data)
-	if local[0] || local[1] {
-		t.Errorf("frames that used the global table carry their own now: %v", local)
+	for k, own := range local {
+		if own {
+			t.Errorf("frame %d carries a table of its own: %v", k, local)
+		}
 	}
-	if want := []byte{220, 30, 30, 30, 200, 30, 0, 0, 0, 30, 30, 220}; !bytes.Equal(table, want) {
+	// The colours shown, black for the transparent one, then each one-pixel
+	// frame's colour, and black up to the next power of two.
+	want := []byte{220, 30, 30, 30, 200, 30, 0, 0, 0, 30, 30, 220}
+	for at := 0; at < len(hidden); at += 768 {
+		want = append(want, hidden[at:at+3]...)
+	}
+	for n := 2; ; n *= 2 {
+		if 3*n >= len(want) {
+			want = append(want, make([]byte, 3*n-len(want))...)
+			break
+		}
+	}
+	if !bytes.Equal(table, want) {
 		t.Errorf("stored global table = % x, want the colours shown and black for the transparent one: % x", table, want)
 	}
 	if len(got.Data) >= len(upload)/2 {
@@ -488,7 +504,8 @@ func gifWithPixels(t *testing.T, transparent byte, pixels ...uint8) []byte {
 // Pixels on a transparent index past the end of a frame's colour table stay
 // transparent: image/gif's encoder marks only the first of the entries
 // image/gif padded the palette with as transparent, and the pixels on the
-// others were stored opaque black.
+// others were stored opaque black. The frame is stored cut to the pixels it
+// draws (playGIF), so it is held to the picture a browser shows.
 func TestGIFTransparentIndexPastItsTable(t *testing.T) {
 	for _, pixels := range [][]uint8{{0, 1, 3, 3}, {0, 1, 2, 3}, {3, 1, 0, 2}} {
 		upload := gifWithPixels(t, 3, pixels...)
@@ -505,11 +522,6 @@ func TestGIFTransparentIndexPastItsTable(t *testing.T) {
 		if clearPixels != 2 {
 			t.Fatalf("%v: the fixture has %d transparent pixels, want 2", pixels, clearPixels)
 		}
-		got := process(t, upload)
-		stored, err := gif.DecodeAll(bytes.NewReader(got.Data))
-		if err != nil {
-			t.Fatalf("%v: decode stored gif: %v", pixels, err)
-		}
-		requireSamePixels(t, original.Image[0], stored.Image[0])
+		requireSamePlay(t, fmt.Sprint(pixels), upload, process(t, upload).Data)
 	}
 }

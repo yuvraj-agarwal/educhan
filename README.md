@@ -475,10 +475,25 @@ server that would refuse what it sends.
     none, if no pixel has the key's colour), and a palette keeps only the colours its
     pixels use, written at as few bits a pixel (1, 2, 4 or 8) as that many colours need.
     16-bit pictures stay 16-bit. An animated PNG keeps its still image.
-  - *GIF* is re-encoded frame by frame, keeping every frame, delay, disposal and the loop
-    count (from either of the two extensions browsers read it from), and dropping
-    comments and application data such as XMP. Its colour tables keep only the colours
-    its frames show.
+  - *GIF* is re-encoded as it plays: each picture it shows, for as long as it shows, and
+    the loop count (from either of the two extensions browsers read it from), and
+    nothing else. A frame that changes nothing on screen — one that draws only
+    transparent pixels, or pixels in the colour already under them, and whose disposal
+    changes nothing either — is not kept, and its time is added to the frame's before
+    it; otherwise frames of one transparent pixel could carry whatever their positions,
+    delays and disposal methods spell out, under the same picture shown for the same
+    time. Each frame kept is cut to the part of it that changes something, and given the
+    disposal method that does what browsers do with its own: the values the format
+    leaves undefined are written as what browsers read them as, and the last frame's,
+    which never shows, as none. Its delay is written as browsers show it — 0 and 1 show
+    for a tenth of a second and are written as 10 — and time past the 655 seconds one
+    delay can say is held by frames of one transparent pixel after it. The last frame of
+    a GIF that plays once is given no delay, because it stays on screen, and a GIF whose
+    frames come down to one is stored as a still, with no loop count. Comments and
+    application data such as XMP are dropped, and the background colour, which browsers
+    never draw, is written as the first entry. Its colour tables keep only the colours
+    its frames show, and which frames share the global table is decided from those
+    colours, not taken from the upload.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
@@ -509,7 +524,11 @@ server that would refuse what it sends.
     (but for a PNG's gamma, applied as above, which changes the values so that the
     picture shows as it did). So data hidden in the low bits of a visible picture, as
     classic steganography does, survives — the aim is to strip the metadata and the
-    channels that do not show, not to alter the picture a reader sees.
+    channels that do not show, not to alter the picture a reader sees. The same holds
+    for how a GIF's pictures are made of frames, which is kept as the poster made them:
+    a frame that clears or puts back what the one before it drew while the next draws it
+    again, and with it how long each of the two shows the same picture for; and the
+    pixels a frame repaints in the colour already under them, beside those it changes.
 
   Dropping the ICC profile means a wide-gamut photo (Display P3, Adobe RGB) can look
   slightly duller than it did; most photos are sRGB and look the same. A profile can
