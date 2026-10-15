@@ -2112,6 +2112,32 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"kms my parents found out lol", support},
 		{"I wanted to die last night 💀", support},
 		{"my parents found out, I wanted to die lol", support},
+		// threatFrame: "glass" done to someone, not to a frame; beaten
+		// unconscious, someone the poster knows from school but not their
+		// family.
+		{"i'm going to glass that teacher at prom on saturday", threat},
+		{"i'm going to glass the frame for my art project at school tomorrow", publish},
+		{"i'm gonna beat my classmate unconscious tomorrow at school", threat},
+		{"i'm gonna beat my brother unconscious when i get home tomorrow lol", publish},
+		// frameSpeaker: any verb after a time and a speaker, "got" opening a
+		// clause, and a greentext line, whose speaker is the poster.
+		{"Tomorrow I make him bleed.", threat},
+		{"tomorrow I make her a birthday cake", publish},
+		{"got my dad's pistol in my bag rn. canteen at lunch. bye everyone", threat},
+		{"got my uncle's guitar in my locker for the concert friday", publish},
+		{">be me\n>get suspended\n>come back friday with a loaded mag", threat},
+		{">be me\n>bring knife to cooking class tomorrow\n>teacher approves", publish},
+		// readNoun: a magazine is a gun's only when it is full or loaded.
+		{"bringing a loaded mag to school tomorrow", threat},
+		{"bring your mags to the library tomorrow", publish},
+		// notAGame: "finals week" is exams.
+		{"the toilets will be blown up during finals week", threat},
+		{"our team will be blown up in the finals this week lol", publish},
+		// prognosis: a teacher of the poster's who won't see a day, unless
+		// a hospital, an illness or a leaving is named; family always.
+		{"our physics ma'am won't see friday 🙂", threat},
+		{"our class teacher won't see monday, she's in hospital", publish},
+		{"my grandpa won't see monday", publish},
 	} {
 		v := bodyVerdict(c.body)
 		got := publish
@@ -2173,6 +2199,23 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"gonna be all over the news on monday, the school will see. i warned them", threat},
 		{"the lab on friday. bringing the lads and some rods. you know who you are", threat},
 		{"kal college ke baad tera dost ghar nahi pahuchega. yaad rakhna", threat},
+		// Harm said to be coming, a place burnt to the ground or set alight
+		// behind locked doors, someone left inside, what the poster has
+		// stowed, a crowd's last time, a sports day, a weekend that is
+		// someone's last, and Hinglish verdicts and weapons brought.
+		{"Not kidding. Friday, 3rd period, the music room. People are going to get hurt.", threat},
+		{"the staff room will be burnt to the ground before the holidays. mark my words", threat},
+		{"chem tuition at 5 today. i'm locking the door from outside and lighting it up", threat},
+		{"reckon the deputy's ute gets torched friday arvo. with him in it", threat},
+		{"the corridor outside 9C on tuesday after lunch. I've got what I need in my backpack. they'll finally understand.", threat},
+		{"next time the auditorium fills up for assembly will be the last time it ever does", threat},
+		{"made something in the shed over the break. school gets it on sports day 💥", threat},
+		{"the deputy head better enjoy his weekend. it's his last one", threat},
+		{"nobody in our form room is making it to the summer holidays", threat},
+		{"kal college mein sabko uda dunga, dekh lena", threat},
+		{"kal school aa raha hu katta leke, principal ko pata chalega", threat},
+		{"bhai principal ka kamra kal raat jala dunga, petrol le aaya hu already", threat},
+		{"jaise hi wo kal clg aayega, usko maar dunga", threat},
 		// The same hints with nothing to make them one.
 		{"the physics teacher fainted in assembly and is leaving in an ambulance, hope she's ok", publish},
 		{"my grandpa will be in hospital till friday after his surgery", publish},
@@ -2200,6 +2243,21 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"i'm coming for all of you in the class leaderboard this week", publish},
 		{"the coach who kicked me off the team apologised today in the gym, we're good now", publish},
 		{"my brother's classmate wrote 'you won't make it to monday, you know who you are' on his desk. we told the school", publish},
+		{"someone will get hurt if you run in the corridor tomorrow", publish},
+		{"she'll be hurt by the news on friday, don't tell her yet", publish},
+		{"the old library was burnt to the ground in 1990, the new one opens tomorrow", publish},
+		{"our team will light the place up at sports day tomorrow, you've been warned", publish},
+		{"lock the lab from the outside tomorrow when you leave, the janitor said", publish},
+		{"the bus left with them still inside it, they missed the trip on friday", publish},
+		{"I've got everything I need in my bag for the trip on friday", publish},
+		{"my parents will finally understand. results come out tomorrow", publish},
+		{"the canteen was packed today, last time it ever happens before the holidays", publish},
+		{"the hall will be packed for the farewell, the last time it ever is, they're demolishing it next month", publish},
+		{"our house gets the trophy on sports day 💥", publish},
+		{"nobody in our form room makes it to the 8am lecture on time", publish},
+		{"kal party mein sabko uda dunga with my dance moves", publish},
+		// A likeness is no hint: "jaise" and "as if".
+		{"exam hall mein invigilator aise dekh raha tha jaise main katta leke aaya hoon 😭", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, true)); got != c.want {
 			t.Errorf("%q: %s, want %s", c.body, got, c.want)
@@ -2693,6 +2751,11 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"pronoun then time": rep("kal sabko "),
 		"urged":             rep("bro just rope "),
 		"grade then cue":    rep("what grade are you in? come alone "),
+		// A place lit up, a crowd's last time, and a teacher of the
+		// poster's who won't see a day, each read for what is round it.
+		"lit up":         rep("light it up "),
+		"last time":      rep("will be the last time it ever does "),
+		"our sir monday": rep("our sir won't see monday "),
 		// A threat told by implication: hints of every kind, close to a
 		// time and a place, and the words that open the most of them.
 		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),
