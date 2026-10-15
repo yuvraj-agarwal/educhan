@@ -24,6 +24,17 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }
 
+// handleSite reports the server's posting settings: whether images are
+// accepted, and how large one may be. It answers every caller the same way and
+// reads nothing from the request, so it says nothing about who is asking, and
+// asking tells the server nothing either.
+func (a *App) handleSite(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, http.StatusOK, Site{
+		Uploads:        a.cfg.UploadsEnabled,
+		MaxUploadBytes: a.cfg.MaxUploadBytes,
+	})
+}
+
 func (a *App) handleListBoards(w http.ResponseWriter, r *http.Request) {
 	boards, err := a.store.Boards(r.Context())
 	if err != nil {
@@ -186,12 +197,12 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	passKey, ok := a.postPass(w, r, sub.Badge)
+	pass, ok := a.postPass(w, r, sub.Badge)
 	if !ok {
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, passKey, sub.Upload != nil)) {
+	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
 
@@ -215,6 +226,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not create thread")
 		return
 	}
+	a.spendPassBudget(pass)
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
 }
 
@@ -273,12 +285,22 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !ok {
 		return
 	}
-	passKey, ok := a.postPass(w, r, sub.Badge)
+	pass, ok := a.postPass(w, r, sub.Badge)
 	if !ok {
 		return
 	}
+	// A reply the thread would refuse anyway — gone, archived, locked, or an
+	// image for a thread at its cap — is turned away here, before flood
+	// control starts a cooldown for it and before its upload is stored. The
+	// poster told to send the text on its own can then do so at once. This
+	// read takes no lock: CreateReply checks again under the board's row, and
+	// that is the check that holds when replies race for the last slot.
+	if err := a.store.ReplyRefusal(r.Context(), board, no, sub.Upload != nil); err != nil {
+		a.fail(w, r, err, "could not add post")
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, passKey, sub.Upload != nil)) {
+	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
 
@@ -303,6 +325,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	a.spendPassBudget(pass)
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
 }
 
@@ -362,20 +385,10 @@ func (a *App) resolveThreadID(w http.ResponseWriter, r *http.Request) (Board, in
 // Both are keyed on the client address even when the poster ID comes from a
 // poster key. The key is chosen by the client, so a limit keyed on it would be
 // one any client could step around by sending a new key with every post.
-//
-// A post with a Pass is counted against the Pass as well (passKey, from
-// postPass), so everyone using one shared Pass waits on one shared cooldown.
-// It is only ever added: a Pass never loosens the address's own limits.
-func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey, passKey string, hasUpload bool) []cooldown {
+func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey string, hasUpload bool) []cooldown {
 	cooldowns := []cooldown{{limiter: limiter, key: board.Slug + "|" + clientKey}}
-	if passKey != "" {
-		cooldowns = append(cooldowns, cooldown{limiter: limiter, key: board.Slug + "|" + passKey})
-	}
 	if hasUpload {
 		cooldowns = append(cooldowns, cooldown{limiter: a.uploadLimiter, key: clientKey})
-		if passKey != "" {
-			cooldowns = append(cooldowns, cooldown{limiter: a.uploadLimiter, key: passKey})
-		}
 	}
 	return cooldowns
 }

@@ -154,9 +154,9 @@ expires or someone clears it. That is why `/verify` gives **Forget this
 credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
 again, so it means verifying from the start. Beside it, in every state of the
-page, **Forget this browser** removes the badge together with the poster key and
-the remembered name (see below), which are what would otherwise let the next
-person at a shared computer post under the same IDs and tripcode.
+page, **Forget this browser** removes the badge together with the poster key,
+the remembered name (see below) and any Pass, which are what would otherwise let
+the next person at a shared computer post under the same IDs and tripcode.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -176,8 +176,18 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- Roughly when a credential was issued — to the *day*, because the stored
-  expiry is rounded up to a UTC day boundary and nothing else is timestamped.
+- When a credential was issued: in the database, only to the *day*, because the
+  stored expiry is rounded up to a UTC day boundary and nothing else in the
+  verification tables is timestamped; in the application's log, for as long as
+  it is kept, to the second, because the request line for
+  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
+  time. Neither line says which institution or address the credential was for
+  (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
+  after an issuance does name the institution, and its time is kept to the
+  second too. So an issuance followed by a badged post ties that post to its
+  stored record on any day its institution issued only one credential, however
+  many other institutions issued that day. How long the request log is kept is
+  what limits this.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -186,8 +196,9 @@ can and cannot work out.
   the secret, an operator who suspects a particular address can recompute the
   HMAC and check whether that person is verified. This is inherent to a
   uniqueness key and is the sharpest edge of the design. It answers "is
-  ana@iitb.ac.in verified?" — it does not answer "who is verified?" or "which
-  posts are theirs?".
+  ana@iitb.ac.in verified?" — it does not answer "who is verified?", nor
+  "which posts are theirs?" except for a post tied to its record by the
+  issuance times above.
 
 **What they cannot do**
 
@@ -199,9 +210,12 @@ can and cannot work out.
 - Link a credential to a post. The credential carries a label, an expiry, and a
   random identifier — nothing derived from the address. Posts store the badge
   as text and hold no reference to the record it came from.
-- Link a post to a verification record by timing. Verification tables carry no
-  `created_at`, and using a credential updates nothing, so there is no "last
-  used" to line up against a post.
+- Link a post to a verification record by timing, beyond the issuance times
+  above. Verification tables carry no `created_at`, and using a credential
+  updates nothing, so there is no "last used" to line up against a post. The
+  log's issuance times name no institution, but a badged post soon after one
+  does, and that ties the post to a single record on a day its institution
+  issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.
@@ -291,16 +305,32 @@ at all — see above.
 
 ## educhan Pass
 
-The educhan Pass works like 4chan's: a year of posting and reporting without
-the captcha, bought for a small fee that helps run the site. It is optional,
-sold only to people who tick an unticked "I confirm I am 18 or over" box, and
-it gives nothing else. A post made with a Pass looks exactly like any other,
-and the content rules, the refusal limit and every cooldown still apply.
+The educhan Pass is modelled on 4chan's: a term of posting without solving the
+captcha (a year, unless `EDUCHAN_PASS_DAYS` says otherwise), bought for a small
+fee that helps run the site. It is optional, sold
+only to people who tick an unticked "I confirm I am 18 or over" box, and it
+gives nothing else. A post made with a Pass looks exactly like any other, and
+the rules and every cooldown still apply.
 
 Two of 4chan's Pass rules don't carry over. 4chan ties a Pass to one IP
-address at a time, which would mean keeping addresses; here everyone using one
-Pass shares one cooldown instead, so sharing it gains nothing. And 4chan's Pass
+address at a time, which would mean keeping addresses; here a Pass has an
+hourly budget instead, and everyone using one Pass shares it. And 4chan's Pass
 lifts IP range and country blocks, which educhan doesn't have.
+
+**The hourly budget.** A Pass skips the captcha for at most
+`EDUCHAN_PASS_HOURLY_POSTS` posts (30 by default) in each clock hour. A post
+counts only once it is saved: one that is refused, fails or is turned away by
+flood control costs nothing. When the hour's budget is spent, the Pass simply
+stops skipping the captcha until the hour ends, and posts with it solve the
+captcha like anyone else's; no post is ever refused because of the budget.
+Sharing a Pass shares the budget. The count lives in the server's memory, per
+instance like flood control, keyed on an HMAC of the code that matches nothing
+in the database, and all it holds is which hour it is for and how many posts:
+no timestamps, so nothing in memory says when a Pass posted. The flood-control
+sweep forgets it within a minute of its hour ending, on the same terms as an
+address (see [Flood control](#flood-control) for an idle Cloud Run instance).
+A Pass adds no cooldown and lifts none, so a post answers exactly as it would
+without one, and its answer says nothing about when the Pass was last used.
 
 **How it is bought.** The Pass page asks the server for a checkout, and the
 browser goes to Stripe's own hosted page by an ordinary navigation: no Stripe
@@ -312,32 +342,116 @@ payment went through by a signed webhook, and the browser that paid collects
 its Pass with a claim it holds in a cookie scoped to `/api/pass`. The code,
 four groups of five letters and digits, is shown once.
 
+**Orders.** A checkout records an order under the browser's claim, with a
+deadline a week on, rounded up to the next midnight UTC. A browser that starts
+a second checkout keeps its claim, so a Stripe tab paid after another is still
+collected, and collecting takes every paid order under the claim at once: a
+renewal renews its Pass, the first new purchase makes the Pass, and any other
+renews that one, now or when it is paid later. Paying twice buys a longer Pass
+and never loses a payment or replaces a code. `GET /api/pass` says whether the
+browser holds a claim, which the page cannot see for itself (the cookie is
+`HttpOnly`), so the page collects on every visit until nothing is left under
+it, and then the cookie goes. An order nobody paid for goes at its deadline, or
+as soon as Stripe reports its checkout expired or its payment failed. A
+checkout completed with a payment that takes days to clear, a bank debit say,
+is held for 30 days from then, and so is the browser's claim. A paid order is
+never dropped for being late: a payment confirmed after the deadline still
+counts, and a paid order nobody collected is kept for a term past its deadline,
+by when a Pass bought with it would have run out, for the owner to reissue.
+Checkout and the daily sweep (`educhan -sweep`) prune what is past all that,
+along with Passes a month past expiry, which can then no longer be renewed and
+are bought anew. A renewal whose Pass was refunded or ran past that month while
+Stripe was opening the checkout is refused with `409`, and the checkout is left
+to expire unpaid.
+
 **What is kept, and what can be worked out.** An operator with the database,
 the server secret and the Stripe account can see:
 
 - that a Pass exists and the day it runs out (`expires_at`, rounded up to a
   UTC day boundary; there is no `created_at`);
 - which Stripe payments bought or renewed it, as `HMAC(EDUCHAN_PASS_SECRET,
-  payment id)`. With Stripe's records beside it, that ties a Pass to whoever
-  paid. This is what lets a refund or a chargeback cancel the Pass, and it is
-  the sharpest edge of the design.
+  payment id)`, with the term each one bought in days and which one created
+  it. With Stripe's records beside it, that ties a Pass to whoever paid. This
+  is what lets a refund or a chargeback take back what it paid for, and it is
+  the sharpest edge of the design;
+- while an order waits to be paid or collected: HMACs of its Stripe session
+  and payment ids, a hash of the browser's claim, the Pass it renews, and its
+  deadline to the day.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
-Pass tables reference only each other, and nothing about a Pass is logged or
-goes into a poster ID. `TestPassIsNeverStoredOrLogged` drives every posting
-path with a Pass and searches every table and the log for the code, its hashes,
-the payment and session ids and the buyer's email and name, with positive
+Pass tables reference only each other, and nothing about a Pass goes into a
+poster ID. Nothing identifying a Pass is logged: the log says that a Pass was
+issued, renewed, reissued or cancelled, never which, and a failure to read a
+Pass on a post is logged without the post's path, which names its board and
+thread (the request's own line keeps the path and its `500`, as for any failed
+request). `TestPassIsNeverStoredOrLogged` drives every posting path with a Pass
+and searches every table and the log for the code, its hashes, the payment and
+session ids, a reissue link and the buyer's email and name, with positive
 controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
 handler reads a handful of fields and never logs the body, which carries the
 payer's email and name.
 
-**Lost codes, refunds and renewals.** A full refund or a dispute cancels the
-Pass it paid for (a partial refund doesn't). A buyer who lost their code
-writes to the support address on Stripe's receipt, and the owner reissues it
-with `POST /api/pass/reissue` and Stripe's payment id; the old code stops
-working. Renewing from a browser that holds the Pass adds a year to it, from
-its expiry or from today if it has run out, and keeps the code.
+The Pass's `POST` endpoints take only a body declared as JSON, which no form
+can send and no other origin's script can send without a CORS preflight that
+is never answered, and refuse a request the browser marks as coming from
+another site (`Sec-Fetch-Site: cross-site`).
+
+**Renewals and refunds.** Renewing from a browser that holds the Pass keeps
+the code and adds a term to it: exactly a term to a Pass that hasn't run out,
+whose expiry is on a midnight already, and a term from now, rounded up to the
+next midnight UTC, to one that has. A full refund or a dispute (a partial
+refund changes nothing) takes off the term that one payment bought: the days
+it moved the expiry on, rounded up to whole days, so the rounding goes with
+it. A Pass with time left after that goes on, and one with none left is
+cancelled. So refunding a purchase cancels the Pass at once, refunding a
+renewal takes that term off and leaves the rest, refunding the purchase
+leaves the renewals paid after it, and somebody who renews another person's
+Pass and disputes the payment takes back only what they gave. A refunded
+renewal of a Pass that had already run out leaves nothing over, not even the
+rest of the day, and the Pass is gone.
+
+Every change to the Pass tables (an order, a payment, a collection, a
+reissue, a refund, pruning) takes one Postgres advisory lock first
+(`passLockID`), so events that arrive together are applied one after another:
+a refund cannot miss a Pass being collected beside it, and a "paid" cannot
+slip past a refund. Posting with a Pass only reads, and takes no lock.
+
+**Lost codes.** A buyer who lost their code writes to the support address on
+Stripe's receipt. The owner finds the payment in Stripe and asks for a reissue
+link with its id:
+
+```bash
+curl -X POST https://<site>/api/pass/reissue -H 'X-Mod-Key: …' \
+  -H 'Content-Type: application/json' -d '{"payment_intent":"pi_…"}'
+# -> {"url":"https://<site>/pass#reissue=…","expires_at":"…"}
+```
+
+and emails the link, from the support address, to the address the buyer wrote
+in from. The owner never sees a code. Opened on the Pass page, the link gives
+the Pass a new code, shown once, and the old one stops working; for a
+purchase paid and never collected, it collects it. It works once, until a
+deadline like an order's (a week, to the next midnight UTC); a newer link for
+the same payment replaces it, and a refund cancels it. Its token rides in the
+address's fragment, which the browser sends to no server and puts in no
+`Referer`, and the page takes it out of the address bar before anything else
+and sends it in the body of the claim; the server keeps only its hash. Only
+the payment that bought a Pass, or a paid purchase nobody collected, can be
+reissued: a renewal's payment answers `409`, because otherwise somebody who
+saw a code once could renew it and have the owner reissue it to them.
+
+**Setting it up.** In Stripe: a one-time Price for the Pass
+(`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
+restricted key (`rk_…`) allowed to write Checkout Sessions and read Prices and
+nothing more; and a webhook endpoint at
+`EDUCHAN_PUBLIC_URL/api/pass/stripe-webhook`, created with API version
+`2024-06-20` (`stripeAPIVersion` in `pass_stripe.go`) and sending the six
+events listed in the [HTTP API](#http-api) table, whose signing secret is
+`EDUCHAN_STRIPE_WEBHOOK_SECRET`. Turn on Stripe's email receipts and give the
+account a public support email: the receipt is how a buyer finds their
+payment, and whom to write to about a lost code. Buyers are sent only to
+`checkout.stripe.com`, so a custom checkout domain set up in Stripe would make
+every checkout fail.
 
 ## Posting identity
 
@@ -393,11 +507,21 @@ along with every poster ID.
 
 One image per post, on both thread creation and replies, **when
 `EDUCHAN_UPLOADS_ENABLED` is on**. It is off by default, and a post carrying an
-image is then refused with `403`, because originals are stored and served as
-uploaded: no metadata stripping and no content scanning yet.
+image is then refused with `403` and
+`{"error":"image uploads are switched off on this server"}`, because originals
+are stored and served as uploaded: no metadata stripping and no content scanning
+yet. With uploads off a multipart post is held to the 64 KiB a JSON post may
+be, so the server stops reading an image once the body passes that, and a file
+over the size limit gets the same `403` rather than a `413`; a multipart post
+with no file, or with the empty file part a browser sends for an untouched
+input, posts as usual. `GET /api/site`
+reports the switch and the size limit as `{"uploads","max_upload_bytes"}`, so a
+client can leave the image picker off a server that would refuse what it sends.
 
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
-  or the content type the client claims.
+  or the content type the client claims. Anything else, or an image whose header claims
+  more than 50 megapixels, is refused with `400` from its header alone, before flood
+  control.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -443,11 +567,11 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Threads | Per-board post numbers, `>>123` quote links with backlinks, greentext, `[spoiler]` text, highlighted `[code]` blocks, `[math]` and `[eqn]` maths typeset by KaTeX, `>>>/board/` and `>>>/board/123` cross-board links, sage, bump limits, sticky and locked flags |
 | Index | Paginated, newest bump first, showing each thread's opening post and last three replies |
 | Catalog | Every live thread on one page as excerpt tiles with thumbnails; an excerpt shows a spoiler as `[spoiler]`, never what it hides |
-| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…` |
+| Attachments | One image per post and a per-board cap per thread, validated by magic bytes, thumbnailed at upload, served from `/media/…`; off unless switched on, and `GET /api/site` says which |
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -460,11 +584,11 @@ button works. `/{slug}/post/{no}` names a post by number alone: it asks the serv
 thread the post is in and replaces itself with that thread, scrolled to the post, so Back
 does not land on it twice. Institution boards are stored as `u-{name}` and live at
 `/u/{name}/`, with the same routes beneath. The top-level words kept for pages — `verify`,
-`mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`, `archive`,
-`safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never read as
-boards.
-`/verify`, `/rules`, and `/faq` are pages; a word without a page yet shows the not-found
-view.
+`pass`, `mod`, `u`, `rules`, `faq`, `legal`, `terms`, `privacy`, `dmca`, `report`,
+`archive`, `safety`, and the server's own `api`, `media`, `healthz`, and `lib` — are never
+read as boards.
+`/verify`, `/pass`, `/rules`, and `/faq` are pages; a word without a page yet shows the
+not-found view.
 
 - **Age screen**: educhan is open to anyone aged 13 and over (`MIN_AGE` in `app.js`; below
   13, COPPA's verifiable parental consent applies, which an anonymous site cannot give).
@@ -475,7 +599,10 @@ view.
   is never stored, sent, or put in the URL. All that is kept, in `localStorage`, is the
   outcome — `educhan:age-ok-v1` after **Continue**, or `educhan:age-refused-v1`, which
   shows a plain page saying who educhan is for, with no way to answer again in that
-  browser. Escape does not dismiss the screen. If storage is blocked, the screen is asked
+  browser. The one refusal not kept is an answer in the current month exactly 13 years
+  back, since that reader may have turned 13 this month: it lasts until the page is
+  reloaded or closed, and the FAQ says a reader who may only just have become old enough is asked
+  again. Escape does not dismiss the screen. If storage is blocked, the screen is asked
   once per visit. `/rules` and `/faq` are readable without answering it, and `MIN_AGE = 0`
   switches it off.
 - **Rules and FAQ**: `/rules` holds the global rules in plain words for readers as young
@@ -490,7 +617,8 @@ view.
   not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
   and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
   Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view.
+  out where the reader is. The footer links to both on every view; its invitation to
+  verify an address shows only on a server with verification switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -526,7 +654,12 @@ view.
     an empty pair, or a `[spoiler]` opened inside another shows as the text that was
     typed.
 - **Posting**: labelled fields, an image picker that previews the chosen file with its name
-  and size, and drag-and-drop anywhere on the form. A half-written reply survives
+  and size, and drag-and-drop anywhere on the form. On a server with uploads switched off,
+  which the page learns from `GET /api/site`, the form has no image field at all and the
+  thread view leaves out the image cap; a page that missed the switch takes the image off
+  when the server refuses it, keeps the text, and the next press posts it. The picker
+  names the server's size limit, and a file over it is turned away when it is picked
+  rather than after the upload. A half-written reply survives
   **Update**, image included, so refreshing a busy thread never costs a draft; if the
   thread was archived or locked meanwhile, the text stays on the page in a read-only box
   to copy. Following a quote link within a thread jumps to the post without reloading
@@ -534,8 +667,8 @@ view.
   post number quotes it into the reply box. With an image attached, **Spoiler image**
   sends it hidden: readers see a neutral tile, filename included, until they click it or
   press Enter on it, and it then expands like any other; the catalog shows the tile only.
-- **Image cap**: the index and catalog show how many images a thread has, and the thread
-  view shows the count against its board's cap. A thread at the cap keeps its reply form
+- **Image cap**: the index and catalog show how many images a thread has, and on a server
+  that takes images the thread view shows the count against its board's cap. A thread at the cap keeps its reply form
   with the image picker switched off and the reason beside it; if the cap is reached
   while a reply is being written, the refusal takes the image off, keeps the text, and
   the next press posts it. On a board whose `image_limit` is 0 the picker says replies
@@ -546,7 +679,19 @@ view.
   anything else. A badged post sends the credential instead, never both. The Name field
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
-  `/verify` drops the key, the name and any badge, for a shared computer.
+  `/verify` drops the key, the name, any badge and any Pass, for a shared computer.
+- **educhan Pass**: `/pass` says what a Pass does and what it costs (with "plus any tax"
+  when Stripe adds it), sells and renews it through Stripe's own page, and takes a code
+  typed in. The browser keeps the Pass in `localStorage` and sends it on unbadged posts
+  only (see [educhan Pass](#educhan-pass)); the page sends it only in the body of a
+  renewal or a check. While a purchase waits to be collected (`GET /api/pass` says
+  `claim`), the page shows that in place of any form to pay with and asks for it on every
+  visit, with a growing pause while it is open. A code the server hands over is stored
+  before anything else, shown once, and can be shown again from the held Pass's panel to
+  write down; a browser that will not store it is told so. A Pass that has run out here
+  can be checked again, in case it was renewed elsewhere. A reissue link
+  (`/pass#reissue=…`) leaves the address before anything else and is spent once. A post
+  refused for its Pass says to solve the captcha and post again.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
@@ -641,7 +786,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
 | `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment |
-| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403` |
+| `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
@@ -655,6 +800,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax add sales tax, VAT or GST at checkout; switch Stripe Tax on in the account first |
 | `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back |
 | `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts |
+| `EDUCHAN_PASS_HOURLY_POSTS` | `30` | A Pass's hourly budget: how many posts in one clock hour skip the captcha. At least 1 |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (seconds) | Minimum interval between checkouts from one client |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 
@@ -727,8 +873,35 @@ limits never compound.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image — does
-not start a cooldown, so a typo never costs a wait.
+request rejected for any other reason — an empty body, an oversized image, a
+file that is not an accepted image or whose header claims too many pixels, a
+reply to a missing, locked or archived thread or an image past a thread's cap —
+does not start a cooldown, so a typo never costs a wait. Two refusals come only
+after the cooldowns have started: an image whose header reads but whose pixels
+do not decode, which only decoding it can find, and decoding is the cost the
+upload cooldown is there for; and the loser of two replies racing for a
+thread's last image slot (see the HTTP API).
+
+The cooldowns are keyed on client addresses, and they are the only place the
+server holds one. A sweep runs once a minute and drops every entry whose
+cooldown has run out, so **an address is held in memory no longer than the
+longest cooldown that applies to it plus one minute**, counted from its last
+post (or code request, for verification's cooldown), whether or not anyone
+else posts in the meantime, **as long as the process has CPU between
+requests**. A host that gives it CPU only while it answers a request, which is
+Cloud Run's default (request-based billing), holds the sweep's timer back while
+an instance is idle. The first request to arrive after a sweep fell due runs
+it before it is handled, but until one arrives, or the instance is shut down,
+an idle instance's memory still holds the addresses it last saw. On Cloud Run
+the one-minute bound needs CPU allocated for the instance's whole life, which
+is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
+the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+
+The address itself is never written to the database or the logs. A post from a
+client that sends no poster key does store a poster ID derived from it (see
+[Poster IDs](#poster-ids)): eight characters of an HMAC keyed by
+`EDUCHAN_POSTER_ID_SALT`, which anyone holding the salt could test candidate
+addresses against, one thread at a time. The web client always sends a key.
 
 State is held in the process, so each instance of a horizontally scaled
 deployment enforces the cooldowns it sees. Moving to shared storage means
@@ -767,6 +940,7 @@ that overwrites the header with just the peer address are each a single hop.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
+| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes"}`: whether posts may carry an image, and the largest one taken. The same answer for every caller; it reads nothing from the request |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
@@ -781,12 +955,12 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","price":{"amount","currency"}}`; `price` is left out when Stripe can't be asked |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, Stripe's page, and sets the claim cookie |
-| `POST` | `/api/pass/claim` | Collect a paid Pass with the claim cookie — `202 {"status":"pending"}` until Stripe reports the payment, then `{"status":"issued","pass","expires_at"}` or `{"status":"renewed","expires_at"}` |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"},"claim"}`; `price` is left out when Stripe can't be asked, and `"claim":true` is there only when the browser holds a claim cookie |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets the claim cookie or keeps the one the browser has; `409` when the Pass to renew was refunded or lapsed meanwhile |
+| `POST` | `/api/pass/claim` | Collect every paid order under the claim cookie — `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while orders wait for Stripe; `400` when nothing is left. `"claim"` says whether anything still waits. With `{"reissue":"…"}`, a reissue link's token, it redeems the link instead, answering the same way or `403 {"pass":"invalid"}` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}` |
-| `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `charge.refunded`, `charge.dispute.created` |
-| `POST` | `/api/pass/reissue` | Moderation key: a new code for a lost one — `{"payment_intent":"pi_…"}` |
+| `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
+| `POST` | `/api/pass/reissue` | Moderation key: a one-time link that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"url","expires_at"}`, `404` for a payment that bought nothing or was refunded, `409` for a renewal's payment |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 
@@ -825,7 +999,12 @@ the time it was pushed off the board once it is archived. It also carries
 `images`, the posts in the thread with an image, and `at_image_limit`. A reply
 to an archived thread answers `403` with `{"error":"thread is archived"}`, to a
 locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
-at its board's image limit `{"error":"image limit reached"}`.
+at its board's image limit `{"error":"image limit reached"}`. These refusals,
+and a reply to a thread that does not exist, come before flood control and
+before the image is stored, so they start no cooldown, and a reply refused at
+the image limit posts at once when sent again without the image. (Two replies
+racing for a thread's last image slot can both get that far; the loser is
+refused inside the transaction, after its cooldowns have started.)
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
@@ -1019,7 +1198,9 @@ records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to
 delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists.
+image public with nothing left to say it exists. Before any of that it prunes
+the educhan Pass's tables of what has outlived its use (see
+[Orders](#educhan-pass)), whether or not the Pass is on sale.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
@@ -1034,13 +1215,16 @@ It logs one line of counts (threads, posts, attachments, and files removed,
 failed, and missing) and nothing about which boards or threads went, and exits
 non-zero if the database fails or any file could not be removed or was missing;
 the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below).
+run on a database a newer release has migrated (see below). It needs none of
+the web server's secrets — the poster-ID salt, the moderation key, the
+verification secret — and, run without them, it does not warn about them:
+those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers
 a request, so a timer inside the server would fire whenever it happened to, and
-a Job leaves no sweep endpoint to protect. That Job and its schedule are not in
-`deploy/` yet.
+a Job leaves no sweep endpoint to protect. [`deploy/README.md`](deploy/README.md)
+section 2.9 sets up that Job and its daily schedule.
 
 ### What is not stateless yet
 
@@ -1052,11 +1236,13 @@ old caveat still applies — `/tmp` is per-instance and in-memory, so an image
 uploaded to one instance answers `404` from another and is lost when the
 container stops.
 
-One thing remains per instance:
+Two things remain per instance:
 
 - **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
   instances enforce the cooldowns N times over. Moving it to shared storage means
   replacing that one type, which nothing else depends on.
+- **The Pass's hourly budget.** `passBudget` counts in process memory too, so with
+  N instances a Pass can skip the captcha up to N times its budget in an hour.
 
 ## Development
 

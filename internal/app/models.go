@@ -32,6 +32,17 @@ type newAttachment struct {
 	Spoiler      bool
 }
 
+// Site is what this server accepts that a client needs to know before it draws
+// a posting form. It is configuration, the same for every caller.
+type Site struct {
+	// Uploads reports whether posts may carry an image at all. When it is
+	// false every image post is refused with 403.
+	Uploads bool `json:"uploads"`
+	// MaxUploadBytes is the largest image the server takes, the limit behind
+	// its 413. It is reported whether or not uploads are on.
+	MaxUploadBytes int64 `json:"max_upload_bytes"`
+}
+
 // Board is a top-level category threads are posted under.
 type Board struct {
 	ID          int    `json:"-"`

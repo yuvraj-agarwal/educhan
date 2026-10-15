@@ -524,6 +524,29 @@ func TestAdultAttestationIsNeverKept(t *testing.T) {
 	}
 }
 
+// The stored row dates an issuance only to the day. The log notes that a
+// credential was issued, as the request log notes the request, but never for
+// which institution: a label stamped to the second would date the row exactly
+// on a day it was its institution's only one.
+func TestIssuanceIsLoggedWithoutTheInstitution(t *testing.T) {
+	var logs syncBuffer
+	h := verifyServerLogging(t, nil, &logs)
+	issued := h.verify("ana@iitb.ac.in")
+	if issued.Label != "IIT Bombay" {
+		t.Fatalf("label = %q, want IIT Bombay, or the scan below proves nothing", issued.Label)
+	}
+
+	written := logs.String()
+	if !strings.Contains(written, `"msg":"verification issued"`) {
+		t.Fatalf("the issuance is not in the log at all:\n%s", written)
+	}
+	for _, trace := range []string{"IIT Bombay", "iitb", "institution", "label"} {
+		if strings.Contains(written, trace) {
+			t.Errorf("the log carries %q:\n%s", trace, written)
+		}
+	}
+}
+
 // One address holds one badge. Verifying again is how a badge is renewed or
 // moved to another browser, and it takes the previous credential with it.
 func TestReverificationRevokesThePreviousCredential(t *testing.T) {
@@ -925,7 +948,7 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 	// TestVerificationTablesCannotBeJoinedToPosts and
 	// TestPassTablesCannotBeJoinedToPosts.
 	for _, table := range []string{"posts", "verification_pending", "verification_credentials",
-		"passes", "pass_payments", "pass_orders", "pass_revocations"} {
+		"passes", "pass_payments", "pass_orders", "pass_revocations", "pass_reissues"} {
 		want[table] = nil
 	}
 	for _, table := range h.tables() {

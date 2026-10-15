@@ -25,6 +25,9 @@ import (
 // at it, and a sweeper that is not looking at the server's media store — a Job
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
+//
+// It also prunes the Pass tables (prunePasses), which hold nothing past its
+// use however rarely anybody buys one.
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.
@@ -60,6 +63,13 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	if len(a.schemaAhead) > 0 {
 		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
 			"run the sweeper from the same release as the server", a.schemaAhead)
+	}
+	// The Pass's orders, refunds and lapsed Passes are pruned here as well as
+	// at checkout, so they go on time on a server that sells none for a while,
+	// or has stopped selling.
+	if err := a.store.prunePasses(ctx, asOf, a.passTermDays()); err != nil {
+		a.logSweep(report)
+		return report, fmt.Errorf("sweep: prune the Pass tables: %w", err)
 	}
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)

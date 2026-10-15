@@ -32,7 +32,7 @@ not.
     post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
     pair (`markupBlocks`), which the front end's `parseMarkup` mirrors.
   - `middleware.go` — logging, panic recovery, security headers, client IP.
-  - `ratelimit.go` — per-client flood control.
+  - `ratelimit.go` — per-client flood control, and the sweep that forgets expired entries.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
@@ -130,9 +130,12 @@ psql -h localhost -p 5432 -U educhan -d educhan \
 
 Attachments use `multipart/form-data` on the same two endpoints; `image` is the file
 field, and everything else stays the same. Uploads are off unless
-`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`):
+`EDUCHAN_UPLOADS_ENABLED=1` is set (otherwise an image post answers `403`), and
+`GET /api/site` says which, with the size limit:
 
 ```bash
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
   -F subject="with image" -F body="look at this" -F image=@/path/to/photo.png \
@@ -254,15 +257,18 @@ The Pass is off unless `EDUCHAN_PASS_SECRET` and the four Stripe settings are se
 end-to-end checks live in `pass_api_test.go` against a fake Stripe (`fakeStripe`) rather
 than in curl. A real checkout uses Stripe's test mode: test keys, a test Price, and
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
-with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A Pass code can be reissued with
+with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued with
 `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H 'Content-Type:
-application/json' -d '{"payment_intent":"pi_…"}'`.
+application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a one-time link
+(`/pass#reissue=…`) for the buyer, never a code.
 
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass
-only in `submit`, the Pass never beside the credential, the age screen storing its outcome alone and sending nothing, the badge's 18+
-box and the Pass's never ticked in advance or kept, KaTeX's options, and the highlighting cap. They are
-a floor, not a proof; a change that trips one has changed one of those properties and
+only in `submit` (the Pass also in the Pass page's own requests), the Pass never beside the
+credential, a reissue token out of the address before anything else, the age screen
+storing its outcome alone and sending nothing, the badge's 18+ box and the Pass's never
+ticked in advance or kept, `/api/site` fetched only past the age screen, KaTeX's options,
+and the highlighting cap. They are a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
 ### Front end conventions
@@ -368,11 +374,29 @@ needs a browser check before the test changes.
   summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
   `image_limit` 0 as a board whose replies never carry images, not a full thread. A
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
-  browser's "Failed to fetch". A not-found page names and links a board only when it is
+  browser's "Failed to fetch". A `429` is worded for what was refused: `/verify` passes
+  `errorMessage` `{ action: "code" }`, so a code request is told to wait and request a
+  code again, never to post again. A not-found page names and links a board only when it is
   in `state.boards`: the slug comes from the address, and echoing any slug would let a
   crafted link write the page's copy. A history change that keeps the rendered path (a
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
+- **A server that takes no images.** `loadSite` reads `GET /api/site`
+  (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
+  draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
+  dropped on the form goes nowhere and `UPLOADS_OFF_REASON` says why, `threadCounts` and
+  `badgesHTML` say nothing about the cap (a count of images posted before the switch
+  stays), the catalog leaves out its empty "no image" box, and the empty-post notice
+  stops offering an image. Until `/api/site` answers, or if it never does, the forms are
+  drawn as before. Either way the server's `image uploads are switched off on this
+  server` is handled like `image limit reached`: `blockFileField` takes the file off with
+  the reason, the text stays for the next press, and `state.site.uploads` turns false for
+  the rest of the visit. The client knows both refusals by `UPLOADS_SWITCHED_OFF` and
+  `IMAGE_LIMIT_REACHED`, which `TestClientKnowsTheServersImageRefusals` checks against
+  what the server answers, so change their words on both sides together.
+  `max_upload_bytes` is the server-wide limit: a picked file over it is taken off the
+  form at once, and the picker's hint and the `413` notice name it through
+  `uploadLimitText` — never a board, since no board has a limit of its own.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -383,8 +407,9 @@ needs a browser check before the test changes.
   hidden wrapper: a lazy image there is not fetched until it is revealed.
 - **The age screen** (`MIN_AGE` in `app.js`: 13, and 0 switches it off) stands in front
   of every view but `UNGATED_VIEWS` (`/rules`, `/faq`). `render` asks `ageStatus()` before
-  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list
-  and the verification flag once, on the first page past the screen, not at start-up.
+  anything else, and nothing is fetched until it says "ok": `loadSite` gets the board list,
+  the verification flag and the site's settings (`GET /api/site`) once, on the first page
+  past the screen, not at start-up (`TestSiteSettingsAreFetchedOnlyPastTheAgeScreen`).
   The screen is a `<dialog>` opened with `showModal()`; Escape is blocked three ways
   (keydown, `cancel`, and reopening on `close`), because Chrome lets a repeated Escape
   through a cancelled `cancel`. Only the outcome is stored, as `educhan:age-ok-v1` or
@@ -406,7 +431,12 @@ needs a browser check before the test changes.
   same commit, and neither page describes a feature before it exists. Both end with
   `HELPLINES_HTML`, one static list for every reader: no lookup of where they are, and
   external links carry `rel="noopener noreferrer"`. The rules and FAQ are readable before
-  the age screen, so they must not depend on anything fetched.
+  the age screen, so they must not depend on anything fetched: what a server can switch
+  off — images, the badge — they qualify in words ("Not every educhan site …") rather
+  than by reading a flag. The footer is not one of those pages, so its sentence inviting
+  readers to verify (`data-verify-footer` in `index.html`) stays hidden until
+  `GET /api/verify` says the feature is on. The header's Verify link stays regardless:
+  `/verify` also holds Forget this browser.
 - The verification credential lives in `localStorage` under `educhan:credential` and
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
@@ -422,21 +452,31 @@ needs a browser check before the test changes.
   `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
   either header is attached anywhere but that one line.
 - The educhan Pass lives in `localStorage` under `educhan:pass`, as the code and its
-  expiry. `submit` sends it in `X-Educhan-Pass` on unbadged posts only (a badged post
-  sends the credential and nothing else), and the Pass page sends it in the body of the
-  two requests that use it on purpose: checking a code typed in (`/api/pass/activate`)
-  and renewing (`/api/pass/checkout`). Buying and renewing leave for Stripe's hosted page
-  by `location.assign`: no Stripe script, frame or stylesheet ever loads on this origin,
-  and the CSP has no exception for Stripe. A post refused for its Pass (`"pass":
-  "invalid"` or `"expired"`) forgets or marks it, and the next press posts without it.
-  `TestOnlyThePostingRequestCarriesThePass` pins the header.
+  expiry, or the code alone marked run out. `submit` sends it in `X-Educhan-Pass` on
+  unbadged posts only (a badged post sends the credential and nothing else), and the Pass
+  page sends it in the body of the requests that use it on purpose: checking a code
+  (`/api/pass/activate`, one typed in or the one held, checked again) and renewing
+  (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else. Buying
+  and renewing leave for Stripe's hosted page by `location.assign`: no Stripe script,
+  frame or stylesheet ever loads on this origin, and the CSP has no exception for Stripe.
+  While `GET /api/pass` says `"claim"`, the page draws a collecting state with no form to
+  pay with and asks `/api/pass/claim` on every visit, with a growing pause while it is
+  open (`collectPass`); what a claim brings is stored (`keepClaimed`) before anything asks
+  whether the reader is still on the page, because the server hands a code over once. A
+  reissue link's token rides in the fragment (`/pass#reissue=…`), leaves the address
+  first thing in `render` (`takePassReissueToken`), and goes once in a claim's body. A
+  post refused for its Pass (`"pass": "invalid"` or `"expired"`) forgets it or marks it
+  run out without a date, and says to solve the captcha and post again.
+  `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
+  code; the Pass page's other promises have their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the
   institution, which the per-credential IDs exist to prevent. A Name the poster cleared
   stays cleared across re-renders and after posting (`restoreDraft` restores empty
   values; `submit` sets the field after `form.reset()`).
-- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state, removes
+- "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
+  code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
   the credential, the Pass, the poster key and the remembered name, and leaves the age
   answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
@@ -466,11 +506,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   unticked 18+ confirmation that stores nothing about age. It carries no name, profile
   or history, and its code travels only in `X-Educhan-Pass` on the posting request, and
   in the body of the requests that check or renew it on the Pass page. A badged post
-  sends the credential instead. Nothing about a Pass is written on a post, logged, or
-  used in a poster ID. Its shared cooldown bucket is keyed on a hash of the code and
-  forgotten with the cooldown. The Pass skips the captcha only, never the content rules,
-  the refusal limit or a cooldown. `TestPassIsNeverStoredOrLogged`,
-  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneCooldown` hold it there.
+  sends the credential instead. Nothing about a Pass is written on a post or used in a
+  poster ID, and nothing identifying a Pass is logged. Its hourly budget is kept in
+  memory, keyed on a hash of the token, and forgotten when the hour ends. The Pass skips
+  the captcha only, never the rules, a refusal limit or a cooldown.
+  `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts` and
+  `TestPassSharesOneHourlyBudget` hold it there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what
@@ -501,7 +542,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 ### Attachments
 
 - One image per post. JPEG, PNG, WebP, and GIF are accepted, decided by magic bytes rather
-  than by the filename or the client-supplied content type.
+  than by the filename or the client-supplied content type. `media.Inspect` checks the
+  format and the header's dimensions without decoding, and `Process` runs it first, so
+  the early refusal in `parseSubmission` and the full one in `media.Save` cannot
+  disagree about a file's header.
+- Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
+  `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
+  as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
+  configuration: it reads nothing from the request, sets no cookie, and answers every
+  caller the same (`TestSiteReportsTheUploadSettings`, and it is on
+  `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything about
+  the caller belongs nowhere near it.
+- With uploads off, `parseSubmission` holds a multipart body to `maxRequestBytes` (the
+  JSON cap, well above the longest legal post) instead of `MaxUploadBytes` plus
+  overhead, and answers an overflow with the switched-off `403`
+  (`uploadsSwitchedOff`, a string clients match on) rather than `413`: a body that size
+  is carrying a file, and the poster should hear the reason that will not change. A
+  smaller file is refused after the form is parsed, and only a part with bytes in it
+  counts, because an untouched file input still sends an empty one. Both refusals come
+  before flood control and store nothing
+  (`TestUploadsSwitchedOffRefusesALargeFileUnread`, which also counts the bytes read).
 - Files are keyed `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and
   `thumbs/{board}/{YYYY}/{MM}/…`, served from `/media/original/…` and `/media/thumb/…`
   with immutable caching. The `local` backend puts them under `$EDUCHAN_UPLOAD_DIR`; the
@@ -523,9 +583,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   refuses with `errImageLimit` (`403 image limit reached`). `threads.image_count` is
   the denormalised copy the listings read for `images`/`at_image_limit`: set on thread
   creation, set from that count on every image reply, and recounted when a post is
-  deleted. Nothing enforces the cap against the counter. The upload is stored before
-  the check, as it is before the lock and archive checks, and the handler's
-  `discardUpload` removes it on refusal.
+  deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
+  parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
+  makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
+  image the cap, counted from the posts like the real check) — then flood control,
+  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  cooldown and stores nothing, and the client's "send the text on its own" goes
+  through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
+  nothing: replies racing for the last slot both pass it, and the check inside
+  `CreateReply`'s transaction is the one that holds (`TestCreateReplyRefusesOnItsOwn`
+  calls it with no handler in front). A reply refused there has already been charged
+  its cooldowns and stored its upload, which `discardUpload` removes. Never move the
+  enforcement into the pre-check or drop it from the transaction.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. JPEG sources keep JPEG thumbnails; PNG, GIF, and WebP get PNG thumbnails so
   transparency survives.
@@ -579,9 +648,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   opening post read from the database. A new query over threads has to decide which set
   it means.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
-  board's `archive_days` have passed. It is a one-shot mode rather than a timer because
+  board's `archive_days` have passed, and prunes the Pass tables (`prunePasses`), on
+  sale or not (`TestSweepPrunesThePassTables`). It is a one-shot mode rather than a timer because
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
-  on a Cloud Scheduler trigger, which `deploy/` does not define yet. `SweepArchived` in
+  on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
   a cutoff fixed when the sweep starts, so a sweep always terminates. Each batch queues
   the storage keys of its files in `media_deletions` (`0007`) in the same transaction
@@ -599,9 +669,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   failures included, and the error it returns has the key taken out
   (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
   failure, a file it could not remove or did not find, or a database a newer release
-  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). **Legal holds (build plan
-  2.10) are not built**; when they are, `SweepArchived` must skip held threads, and its
-  comment says so.
+  migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
+  like the server, and runs without the salt, the moderation key and the verification
+  secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -668,8 +743,37 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `handlers.go`. Thread and reply cooldowns are keyed per board and client, the upload
   cooldown per client across the whole server. A submission clears every cooldown that
   applies to it or none is started, so a post refused by one limit is not charged for the
-  other; `allowAll` is what enforces that. State is per process and in memory — a shared
-  backend means replacing `cooldownLimiter`, which nothing else depends on.
+  other; `allowAll` is what enforces that. Nothing is refunded once a cooldown starts,
+  so every refusal that can be known up front comes before `allow`: a malformed poster
+  key, the body, a badge the poster cannot have, uploads switched off, a file its header
+  shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format,
+  or more than `media.MaxPixels`), and a reply the thread would refuse
+  (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
+  upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
+  after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
+  State is per process and in memory — a shared backend means replacing
+  `cooldownLimiter`, which nothing else depends on.
+  The keys carry client addresses, so the limiters are also a privacy surface: `New`
+  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
+  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
+  **While the process has CPU, an address is held in memory no longer than the
+  longest cooldown that applies to it plus one minute**, counted from its last action
+  that started one, busy server or quiet. A host that gives CPU only during requests,
+  which is Cloud Run's default (request-based billing), holds the timer back on an
+  idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
+  request is handled; until a request arrives or the instance stops, an idle instance
+  still holds what it last saw, and on Cloud Run the one-minute bound needs CPU always
+  allocated (`--no-cpu-throttling`). The README's Flood control section states the
+  bound with that condition, and anything the client says about addresses rests on
+  it, which is why the FAQ promises no time limit. A longer interval, a new limiter
+  left out of the sweep, a limiter keyed on something that outlives its cooldown, or
+  the request-path sweep dropped from `Routes` breaks it
+  (`TestSweepExpiredKeepsOnlyLiveCooldowns`, `TestSweepCooldownsRunsUntilStopped`,
+  `TestCooldownSweepRunsBeforeARequestOnceItIsOverdue`, and
+  `TestFloodControlForgetsAddressesOnAQuietServer` and
+  `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period
+  through `Config.cooldownSweepEvery`). The record-time sweep past
+  `cooldownSweepThreshold` only bounds a burst between two ticks.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
@@ -763,7 +867,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     Do not "fix" this back to `sessionStorage` without resolving the reissue problem.
   - Never log an address, and never pass one to anything that persists. The development
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
-    The credential is not logged either: it is shown once, in one response body.
+    The credential is not logged either: it is shown once, in one response body. The
+    issuance line (`verification issued`) is bare: no label, no institution, nothing
+    from the record. The row dates an issuance to the day; a label stamped to the
+    second would date it exactly whenever it was its institution's only one that day.
+    A badged post soon after an issuance still names the institution, so the request
+    log's time for `/api/verify/confirm` can tie that post to its record on such a day;
+    the README says so, and how long that log is kept is what limits it.
+    `TestIssuanceIsLoggedWithoutTheInstitution` holds the line bare, and the README's
+    privacy section says what the log's times do and do not reveal; keep the two in step.
   - `TestNoEmailAddressReachesTheDatabase` runs the whole flow and then searches every
     column of every table for the address. It has positive controls, so it fails rather
     than passing vacuously if the scan stops working.
@@ -823,8 +935,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/archive_test.go`, `internal/app/imagelimit_test.go`,
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
-  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`) run the whole app
-  against an isolated schema in `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so
+  `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
+  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
+  the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
+  `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a

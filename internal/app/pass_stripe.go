@@ -32,8 +32,8 @@ import (
 const (
 	stripeAPIBase = "https://api.stripe.com"
 	// stripeAPIVersion pins the shape of what the API returns. Webhook payloads
-	// follow the version the endpoint was created with instead, so
-	// deploy/README.md says to create it with this one. Only fields that have
+	// follow the version the endpoint was created with instead, so the
+	// README's "Setting it up" says to create it with this one. Only fields that have
 	// been stable across versions are read either way.
 	stripeAPIVersion = "2024-06-20"
 	// stripeSignatureTolerance is how old a webhook's signed timestamp may be,
@@ -102,10 +102,23 @@ func (c *stripeClient) createCheckout(ctx context.Context, successURL, cancelURL
 	if err := c.call(ctx, http.MethodPost, "/v1/checkout/sessions", form, &s); err != nil {
 		return checkoutSession{}, err
 	}
-	if s.ID == "" || !strings.HasPrefix(s.URL, "https://") {
-		return checkoutSession{}, errors.New("stripe: checkout session without an id or an https url")
+	if s.ID == "" || !isStripeCheckoutURL(s.URL) {
+		return checkoutSession{}, errors.New("stripe: checkout session without an id or a checkout.stripe.com url")
 	}
 	return s, nil
+}
+
+// stripeCheckoutHost is where Stripe hosts its checkout pages, and the one
+// place the Pass page will send a buyer.
+const stripeCheckoutHost = "checkout.stripe.com"
+
+// isStripeCheckoutURL reports whether raw is a page on Stripe's checkout
+// host, so a session URL that came back as anything else, by a fault or a
+// compromised key, never becomes a redirect to another site. Stripe's custom
+// checkout domains are not accepted.
+func isStripeCheckoutURL(raw string) bool {
+	u, err := url.Parse(raw)
+	return err == nil && u.Scheme == "https" && u.Host == stripeCheckoutHost && u.User == nil
 }
 
 // passPrice is what the Pass page shows before anyone clicks: the amount in
@@ -264,6 +277,8 @@ type stripePaymentObject struct {
 const (
 	stripeCheckoutCompleted    = "checkout.session.completed"
 	stripeCheckoutAsyncSuccess = "checkout.session.async_payment_succeeded"
+	stripeCheckoutAsyncFailure = "checkout.session.async_payment_failed"
+	stripeCheckoutExpired      = "checkout.session.expired"
 	stripeChargeRefunded       = "charge.refunded"
 	stripeDisputeCreated       = "charge.dispute.created"
 )
