@@ -158,6 +158,9 @@ func (stalledStore) Put(ctx context.Context, _, _ string, _ io.Reader) error {
 // nothing stored, and the cooldowns it started given back, so it can be sent
 // again at once. Without the deadline it would wait on, be made after the
 // server could no longer answer it, and leave its poster to send it twice.
+// The 503 is written once the deadline has passed, inside the write deadline
+// processContext set answerAllowance beyond it, so this is also what holds
+// that allowance: without it the client gets no answer at all.
 func TestPostPastItsDeadlineIsNotMadeAndNotCharged(t *testing.T) {
 	h := testServer(t, func(cfg *Config) {
 		cfg.ThreadCooldown = time.Minute
@@ -337,15 +340,6 @@ func TestAnUploadIsReadOnce(t *testing.T) {
 	}
 }
 
-// postDeadline leaves the commit and the answer time inside the server's
-// write timeout, which runs from the same moment.
-func TestPostDeadlineLeavesTimeToAnswer(t *testing.T) {
-	if WriteTimeout-postDeadline < 5*time.Second {
-		t.Errorf("postDeadline %v leaves %v of WriteTimeout %v for the commit and the answer; want 5s at least",
-			postDeadline, WriteTimeout-postDeadline, WriteTimeout)
-	}
-}
-
 // throttledReader hands out its data a chunk at a time with a pause between, so
 // a request body streams slowly as from a poor connection.
 type throttledReader struct {
@@ -392,7 +386,9 @@ func multipartImage(t *testing.T, body string, image []byte) ([]byte, string) {
 // after the body is read (processContext), so a slow connection no longer
 // spends the image's budget and is no longer mistaken for a busy server and
 // turned away 503. A body slower than the read timeout is the client's doing
-// and is answered 408, with nothing stored either way.
+// and is answered 408, with nothing stored either way; that answer is written
+// once the read timeout has passed, inside the write deadline parseSubmission
+// set answerAllowance beyond it, so the 408 is lost without the allowance.
 func TestSlowUploadBodyIsNotMistakenForABusyServer(t *testing.T) {
 	t.Run("a body slower than the processing deadline still posts", func(t *testing.T) {
 		h := testServer(t, nil)
