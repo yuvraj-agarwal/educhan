@@ -561,13 +561,25 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	focus := squash(withoutComments(jsBlock(t, script, `el.main.addEventListener("focusin", (event) => {`, "});")))
 	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
 	toggled := squash(withoutComments(jsFunction(t, script, "captchaBadgeToggled")))
-	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 3 ||
+	attached := squash(withoutComments(jsFunction(t, script, "captchaImageAttached")))
+	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 4 ||
 		!strings.Contains(focus, `if (box.matches("textarea, input[type=text], input[type=email]") && captchaFormNeedsIt(box.form)) { prepareCaptcha(); }`) ||
 		!strings.Contains(send, `=== "spent")) { keepCaptcha(taken); } else if (answer && needsIt() && onScreen()) { prepareCaptcha(); }`) ||
-		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) {
-		t.Errorf("prepareCaptcha() is called %d times in app.js; want three: from the focusin listener in a box to write "+
+		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) ||
+		!strings.Contains(attached, `if (captchaFormNeedsIt(form) && image && image.files && image.files.length) { prepareCaptcha(); }`) {
+		t.Errorf("prepareCaptcha() is called %d times in app.js; want four: from the focusin listener in a box to write "+
 			"in a form that needs an answer, on unticking the badge where the tick stopped a puzzle or something is "+
-			"written, and after a refusal that spent the answer of a form still on screen", n)
+			"written, on an image attached to a form that needs an answer, and after a refusal that spent the answer "+
+			"of a form still on screen", n)
+	}
+	// An image counts once it is attached, picked or dropped; one a re-render
+	// puts back (restoreDraft, through setFile) is part of drawing a page.
+	change := squash(withoutComments(jsBlock(t, script, `el.main.addEventListener("change", (event) => {`, "});")))
+	drop := squash(withoutComments(jsBlock(t, script, `document.addEventListener("drop", (event) => {`, "});")))
+	if strings.Count(code, "captchaImageAttached(") != 3 ||
+		!strings.Contains(change, "clearNotice(); updateFileField(field); captchaImageAttached(event.target.form); }") ||
+		!strings.Contains(drop, `setFile(field, event.dataTransfer.files[0]); captchaImageAttached(field.closest("form"));`) {
+		t.Error("an image picked or dropped no longer starts the puzzle, once it is attached, or something else calls captchaImageAttached")
 	}
 	// Unticking starts the puzzle again only where the tick stopped one, which
 	// stopCaptcha says, or where the form holds some of the post already.
@@ -589,7 +601,7 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	if strings.Contains(writing, `"name"`) {
 		t.Error("captchaFormHasWriting reads the name, which the form is drawn with")
 	}
-	for _, name := range []string{"render", "formHTML", "verifyViewHTML", "loadSite"} {
+	for _, name := range []string{"render", "formHTML", "verifyViewHTML", "loadSite", "restoreDraft", "setFile"} {
 		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(fn, "Captcha(") {
 			t.Errorf("%s starts the captcha; drawing a page must not", name)
 		}
@@ -803,7 +815,7 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // redraws anything, and says nothing on the page the reader went to.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	script := appScript(t)
-	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on, "return form.isConnected && state.route === route;") {
+	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on, "return form.isConnected && routeKey(state.route) === routeKey(route);") {
 		t.Error("formOnScreen no longer asks that the form is in the document and its page still the one asked for")
 	}
 
@@ -852,7 +864,9 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	}
 	// A post that went from a form since gone leaves the page the reader went
 	// to as it is, and a code request does not draw /verify over it.
-	inOrder(t, "the submit handler", submit, "onScreen, );", "if (!onScreen()) { return; }", "form.reset();", "await navigate(")
+	// The form a post went from is emptied wherever it is, so a redraw that
+	// carried it while it was held does not show the post again.
+	inOrder(t, "the submit handler", submit, "onScreen, );", "form.reset();", "release(false); if (!onScreen()) { return; } await navigate(")
 	inOrder(t, "submitVerification", verify,
 		"onScreen, );", "if (!onScreen()) { return; }", "el.main.innerHTML = verifyViewHTML();",
 		`await api("/api/verify/confirm"`, "storeCredential(issued.credential);", "if (!onScreen()) {", "await renderVerify();",
@@ -960,8 +974,8 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))
 	for _, want := range []string{
 		"const controls = Array.from(form.elements).filter((control) => !control.disabled);",
-		"for (const control of controls) { control.disabled = true; }",
-		"return (refocus) => { for (const control of controls) { control.disabled = false; }",
+		"for (const control of controls) { control.disabled = true; } heldForms.add(form);",
+		"return (refocus) => { heldForms.delete(form); for (const control of controls) { control.disabled = false; }",
 	} {
 		if !strings.Contains(hold, want) {
 			t.Errorf("holdForm no longer switches off exactly the controls that were on, and back: missing %s", want)
@@ -1000,13 +1014,20 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	inOrder(t, "submitVerification", verify, "const data = new FormData(form);",
 		"if (requesting && !(adult && adult.checked)) {",
 		held, "sendWithCaptcha(", `await api("/api/verify/confirm"`, "} catch (err) {", "release(shown);")
+	// The button is held with the rest, and released on a refusal, and for a
+	// post also after a success, once the form is emptied, so that a redraw
+	// does not carry it as still held (TestAHeldFormSurvivesARedrawOfItsPage);
+	// after a code request's success the page is replaced.
 	for name, fn := range map[string]string{"the submit handler": submit, "submitVerification": verify} {
-		// The button is held with the rest, and released only on a refusal:
-		// after a success the form is replaced.
-		if strings.Count(fn, "release(") != 1 || strings.Contains(fn, "button.disabled") {
-			t.Errorf("%s switches its controls on somewhere besides its refusal, or its button apart from them", name)
+		want := 1
+		if name == "the submit handler" {
+			want = 2
+		}
+		if strings.Count(fn, "release(") != want || strings.Contains(fn, "button.disabled") {
+			t.Errorf("%s switches its controls on somewhere besides its refusal and, for a post, its success, or its button apart from them", name)
 		}
 	}
+	inOrder(t, "the submit handler", submit, "sendWithCaptcha(", "form.reset();", "clearFileField(fileField); } release(false);", "} catch (err) {")
 	if blocked, released := strings.Index(submit, "blockFileField("), strings.Index(submit, "release(shown);"); blocked < released {
 		t.Error("the submit handler switches its controls back on after switching the picker off, which turns the picker back on")
 	}
@@ -1024,6 +1045,54 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	}
 }
 
+// Pressing Update while a post is on its way redraws the thread, and a redraw
+// replaces the form. The post belongs to the page, so the form it went from
+// is carried across as itself, still held, and put in the new page in place
+// of the one drawn there; the post goes ahead and is answered on the form the
+// reader sees. A copy of its text in a live form would show a post that went
+// as one not sent, and post it twice on the next press. So that the held form
+// stays in the document meanwhile, a redraw of its own page keeps the page,
+// dimmed, rather than drawing a skeleton over it. A held form that has been
+// answered by the time the page is drawn is read like any draft, so one whose
+// post went is drawn empty.
+func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
+	script := appScript(t)
+	if !strings.Contains(withoutComments(script), "\nconst heldForms = new WeakSet();\n") {
+		t.Fatal("app.js no longer keeps the held forms in heldForms")
+	}
+	capture := squash(withoutComments(jsFunction(t, script, "captureDraft")))
+	inOrder(t, "captureDraft", capture,
+		`const form = el.main.querySelector("form[data-kind]");`,
+		"if (heldForms.has(form)) { return { key: routeKey(state.route), held: form }; }",
+		"return { key: routeKey(state.route), ...formDraft(form) };",
+	)
+	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
+	inOrder(t, "restoreDraft", restore,
+		"if (!draft || draft.key !== routeKey(state.route)) { return; }",
+		`const form = el.main.querySelector("form[data-kind]");`,
+		"if (draft.held) { const held = draft.held; if ( heldForms.has(held) && form && "+
+			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
+			"form.replaceWith(held);",
+		"return; } draft = { key: draft.key, ...formDraft(held) }; }",
+		"if (!form) { keepUnsentDraft(draft); return; }",
+	)
+	render := squash(withoutComments(jsFunction(t, script, "render")))
+	inOrder(t, "render", render,
+		"async function render({ draft = captureDraft() } = {}) {",
+		"state.route = route;",
+		"const finish = beginLoading({ skeleton: !(draft && draft.held && draft.key === routeKey(route)) });",
+		"restoreDraft(draft);",
+	)
+	loading := squash(withoutComments(jsFunction(t, script, "beginLoading")))
+	if !strings.Contains(loading, "function beginLoading({ skeleton = true } = {}) {") ||
+		!strings.Contains(loading, "if (skeleton) { el.main.innerHTML =") || strings.Count(loading, "el.main.innerHTML") != 1 {
+		t.Error("beginLoading draws its skeleton over a page that asked to stay")
+	}
+	if n := strings.Count(withoutComments(script), "beginLoading("); n != 2 {
+		t.Errorf("beginLoading is called %d times in app.js; want once, in render", n-1)
+	}
+}
+
 // The FAQ's account of the check is the page's: the puzzle starts when focus
 // moves into a box to write in, which quoting a post does too, and a press
 // before it is solved waits with the button saying what the FAQ says it says.
@@ -1037,7 +1106,7 @@ func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
 	answer = answer[strings.Index(answer, "answer: `")+len("answer: `"):]
 	answer = squash(answer[:strings.Index(answer, "`")])
 	for _, want := range []string{
-		"the puzzle starts when you move into a box to write in, or quote a post,",
+		"the puzzle starts when you move into a box to write in, quote a post or attach an image,",
 		"If the puzzle hasn't finished when you press the button, the button says <strong>Checking…</strong> until it has.",
 	} {
 		if !strings.Contains(answer, want) {

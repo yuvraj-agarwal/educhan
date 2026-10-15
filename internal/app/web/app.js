@@ -2307,16 +2307,16 @@ const FAQ_SECTIONS = [
     answer: `
       <p>On sites that have it switched on, your browser solves a small maths puzzle before
         each post goes, and before it asks for a badge code. You don't have to do anything:
-        the puzzle starts when you move into a box to write in, or quote a post, and usually
-        takes a few seconds, while you write. That costs a person almost nothing, but it
-        makes a program that posts thousands of times a minute slow and expensive to run. If
-        the puzzle hasn't finished when you press the button, the button says
-        <strong>Checking…</strong> until it has.</p>
+        the puzzle starts when you move into a box to write in, quote a post or attach an
+        image, and usually takes a few seconds, while you write. That costs a person almost
+        nothing, and slows down a program that posts over and over. If the puzzle hasn't
+        finished when you press the button, the button says <strong>Checking…</strong>
+        until it has.</p>
       <p>The puzzle comes from educhan itself, not from Google or any other company, and no
         cookie is set for it. Each answer is used once, for one post or one code request. So
         that it can't be used twice, the server keeps a scrambled fingerprint of the puzzle for
-        a day or so, dated only to the day, with nothing that points to you or to your post.
-        Posts with the <a href="#faq-badge">verified badge</a> skip the check.</p>`,
+        a day or so, which holds nothing about you or what you wrote. Posts with the
+        <a href="#faq-badge">verified badge</a> skip the check.</p>`,
   },
   {
     id: "faq-tripcodes",
@@ -2726,10 +2726,13 @@ function emptyStateHTML(message, slug = null) {
 
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
-function beginLoading() {
+// With skeleton false the current view stays, dimmed, however long it takes.
+function beginLoading({ skeleton = true } = {}) {
   el.main.setAttribute("aria-busy", "true");
   const timer = setTimeout(() => {
-    el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+    if (skeleton) {
+      el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
+    }
   }, 250);
   return () => {
     clearTimeout(timer);
@@ -2776,7 +2779,10 @@ async function render({ draft = captureDraft() } = {}) {
   // left, on the next page that needs it.
   closeAgeScreen();
 
-  const finish = beginLoading();
+  // A redraw of the page a post is on its way from keeps the page on screen,
+  // dimmed, rather than a skeleton, so the form the post went from stays in
+  // the document until it goes into the new page (restoreDraft).
+  const finish = beginLoading({ skeleton: !(draft && draft.held && draft.key === routeKey(route)) });
   let resolved = null;
   try {
     if (age === "ok") {
@@ -2901,6 +2907,10 @@ function field(form, name) {
 
 // A re-render replaces the form, so anything half-written is carried across —
 // "Update" on a busy thread must not cost you the reply you were typing.
+// A form whose post is on its way (holdForm) is carried as itself: restoreDraft
+// puts it, still held, in the new page, so the post on its way is what that
+// page shows, and is read for its values only if its post has been answered by
+// then (emptied after a success, released after a refusal).
 function captureDraft() {
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
@@ -2908,6 +2918,14 @@ function captureDraft() {
     const unsent = el.main.querySelector("textarea[data-unsent]");
     return unsent ? { key: routeKey(state.route), open: true, body: unsent.value } : null;
   }
+  if (heldForms.has(form)) {
+    return { key: routeKey(state.route), held: form };
+  }
+  return { key: routeKey(state.route), ...formDraft(form) };
+}
+
+// formDraft reads what a posting form holds.
+function formDraft(form) {
   const image = field(form, "image");
   const details = form.closest("details");
   const value = (name) => {
@@ -2918,7 +2936,6 @@ function captureDraft() {
   const badge = field(form, "badge");
   const spoiler = field(form, "spoiler");
   return {
-    key: routeKey(state.route),
     open: details ? details.open : true,
     subject: value("subject"),
     name: value("name"),
@@ -2935,6 +2952,24 @@ function restoreDraft(draft) {
     return;
   }
   const form = el.main.querySelector("form[data-kind]");
+  if (draft.held) {
+    // Still held, its post still on its way: the form itself takes the place
+    // of the one just drawn for the same thread, or the same board's new
+    // thread, so the post is answered there.
+    const held = draft.held;
+    if (
+      heldForms.has(held) &&
+      form &&
+      form.dataset.kind === held.dataset.kind &&
+      form.dataset.thread === held.dataset.thread
+    ) {
+      form.replaceWith(held);
+      const details = held.closest("details");
+      if (details) details.open = true;
+      return;
+    }
+    draft = { key: draft.key, ...formDraft(held) };
+  }
   if (!form) {
     keepUnsentDraft(draft);
     return;
@@ -3272,6 +3307,7 @@ el.main.addEventListener("change", (event) => {
   if (field && event.target.matches(".file-input")) {
     clearNotice();
     updateFileField(field);
+    captchaImageAttached(event.target.form);
   }
   if (event.target.matches('input[type="checkbox"][name="badge"]')) {
     badgeToggled(event.target);
@@ -3373,6 +3409,7 @@ document.addEventListener("drop", (event) => {
   field.classList.remove("dragging");
   clearNotice();
   setFile(field, event.dataTransfer.files[0]);
+  captchaImageAttached(field.closest("form"));
 });
 
 /* Poster key --------------------------------------------------------------- */
@@ -3463,6 +3500,16 @@ const CAPTCHA_INSECURE = "The anti-spam check needs a secure (https) connection 
 const CAPTCHA_TOO_SLOW = "The anti-spam check took too long, so nothing was sent. Wait a minute and try again.";
 // What it says when the server could not make a challenge.
 const CAPTCHA_UNAVAILABLE = "The anti-spam check couldn't start, so nothing was sent. Try again in a moment.";
+// captchaBusy is what it says when the server hands out no more puzzles to
+// this address for now (a 429 from /api/captcha, with how long to wait): too
+// many have been asked for from it this minute, which a whole campus behind
+// one address can do. It is not a post's or a code request's cooldown, so it
+// is not worded as one.
+function captchaBusy(err) {
+  const seconds = err.payload && err.payload.retry_after;
+  const wait = seconds ? `Wait ${plural(seconds, "second", "seconds")}` : "Wait a minute";
+  return `Too many anti-spam checks have been started from your network, so nothing was sent. ${wait} and try again.`;
+}
 
 // The answer this page holds, until a request takes it: goodUntil is when it is
 // replaced rather than sent, by this browser's clock. solving is the puzzle in
@@ -3537,6 +3584,18 @@ function captchaFormHasWriting(form) {
   return written("subject") || written("body") || Boolean(image && image.files && image.files.length);
 }
 
+// An image picked or dropped is some of the post, as writing in a box is: the
+// puzzle starts for it in a form that needs it, once the image is attached (a
+// file over the size limit is taken straight back off, and starts nothing).
+// Not when a re-render puts a draft's image back (restoreDraft), which is
+// drawing a page.
+function captchaImageAttached(form) {
+  const image = form instanceof HTMLFormElement ? field(form, "image") : null;
+  if (captchaFormNeedsIt(form) && image && image.files && image.files.length) {
+    prepareCaptcha();
+  }
+}
+
 // The forms whose badge, when ticked, stopped a puzzle in progress.
 const captchaStoppedByBadge = new WeakSet();
 
@@ -3603,6 +3662,9 @@ async function solveCaptcha(signal) {
   try {
     challenge = await api("/api/captcha", { signal });
   } catch (err) {
+    if (err.status === 429) {
+      throw new Error(captchaBusy(err));
+    }
     throw err.status >= 500 ? new Error(CAPTCHA_UNAVAILABLE) : err;
   }
   if (
@@ -3720,11 +3782,12 @@ function runCaptchaWorkers(challenge, signal) {
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen). A request whose form has gone by the time its answer is
-// ready, because the reader went to another page or pressed Update, is not
-// sent at all: nothing has gone yet, the answer is put back for the next
-// press, and sendWithCaptcha throws, for a caller that shows nothing for a
-// form that is gone. Neither the second send nor the next puzzle is started
-// for one.
+// ready, because the reader went to another page, is not sent at all: nothing
+// has gone yet, the answer is put back for the next press, and sendWithCaptcha
+// throws, for a caller that shows nothing for a form that is gone. Neither the
+// second send nor the next puzzle is started for one. Pressing Update while a
+// post waits does not take its form away: the redrawn page shows the same
+// form, still held.
 async function sendWithCaptcha(needsIt, send, solving, onScreen) {
   for (let retried = false; ; retried = true) {
     let taken = null;
@@ -3780,12 +3843,18 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
 }
 
 // formOnScreen says whether a form is still the one the reader is looking at:
-// in the document, on the page that drew it. Going to another page, or
-// pressing Update, changes state.route at once, while the old form stays in
-// the document until the new page is drawn over it.
+// in the document, on the page that drew it. Going to another page changes
+// state.route at once, while the old form stays in the document until the new
+// page is drawn over it. A redraw of the same page, Update say, keeps a form
+// whose post is on its way in the document throughout, and puts it in the new
+// page in place of the one drawn there (render, restoreDraft), so the post
+// goes ahead and is answered on that form.
 function formOnScreen(form, route) {
-  return form.isConnected && state.route === route;
+  return form.isConnected && routeKey(state.route) === routeKey(route);
 }
+
+// The forms holdForm holds.
+const heldForms = new WeakSet();
 
 // holdForm switches off a form's controls while its request is pending, from
 // the press until the answer, with whatever the reader wrote left where it is.
@@ -3798,13 +3867,17 @@ function formOnScreen(form, route) {
 // box to write in, it would start another puzzle. That is only while the focus
 // is still lost, on the page itself or nowhere: a reader who moved it during
 // the wait, to read a post say, keeps it where they put it.
+// Until release, the form is in heldForms, and a redraw of its page carries it
+// across as it is (captureDraft, restoreDraft).
 function holdForm(form) {
   const controls = Array.from(form.elements).filter((control) => !control.disabled);
   const focused = form.contains(document.activeElement);
   for (const control of controls) {
     control.disabled = true;
   }
+  heldForms.add(form);
   return (refocus) => {
+    heldForms.delete(form);
     for (const control of controls) {
       control.disabled = false;
     }
@@ -3917,17 +3990,12 @@ el.main.addEventListener("submit", async (event) => {
     if (!held && forgets === browserForgets) {
       storageSet(NAME_STORAGE_KEY, name);
     }
-    // A reader who left while the post was on its way has a page of their own
-    // choosing on screen now, perhaps another post being written: the post
-    // went, and that page is left as it is.
-    if (!onScreen()) {
-      return;
-    }
-    // Clear before navigating so the draft carried across the re-render is the
-    // empty form rather than the post that just went through. reset() puts the
-    // Name back to what the form was drawn with, so it is set again: to the
-    // name just used — empty, if the poster cleared it — or after a badged
-    // post to the remembered one.
+    // Cleared, wherever the form is, so the draft carried across a re-render
+    // is the empty form rather than the post that just went through: the
+    // navigation below, or a redraw of the page that carried the form while
+    // it was held (captureDraft). reset() puts the Name back to what the form
+    // was drawn with, so it is set again: to the name just used — empty, if
+    // the poster cleared it — or after a badged post to the remembered one.
     form.reset();
     const nameField = field(form, "name");
     if (nameField) {
@@ -3936,6 +4004,13 @@ el.main.addEventListener("submit", async (event) => {
     const fileField = form.querySelector("[data-file-field]");
     if (fileField) {
       clearFileField(fileField);
+    }
+    release(false);
+    // A reader who left while the post was on its way has a page of their own
+    // choosing on screen now, perhaps another post being written: the post
+    // went, and that page is left as it is.
+    if (!onScreen()) {
+      return;
     }
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {

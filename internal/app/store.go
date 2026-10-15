@@ -1484,7 +1484,10 @@ func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
 //
 // The row's expiry is the challenge's rounded up to the next UTC midnight, as a
 // credential's is (nextDayBoundary), so the only date a row stores is the day,
-// and the table holds a day or two of answers. Each spend first deletes a batch
+// and the table holds a day or two of answers. The row's xmin and ctid are
+// another matter: they lie beside those of the post or code request written
+// just after it, so whoever reads the database can pair the two and date the
+// row by the post, which says only that the post carried an answer. Each spend first deletes a batch
 // of the rows past their expiry, and the daily sweep the rest
 // (PruneSpentCaptchas). The cut-off is by the server's clock, the one that
 // decided the challenge was still good. SKIP LOCKED leaves rows another spend

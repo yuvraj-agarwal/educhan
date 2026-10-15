@@ -247,6 +247,39 @@ func TestCooldownLimiterSweeps(t *testing.T) {
 	}
 }
 
+// A map full of live cooldowns cannot be shrunk by a sweep, so sweeping it on
+// every record would cost each admission a pass over the whole map, under the
+// lock every admission takes. Past the threshold, record sweeps again only once
+// the map has doubled since the last sweep.
+func TestCooldownLimiterSweepsOnceEachTimeItDoubles(t *testing.T) {
+	now := time.Now()
+	limiter := newCooldownLimiter(time.Second)
+	limiter.now = func() time.Time { return now }
+
+	for i := range cooldownSweepThreshold {
+		allow(limiter, fmt.Sprintf("live %d", i))
+	}
+	// At the threshold, a sweep that finds every cooldown live frees nothing.
+	allow(limiter, "one more")
+	if got := len(limiter.seen); got != cooldownSweepThreshold+1 {
+		t.Fatalf("tracked keys = %d, want %d", got, cooldownSweepThreshold+1)
+	}
+	// Every cooldown so far runs out, but the map has not doubled since that
+	// sweep, so nothing sweeps them until it has.
+	now = now.Add(2 * time.Second)
+	for i := cooldownSweepThreshold + 1; i < 2*cooldownSweepThreshold; i++ {
+		allow(limiter, fmt.Sprintf("later %d", i))
+	}
+	if got := len(limiter.seen); got != 2*cooldownSweepThreshold {
+		t.Fatalf("tracked keys = %d, want %d: record swept before the map doubled", got, 2*cooldownSweepThreshold)
+	}
+	// Doubled: the next record sweeps, and keeps only the live cooldowns.
+	allow(limiter, "doubled")
+	if got, want := len(limiter.seen), cooldownSweepThreshold; got != want {
+		t.Errorf("tracked keys = %d after the map doubled, want %d: the expired ones swept", got, want)
+	}
+}
+
 // trackedKeys lists what a limiter holds, under its lock, so a test can read it
 // while the sweep goroutine runs.
 func trackedKeys(l *cooldownLimiter) []string {

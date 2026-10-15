@@ -521,7 +521,8 @@ view.
   when the server refuses it, keeps the text, and the next press posts it. The picker
   names the server's size limit, and a file over it is turned away when it is picked
   rather than after the upload. A half-written reply survives
-  **Update**, image included, so refreshing a busy thread never costs a draft; if the
+  **Update**, image included, so refreshing a busy thread never costs a draft (a reply
+  on its way meanwhile stays on screen as it was, until it is answered); if the
   thread was archived or locked meanwhile, the text stays on the page in a read-only box
   to copy. Following a quote link within a thread jumps to the post without reloading
   the thread, so revealed spoilers stay revealed. Clicking a
@@ -768,8 +769,8 @@ script from anywhere else runs on the page, and no cookie is set.
 1. When focus moves into a box to write in, in a form that needs an answer,
    however it gets there (a click or tap, Tab, quoting a post), the page asks
    `GET /api/captcha` for a challenge, unless it already holds a good answer or
-   is solving one. Unticking the badge, a refusal that spent the answer and a
-   press with no answer ready can start one too (the full list heads
+   is solving one. Attaching an image, unticking the badge, a refusal that spent
+   the answer and a press with no answer ready can start one too (the full list heads
    `/* Captcha */` in `app.js`); drawing a page never does. A challenge is a
    random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
    expiry half an hour away, and the server's HMAC over all of it. The server
@@ -825,14 +826,19 @@ while its form is on screen.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is
-what the form shows. A reader who leaves the form before the answer is ready,
-for another page or with Update, sends nothing, and the answer is put back for
-the next press; a request that had already gone is not reported on the page they
-went to.
+what the form shows. A reader who goes to another page before the answer is
+ready sends nothing, and the answer is put back for the next press; a request
+that had already gone is not reported on the page they went to. Update, pressed
+meanwhile, redraws the thread around the same form, still held, and the post
+goes ahead and is answered there: the form is cleared and the thread shows the
+post when it went, and the form is switched back on with the reason when it was
+refused.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to
-eight times, and past 300 in a minute `GET /api/captcha` answers `429`. The
+eight times, and past 300 in a minute `GET /api/captcha` answers `429`, which
+the page reports as too many checks started from the reader's network, with the
+wait, rather than as a post's cooldown. The
 count is kept per client address, an IPv6 address counted by its `/64` (the
 block one connection is usually given), in one-minute windows, in each
 instance's memory like flood control, and swept with the cooldowns (see
@@ -846,7 +852,12 @@ signature and its expiry rounded up to the next UTC midnight, as a credential's
 is, so the only date a row stores is the day. Each spend deletes a batch of the
 rows past their day, and the daily [sweep](#the-archive-sweeper) the rest, so a
 row is gone a day or so after its puzzle was solved. Nothing stored in the table
-names the post or code request an answer let through, or who solved it.
+names the post or code request an answer let through, or who solved it. Where a
+row sits is another matter: until it is deleted, its place in the table and the
+transaction that wrote it, which Postgres keeps with every row, lie beside the
+post's or the code request's, so whoever reads the database files can pair the
+two and date the row by the post. That shows only that the post carried an
+answer, which every post without a badge does while the captcha is on.
 
 Proof of work slows a script down; it does not tell a person from one. It
 makes each post cost the poster's processor a moment and a bulk poster's a

@@ -5,8 +5,8 @@ repository contains the working prototype: a Go HTTP API plus an embedded web UI
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
 attachments, a paginated index, a catalog view, a per-board archive, threads with quote
 links and post markup (spoilers, highlighted code, maths, cross-board links), per-client
-flood control, key-authenticated moderation and board management, and optional
-institutional verification badges are implemented. Janitor accounts, bans, and reports are
+flood control, a self-hosted proof-of-work captcha, key-authenticated moderation and board
+management, and optional institutional verification badges are implemented. Janitor accounts, bans, and reports are
 not.
 
 ## Stack & layout
@@ -399,19 +399,22 @@ check before the test changes.
   write in, however it gets there (the `focusin` listener; a quote and the `/verify`
   buttons put the focus there too; the badge box is not one), unticking the badge on a
   form whose tick stopped a puzzle or that already has something written or attached
-  (`captchaBadgeToggled`, `captchaFormHasWriting`), a refusal that spent the answer while
-  its form is on screen, and a press with no good answer held. Ticking the badge stops it
+  (`captchaBadgeToggled`, `captchaFormHasWriting`), an image picked or dropped on it
+  (`captchaImageAttached`; not one a re-render puts back), a refusal that spent the answer
+  while its form is on screen, and a press with no good answer held. Ticking the badge stops it
   unless a request is waiting for it (`stopCaptcha`, which says whether it stopped one).
   It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS` copies with interleaved
   counters (side by side where the browser allows; Chromium runs their Web Crypto on one
   thread), and only in a secure context (`CAPTCHA_INSECURE` otherwise) with `Worker` and
   `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing before any fetch, and only on a
-  response shaped like a challenge (`CAPTCHA_UNAVAILABLE` otherwise). Every copy is
+  response shaped like a challenge (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from
+  `/api/captcha` says too many checks were started from the reader's network, with its
+  wait (`captchaBusy`), never a post's or a code request's cooldown. Every copy is
   terminated when the puzzle ends, a throw while starting them included. The answer is
   kept in the `captcha` object in memory only, never in storage or a draft, and read only
   by `captchaAnswer`, `takeCaptcha`, `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha`
   sends a post or a code request, solving first when needed, and only from a form still on
-  screen (`formOnScreen`: in the document, with `state.route` unchanged since the press).
+  screen (`formOnScreen`: in the document, on the page, by `routeKey`, it was pressed on).
   Each request takes its answer out of the page as it is handed over (`takeCaptcha`), so a
   second press while one is on its way solves a fresh puzzle, and puts it back
   (`keepCaptcha`: only into an empty place, only while good) only when it left it unspent.
@@ -420,7 +423,12 @@ check before the test changes.
   answer the form is held (`holdForm`: controls switched off once the form has been read
   and checked, straight into the `try` whose catch releases them, and switched back on
   after a refusal, with the focus on the button if the form had it and it is still lost,
-  on the page or nowhere; `app.css` shows the held controls switched off). A request that
+  on the page or nowhere, or after a success once the form is emptied; `app.css` shows
+  the held controls switched off). A redraw of the form's own page while it is held
+  (Update) keeps the page, dimmed, in place of the skeleton, and puts the held form itself
+  into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
+  `restoreDraft`), so the post goes ahead and is answered on the form on screen; a form
+  answered by then is read for its values like any draft, emptied after a success. A request that
   succeeds keeps the answer it took; a refusal carrying `"captcha"` drops it and, while
   the form is on screen, sends once more with a fresh one, and `"required"` also turns
   `state.site.captcha` on for a page drawn without knowing. Any other refusal, or no
@@ -703,8 +711,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a database
   failure, a file it could not remove or did not find, or a database a newer release
   migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
-  like the server, and runs without the salt, the moderation key and the verification
-  secret on purpose, so `New` warns about none of them: those warnings are
+  like the server, and runs without the salt, the moderation key, the verification
+  secret and the captcha secret on purpose, so `New` warns about none of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
   warning about a server-only setting goes there, not in `New`. **Legal holds (build
@@ -819,7 +827,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `TestFloodControlForgetsAddressesOnAQuietServer` and
   `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period
   through `Config.cooldownSweepEvery`). The record-time sweep past
-  `cooldownSweepThreshold` only bounds a burst between two ticks.
+  `cooldownSweepThreshold` only bounds a burst between two ticks, and runs again only
+  once the map has doubled since the last sweep (`sweepAt`,
+  `TestCooldownLimiterSweepsOnceEachTimeItDoubles`): a map of live cooldowns, which no
+  sweep can shrink, swept on every record would cost every admission a pass over it
+  while holding `admission`.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
