@@ -286,7 +286,42 @@ func holdReason(fields []*scannedField, contactCue bool) string {
 	if cues && placesTheReader(fields) {
 		return holdGrooming
 	}
+	// A meeting in the open, with a group or with an errand is still a cue
+	// beside the reader's age asked: "how old are you? meet me at the
+	// library".
+	if !cues && asksTheAge(fields) {
+		for _, f := range fields {
+			if f.anyMatch(privateCueRules, cueBesideAnAge) {
+				return holdGrooming
+			}
+		}
+	}
 	return ""
+}
+
+// asksTheAge reports a question in the post about the reader's age itself,
+// not their year, school or place: "how old are you", "what's your age", "u
+// 14?", "any 14yo girls".
+func asksTheAge(fields []*scannedField) bool {
+	for _, f := range fields {
+		if f.anyMatch(ageQuestionRules, ageAsked) {
+			return true
+		}
+	}
+	return false
+}
+
+// ageAsked is ageCheck for a match that names an age: "old", "age" or a
+// number that is not a school year ("grade 11", "9th").
+func ageAsked(v *view, m []int) bool {
+	ws := wordsIn(v.text[m[0]:m[1]])
+	for i, w := range ws {
+		if is(w, "old") || is(w, "age") || isASCIIDigit(w[0]) && !ordinalWord.MatchString(w) &&
+			!(i > 0 && schoolYearNouns[ws[i-1]]) {
+			return ageCheck(v, m)
+		}
+	}
+	return false
 }
 
 // quoteSource is the text a block quotes back: the poster's own, from the
@@ -5455,7 +5490,14 @@ var (
 // alone in thinking", "a secret that", "between you and me, the food is
 // awful", "campus pics?", "seniors se baat karo" (talk to the seniors) and
 // "library mein milte hain" (they are in the library).
-func cueCheck(v *view, m []int) bool {
+func cueCheck(v *view, m []int) bool { return privateCue(v, m, true) }
+
+// cueBesideAnAge is cueCheck for a post that asks the reader's age, where a
+// meeting is a cue wherever it is and whoever else is there.
+func cueBesideAnAge(v *view, m []int) bool { return privateCue(v, m, false) }
+
+// privateCue is cueCheck; openMeetings turns down a meeting in the open.
+func privateCue(v *view, m []int, openMeetings bool) bool {
 	text := v.text
 	ws := wordsIn(text[m[0]:m[1]])
 	if len(ws) == 0 {
@@ -5465,7 +5507,28 @@ func cueCheck(v *view, m []int) bool {
 	next := nextWords(clauseAfter(text, m[1]), 2)
 	prev := wordsIn(clauseBefore(text, m[0]))
 	nextIn := func(k int, set map[string]bool) bool { return len(next) > k && set[next[k]] }
+	// A meeting somewhere public or with a group, and a visit with an
+	// errand, are not a private one: "we can meet at the library for group
+	// study", "let's meet at the mess for dinner", "I'll come by tonight with
+	// the notes", "come to my place for group study". A gate, a street or
+	// anywhere outside is not public in this sense, and nothing excuses a cue
+	// that asks for the reader alone ("come alone", "come without your
+	// friends", "just us two").
+	if openMeetings && anyIn(ws, meetingCues) {
+		sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+		if !anyIn(sentence, isolationWords) && (anyIn(sentence, publicPlaces) || groupMeeting(sentence) ||
+			anyIn(ws, visitCues) && errand(wordsIn(sentenceAfter(text, m[1])))) {
+			return false
+		}
+	}
 	switch {
+	case is(last, "know") && (is(first, "do") || is(first, "does")):
+		// "do your parents know about the fee hike?" asks about a thing;
+		// "do your parents know about us", "know you talk to strangers"
+		// and "do your parents know?" are about the poster and the reader.
+		about := nextWords(clauseAfter(text, m[1]), 3)
+		return !(len(about) > 1 && is(about[0], "about") && !personalAbout[about[1]] &&
+			!(len(about) > 2 && personalAbout[about[2]]))
 	case len(ws) == 1 && is(first, "privately") || len(ws) == 2 && is(first, "in") && is(last, "private"):
 		// Offered by the poster to the reader, not "ask the prof privately".
 		sentence := wordsIn(sentenceAround(text, m[0], m[1]))
@@ -5510,6 +5573,55 @@ func cueCheck(v *view, m []int) bool {
 	}
 	return true
 }
+
+// groupMeeting reports a sentence that makes a meeting a group's: "group
+// study", "our team is meeting at 5", "everyone's coming".
+func groupMeeting(ws []string) bool {
+	for i, w := range ws {
+		if groupNouns[w] || is(w, "group") && (i+1 < len(ws) && is(ws[i+1], "study") || i > 0 && is(ws[i-1], "study")) {
+			return true
+		}
+	}
+	return false
+}
+
+// errand reports a visit's errand in the words after it: "with the notes",
+// "to return your charger", "to drop off the book".
+func errand(ws []string) bool {
+	for i, w := range ws {
+		if (is(w, "with") || errandVerbs[w] && i > 0 && is(ws[i-1], "to")) &&
+			anyIn(ws[i+1:min(len(ws), i+4)], errandObjects) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// schoolYearNouns name a school year before its number: "grade 11".
+	schoolYearNouns = canonSetOf(`grade class year std standard form sem semester`)
+	// meetingCues are the words of a meet-up or a visit cue, and visitCues
+	// the ones of a visit.
+	meetingCues = canonSetOf(`meet meeting meetup wait waiting hang hangout come visit drop`)
+	visitCues   = canonSetOf(`come visit drop`)
+	// publicPlaces are where a meeting is in front of everyone: a library,
+	// a canteen, a fest, a class.
+	publicPlaces = canonSetOf(`library libraries mess canteen cafeteria cafe caf foodcourt fest auditorium classroom
+		lab labs seminar lecture lectures practice tutorial`)
+	// groupNouns make a meeting a group's.
+	groupNouns = canonSetOf(`team teams squad gang everyone everybody everyone's batchmates classmates others`)
+	// isolationWords ask for the reader alone, which no place or group
+	// excuses.
+	isolationWords = canonSetOf(`alone without w/o just nobody noone secret private privately yourself urself own`)
+	errandVerbs    = canonSetOf(`return give drop collect lend borrow submit bring pass hand`)
+	errandObjects  = canonSetOf(`notes note book books charger cable assignment assignments project projects file files
+		keys key laptop calculator copy copies register bag umbrella card form forms textbook textbooks pendrive
+		headphones earphones jacket bottle tiffin`)
+	// personalAbout, after "do your parents know about", make it about the
+	// poster or the reader.
+	personalAbout = canonSetOf(`us me this it that him her them our my you u ur your chat chats messages dms texts
+		talking`)
+)
 
 var (
 	// offerWords are the poster offering something: "I can", "let's".
@@ -5579,12 +5691,60 @@ func ageCheck(v *view, m []int) bool {
 			return false
 		}
 	}
+	// "u 14? the competition is for 14 and above": an age asked for a rule
+	// that is all in the open.
+	if strings.ContainsAny(v.text[m[0]:m[1]], "0123456789") && ageRuleAfter(v.text[m[1]:min(len(v.text), m[1]+80)]) {
+		return false
+	}
 	if !is(ws[len(ws)-1], "area") && !is(ws[len(ws)-1], "location") {
 		return true
 	}
 	next := nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
 	return len(next) == 0 || !areaTopics[next[0]]
 }
+
+// ageRuleAfter reports an age limit stated in s: "for 14 and above", "14+
+// only", "under 15 only", "the age limit is 16", "eligible". An adult's age
+// in it ("this server is 18+", "the age limit is 18") is a reason to keep the
+// reader out, not to ask them in, so it is none.
+func ageRuleAfter(s string) bool {
+	plus := false
+	for i := 0; i < len(s); i++ {
+		if !isASCIIDigit(s[i]) {
+			continue
+		}
+		j := i
+		for j < len(s) && isASCIIDigit(s[j]) {
+			j++
+		}
+		if n, err := strconv.Atoi(s[i:j]); err == nil && n >= 18 && j-i <= 2 {
+			return false
+		}
+		plus = plus || j < len(s) && s[j] == '+'
+		i = j
+	}
+	if plus {
+		return true
+	}
+	ws := wordsIn(s)
+	for i, w := range ws {
+		switch {
+		case ageRuleWords[w]:
+			return true
+		case (is(w, "and") || is(w, "or")) && i+1 < len(ws) && ageBounds[ws[i+1]]:
+			return true
+		case is(w, "age") && i+1 < len(ws) && ageLimits[ws[i+1]]:
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	ageRuleWords = canonSetOf(`eligible eligibility`)
+	ageBounds    = canonSetOf(`above over up older under below younger`)
+	ageLimits    = canonSetOf(`limit limits group groups category categories criteria bracket cutoff`)
+)
 
 var (
 	// readerStatement opens a statement about the reader, and whenWords

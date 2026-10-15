@@ -1212,13 +1212,29 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"we'll rope in the seniors for the fest",
 		"I took od for the fest tomorrow",
 		"stop existing in my group chat with your memes lol",
-		// A reader's year, school or age asked about for a reason that is
-		// all in the open.
-		"when you're in 12th you'll understand why boards matter. don't tell me I didn't warn you",
-		"you're 15 minutes late to the thread lol, meet me at the library next time",
-		"which batch are you in? we could meet at the library to study",
-		"which college do you go to? I'll be at the fest on saturday, say hi to the organisers",
+		// Both halves of a grooming cue, one of them said for a reason that
+		// is all in the open: a reader's year or age beside a cue, or a
+		// question that places the reader beside a meeting in public, with
+		// a group or with an errand, or a question about a thing. Each is
+		// held without the reading that turns its half down.
+		"when you're in 12th you'll understand why boards matter. dm me if you want my notes",
+		"you're 15 minutes late to the thread lol, dm me next time",
+		"u 14? the competition is for 14 and above, dm me",
+		"you're 15? the age limit is 16 for the trek, dm me for the form",
 		"you're in grade 11 so take physics seriously. ask the teacher privately if you're shy",
+		"how old are you? do your parents know about the fee hike?",
+		"you're in 9th? do your parents know about the fee hike?",
+		"which school do you go to? do your parents know about the trip form?",
+		"what time do you get out of school? we can meet at the library for group study",
+		"which year are you in? we could meet at the library to study",
+		"which hostel are you in? let's meet at the mess for dinner",
+		"you're in 12th right? come to my place for group study, my mom will make snacks",
+		"what's your school? our team is meeting at 5, wait for me outside the gate",
+		"which hostel are you in? I'll come by tonight with the notes",
+		"which room are you in? I'll come to your room tonight to return your charger",
+		// One half alone: a question that places the reader with no cue,
+		// and a cue with no such question.
+		"which college do you go to? I'll be at the fest on saturday, say hi to the organisers",
 		"tell me your school name and I'll tell you if they have a good lab",
 		"what time do you get out of school? mine ends at 2",
 		"how old are you? don't tell me, I'll guess from your handwriting",
@@ -1226,7 +1242,6 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"tum 8th mein ho na? board exam ki tension mat lo",
 		"are you usually by yourself at lunch? join our table at the canteen",
 		"do your parents know about the fee hike? the circular came today",
-		"u 14? the competition is for 14 and above, ask your teacher",
 		// Crisis lines written the way they are dialled, and numbers set
 		// aside for fiction in every layout the rules read.
 		"PAPYRUS HOPELINE247 is 0800 068 4141 in the UK, for under-35s. my sixth form put it on every noticeboard",
@@ -1845,6 +1860,27 @@ func TestFilterHolds(t *testing.T) {
 		{"are you 13? do your parents know you talk to strangers? let's go private", holdGrooming},
 		{"which floor is your room on? I'll come to your room tonight, keep it a secret", holdGrooming},
 		{"you're 12? delete this after reading", holdGrooming},
+		// A gate or outside is not somewhere in the open; nothing excuses
+		// asking for the reader alone; a visit with no errand, and parents
+		// asked about the poster and the reader, are cues; and a meeting
+		// anywhere is one beside the reader's age, as an adult's age limit
+		// is no open reason to ask it.
+		{"what time do you get out of school? meet me at the gate", holdGrooming},
+		{"which school do you go to? come alone to the library", holdGrooming},
+		{"which hostel are you in? come without your friends, let's meet at the mess", holdGrooming},
+		{"which school do you go to? meet me at the library, just us two", holdGrooming},
+		{"you're in 9th? let's meet at the park", holdGrooming},
+		{"which hostel are you in? I'll come by tonight", holdGrooming},
+		{"which room are you in? I'll come to your room tonight", holdGrooming},
+		{"which school do you go to? do your parents know about us?", holdGrooming},
+		{"how old are you? do your parents know?", holdGrooming},
+		{"how old are you? do your parents know about our chats?", holdGrooming},
+		{"how old are you? meet me at the library", holdGrooming},
+		{"u 14? I'll come by tonight with the notes", holdGrooming},
+		{"any 14yo girls here? let's meet at the canteen", holdGrooming},
+		{"u 14? dm me", holdGrooming},
+		{"u 14? this server is 18+ only, dm me", holdGrooming},
+		{"you're 15? the age limit is 18, dm me anyway", holdGrooming},
 	}
 	// The method questions show the support message first, because the
 	// person asking may be asking for themselves. Every other hold comes
