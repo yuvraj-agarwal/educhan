@@ -243,3 +243,54 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 		t.Errorf("GET /api/boards on a newer schema: status %d, want the server still serving", status)
 	}
 }
+
+// Attachments used to keep the filename the poster's browser sent. 0008
+// renames every existing one the way new uploads are named, "image" and the
+// stored file's extension, so no filename a poster sent survives the
+// migration.
+func TestAttachmentNamesAreRewritten(t *testing.T) {
+	pool, url := databaseAt(t, 7)
+	ctx := context.Background()
+	seedThread(t, pool, "meta", "photos from the fest")
+	for no, row := range []struct{ name, path string }{
+		{"IMG_20261013_Priya.jpg", "meta/2026/10/aaaa.jpg"},
+		{"Screenshot from 2026-10-12 Priya.PNG", "meta/2026/10/bbbb.png"},
+		{"", "meta/2026/10/cccc.webp"},
+		{"Priya's cat.webp", "meta/2026/10/dddd.gif"},
+	} {
+		if _, err := pool.Exec(ctx, `
+			WITH p AS (
+			    INSERT INTO posts (thread_id, board_id, no, body, is_op)
+			    SELECT t.id, t.board_id, $1, 'a reply', FALSE
+			    FROM threads t JOIN boards b ON b.id = t.board_id
+			    WHERE b.slug = 'meta' AND t.no = 1
+			    RETURNING id
+			)
+			INSERT INTO attachments (post_id, original_name, original_path, thumb_path, content_type,
+			    thumb_content_type, byte_size, width, height, thumb_width, thumb_height)
+			SELECT id, $2, $3, $3, 'image/jpeg', 'image/jpeg', 1, 1, 1, 1, 1 FROM p`,
+			no+2, row.name, row.path); err != nil {
+			t.Fatalf("seed attachment %q: %v", row.name, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE boards SET next_post_no = 6 WHERE slug = 'meta'`); err != nil {
+		t.Fatalf("advance numbering: %v", err)
+	}
+
+	h := serverOn(t, url)
+	var names []string
+	for _, p := range fetchThread(t, h, "meta", 1).Posts[1:] {
+		if p.Attachment == nil {
+			t.Fatalf("post No. %d lost its attachment", p.No)
+		}
+		names = append(names, p.Attachment.Name)
+	}
+	if got, want := strings.Join(names, ","), "image.jpg,image.png,image.webp,image.gif"; got != want {
+		t.Errorf("attachment names = %s, want %s", got, want)
+	}
+	for _, table := range h.tables() {
+		if n := h.rowsContaining(table, []byte("Priya")); n != 0 {
+			t.Errorf("%d rows of %s still contain a poster's filename", n, table)
+		}
+	}
+}

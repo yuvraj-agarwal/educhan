@@ -73,13 +73,28 @@ type cooldown struct {
 // control is a much better trade than the lock ordering an atomic version
 // would need between limiters that are not always applied together.
 func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {
+	retryAfter, _, ok = chargeAll(cooldowns...)
+	return retryAfter, ok
+}
+
+// chargeAll is allowAll, also returning the refund for an admitted action:
+// it takes back the cooldowns this action started, for an action that then
+// was not carried out for a reason that was not the caller's (the server too
+// busy to take it). A cooldown another request has started since is left
+// alone, so a refund never shortens a wait somebody else's action began.
+func chargeAll(cooldowns ...cooldown) (retryAfter time.Duration, refund func(), ok bool) {
 	if wait := longestWait(cooldowns...); wait > 0 {
-		return wait, false
+		return wait, nil, false
 	}
-	for _, c := range cooldowns {
-		c.limiter.record(c.key)
+	started := make([]time.Time, len(cooldowns))
+	for i, c := range cooldowns {
+		started[i] = c.limiter.record(c.key)
 	}
-	return 0, true
+	return 0, func() {
+		for i, c := range cooldowns {
+			c.limiter.forget(c.key, started[i])
+		}
+	}, true
 }
 
 // longestWait is the longest of the waits the cooldowns still impose, recording
@@ -111,10 +126,11 @@ func (l *cooldownLimiter) peek(key string) time.Duration {
 	return max(l.interval-l.now().Sub(last), 0)
 }
 
-// record starts key's cooldown.
-func (l *cooldownLimiter) record(key string) {
+// record starts key's cooldown and returns when it started, which forget
+// takes to tell this start from a later one.
+func (l *cooldownLimiter) record(key string) time.Time {
 	if l == nil || l.interval <= 0 {
-		return
+		return time.Time{}
 	}
 
 	l.mu.Lock()
@@ -125,6 +141,23 @@ func (l *cooldownLimiter) record(key string) {
 		l.sweep(now)
 	}
 	l.seen[key] = now
+	return now
+}
+
+// forget takes back the cooldown record started for key at started, if it is
+// still the one key is waiting on. A key with nothing to wait on is not
+// tracked at all, so the entry goes rather than being wound back.
+func (l *cooldownLimiter) forget(key string, started time.Time) {
+	if l == nil || l.interval <= 0 {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if last, tracked := l.seen[key]; tracked && last.Equal(started) {
+		delete(l.seen, key)
+	}
 }
 
 // sweep drops entries whose cooldown has elapsed. Callers must hold the mutex.

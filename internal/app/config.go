@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yuvraj-agarwal/educhan/internal/mailer"
+	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
 // Config holds runtime configuration sourced from the environment.
@@ -60,11 +61,13 @@ type Config struct {
 	// GCSPrefix is an optional key prefix within GCSBucket, so a bucket can be
 	// shared with other content. Empty stores objects at the bucket root.
 	GCSPrefix string
-	// MaxUploadBytes is the largest attachment accepted with a post.
+	// MaxUploadBytes is the largest attachment accepted with a post, at most
+	// maxUploadLimit.
 	MaxUploadBytes int64
-	// UploadsEnabled accepts image attachments. It is off unless set: images
-	// are stored and served exactly as uploaded, with no metadata stripping
-	// and no content scanning yet, so a deployment opts in knowingly.
+	// UploadsEnabled accepts image attachments. It is off unless set: every
+	// image is rewritten without its metadata before it is stored, but nothing
+	// checks what an image shows yet (no known-image matching, no content
+	// scanning), so a deployment opts in knowingly.
 	UploadsEnabled bool
 	// VerifySecret keys institutional verification: the HMAC that stands in for
 	// an address, the hash of a pending code, and the signature on an issued
@@ -113,6 +116,24 @@ const defaultRefusalLimit = 10
 // defaultMaxUploadBytes caps a single attachment. Imageboard posts are small;
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
+
+// maxUploadLimit is the most MaxUploadBytes may be, 63 MiB: the body that
+// carries an image, up to multipartOverhead more than the image, is reserved
+// whole in the memory set aside for request bodies (media.UploadBudget)
+// before it is read. A body larger than that budget would be reserved as the
+// whole of it and read past it, and the budget would no longer bound what the
+// uploads hold.
+const maxUploadLimit = media.UploadBudget - multipartOverhead
+
+// checkUploadLimit refuses an attachment size limit over maxUploadLimit.
+func checkUploadLimit(cfg Config) error {
+	if cfg.MaxUploadBytes > maxUploadLimit {
+		return fmt.Errorf("EDUCHAN_MAX_UPLOAD_BYTES: %d is over the most an attachment may be, %d (%d MiB), "+
+			"so that the request carrying one fits the %d MiB set aside for upload bodies",
+			cfg.MaxUploadBytes, maxUploadLimit, maxUploadLimit>>20, media.UploadBudget>>20)
+	}
+	return nil
+}
 
 // The media backends EDUCHAN_MEDIA_BACKEND selects between. Local is the
 // default so an existing deployment, the compose stack, and a developer's
@@ -169,6 +190,9 @@ func ConfigFromEnv() (Config, error) {
 		return Config{}, err
 	}
 	if cfg.MaxUploadBytes, err = envBytes("EDUCHAN_MAX_UPLOAD_BYTES", defaultMaxUploadBytes); err != nil {
+		return Config{}, err
+	}
+	if err := checkUploadLimit(cfg); err != nil {
 		return Config{}, err
 	}
 	if cfg.UploadsEnabled, err = envBool("EDUCHAN_UPLOADS_ENABLED"); err != nil {

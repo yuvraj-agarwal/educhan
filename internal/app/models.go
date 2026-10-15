@@ -9,6 +9,8 @@ import (
 // Attachment is the image belonging to a post, as exposed by the API. Paths are
 // rendered as URLs so clients never need to know how blobs are addressed.
 type Attachment struct {
+	// Name is "image" and the stored format's extension, such as "image.jpg".
+	// The poster's own filename is never kept.
 	Name        string `json:"name"`
 	URL         string `json:"url"`
 	ThumbURL    string `json:"thumb_url"`
@@ -27,9 +29,11 @@ type Attachment struct {
 // newAttachment is an image that has been written to the media store and is
 // waiting for its database row.
 type newAttachment struct {
-	OriginalName string
-	Image        media.StoredImage
-	Spoiler      bool
+	// Name is what the image is shown under, from attachmentName: never the
+	// filename the poster's browser sent. It is stored in original_name.
+	Name    string
+	Image   media.StoredImage
+	Spoiler bool
 }
 
 // Site is what this server accepts that a client needs to know before it draws

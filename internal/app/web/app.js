@@ -170,6 +170,19 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
       ? `Codes can't be requested that often. Wait ${wait}, then request a code again.`
       : `Flood control: wait ${wait} and post again.`;
   }
+  // Too many images arriving at once for the server to take this one in time.
+  // Nothing was posted and no flood-control wait was started, so the same
+  // post, image and all, can go again once the wait is over.
+  if (err.status === 503 && err.payload && err.payload.retry_after) {
+    const wait = plural(err.payload.retry_after, "second", "seconds");
+    return `Too many images are being posted right now, so yours wasn't. Wait ${wait} and post again: your post is still in the form.`;
+  }
+  // The image did not finish arriving in the time the server gives a body,
+  // counted from when it had room to read it: the connection, not the server.
+  // Nothing was posted and no flood-control wait was started.
+  if (err.status === 408) {
+    return "Your image took too long to upload, so nothing was posted. Check your connection or try a smaller image, then post again: your post is still in the form.";
+  }
   // The form stays on screen after a refusal, so these say what happened and
   // leave the half-written post where it is.
   if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
@@ -1226,9 +1239,9 @@ function attachmentHTML(att, { expandable = false } = {}) {
     return `<div class="post-file">${caption}${link}</div>`;
   }
   // A spoilered image is a neutral tile until someone asks for it. The
-  // filename waits behind it with the thumbnail — a name can give away as much
-  // as a picture — and the lazy thumbnail is not fetched while it is hidden.
-  // Once shown it is an ordinary attachment and expands like one.
+  // caption waits behind it with the thumbnail, and the lazy thumbnail is not
+  // fetched while it is hidden. Once shown it is an ordinary attachment and
+  // expands like one.
   return `
     <div class="post-file spoiler">
       <button class="spoiler-tile" type="button" data-action="reveal-spoiler">Spoiler image, click to show</button>
@@ -2325,8 +2338,10 @@ const FAQ_SECTIONS = [
         work out that it's you. So:</p>
       <ul>
         <li>Don't post your name, your school, or photos of yourself or anyone else.</li>
-        <li>Remember that photos can carry hidden details, such as where they were taken, and
-          educhan doesn't remove them yet.</li>
+        <li>A photo can show more than you meant it to. educhan removes the hidden details a
+          photo file carries, such as where and when it was taken and on what phone, before
+          it keeps the photo, and doesn't keep the file's name. But it can't remove what's in
+          the picture: a face, a uniform, a street sign or the view from a window.</li>
         <li>A tripcode links every post that carries it, and a badge shows which university
           or college you're at.</li>
         <li>Your internet provider, the network you're on (a school's, say) and anyone who can
