@@ -508,3 +508,39 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 		t.Error("no wrong code was answered")
 	}
 }
+
+// Asking to verify another address puts the badge panel away, and with it
+// "Forget this credential", while the badge itself stays held and usable until
+// a new one is confirmed. Both steps of replacing it — the address and the
+// code — offer to keep it, which brings the panel back; without that the only
+// way back was a reload.
+func TestReplacingABadgeCanGoBackToIt(t *testing.T) {
+	script := appScript(t)
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+
+	if !strings.Contains(view, "const keep = v.badge\n") {
+		t.Fatal("verifyViewHTML no longer offers to keep a held badge, and only a held one")
+	}
+	code := strings.Index(view, `if (verifyStep.step === "code") {`)
+	panel := strings.Index(view, "if (v.badge && !verifyStep.replacing) {")
+	address := strings.Index(view, `data-verify="request"`)
+	if code < 0 || panel < 0 || address < 0 || !(code < panel && panel < address) {
+		t.Fatal("verifyViewHTML no longer draws the code step, the badge panel and the address step in that order")
+	}
+	if n := strings.Count(view[code:panel], "${keep}"); n != 1 {
+		t.Errorf("the code step offers to keep the badge %d times; want once", n)
+	}
+	if n := strings.Count(view[address:], "${keep}"); n != 1 {
+		t.Errorf("the address step offers to keep the badge %d times; want once", n)
+	}
+
+	handler := regexp.MustCompile(`(?s)if \(event\.target\.closest\('\[data-action="verify-keep"\]'\)\) \{(.*?)\n  \}`).
+		FindStringSubmatch(withoutComments(script))
+	if handler == nil {
+		t.Fatal(`app.js has no click handler for data-action="verify-keep"`)
+	}
+	// Back to the badge panel: the address step, not asked for over the badge.
+	if !strings.Contains(handler[1], `verifyStep = { step: "email", label: "" };`) {
+		t.Errorf("keeping the badge does not go back to the badge panel:%s", handler[1])
+	}
+}

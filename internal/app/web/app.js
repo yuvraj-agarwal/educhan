@@ -1967,6 +1967,12 @@ function verifyViewHTML() {
       ${forgetBrowserHTML()}`;
   }
 
+  // While a badge held here is being replaced, either step can go back to it:
+  // asking for a new badge retires nothing until the new one is confirmed.
+  const keep = v.badge
+    ? `<button class="btn subtle" type="button" data-action="verify-keep">Keep my badge</button>`
+    : "";
+
   // A code is pending: the box to type it in is the page until the code is
   // confirmed or given up, whether or not this browser already holds a badge.
   // A badge held here is replaced only once the new one is confirmed, so it is
@@ -1987,6 +1993,7 @@ function verifyViewHTML() {
         <div class="actions">
           <button class="btn primary" type="submit">Verify</button>
           <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
+          ${keep}
         </div>
       </form>
       ${forgetBrowserHTML()}`;
@@ -2045,6 +2052,7 @@ function verifyViewHTML() {
       </label>
       <div class="actions">
         <button class="btn primary" type="submit">Send code</button>
+        ${keep}
       </div>
     </form>
     ${forgetBrowserHTML()}`;
@@ -3168,6 +3176,18 @@ document.addEventListener("click", (event) => {
     renderVerify().then(() => {
       showNotice("This browser no longer holds your post key, your name or a badge.");
     });
+    return;
+  }
+
+  // Keeping the badge gives up replacing it: the page goes back to the badge
+  // held here, and a code already sent is left to expire unused.
+  if (event.target.closest('[data-action="verify-keep"]')) {
+    event.preventDefault();
+    clearNotice();
+    verifyStep = { step: "email", label: "" };
+    el.main.innerHTML = verifyViewHTML();
+    const again = el.main.querySelector('[data-action="verify-again"]');
+    if (again) again.focus();
     return;
   }
 
