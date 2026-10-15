@@ -2,6 +2,7 @@ package media
 
 import (
 	"bytes"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -9,6 +10,7 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
 
 	"golang.org/x/image/webp"
 
@@ -134,10 +136,11 @@ func transposedZig(k int) int {
 }
 
 // maxGIFFramePixels bounds the pixels of all a GIF's frames together. The
-// header check holds each frame to the canvas, and the canvas to MaxPixels,
-// but every frame is decoded and kept at a byte a pixel until it is
-// re-encoded, and a frame of one flat colour compresses to almost nothing: a
-// few megabytes of GIF could otherwise ask for gigabytes. Four
+// header check holds the canvas to MaxPixels, but not the frames: a frame
+// after the first may reach past the canvas (gifReader), every frame is
+// decoded and kept at a byte a pixel until it is re-encoded, and a frame of
+// one flat colour compresses to almost nothing: a few megabytes of GIF could
+// otherwise ask for gigabytes. Four
 // canvases' worth is a long animation at any ordinary size (a 640×480 GIF can
 // have 300 frames) and no more memory than the largest JPEG.
 const maxGIFFramePixels = 4 * MaxPixels
@@ -299,14 +302,24 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 // loop extensions it came in (gifFramePixels reads it). The colour tables keep
 // only the colours the pixels use (cleanGIF). The thumbnail is of the first
 // frame.
+//
+// It is stored as browsers show it where that and image/gif part ways. A
+// file that ends after its last block without a trailer plays in a browser,
+// and is decoded with one put after it. A frame after the first that reaches
+// past the canvas is drawn by a browser only where it overlaps the canvas,
+// and is cut to that (clipGIF); image/gif refuses the whole file, so it is
+// told the logical screen takes in every frame (gifReader). A first frame
+// past the canvas is refused by gifFramePixels: browsers disagree on what to
+// show for it.
 func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) {
-	g, err := gif.DecodeAll(bytes.NewReader(data))
+	g, err := gif.DecodeAll(gifReader(data, frames))
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
 	if frames.looped {
 		g.LoopCount = frames.loop
 	}
+	clipGIF(g, frames.canvas)
 	cleanGIF(g)
 	buf := newStoredBuffer(len(data), limit)
 	stored, err := buf.encoded(FormatGIF, gif.EncodeAll(buf, g))
@@ -319,6 +332,48 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 		pic:    g.Image[0],
 		canvas: image.Rect(0, 0, g.Config.Width, g.Config.Height),
 	}, nil
+}
+
+// gifTrailer is the block that ends a GIF.
+var gifTrailer = []byte{0x3B}
+
+// gifReader is what image/gif decodes a GIF from, given what gifFramePixels
+// read of it: the file, with the logical screen its header gives widened to
+// take in every frame when one reaches past it, because image/gif refuses a
+// frame outside the screen, and with a trailer after it when it had none.
+// Nothing is copied but the header.
+func gifReader(data []byte, frames gifFrames) io.Reader {
+	head := data[:10] // signature, version, logical screen width and height
+	if frames.screen != frames.canvas {
+		head = append([]byte(nil), head...)
+		binary.LittleEndian.PutUint16(head[6:], uint16(frames.screen.X))
+		binary.LittleEndian.PutUint16(head[8:], uint16(frames.screen.Y))
+	}
+	parts := []io.Reader{bytes.NewReader(head), bytes.NewReader(data[10:])}
+	if !frames.trailed {
+		parts = append(parts, bytes.NewReader(gifTrailer))
+	}
+	return io.MultiReader(parts...)
+}
+
+// clipGIF holds a decoded GIF to its canvas, as browsers draw one: a frame
+// reaching past the canvas is cut to the part on it, and a frame wholly off
+// it, which shows nothing for its delay, becomes a single transparent pixel
+// that is left in place, which shows the same nothing for the same time.
+func clipGIF(g *gif.GIF, canvas image.Point) {
+	g.Config.Width, g.Config.Height = canvas.X, canvas.Y
+	r := image.Rectangle{Max: canvas}
+	for k, m := range g.Image {
+		if m.Rect.In(r) {
+			continue
+		}
+		if on := m.Rect.Intersect(r); !on.Empty() {
+			g.Image[k] = m.SubImage(on).(*image.Paletted)
+			continue
+		}
+		g.Image[k] = image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{transparentEntry})
+		g.Disposal[k] = gif.DisposalNone
+	}
 }
 
 // sanitizeWebP checks a WebP's structure and strips it to the chunks that
@@ -790,11 +845,22 @@ func copiesPalette(p, global color.Palette) bool {
 }
 
 // gifFrames is what a GIF's frames come to: their area together, and how
-// many there are, and how often they are played.
+// many there are, and how often they are played; and what gifReader needs
+// to have image/gif decode them.
 type gifFrames struct {
 	pixels, count int64
 	looped        bool // a loop extension gave a loop count,
 	loop          int  // which is this, as gif.GIF's LoopCount reads
+	// largest is the area of the largest frame. image/gif puts an
+	// interlaced frame's rows in order in a copy of it, and a frame may be
+	// larger than the canvas.
+	largest int64
+	// canvas is the logical screen the header gives, which is the picture
+	// browsers show; screen takes in every frame as well.
+	canvas, screen image.Point
+	// trailed is whether the file ends with a trailer rather than straight
+	// after its last block.
+	trailed bool
 }
 
 // gifFramePixels adds up the area of every frame a GIF declares, and counts
@@ -821,42 +887,54 @@ type gifFrames struct {
 // the compressed pixels; where they make the decoder stop with an error, the
 // frames it had allocated by then have already been counted.
 //
+// Where browsers show a file image/gif refuses, the walk reads it as they
+// do, and sanitizeGIF has the decoder read it that way too (gifReader): a
+// file that ends straight after a whole block, without the trailer, ends
+// there; and a frame after the first may reach past the canvas, which the
+// screen is widened to take in. A first frame past the canvas is refused,
+// because browsers disagree on what to show for it (Chromium widens the
+// canvas to hold it, Firefox moves it to the corner and makes the canvas its
+// size), and so is a frame reaching past the 65,535 pixels a header can say.
+//
 // It returns ErrImageTooLarge as soon as the area passes limit, and
-// ErrCorruptImage when the walk does not end at the trailer: a file the
-// decoder could not read to its end is refused rather than half counted.
-// TestGIFFramePixelsReadsWhatTheDecoderReads and FuzzGIFFramePixels hold it to
-// the decoder.
+// ErrCorruptImage when the walk does not end at the trailer or at the end of
+// a whole block: a file the decoder could not read to its end is refused
+// rather than half counted. TestGIFFramePixelsReadsWhatTheDecoderReads and
+// FuzzGIFFramePixels hold it to the decoder.
 func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 	const (
 		headerLen     = 13 // signature, version, logical screen descriptor
 		descriptorLen = 10 // separator, position, size, flags
 		graphicLen    = 6  // block size (4), flags, delay, transparent index, terminator
 		plainTextLen  = 13 // read whole by image/gif, whatever its block size says
+		maxSide       = 0xFFFF
 	)
 	if len(data) < headerLen {
 		return gifFrames{}, ErrCorruptImage
 	}
+	var f gifFrames
+	f.canvas = image.Pt(int(binary.LittleEndian.Uint16(data[6:])), int(binary.LittleEndian.Uint16(data[8:])))
+	f.screen = f.canvas
 	i := headerLen
 	if flags := data[10]; flags&0x80 != 0 {
 		i += 3 << (1 + flags&0x07)
 	}
-	// skipBlocks steps over a run of data sub-blocks and its terminator. It
-	// returns len(data) when the run is cut short, which ends the walk
-	// without a trailer.
-	skipBlocks := func(i int) int {
+	// skipBlocks steps over a run of data sub-blocks and its terminator, and
+	// reports whether the file held all of it.
+	skipBlocks := func(i int) (int, bool) {
 		for i < len(data) {
 			n := int(data[i])
 			i++
 			if n == 0 {
-				return i
+				return i, true
 			}
 			i += n
 		}
-		return len(data)
+		return len(data), false
 	}
 
-	var f gifFrames
-	for i < len(data) {
+	whole := true
+	for i < len(data) && whole {
 		switch data[i] {
 		case 0x21: // extension: introducer, label, then as the label says
 			if i+2 > len(data) {
@@ -870,7 +948,7 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 				}
 				i = at + graphicLen
 			case 0x01: // plain text
-				i = skipBlocks(at + plainTextLen)
+				i, whole = skipBlocks(at + plainTextLen)
 			case 0xFF: // application: its own length byte, then sub-blocks
 				if at >= len(data) {
 					return f, ErrCorruptImage
@@ -881,9 +959,9 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 						f.looped, f.loop = true, int(data[j+2])|int(data[j+3])<<8
 					}
 				}
-				i = skipBlocks(at + 1 + size)
+				i, whole = skipBlocks(at + 1 + size)
 			case 0xFE: // comment
-				i = skipBlocks(at)
+				i, whole = skipBlocks(at)
 			default: // image/gif refuses an extension it does not know
 				return f, ErrCorruptImage
 			}
@@ -891,11 +969,19 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 			if i+descriptorLen > len(data) {
 				return f, ErrCorruptImage
 			}
-			w := int64(data[i+5]) | int64(data[i+6])<<8
-			h := int64(data[i+7]) | int64(data[i+8])<<8
+			left := int(binary.LittleEndian.Uint16(data[i+1:]))
+			top := int(binary.LittleEndian.Uint16(data[i+3:]))
+			w := int(binary.LittleEndian.Uint16(data[i+5:]))
+			h := int(binary.LittleEndian.Uint16(data[i+7:]))
 			flags := data[i+9]
+			right, bottom := left+w, top+h
+			if f.count == 0 && (right > f.canvas.X || bottom > f.canvas.Y) || right > maxSide || bottom > maxSide {
+				return f, ErrCorruptImage
+			}
+			f.screen = image.Pt(max(f.screen.X, right), max(f.screen.Y, bottom))
 			f.count++
-			f.pixels += w * h
+			f.pixels += int64(w) * int64(h)
+			f.largest = max(f.largest, int64(w)*int64(h))
 			if f.pixels > limit {
 				return f, ErrImageTooLarge
 			}
@@ -908,15 +994,21 @@ func gifFramePixels(data []byte, limit int64) (gifFrames, error) {
 			if i >= len(data) || data[i] < 2 || data[i] > 8 {
 				return f, ErrCorruptImage
 			}
-			i = skipBlocks(i + 1)
+			i, whole = skipBlocks(i + 1)
 		case 0x3B: // the trailer, where the decoder stops reading
 			if f.count == 0 { // which it refuses before any frame
 				return f, ErrCorruptImage
 			}
+			f.trailed = true
 			return f, nil
 		default: // a block image/gif refuses
 			return f, ErrCorruptImage
 		}
 	}
-	return f, ErrCorruptImage
+	// The end of the file, with no trailer: where a whole block ended after
+	// a frame, it ends there, as it does in a browser.
+	if !whole || i != len(data) || f.count == 0 {
+		return f, ErrCorruptImage
+	}
+	return f, nil
 }

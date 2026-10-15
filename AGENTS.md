@@ -516,10 +516,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   with its own length byte — because a walk that read one extension differently from
   the decoder lost its place there and counted none of the frames after it, which the
   decoder went on to decode. It refuses (`ErrCorruptImage`) a file it cannot follow to
-  the trailer. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
-  hold it to the decoder: whatever `gif.DecodeAll` decodes, the walk must reach the
-  trailer with exactly the decoder's frames, frame area and, short of an ANIMEXTS1.0
-  extension, loop count. Change the two together.
+  the trailer or to the end of a whole block. Two kinds of file browsers play and
+  `image/gif` refuses are read as browsers read them, and `sanitizeGIF` has the decoder
+  read them so too (`gifReader`): one that ends after its last block without the
+  trailer, which gets one, and one with a frame after the first reaching past the
+  canvas, for which the decoder is told the screen takes in every frame, and which
+  `clipGIF` then cuts to the canvas, a frame wholly off it becoming one transparent
+  pixel left in place for its delay (`TestGIFIsStoredAsBrowsersShowIt`). A first frame
+  past the canvas is refused: Chromium widens the canvas, Firefox moves the frame to
+  the corner. `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels`
+  hold the walk to the decoder: whatever `gif.DecodeAll` decodes from what `gifReader`
+  makes of a file, the walk must have read exactly its frames, their area, the largest
+  of them (charged again for an interlaced frame's reordering, as the canvas was) and,
+  short of an ANIMEXTS1.0 extension, its loop count; and whatever it decodes of a file
+  the walk refused is a disagreement. Change the two together.
 - **What is stored is never the upload.** `media.Process` rewrites every image without
   its metadata before `Save` hands it to a backend, so both backends store the same
   file (`internal/media/sanitize.go`). Files stored before this release are the

@@ -147,9 +147,10 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 	case FormatGIF.Name:
 		// Every frame is decoded and kept, a byte a pixel and its overhead,
 		// until all of them are encoded again. An interlaced frame is
-		// decoded once more while its rows are put in order.
+		// decoded once more while its rows are put in order: at most the
+		// canvas, or a frame reaching past it (gifReader) if that is larger.
 		kept := frames.pixels + frames.count*gifFrameOverhead
-		return []phase{{alloc: kept + px, after: kept}}
+		return []phase{{alloc: kept + max(px, frames.largest), after: kept}}
 	case FormatWebP.Name:
 		return webpPhases(data, w, h)
 	}

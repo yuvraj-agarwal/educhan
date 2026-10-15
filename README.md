@@ -372,10 +372,13 @@ client can leave the image picker off a server that would refuse what it sends.
 - **Formats**: JPEG, PNG, WebP, and GIF, identified by magic bytes rather than by filename
   or the content type the client claims. Anything else, an image whose header claims
   more than 25 megapixels (room for the 24-megapixel photos phones and cameras save, an
-  iPhone's 5712×4284 included), a GIF whose frames add up to more than four times that
-  or whose blocks cannot be read through to its end, or an image that would take more
+  iPhone's 5712×4284 included), a GIF whose frames add up to more than four times that,
+  whose blocks cannot be read through to its end, or whose first frame reaches past its
+  canvas (browsers disagree on how to show that one), or an image that would take more
   memory to process than the server sets aside for all of them at once, is refused with
-  `400` before anything is decoded and before flood control. The memory depends on the
+  `400` before anything is decoded and before flood control. A GIF that ends after its
+  last frame without the closing byte, or whose later frames reach past its canvas, is
+  stored as browsers show it: whole, and with each frame cut to the part on the canvas. The memory depends on the
   encoding as well as the size. At the full 25 megapixels, from an upload of up to the
   default 8 MiB:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,

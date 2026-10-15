@@ -109,6 +109,31 @@ func gifOfFrames(t *testing.T, w, h, n int) []byte {
 	return buf.Bytes()
 }
 
+// gifPastCanvas is a GIF whose 64×64 canvas holds its first frame, and whose
+// second, large×tall, reaches far past it, as browsers draw one cut to the
+// canvas. image/gif decodes it whole (gifReader), so the canvas says nothing
+// of what decoding it takes.
+func gifPastCanvas(t *testing.T, large, tall int) []byte {
+	t.Helper()
+	pal := color.Palette{color.Black, color.White}
+	g := &gif.GIF{
+		Image: []*image.Paletted{
+			image.NewPaletted(image.Rect(0, 0, 64, 64), pal),
+			image.NewPaletted(image.Rect(32, 32, 32+large, 32+tall), pal),
+		},
+		Delay:  []int{1, 1},
+		Config: image.Config{Width: 32 + large, Height: 32 + tall},
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, g); err != nil {
+		t.Fatalf("encode gif: %v", err)
+	}
+	out := buf.Bytes()
+	binary.LittleEndian.PutUint16(out[6:], 64)
+	binary.LittleEndian.PutUint16(out[8:], 64)
+	return out
+}
+
 // interlaced marks every frame of a GIF of flat frames interlaced, which
 // image/gif never writes itself. A flat frame is the same picture whatever
 // order its rows come in, so the flag is all that has to change.
@@ -251,7 +276,10 @@ func greyQuadrants(w, h int) *image.Gray {
 // levels of alpha in vertical bands, the first clear, which libwebp writes as
 // a colour index packed two pixels to the byte: the dearest way to decode
 // either. cost-411.jpg is made with ImageMagick (-sampling-factor 4x1
-// -quality 90), because Pillow does not write 4:1:1. An opaque lossy WebP is
+// -quality 90), because Pillow does not write 4:1:1. The GIF past its canvas
+// has a 3200×2400 interlaced frame on a canvas of 64×64, so that the copy
+// its rows are put in order in is charged on the frame, not the canvas. An
+// opaque lossy WebP is
 // charged for its planes and two copies of its file (the strip's and the
 // decoder's), so it comes three ways, each term megabytes over the others
 // somewhere: 2400×1800 as Pillow made it, whose planes are megabytes and
@@ -290,6 +318,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
+		"GIF past its canvas":          interlaced(t, gifPastCanvas(t, large, tall)),
 		"WebP lossy":                   readTestdata(t, "cost-lossy.webp"),
 		"WebP lossy, small, padded":    paddedBitstream(t, readTestdata(t, "webp-swatches.webp"), 8<<20),
 		"WebP lossy, padded":           paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),

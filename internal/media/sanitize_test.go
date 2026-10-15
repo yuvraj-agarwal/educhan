@@ -12,6 +12,7 @@ import (
 	"image/gif"
 	"image/jpeg"
 	"image/png"
+	"io"
 	"math"
 	"math/rand"
 	"os"
@@ -936,7 +937,7 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 
 	within := gifOf(4)
-	if got, err := gifFramePixels(within, maxGIFFramePixels); got != (gifFrames{pixels: 4 * MaxPixels, count: 4}) || err != nil {
+	if got, err := gifFramePixels(within, maxGIFFramePixels); got.pixels != 4*MaxPixels || got.count != 4 || err != nil {
 		t.Errorf("gifFramePixels = %+v, %v; want four frames of %d pixels and no error", got, err, 4*MaxPixels)
 	}
 	if _, err := Inspect(within); err != nil {
@@ -990,16 +991,40 @@ var gifExtensions = map[string][]byte{
 }
 
 // framesDecoded is what gifFramePixels should make of a GIF image/gif
-// decoded as g: the area and number of its frames, and its loop count.
+// decoded as g: the area and number of its frames, the largest of them, and
+// its loop count.
 func framesDecoded(g *gif.GIF) gifFrames {
 	f := gifFrames{count: int64(len(g.Image)), looped: g.LoopCount != -1}
 	for _, frame := range g.Image {
-		f.pixels += int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
+		area := int64(frame.Bounds().Dx()) * int64(frame.Bounds().Dy())
+		f.pixels += area
+		f.largest = max(f.largest, area)
 	}
 	if f.looped {
 		f.loop = g.LoopCount
 	}
 	return f
+}
+
+// counted is what of a walk's gifFrames a decoder can be held to: what
+// framesDecoded reads off the frames it made.
+func counted(f gifFrames) gifFrames {
+	return gifFrames{pixels: f.pixels, count: f.count, looped: f.looped, loop: f.loop, largest: f.largest}
+}
+
+// decodeAsStored decodes a GIF the way sanitizeGIF does, from what the walk
+// made of it (gifReader).
+func decodeAsStored(t *testing.T, data []byte) (*gif.GIF, gifFrames) {
+	t.Helper()
+	f, err := gifFramePixels(data, math.MaxInt64)
+	if err != nil {
+		t.Fatalf("gifFramePixels: %v", err)
+	}
+	g, err := gif.DecodeAll(gifReader(data, f))
+	if err != nil {
+		t.Fatalf("the decoder refuses what the walk took: %v", err)
+	}
+	return g, f
 }
 
 // spliceAfterHeader puts ext into a GIF after its header and global colour
@@ -1014,9 +1039,147 @@ func spliceAfterHeader(data, ext []byte) []byte {
 	return append(out, data[at:]...)
 }
 
+// withFrameAt moves frame k of a GIF that image/gif wrote to (left, top),
+// keeping its size: the position fields of its image descriptor, and nothing
+// else, change.
+func withFrameAt(t *testing.T, data []byte, k, left, top int) []byte {
+	t.Helper()
+	out := append([]byte(nil), data...)
+	table := func(flags byte) int {
+		if flags&0x80 == 0 {
+			return 0
+		}
+		return 3 << (1 + flags&0x07)
+	}
+	subBlocks := func(i int) int {
+		for i < len(out) && out[i] != 0 {
+			i += 1 + int(out[i])
+		}
+		return i + 1
+	}
+	for i, frame := 13+table(out[10]), 0; i < len(out); {
+		switch out[i] {
+		case 0x21: // image/gif writes graphic control and application extensions
+			switch out[i+1] {
+			case 0xF9:
+				i += 8
+			case 0xFF:
+				i = subBlocks(i + 3 + int(out[i+2]))
+			default:
+				t.Fatalf("an extension image/gif does not write, %#x", out[i+1])
+			}
+		case 0x2C:
+			if frame == k {
+				binary.LittleEndian.PutUint16(out[i+1:], uint16(left))
+				binary.LittleEndian.PutUint16(out[i+3:], uint16(top))
+				return out
+			}
+			frame++
+			i = subBlocks(i + 10 + table(out[i+9]) + 1)
+		default:
+			t.Fatalf("no frame %d in the fixture", k)
+		}
+	}
+	t.Fatalf("no frame %d in the fixture", k)
+	return nil
+}
+
+// A GIF is stored as browsers show it where image/gif alone would refuse it.
+// A file that ends after its last frame without the trailer plays in a
+// browser, and is stored as if it had one. A frame after the first that
+// reaches past the canvas is drawn by a browser only where it is on the
+// canvas, and is stored cut to that; one wholly off the canvas shows nothing
+// for its delay, and is stored as one transparent pixel left in place for
+// the same delay. A first frame past the canvas is refused before any
+// cooldown: Chromium widens the canvas to show it, Firefox moves it to the
+// corner, and there is no one picture to store.
+func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
+	src := animatedGIF(t, 0) // 60×40; frame 1 is 20×20 at (10,5)
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, src); err != nil {
+		t.Fatalf("encode: %v", err)
+	}
+	whole := buf.Bytes()
+	want := process(t, whole)
+
+	t.Run("no trailer", func(t *testing.T) {
+		got := process(t, whole[:len(whole)-1])
+		if !bytes.Equal(got.Data, want.Data) || !bytes.Equal(got.Thumb.Data, want.Thumb.Data) {
+			t.Error("stored differently from the same GIF with its trailer")
+		}
+	})
+
+	// frame decodes the stored GIF and checks it has the source's frames,
+	// delays and disposal but for frame 1, which it returns.
+	frame := func(t *testing.T, data []byte) (*image.Paletted, *gif.GIF) {
+		t.Helper()
+		g, err := gif.DecodeAll(bytes.NewReader(process(t, data).Data))
+		if err != nil {
+			t.Fatalf("the stored GIF does not decode: %v", err)
+		}
+		if g.Config.Width != 60 || g.Config.Height != 40 || len(g.Image) != 3 {
+			t.Fatalf("stored a %dx%d GIF of %d frames, want the 60x40 canvas and all 3", g.Config.Width, g.Config.Height, len(g.Image))
+		}
+		for _, k := range []int{0, 2} {
+			if g.Image[k].Rect != src.Image[k].Rect || g.Delay[k] != src.Delay[k] || g.Disposal[k] != src.Disposal[k] {
+				t.Errorf("frame %d stored at %v, delay %d, disposal %d; want it as it was", k, g.Image[k].Rect, g.Delay[k], g.Disposal[k])
+			}
+		}
+		return g.Image[1], g
+	}
+
+	t.Run("a later frame past the canvas", func(t *testing.T) {
+		m, g := frame(t, withFrameAt(t, whole, 1, 50, 30))
+		if m.Rect != image.Rect(50, 30, 60, 40) {
+			t.Fatalf("frame 1 stored at %v, want the part on the canvas, (50,30)-(60,40)", m.Rect)
+		}
+		if g.Delay[1] != src.Delay[1] || g.Disposal[1] != src.Disposal[1] {
+			t.Errorf("frame 1 stored with delay %d and disposal %d, want them as they were", g.Delay[1], g.Disposal[1])
+		}
+		// Moved, frame 1's pixel (x, y) is the source's (x-40, y-25).
+		orig := src.Image[1]
+		for y := 30; y < 40; y++ {
+			for x := 50; x < 60; x++ {
+				if a, b := m.At(x, y), orig.At(x-40, y-25); !sameColour(a, b) {
+					t.Fatalf("frame 1 at (%d,%d) = %v, want %v", x, y, a, b)
+				}
+			}
+		}
+	})
+
+	t.Run("a later frame wholly off the canvas", func(t *testing.T) {
+		m, g := frame(t, withFrameAt(t, whole, 1, 61, 41))
+		if m.Rect != image.Rect(0, 0, 1, 1) {
+			t.Fatalf("frame 1 stored at %v, want one pixel at the origin", m.Rect)
+		}
+		if _, _, _, a := m.At(0, 0).RGBA(); a != 0 {
+			t.Errorf("frame 1's one pixel has alpha %d, want it transparent", a)
+		}
+		if g.Delay[1] != src.Delay[1] || g.Disposal[1] != gif.DisposalNone {
+			t.Errorf("frame 1 stored with delay %d and disposal %d, want delay %d left in place", g.Delay[1], g.Disposal[1], src.Delay[1])
+		}
+	})
+
+	t.Run("a first frame past the canvas", func(t *testing.T) {
+		data := withFrameAt(t, whole, 0, 1, 0)
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("Inspect = %v, want ErrCorruptImage before any cooldown", err)
+		}
+	})
+}
+
+// sameColour reports whether two colours are the same, alpha included.
+func sameColour(a, b color.Color) bool {
+	r1, g1, b1, a1 := a.RGBA()
+	r2, g2, b2, a2 := b.RGBA()
+	return r1 == r2 && g1 == g2 && b1 == b2 && a1 == a2
+}
+
 // The frame count reads a GIF block for block as image/gif does, so no
 // extension can hide the frames after it from the budget, and a file the
-// decoder could not read to its trailer is refused before anything is decoded.
+// decoder could not read to its end is refused before anything is decoded.
+// Where the walk reads a file browsers show and image/gif refuses as is, it
+// is held to what the decoder reads from gifReader.
 func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 	var small bytes.Buffer
 	if err := gif.EncodeAll(&small, animatedGIF(t, 0)); err != nil {
@@ -1042,7 +1205,7 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 		if err != nil {
 			t.Fatalf("%s: the fixture does not decode: %v", name, err)
 		}
-		if got, err := gifFramePixels(data, math.MaxInt64); got != framesDecoded(g) || err != nil {
+		if got, err := gifFramePixels(data, math.MaxInt64); counted(got) != framesDecoded(g) || !got.trailed || err != nil {
 			t.Errorf("%s: gifFramePixels = %+v, %v; the decoder read %+v", name, got, err, framesDecoded(g))
 		}
 		if _, err := Inspect(spliceAfterHeader(huge, ext)); !errors.Is(err, ErrImageTooLarge) {
@@ -1051,15 +1214,43 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 	}
 
 	whole := small.Bytes()
+	noTrailer := whole[:len(whole)-1]
+	header := 13 + 3*(2<<(whole[10]&7))
+	// Read as browsers read them: image/gif refuses each as it is, and
+	// decodes it from gifReader.
+	widened := map[string][]byte{
+		"no trailer":                       noTrailer,
+		"no trailer, after an extension":   append(append([]byte(nil), noTrailer...), gifExtensions["comment"]...),
+		"a later frame past the canvas":    withFrameAt(t, whole, 1, 50, 30),
+		"a later frame wholly off it":      withFrameAt(t, whole, 1, 61, 41),
+		"a later frame past it, untrailed": withFrameAt(t, noTrailer, 2, 1, 1),
+	}
+	for name, data := range widened {
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err == nil {
+			t.Fatalf("%s: image/gif decodes the fixture as it is; it should not", name)
+		}
+		g, got := decodeAsStored(t, data)
+		if counted(got) != framesDecoded(g) {
+			t.Errorf("%s: gifFramePixels = %+v; the decoder read %+v", name, got, framesDecoded(g))
+		}
+		if _, err := Inspect(data); err != nil {
+			t.Errorf("%s: Inspect = %v, want it taken", name, err)
+		}
+	}
+
 	refused := map[string][]byte{
-		"no trailer":           whole[:len(whole)-1],
-		"cut inside a frame":   whole[:len(whole)/2],
-		"an unknown block":     append(append([]byte(nil), whole[:len(whole)-1]...), 0x00, 0x3B),
-		"an unknown extension": spliceAfterHeader(whole, []byte{0x21, 0x02, 0x00}),
+		"cut inside a frame":             whole[:len(whole)/2],
+		"cut inside a comment":           append(append([]byte(nil), noTrailer...), 0x21, 0xFE, 0x05, 'h', 'i'),
+		"cut after a frame's descriptor": append(append([]byte(nil), noTrailer...), 0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0),
+		"an unknown block":               append(append([]byte(nil), noTrailer...), 0x00, 0x3B),
+		"an unknown extension":           spliceAfterHeader(whole, []byte{0x21, 0x02, 0x00}),
 		"a bad graphic control": spliceAfterHeader(whole,
 			[]byte{0x21, 0xF9, 0x05, 0x00, 0x0A, 0x00, 0x00, 0x00, 0x00}),
-		"no frames":         spliceAfterHeader(whole[:13+3*(2<<(whole[10]&7))], []byte{0x3B}),
-		"a bad LZW minimum": spliceAfterHeader(whole, []byte{0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 9, 0}),
+		"no frames":                          spliceAfterHeader(whole[:header], []byte{0x3B}),
+		"no frames and no trailer":           whole[:header],
+		"a bad LZW minimum":                  spliceAfterHeader(whole, []byte{0x2C, 0, 0, 0, 0, 1, 0, 1, 0, 0, 9, 0}),
+		"a first frame past the canvas":      withFrameAt(t, whole, 0, 1, 0),
+		"a frame past what a header can say": withFrameAt(t, whole, 1, 0xFFFF-10, 0),
 	}
 	for name, data := range refused {
 		if _, err := gif.DecodeAll(bytes.NewReader(data)); err == nil {
@@ -1095,18 +1286,25 @@ func FuzzGIFFramePixels(f *testing.F) {
 	f.Add([]byte("GIF89a\x01\x00\x01\x00\xff\x00\x00"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		n, err := gifFramePixels(data, math.MaxInt64)
-		if n.pixels < 0 || n.count < 0 {
+		if n.pixels < 0 || n.count < 0 || n.largest > n.pixels {
 			t.Fatalf("gifFramePixels = %+v", n)
 		}
 		// Bound what the decoder may allocate here, as Inspect does.
 		if cfg, err := gif.DecodeConfig(bytes.NewReader(data)); err != nil || int64(cfg.Width)*int64(cfg.Height) > 1<<20 || n.pixels > 1<<24 || n.count > 1<<12 {
 			return
 		}
-		g, decErr := gif.DecodeAll(bytes.NewReader(data))
+		// A file the walk takes is decoded as sanitizeGIF decodes it; one it
+		// refuses, as it is, which the decoder must refuse too.
+		r := io.Reader(bytes.NewReader(data))
+		if err == nil {
+			r = gifReader(data, n)
+		}
+		g, decErr := gif.DecodeAll(r)
 		if decErr != nil {
 			return
 		}
 		want := framesDecoded(g)
+		n = counted(n)
 		if bytes.Contains(data, []byte("ANIMEXTS1.0")) {
 			// image/gif does not read this loop extension; the walk does.
 			n.looped, n.loop = false, 0
