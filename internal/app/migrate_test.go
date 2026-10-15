@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -241,5 +242,84 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 	var out map[string]any
 	if status := h.do(http.MethodGet, "/api/boards", nil, &out); status != http.StatusOK {
 		t.Errorf("GET /api/boards on a newer schema: status %d, want the server still serving", status)
+	}
+}
+
+// ANALYZE copies a sample of each column's values into pg_statistic, where
+// pg_stats shows them, and autovacuum runs it by itself after enough writes:
+// for the pending table, email hashes of codes in flight beside expiries to
+// the microsecond, kept after the rows are gone and through every rewrite and
+// vacuum. 0008 drops what had been gathered before it, stops anything being
+// gathered again, and turns autovacuum off on both tables, since the times it
+// last ran follow the writes that set it off.
+func TestVerificationTablesKeepNoStatistics(t *testing.T) {
+	pool, url := databaseAt(t, 7)
+	ctx := context.Background()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, query, args...); err != nil {
+			t.Fatalf("exec %q: %v", query, err)
+		}
+	}
+	// fill writes a few rows into both tables, as requests and
+	// confirmations would, and analyses them.
+	fill := func(from int) {
+		t.Helper()
+		for i := from; i < from+5; i++ {
+			exec(`INSERT INTO verification_pending (email_hash, token_hash, code_hash, label, expires_at)
+				VALUES (int4send($1::int), sha256(int4send($1::int)), '\x00', 'Somewhere',
+				        now() + $1 * interval '1 second')`, i)
+			exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+				VALUES (int4send($1::int), sha256(int4send($1::int)), 'Somewhere',
+				        date_trunc('day', now()) + interval '181 days')`, i)
+		}
+		exec(`ANALYZE verification_pending, verification_credentials`)
+	}
+	sampled := func() []string {
+		t.Helper()
+		rows, err := pool.Query(ctx, `
+			SELECT tablename || '.' || attname FROM pg_stats
+			WHERE schemaname = current_schema()
+			  AND tablename IN ('verification_pending', 'verification_credentials')
+			ORDER BY 1`)
+		if err != nil {
+			t.Fatalf("read pg_stats: %v", err)
+		}
+		columns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read pg_stats: %v", err)
+		}
+		return columns
+	}
+
+	// Positive control: before 0008, ANALYZE keeps a sample of every column,
+	// the email hashes of codes in flight among them.
+	fill(0)
+	if columns := sampled(); !slices.Contains(columns, "verification_pending.email_hash") {
+		t.Fatalf("before 0008, pg_stats holds %v and no email hashes; the check cannot be trusted", columns)
+	}
+
+	h := serverOn(t, url)
+	if columns := sampled(); len(columns) != 0 {
+		t.Errorf("after 0008, pg_stats still holds statistics for %v", columns)
+	}
+	fill(100)
+	if columns := sampled(); len(columns) != 0 {
+		t.Errorf("ANALYZE after 0008 gathered statistics for %v", columns)
+	}
+
+	var autovacuumed []string
+	rows, err := h.app.pool.Query(ctx, `
+		SELECT relname FROM pg_class
+		WHERE oid IN ('verification_pending'::regclass, 'verification_credentials'::regclass)
+		  AND NOT ('autovacuum_enabled=false' = ANY (coalesce(reloptions, '{}')))`)
+	if err != nil {
+		t.Fatalf("read reloptions: %v", err)
+	}
+	if autovacuumed, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatalf("read reloptions: %v", err)
+	}
+	if len(autovacuumed) != 0 {
+		t.Errorf("autovacuum is still on for %v", autovacuumed)
 	}
 }

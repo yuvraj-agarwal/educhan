@@ -313,8 +313,9 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 	// stored row, once the nightly sweep has rewritten it, dates an issuance
 	// only to the day; a line naming the institution, stamped to the second,
 	// would date that row exactly on any day it was the institution's only
-	// one, and line it up with the badged posts that follow. The request log's line for this endpoint already
-	// carries the time, so this line carries no more than that does.
+	// one, and line it up with the badged posts that follow. The request
+	// log's line for this endpoint already carries the time, so this line
+	// carries no more than that does.
 	a.log.Info("verification issued")
 
 	// The credential is handed back in the body rather than set as a cookie, so

@@ -29,7 +29,8 @@ import (
 // Last, it rewrites the verification tables (Store.RewriteCredentials), so
 // that by the time the morning's backup runs the credential rows carry the
 // sweep's transaction id rather than each its own, which would date its
-// issuance against the posts written around it.
+// issuance against the posts written around it, and the tables' files hold
+// nothing else.
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.
@@ -49,12 +50,13 @@ type SweepReport struct {
 	BlobsRemoved int
 	BlobFailures int
 	BlobsMissing int
-	// The verification credentials the sweep rewrote, which is every one
-	// there was (Store.RewriteCredentials): it shows the rewrite ran, and
-	// over how much. It is the size of the table, which anyone holding the
-	// database has, and the log already counts issuances one by one
-	// ("verification issued"); a daily total says how many credentials are
-	// live and nothing about any one of them. Nothing finer — no label, no
+	// The rows of the credentials table the sweep rewrote, which is all of
+	// them (Store.RewriteCredentials), expired ones that no confirmation has
+	// pruned yet included: it shows the rewrite ran, and over how much. Kept
+	// night after night it is a history of the table's size, which the
+	// database does not keep, and it says how many credentials there were
+	// and nothing about any one of them; the log already counts issuances
+	// one by one ("verification issued"). Nothing finer — no label, no
 	// expiry — belongs here.
 	Credentials int
 }

@@ -794,14 +794,16 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 	h.badgedPost(path, confirm.out.Credential, "IIT Bombay")
 }
 
-// The rewrite and the vacuum each wait a few seconds at most for a lock, and
-// a sweep that could not finish either says so in its exit status. A session
-// that writes to the credentials table and stays open stops the rewrite; one
-// that only reads the pending table, as an export does, stops the vacuum
-// after the rewrite has committed. Either way the next sweep finishes.
+// The rewrite waits a few seconds at most for its lock, the vacuum keeps
+// trying for a while a table it cannot take, and a sweep that could not finish
+// either says so in its exit status. A session that writes to the credentials
+// table and stays open stops the rewrite; one that only reads the pending
+// table, as an export does, stops the vacuum after the rewrite has committed.
+// Either way the next sweep finishes.
 func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
+	h.app.store.vacuumPatience = time.Second
 	ctx := context.Background()
 	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
 		VALUES ('\x01', '\x02', 'Held College', date_trunc('day', now()) + interval '181 days')`)
@@ -838,8 +840,8 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	files := h.relationFiles("verification_credentials", "verification_pending")
 	reader := hold(`SELECT count(*) FROM verification_pending`)
 	report, err = h.app.Sweep(ctx)
-	if err == nil || !strings.Contains(err.Error(), "lock timeout") {
-		t.Fatalf("a sweep held off the pending table returned %v, want a lock timeout", err)
+	if err == nil || !strings.Contains(err.Error(), "could not take verification_pending") {
+		t.Fatalf("a sweep held off the pending table returned %v, want it to say it could not take the table", err)
 	}
 	if report.Credentials != 2 {
 		t.Errorf("the sweep reports %d credentials rewritten, want the 2 it rewrote before the vacuum stopped", report.Credentials)
@@ -853,11 +855,388 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 		}
 	}
 
+	h.app.store.vacuumPatience = vacuumPatience
 	if _, err := h.app.Sweep(ctx); err != nil {
 		t.Fatalf("sweep once nothing holds the tables: %v", err)
 	}
 	after := h.relationFiles("verification_credentials", "verification_pending")
 	if after[0] == files[0] || after[1] == files[1] {
 		t.Errorf("the tables are still in files %v after a sweep that finished, want new ones", after)
+	}
+}
+
+// credentialsTableSize is the size of the credentials table's file, which
+// holds every row version VACUUM FULL kept, live or not.
+func (h *harness) credentialsTableSize() int64 {
+	h.t.Helper()
+	var size int64
+	if err := h.app.pool.QueryRow(context.Background(),
+		`SELECT pg_relation_size('verification_credentials')`).Scan(&size); err != nil {
+		h.t.Fatalf("size of the credentials table: %v", err)
+	}
+	return size
+}
+
+// issueDirectly writes n credentials straight into the table, each in a
+// transaction of its own, as n confirmations would: n rows with n
+// transaction ids, enough of them that a file holding their old versions as
+// well is plainly bigger than one holding the rows alone.
+func (h *harness) issueDirectly(n int) {
+	h.t.Helper()
+	for i := range n {
+		h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+			VALUES (int4send($1::int), sha256(int4send($1::int)), 'Somewhere',
+			        date_trunc('day', now()) + interval '181 days')`, i)
+	}
+}
+
+// assertNothingButLiveRows fails the test unless the credentials table's file
+// holds only its rows: a VACUUM FULL run now, with nothing written since the
+// sweep, has nothing left to take out.
+func (h *harness) assertNothingButLiveRows() {
+	h.t.Helper()
+	swept := h.credentialsTableSize()
+	h.exec(`VACUUM FULL verification_credentials`)
+	if again := h.credentialsTableSize(); again != swept {
+		h.t.Errorf("the credentials table took %d bytes after the sweep and %d after one more VACUUM FULL: "+
+			"the sweep left old row versions in it", swept, again)
+	}
+}
+
+// VACUUM FULL keeps a deleted row, xmin and all, while any snapshot older than
+// its cutoff could still read it, and that cutoff is held back by any
+// statement or transaction in the database that began before the rewrite
+// committed, or by a transaction anywhere on the instance that had written
+// something by then. So every version the rewrite replaced can go into the new
+// file, issuance xmins and all, with the file's number changed as if nothing
+// were wrong. The sweep must not report success then: it tries again while the
+// older transaction lasts, and fails when it outlasts the sweep's patience.
+// Both kinds of holder are here — a snapshot, as a long read or an export
+// keeps, and a transaction that has written something, as a reply in flight
+// is.
+func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
+	const issued = 200
+	for _, holder := range []struct {
+		name      string
+		isolation pgx.TxIsoLevel
+		statement string
+	}{
+		{"snapshot", pgx.RepeatableRead, `SELECT count(*) FROM posts`},
+		// Asking for its id is what writing anything would give it.
+		{"writer", pgx.ReadCommitted, `SELECT pg_current_xact_id()`},
+	} {
+		t.Run(holder.name, func(t *testing.T) {
+			var logs syncBuffer
+			h := testServerLogging(t, nil, &logs)
+			h.app.store.vacuumPatience = time.Second
+			ctx := context.Background()
+			h.issueDirectly(issued)
+
+			held, err := h.app.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: holder.isolation})
+			if err != nil {
+				t.Fatalf("begin: %v", err)
+			}
+			t.Cleanup(func() { _ = held.Rollback(ctx) })
+			if _, err := held.Exec(ctx, holder.statement); err != nil {
+				t.Fatalf("hold: %v", err)
+			}
+
+			report, err := h.app.Sweep(ctx)
+			if err == nil || !strings.Contains(err.Error(), "kept rows deleted from verification_credentials") {
+				t.Fatalf("a sweep that overlapped an older transaction returned %v, "+
+					"want it to say VACUUM FULL kept the old rows", err)
+			}
+			if report.Credentials != issued {
+				t.Errorf("the sweep rewrote %d credentials, want %d", report.Credentials, issued)
+			}
+			if strings.Contains(logs.String(), "Somewhere") || strings.Contains(err.Error(), "Somewhere") {
+				t.Errorf("the failing sweep logged a credential's label")
+			}
+			// Positive controls: the file the failed sweep left is the bigger
+			// for the old versions, and a snapshot from before the rewrite
+			// still reads them out of it, each with its issuance xmin.
+			kept := h.credentialsTableSize()
+			if holder.isolation == pgx.RepeatableRead {
+				var xmins int
+				if err := held.QueryRow(ctx,
+					`SELECT count(DISTINCT xmin::text) FROM verification_credentials`).Scan(&xmins); err != nil {
+					t.Fatalf("read the old rows: %v", err)
+				}
+				if xmins != issued {
+					t.Errorf("the older snapshot reads %d transaction ids, want the %d issuances'", xmins, issued)
+				}
+			}
+			if err := held.Rollback(ctx); err != nil {
+				t.Fatalf("end the older transaction: %v", err)
+			}
+
+			h.app.store.vacuumPatience = vacuumPatience
+			if _, err := h.app.Sweep(ctx); err != nil {
+				t.Fatalf("sweep once the older transaction has ended: %v", err)
+			}
+			if size := h.credentialsTableSize(); size >= kept {
+				t.Errorf("the credentials table takes %d bytes after a sweep that finished and took %d after "+
+					"one that kept the old rows; the size cannot tell them apart", size, kept)
+			}
+			h.assertNothingButLiveRows()
+			if n := h.credentialXmins(nil); n != 1 {
+				t.Errorf("the credentials carry %d transaction ids, want the last sweep's alone", n)
+			}
+		})
+	}
+}
+
+// An older transaction that ends while the sweep is trying costs a wait, not
+// a failed run: VACUUM FULL runs again once nothing older than the rewrite is
+// left, and that run takes the old versions out.
+func TestSweepWaitsForAnOlderTransactionToEnd(t *testing.T) {
+	const issued = 200
+	h := testServer(t, nil)
+	ctx := context.Background()
+	h.issueDirectly(issued)
+
+	held, err := h.app.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = held.Rollback(ctx) })
+	if _, err := held.Exec(ctx, `SELECT count(*) FROM posts`); err != nil {
+		t.Fatalf("hold a snapshot: %v", err)
+	}
+	file := h.relationFiles("verification_credentials")[0]
+	swept := h.sweepLater()
+	waitUntil(t, "the sweep has run VACUUM FULL on the credentials once",
+		func() bool { return h.relationFiles("verification_credentials")[0] != file })
+
+	// The file that run wrote holds the old versions: the snapshot reads them.
+	var xmins int
+	if err := held.QueryRow(ctx,
+		`SELECT count(DISTINCT xmin::text) FROM verification_credentials`).Scan(&xmins); err != nil {
+		t.Fatalf("read the old rows: %v", err)
+	}
+	if xmins != issued {
+		t.Fatalf("the older snapshot reads %d transaction ids after the first VACUUM FULL, want the %d issuances'; "+
+			"this test did not catch the sweep before it finished", xmins, issued)
+	}
+	kept := h.credentialsTableSize()
+	if err := held.Rollback(ctx); err != nil {
+		t.Fatalf("end the older transaction: %v", err)
+	}
+
+	sweep := await(t, "the sweep", swept)
+	if sweep.err != nil {
+		t.Fatalf("a sweep whose older transaction ended while it waited: %v", sweep.err)
+	}
+	if size := h.credentialsTableSize(); size >= kept {
+		t.Errorf("the credentials table takes %d bytes after the sweep, as many as the %d it took "+
+			"with the old versions in it", size, kept)
+	}
+	h.assertNothingButLiveRows()
+}
+
+// VACUUM FULL skips, with nothing worse than a warning, a table its role may
+// not vacuum, which leaves the table in its old file with every old version
+// in it. Waiting will not change that, so the sweep fails at once and says
+// why, and its log is still counts alone. Here a plain VACUUM, which also
+// leaves each table where it is and warns of nothing, stands in for a role
+// that does not own the tables, which a test cannot make.
+func TestSweepFailsWhenVacuumLeavesATableInItsFile(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		VALUES ('\x01', '\x02', 'Unowned College', '2033-03-03T00:00:00Z')`)
+	h.app.store.vacuumCommand = "VACUUM (SKIP_LOCKED)"
+
+	start := time.Now()
+	before := len(logs.String())
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "must own the verification tables") {
+		t.Fatalf("a sweep whose VACUUM FULL left the tables in their files returned %v, "+
+			"want it to say the role must own them", err)
+	}
+	if took := time.Since(start); took > vacuumPatience/2 {
+		t.Errorf("the sweep took %s to give up on something waiting cannot change", took)
+	}
+	if report.Credentials != 1 {
+		t.Errorf("the sweep reports %d credentials rewritten, want the 1 it rewrote", report.Credentials)
+	}
+
+	var records []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()[before:]), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		records = append(records, entry)
+	}
+	if len(records) != 1 || records[0]["msg"] != "sweep" {
+		t.Fatalf("the sweep logged %v, want exactly one sweep record", records)
+	}
+	record := records[0]
+	delete(record, "time")
+	delete(record, "level")
+	delete(record, "msg")
+	want := map[string]any{"threads": 0.0, "posts": 0.0, "attachments": 0.0,
+		"blobs_removed": 0.0, "blob_failures": 0.0, "blobs_missing": 0.0, "credentials_rewritten": 1.0}
+	if fmt.Sprint(record) != fmt.Sprint(want) {
+		t.Errorf("sweep record = %v, want exactly %v", record, want)
+	}
+	for _, text := range []string{logs.String(), err.Error()} {
+		if strings.Contains(text, "Unowned") || strings.Contains(text, "2033-03-03") {
+			t.Errorf("the failing sweep logged something of a credential's row: %s", text)
+		}
+	}
+}
+
+// While the sweep cannot vacuum a table another session holds — an export
+// reading the credentials, say — badged posts must not queue behind it: each
+// one waiting would hold one of its instance's few database connections, and
+// once they held them all every request on the instance would wait. VACUUM
+// FULL waiting for its lock queues them; the sweep's vacuum takes a table only
+// when nobody holds it, and otherwise tries again later.
+func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
+	h := verifyServer(t, nil)
+	h.app.store.vacuumPatience = 3 * time.Second
+	h.addBoard("busy")
+	thread := h.createThread("busy", "", "", "posting through the sweep")
+	path := fmt.Sprintf("/api/boards/busy/threads/%d/posts", thread.ThreadNo)
+	credential := h.verify("export@iitb.ac.in").Credential
+	ctx := context.Background()
+
+	export, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = export.Rollback(ctx) })
+	if _, err := export.Exec(ctx, `SELECT count(*) FROM verification_credentials`); err != nil {
+		t.Fatalf("read the credentials: %v", err)
+	}
+
+	pending := h.relationFiles("verification_pending")[0]
+	swept := h.sweepLater()
+	// The sweep has reached the vacuum once it is waiting for the credentials
+	// table, or, not waiting, has gone on to the pending table.
+	waitUntil(t, "the sweep reaches the vacuum", func() bool {
+		var waiting bool
+		if err := h.app.pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'verification_credentials'::regclass
+			               AND mode = 'AccessExclusiveLock' AND NOT granted)`).Scan(&waiting); err != nil {
+			t.Fatalf("read pg_locks: %v", err)
+		}
+		return waiting || h.relationFiles("verification_pending")[0] != pending
+	})
+
+	start := time.Now()
+	h.badgedPost(path, credential, "IIT Bombay")
+	if took := time.Since(start); took > 2*time.Second {
+		t.Errorf("a badged post took %s while the sweep tried to vacuum a table an export held: "+
+			"it queued behind the vacuum", took)
+	}
+
+	sweep := await(t, "the sweep", swept)
+	if sweep.err == nil || !strings.Contains(sweep.err.Error(), "could not take verification_credentials") {
+		t.Errorf("a sweep that could not take the credentials table returned %v, want it to say so", sweep.err)
+	}
+	if err := export.Rollback(ctx); err != nil {
+		t.Fatalf("end the export: %v", err)
+	}
+	h.app.store.vacuumPatience = vacuumPatience
+	if _, err := h.app.Sweep(ctx); err != nil {
+		t.Fatalf("sweep once the export has ended: %v", err)
+	}
+}
+
+// PostgreSQL's statistics keep the time of the last scan of every table and
+// index (last_seq_scan, last_idx_scan), and a confirmation checking the
+// credentials' primary key is such a scan: on a day with a single issuance it
+// would date that credential to the second, though its row says only the day.
+// After the sweep, every one of those times on the verification tables is the
+// sweep's.
+func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
+	h := verifyServer(t, nil)
+	h.verify("scanned@iitb.ac.in")
+	ctx := context.Background()
+
+	type stamp struct {
+		what string
+		at   *time.Time
+	}
+	stamps := func() []stamp {
+		rows, err := h.app.pool.Query(ctx, `
+			SELECT relname || ' read whole', last_seq_scan FROM pg_stat_user_tables
+			WHERE schemaname = current_schema() AND relname = ANY ($1)
+			UNION ALL
+			SELECT relname || ' read by index', last_idx_scan FROM pg_stat_user_tables
+			WHERE schemaname = current_schema() AND relname = ANY ($1)
+			UNION ALL
+			SELECT indexrelname, last_idx_scan FROM pg_stat_user_indexes
+			WHERE schemaname = current_schema() AND relname = ANY ($1)
+			ORDER BY 1`, verificationTables[:])
+		if err != nil {
+			t.Fatalf("read the scan times: %v", err)
+		}
+		all, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (stamp, error) {
+			var s stamp
+			err := row.Scan(&s.what, &s.at)
+			return s, err
+		})
+		if err != nil {
+			t.Fatalf("read the scan times: %v", err)
+		}
+		// Both tables, each read whole and by index, and their six indexes.
+		if len(all) != 10 {
+			t.Fatalf("found %d scan times, want 10: %v", len(all), all)
+		}
+		return all
+	}
+
+	// Every table and index scanned once before the sweep, as restampScans
+	// scans them, on a connection that then closes, which hands its counts
+	// to the statistics at once: a request's connection goes back to the pool
+	// and hands them over when it is next idle long enough, which can be ten
+	// seconds away.
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if err := restampScans(ctx, conn); err != nil {
+		t.Fatalf("scan the verification tables: %v", err)
+	}
+	if err := conn.Close(ctx); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	waitUntil(t, "the statistics have a time for every scan", func() bool {
+		for _, s := range stamps() {
+			if s.at == nil {
+				return false
+			}
+		}
+		return true
+	})
+	var sweepStart time.Time
+	if err := h.app.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&sweepStart); err != nil {
+		t.Fatalf("read the clock: %v", err)
+	}
+
+	if _, err := h.app.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// The sweeper's connection closes as the sweep returns, and the
+	// statistics take its counts a moment later.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		var stale []string
+		for _, s := range stamps() {
+			if s.at == nil || s.at.Before(sweepStart) {
+				stale = append(stale, fmt.Sprintf("%s at %v", s.what, s.at))
+			}
+		}
+		if len(stale) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("after the sweep, scan times from before it (%s) remain: %s", sweepStart, stale)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 }

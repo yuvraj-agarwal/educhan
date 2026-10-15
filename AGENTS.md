@@ -624,14 +624,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   error or a cancellation — it calls `RewriteCredentials` (see **Verified Anonymity**
   below). It logs one record of counts and nothing that names a board or thread or
   says anything of a credential, failures included, and the error it returns has the
-  key taken out (`TestSweepLogsOnlyCounts`); `credentials_rewritten` is the size of
-  the credentials table, which anyone holding the database has anyway, and nothing
-  finer belongs beside it. It returns an error — a non-zero exit — on a database failure, a
-  file it could not remove or did not find, a rewrite or vacuum of the verification
-  tables that did not finish, or a database a newer release migrated
-  (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New`
-  like the server, and runs without the salt, the moderation key and the verification
-  secret on purpose, so `New` warns about none of them: those warnings are
+  key taken out (`TestSweepLogsOnlyCounts`). `credentials_rewritten` is the number of
+  rows in the credentials table, expired ones no confirmation has pruned yet
+  included; night after night it is a history of the table's size, which the
+  database does not keep, and nothing finer belongs beside it. It returns an error —
+  a non-zero exit — on a database failure, a file it could not remove or did not
+  find, a rewrite or vacuum of the verification tables that did not finish, or a
+  database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`).
+  It builds its App with `New` like the server, and runs without the salt, the
+  moderation key and the verification secret on purpose, so `New` warns about none
+  of them: those warnings are
   `WarnServingSettings`, which only `serve` in `cmd/server` calls
   (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
   warning about a server-only setting goes there, not in `New`. **Legal holds (build
@@ -788,8 +790,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   breaks the promise rather than just the code: the address is never written anywhere
   (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
   credential carries only a label, an expiry, and a random id; and nothing links a
-  credential to a post. Practical consequences when editing `verify.go`, `store.go`, or
-  `0004_verification.sql`:
+  credential to a post. Practical consequences when editing `verify.go`, `store.go`,
+  `0004_verification.sql`, or `0008_verification_statistics.sql`:
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
@@ -800,30 +802,54 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
     dates its issuance to the minutes between two of them; freezing keeps `xmin`, and
     `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's last
-    step, locks `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed
-    transaction (writers wait, `CredentialLabel` reads on), deletes every row and
-    inserts the returned copy back `ORDER BY random()` in one statement, then runs
-    `VACUUM FULL` on both verification tables outside the transaction, which takes the
-    dead versions — and deleted pending rows, with their email hash and an expiry to
-    the second — off disk. It runs on a connection taken out of the pool with
-    `lock_timeout` at five seconds, so a session holding a table fails the sweep
-    instead of queueing badged posts behind the vacuum. `VACUUM FULL` skips, with only
-    a warning, a table its role owns neither itself nor through owning the database, so
-    the sweep compares `pg_relation_filenode` before and after and fails on an
-    unchanged one: the sweeper connects as the role that ran the migrations. A new write path into the
+    step, works on a connection of its own, with `lock_timeout` at five seconds and a
+    handler that collects notices. It locks `verification_credentials`
+    `IN EXCLUSIVE MODE` in a read-committed transaction (writers wait, `CredentialLabel`
+    reads on), deletes every row and inserts the returned copy back `ORDER BY random()`
+    in one statement, and notes the transaction's id. `restampScans` then reads each
+    verification table whole and through each of its indexes, which it finds in the
+    catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
+    show for them is the sweep's rather than the last confirmation's. Last,
+    `VACUUM (FULL, SKIP_LOCKED)` on each table, outside the transaction, takes the dead
+    versions — and deleted pending rows, with their email hash and an expiry to the
+    second — off disk. `SKIP_LOCKED` passes over a table another session holds, with a
+    `55P03` warning, rather than queueing every badged post behind the vacuum.
+    `VACUUM FULL` keeps any deleted row an older snapshot could read: any statement or
+    transaction in the database that began before the rewrite committed and is still
+    running, the server's own requests included, or a transaction anywhere on the
+    instance that had written something by then. So the sweep requires each table's
+    `relfrozenxid` afterwards to be newer than the rewrite's transaction id, which
+    `VACUUM FULL` makes true exactly when it dropped those rows, and otherwise runs it
+    again, backing off, for up to `vacuumPatience` (a minute) before failing. It also
+    skips, with a different warning, a table its role owns neither itself nor through
+    owning the database: an unchanged `pg_relation_filenode` with no `55P03` fails the
+    sweep at once, and the sweeper connects as the role that ran the migrations.
+    `0008` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
+    from copying email hashes beside their expiries into `pg_statistic`, drops what it
+    had copied, and turns autovacuum off on both, since the times it last ran follow
+    the writes; the nightly `VACUUM FULL` is their vacuum. A new write path into the
     credentials table re-dates the rows it writes until the next sweep, so treat one
-    like a new column. The README's "Transaction ids, and the nightly rewrite" says
-    exactly what this protects — the live database after the 03:17 UTC sweep, where a
-    credential is dated only by its expiry day — and what it does not: a credential
-    issued since the last sweep, backups (taken from 05:00 UTC, up to 09:00, seven
-    kept), a session holding an old snapshot during the vacuum, and the write-ahead
-    log. Point-in-time recovery stays off and `track_commit_timestamp` stays off
-    (`deploy/README.md` section 2.2); changing either means changing that README
-    section in the same commit. `TestSweepTakesIssuanceTimeOutOfCredentials`,
+    like a new column, and a new column on either table gets `SET STATISTICS 0` in its
+    migration. The README's "Transaction ids, and the nightly rewrite" says exactly
+    what this protects — the verification tables of the live database after the 03:17
+    UTC sweep, where a credential is dated only by its expiry day — and what it does
+    not: a credential issued since the last sweep, backups (taken from 05:00 UTC, up to
+    09:00, seven kept), a night the sweep failed, autovacuum times recorded before
+    `0008`, and the write-ahead log the server keeps for crash recovery, which dates
+    every issuance until PostgreSQL deletes or reuses its segment. Point-in-time
+    recovery stays off and `track_commit_timestamp` stays off (`deploy/README.md`
+    section 2.2); changing either means changing that README section in the same
+    commit. `TestSweepTakesIssuanceTimeOutOfCredentials`,
     `TestSweepStoresCredentialsOutOfIssuanceOrder`,
     `TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
-    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce` and
-    `TestSweepFailsWhenTheVerificationTablesAreHeld` hold it.
+    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`,
+    `TestSweepFailsWhenTheVerificationTablesAreHeld`,
+    `TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
+    `TestSweepWaitsForAnOlderTransactionToEnd`,
+    `TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+    `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
+    `TestSweepLeavesNoScanTimeFromBeforeIt` and
+    `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
     returned by `/api/verify/confirm`, kept by the client in `localStorage`, and sent
     in `X-Educhan-Credential` only on posts that ticked the badge box. A cookie would be
@@ -858,8 +884,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `mailer.Dev` sender prints one to stdout, which is why it is a development tool only.
     The credential is not logged either: it is shown once, in one response body. The
     issuance line (`verification issued`) is bare: no label, no institution, nothing
-    from the record. The row dates an issuance to the day; a label stamped to the
-    second would date it exactly whenever it was its institution's only one that day.
+    from the record. Once the nightly sweep has rewritten it, the row dates an
+    issuance to the day; a label stamped to the second would date it exactly whenever
+    it was its institution's only one that day.
     A badged post soon after an issuance still names the institution, so the request
     log's time for `/api/verify/confirm` can tie that post to its record on such a day;
     the README says so, and how long that log is kept is what limits it.

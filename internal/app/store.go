@@ -5,7 +5,9 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -54,10 +56,17 @@ const (
 // Store is the PostgreSQL-backed persistence layer.
 type Store struct {
 	pool *pgxpool.Pool
+	// What RewriteCredentials runs on each verification table, and how long
+	// it keeps trying: vacuumCommand and vacuumPatience, which tests change
+	// to see a vacuum that skips a table, or a sweep that gives up sooner.
+	vacuumCommand  string
+	vacuumPatience time.Duration
 }
 
 // NewStore wraps an existing pool.
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func NewStore(pool *pgxpool.Pool) *Store {
+	return &Store{pool: pool, vacuumCommand: vacuumCommand, vacuumPatience: vacuumPatience}
+}
 
 // Ping reports whether the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
@@ -1169,19 +1178,42 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 	return label, err
 }
 
-// verificationLockTimeout bounds each wait RewriteCredentials makes for a lock
-// on a verification table. While VACUUM FULL waits for one, every request
-// that reads a credential queues behind it, so a session that holds a table
-// for long — an export, a psql left in a transaction — fails the sweep within
-// seconds rather than holding up badged posts and confirmations until it ends.
+// verificationLockTimeout bounds every wait RewriteCredentials makes for a
+// lock. The one it can wait on in practice is the rewrite's lock on the
+// credentials table, which a transaction that has written to the table, or
+// locked rows in it, holds up. While the rewrite waits, confirmations queue
+// behind it, each holding one of its instance's few database connections,
+// and once they hold them all every request on that instance waits too; so a
+// transaction left open on the table — a psql session that wrote to it, say —
+// fails the sweep within seconds rather than stalling the site until it ends.
+// Reads do not queue behind the rewrite, and nothing queues behind the
+// vacuum, which takes a table only when nobody else holds it
+// (vacuumVerificationTables).
 const verificationLockTimeout = "5s"
+
+// How long RewriteCredentials keeps trying VACUUM FULL on a verification
+// table it could not take, or whose new file still holds rows deleted before
+// the rewrite, before the sweep fails; and how long it waits between tries:
+// vacuumFirstWait at first, doubling each time up to vacuumMaxWait.
+const (
+	vacuumPatience  = time.Minute
+	vacuumFirstWait = 100 * time.Millisecond
+	vacuumMaxWait   = 5 * time.Second
+)
+
+// vacuumCommand is what RewriteCredentials runs on each verification table.
+const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED)"
+
+// sqlstateLockNotAvailable is the code of the warning VACUUM gives when
+// SKIP_LOCKED makes it pass over a table another session holds.
+const sqlstateLockNotAvailable = "55P03"
 
 // verificationTables are the tables RewriteCredentials vacuums.
 var verificationTables = [...]string{"verification_credentials", "verification_pending"}
 
 // RewriteCredentials takes from the verification tables what PostgreSQL
 // records about every row whatever the schema leaves out, and returns how many
-// credentials it rewrote. The archive sweeper calls it once a night.
+// credential rows it rewrote. The archive sweeper calls it once a night.
 //
 // Every row carries the id of the transaction that wrote it (xmin). Posts are
 // written by transactions too, and carry created_at, so a credential's xmin
@@ -1202,31 +1234,34 @@ var verificationTables = [...]string{"verification_credentials", "verification_p
 // reads throughout: the old rows until the commit, the new ones after, never
 // neither.
 //
-// The old versions are still on disk with their xmin, as are the pending rows
-// confirmations deleted, each with an email hash and an expiry to the second.
-// VACUUM FULL writes both tables to new files without them and drops the old
-// files; it cannot run in a transaction. It copies rather than drops a deleted
-// row that a snapshot taken before the rewrite committed could still read.
-// educhan's own transactions last milliseconds, so only a long session
-// elsewhere in the database — an export, a psql left open — would keep old
-// rows on disk past the sweep. And it skips a table the connecting role may
-// not vacuum — one it owns neither itself nor through owning the database —
-// with only a warning, so the files are compared before and after and an
-// unchanged one is an error.
+// The old versions are still in the table's file with their xmin, as are the
+// pending rows confirmations deleted, each with an email hash and an expiry to
+// the second, and vacuumVerificationTables writes both tables to new files
+// without them. The times PostgreSQL's statistics keep of the last scan of
+// each table and index would date the last confirmation before the sweep, so
+// restampScans makes them the sweep's.
+//
+// It works on a connection of its own rather than one from the pool, for the
+// two settings the pool's connections should not carry: the lock timeout, and
+// a handler for the warnings with which VACUUM reports a table it skipped.
 func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
-	pooled, err := s.pool.Acquire(ctx)
+	notices := &noticeLog{}
+	config := s.pool.Config().ConnConfig
+	if config.RuntimeParams == nil {
+		config.RuntimeParams = map[string]string{}
+	}
+	config.RuntimeParams["lock_timeout"] = verificationLockTimeout
+	config.OnNotice = notices.add
+	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {
-		return 0, err
+		return 0, fmt.Errorf("connect: %w", err)
 	}
-	// The lock timeout is a session setting, so this connection leaves the
-	// pool and is closed afterwards rather than handed back carrying it.
-	conn := pooled.Hijack()
 	defer conn.Close(context.WithoutCancel(ctx))
-	if _, err := conn.Exec(ctx, `SET lock_timeout = '`+verificationLockTimeout+`'`); err != nil {
-		return 0, fmt.Errorf("set lock timeout: %w", err)
-	}
 
-	var rewritten int
+	var (
+		rewritten int
+		rewrite   uint32 // the rewriting transaction's id
+	)
 	err = pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `LOCK TABLE verification_credentials IN EXCLUSIVE MODE`); err != nil {
 			return fmt.Errorf("lock credentials: %w", err)
@@ -1243,43 +1278,220 @@ func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 			return fmt.Errorf("rewrite credentials: %w", err)
 		}
 		rewritten = int(tag.RowsAffected())
+		// The old versions carry this id as the transaction that deleted
+		// them, and the vacuum is measured against it. Asking for it gives
+		// the transaction one even when there was nothing to delete.
+		if err := tx.QueryRow(ctx, `SELECT pg_current_xact_id()::xid`).Scan(&rewrite); err != nil {
+			return fmt.Errorf("read the rewrite's transaction id: %w", err)
+		}
 		return nil
 	})
 	if err != nil {
 		return 0, err
 	}
-
-	before, err := relationFiles(ctx, conn, verificationTables[:])
-	if err != nil {
+	if err := restampScans(ctx, conn); err != nil {
 		return rewritten, err
 	}
-	if _, err := conn.Exec(ctx, `VACUUM FULL `+strings.Join(verificationTables[:], ", ")); err != nil {
-		return rewritten, fmt.Errorf("vacuum verification tables: %w", err)
-	}
-	after, err := relationFiles(ctx, conn, verificationTables[:])
-	if err != nil {
-		return rewritten, err
-	}
-	for i, table := range verificationTables {
-		if after[i] == before[i] {
-			return rewritten, fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
-				"must own the verification tables, as the role that ran the migrations does, or the database", table)
-		}
-	}
-	return rewritten, nil
+	return rewritten, s.vacuumVerificationTables(ctx, conn, notices, rewrite)
 }
 
-// relationFiles returns the number of the file each table is stored in, which
-// VACUUM FULL replaces.
-func relationFiles(ctx context.Context, conn *pgx.Conn, tables []string) ([]int64, error) {
-	files := make([]int64, len(tables))
-	for i, table := range tables {
-		if err := conn.QueryRow(ctx,
-			`SELECT pg_relation_filenode($1::text::regclass)::bigint`, table).Scan(&files[i]); err != nil {
-			return nil, fmt.Errorf("find the file %s is stored in: %w", table, err)
+// vacuumVerificationTables runs VACUUM FULL on each verification table until
+// the table's new file holds no row deleted by the rewrite (transaction id
+// rewrite) or before it, trying again for up to s.vacuumPatience.
+//
+// VACUUM FULL writes a table to a new file and drops the old one; it cannot
+// run in a transaction. Three things can keep it from doing that job.
+//
+// Another session can hold the table. VACUUM FULL waiting for it would queue
+// every badged post and confirmation behind it, so it runs with SKIP_LOCKED:
+// it passes over a table it cannot take at once, with a warning, and this
+// tries again a moment later.
+//
+// It copies, rather than drops, a deleted row that some snapshot could still
+// read: one deleted by a transaction no older than its cutoff. The cutoff is
+// the oldest snapshot or transaction still open in this database, or older:
+// VACUUM FULL's own snapshot counts, and that is older than every transaction
+// still open anywhere on the instance that has written something. So a
+// snapshot in this database taken before the rewrite committed and still in
+// use — a statement running then, which a request in flight is enough for, or
+// a transaction reading from one snapshot, as an export does — or a
+// transaction anywhere on the instance that had written something by then
+// puts every row the rewrite deleted into the new file, each with the xmin it
+// was issued under, and the pending rows confirmations deleted with them.
+// VACUUM FULL freezes what it keeps and moves the table's relfrozenxid up to
+// its cutoff, so those rows are gone exactly when relfrozenxid is newer than
+// the rewrite. Until it is, this waits for the older transactions to end and
+// runs VACUUM FULL again.
+//
+// And it skips, with a different warning, a table its role may not vacuum —
+// one it owns neither itself nor through owning the database. Waiting does
+// not change that, so the sweep fails at once. The table's file is compared
+// before and after to see whether VACUUM FULL ran at all.
+func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
+	rewrite uint32) error {
+	deadline := time.Now().Add(s.vacuumPatience)
+	wait := vacuumFirstWait
+	left := verificationTables[:]
+	for {
+		var held []string
+		var why []string
+		for _, table := range left {
+			reason, err := s.vacuumVerificationTable(ctx, conn, notices, table, rewrite)
+			if err != nil {
+				return err
+			}
+			if reason != "" {
+				held = append(held, table)
+				why = append(why, reason)
+			}
 		}
+		if len(held) == 0 {
+			return nil
+		}
+		if time.Until(deadline) < wait {
+			return fmt.Errorf("%s; tried for %s, and the next sweep tries again",
+				strings.Join(why, "; "), s.vacuumPatience)
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("vacuum verification tables: %w", ctx.Err())
+		case <-timer.C:
+		}
+		wait = min(2*wait, vacuumMaxWait)
+		left = held
 	}
-	return files, nil
+}
+
+// vacuumVerificationTable runs VACUUM FULL on table once. It returns why the
+// run did not do its job when that is something waiting can change, and an
+// error when it is not.
+func (s *Store) vacuumVerificationTable(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
+	table string, rewrite uint32) (string, error) {
+	before, err := relationFile(ctx, conn, table)
+	if err != nil {
+		return "", err
+	}
+	notices.take()
+	if _, err := conn.Exec(ctx, s.vacuumCommand+" "+pgx.Identifier{table}.Sanitize()); err != nil {
+		return "", fmt.Errorf("vacuum %s: %w", table, err)
+	}
+	warnings := notices.take()
+	after, err := relationFile(ctx, conn, table)
+	if err != nil {
+		return "", err
+	}
+	if after == before {
+		if slices.Contains(warnings, sqlstateLockNotAvailable) {
+			return fmt.Sprintf("VACUUM FULL could not take %s, which another session held", table), nil
+		}
+		return "", fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
+			"must own the verification tables, as the role that ran the migrations does, or the database", table)
+	}
+	var clean bool
+	if err := conn.QueryRow(ctx,
+		`SELECT age(relfrozenxid) < age($2::xid) FROM pg_class WHERE oid = $1::text::regclass`,
+		table, rewrite).Scan(&clean); err != nil {
+		return "", fmt.Errorf("read what VACUUM FULL kept of %s: %w", table, err)
+	}
+	if !clean {
+		return fmt.Sprintf("VACUUM FULL kept rows deleted from %s before the rewrite, which a transaction "+
+			"older than the rewrite could still read: a statement or transaction in this database, "+
+			"or one anywhere on the instance that had written something", table), nil
+	}
+	return "", nil
+}
+
+// restampScans reads each verification table through each of its indexes, and
+// once whole, so that the times PostgreSQL's statistics keep of the last scan
+// of each — last_idx_scan in pg_stat_user_indexes, last_seq_scan and
+// last_idx_scan in pg_stat_user_tables — are the sweep's. Otherwise they
+// would keep the time a request last read a table that way: a confirmation
+// checking the credentials' primary key, say, which on a day with a single
+// issuance dates that credential to the second though its row says only the
+// day. The statistics keep the latest time they are given, so a request that
+// read a table before the sweep cannot put its time back afterwards.
+func restampScans(ctx context.Context, conn *pgx.Conn) error {
+	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		rows, err := tx.Query(ctx, `
+			SELECT c.relname, a.attname
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indrelid
+			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+			WHERE i.indrelid = ANY ($1::text[]::regclass[])`, verificationTables[:])
+		if err != nil {
+			return fmt.Errorf("list the verification tables' indexes: %w", err)
+		}
+		var probes [][2]string
+		for rows.Next() {
+			var table, column string
+			if err := rows.Scan(&table, &column); err != nil {
+				rows.Close()
+				return fmt.Errorf("list the verification tables' indexes: %w", err)
+			}
+			probes = append(probes, [2]string{table, column})
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("list the verification tables' indexes: %w", err)
+		}
+
+		// For this transaction only: with reading the table and sorting
+		// priced out, ordering by an index's first column reads that index.
+		if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+			SET LOCAL enable_sort = off`); err != nil {
+			return fmt.Errorf("plan index scans: %w", err)
+		}
+		for _, p := range probes {
+			if _, err := tx.Exec(ctx, `SELECT FROM `+pgx.Identifier{p[0]}.Sanitize()+
+				` ORDER BY `+pgx.Identifier{p[1]}.Sanitize()+` LIMIT 1`); err != nil {
+				return fmt.Errorf("scan an index of %s: %w", p[0], err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = on; SET LOCAL enable_indexscan = off;
+			SET LOCAL enable_indexonlyscan = off`); err != nil {
+			return fmt.Errorf("plan table scans: %w", err)
+		}
+		for _, table := range verificationTables {
+			if _, err := tx.Exec(ctx, `SELECT FROM `+pgx.Identifier{table}.Sanitize()); err != nil {
+				return fmt.Errorf("scan %s: %w", table, err)
+			}
+		}
+		return nil
+	})
+}
+
+// noticeLog collects the codes of the notices and warnings a connection is
+// sent, which is how VACUUM reports a table it skipped.
+type noticeLog struct {
+	mu    sync.Mutex
+	codes []string
+}
+
+func (n *noticeLog) add(_ *pgconn.PgConn, notice *pgconn.Notice) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.codes = append(n.codes, notice.Code)
+}
+
+// take returns the codes collected since it was last called.
+func (n *noticeLog) take() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	codes := n.codes
+	n.codes = nil
+	return codes
+}
+
+// relationFile returns the number of the file a table is stored in, which
+// VACUUM FULL replaces.
+func relationFile(ctx context.Context, conn *pgx.Conn, table string) (int64, error) {
+	var file int64
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_relation_filenode($1::text::regclass)::bigint`, table).Scan(&file); err != nil {
+		return 0, fmt.Errorf("find the file %s is stored in: %w", table, err)
+	}
+	return file, nil
 }
 
 // attachedImages collects the blob paths a query selects, as the pairs
