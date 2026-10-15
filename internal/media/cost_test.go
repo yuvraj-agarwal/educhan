@@ -593,13 +593,25 @@ func (e *errorsKept) Errorf(format string, args ...any) {
 // TestDroppedDecodingTermIsStillCaught proves that the skip in
 // checkProcessingCost — not measuring the limit-0 decoding run when the whole
 // is already within the decoding estimate — cannot hide a decoding term left
-// out of the model, by leaving one out and running checkProcessingCost
-// itself. The fixture is one the skip is taken for: a lossless WebP whose
-// peak is in the decode, so that the whole is within the model's decoding
-// estimate. With its largest decoding phase dropped, as a model that forgot
-// a term would have it, checkProcessingCost has to find the whole over the
-// shrunk estimate, run the decoding run it would otherwise skip, and report
-// the decode over the estimate. A wider skip condition fails this.
+// out of the model. The fixture, a lossless WebP, is one the skip is taken
+// for: its full decoding estimate (about 32.5 MiB) covers the whole process's
+// peak (about 30.7 MiB), so with the model unchanged the decoding run is
+// skipped.
+//
+// The term dropped is a realistic one, not a gross slice of the estimate: the
+// colour-indexed decode's packed picture, 4·⌈w/2⌉·h, about 8 MiB here, which a
+// model that forgot it would omit. That lands the decoding estimate at about
+// 24.3 MiB, just under what the decode actually holds (the limit-0 run
+// measures about 24.7 MiB), which is the point — the skip must not be taken
+// once the estimate drops below the measured whole, however little.
+// checkProcessingCost has to find the whole over the shrunk estimate, run the
+// decoding run it would otherwise skip, and report the decode over the
+// estimate. This pins the skip to the committed condition (whole <= decoding):
+// a condition widened by even the margin between the real estimate and the
+// whole — say whole <= decoding + 2 MiB, or whole <= 2·decoding — would skip
+// the run here and hide the dropped term. It does not pin the exact byte
+// boundary; it pins that a realistic forgotten term is caught, which dropping
+// the whole largest phase (a 7× gap) would not establish.
 func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
 	const name = "WebP lossless"
 	data := readTestdata(t, "cost-lossless.webp")
@@ -611,24 +623,37 @@ func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
-	decoding := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
+	full := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
 
-	dropLargest := func(phases []phase) []phase {
+	// Drop only the vp8l colour-index packed picture (vp8lPixels' 4·⌈w/2⌉·h
+	// term) from the decode phase, the one with the most allocated: a term a
+	// model could plausibly forget, not the whole phase.
+	packed := 4 * ((int64(cfg.Width) + 1) / 2) * int64(cfg.Height)
+	dropPacked := func(phases []phase) []phase {
+		out := append([]phase{}, phases...)
 		largest := 0
-		for i, p := range phases {
-			if p.alloc > phases[largest].alloc {
+		for i, p := range out {
+			if p.alloc > out[largest].alloc {
 				largest = i
 			}
 		}
-		return append(append([]phase{}, phases[:largest]...), phases[largest+1:]...)
+		out[largest].first -= packed
+		out[largest].alloc -= packed
+		return out
 	}
+	shrunk := peakOf(dropPacked(decodingPhases(in.format, data, cfg, in.frames))...) + processingSlack
+
 	kept := &errorsKept{TB: t}
-	whole, ran := checkProcessingCost(kept, name+", largest decoding phase dropped", data, dropLargest)
-	if whole > decoding {
-		t.Fatalf("whole %d over the model's decoding estimate %d: the skip is not taken for this fixture, so it proves nothing", whole, decoding)
+	whole, ran := checkProcessingCost(kept, name+", packed term dropped", data, dropPacked)
+	// The dropped term must leave the estimate under the whole (so the run is
+	// not skipped) while the full estimate still covers it (so without the
+	// drop the run would be skipped): that the drop crosses the boundary is
+	// what the test turns on.
+	if !(shrunk < whole && whole <= full) {
+		t.Fatalf("whole %d not between the shrunk estimate %d and the full one %d: the drop does not cross the skip boundary, so the test proves nothing", whole, shrunk, full)
 	}
 	if !ran {
-		t.Fatal("checkProcessingCost skipped the decoding run with a decoding term left out: the term is hidden")
+		t.Fatal("checkProcessingCost skipped the decoding run with the packed term left out: a realistic forgotten term is hidden")
 	}
 	caught := false
 	for _, e := range kept.errs {
@@ -639,7 +664,7 @@ func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
 		}
 	}
 	if !caught {
-		t.Errorf("checkProcessingCost reported %q with a decoding term left out, want the decode over the estimate of its decoding phases", kept.errs)
+		t.Errorf("checkProcessingCost reported %q with the packed term left out, want the decode over the estimate of its decoding phases", kept.errs)
 	}
 }
 

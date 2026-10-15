@@ -2171,6 +2171,42 @@ func TestSpansWalksOnlyCoveredRows(t *testing.T) {
 	}
 }
 
+// TestSpansIsLinearInCoveredRowsNotTheGap catches a walk bounded by the gap
+// rather than unbounded by it, which the int-range test above does not: a
+// spans that merged coveredRows' intervals whenever the gap between them was
+// under some fixed number of rows would walk every row of any real canvas
+// (at most 65,535) and still return on two rectangles 2^64 rows apart,
+// passing that test while reintroducing the very regression — a one-pixel
+// frame at each end of a 1×65,535 canvas walking all 65,535 rows a frame.
+//
+// So it runs spans over that real gap, a million times, and holds the lot to
+// a deadline. Walking only the two covered rows is 2 runs a call, two million
+// in all, which takes well under a second (about 40 ms here); walking the
+// 65,534-row gap each time is 65 billion rows, hundreds of seconds, so a
+// gap-bounded walk fails on the ten-second deadline and not on this machine's
+// timing. The goroutine a failure leaves behind runs until the binary exits.
+func TestSpansIsLinearInCoveredRowsNotTheGap(t *testing.T) {
+	const runs = 1_000_000
+	top := image.Rect(0, 0, 1, 1)
+	bottom := image.Rect(0, 65534, 1, 65535) // a 1×65535 canvas: the F1 regression
+	done := make(chan int, 1)
+	go func() {
+		calls := 0
+		for i := 0; i < runs; i++ {
+			spans(top, image.Rectangle{}, bottom, func(y, x0, x1 int) { calls++ })
+		}
+		done <- calls
+	}()
+	select {
+	case calls := <-done:
+		if calls != 2*runs {
+			t.Errorf("spans made %d calls over %d runs, want %d (two covered rows each)", calls, runs, 2*runs)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("a million spans over a 65,534-row gap did not finish within 10 s: it is walking the gap rows, not only the two covered")
+	}
+}
+
 // TestCoveredRowsAreTheRowsARectangleCovers holds coveredRows, the outer loop
 // of spans, to the rows at least one rectangle covers, each once: never the
 // gaps between them, which nothing charges.

@@ -269,6 +269,13 @@ func TestEncodingStopsWhenTheContextEndsPartway(t *testing.T) {
 // nothing held in the processing budget. The wait for the budget is what
 // refuses it, before sanitize is reached; TestSanitizeStopsAtOnceWhenTheContextIsAlreadyDone
 // goes past that.
+//
+// Unlike the other cancel tests, this one guards behaviour that predates the
+// in-flight cancellation work: the budget wait ((*budget).acquire) has always
+// returned the context's error before sanitize runs, so it passes without the
+// ctxReader, storedBuffer and playGIF checks. It is an honest regression guard
+// for the budget wait, not evidence of those checks — each of those is pinned
+// by its own test above, which fails when its own check is removed.
 func TestProcessStopsWhenTheContextIsAlreadyDone(t *testing.T) {
 	upload := encodePNG(t, 64, 64)
 	b := narrowBudget(t, processingBudget)

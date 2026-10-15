@@ -614,11 +614,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   what was there before it was drawn, which the player keeps for that (`saved`) and which
   has to be transparent wherever the next picture is. Every choice is a function of the
   pictures and the choices before it, so "shown alike, stored alike" still holds, and
-  every GIF stored before frames could be put back that `Inspect` still admits is stored
-  as the same bytes, the way it took then being still the first that does; an animation
-  whose tables give more than 255 colours is now charged for `saved` from its header
-  (`gifFrames.many`, `gifPlayScratch`), so one on a large canvas from a large upload may
-  be refused that was stored before (the README's bands). Where no way will do, the GIF is
+  every GIF stored before frames could be put back that `Inspect` still admits, and whose
+  stored frames are each at least `gifRowPixels` wide, is stored as the same bytes, the
+  way it took then being still the first that does. Two later charges each refuse some
+  GIFs stored before: an animation whose tables give more than 255 colours is now charged
+  for `saved` from its header (`gifFrames.many`, `gifPlayScratch`), so one on a large
+  canvas from a large upload may be refused that was stored before (the README's bands);
+  and a stored frame or a rectangle `choose` looks at is now charged by its rows
+  (`gifCharge`, below), so a GIF whose stored frames are tall and narrower than
+  `gifRowPixels` may be refused that was stored before (24 one-pixel frames put back at
+  the two ends of a 1×65,535 canvas, 969 B, were stored before the row charge and are
+  refused now). Where no way will do, the GIF is
   refused (`ErrImageTooCostly`), as is one whose stored frames, with what `choose` looked
   at for ways it did not take (`tried`, so that looking is bounded as writing is), are
   charged more than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
@@ -634,7 +640,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `gifFramePixels` holds the declared frames to `maxGIFFramePixels`, but the put-back,
   restore-chain and widened-clear work shows only as the frames are played, so a GIF the
   header admits can still be refused here (put back on a 2000² canvas, `Inspect` admits 49
-  frames where the player takes 14; a 1000² restore chain, 199 where the player takes 34),
+  frames where the player takes 14; a 1000² restore chain, from an upload over the 8 MiB
+  default, 199 where the player takes 34),
   after it has been decoded and its first picture thumbnailed, and after flood control, so
   the cooldown is charged and nothing is written (`Save` stores only after `processHeld`
   succeeds, so `discardUpload` has nothing to remove). The work is already spent, so the
