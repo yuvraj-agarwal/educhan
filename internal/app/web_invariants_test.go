@@ -378,3 +378,49 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
 	}
 }
+
+// A code that has been sent is what the Verify page is for until the code is
+// confirmed or given up, whether or not the browser already holds a badge: a
+// badge is replaced only once the new one is confirmed. So verifyViewHTML
+// decides the code step before it looks at a held badge, and on verifyStep.step
+// alone. A badge holder who pressed "Verify another address" and sent a code
+// once got the badge panel back instead, with nowhere to type the code: the
+// code step came after the panel, and sending the code dropped the flag that
+// held the panel off.
+func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
+	script := appScript(t)
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+
+	// The view's own branches, in order: the ones at its top level, indented
+	// once.
+	var conditions []string
+	for _, m := range regexp.MustCompile(`(?m)^  if \((.+)\) \{$`).FindAllStringSubmatch(view, -1) {
+		conditions = append(conditions, m[1])
+	}
+	const codeStep = `verifyStep.step === "code"`
+	at := -1
+	for i, c := range conditions {
+		if strings.Contains(c, `"code"`) {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		t.Fatalf("verifyViewHTML has no top-level branch for the code step; its branches are %q", conditions)
+	}
+	if conditions[at] != codeStep {
+		t.Errorf("the code step is drawn when %q; want exactly %q, so nothing but a pending code decides it",
+			conditions[at], codeStep)
+	}
+	for _, c := range conditions[:at] {
+		if c != "!v.enabled" {
+			t.Errorf("verifyViewHTML checks %q before the code step; only !v.enabled may come first, "+
+				"or a pending code can be hidden behind another panel", c)
+		}
+	}
+	// And the code step is what a sent code leads to.
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+	if !strings.Contains(submit, `verifyStep = { step: "code", label: sent.label || "" };`) {
+		t.Error("submitVerification no longer moves to the code step once the code is sent")
+	}
+}

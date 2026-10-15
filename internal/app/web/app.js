@@ -1779,7 +1779,10 @@ async function renderArchive(route) {
 
 // Which half of the verification page is on screen. A code has been sent when
 // this is "code"; nothing about the address is kept here, only the badge it
-// would earn, so a reload starts over rather than resuming.
+// would earn, so a reload starts over rather than resuming. replacing is for
+// the address step alone: it was asked for over a badge this browser holds
+// ("Verify another address"), where the page would otherwise show that badge.
+// While a code is pending the code box shows whatever is held.
 let verifyStep = { step: "email", label: "" };
 
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
@@ -1954,6 +1957,31 @@ function verifyViewHTML() {
       ${forgetBrowserHTML()}`;
   }
 
+  // A code is pending: the box to type it in is the page until the code is
+  // confirmed or given up, whether or not this browser already holds a badge.
+  // A badge held here is replaced only once the new one is confirmed, so it is
+  // no reason to hide the box, and this step is decided on verifyStep.step
+  // alone: a badge holder who asked for a code once saw the badge panel in its
+  // place, with nowhere to type the code.
+  if (verifyStep.step === "code") {
+    return `
+      <div class="board-head"><h1>Institutional verification</h1></div>
+      ${VERIFY_INTRO}
+      <form class="verify-panel fields" data-verify="confirm">
+        <p>A code is on its way. It earns you ${verifiedBadgeHTML(verifyStep.label)} and expires shortly.</p>
+        <div class="field">
+          <label class="label" for="f-code">Code from the email</label>
+          <input type="text" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="12" placeholder="6 digits" required />
+        </div>
+        <div class="actions">
+          <button class="btn primary" type="submit">Verify</button>
+          <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
+        </div>
+      </form>
+      ${forgetBrowserHTML()}`;
+  }
+
   if (v.badge && !verifyStep.replacing) {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
@@ -1983,25 +2011,6 @@ function verifyViewHTML() {
           <button class="btn subtle" type="button" data-action="verify-again">Verify another address</button>
         </div>
       </div>
-      ${forgetBrowserHTML()}`;
-  }
-
-  if (verifyStep.step === "code") {
-    return `
-      <div class="board-head"><h1>Institutional verification</h1></div>
-      ${VERIFY_INTRO}
-      <form class="verify-panel fields" data-verify="confirm">
-        <p>A code is on its way. It earns you ${verifiedBadgeHTML(verifyStep.label)} and expires shortly.</p>
-        <div class="field">
-          <label class="label" for="f-code">Code from the email</label>
-          <input type="text" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code"
-                 maxlength="12" placeholder="6 digits" required />
-        </div>
-        <div class="actions">
-          <button class="btn primary" type="submit">Verify</button>
-          <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
-        </div>
-      </form>
       ${forgetBrowserHTML()}`;
   }
 
