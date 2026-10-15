@@ -710,7 +710,9 @@ boards at once. Uploads are counted across the whole server instead, because
 decoding, thumbnailing, and storing an image costs the same wherever the post
 lands. A post with an image has to clear both its posting cooldown and the
 upload cooldown; when it is refused, neither cooldown is started, so the two
-limits never compound.
+limits never compound. Each cooldown is checked and started in one step, so of
+several posts sent at the same moment from one address, one goes ahead and the
+others are refused.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
@@ -794,24 +796,27 @@ There is no limit per credential: its holder posts without puzzles from any
 address, under that address's flood control.
 
 The answer is checked, the lookup included, before flood control. It is spent
-once flood control has found no cooldown to wait out, and only then are the
-post's cooldowns started. So a post refused by the captcha starts no cooldown,
-and a post refused by a cooldown keeps its answer for when it is let through.
-Two posts racing with one answer can both pass the lookup; the spend lets one
-through and refuses the other as used, with no cooldown started for it, so one
-answer sent to many boards at once holds none of them back. A refusal answers
-`403` with `"captcha": "required" | "invalid" | "expired" | "used"` beside the
-message; the page solves a fresh puzzle and sends the post once more, so the
-reader presses the button once (unless they have left the form meanwhile: a
-request goes only from a form still on screen). A `used` answer was spent by an
-earlier request, which started its cooldowns, so the resend can meet one of
-them; the page then says how long to wait and keeps the fresh answer for the
-next press. Every response to a request whose answer was spent carries
-`Educhan-Captcha: spent`, a refusal written after the spend included (an image
-whose pixels fail to decode, or a thread that filled up meanwhile). The page
-keeps its answer through any refusal without that header, so the next press goes
-straight out, and starts the next puzzle as soon as one with it arrives, while
-its form is on screen.
+once flood control has found no cooldown to wait out, and flood control then
+checks again as it starts the post's cooldowns. So a post refused by the captcha
+starts no cooldown, and a post refused by a cooldown keeps its answer for when
+it is let through, unless another post from the same address started that
+cooldown between the two checks: of several sent at once, the one let through
+starts it, and the others have spent their answers. Two posts racing with one
+answer can both pass the lookup; the spend lets one through and refuses the
+other as used, with no cooldown started for it, so one answer sent to many
+boards at once holds none of them back. A refusal answers `403` with `"captcha":
+"required" | "invalid" | "expired" | "used"` beside the message; the page solves
+a fresh puzzle and sends the post once more, so the reader presses the button
+once (unless they have left the form meanwhile: a request goes only from a form
+still on screen). A `used` answer was spent by an earlier request, which started
+its cooldowns, so the resend can meet one of them; the page then says how long
+to wait and keeps the fresh answer for the next press. Every response to a
+request whose answer was spent carries `Educhan-Captcha: spent`, a refusal
+written after the spend included (a cooldown another request from the same
+address started meanwhile, an image whose pixels fail to decode, or a thread
+that filled up meanwhile). The page keeps its answer through any refusal without
+that header, so the next press goes straight out, and starts the next puzzle as
+soon as one with it arrives, while its form is on screen.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, so what is sent is what the form

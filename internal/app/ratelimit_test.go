@@ -1,8 +1,10 @@
 package app
 
 import (
+	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -121,6 +123,69 @@ func TestAllowAllChargesNothingWhenRefused(t *testing.T) {
 	now = now.Add(24 * time.Second)
 	if _, ok := allowAll(cooldown{upload, "a"}); !ok {
 		t.Error("a refused attempt must not extend the upload cooldown")
+	}
+}
+
+// Requests from one client racing for the same cooldowns: exactly one is
+// admitted, because each limiter checks and starts a cooldown in one step. A
+// racer refused by the shared upload cooldown gives back the reply cooldown it
+// took on its own board, so that board is free again afterwards unless the
+// winner posted there.
+func TestAllowAllAdmitsOneOfARace(t *testing.T) {
+	post := newCooldownLimiter(time.Hour)
+	upload := newCooldownLimiter(time.Hour)
+
+	const racers = 64
+	var admitted atomic.Int32
+	var winner atomic.Value
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range racers {
+		board := fmt.Sprint("board ", i%2)
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, ok := allowAll(cooldown{post, board + "|a"}, cooldown{upload, "a"}); ok {
+				admitted.Add(1)
+				winner.Store(board)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	if n := admitted.Load(); n != 1 {
+		t.Fatalf("%d of %d racing image posts admitted, want 1", n, racers)
+	}
+	won := winner.Load().(string)
+	for _, board := range []string{"board 0", "board 1"} {
+		held := post.peek(board+"|a") > 0
+		if held != (board == won) {
+			t.Errorf("reply cooldown on %s held %t after the race, want it held only where the post went (%s)", board, held, won)
+		}
+	}
+}
+
+// forget takes back only the start it is given: once a cooldown has run out
+// and been started again, the old start is no longer what the key waits on,
+// and forgetting it leaves the new one alone.
+func TestForgetLeavesALaterStartAlone(t *testing.T) {
+	now := time.Now()
+	limiter := newCooldownLimiter(10 * time.Second)
+	limiter.now = func() time.Time { return now }
+
+	_, first, ok := limiter.take("a")
+	if !ok {
+		t.Fatal("first take refused")
+	}
+	now = now.Add(11 * time.Second)
+	if _, _, ok := limiter.take("a"); !ok {
+		t.Fatal("take after the cooldown ran out refused")
+	}
+	limiter.forget("a", first)
+	if wait := limiter.peek("a"); wait != 10*time.Second {
+		t.Errorf("wait after forgetting the earlier start = %s, want the later start's 10s", wait)
 	}
 }
 

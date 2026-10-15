@@ -212,7 +212,9 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	// is told so with its answer unspent. The answer is spent before the image
 	// is processed, and the cooldowns start only once it is, so a post refused
 	// as used, racing another that carried the same answer, starts none: one
-	// answer cannot be sent to many boards at once to hold them all.
+	// answer cannot be sent to many boards at once to hold them all. The
+	// second half checks again as it starts them, so of a burst of posts from
+	// one address that all passed the first, one goes ahead.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	cooldowns := a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)
 	if !a.notCoolingDown(w, cooldowns) {
@@ -221,7 +223,9 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
-	startAll(cooldowns...)
+	if !a.allow(w, cooldowns) {
+		return
+	}
 
 	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
 	if err != nil {
@@ -327,7 +331,9 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
-	startAll(cooldowns...)
+	if !a.allow(w, cooldowns) {
+		return
+	}
 
 	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
 	if err != nil {
@@ -418,9 +424,8 @@ func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey str
 }
 
 // notCoolingDown answers 429 for a post that flood control would refuse,
-// starting nothing: the first half of flood control. startAll is the second,
-// once the post's answer is spent. Two posts from one address that pass this
-// together both go ahead, as allowAll already lets them.
+// starting nothing: the first half of flood control, before the post's answer
+// is spent. allow is the second, once it is.
 func (a *App) notCoolingDown(w http.ResponseWriter, cooldowns []cooldown) bool {
 	return a.waitedOut(w, "posting", cooldowns)
 }
@@ -434,6 +439,26 @@ func (a *App) waitedOut(w http.ResponseWriter, action string, cooldowns []cooldo
 		return false
 	}
 	return true
+}
+
+// allow applies posting flood control and starts its cooldowns, answering 429
+// with a Retry-After when the caller must wait: the second half, which checks
+// again because another post from the same address may have gone ahead since
+// the first. A post refused here has had its answer spent, and the refusal
+// says so (Educhan-Captcha: spent), so the page solves the next one; only a
+// client racing itself meets it.
+func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
+	return a.allowAction(w, "posting", cooldowns)
+}
+
+// allowAction is allow for anything else that is rate limited; action names
+// what was refused, so a 429 from verification does not talk about posting.
+func (a *App) allowAction(w http.ResponseWriter, action string, cooldowns []cooldown) bool {
+	wait, ok := allowAll(cooldowns...)
+	if !ok {
+		tooQuickly(w, action, wait)
+	}
+	return ok
 }
 
 // tooQuickly answers an action flood control refused: 429, with how long to

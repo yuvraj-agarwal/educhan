@@ -815,7 +815,7 @@ func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
 	}
 	// Verification is off here, so its limiter is fed the way a code
 	// request would feed it.
-	h.app.verifyLimiter.record("ip|" + address)
+	h.app.verifyLimiter.take("ip|" + address)
 
 	limiters := map[string]*cooldownLimiter{
 		"thread": h.app.threadLimiter, "post": h.app.postLimiter,

@@ -420,6 +420,126 @@ func TestCodeRequestsNeedTheCaptcha(t *testing.T) {
 	}
 }
 
+// A burst of posts from one address, each with an answer of its own, can all
+// pass flood control's first half before any of them spends; the second half
+// checks again as it starts the cooldowns, so exactly one posts. A post refused
+// there has spent its answer and says so; one refused by the first half kept
+// its answer, which then posts on a board of its own.
+func TestABurstFromOneAddressPostsOnce(t *testing.T) {
+	h := captchaServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Hour })
+	h.addBoard("general")
+
+	const racers = 8
+	answers := make([]string, racers)
+	for i := range answers {
+		answers[i] = h.solveCaptcha()
+	}
+	type outcome struct {
+		answer string
+		status int
+		spent  bool
+	}
+	outcomes := make([]outcome, racers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i, answer := range answers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := json.Marshal(map[string]any{"body": "burst", "captcha": answer})
+			<-start
+			res, err := http.Post(h.base+"/api/boards/general/threads", "application/json", bytes.NewReader(body))
+			if err != nil {
+				return
+			}
+			res.Body.Close()
+			outcomes[i] = outcome{answer, res.StatusCode, res.Header.Get(captchaSpentHeader) == "spent"}
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	created := 0
+	for i, o := range outcomes {
+		switch o.status {
+		case http.StatusCreated:
+			created++
+		case http.StatusTooManyRequests:
+			// Each refused answer is tried on a board of its own, whose
+			// thread cooldown nothing has started.
+			board := fmt.Sprint("spare", i)
+			h.addBoard(board)
+			status, refused := h.attempt("/api/boards/"+board+"/threads", map[string]any{"body": "again", "captcha": o.answer})
+			if o.spent {
+				expectCaptchaRefusal(t, fmt.Sprintf("racer %d's answer, which its 429 said was spent", i), status, refused, captchaUsed)
+			} else if status != http.StatusCreated {
+				t.Errorf("racer %d's answer, which its 429 said was kept, on another board: status %d (%s), want 201",
+					i, status, refused.Error)
+			}
+		default:
+			t.Errorf("racer %d: status %d, want 201 or 429", i, o.status)
+		}
+	}
+	if created != 1 {
+		t.Errorf("%d of %d racing threads from one address posted, want 1", created, racers)
+	}
+}
+
+// Badged posts spend no answer, so nothing slows a burst of them between flood
+// control's two halves; the second half still lets only one through.
+func TestABadgedBurstFromOneAddressPostsOnce(t *testing.T) {
+	h := verifyServer(t, withCaptcha(func(cfg *Config) { cfg.PostCooldown = time.Hour }))
+	h.addBoard("general")
+	var started verifyResponse
+	if status := h.post("/api/verify/request", map[string]any{
+		"email": "ana@iitb.ac.in", "adult": true, "captcha": h.solveCaptcha(),
+	}, &started); status != http.StatusAccepted {
+		t.Fatalf("request code: status %d (%s)", status, started.Error)
+	}
+	status, confirmed := h.confirmCode(h.mail.last(t).Code)
+	if status != http.StatusOK {
+		t.Fatalf("confirm code: status %d (%s)", status, confirmed.Error)
+	}
+	credential := confirmed.Credential
+	thread := h.createThreadWithCaptcha("general", "open")
+	path := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+
+	const racers = 8
+	statuses := make([]int, racers)
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := range racers {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			body, _ := json.Marshal(map[string]any{"body": "badged burst", "badge": true})
+			req, err := http.NewRequest(http.MethodPost, h.base+path, bytes.NewReader(body))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			req.Header.Set(credentialHeader, credential)
+			<-start
+			res, err := h.http.Do(req)
+			if err != nil {
+				return
+			}
+			res.Body.Close()
+			statuses[i] = res.StatusCode
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	counts := map[int]int{}
+	for _, status := range statuses {
+		counts[status]++
+	}
+	if counts[http.StatusCreated] != 1 || counts[http.StatusTooManyRequests] != racers-1 {
+		t.Errorf("statuses %v, want one 201 and %d 429s", counts, racers-1)
+	}
+}
+
 // A reply is held to the same order as a thread: a captcha refusal starts no
 // cooldown, a reply flood control refuses keeps its answer, and the answer is
 // spent before the image is processed, so a refusal for an image that fails

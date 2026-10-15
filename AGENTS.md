@@ -435,10 +435,12 @@ needs a browser check before the test changes.
   checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not
   already spent) before flood control. Flood control comes in two halves: the check
   (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429` and starts
-  nothing, then the answer is spent (`spendCaptcha`) and only then are the cooldowns
-  started (`startAll`), before any upload is processed. So a request refused as used,
-  which only a replay racing its original can be at that point, starts no cooldown
-  (`TestALostSpendStartsNoCooldown`). In the posting handlers the check is the last
+  nothing, then the answer is spent (`spendCaptcha`), and only then does `allow` (or
+  `allowAction`) check again and start the cooldowns, before any upload is processed.
+  So a request refused as used, which only a replay racing its original can be at that
+  point, starts no cooldown (`TestALostSpendStartsNoCooldown`), and of a burst from one
+  address that all passed the first check, one goes ahead
+  (`TestABurstFromOneAddressPostsOnce`); the others are refused with the spent header. In the posting handlers the check is the last
   refusal before flood control; in `handleVerifyRequest` it comes straight after the 18+
   attestation, before the address is parsed.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
@@ -604,8 +606,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
   image the cap, counted from the posts like the real check) — then the captcha check
   (`checkCaptcha`), then flood control's check (`notCoolingDown`), then the captcha
-  spend (`spendCaptcha`), then the cooldowns are started (`startAll`), then the upload
-  is stored, then `CreateReply`. So the common refusal costs no
+  spend (`spendCaptcha`), then flood control again as the cooldowns start (`allow`),
+  then the upload is stored, then `CreateReply`. So the common refusal costs no
   cooldown and stores nothing, and the client's "send the text on its own" goes
   through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
   nothing: replies racing for the last slot both pass it, and the check inside
@@ -762,20 +764,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
 - Flood control lives in `ratelimit.go` and is applied in `handlers.go` in two halves:
   `notCoolingDown` checks the cooldowns `postCooldowns` lists and starts nothing, and
-  `startAll` starts them all once the captcha answer is spent, so a post refused as used
-  starts none. Thread and reply cooldowns are keyed per board and client, the upload
-  cooldown per client across the whole server. A submission clears every cooldown that
-  applies to it or none is started, so a post refused by one limit is not charged for the
-  other (`allowAll` is the two halves in one call, as the limiter tests use it). Nothing
-  is refunded once a cooldown starts, so every refusal that can be known up front comes
-  before `startAll`: a malformed poster key, the body, a badge the poster cannot have,
-  uploads switched off, a file its header shows to be unusable (`media.Inspect` in
-  `parseSubmission`: not an accepted format, or more than `media.MaxPixels`), a reply the
-  thread would refuse (`ReplyRefusal`), and a captcha answer that is missing, wrong,
-  expired or already spent (`checkCaptcha`). Decoding the pixels is not up front, because
-  it is the cost the upload cooldown limits, so an image that fails to decode is refused
-  by `storeUpload` after `startAll` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins
-  both sides).
+  `allow` checks them again and starts them all once the captcha answer is spent, so a
+  post refused as used starts none. Thread and reply cooldowns are keyed per board and
+  client, the upload cooldown per client across the whole server. A submission clears
+  every cooldown that applies to it or none is started, so a post refused by one limit is
+  not charged for the other; `allowAll` is what enforces that. Each limiter checks and
+  starts a cooldown in one step under its lock (`take`), so of simultaneous requests for
+  one key exactly one is admitted, and a cooldown taken before a later one refuses is
+  given back (`forget`) (`TestAllowAllAdmitsOneOfARace`). Nothing is refunded once an
+  action is admitted, so every refusal that can be known up front comes before `allow`: a
+  malformed poster key, the body, a badge the poster cannot have, uploads switched off, a
+  file its header shows to be unusable (`media.Inspect` in `parseSubmission`: not an
+  accepted format, or more than `media.MaxPixels`), a reply the thread would refuse
+  (`ReplyRefusal`), and a captcha answer that is missing, wrong, expired or already spent
+  (`checkCaptcha`). Decoding the pixels is not up front, because it is the cost the upload
+  cooldown limits, so an image that fails to decode is refused by `storeUpload` after
+  `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
   State is per process and in memory, the captcha's challenge count
   (`captchaMeter`) included — a shared backend means replacing `cooldownLimiter`,
   which nothing else depends on, and the meter.
@@ -934,7 +938,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   any suffix. Plus-addressing is stripped from the uniqueness key and dots deliberately
   are not: that is a Gmail convention, and applying it everywhere would fold two real
   people at one institution into one identity.
-- Code requests reuse `cooldownLimiter` through `waitedOut` and `startAll`, keyed per
+- Code requests reuse `cooldownLimiter` through `waitedOut` and `allowAction`, keyed per
   client **and** per address hash, so a refused request starts neither cooldown. The
   attempt cap on a pending row is what keeps a six-digit code safe; a wrong guess is
   committed rather than rolled back, which is why `ConfirmVerification` returns its outcome

@@ -204,11 +204,14 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// The cooldowns start once the answer is spent, as for a post, so a
 	// request refused as used starts none: one answer sent many times at once,
 	// each copy naming another email address, cannot hold all of those
-	// addresses out of codes.
+	// addresses out of codes. Starting them checks them again, so of a burst
+	// that all passed the check above, one goes ahead.
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
-	startAll(cooldowns...)
+	if !a.allowAction(w, "requesting codes", cooldowns) {
+		return
+	}
 
 	code, err := verificationCode()
 	if err != nil {

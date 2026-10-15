@@ -58,8 +58,8 @@ type cooldown struct {
 }
 
 // allowAll reports whether an action is permitted, applying several cooldowns
-// as one decision. When it is not, the caller is told how long to wait: the
-// longest of the outstanding waits.
+// as one decision, and starts them all when it is. When it is not, the caller
+// is told how long to wait: the longest of the outstanding waits.
 //
 // A cooldown starts on every limiter only once all of them allow the action. A
 // request one cooldown refuses must not consume another, or a reply carrying an
@@ -67,19 +67,29 @@ type cooldown struct {
 // neither of them describes. Nothing is recorded for a refused action either, so
 // a rejected caller cannot extend its own cooldown by retrying.
 //
-// The check and the record are not atomic across limiters. Two simultaneous
-// requests for the same key can therefore both be admitted, which for flood
-// control is a much better trade than the lock ordering an atomic version
-// would need between limiters that are not always applied together.
+// Each limiter checks and starts its cooldown in one step (take), so of two
+// requests for the same key at the same moment exactly one is admitted. A
+// cooldown taken before a later one refuses is taken back (forget). The order
+// is the caller's, the same for every request, so two requests never hold
+// each other's first cooldown; at worst a request is refused because another
+// from the same client holds, for that instant, a cooldown it then gives back.
 //
-// A handler that spends a captcha answer calls the two halves, longestWait and
-// startAll, itself, with the spend between them, so a request refused for its
-// answer starts no cooldown.
+// A handler that spends a captcha answer checks first with longestWait, which
+// starts nothing, so a request that has to wait keeps its answer, and calls
+// allowAll only once the answer is spent, so a request refused for its answer
+// starts no cooldown.
 func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {
-	if wait := longestWait(cooldowns...); wait > 0 {
-		return wait, false
+	started := make([]time.Time, 0, len(cooldowns))
+	for i, c := range cooldowns {
+		wait, at, ok := c.limiter.take(c.key)
+		if !ok {
+			for j, at := range started {
+				cooldowns[j].limiter.forget(cooldowns[j].key, at)
+			}
+			return max(wait, longestWait(cooldowns[i+1:]...)), false
+		}
+		started = append(started, at)
 	}
-	startAll(cooldowns...)
 	return 0, true
 }
 
@@ -94,15 +104,6 @@ func longestWait(cooldowns ...cooldown) time.Duration {
 		}
 	}
 	return longest
-}
-
-// startAll starts every cooldown, as allowAll does once none of them refuses:
-// the second half of flood control, for a caller that checked with
-// longestWait and has since decided the action goes ahead.
-func startAll(cooldowns ...cooldown) {
-	for _, c := range cooldowns {
-		c.limiter.record(c.key)
-	}
 }
 
 // peek reports how long key must wait, recording nothing.
@@ -121,8 +122,35 @@ func (l *cooldownLimiter) peek(key string) time.Duration {
 	return max(l.interval-l.now().Sub(last), 0)
 }
 
-// record starts key's cooldown.
-func (l *cooldownLimiter) record(key string) {
+// take starts key's cooldown unless key still has one to wait out, checking
+// and starting under one lock. It reports how long key must wait when it
+// cannot, and when the cooldown started when it could, which forget takes to
+// tell this start from a later one.
+func (l *cooldownLimiter) take(key string) (wait time.Duration, started time.Time, ok bool) {
+	if l == nil || l.interval <= 0 {
+		return 0, time.Time{}, true
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	now := l.now()
+	if last, tracked := l.seen[key]; tracked {
+		if wait := l.interval - now.Sub(last); wait > 0 {
+			return wait, time.Time{}, false
+		}
+	}
+	if len(l.seen) >= cooldownSweepThreshold {
+		l.sweep(now)
+	}
+	l.seen[key] = now
+	return 0, now, true
+}
+
+// forget takes back the cooldown take started for key at started, if it is
+// still the one key is waiting on. A key with nothing to wait on is not
+// tracked at all, so the entry goes rather than being wound back.
+func (l *cooldownLimiter) forget(key string, started time.Time) {
 	if l == nil || l.interval <= 0 {
 		return
 	}
@@ -130,11 +158,9 @@ func (l *cooldownLimiter) record(key string) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
-	now := l.now()
-	if len(l.seen) >= cooldownSweepThreshold {
-		l.sweep(now)
+	if last, tracked := l.seen[key]; tracked && last.Equal(started) {
+		delete(l.seen, key)
 	}
-	l.seen[key] = now
 }
 
 // sweep drops entries whose cooldown has elapsed. Callers must hold the mutex.
