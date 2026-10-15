@@ -267,7 +267,10 @@ looks tempting and breaks something:
 Four values do not belong in a deployment command: the database URL (it carries
 the password), the poster-ID salt, the moderation key, and the captcha secret.
 Unset, the captcha secret switches the captcha off, the way verification is off
-without its secret.
+without its secret; set, it must be at least 32 characters or the server refuses
+to start, and `openssl rand -hex 32` makes 64. `first-deploy.sh` creates it the
+same way, only if it is missing. Only the service reads it: the sweeper Job
+neither has nor needs it.
 
 ```bash
 printf 'postgres://educhan:%s@/educhan?host=/cloudsql/%s&sslmode=disable' \
@@ -295,6 +298,18 @@ so the same browser shows a different ID depending on which container answered.
 A poster ID is an HMAC of the browser's poster key (or of the badge credential's
 id, on a badged post) under this salt; only a post that arrives without a poster
 key falls back to the client address.
+
+**The captcha secret signs each challenge**, so every instance has to share it:
+a challenge one container issued is checked by whichever container takes the
+post. Rotating it only fails the challenges issued in the last half hour, which
+browsers replace on their own, so it can be rotated whenever you like. How much
+work a challenge asks for is `EDUCHAN_CAPTCHA_WORK` (section 4), which needs no
+deploy change at its default. The captcha needs nothing else from the platform:
+its worker is served from the site itself under the existing CSP, so no CSP,
+load balancer or Cloud Armor change; `GET /api/captcha` answers `no-store` and
+sets no cookie; and the per-address challenge count it keeps to raise the work
+for a busy address is swept with the cooldowns, so what the root README's Flood
+control section says about CPU between requests covers it too.
 
 ### 2.5 Build and push
 
@@ -591,6 +606,8 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_GCS_PREFIX` | unused | `media` | Optional key prefix, so the bucket can hold other things too |
 | `EDUCHAN_POSTER_ID_SALT` | random per process | from Secret Manager | Set it locally too, or poster IDs change on every restart. Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | unset; export a throwaway | from Secret Manager | Unset means every moderation endpoint answers `403` |
+| `EDUCHAN_CAPTCHA_SECRET` | unset unless testing the captcha | from Secret Manager | Keys the posting captcha's challenges. Unset switches the captcha off; under 32 characters refuses to start. Same value on every instance; rotating it fails only challenges from the last half hour |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` (default) | `1500` (default) | Average attempts a challenge asks for, raised for an address asking for challenges quickly. Between `1` and `2097152` |
 | `EDUCHAN_VERIFY_SECRET` | unset unless testing verification | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
 | `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
