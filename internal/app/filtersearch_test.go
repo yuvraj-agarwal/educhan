@@ -204,7 +204,7 @@ func compareSearches(t testing.TB, text string, found map[*search]int) {
 
 func TestFilterSearchesMatchTheirRegexps(t *testing.T) {
 	found := map[*search]int{}
-	for _, text := range filterSearchTexts(t, 5) {
+	for _, text := range filterSearchTexts(t, 6) {
 		compareSearches(t, text, found)
 		if t.Failed() {
 			return

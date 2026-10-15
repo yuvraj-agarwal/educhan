@@ -382,9 +382,9 @@ not pull them apart. Each rule has one outcome:
 | Block (`422`) | `contact` | Phone numbers (`+` and a country code, the `+` inside a bracket or not; Indian mobiles; US numbers written the US way; UK numbers starting 07, or 01/02/03 when spaced; Australian mobiles starting 04), written digit by digit or in groups of two or more, set off by a comma or by up to three spaces, line breaks, dashes, dots or underscores, and with `O` or `l` for a digit; an Indian mobile in any grouping of two or more digits after "call me", "text me" or "my number"; a mobile read out a digit at a time in words, or in words and digits mixed ("nine eight 7 six …", "oh seven nine one one, double two three …", "nau aath saat …"); email addresses (not the RFC 2606 example domains), also with a bracketed or spelled-out `@` and dot or a mail provider with no ending ("name@gmail"); invite and profile links for messaging and social apps, Signal's included, also with "slash" spelled out and, on hosts too long to turn up inside other words, "dot" ("discord dot gg slash …"); and asking to talk on one ("add me on snap", "what's your insta", "let's move this to discord", "exchange snaps?", "leave your number", "my discord is x_y_z", "snap: x_y_z", "telegram pe aao: @x_y", "disc: name#1234", "line id: x_y", "👻 = x_y", "insta pe add karo", "apna number do", "number bhejo"), also with a letter of the app's name in brackets ("i[n]sta"). An app named on its own is fine |
 | Block (`422`) | `id_number` | Aadhaar numbers (twelve digits, first 2–9, with a valid Verhoeff check digit, or with any check digit after the word "Aadhaar": "my aadhaar no …"), US Social Security numbers written with dashes, or with spaces after "SSN" or "social security number", UK National Insurance numbers |
 | Support (`422`) | — | Crisis language in the poster's own voice ("I want to die", "I want to hurt myself", "I've been cutting myself again", "I'm so tired of being alive", "thinking about ending it", "kms", "mujhe marna hai", "jeene ka mann nahi karta", "main khudkushi kar lunga"), not someone else's ("my friend keeps saying she wants to die"), and a question about a method ("how many pills would it take to kill me", "is 20 paracetamol enough to die", "how to end it all", "how to make myself throw up"), which is then held as `self_harm`. It never blocks: sent again with `"support_seen": true`, the post goes on to the rules below |
-| Hold (`202`) | `threat` | An intent to hurt people or attack a place, in the first person or as a call for someone to ("I'm bringing a gun", "gonna shoot up", "someone should shoot up the school", "I'll be waiting at the bus stop with a knife", "kal chaku leke aaunga"), or harm said to be coming to someone ("whoever snitched gets shot", "everyone in the lab is going to die", "they'll finally pay"), with a place or a time near it or in the subject, and school-attack warnings. A film or sports shoot, a game (though not a shooting or a bomb at one), a report that quotes what someone said, news, a story's plot, an exam, a team or a market ("kill JEE tomorrow", "a bloodbath on Dalal Street"), a drill, hurt feelings, killing with kindness, and hyperbole ("you'll die when you see the results", "you're going to die in the exam") are not threats; a condition that demands something ("if you tell anyone", "unless you pay") does not make one harmless |
-| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "cut your wrists", "neck yourself", "off yourself", "an hero", "why are you still alive", "do us all a favour and jump off a building", "people like that should just kill themselves", "take all your pills", "khudkushi kar le", "chhat se kood ja", how-many and what-dose questions in either order, "enough to die", lethal doses, how to tie or make a noose, how to purge, thinspo, meanspo, "ana coach" — not when the sentence says not to ("please don't kys", "a bad rank doesn't end your life") or warns ("be careful with the scalpel, you could cut yourself"), and not "die your hair" or "a hill to die on" |
-| Hold (`202`) | `grooming` | An age, school-year or location question ("which year of school are you in?", "where exactly do you live?", "which hostel and room number?", "you're in 9th?"), or an age asked for by number ("any 14yo girls here?", "13-15 yo girls"), and a private-contact, meet-up, visit, secrecy, video-call or photo cue ("dm me", "we could meet", "I'll come by tonight", "keep it quiet", "facetime me", "photo bhejo") in the same post |
+| Hold (`202`) | `threat` | An intent to hurt people or attack a place, read from who says it, what they say they will do, and who or what it is done to, whatever the words between: the poster ("I", "we", "imma", "I'm going to", "on monday I"), a verb of harm (stab, shoot, beat, run over, push down the stairs, throw off the roof, put in hospital, make bleed, beat to death, burn down, torch, set on fire, blow up, take a hammer to), and a person, a group, a place or a vehicle ("I'm going to run over the PE teacher in the parking lot on monday", "I'll break Kabir's jaw after class", "gonna set the staff room on fire monday"); bringing or getting a weapon or fuel ("I'm bringing a machete to the canteen tomorrow", "I've got a gun and I'm coming to school tomorrow", "going to the hostel tonight with petrol"); a call for someone to ("someone should shoot up the school"); harm said to be coming to a group picked out by where it is or who it is, or to all of them ("everyone in the computer lab at 2pm will get hurt tomorrow", "the guys who stole my bag will be beaten up after school", "whoever snitched gets shot", "they'll finally pay"), to a place or a vehicle ("the library will burn on friday", "the principal's car will blow up tomorrow"), or to someone said to be dead by a day or not to see it ("10B is dead tomorrow", "the warden won't see monday"); a weapon emoji beside a school one; and Hinglish ("tujhe kal school ke baad peet dunga", "kal canteen mein bomb laga denge", "kal school mein uski gardan tod dunga", "uss ladki ko kal college ke bahar utha lenge") — each with a place or a time near it or in the subject — and school-attack warnings. Not threats: the same verbs said of an exam, a meal, a record, the news, a party, photos or the speaker ("I'm going to kill this exam tomorrow", "break the record at sports day", "shoot my shot at the farewell", "drown myself in coffee"); a knife for the cake, a bat for the nets, a prop, a toy, an airsoft gun, a kitchen knife, a water gun at Holi; a film or sports shoot, a game (though not a shooting or a bomb at one), a story's plot, news, and a report that quotes what someone said; an exam, a team or a market ("kill JEE tomorrow", "a bloodbath on Dalal Street"); a drill, hurt feelings, killing with kindness; harm to people at large, to the poster's own things or to one person as a caution ("people will get hurt at this concert", "you'll get hurt if you climb that wall"), harm that happens every week, a hall that will "blow up with cheers"; exasperation with one person taken back at once ("I'm going to strangle him at lunch tomorrow (I won't, I love him)"); and hyperbole ("you'll die when you see the results", "you're going to die in the exam"). A condition that demands something ("if you tell anyone", "unless you pay") does not make one harmless |
+| Hold (`202`) | `self_harm` | Encouragement or method: "kys", "go die", "cut yourself", "cut your wrists", "neck yourself", "off yourself", "an hero", "why are you still alive", "people like that should just kill themselves", "take all your pills", "khudkushi kar le", "chhat se kood ja", how-many and what-dose questions in either order, "enough to die", lethal doses, how to tie or make a noose, how to purge, thinspo, meanspo, "ana coach"; and an act urged on someone, in any of the ways of telling them to: an order with nothing but fillers before it ("bro just rope", "pls just od already", "just jump already", "go self harm in a corner"), one after a favour asked ("do us all a favour and overdose", "do the world a favour and stop breathing", "do us all a favour and jump off a building"), a modal said to them ("you need to overdose tonight", "why don't you just stop existing", "time for you to rope"), the act judged to be what they should do ("ending yourself would be the best thing you did all year", "suicide is the only solution for someone with your marks", "the world would be better if you ended your life tonight"), "rope time for OP", "jump in front of a train", "just do it" in a post about dying, and Hinglish ("zeher kha le", "apni jaan le le", "pankhe se latak ja", "marr kyun nahi jaata tu") — not when the sentence says not to ("please don't kys", "a bad rank doesn't end your life") or warns ("be careful with the scalpel, you could cut yourself"), and not "die your hair", "a hill to die on", "overdose on caffeine", "jump into the pool", "jump at the chance", "stop breathing on my neck", "stop living in the past", "cut yourself some slack", "rope in the seniors", "od" for on-duty leave, a boss fight, "just do it" about a deadline, or "bus mein latak ja" |
+| Hold (`202`) | `grooming` | A question that places the reader — an age, a school year or grade, a school, a hostel or a room, where exactly someone lives or studies, when they get out ("which year of school are you in?", "what grade are you in?", "where exactly do you live?", "where exactly is your coaching?", "which hostel and room number?", "what time do you get out of school?", "tell me your class and your address", "you're in 9th?", "you're 12?", "that's your tuition right?", "kis school mein padhte ho?", "tum 9th mein ho?") — or an age asked for by number ("any 14yo girls here?", "13-15 yo girls"), and a private-contact, meet-up, visit, secrecy, video-call or photo cue ("dm me", "we could meet", "I'll come by tonight", "come alone", "come without your friends", "wait for me outside", "I'll pick you up after the batch", "somewhere your parents can't see", "do your parents know you talk to strangers?", "your parents don't need to know", "keep it quiet", "delete this after reading", "let's go private", "facetime me", "photo bhejo", "kisi ko mat batana", "ek baar milo", "gift dilaunga") in the same post. An age or a year said for a reason that is all in the open is not one ("when you're in 12th you'll understand", "you're 15 minutes late", "u 14? the competition is for 14 and above", "do your parents know about the fee hike?") |
 
 The patterns are written for English and for some Hinglish (Hindi written in
 Latin letters, as in the examples above). Hindi in Devanagari, and every other
@@ -414,24 +414,34 @@ here"), contact details hidden in `[math]`, an email
 address under a top-level domain the filter does not list (it knows the common
 generic ones and about fifty countries', India's, the UK's and the US's among
 them, plus any university's `edu` or `ac` domain under a country's), the same
-request in Devanagari or another language — and they catch posts that
+request in Devanagari or another language, a threat or a push towards
+self-harm that names no act, weapon or harm and leaves the reader to work it
+out ("they'll need to carry you home", "you know what to do", "the last one
+any of them ever have") — and they catch posts that
 are fine: gaming trash talk, a countdown written as spaced digits, a question
 about a medicine's dose, a twelve-digit reference number that happens to pass
 the Aadhaar check, a sentence that says something "will be killed tomorrow"
-when the something is a bill. That is why a block says exactly what it matched, and why a
+when the something is a bill, a debater who will "open fire on the opposition
+tomorrow". That is why a block says exactly what it matched, and why a
 hold waits for a person rather than deleting anything. The filter raises the
 cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
 What it does with posts like the ones it is written for is pinned by a corpus:
-895 made-up posts in `internal/app/testdata/filter_corpus`, one file per kind
-(academic, student life, contact details, risky posts), each labelled with what
-the filter should do. `TestFilterCorpus` runs every one through the filter and
-fails on any it gets wrong, except the few marked as known misses, each with a
-note saying why the miss is accepted, and logs how many ordinary posts were
-stopped and how much of each kind was caught (`go test -run TestFilterCorpus -v
-./internal/app`). The rules were fixed against these posts, so the rates it
-logs say what the filter does on them, not on posts no one has written yet.
+1,804 made-up posts in `internal/app/testdata/filter_corpus`, in two halves of
+one file per kind (academic, student life, contact details, risky posts; the
+second half's files end in `_2`), each labelled with what the filter should
+do. `TestFilterCorpus` runs every one through the filter and fails on any it
+gets wrong, except those marked as known misses, each with a note saying why
+the miss is accepted, and logs how many ordinary posts were stopped and how
+much of each kind was caught (`go test -run TestFilterCorpus -v
+./internal/app`). The rules were fixed against the first half. The second was
+written apart from them, and on it the threat, self-harm and grooming rules
+first held 55 of its 135 risky posts, which is why they were rewritten to read
+who says what to whom rather than lists of phrases; they now hold 130. The
+second half was measured throughout that rewrite, so neither half's rates say
+what the filter does on posts no one has written yet. Its contact and support
+misses are marked as known misses and are left for a later pass.
 
 Nothing the filter reads or matches is logged, and nothing of a post it sends
 back is stored: not the text, not what matched, and not which rule. A refused
@@ -446,14 +456,14 @@ its thread's `held_at`. Nothing else the filter matched is kept. A moderator's
 approval is logged with the board, thread and post number, as every
 moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
-length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.4 ms for
-a typical 500-character post, about 2 ms for an ordinary post of the maximum
-length, and no more than about 15 ms for the slowest of the 247 posts built to
-be slow (measured one post at a time with `GOMAXPROCS=1` under `taskset`, the
-best of several runs). Each server prepares the rules once, as it starts:
-about 3 seconds of one core, with the heap reaching about 300 MB while it does
-and about 50 MB kept afterwards, and a post that arrives before that is done
-waits for it. A
+length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.7 ms for
+a typical 500-character post, about 3 ms for an ordinary post of the maximum
+length, and no more than about 17 ms for the slowest of the 1,193 posts built
+to be slow (measured one post at a time with `GOMAXPROCS=1` under `taskset`,
+the best of several runs). Each server prepares the rules once, as it starts:
+about 3.5 seconds of one core, with the heap reaching about 300 MB while it
+does and about 60 MB kept afterwards, and a post that arrives before that is
+done waits for it. A
 refused post costs no cooldown, so refusals are counted instead: after
 `EDUCHAN_REFUSAL_LIMIT` of them (10 by default) in a minute, a client's posts
 are answered `429` without being read until the minute is up (see

@@ -124,7 +124,7 @@
 {"id": "risk-124", "body": "bomb disposal squad is doing a demo at school tomorrow at 10 for science week, should be cool", "subject": "", "name": "", "expect": "publish", "why": "school event"}
 {"id": "risk-125", "body": "how old do you have to be to volunteer at a hospital? want to do it over the summer", "subject": "", "name": "", "expect": "publish", "why": "eligibility question"}
 {"id": "risk-126", "body": "you're in year 7? that's cool. can you get out of the house on saturday without your parents knowing? let's meet", "subject": "", "name": "", "expect": "hold", "why": "school year plus secret meet"}
-{"id": "risk-127", "body": "nobody would even come to your funeral. just do it", "subject": "", "name": "", "expect": "hold", "why": "goading suicide", "known_miss": true, "note": "\"just do it\" names no act; what \"it\" is comes from the sentence before, and the phrase alone is everyday advice"}
+{"id": "risk-127", "body": "nobody would even come to your funeral. just do it", "subject": "", "name": "", "expect": "hold", "why": "goading suicide"}
 {"id": "risk-128", "body": "NCC firing practice at the range this saturday. do we get our own rifles or share?", "subject": "", "name": "", "expect": "publish", "why": "supervised cadet training"}
 {"id": "risk-129", "body": "IIT Delhi vs IIT Bombay for EE, which would you pick and why", "subject": "", "name": "", "expect": "publish", "why": "choosing a college"}
 {"id": "risk-130", "body": "khud ko khatam kar le, tere jaise logon ki zarurat nahi duniya ko", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: end yourself"}

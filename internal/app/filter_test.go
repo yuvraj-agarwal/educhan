@@ -1051,6 +1051,98 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"we're gonna beat this topic to death in class tomorrow",
 		"valo 5 stack tomorrow 8pm, we're gonna slaughter them on ascent",
 		"Among Us after class? I'm killing all of you in electrical",
+		// The threat grammar's verbs in their ordinary senses: an exam, a
+		// meal, a record, the news, a party, photos, a habit; a game or a
+		// sport; something done to oneself; a place that will be lively;
+		// harm to people at large, or to one person as a caution; and
+		// "dead", "won't see" and "won't make it" said of other things.
+		"I'm going to murder this pizza tonight",
+		"I'm going to strangle my brother if he takes my charger again lol",
+		"im gonna drown myself in coffee before the exam tomorrow",
+		"I'm going to throw the ball to coach at practice tomorrow",
+		"I'm gonna push my sister into the pool at the party tomorrow lol",
+		"we're going to run over the syllabus again tomorrow in class",
+		"I'm going to break the record at sports day tomorrow",
+		"I'll break the news to the class tomorrow",
+		"we're going to smash them in the cricket match tomorrow at the ground",
+		"I'm going to burn the midnight oil tonight at the library",
+		"we're going to start a fire at the campsite tonight for smores",
+		"we'll take out the trash after school tomorrow",
+		"I'll take the principal's car to the garage tomorrow, he asked me to",
+		"I'm bringing a knife to cut the cake at the class party tomorrow",
+		"bringing a bat to the nets tomorrow, who's in?",
+		"I've got a gun in the airsoft tournament tomorrow at the club",
+		"I'm going to shoot the principal's speech for the yearbook tomorrow",
+		"I'm going to shoot my shot with her at the farewell tomorrow",
+		"I'll beat him in the chess tournament tomorrow at school",
+		"going to the school tomorrow with my dad",
+		"I'll put my sister to bed tonight",
+		"I'm going to hunt down that book in the library tomorrow",
+		"the school will burn a hole in my pocket with these fees tomorrow",
+		"our hostel is going to blow up with cheers when india wins tonight",
+		"people will get hurt at this concert tomorrow, too crowded",
+		"kids in my school are getting hurt in PE every week",
+		"you'll get hurt if you climb that wall at school tomorrow",
+		"everyone in the class will be hurt by the new attendance rule tomorrow",
+		"my phone is dead and I have class tomorrow",
+		"the group chat is dead tomorrow lol",
+		"my grandma won't see next week, the doctors said today",
+		"he won't make it to monday's class, he's sick",
+		"we won't make it out of the exam alive tomorrow lol",
+		"I'm going to jump the queue at the canteen tomorrow",
+		"I'm going to attack the problem set tonight at the library",
+		"my dad's car is going to blow up if he keeps ignoring the engine light, the garage said today",
+		"the lab will blow up if you mix those chemicals, sir warned us today",
+		"everyone in the canteen at 1pm will get a free samosa",
+		"the principal won't see you tomorrow, he's busy",
+		"I'm going to stab at the problem again tonight at the library",
+		"I'm throwing my friend a surprise party at the hostel tomorrow",
+		"I'm going to push the teacher to extend the deadline tomorrow",
+		"I'm locking the doors of the hostel room and starting a movie marathon tonight",
+		"I'm going to strangle him at lunch tomorrow (I won't, I love him)",
+		// Hinglish: a DJ, picking someone up, washing, a kitchen knife, a
+		// game's gun, a result.
+		"kal college mein dhamaka hoga, DJ aa raha hai",
+		"kal tujhe station se utha lunga, 6 baje",
+		"kal kapde dho dunga hostel mein",
+		"kal gaadi ko dho dunga",
+		"naya chaku le liya hai kitchen ke liye, kal se sabzi main kaatunga",
+		"bgmi mein kal gun ready hai, school ke baad khelte hai",
+		"kal result aayega, school mein dhamaka hoga",
+		// The self-harm acts said of other things: caffeine, the queue,
+		// the pool, the camera, a chance, a deadline, a boss fight, help
+		// offered, "rope in", on-duty leave, hair dye.
+		"what does kys mean",
+		"please stop breathing on my neck in the queue",
+		"stop living in the past and study",
+		"just jump into the pool, the water is warm",
+		"jump in front of the camera for the photo",
+		"you should jump at the chance to join the club",
+		"just do it already, the form closes tonight",
+		"time to die in the boss fight again",
+		"don't self harm, please talk to someone",
+		"cut yourself some slack, you studied hard",
+		"the world would be better if you learned to code",
+		"death is the only certainty in life, said someone famous",
+		"bus mein latak ja, jagah nahi hai",
+		"we'll rope in the seniors for the fest",
+		"I took od for the fest tomorrow",
+		"stop existing in my group chat with your memes lol",
+		// A reader's year, school or age asked about for a reason that is
+		// all in the open.
+		"when you're in 12th you'll understand why boards matter. don't tell me I didn't warn you",
+		"you're 15 minutes late to the thread lol, meet me at the library next time",
+		"which batch are you in? we could meet at the library to study",
+		"which college do you go to? I'll be at the fest on saturday, say hi to the organisers",
+		"you're in grade 11 so take physics seriously. ask the teacher privately if you're shy",
+		"tell me your school name and I'll tell you if they have a good lab",
+		"what time do you get out of school? mine ends at 2",
+		"how old are you? don't tell me, I'll guess from your handwriting",
+		"where exactly is your hostel? the delivery guys can't find B block",
+		"tum 8th mein ho na? board exam ki tension mat lo",
+		"are you usually by yourself at lunch? join our table at the canteen",
+		"do your parents know about the fee hike? the circular came today",
+		"u 14? the competition is for 14 and above, ask your teacher",
 	}
 	for _, body := range posts {
 		if v := bodyVerdict(body); v.Outcome != contentPublish {
@@ -1439,6 +1531,87 @@ func TestFilterHolds(t *testing.T) {
 		{"where u live? dm me", holdGrooming},
 		{"where u from? dm me", holdGrooming},
 		{"kitne saal ki ho? photo bhejo", holdGrooming},
+		// Threats read as grammar: the speaker, a verb of harm and what it
+		// is done to (a person, a place, a vehicle), whatever the words
+		// between; carrying a weapon somewhere; harm said to be coming to a
+		// group picked out by where it is or who it is; a place said to be
+		// going to burn; and Hinglish verbs with the subject left out.
+		{"I'm going to stab the new kid in the library tomorrow", holdThreat},
+		{"I'm going to run over the PE teacher in the parking lot on monday", holdThreat},
+		{"we're gonna throw the monitor off the hostel roof tonight", holdThreat},
+		{"I'll push the topper down the stairs after school", holdThreat},
+		{"imma put the warden in the hospital tomorrow", holdThreat},
+		{"I'm going to make the bullies bleed at lunch tomorrow", holdThreat},
+		{"I'll break Kabir's jaw after class", holdThreat},
+		{"I'm going to burn down the girls hostel tonight", holdThreat},
+		{"we're going to torch the principal's office on friday", holdThreat},
+		{"gonna set the staff room on fire monday", holdThreat},
+		{"I'm going to beat the new kid to death after school", holdThreat},
+		{"I'm bringing a machete to the canteen tomorrow", holdThreat},
+		{"bringing my dad's pistol to class on monday", holdThreat},
+		{"I've got a gun and I'm coming to school tomorrow", holdThreat},
+		{"I'm coming to the exam hall tomorrow with a knife", holdThreat},
+		{"going to the hostel tonight with petrol", holdThreat},
+		{"I'm going to take a hammer to the warden's head tomorrow", holdThreat},
+		{"I'll drown the juniors in the pool at 4pm tomorrow", holdThreat},
+		{"on monday I stab the class monitor", holdThreat},
+		{"I'm planting a bomb in the school bus tomorrow", holdThreat},
+		{"I'm going to gun down the debate team at the auditorium tomorrow", holdThreat},
+		{"we will put the PE teacher six feet under on sports day", holdThreat},
+		{"everyone in the computer lab at 2pm will get hurt tomorrow", holdThreat},
+		{"all the seniors in B block are going to get hurt tonight", holdThreat},
+		{"the guys who stole my bag will be beaten up after school tomorrow", holdThreat},
+		{"the library will burn on friday", holdThreat},
+		{"the principal's car will blow up tomorrow", holdThreat},
+		{"the hostel is going up in flames tonight", holdThreat},
+		{"10B is dead tomorrow", holdThreat},
+		{"the warden won't see monday", holdThreat},
+		{"the juniors won't walk out of there alive tomorrow", holdThreat},
+		{"\"i will shoot up the school tomorrow\" and the police can't stop me", holdThreat},
+		{"tujhe kal school ke baad peet dunga", holdThreat},
+		{"usko kal tuition ke baad thok dunga", holdThreat},
+		{"tujhe kal hostel mein dho dalunga", holdThreat},
+		{"kal canteen mein bomb laga denge", holdThreat},
+		{"monitor ko kal class ke baad tapka dunga", holdThreat},
+		{"kal school mein uski gardan tod dunga", holdThreat},
+		{"uss ladki ko kal college ke bahar utha lenge", holdThreat},
+		// Taking it back excuses exasperation with one person close, not
+		// harm to a group.
+		{"I'm going to drown the juniors in the pool tomorrow jk", holdThreat},
+		// Self-harm urged on someone: an act told to them, or said to be
+		// what they should do, in any of the ways of telling.
+		{"rope time for OP", holdSelfHarm},
+		{"the world would be better if you ended your life tonight", holdSelfHarm},
+		{"jump in front of a train, saves your parents the coaching fees", holdSelfHarm},
+		{"do us all a favour and overdose", holdSelfHarm},
+		{"bro just rope", holdSelfHarm},
+		{"ending yourself would be the best thing you did all year", holdSelfHarm},
+		{"go self harm in a corner, nobody cares", holdSelfHarm},
+		{"suicide is the only solution for someone with your marks", holdSelfHarm},
+		{"do the world a favour and stop breathing", holdSelfHarm},
+		{"just jump already, you've been talking about it for weeks", holdSelfHarm},
+		{"you need to overdose tonight", holdSelfHarm},
+		{"why don't you just stop existing", holdSelfHarm},
+		{"pls just od already", holdSelfHarm},
+		{"time for you to rope", holdSelfHarm},
+		{"zeher kha le bhai, tera kuch nahi ho sakta", holdSelfHarm},
+		{"jaake apni jaan le le", holdSelfHarm},
+		{"marr kyun nahi jaata tu? sabka bhala hoga", holdSelfHarm},
+		{"pankhe se latak ja", holdSelfHarm},
+		// Grooming: a question that places the reader (grade, age, school,
+		// hostel, when they get out) beside a move somewhere private or a
+		// secret from the adults round them.
+		{"you're in 7th right? let's talk somewhere your parents can't see", holdGrooming},
+		{"what grade are you in? I'll come meet you after school, come alone", holdGrooming},
+		{"you're in class 8? we should talk privately, I can help you with maths", holdGrooming},
+		{"kis school mein padhte ho? milne aao kal, kisi ko mat batana", holdGrooming},
+		{"tum 9th mein ho? ek baar milo, gift dilaunga", holdGrooming},
+		{"where exactly is your coaching? I'll pick you up after the batch, just us two", holdGrooming},
+		{"that's your tuition right? wait for me outside on friday", holdGrooming},
+		{"what time do you get out of school? meet me at the park, come without your friends", holdGrooming},
+		{"are you 13? do your parents know you talk to strangers? let's go private", holdGrooming},
+		{"which floor is your room on? I'll come to your room tonight, keep it a secret", holdGrooming},
+		{"you're 12? delete this after reading", holdGrooming},
 	}
 	// The method questions show the support message first, because the
 	// person asking may be asking for themselves. Every other hold comes
@@ -1729,6 +1902,8 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 		"hindiHandle": {hindiHandle}, "handleBeforeApp": {handleBeforeApp}, "namedTargetRules": namedTargetRules,
 		"myAmbiguousAppRule": {myAmbiguousAppRule}, "appThenAtHandle": {appThenAtHandle},
 		"discTagHandle": {discTagHandle}, "labelledAppHandle": {labelledAppHandle},
+		"threatFrameRules": threatFrameRules, "threatComingRules": threatComingRules,
+		"threatSymbolRules": threatSymbolRules, "selfHarmUrgeRules": selfHarmUrgeRules,
 	}
 	posix := regexp.MustCompile(`\[:[a-z]+:\]|\\p\{[^}]*l|\(\?[a-z]*l`)
 	for name, rs := range rules {
@@ -1879,6 +2054,18 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"app then words":   rep("telegram pe aao "),
 		"passive":          rep("gets stabbed tomorrow "),
 		"hinglish":         rep("usko kal maar dunga "),
+		// The threat grammar's openings next to a place or a time, which is
+		// when what follows them is read: a speaker and a verb, harm said
+		// to be coming, a place said to burn, a day someone won't see, and
+		// Hinglish pronouns with a time between; and an act urged, and a
+		// reader's grade asked about beside a cue.
+		"frame by a place":  rep("school i'm going to "),
+		"coming harm":       rep("everyone in the lab will get hurt tomorrow "),
+		"burning place":     rep("the hostel will burn "),
+		"won't see":         rep("the warden won't see monday "),
+		"pronoun then time": rep("kal sabko "),
+		"urged":             rep("bro just rope "),
+		"grade then cue":    rep("what grade are you in? come alone "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.

@@ -241,7 +241,7 @@ func holdReason(fields []*scannedField) string {
 		return holdThreat
 	}
 	for _, f := range fields {
-		if f.anyMatch(selfHarmRules, selfHarmCheck) || f.asksForAMethod() {
+		if f.anyMatch(selfHarmRules, selfHarmCheck) || f.anyMatch(selfHarmUrgeRules, urgeCheck) || f.asksForAMethod() {
 			return holdSelfHarm
 		}
 	}
@@ -1567,6 +1567,59 @@ var selfHarmRules = []rule{bothViews(`\b` + words(
 	words(`ana`, `mia`)+`~`+words(`coach`, `buddy`, `tips?`),
 ) + `\b`)}
 
+// selfHarmUrgeRules read encouragement as two parts, the act and what
+// frames it as said to someone, rather than as phrasings: the act is found
+// here ("overdose", "stop breathing", "rope", "jump in front of a train",
+// "kysing"), and urgeCheck reads the words before it for the frame: an
+// imperative opening its clause ("bro just rope"), "and" after a request
+// ("do us all a favour and overdose", "do the world a favour and stop
+// breathing"), or a modal said to someone ("you should", "why don't you",
+// "time to", "maybe you should"). The other rules judge the act itself:
+// "ending yourself would be the best thing you did", "suicide is the only
+// solution for someone with your marks", "the world would be better if you
+// ended your life", and the Hinglish imperatives ("zeher kha le", "apni jaan
+// le le", "latak ja", "mar kyun nahi jaata").
+var selfHarmUrgeRules = []rule{
+	bothViews(`\b` + words(
+		`jump~in~front~of~`+words(`a`, `the`)+`~`+words(`train`, `bus`, `truck`, `car`, `metro`, `lorry`, `tram`),
+		`overdose`, `od`, `rope`, `die`, `jump`, `do~it`,
+		words(`stop`, `quit`)+`~`+words(`breathing`, `existing`, `living`), `cease~to~exist`,
+		`self~?harm`, words(`harm`, `drown`, `kill`, `hang`, `end`, `off`, `cut`, `neck`, `starve`, `unalive`)+`~`+
+			words(`your`, `ur`)+`~sel(?:f|ves)`, `set~`+words(`your`, `ur`)+`~self~on~fire`,
+		`k+y+s+(?:ing|in|ed)`,
+	) + `\b`),
+	// "ending yourself would be the best thing you did all year".
+	bothViews(`\b` + words(`ending`, `killing`, `offing`, `hanging`, `roping`, `unaliving`, `necking`, `drowning`) +
+		`~` + words(`your`, `ur`) + `~sel(?:f|ves)~` + words(`would`, `will`, `is`, `'?d`, `might`) +
+		`~(?:be~)?(?:` + words(`the`, `a`, `your`, `ur`) + `~)?` + words(`best`, `right`, `only`, `smartest`,
+		`kindest`, `nicest`, `greatest`, `good`, `favou?r`, `gift`, `win`, `service`, `improvement`) + `(?:~` +
+		words(`thing`, `move`, `decision`, `choice`, `idea`, `option`) + `)?\b`),
+	// "suicide is the only solution for someone with your marks".
+	bothViews(`\b` + words(`suicide`, `kys`, `death`, `dying`, `rope`, `killing~(?:your|ur)~self`, `ending~it`,
+		`ending~(?:your|ur)~life`) + `~` + words(`is`, `'?s`, `would~be`, `will~be`, `seems~like`, `sounds~like`) +
+		`~(?:` + words(`the`, `your`, `ur`, `a`) + `~)?(?:` + words(`only`, `best`, `right`, `real`, `easiest`,
+		`obvious`) + `~)?` + words(`solution`, `option`, `answer`, `way~out`, `choice`, `cure`, `fix`) + `\b`),
+	// "the world would be better if you ended your life tonight".
+	bothViews(`\b` + words(`world`, `everyone`, `everybody`, `we`, `parents`, `family`, `mom`, `mum`, `dad`, `class`,
+		`board`, `school`, `earth`, `planet`, `society`, `everything`) + `~` + words(`would`, `will`, `'?d`) +
+		`~be~better~(?:off~)?` + words(`if~`+words(`you`, `u`)+`~`+words(`died`, `were~dead`, `was~dead`,
+		`ended~(?:your|ur)~life`, `ended~it`, `killed~(?:your|ur)~self`, `weren'?t~`+words(`here`, `alive`, `around`,
+			`born`), `didn'?t~exist`, `never~existed`, `disappeared`, `jumped`, `hanged~(?:your|ur)~self`,
+		`were~gone`), `without~`+words(`you`, `u`)) + `\b`),
+	// Hinglish: "zeher kha le", "apni jaan le le", "latak ja", "mar kyun
+	// nahi jaata".
+	bothViews(`\b` + words(
+		words(`zeher`, `zehar`, `zahar`, `jeher`, `zaher`)+`~`+words(`kha`, `khaa`, `pi`, `pee`)+`~`+
+			words(`le`, `lo`, `ja`, `jaa`, `jao`, `ke~mar~ja`, `ke~mar~jaa`, `ke~mar~jao`),
+		`apni~jaan~`+words(`le`, `de`)+`~`+words(`le`, `de`, `lo`, `do`),
+		words(`latak`, `lattak`)+`~`+words(`ja`, `jaa`, `jao`),
+		`mar+~`+words(`kyun`, `kyu`, `kyon`, `q`)+`~`+words(`nahi`, `nhi`, `nai`)+`~`+words(`jaata`, `jata`, `jaati`,
+			`jati`, `jaate`, `jate`),
+		// "rope time for OP": the act as the time for it.
+		words(`rope`, `kys`, `neck`)+`~time`,
+	) + `\b`),
+}
+
 // selfHarmMethodRules ask or tell how to hurt or kill oneself: how, how many,
 // what dose. Someone asking may be asking for themselves, so a post with one
 // is answered with the support message first, as crisis language is, and is
@@ -1669,13 +1722,13 @@ var (
 	// "the exam centre", "the mess", "the seminar hall". They are in
 	// alphabetical order, as peopleNouns are, so that words starting alike
 	// share their start when the pattern is compiled, and are read once.
-	threatPlaces = words(`airport`, `assembly`, `auditorium`, `bathroom`, `bus`, `cafeteria`, `campus`, `canteen`,
-		`center`, `centre`, `ceremony`, `church`, `class`, `classroom`, `coaching`, `college`, `columbine`, `concert`,
-		`convocation`, `corridor`, `dorm`, `exam~cell`, `exam~hall`, `farewell`, `ghar`, `graduation`, `gurdwara`,
-		`gurudwara`, `gym`, `hall`, `hallway`, `hospital`, `hostel`, `lab`, `library`, `mall`, `meeting`, `mess`, `metro`,
-		`mosque`, `office`, `parking`, `parking~lot`, `playground`, `prom`, `restroom`, `school`, `school~bus`, `seminar`,
-		`stadium`, `staffroom`, `staff~room`, `station`, `synagogue`, `temple`, `toilets?`, `tuition`, `uni`, `university`,
-		`washroom`)
+	threatPlaces = words(`airport`, `annual~day`, `assembly`, `auditorium`, `bathroom`, `bus`, `cafeteria`, `campus`,
+		`canteen`, `center`, `centre`, `ceremony`, `church`, `class`, `classroom`, `coaching`, `college`, `columbine`,
+		`concert`, `convocation`, `corridor`, `dorm`, `exam~cell`, `exam~hall`, `farewell`, `ghar`, `graduation`,
+		`gurdwara`, `gurudwara`, `gym`, `hall`, `hallway`, `hospital`, `hostel`, `lab`, `library`, `mall`, `meeting`,
+		`mess`, `metro`, `mosque`, `office`, `parking`, `parking~lot`, `playground`, `prom`, `restroom`, `school`,
+		`school~bus`, `seminar`, `sports~day`, `stadium`, `staffroom`, `staff~room`, `station`, `synagogue`, `temple`,
+		`toilets?`, `tuition`, `uni`, `university`, `washroom`)
 	weekdays    = words(`mon`, `tues`, `wednes`, `thurs`, `fri`, `satur`, `sun`) + `day`
 	threatTimes = words(`today`, `tonight`, `tomorrow`, `tmrw`, `tmr`, `tmrrw`, `tomoz`, `2moro`, `2morrow`, `kal`,
 		`aaj`, words(`on`, `this`, `next`, `coming`)+`~`+weekdays, weekdays,
@@ -1700,13 +1753,31 @@ var (
 	// what is brought.
 	hindiWill = words(`dunga`, `dungi`, `denge`, `doonga`, `doongi`, `daalunga`, `dalunga`, `daalungi`, `dalungi`,
 		`daalenge`, `dalenge`)
-	hindiKill = words(`maar~`+hindiWill, `maarunga`, `marunga`, `maroonga`, `maaroonga`, `maarungi`, `marungi`,
-		`maarenge`, `marenge`)
+	// hindiKill is the future of the verbs of beating and killing: "maar
+	// dunga", "peet denge", "thok dunga", "tapka dunga".
+	hindiKill = words(words(`maar`, `peet`, `pit`, `thok`, `thokk`, `tapka`)+`~`+hindiWill, `maarunga`,
+		`marunga`, `maroonga`, `maaroonga`, `maarungi`, `marungi`, `maarenge`, `marenge`, `peetunga`, `pitunga`,
+		`peetenge`, `pitenge`, `thokunga`, `thokenge`, `tapkaunga`, `tapkaenge`, `tapkayenge`)
+	// hindiCome is the future of coming and going: "aaunga", "jayenge".
+	hindiCome = words(`aaunga`, `aunga`, `aaoonga`, `aaonga`, `aaungi`, `aungi`, `aaenge`, `aayenge`, `aa~raha~h(?:u|oo)n?`,
+		`aa~rahi~h(?:u|oo)n?`, `jaunga`, `jaaunga`, `jaungi`, `jaenge`, `jayenge`, `jaayenge`)
+	// hindiBody are the parts of someone a threat breaks: "haath pair tod
+	// denge", "sar phod dunga".
+	hindiBody = words(`sar`, `sir`, `sarr`, `muh`, `munh`, `mooh`, `daant`, `dant`, `haddi`, `haddiyan`, `haddiyaan`,
+		`taang`, `taange`, `tange`, `taangein`, `haath`, `hath`, `pair`, `pairr`, `paer`, `paon`, `paanv`, `khopdi`,
+		`khopadi`, `jabda`, `pasli`, `pasliyan`, `gardan`, `kamar`, `naak`, `nak`)
 	hindiBlades = words(`goli`, `chaku`, `chakku`, `chaaku`, `chakoo`, `chhura`, `chhuri`, `chura`, `churi`, `knife`,
 		`talwar`, `talvar`)
 	hindiArms = words(`bandook`, `banduk`, `bandooq`, `katta`, `kattaa`, `tamancha`, `tamanchaa`, `pistol`, `gun`,
 		`revolver`, `chaku`, `chakku`, `chaaku`, `chhura`, `chhuri`, `talwar`, `talvar`, `knife`, `bomb`, `rod`,
 		`danda`, `tezaab`, `tezab`, `acid`)
+	// hindiGuns are the arms that are only arms: not a rod, and not
+	// "bomb", which is praise as often.
+	hindiGuns = words(`bandook`, `banduk`, `bandooq`, `katta`, `kattaa`, `tamancha`, `tamanchaa`, `pistol`, `gun`,
+		`revolver`, `chaku`, `chakku`, `chaaku`, `chhura`, `chhuri`, `talwar`, `talvar`, `knife`, `tezaab`, `tezab`,
+		`acid`)
+	// hindiPronouns are who a Hinglish threat is aimed at.
+	hindiPronouns = words(`sabko`, `sab~ko`, `sabhi~ko`, `tujhe`, `tumhe`, `tumko`, `usko`, `unko`, `isko`, `tereko`)
 	// harmEnding is how a threat says an event will end: "with bodies on the
 	// floor", "with their captain in hospital".
 	harmEnding = `(?:` + words(`the`, `their`, `his`, `her`, `your`, `ur`, `some`, `a~few`, `lots~of`, `many`) +
@@ -1755,23 +1826,40 @@ var (
 			// Hinglish: "sabko goli maar dunga", "tujhe maar dalunga", with up
 			// to four words between, where Hindi puts a time or a place:
 			// "tujhe kal maar dunga", "tujhe kal school ke baad maar dunga",
-			// "Verma ma'am ko kal chaku maar dunga", "usko maarunga".
-			words(`sabko`, `sab~ko`, `sabhi~ko`, `tujhe`, `tumhe`, `tumko`, `usko`, `unko`, `isko`, `tereko`, `ko`)+
-				`~(?:\pL+~){0,4}?(?:`+hindiBlades+`~)?`+hindiKill,
+			// "Verma ma'am ko kal chaku maar dunga", "usko maarunga"; "tujhe
+			// dho dalunga", thrashing, which threatExcused takes only of a
+			// person, since "kapde ko dho dunga" is the washing; and "uss
+			// ladki ko college ke bahar utha lenge", carrying someone off.
+			// One run of words between serves all three.
+			words(hindiPronouns, `ko`)+`~(?:\pL+~){0,4}?`+words(`(?:`+hindiBlades+`~)?`+hindiKill, `dho~`+hindiWill,
+				`utha~`+words(`lenge`, `le~jayenge`, `le~jaenge`, `le~jaunga`, `ke~le~jayenge`, `ke~le~jaenge`,
+					`ke~le~jaunga`)),
+			// "itna maarenge ki uth nahi paoge", "jamke maarenge": beat someone
+			// so hard that.
+			words(`itna`, `itni`, `itne`, `aisa`, `aise`)+`~`+hindiKill+`~ki`, words(`jamke`, `jam~ke`)+`~`+hindiKill,
 			hindiBlades+`~`+hindiKill,
 			// "kal school uda dunga": blow a place up.
 			threatPlaces+`~(?:ko~)?(?:bomb~se~)?uda~`+hindiWill,
 			// "chaku leke aaunga", "papa ki bandook le aaunga": bring a weapon.
-			hindiArms+`~`+words(`le~ke`, `leke`, `lekar`, `le~kar`, `le`)+`~`+words(`aaunga`, `aunga`, `aaoonga`,
-				`aaonga`, `aaungi`, `aungi`, `aaenge`, `aayenge`, `aa~raha~h(?:u|oo)n?`, `aa~rahi~h(?:u|oo)n?`),
+			// "bomb rakh ke aaunga": leave one behind.
+			hindiArms+`~`+words(`le~ke`, `leke`, `lekar`, `le~kar`, `le`, `rakh~ke`, `rakhke`, `rakh~kar`, `rakhkar`,
+				`chhod~ke`, `chhodke`, `chod~ke`, `chodke`, `laga~ke`, `lagake`)+`~`+hindiCome,
+			// "bomb rakh dunga", "bomb laga denge": plant one.
+			words(`bomb`, `bum`)+`~`+words(`rakh`, `laga`, `fit~kar`, `plant~kar`, `chhod`, `chod`)+`~`+hindiWill,
+			// "chaku le liya hai", "bandook ready hai": one got ready.
+			hindiGuns+`~`+words(`le~liya`, `le~li`, `khareed~liya`, `kharid~liya`, `khareed~li`, `kharid~li`,
+				`rakh~liya`, `rakh~li`, `ready`, `tayyar`, `taiyar`, `taiyaar`, `load`, `loaded`, `mil~gaya`, `mil~gayi`,
+				`mil~gya`, `mil~gyi`),
+			// "school mein dhamaka hoga": something will go off. threatCheck
+			// wants a place in the sentence, and no party.
+			words(`dhamaka`, `dhamakaa`, `dhmaka`, `blast`)+`~`+words(`hoga`, `karunga`, `karenge`, `kar~dunga`,
+				`kar~denge`, `karwaunga`, `karwa~dunga`),
 			hindiArms+`~`+words(`laaunga`, `launga`, `laoonga`, `laaungi`, `laungi`, `laaenge`, `laayenge`, `layenge`),
 			// "pitwa dunga": have someone beaten; "sar phod dunga": break a
 			// head; "aag laga dunga", "jala dunga": set on fire. threatCheck
 			// turns down a stage, a lamp and a pest.
 			`pitwa~`+hindiWill, words(`pitwaunga`, `pitwaoonga`, `pitwaenge`, `pitwaungi`),
-			words(`sar`, `sir`, `sarr`, `muh`, `munh`, `mooh`, `daant`, `dant`, `haddi`, `haddiyan`, `haddiyaan`, `taang`,
-				`taange`, `tange`, `haath`, `khopdi`, `khopadi`, `jabda`)+`~`+words(`phod`, `fod`, `tod`, `tor`, `todd`)+
-				`~`+hindiWill,
+			hindiBody+`~`+words(`phod`, `fod`, `tod`, `tor`, `todd`, `kaat`, `kat`)+`~`+hindiWill,
 			`aag~`+words(`laga`, `lga`, `lagaa`, `laga~ke`, `lagake`)+`~`+hindiWill,
 			words(`jala`, `jalaa`, `jla`)+`~`+hindiWill,
 		) + `\b`),
@@ -2146,6 +2234,9 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 		}
 	case is(last, "dead") || is(last, "meat"):
 		return !(len(next) > 0 && deadNotThreat[next[0]])
+	case is(last, "hurt") && harmlessCondition(sentence) && !conditionalPlace.matchIn(v, sentence) &&
+		!conditionalPlaceLoose.matchIn(v, sentence):
+		return false // "you'll get hurt if you climb that wall"
 	case is(last, "die"):
 		if gameDeath(next) || anyIn(next, dieNotThreat) || strings.Contains(canon(after), canon("one day")) ||
 			dieIdiom(next) || whenYouSee(next) || whenResults(next) || eventAfterPreposition(next) {
@@ -2251,6 +2342,24 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 		return anyIn(sws, storyWords) || anyIn(sws, gameWords)
 	case is(last, "die") && everyoneIn.MatchString(cm):
 		return anyIn(ws, eventWords) || anyIn(ws, foodWords)
+	case hinglishCarry.MatchString(cm):
+		// "station se utha lunga", "school se utha lenge" are a lift.
+		for i, w := range ws {
+			if is(w, "se") && i > 0 && (pickupWords[ws[i-1]] || threatPlaceWords[ws[i-1]]) {
+				return true
+			}
+		}
+		return anyIn(ws, pickupWords) || is(first, "ko") && hinglishNotTarget[prev]
+	case hinglishBlast.MatchString(cm):
+		return !anyIn(sws, threatPlaceWords) || anyIn(sws, stageWords) || anyIn(sws, eventWords) ||
+			anyIn(sws, festivalWords) || anyIn(sws, hypeWords) || anyIn(sws, gameWords)
+	case hinglishReady.MatchString(cm):
+		return anyIn(sws, propWords) || anyIn(sws, gameWords) || anyIn(sws, toyWeapon) || anyIn(sws, festivalWords) ||
+			gameNamed(text, m)
+	case is(first, "ko") && hasWord(ws, "dho"):
+		// "gaadi ko dho dunga" is the washing: only "tujhe dho dalunga",
+		// said to a person, is the thrashing.
+		return true
 	case is(first, "ko"):
 		return hinglishNotTarget[prev]
 	case hinglishFire.MatchString(cm):
@@ -2313,6 +2422,18 @@ var (
 	setOnFire = regexp.MustCompile(canon(`\b(?:set|setting)\b.*\bfire$|\bfire[^\pL\pN]+to\b|\bburn(?:ing)?\b`))
 	// everyoneIn is "everyone in the lab ... is going to die".
 	everyoneIn = regexp.MustCompile(canon(`^(?:everyone|everybody|every|all|y'?all|yall|you)\b`))
+	// hinglishCarry is "utha lenge", hinglishBlast "dhamaka hoga", and
+	// hinglishReady "chaku le liya hai".
+	hinglishCarry = regexp.MustCompile(canon(`\butha\b`))
+	hinglishBlast = regexp.MustCompile(canon(`^(?:dhamaka|dhamakaa|dhmaka|blast)\b`))
+	hinglishReady = regexp.MustCompile(canon(`\b(?:liya|li|ready|tayyar|taiyar|taiyaar|load|loaded|gaya|gayi|gya|gyi)$`))
+	// pickupWords make carrying someone off a lift: "station se utha
+	// lunga".
+	pickupWords = canonSetOf(`station stop stand airport railway metro bus`)
+	// hypeWords make "dhamaka hoga" a party: "kal college mein dhamaka hoga,
+	// DJ aa raha hai".
+	hypeWords = canonSetOf(`party dj sale offer launch news announcement result results reveal trailer song album
+		movie film release show concert performance entry`)
 	// hinglishFire and hinglishBring are "aag laga dunga" or "jala dunga",
 	// and "chaku leke aaunga".
 	hinglishFire  = regexp.MustCompile(canon(`^(?:aag|jala|jalaa|jla)\b`))
@@ -2372,7 +2493,7 @@ var (
 	// not a person: "machhar ko maar dunga", "exam ko maar dunga".
 	hinglishNotTarget = canonSetOf(`machhar macchar machar mosquito mosquitoes makkhi cockroach cockroaches chuha
 		chuhe chuhon keeda keede kide exam exams paper test boredom bore neend bhook bhookh time mood game level boss
-		sawal question questions`)
+		sawal question questions saman samaan bag bags phone call kachra kooda`)
 	toyWeapon     = canonSetOf(`water toy nerf glue nakli khilona paani pani pichkari airsoft paintball bubble spray`)
 	festivalWords = canonSetOf(`diwali deepawali patakhe patake cracker crackers holi pichkari`)
 	// deadHorse, beaten to death, is a topic: "beat this joke to death".
@@ -2682,6 +2803,32 @@ func quoted(text string, i int) bool {
 	return strings.ContainsRune(`"'“‘«`, r)
 }
 
+// clauseStart is where the clause holding offset i starts, within 64 bytes:
+// just past the last quotation mark or clause break before i, and past the
+// spaces after it. A rule that matches at its verb or its harm reads a
+// report from there: "\"i will shoot up the school tomorrow\" he said" is
+// quoted from "i", not from "shoot". An apostrophe inside a word ("i'll",
+// "students'") opens nothing.
+func clauseStart(text string, i int) int {
+	lo := max(0, i-64)
+	for j := i; j > lo; {
+		r, size := utf8.DecodeLastRuneInString(text[:j])
+		opens := strings.ContainsRune(".!?\n,;:\"“‘«", r)
+		if r == '\'' {
+			p, _ := utf8.DecodeLastRuneInString(text[:j-size])
+			opens = j-size == 0 || !unicode.IsLetter(p) && !unicode.IsDigit(p)
+		}
+		if opens {
+			for j < i && text[j] == ' ' {
+				j++
+			}
+			return j
+		}
+		j -= size
+	}
+	return i
+}
+
 // nextWords splits the start of s into at most n words of letters, digits
 // and hyphens. It reads no further than the nth word, since s is often all
 // of a post after a match.
@@ -2723,6 +2870,1145 @@ func sentenceAfter(text string, i int) string {
 // same threat.
 const threatWindow = 200
 
+/* Threat grammar -------------------------------------------------------------- */
+
+// The threat rules above read phrasings: an act and what it is done to,
+// spelled out together. threatFrameRules and threatComingRules read the
+// grammar instead.
+//
+// threatFrameRules find only the speaker and a verb — "I'm going to",
+// "we're", "imma", "gonna" or a bare "bringing" opening a sentence, then a
+// verb of hurting people or wrecking places — and threatFrame reads what
+// follows the verb with readNoun: a pronoun or a group ("them", "all of
+// you"), or determiners and owners, up to two words describing the head, and
+// a head word of the kind the verb is read with. "Stab" and "run over" are
+// read with anyone; "kill", "hurt" and "jump" only with someone in a role or
+// a group ("the warden", "my maths teacher", "the new kid"), since "I'm
+// going to kill my brother" is how people talk; "burn" and "blow up" with a
+// place or a vehicle, so not "the midnight oil" or "my phone"; "break" with
+// someone else's body ("Kabir's jaw", not "a leg"); "throw" with a person
+// and somewhere to fall from ("off the stand roof", "in front of a train");
+// "put" with a person and a grave or a hospital; "make" with a person and
+// "bleed"; "bring", "have" or "coming with" with a weapon, and a bat or a rod
+// only when it is brought to a place that is not a pitch.
+//
+// threatComingRules read harm said to be coming, with the subject read the
+// same way (threatSubject): a group picked out by where it is or who it is
+// ("every single person in that class will be hurt", "everyone in the
+// canteen at 1pm, you're all getting hurt"), a place or a vehicle that will
+// burn or blow up ("the school will burn on sports day", "the dean's car is
+// going up in flames"), people who are "dead on friday", and someone who
+// "won't see monday" or "won't walk out of there".
+//
+// Every match is then put to threatCheck, as a phrasing is, so what makes a
+// phrasing harmless (a game, a film shoot, a quotation, an event straight
+// after it, "with kindness") makes these harmless too; and like a phrasing,
+// each needs a place or a time near it.
+
+// nounKind is what the head of a noun phrase names.
+type nounKind uint8
+
+const (
+	nounNone nounKind = iota
+	// nounPerson is someone by their role, or a group: "the warden", "my
+	// maths teacher", "the new kid", "everyone", "them".
+	nounPerson
+	// nounKin is someone close: "my dad", "her brother", "my bestie", or a
+	// name.
+	nounKin
+	nounPlace
+	nounVehicle
+	// nounBody is a part of someone: "Kabir's jaw", "his face".
+	nounBody
+	nounWeapon
+	// nounBlunt is something to hit with that has other uses: a bat, a rod.
+	nounBlunt
+	// nounFuel is something to burn with: petrol.
+	nounFuel
+)
+
+// nounPhrase is a noun phrase read from the start of a list of words.
+type nounPhrase struct {
+	kind nounKind
+	head string
+	// n is how many words it took.
+	n int
+	// pronoun is set for "you", "him", "them" and the like, and quantified
+	// for a group picked out with "every", "all" or "each". owned is set
+	// for a head after an owner ("Kabir's jaw", "his face"), and mine when
+	// the owner is the speaker ("my", "our"). picked is set for a group
+	// picked out by what follows it: "every person in that class", "the
+	// guys who stole my book".
+	pronoun, quantified, owned, mine, picked bool
+}
+
+var (
+	// rolePeople are people by what they are at school, college or work, and
+	// groups of them.
+	rolePeople = canonSetOf(`teacher teachers principal headmaster headmistress sir maam ma'am madam mam miss coach
+		coaches warden wardens dean deans hod hods professor professors prof profs lecturer lecturers faculty staff
+		invigilator invigilators examiner examiners tutor tutors mentor mentors guard guards watchman security
+		driver drivers prefect prefects monitor monitors captain captains student students kid kids boy boys girl
+		girls guy guys dude dudes people ppl classmate classmates batchmate batchmates batch senior seniors junior
+		juniors fresher freshers topper toppers bully bullies deskmate deskmates benchmate benchmates roommate
+		roommates hosteller hostellers hosteler hostelers grader graders class section crowd man men woman women
+		person persons child children members cop cops police officer officers clerk peon librarian counsellor
+		counselor nerd nerds jocks rep reps cr team teams squad`)
+	// kinPeople are the people closest to someone, at home and among friends.
+	kinPeople = canonSetOf(`dad father papa mom mum mother mummy mommy mama brother sister cousin cousins uncle
+		aunt aunty auntie grandma grandpa grandmother grandfather nana nani dada dadi family parents stepdad stepmom
+		stepfather stepmother friend friends bestie bff ex crush girlfriend boyfriend gf bf neighbour neighbours
+		neighbor neighbors husband wife son daughter`)
+	// bareTitles name someone with no determiner: "throw coach off the
+	// roof".
+	bareTitles = canonSetOf(`coach sir maam ma'am madam mam principal warden dean dad mom mum papa mummy`)
+	// titleWords come before a name: "Mr. Banerjee's class".
+	titleWords = canonSetOf(`mr mrs ms miss dr sir prof`)
+	// placeHeads are where an act against a place is aimed: the places of
+	// threatPlaceWords, and the parts of a building or a campus.
+	placeHeads = canonSetOf(`airport assembly auditorium bathroom bus cafeteria campus canteen center centre
+		church class classroom coaching college concert corridor dorm farewell ghar gurdwara gurudwara gym hall
+		hallway hospital hostel lab library mall mess metro mosque office parking playground restroom school
+		seminar stadium station synagogue temple toilet toilets tuition uni university washroom building house
+		home room block flat shop store floor floors wing gate gates ground grounds field court stand stands
+		department dept quarters labs halls classrooms hostels schools colleges rooms offices houses flats apartment
+		apartments rally staffroom convocation graduation prom meeting`)
+	vehicleHeads = canonSetOf(`car cars bus buses van vans truck jeep suv bike scooter scooty auto rickshaw cab
+		train metro`)
+	bodyHeads = canonSetOf(`leg legs arm arms bone bones neck nose jaw face skull teeth tooth finger fingers rib
+		ribs knee knees kneecap kneecaps spine head hand hands wrist wrists`)
+	weaponHeads = canonSetOf(`gun guns knife knives blade blades machete machetes sword swords axe axes dagger
+		daggers rifle rifles pistol pistols revolver revolvers shotgun shotguns bomb bombs explosive explosives
+		grenade grenades acid taser tasers firearm firearms weapon weapons ak ak47 ar ar15 glock katta tamancha
+		chaku chakku chaaku chhura chhuri talwar`)
+	bluntHeads = canonSetOf(`bat bats stick sticks rod rods hammer crowbar pipe brick bricks chain chains`)
+	fuelHeads  = canonSetOf(`petrol kerosene gasoline diesel`)
+	// heightHeads are what someone is thrown or pushed off or in front of.
+	heightHeads = canonSetOf(`roof rooftop terrace stand stands building balcony window bridge cliff stairs
+		staircase steps ledge tower train bus truck car metro lorry tram lake river well canal`)
+	// graveHeads are where someone is put: "put him in the ground".
+	graveHeads = canonSetOf(`ground grave hospital icu coma wheelchair morgue coffin cast`)
+	// pitchHeads are places a bat or a stick is brought to for a game.
+	pitchHeads = canonSetOf(`ground grounds field court gym nets stadium playground pitch`)
+
+	// determiners come before the words describing a head; ownerWords are
+	// the ones that say whose it is, and quantifiers pick out a group.
+	determiners = canonSetOf(`the a an my our your ur his her their this that these those every each all some any
+		few both whole single one`)
+	ownerWords  = canonSetOf(`my our your ur his her their ya`)
+	myWords     = canonSetOf(`my our`)
+	quantifiers = canonSetOf(`every each all any`)
+	objectWords = canonSetOf(`you u ya him her them yall y'all everyone everybody`)
+	// groupWords start a group ("all of you", "every one of them"), and
+	// pronounGroups follow a pronoun to make one ("you all", "you guys").
+	groupWords    = canonSetOf(`all every each both single one`)
+	pronounGroups = canonSetOf(`all guys two lot`)
+	// graveWords are where someone is sent, and bombWords what is planted.
+	graveWords = canonSetOf(`icu morgue grave coffin afterlife`)
+	bombWords  = canonSetOf(`bomb bombs explosive explosives grenade grenades`)
+	// nounTails are the words a head of a phrase describes when it comes
+	// before them, besides events and messages: "the school uniform", "the
+	// class group chat".
+	nounTails = canonSetOf(`chat gc group groups uniform uniforms fee fees timetable schedule result results marks
+		grades syllabus bag bags bottle record records list rules notice account id card number name dp status story
+		post page song playlist election timings code wifi password lunch tiffin portal app fund funds
+		budget website server bell`)
+	// nounEnds are the words that can come straight after a noun phrase
+	// that is over: a preposition, a conjunction, a time, an adverb, a
+	// pronoun.
+	nounEnds = canonSetOf(`in at on to into onto with for from of by near behind after before during till until
+		over under through inside outside across around off out up down and or but so if when while because then
+		tomorrow tmrw tmr tonight today kal aaj parso next this every monday tuesday wednesday thursday friday
+		saturday sunday morning evening night afternoon now again already too first soon later finally right just
+		really also alive who that which whoever where there here like as lol bro fr ngl tbh ok okay im i'm i
+		we you he she they it is are was were will would 'll gets get getting goes go going has have had won't
+		wont isn't can't cant`)
+)
+
+// wordSpans splits s into words as wordsIn does, with where each starts and
+// ends.
+func wordSpans(s string) [][2]int {
+	var out [][2]int
+	start := -1
+	for i, r := range s {
+		in := unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\''
+		switch {
+		case in && start < 0:
+			start = i
+		case !in && start >= 0:
+			out = append(out, [2]int{start, i})
+			start = -1
+		}
+	}
+	if start >= 0 {
+		out = append(out, [2]int{start, len(s)})
+	}
+	return out
+}
+
+// ownerWord reports a word that says whose the next one is: "my",
+// "kabir's", "teachers'".
+func ownerWord(w string) bool {
+	return ownerWords[w] || len(w) > 2 && (strings.HasSuffix(w, "'s") || strings.HasSuffix(w, "s'"))
+}
+
+// headKind is what a word names as the head of a noun phrase.
+func headKind(w string) nounKind {
+	switch {
+	case rolePeople[w]:
+		return nounPerson
+	case kinPeople[w]:
+		return nounKin
+	case bodyHeads[w]:
+		return nounBody
+	case weaponHeads[w]:
+		return nounWeapon
+	case bluntHeads[w]:
+		return nounBlunt
+	case fuelHeads[w]:
+		return nounFuel
+	case vehicleHeads[w]:
+		return nounVehicle
+	case placeHeads[w]:
+		return nounPlace
+	}
+	return nounNone
+}
+
+// readNoun reads a noun phrase at the start of ws: a pronoun ("you",
+// "them") or a group ("all of you", "every one of them", "you guys"); or up
+// to three determiners and owners ("all the", "my dad's", "Mr. Banerjee's"),
+// up to two words describing the head, and the head, which is the last of a
+// row of words of a kind ("the 3rd floor lab", "the class teacher"). A head
+// followed by a word it describes is no head: an event, a message or one of
+// nounTails ("the class presentation", "the school uniform"). Only a place,
+// a vehicle, a weapon and a title do without a determiner ("B-block
+// hostel", "coach").
+func readNoun(ws []string) nounPhrase {
+	if len(ws) == 0 {
+		return nounPhrase{}
+	}
+	ended := func(i int) bool {
+		return i >= len(ws) || !nounTails[ws[i]] && !eventWords[ws[i]] && !messageWords[ws[i]]
+	}
+	i := 0
+	for i < len(ws) && i < 3 && groupWords[ws[i]] {
+		i++
+	}
+	if i > 0 && i+1 < len(ws) && is(ws[i], "of") && objectWords[ws[i+1]] {
+		return nounPhrase{kind: nounPerson, head: ws[i+1], n: i + 2, pronoun: true, quantified: true}
+	}
+	if objectWords[ws[0]] && !(is(ws[0], "her") && len(ws) > 1 && headKind(ws[1]) != nounNone) {
+		n := 1
+		if len(ws) > 1 && pronounGroups[ws[1]] {
+			n = 2
+		}
+		return nounPhrase{kind: nounPerson, head: ws[0], n: n, pronoun: true,
+			quantified: is(ws[0], "everyone") || is(ws[0], "everybody") || n == 2}
+	}
+	np := nounPhrase{}
+	i = 0
+	for i < len(ws) && i < 3 {
+		switch w := ws[i]; {
+		case titleWords[w] && i+1 < len(ws) && ownerWord(ws[i+1]):
+		case determiners[w] || ownerWord(w):
+			np.owned = np.owned || ownerWord(w)
+			np.mine = np.mine || myWords[w]
+			np.quantified = np.quantified || quantifiers[w]
+		default:
+			goto described
+		}
+		i++
+	}
+described:
+	for j := i; j < len(ws) && j < i+3; j++ {
+		k := headKind(ws[j])
+		if k == nounNone {
+			if ownerWord(ws[j]) || nounEnds[ws[j]] {
+				break // "the trash after school" is no school
+			}
+			continue
+		}
+		if j+1 < len(ws) && headKind(ws[j+1]) != nounNone && j+1 < i+3 {
+			continue // "the class teacher": the next word is the head
+		}
+		if !ended(j + 1) {
+			return nounPhrase{}
+		}
+		if i == 0 && k != nounPlace && k != nounVehicle && !(j == 0 && (bareTitles[ws[j]] || k == nounWeapon ||
+			k == nounBlunt || k == nounFuel)) {
+			return nounPhrase{}
+		}
+		np.kind, np.head, np.n = k, ws[j], j+1
+		return np
+	}
+	return nounPhrase{}
+}
+
+// people reports a phrase that names people: anyone at all when strong, and
+// otherwise someone in a role or a group, or "you", "them", "everyone".
+func (np nounPhrase) people(strong bool) bool {
+	return np.kind == nounPerson || strong && np.kind == nounKin
+}
+
+// place reports a phrase that names a place or a vehicle. A head that is
+// both a group and a place ("class") is read as the place.
+func (np nounPhrase) place() bool {
+	return np.kind == nounPlace || np.kind == nounVehicle || np.kind == nounPerson && placeHeads[np.head]
+}
+
+// threatVerbForms maps every form of the verbs threatFrameRules read to the
+// verb.
+var threatVerbForms = func() map[string]string {
+	m := map[string]string{}
+	for _, forms := range strings.Split(threatVerbList, ",") {
+		fs := strings.Fields(forms)
+		for _, f := range fs {
+			m[f], m[canon(f)] = fs[0], fs[0]
+		}
+	}
+	return m
+}()
+
+// threatVerbList is each verb's forms, the verb first.
+const threatVerbList = `kill killing kills, murder murdering murders, massacre massacring, slaughter slaughtering,
+	attack attacking attacks, hurt hurting hurts, injure injuring, harm harming, maim maiming,
+	stab stabbing stabs, shoot shooting shoots, knife knifing, shank shanking, slash slashing, behead beheading,
+	strangle strangling, choke choking, drown drowning, poison poisoning, gun gunning, mow mowing,
+	beat beating, jump jumping, run running, throw throwing, push pushing, shove shoving, toss tossing,
+	put putting, send sending, make making, break breaking, smash smashing, snap snapping, crack cracking,
+	burn burning burns, torch torching, bomb bombing bombs, blow blowing blows, set setting, start starting,
+	light lighting, open opening, take taking, bring bringing brings brought, carry carrying, pack packing packed,
+	hide hiding, keep keeping, have having got own bought, come coming, show showing, turn turning,
+	walk walking, go going, head heading, hunt hunting, plant planting, detonate detonating`
+
+var (
+	threatVerbBase = words(`kill`, `murder`, `massacre`, `slaughter`, `attack`, `hurt`, `injure`, `harm`, `maim`,
+		`stab`, `shoot`, `knife`, `shank`, `slash`, `behead`, `strangle`, `choke`, `drown`, `poison`, `gun`, `mow`,
+		`beat`, `jump`, `run`, `throw`, `push`, `shove`, `toss`, `put`, `send`, `make`, `break`, `smash`, `snap`,
+		`crack`, `burn`, `torch`, `bomb`, `blow`, `set`, `start`, `light`, `open`, `take`, `bring`, `carry`, `pack`,
+		`hide`, `keep`, `have`, `come`, `show`, `turn`, `walk`, `go`, `head`, `hunt`, `plant`, `detonate`)
+	threatVerbIng = words(`killing`, `murdering`, `massacring`, `slaughtering`, `attacking`, `hurting`,
+		`injuring`, `harming`, `maiming`, `stabbing`, `shooting`, `knifing`, `shanking`, `slashing`, `beheading`,
+		`strangling`, `choking`, `drowning`, `poisoning`, `gunning`, `mowing`, `beating`, `jumping`, `running`,
+		`throwing`, `pushing`, `shoving`, `tossing`, `putting`, `sending`, `making`, `breaking`, `smashing`,
+		`snapping`, `cracking`, `burning`, `torching`, `bombing`, `blowing`, `setting`, `starting`, `lighting`,
+		`opening`, `taking`, `bringing`, `carrying`, `packing`, `hiding`, `keeping`, `having`, `coming`, `showing`,
+		`turning`, `walking`, `going`, `heading`, `hunting`, `planting`, `detonating`)
+	// threatFrameRules find a verb of threatVerbList, and threatFrameCheck
+	// reads who says it (frameSpeaker) and what it is done to
+	// (threatFrame). The verbs are found first because they are rarer than
+	// the ways of saying who: a post of nothing but "i will" or "i'm" costs
+	// nothing here.
+	threatFrameRules = []rule{bothViews(`\b` + words(threatVerbBase, threatVerbIng,
+		words(`got`, `own`, `bought`, `brought`, `packed`)) + `\b`)}
+
+	// strongPresent are the verbs read in the plain present after "I" or
+	// "we": "on the 30th I burn down B-block hostel". "We kill it at the
+	// fest" is how people talk of the rest.
+	strongPresent = setOf(`kill murder stab shoot knife bomb blow burn torch bring`)
+	// bareStart are the verbs read with no subject where a clause starts:
+	// "bringing a bat to the 3rd floor lab tomorrow", "going there sunday
+	// night with petrol".
+	bareStart = setOf(`stab shoot knife bomb blow burn torch bring carry come go head show walk`)
+	// heldForms are what having a weapon is said with: "I have a gun",
+	// "I've got a blade", "I just bought".
+	heldForms   = canonSetOf(`have got own bought brought packed`)
+	heldFillers = canonSetOf(`'ve ve have just already also finally`)
+	// frameAdverbs may come between the speaker and the verb: "i'm going to
+	// fucking shoot", "gonna go shoot up the school", "imma come and".
+	frameAdverbs = canonSetOf(`actually bloody definitely effing fckin fcking finally fkin fking fkn freakin freaking
+		frickin fricking fuckin fucking go come and just literally really seriously totally`)
+	// speakerPlans are a speaker who says what they will do, in one word:
+	// "imma"; speakerBe one who says what they are doing: "i'm".
+	speakerPlans = canonSetOf(`imma ima i'ma i'll ill we'll`)
+	speakerBe    = canonSetOf(`i'm im we're`)
+	// planModals say what will be done, after "i" or "we", or opening a
+	// clause: "i will", "gonna"; planTo say it with "to": "going to",
+	// "about to", "want to".
+	planModals = canonSetOf(`will wil 'll ll gonna gunna finna wanna gotta shall should could may might`)
+	planTo     = canonSetOf(`going about bout want plan planning ready intend need needs has ought`)
+	// beAux end a speaker before the -ing form: "i am", "we'll be".
+	beAux = canonSetOf(`am are 'm m 're r`)
+	// someoneWords call for someone to do it: "someone should".
+	someoneWords = canonSetOf(`someone somebody`)
+)
+
+// clauseWords puts into dst up to len(dst) words of the clause that ends at
+// offset i of text, nearest first, and returns how many, and whether the
+// clause starts there: nothing but separators between it and the start of
+// a sentence, a line or a clause.
+func clauseWords(dst []string, text string, i int) (n int, opens bool) {
+	lo := max(0, i-64)
+	j := i
+	for n < len(dst) {
+		for j > lo {
+			r, size := utf8.DecodeLastRuneInString(text[lo:j])
+			if unicode.IsLetter(r) || unicode.IsDigit(r) || r == '\'' {
+				break
+			}
+			if strings.ContainsRune(".!?\n,;:>", r) {
+				return n, true
+			}
+			j -= size
+		}
+		end := j
+		for j > lo {
+			r, size := utf8.DecodeLastRuneInString(text[lo:j])
+			if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '\'' {
+				break
+			}
+			j -= size
+		}
+		if j == end {
+			return n, j == 0
+		}
+		dst[n] = text[j:end]
+		n++
+	}
+	return n, false
+}
+
+// frameSpeaker reports the poster saying, in the clause before offset i
+// of text, that they will do the verb found there, are doing it or have
+// it: "i'm going to", "we'll", "imma", "i'm", "we will be", "i've got",
+// "I" before a strong verb in the present, "someone should", "gonna" or a
+// bare "bringing" opening a clause, and "and" after any of these earlier in
+// the sentence. Up to three of frameAdverbs may come before the verb.
+func frameSpeaker(text string, i int, verb, form string) bool {
+	var buf [8]string
+	n, opens := clauseWords(buf[:], text, i)
+	ws := buf[:n]
+	k := 0
+	for k < len(ws) && k < 3 && frameAdverbs[ws[k]] {
+		if is(ws[k], "and") && !(k+1 < len(ws) && (is(ws[k+1], "go") || is(ws[k+1], "come"))) {
+			break // "come and" is one, "the doors of 8C and" none
+		}
+		k++
+	}
+	ing := strings.HasSuffix(form, "ing")
+	speaker := func(j int) bool { return j < len(ws) && (is(ws[j], "i") || is(ws[j], "we")) }
+	at := func(j int, set map[string]bool) bool { return j < len(ws) && set[ws[j]] }
+	switch {
+	case k == len(ws):
+		// Opening a clause: "bringing a bat".
+		return opens && ing && bareStart[verb]
+	case is(ws[k], "and") || is(ws[k], "then"):
+		// "I'm locking the doors and starting a fire".
+		return speakerBefore(text, i)
+	case heldForms[form]:
+		j := k
+		for j < len(ws) && j < k+2 && heldFillers[ws[j]] {
+			j++
+		}
+		return speaker(j) || at(j, speakerBe) || is(ws[min(j, len(ws)-1)], "i've") || is(ws[min(j, len(ws)-1)], "we've")
+	case ing:
+		// "i'm bringing", "we are shooting", "i'll be heading".
+		switch {
+		case at(k, speakerBe):
+			return true
+		case at(k, beAux):
+			return speaker(k + 1)
+		case is(ws[k], "be"):
+			return at(k+1, speakerPlans) || at(k+1, planModals) && speaker(k+2)
+		}
+		return false
+	}
+	// The plain verb: "i will", "imma", "i'm going to", "gonna" opening a
+	// clause, "someone should", "I burn".
+	switch {
+	case at(k, speakerPlans):
+		return true
+	case speaker(k):
+		return strongPresent[verb]
+	case at(k, planModals):
+		j := k + 1
+		return speaker(j) || at(j, speakerBe) || at(j, someoneWords) || at(j, beAux) && speaker(j+1) ||
+			j == len(ws) && opens
+	case is(ws[k], "to") && at(k+1, planTo):
+		j := k + 2
+		return speaker(j) || at(j, speakerBe) || at(j, someoneWords) || at(j, beAux) && speaker(j+1) ||
+			j == len(ws) && opens && (is(ws[k+1], "going") || is(ws[k+1], "about") || is(ws[k+1], "bout"))
+	}
+	return false
+}
+
+// threatFrameCheck reads what follows a verb of threatFrameRules
+// (threatFrame) and, when it is something the verb threatens, puts the verb
+// and what it is done to to threatCheck as one match, so that what makes
+// the phrasings harmless makes these harmless too. A game or a story named
+// in the sentence excuses any act, as do a dream and a fantasy; a prop, a
+// toy, a kitchen or a festival excuses a weapon brought.
+func (f *scannedField) threatFrameCheck(v *view, m []int) bool {
+	ws := wordsIn(v.text[m[0]:m[1]])
+	if len(ws) == 0 {
+		return false
+	}
+	form := ws[len(ws)-1]
+	verb := threatVerbForms[form]
+	if verb == "" || !frameSpeaker(v.text, m[0], verb, form) {
+		return false
+	}
+	at := m[1]
+	end, armed, ok := f.threatFrame(v, verb, clauseAfter(v.text, at), at)
+	if !ok {
+		return false
+	}
+	whole := []int{m[0], end}
+	sentence := wordsIn(sentenceAround(v.text, m[0], end))
+	if storyNamed(sentence) || anyIn(sentence, dreamWords) {
+		return false
+	}
+	if gameActs[verb] && (gameAfterAPreposition(nextWords(clauseAfter(v.text, end), 6)) ||
+		gameNamed(v.text, whole) && !anyIn(sentence, threatPlaceWords)) {
+		return false
+	}
+	if armed && (anyIn(sentence, propWords) || anyIn(sentence, gameWords) || anyIn(sentence, toyWeapon) ||
+		anyIn(sentence, festivalWords)) {
+		return false
+	}
+	if hyperbolicActs[verb] && retracted(v.text, end) && closeOne(readNoun(nextWords(clauseAfter(v.text, at), 6))) {
+		return false
+	}
+	if reportedThreat(v.text, []int{clauseStart(v.text, m[0]), end}) {
+		return false
+	}
+	return f.threatCheck(v, whole)
+}
+
+var (
+	// gameActs are the verbs a game or a sport uses of its players: "we're
+	// going to kill them at the match". Throwing someone off a roof is no
+	// game's, so a game named after it is when it happens.
+	gameActs = setOf(`kill murder massacre slaughter attack hurt harm jump shoot beat smash crack break bomb blow
+		burn torch take run stab destroy`)
+	// hyperbolicActs are the verbs said in exasperation of someone close,
+	// and taken back: "I'm going to strangle him (I won't, I love him)".
+	hyperbolicActs = setOf(`kill murder strangle choke drown poison hurt beat`)
+	// takenBack are what take an act back straight after it.
+	takenBack = [][]string{{"i", "won't"}, {"i", "wont"}, {"i", "wouldn't"}, {"i", "wouldnt"}, {"not", "really"},
+		{"jk"}, {"just", "kidding"}, {"kidding"}, {"not", "literally"}, {"obviously", "not"}}
+)
+
+// closeOne reports one person close to the speaker, the one exasperation is
+// said of: "him", "her", "my brother". A group, or someone known only by
+// their role, is not taken back so easily: "I'm going to drown the juniors
+// tomorrow jk" is held.
+func closeOne(np nounPhrase) bool {
+	if np.quantified || np.picked {
+		return false
+	}
+	return np.pronoun && (is(np.head, "him") || is(np.head, "her")) || np.kind == nounKin && !strings.HasSuffix(np.head, "s")
+}
+
+// retracted reports an act taken back in the words after offset i of
+// text: "(I won't, I love him)", "jk".
+func retracted(text string, i int) bool {
+	ws := wordsIn(text[i:min(len(text), i+64)])
+	for k := range ws {
+		for _, t := range takenBack {
+			if k+len(t) > len(ws) {
+				continue
+			}
+			match := true
+			for j, w := range t {
+				match = match && is(ws[k+j], w)
+			}
+			if match {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// speakerBefore reports the poster saying what they will do or are doing
+// earlier in the sentence that ends at offset i of text: "I'm", "we'll",
+// "I am going to", "imma".
+func speakerBefore(text string, i int) bool {
+	before := text[max(0, i-64):i]
+	ws := wordsIn(before[strings.LastIndexAny(before, ".!?\n")+1:])
+	for k, w := range ws {
+		if speakerWords[w] {
+			return true
+		}
+		if is(w, "i") || is(w, "we") {
+			for _, n := range ws[k+1 : min(len(ws), k+3)] {
+				if speakerAux[n] {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+var (
+	// speakerWords and speakerAux are the poster saying what they will do
+	// or are doing, for speakerBefore.
+	speakerWords = canonSetOf(`i'm im i'll we're we'll imma ima`)
+	speakerAux   = canonSetOf(`am are will 'll gonna going finna shall`)
+)
+
+// storyNamed reports a story named in ws: a film, a show, a book. "Shows
+// up" is no show.
+func storyNamed(ws []string) bool {
+	for i, w := range ws {
+		if storyWords[w] && !((is(w, "show") || is(w, "shows")) && i+1 < len(ws) && is(ws[i+1], "up")) {
+			return true
+		}
+	}
+	return false
+}
+
+// dreamWords make an act one in a dream or a game of pretend.
+var dreamWords = canonSetOf(`dream dreams dreamt dreamed nightmare nightmares fantasy fantasise fantasize
+	roleplay rp`)
+
+// threatFrame reads the words after a verb of threatFrameRules, after
+// starting at offset at of v.text, for what the verb is done to, and returns
+// where in v.text the act ends, and whether it is a weapon brought or held.
+func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int, armed, ok bool) {
+	sp := wordSpans(after)
+	if len(sp) == 0 {
+		return 0, false, false
+	}
+	ws := make([]string, len(sp))
+	for i, s := range sp {
+		ws[i] = after[s[0]:s[1]]
+	}
+	act := func(n int) (int, bool, bool) { return at + sp[min(n, len(sp))-1][1], false, true }
+	held := func(n int) (int, bool, bool) { return at + sp[min(n, len(sp))-1][1], true, true }
+	word := func(i int, set ...string) bool {
+		if i < 0 || i >= len(ws) {
+			return false
+		}
+		for _, w := range set {
+			if is(ws[i], w) {
+				return true
+			}
+		}
+		return false
+	}
+	noun := func(i int) nounPhrase {
+		if i >= len(ws) {
+			return nounPhrase{}
+		}
+		np := readNoun(ws[i:])
+		np.n += i
+		return np
+	}
+	// object is a noun phrase at i, or a name: a word with a capital in
+	// the source that is not a day, a subject or the like.
+	object := func(i int) nounPhrase {
+		if np := noun(i); np.kind != nounNone || i >= len(ws) {
+			return np
+		}
+		a, b := v.span(at+sp[i][0], at+sp[i][1])
+		if r, _ := utf8.DecodeRuneInString(f.src[a:b]); unicode.IsUpper(r) && b-a > 1 &&
+			!notANameTarget[strings.ToLower(f.src[a:b])] && (i+1 >= len(ws) || nounEnds[ws[i+1]]) {
+			return nounPhrase{kind: nounKin, head: ws[i], n: i + 1}
+		}
+		return nounPhrase{}
+	}
+	// within reports a word of set in the four after i, and where.
+	within := func(i int, set map[string]bool) (int, bool) {
+		for k := i; k < len(ws) && k < i+4; k++ {
+			if set[ws[k]] {
+				return k + 1, true
+			}
+		}
+		return 0, false
+	}
+	switch verb {
+	case "kill", "murder", "massacre", "slaughter", "hurt", "injure", "harm", "maim", "attack", "jump":
+		if np := object(0); np.people(false) && !np.mine {
+			return act(np.n)
+		}
+		if np := noun(0); (verb == "attack" || verb == "massacre") && np.place() && !np.mine {
+			return act(np.n)
+		}
+	case "stab", "shoot", "knife", "shank", "slash", "behead", "strangle", "choke", "drown", "poison":
+		if np := object(0); np.people(true) {
+			return act(np.n)
+		}
+		if np := noun(1); verb == "shoot" && word(0, "up") && np.place() {
+			return act(np.n)
+		}
+	case "gun", "mow", "hunt":
+		if np := object(1); verb != "hunt" && word(0, "down") && np.people(true) {
+			return act(np.n)
+		}
+		if np := object(0); np.people(true) && word(np.n, "down") {
+			return act(np.n + 1)
+		}
+	case "beat":
+		if np := object(1); word(0, "up") && np.people(true) {
+			return act(np.n)
+		}
+		np := object(0)
+		if !np.people(true) {
+			break
+		}
+		switch j := np.n; {
+		case word(j, "up", "senseless", "unconscious") && !np.mine:
+			return act(j + 1)
+		case word(j, "to") && word(j+1, "death", "pulp"), word(j, "half") && word(j+1, "to") && word(j+2, "death"),
+			word(j, "till", "until", "untill", "til"), word(j, "black") && word(j+1, "and") && word(j+2, "blue"):
+			return act(j + 2)
+		case word(j, "with"):
+			if w := noun(j + 1); w.kind == nounWeapon || w.kind == nounBlunt {
+				return act(w.n)
+			}
+		}
+	case "run":
+		if np := object(1); word(0, "over", "down") && np.people(true) {
+			return act(np.n)
+		}
+		if np := object(0); np.people(true) && word(np.n, "over", "down") {
+			return act(np.n + 1)
+		}
+	case "throw", "push", "shove", "toss":
+		np := object(0)
+		if !np.people(true) {
+			break
+		}
+		j := np.n
+		switch {
+		case word(j, "off", "from", "down", "into"):
+			j++
+		case word(j, "out", "in") && word(j+1, "of", "front"):
+			j += 2
+		default:
+			return 0, false, false
+		}
+		// "off the stand roof", "in front of a train", "down the stairs".
+		if k, ok := within(j, heightHeads); ok {
+			return act(k)
+		}
+	case "put":
+		if np := object(0); np.people(true) {
+			if j := np.n; word(j, "six") && word(j+1, "feet") && word(j+2, "under") {
+				return act(j + 3)
+			}
+			if k, ok := within(np.n+1, graveHeads); ok && word(np.n, "in", "into", "under") {
+				return act(k)
+			}
+		}
+	case "send":
+		if np := object(0); np.people(true) && word(np.n, "to") {
+			if k, ok := within(np.n+1, graveWords); ok {
+				return act(k)
+			}
+		}
+	case "make":
+		// "make them bleed", and not "make them bleed red ink".
+		if np := object(0); np.people(true) && word(np.n, "bleed", "beg") && (np.n+1 >= len(ws) || nounEnds[ws[np.n+1]]) {
+			return act(np.n + 1)
+		}
+	case "break", "smash", "snap", "crack":
+		if np := noun(0); np.kind == nounBody && np.owned && !np.mine {
+			return act(np.n)
+		}
+	case "burn", "torch", "bomb":
+		i := 0
+		if verb == "burn" && word(0, "down") {
+			i = 1
+		}
+		if np := noun(i); np.place() && !np.mine {
+			return act(np.n)
+		}
+		if np := object(0); verb == "burn" && np.people(true) && word(np.n, "alive") {
+			return act(np.n + 1)
+		}
+	case "blow":
+		if np := noun(1); word(0, "up") && np.place() && !np.mine {
+			return act(np.n)
+		}
+		if np := noun(0); np.place() && !np.mine && word(np.n, "up") {
+			return act(np.n + 1)
+		}
+	case "set":
+		if word(0, "fire") && word(1, "to") {
+			if np := object(2); np.place() || np.people(true) {
+				return act(np.n)
+			}
+		}
+		np := noun(0)
+		if !np.place() {
+			np = object(0)
+			if !np.people(true) {
+				break
+			}
+		}
+		if word(np.n, "on") && word(np.n+1, "fire") || word(np.n, "alight", "ablaze") {
+			return act(np.n + 2)
+		}
+	case "start", "light":
+		if word(0, "a", "the") && word(1, "fire", "fires") &&
+			!anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), campWords) {
+			return act(2)
+		}
+	case "open":
+		if word(0, "fire") {
+			return act(1)
+		}
+	case "take":
+		if word(0, "out") {
+			if np := object(1); np.kind == nounPerson && !np.pronoun || np.place() && !np.mine {
+				return act(np.n)
+			}
+			break
+		}
+		// "take a bat to his head", "take a knife to school".
+		if np := noun(0); (np.kind == nounWeapon || np.kind == nounBlunt) && word(np.n, "to", "into") {
+			if p := noun(np.n + 1); p.place() && !p.mine && !pitchHeads[p.head] ||
+				p.kind == nounBody && p.owned && !p.mine {
+				return held(p.n)
+			}
+		}
+	case "bring", "carry", "pack", "hide", "keep", "have":
+		np := noun(0)
+		switch np.kind {
+		case nounWeapon:
+			return held(np.n)
+		case nounBlunt:
+			// "bringing a bat to the 3rd floor lab": only to a place, and
+			// not one where a bat is for a game.
+			if p := noun(np.n + 1); word(np.n, "to", "into") && p.place() && !p.mine && !pitchHeads[p.head] {
+				return held(p.n)
+			}
+		}
+	case "come", "show", "turn", "walk", "go", "head":
+		// "coming with a knife", "going there sunday night with petrol".
+		for k := 0; k < len(ws) && k < 7; k++ {
+			if is(ws[k], "with") {
+				if np := noun(k + 1); np.kind == nounWeapon || np.kind == nounFuel {
+					return held(np.n)
+				}
+				break
+			}
+		}
+	case "plant", "detonate":
+		if np := noun(0); np.kind == nounWeapon && bombWords[np.head] {
+			return act(np.n)
+		}
+	}
+	return 0, false, false
+}
+
+// campWords make starting a fire a campfire or a stove, or a fire in the
+// comments: "start a fire at the campsite tonight".
+var campWords = canonSetOf(`camp camps campsite campfire camping bonfire bbq barbecue barbeque grill marshmallows
+	smores fireplace chulha stove kitchen cook cooking diya lamp hearth survival scouts guides trek trekking
+	firewood wood logs comments chat gc twitter insta internet timeline stage dancefloor`)
+
+var (
+	// threatComingRules are harm said to be coming to people or a place,
+	// with nobody named as doing it; threatComingCheck reads who or what
+	// it is said of.
+	threatComingRules = []rule{bothViews(`\b` + words(
+		// "will be hurt", "are all getting hurt", "is going to get jumped".
+		words(`will`, `'?ll`, `is~going~to`, `are~going~to`, `'?s~going~to`, `'?re~going~to`, `is~gonna`,
+			`are~gonna`, `'?s~gonna`, `'?re~gonna`, `gonna`, `going~to`, `is`, `are`, `'?s`, `'?re`, `r`)+
+			`~(?:`+words(`all`, `definitely`, `finally`, `really`, `literally`)+`~)?`+
+			words(`be`, `get`, `getting`, `be~getting`)+`~`+words(`hurt`, `harmed`, `injured`, `attacked`,
+			`jumped`, `beaten(?:~up)?`, `run~over`, `burn(?:ed|t)~alive`, `stabbed`, `shot`, `killed`, `murdered`),
+		// "the school will burn", "the car is going up in flames", "the
+		// auditorium blows up".
+		words(`will`, `'?ll`, `is~going~to`, `'?s~going~to`, `is~gonna`, `'?s~gonna`, `gonna`)+`~`+
+			words(`burn(?:~down|~to~the~ground)?`, `blow~up`, `go~up~in~flames`, `be~blown~up`, `be~bombed`,
+				`be~burn(?:ed|t)~down`, `be~torched`, `be~set~on~fire`),
+		words(`is`, `'?s`)+`~`+words(`going~up~in~flames`, `burning~down`, `blowing~up`),
+		words(`blows~up`, `burns~down`, `goes~up~in~flames`),
+		// "12 science is dead on friday", "you're all dead tomorrow".
+		words(`is`, `are`, `'?s`, `'?re`, `r`)+`~(?:`+words(`all`, `so`)+`~)?dead`,
+		// "the warden won't see monday", "they won't walk out of there".
+		words(`won'?t`, `wont`, `will~not`, `will~never`, `'?ll~never`, `isn'?t~going~to`, `is~not~going~to`,
+			`aren'?t~going~to`, `ain'?t~gonna`, `not~gonna`)+`~`+words(
+			words(`see`, `live~to~see`, `survive`, `make~it~to`, `last~(?:till|until|to)`)+`~`+
+				words(weekdays, `tomorrow`, `tmrw`, `the~weekend`, `next~week`, `another~day`, `the~morning`),
+			words(`walk`, `make~it`, `get`, `come`)+`~out~`+words(`alive`, `of~there`, `of~here`)),
+	) + `\b`)}
+	// threatSymbolRules are a weapon drawn at a school: "🔫🏫".
+	threatSymbolRules = []rule{bothViews(`(?:🔫|🔪|💣|🧨|🗡)[^\pL\pN]{0,3}(?:🏫|🏛|🏢)`)}
+)
+
+// threatSymbolCheck turns down a weapon drawn at a school in a sentence
+// that names a game, a toy or a festival: "🔫🏫 game night at school".
+func (f *scannedField) threatSymbolCheck(v *view, m []int) bool {
+	ws := wordsIn(sentenceAround(v.text, m[0], m[1]))
+	return !anyIn(ws, gameWords) && !anyIn(ws, toyWeapon) && !anyIn(ws, festivalWords) && !storyNamed(ws)
+}
+
+// threatComingCheck reads who or what harm is said to be coming to
+// (threatSubject), and turns down the readings that are not a threat. Harm
+// to people needs a group picked out by where it is or who it is ("every
+// single person in that class", "everyone in the canteen at 1pm", "the guys
+// who stole my book") or all of them ("you're all getting hurt"), not people
+// at large ("people will get hurt at this concert" worries) and not one
+// person ("you'll get hurt" cautions); said in the present ("are getting
+// hurt") it needs a day as well, or it reports. A place or a vehicle that
+// will burn needs one picked out, not the speaker's ("my house will burn
+// down if I leave the iron on"); "dead" needs a time straight after it;
+// "won't see" needs a time that is not an owner ("monday's class"). A
+// condition that demands nothing, a "by" that names what does it ("hurt by
+// the news"), a story, a game, an event and anything that happens again and
+// again excuse all of them.
+func (f *scannedField) threatComingCheck(v *view, m []int) bool {
+	text := v.text
+	ws := wordsIn(text[m[0]:m[1]])
+	if len(ws) == 0 {
+		return false
+	}
+	subject := threatSubject(text, m[0])
+	next := nextWords(clauseAfter(text, m[1]), 6)
+	last := ws[len(ws)-1]
+	dead := is(last, "dead")
+	survive := !dead && (hasWord(ws, "see") || hasWord(ws, "survive") || hasWord(ws, "last") ||
+		hasWord(ws, "make") && !hasWord(ws, "out"))
+	out := !dead && !survive && hasWord(ws, "out")
+	ruin := !dead && !survive && !out && anyIn(ws, ruinWords)
+	// What each reading needs of its subject, and "dead" of its time, is
+	// read before the sentence round it, which costs more.
+	switch {
+	case dead:
+		// "dead on friday", "dead tomorrow", "dead after school".
+		if !subject.people(false) || len(next) == 0 || !soonWords[next[0]] && !(len(next) > 1 &&
+			deadWhen[next[0]] && (soonWords[next[1]] || is(next[1], "school") || is(next[1], "class"))) {
+			return false
+		}
+	case survive, out:
+		if !subject.people(true) {
+			return false
+		}
+	case ruin:
+		if !subject.place() {
+			return false
+		}
+	default:
+		if !subject.people(false) {
+			return false
+		}
+	}
+	around := sentenceAround(text, m[0], m[1])
+	sentence := wordsIn(around)
+	// A condition of being somewhere is the threat's own: "if anyone from
+	// 4th period shows up to the pep rally they're getting shot", "along
+	// with the dean if he's in it".
+	present := presenceCondition(sentence)
+	if subject.pronoun && subjectPronouns[subject.head] && !present {
+		return false // "he won't see monday" is as often a prognosis
+	}
+	if subject.mine || habitual(sentence) || storyNamed(sentence) || anyIn(sentence, dreamWords) ||
+		untimed(sentence, gameWords) || harmlessCondition(around) && !present {
+		return false
+	}
+	switch {
+	case dead:
+		// threatCheck reads "dead on" as the idiom; the time read above says
+		// it is not.
+		return !reportedThreat(text, m) && !reportedThreat(text, []int{clauseStart(text, m[0]), m[1]})
+	case survive:
+		if len(next) > 0 && !nounEnds[next[0]] || strings.HasPrefix(text[m[1]:], "'") || anyIn(sentence, eventWords) {
+			return false
+		}
+	case out:
+		// "won't walk out of there", with nothing more said of it.
+		if (is(last, "there") || is(last, "here")) && len(next) > 0 && !trailFillers[next[0]] && !is(next[0], "alive") &&
+			!soonWords[next[0]] {
+			return false
+		}
+	case ruin:
+		if untimed(sentence, stageWords) || untimed(sentence, eventWords) {
+			return false
+		}
+		if is(last, "burn") && len(next) > 0 && !nounEnds[next[0]] {
+			return false // "will burn a hole in my pocket": what it burns is no fire
+		}
+		if len(next) > 1 && is(next[0], "with") && notRuin[next[1]] {
+			return false // "the hall will blow up with cheers"
+		}
+	default:
+		// Harm to people: a group picked out, all of them, or whoever is
+		// somewhere.
+		if !(subject.quantified || subject.picked || hasWord(ws, "all") || present) {
+			return false
+		}
+		if progressiveBe[strings.TrimLeft(ws[0], "'")] && !anyIn(sentence, soonWords) {
+			return false // "the kids in that school are getting hurt" reports
+		}
+		if len(next) > 1 && is(next[0], "by") && !is(next[1], "me") && !is(next[1], "us") && !soonWords[next[1]] {
+			return false
+		}
+		if len(next) > 0 && (strings.HasSuffix(next[0], "ing") || hurtNotThreat[next[0]] || is(next[0], "emotionally")) {
+			return false // "you'll all get hurt playing like that", "hurt feelings"
+		}
+		if eventAfterPreposition(next) {
+			return false
+		}
+	}
+	if reportedThreat(text, []int{clauseStart(text, m[0]), m[1]}) {
+		return false
+	}
+	return f.threatCheck(v, m)
+}
+
+var (
+	// deadWhen are the words that put "dead" at a time: "dead on friday".
+	deadWhen = canonSetOf(`on by after this before`)
+	// ruinWords are what threatComingRules say happens to a place, and
+	// notRuin what makes it a celebration: "blow up with cheers".
+	ruinWords = canonSetOf(`burn burned burnt blow blown blows bombed torched flames fire`)
+	notRuin   = canonSetOf(`laughter excitement joy cheers cheering noise energy hype love`)
+	// subjectFillers open a clause without being part of its subject.
+	subjectFillers = canonSetOf(`so and but ok okay lol bro yeah yes well also then now just tbh fr ngl honestly
+		listen trust me remember mark my words and`)
+	// pickWords, after a group, pick it out: "everyone in that class", "the
+	// guys who stole my book".
+	pickWords = canonSetOf(`in at from on inside of who that which near around`)
+	// sectionWords name a class's section or stream: "12 science", "9 b".
+	sectionWords = canonSetOf(`science sci commerce comm arts humanities medical nonmedical a b c d e f`)
+	// subjectPronouns stand for people already named.
+	subjectPronouns = canonSetOf(`they he she`)
+	// presenceVerbs and presenceAfter say someone is somewhere: "shows up",
+	// "is in", "comes to".
+	presenceVerbs = canonSetOf(`show shows showed turn turns come comes coming step steps walk walks enter enters
+		go goes is are 's 're am was were be`)
+	presenceAfter = canonSetOf(`up in into inside at to there here around near still`)
+	// timePrepositions put an event at a time: "on sports day", "during the
+	// annual function".
+	timePrepositions = canonSetOf(`on during at before after till until by`)
+)
+
+// presenceCondition reports an "if" whose condition is someone being
+// somewhere: "if anyone shows up to the rally", "if he's in it".
+func presenceCondition(ws []string) bool {
+	for i, w := range ws {
+		if w != "if" {
+			continue
+		}
+		for k := i + 1; k < len(ws) && k < i+6; k++ {
+			v := strings.TrimLeft(ws[k], "'")
+			if j := strings.IndexByte(ws[k], '\''); j > 0 {
+				v = ws[k][j:] // "he's"
+			}
+			if (presenceVerbs[v] || presenceVerbs[ws[k]]) && k+1 < len(ws) && presenceAfter[ws[k+1]] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// untimed reports a word of set in ws that is not put at a time: "the
+// school will burn on sports day" names when, and "the stage will be on
+// fire at the fest" is a performance.
+func untimed(ws []string, set map[string]bool) bool {
+	for i, w := range ws {
+		if !set[w] {
+			continue
+		}
+		timed := false
+		for k := max(0, i-3); k < i; k++ {
+			timed = timed || timePrepositions[ws[k]]
+		}
+		if !timed {
+			return true
+		}
+	}
+	return false
+}
+
+// threatSubject reads who or what the clause ending at offset i of text is
+// about: its first noun phrase when what follows that picks it out ("every
+// single person in that class", "the guys who stole my book"), or else the
+// noun phrase that ends at i ("the warden", "you", "the dean's car"), or a
+// class named by its year ("12 science", "9B").
+func threatSubject(text string, i int) nounPhrase {
+	ws := wordsIn(subjectClause(text, i))
+	for len(ws) > 0 && subjectFillers[ws[0]] {
+		ws = ws[1:]
+	}
+	if len(ws) == 0 {
+		return nounPhrase{}
+	}
+	if np := readNoun(ws); np.kind != nounNone {
+		switch {
+		case np.n == len(ws):
+			return np
+		case pickWords[ws[np.n]]:
+			np.picked = true
+			return np
+		}
+	}
+	for k := 1; k < len(ws); k++ {
+		if np := readNoun(ws[k:]); np.kind != nounNone && np.n == len(ws)-k {
+			return np
+		}
+	}
+	if w := ws[len(ws)-1]; subjectPronouns[w] {
+		return nounPhrase{kind: nounPerson, head: w, n: len(ws), pronoun: true}
+	}
+	if classSection(ws) {
+		return nounPhrase{kind: nounPerson, head: ws[len(ws)-1], n: len(ws), quantified: true}
+	}
+	return nounPhrase{}
+}
+
+// subjectClause is clauseBefore read past the dot of a title: "Mr.
+// Banerjee's maths class" is one clause.
+func subjectClause(text string, i int) string {
+	from := max(0, i-64)
+	before := text[from:i]
+	for {
+		j := strings.LastIndexAny(before, ".!?\n,;:")
+		if j < 0 {
+			return before
+		}
+		if before[j] == '.' {
+			if ws := wordsIn(before[:j]); len(ws) > 0 && titleWords[ws[len(ws)-1]] {
+				before = before[:j] + " " + before[j+1:]
+				continue
+			}
+		}
+		return before[j+1:]
+	}
+}
+
+// classSection reports words that end in a class named by its year: "12
+// science", "11th commerce", "9b", "class 10".
+func classSection(ws []string) bool {
+	// year reads "12", "11th" or "9b", and whether a section letter ends it.
+	year := func(w string) (ok, lettered bool) {
+		n := 0
+		for n < len(w) && w[n] >= '0' && w[n] <= '9' {
+			n++
+		}
+		if n == 0 || n > 2 {
+			return false, false
+		}
+		if y, _ := strconv.Atoi(w[:n]); y < 1 || y > 12 {
+			return false, false
+		}
+		switch rest := w[n:]; {
+		case rest == "":
+			return true, false
+		case len(rest) == 1 && rest[0] >= 'a' && rest[0] <= 'f':
+			return true, true
+		case rest == "st" || rest == "nd" || rest == "rd" || rest == "th":
+			return true, false
+		}
+		return false, false
+	}
+	k := len(ws)
+	if ok, lettered := year(ws[k-1]); ok && (lettered || k >= 2 && (is(ws[k-2], "class") || is(ws[k-2], "grade"))) {
+		return true
+	}
+	ok, _ := year(ws[max(0, k-2)])
+	return k >= 2 && ok && sectionWords[ws[k-1]]
+}
+
 // Grooming cues: a question about age, school year or where someone lives or
 // studies, together with a private-contact or meet-up cue, anywhere in one
 // post, in English or some Hinglish. Either half alone is ordinary
@@ -2753,14 +4039,37 @@ var (
 			ageNumber+ageUnit,
 		`any~`+youthNoun+`~(?:here~)?`+words(`in`, `from`)+`~(?:`+words(`class`, `grade`, `std`, `standard`,
 			`year`)+`~\d{1,2}|\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?)`,
-		`where~`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+words(`school`, `house`, `home`),
+		`where~(?:exactly~)?`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
+		words(`what`, `which`)+`~`+readerPlaces+`~`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
+		// Said of the reader, a question or not: "you're in grade 6", "you're
+		// in 9th right", "you're in which grade", "you're 14". ageCheck turns
+		// down "when you're in 12th" and "you're 15 minutes late".
+		words(`you'?re`, `youre`, `you~are`, `u'?re`)+`~(?:`+words(`in`, `doing`, `studying~in`)+`~)?`+readerGrade,
+		words(`ur`, `u~r`)+`~in~`+readerGrade,
+		words(`you'?re`, `youre`, `you~are`, `u'?re`, `ur`, `u~r`)+`~1[0-7]`,
+		// "tum 8th mein ho na", "class 9 mein ho".
+		words(`class~\d{1,2}`, `\d{1,2}(?:st|nd|rd|th)(?:~`+words(`class`, `std`, `standard`)+`)?`)+`~`+
+			words(`mein`, `me`, `main`, `mai`)+`~`+words(`ho`, `padhte~ho`, `padhti~ho`),
+		// "do you go to the school on MG Road", "that's your school right?",
+		// "tell me your school name", "what time do you get out".
+		words(`do`, `d`)+`~`+words(`you`, `u`)+`~`+words(`go~to`, `study~at`, `attend`)+`~`+words(`the`, `that`, `this`)+
+			`~`+readerPlaces,
+		words(`tell`, `send`, `share`, `drop`, `give`, `dm`, `text`)+`~me~`+words(`your`, `ur`)+`~`+
+			words(readerPlaces, `address`, `age`, `class`, `grade`, `area`, `location`),
+		`what~time~(?:`+words(`do`, `d`)+`~)?`+words(`you`, `u`)+`~`+words(`get~out`, `leave`, `finish`, `get~off`,
+			`get~home`, `reach~home`, `go~home`, `come~out`),
+		// "kis city se ho", "kaunse area mein rehti ho".
+		words(`kis`, `kaunse`, `konse`, `kaunsa`, `konsa`, `kaunsi`, `konsi`)+`~`+words(`city`, `area`, `school`,
+			`college`, `class`, `jagah`, `sheher`, `shehar`, `mohalla`, `colony`, `sector`, `hostel`, `coaching`, `tuition`,
+			`gaon`)+`~`+words(`se`, `mein`, `me`, `main`)+`~(?:`+words(`rehte`, `rehti`, `padhte`, `padhti`, `jaate`,
+			`jaati`, `jate`, `jati`)+`~)?`+words(`ho`, `hai`, `h`),
 		// "which college do you go to", "what area are you in": the verb has
 		// to be about being there, so "which college do you suggest" is
 		// advice.
-		words(`what`, `which`)+`~`+words(`school`, `college`, `uni`, `city`, `town`, `area`, `place`, `locality`)+`~`+
+		words(`what`, `which`)+`~`+words(readerPlaces, `uni`, `city`, `town`, `area`, `place`, `locality`)+`~`+
 			words(`do`, `d`)+`~`+words(`you`, `u`)+`~`+words(`go~to`, `attend`, `study~at`, `study~in`, `study`,
 			`live~in`, `live`, `stay~in`, `stay`, `come~from`, `belong~to`),
-		words(`what`, `which`)+`~`+words(`school`, `college`, `uni`, `city`, `town`, `area`, `place`, `locality`)+`~`+
+		words(`what`, `which`)+`~`+words(readerPlaces, `uni`, `city`, `town`, `area`, `place`, `locality`)+`~`+
 			words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`in`, `at`, `from`, `studying`, `living`, `staying`),
 		`what'?s?~(?:is~)?`+words(`your`, `ur`)+`~`+words(`school`, `address`, `location`, `city`, `town`, `area`,
 			`postcode`, `pincode`, `zip`),
@@ -2791,6 +4100,15 @@ var (
 					`room`, `block`, `floor`, `building`, `flat`, `house`, `street`, `colony`, `sector`, `part`)+
 				`(?:~`+words(`exactly`, `and~room~(?:number|no)`, `and~room`, `and~block`, `and~floor`)+`)?`)+
 				`[^\pL\pN?]*\?`,
+			// A child's year asked alone: "Year 7?", "6th standard?" ("Year
+			// 12?" is as often a question about a syllabus); "that's your
+			// school right?"; "school kaunsa?".
+			`(?:^|[.!?\n,;:])[^\pL\pN]*`+words(words(`year`, `grade`, `class`, `std`, `standard`)+`~(?:[1-9]|10)`,
+				`(?:[1-9]|10)(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?`)+`[^\pL\pN?]*\?`,
+			`\b`+words(`that'?s`, `thats`, `is~that`, `this~is`, `is~this`)+`~`+words(`your`, `ur`)+`~`+readerPlaces+
+				`(?:~`+words(`right`, `ryt`, `na`, `no`, `yeah`)+`)?[^\pL\pN?]*\?`,
+			`(?:^|[.!?\n,;:])[^\pL\pN]*`+words(`school`, `college`, `class`, `tuition`, `coaching`, `area`, `city`)+`~`+
+				words(`kaunsa`, `konsa`, `kaunsi`, `konsi`, `kaunse`, `konse`, `kahan`, `kaha`)+`[^\pL\pN?]*\?`,
 			// A guess put as a question: "so you're in 10th?", "you're 14?",
 			// "13 or 14?", "year 8 or year 9?".
 			`\b`+words(`you'?re`, `you~are`, `u~r`, `ur`, `u'?re`)+`~(?:in~)?`+words(`1\d`,
@@ -2800,6 +4118,17 @@ var (
 				words(`1[0-7]`, words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`[^\pL\pN?]*\?`,
 		)),
 	}
+	// readerPlaces are where a reader is asked to say they study or live:
+	// "which hostel are you in", "where exactly is your coaching". Not a
+	// branch, a batch or a section, which a college asks of everyone.
+	readerPlaces = words(`school`, `college`, `hostel`, `coaching`, `tuition`, `institute`, `academy`, `campus`,
+		`block`, `building`, `floor`, `room`, `flat`, `apartment`, `society`, `colony`, `sector`, `street`, `road`,
+		`house`, `home`)
+	// readerGrade is a year at school: "grade 6", "9th", "class 10th",
+	// "which grade".
+	readerGrade = words(words(`grade`, `class`, `year`, `std`, `standard`, `form`)+`~\d{1,2}(?:st|nd|rd|th)?`,
+		`\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?`,
+		words(`which`, `what`)+`~`+words(`grade`, `class`, `year`, `std`, `standard`))
 	// ageNumber, ageUnit and youthNoun make up an age someone is looked for
 	// at: "14yo girls", "13-15 year old boys".
 	ageNumber = `\d{1,2}(?:~?(?:-|to)~?\d{1,2})?~?`
@@ -2828,9 +4157,40 @@ var (
 		`just~`+words(`us~two`, `us~2`, `the~two~of~us`, `you~and~me`, `u~and~me`, `you~and~i`, `u~and~i`),
 		`keep~`+words(`this`, `it`)+`~`+words(`quiet`, `on~the~down~low`, `on~the~dl`, `hush~hush`, `to~yourself`,
 			`to~urself`, `private`),
-		words(`i'?ll`, `i~will`, `i~can`, `ill`, `i'?m~gonna`, `i~am~going~to`)+`~`+words(`come~by`, `come~over`,
-			`come~round`, `come~around`, `drop~by`, `visit~you`, `pick~you~up`, `wait~for~you`,
-			`be~waiting~for~you`),
+		words(`i'?ll`, `i~will`, `i~can`, `i~could`, `ill`, `i'?d`, `lemme`, `let~me`, `i'?m~gonna`, `i~am~going~to`,
+			`i~wanna`, `i~want~to`)+`~`+words(`come~by`, `come~over`, `come~round`, `come~around`, `drop~by`,
+			words(`visit`, `meet`, `come~(?:and~)?`+words(`meet`, `see`, `visit`, `get`, `find`))+`~`+words(`you`, `u`),
+			`pick~`+words(`you`, `u`)+`~up`, `wait~for~`+words(`you`, `u`), `be~waiting~for~`+words(`you`, `u`),
+			`keep~`+words(`you`, `u`)+`~company`, `be~waiting`, `wait~there`),
+		// "come alone", "come without your friends", "come to my room",
+		// "wait for me after the evening batch", "meet me at the gate".
+		`come~`+words(`alone`, `by~yourself`, `by~urself`, `on~your~own`),
+		`come~`+words(`without`, `w/o`)+`~`+words(`your`, `ur`, `telling`, `anyone`),
+		`come~to~`+words(`my`, `our`, `your`, `ur`)+`~`+words(`place`, `house`, `home`, `room`, `flat`, `hostel`, `car`,
+			`office`, `apartment`),
+		words(`wait`, `waiting`)+`~for~me`, `meet~me~`+words(`at`, `after`, `outside`, `near`, `behind`, `by`, `in`),
+		// "your parents at work till late?", "your mum works nights", "do
+		// your parents know".
+		words(`your`, `ur`)+`~`+words(`parents`, `mom`, `mum`, `dad`, `mummy`, `papa`)+`~(?:`+words(`are`, `is`, `'?s`,
+			`r`)+`~)?(?:`+words(`usually`, `always`, `still`)+`~)?`+words(`at~work`, `out`, `away`, `not~home`,
+			`working~late`, `work~nights`, `works~nights`, `working~nights`, `out~of~town`, `travelling`, `traveling`),
+		words(`do`, `does`)+`~`+words(`your`, `ur`)+`~`+words(`parents`, `mom`, `mum`, `dad`, `family`)+`~know`,
+		// "they never have to find out", "your parents don't need to know".
+		words(`they`, `nobody`, `no~one`, `noone`, `your~parents`, `ur~parents`, `anyone`, `your~mom`, `your~mum`)+
+			`~(?:`+words(`will`, `would`, `don'?t`, `dont`, `doesn'?t`)+`~)?(?:never~)?`+words(`has`, `have`, `need`,
+			`needs`, `gotta`)+`~to~`+words(`know`, `find~out`),
+		words(`don'?t`, `dont`, `do~not`)+`~`+words(`tell`, `mention`, `show`)+`~`+words(`the`, `my`, `him`, `her`,
+			`them`, `this`, `it`, `me~to`),
+		`secret~`+words(`friends?`, `chats?`, `bf`, `gf`, `boyfriend`, `girlfriend`, `relationship`, `meetings?`),
+		`delete~`+words(`this`, `it`, `the~chat`, `our~chat`, `this~chat`, `this~thread`, `the~thread`, `these~messages`,
+			`the~messages`, `everything`)+`~after`,
+		words(`go`, `move`, `switch`, `talk`, `chat`, `take~this`, `take~it`)+`~private`,
+		words(`where`, `somewhere`)+`~`+words(`nobody`, `no~one`, `noone`, `they`, `the~mods`, `mods`, `your~parents`,
+			`ur~parents`, `anyone`, `people`, `others`)+`~(?:else~)?`+words(`can'?t`, `cant`, `cannot`, `can~not`,
+			`won'?t`, `wont`, `will~not`)+`~`+words(`see`, `read`, `find`, `hear`),
+		words(`are`, `r`)+`~`+words(`you`, `u`)+`~(?:`+words(`usually`, `ever`, `always`, `often`, `mostly`)+`~)?`+
+			words(`by~yourself`, `by~urself`, `on~your~own`, `on~ur~own`),
+		words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`usually`, `ever`, `always`, `often`, `mostly`)+`~alone`,
 		// "without your parents knowing", "tell your parents you're at a
 		// friend's", "does your mom check your phone".
 		`without~`+words(`your`, `ur`)+`~`+words(`parents`, `mom`, `mum`, `dad`, `family`, `folks`)+`~`+
@@ -2871,7 +4231,12 @@ var (
 			`dikhao`, `dikha`),
 		words(`pe`, `par`, `pr`)+`~`+words(`aao`, `aaja`, `aajao`, `aa~jao`, `milo`),
 		words(`akele`, `akeli`, `akela`)+`~`+words(`ho`, `hai`, `h`, `aana`, `aao`, `aaja`, `milna`, `mil`),
-		`kisi~ko~`+words(`mat`, `na`, `nahi`)+`~`+words(`bolna`, `batana`, `bata`, `bol`, `batao`),
+		`ko~`+words(`mat`, `na`, `nahi`)+`~`+words(`bolna`, `batana`, `bata`, `bol`, `batao`),
+		`private~`+words(`rakhna`, `rakho`, `rakh`),
+		words(`ek~baar`, `kabhi`, `akele`)+`~`+words(`milo`, `milte`, `mil~lo`, `milna`),
+		`milne~`+words(`aa`, `aao`, `aaja`, `aajao`, `aa~jao`, `aa~jaao`, `aana`),
+		words(`gift`, `gifts`, `chocolate`, `chocolates`, `toffee`, `phone`, `paise`)+`~`+words(`dunga`, `dungi`,
+			`dilaunga`, `dilaungi`, `doonga`),
 		words(`milte`, `milna`)+`~`+words(`hain`, `hai`, `h`),
 		`private~`+words(`mein`, `me`, `main`)+`~baat`,
 	) + `\b`),
@@ -2881,6 +4246,9 @@ var (
 		bothViews(`(?:^|[.!?\n,;:])[^\pL\pN]*alone[^\pL\pN?]*\?`),
 		// "let's meet at the metro station, just you", where it ends.
 		bothViews(`\bjust~` + words(`you`, `u`) + `[^\pL\pN]*(?:[.!?\n]|$)`),
+		// "I can train you privately", "I can help with your project
+		// privately": cueCheck wants the poster offering it to the reader.
+		bothViews(`\b` + words(`privately`, `in~private`) + `\b`),
 	}
 )
 
@@ -2900,6 +4268,13 @@ func cueCheck(v *view, m []int) bool {
 	prev := wordsIn(clauseBefore(text, m[0]))
 	nextIn := func(k int, set map[string]bool) bool { return len(next) > k && set[next[k]] }
 	switch {
+	case len(ws) == 1 && is(first, "privately") || len(ws) == 2 && is(first, "in") && is(last, "private"):
+		// Offered by the poster to the reader, not "ask the prof privately".
+		sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+		return anyIn(sentence, offerWords) && anyIn(sentence, secondPerson)
+	case is(last, "waiting"):
+		// "I'll be waiting", not "I'll be waiting for your reply".
+		return !(nextIn(0, setOf(`for`)) && len(next) > 1 && !secondPerson[next[1]] && !is(next[1], "you"))
 	case is(first, "call") && is(last, "me"):
 		return !nextIn(0, callMeIdioms)
 	case is(first, "just"):
@@ -2939,6 +4314,8 @@ func cueCheck(v *view, m []int) bool {
 }
 
 var (
+	// offerWords are the poster offering something: "I can", "let's".
+	offerWords   = canonSetOf(`i i'm im i'll ill i'd me my we we'll let's lets us`)
 	callMeIdioms = canonSetOf(`crazy weird old old-fashioned oldfashioned a an stupid dumb lazy naive biased
 		paranoid cynical petty picky extra whatever anything names what mad insane nuts sentimental selfish
 		boring pessimistic optimistic skeptical sceptical cringe ishmael out mr ms miss sir maam`)
@@ -2983,6 +4360,19 @@ func ageCheck(v *view, m []int) bool {
 	if len(ws) == 0 {
 		return true
 	}
+	if readerStatement[strings.TrimRight(ws[0], "'")] || is(ws[0], "you") && len(ws) > 1 && is(ws[1], "are") ||
+		is(ws[0], "u") && len(ws) > 1 && is(ws[1], "r") {
+		// "when you're in 12th you'll get it" says when, not who; "you're
+		// 15 minutes late" is no age.
+		if before := wordsBefore(v.text, m[0], 3); len(before) > 0 && (whenWords[before[0]] ||
+			len(before) > 2 && is(before[0], "time") && is(before[1], "the") && is(before[2], "by")) {
+			return false
+		}
+		next := nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
+		if len(next) > 0 && ageUnits[next[0]] || strings.HasPrefix(v.text[m[1]:], "%") {
+			return false
+		}
+	}
 	// "if someone asks how old you are": a question reported, not asked.
 	if is(ws[0], "how") && !is(ws[len(ws)-1], "old") {
 		next := nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
@@ -2999,6 +4389,12 @@ func ageCheck(v *view, m []int) bool {
 }
 
 var (
+	// readerStatement opens a statement about the reader, and whenWords
+	// make it a time: "once you're in college".
+	readerStatement = canonSetOf(`you're youre u're ur`)
+	whenWords       = canonSetOf(`if when whenever once until till til whether as after before since unless while`)
+	ageUnits        = canonSetOf(`minutes minute mins min hours hour hrs hr days day weeks week months month seconds secs
+		percent marks mark points point rank km kms kg kgs times x`)
 	areaTopics = canonSetOf(`of preference preferences expertise interest`)
 	askedWords = canonSetOf(`asks asked ask asking know knows wonder wondering tell tells told says said`)
 )
@@ -3136,32 +4532,106 @@ func (f *scannedField) work() int {
 // shooting" with a time still to come close by. The fields are read as one
 // text, in form order, because a subject is shown as the title right above
 // the body: "School tomorrow" over "I'm going to shoot everyone" is one
-// threat.
+// threat. The places and times are found first, once, so that an intent
+// with none near it is never read for what it means.
 func threatens(fields []*scannedField) bool {
 	for i := 1; i < len(fields); i++ {
 		prev := fields[i-1]
 		fields[i].offset = prev.offset + int(prev.readingPositions()[len(prev.src)]) + 1
 	}
-	pair := func(first, second []rule, check func(f *scannedField) matchCheck, w int) bool {
-		var a, b [][2]int
+	spansOf := func(rules []rule) nearSpans {
+		var b [][2]int
 		for _, f := range fields {
-			a = append(a, f.spansFrom(first, check(f))...)
+			b = append(b, f.spansFrom(rules, nil)...)
 		}
-		if len(a) == 0 {
+		return newNearSpans(b)
+	}
+	var placeOrTime *nearSpans
+	placesAndTimes := func() nearSpans {
+		if placeOrTime == nil {
+			s := spansOf(threatPlaceOrTimeRules)
+			placeOrTime = &s
+		}
+		return *placeOrTime
+	}
+	pair := func(first []rule, second func() nearSpans, check func(f *scannedField) matchCheck, w int) bool {
+		b := second()
+		if len(b.s) == 0 {
 			return false
 		}
 		for _, f := range fields {
-			b = append(b, f.spansFrom(second, nil)...)
+			if f.anyNear(first, check(f), b, w) {
+				return true
+			}
 		}
-		return near(a, b, w)
+		return false
 	}
 	byField := func(check matchCheck) func(*scannedField) matchCheck {
 		return func(*scannedField) matchCheck { return check }
 	}
-	return pair(threatIntentRules, threatPlaceOrTimeRules, func(f *scannedField) matchCheck { return f.threatCheck }, threatWindow) ||
-		pair(namedTargetRules, threatPlaceOrTimeRules, func(f *scannedField) matchCheck { return f.namedTargetCheck }, threatWindow) ||
-		pair(threatWarningRules, threatWarningCues, byField(nil), threatWindow) ||
-		pair(schoolShootingRules, futureTimeRules, byField(schoolShootingCheck), schoolShootingWindow)
+	of := func(rules []rule) func() nearSpans { return func() nearSpans { return spansOf(rules) } }
+	return pair(threatIntentRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatCheck }, threatWindow) ||
+		pair(namedTargetRules, placesAndTimes, func(f *scannedField) matchCheck { return f.namedTargetCheck }, threatWindow) ||
+		pair(threatFrameRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatFrameCheck }, threatWindow) ||
+		pair(threatComingRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatComingCheck }, threatWindow) ||
+		pair(threatSymbolRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatSymbolCheck }, threatWindow) ||
+		pair(threatWarningRules, of(threatWarningCues), byField(nil), threatWindow) ||
+		pair(schoolShootingRules, of(futureTimeRules), byField(schoolShootingCheck), schoolShootingWindow)
+}
+
+// nearSpans are spans in reading positions, ordered by where they start,
+// with the furthest end any of the first j reaches, so that whether a span
+// is near one of them is a binary search.
+type nearSpans struct {
+	s     [][2]int
+	reach []int
+}
+
+func newNearSpans(s [][2]int) nearSpans {
+	reach := make([]int, len(s))
+	for j, x := range s {
+		reach[j] = x[1]
+		if j > 0 {
+			reach[j] = max(reach[j], reach[j-1])
+		}
+	}
+	return nearSpans{s, reach}
+}
+
+// near reports a span within w reading positions of x: the first one that
+// ends no more than w before x starts, if it starts no more than w after x
+// ends. Every span before it ends too early, and every one after it starts
+// later still.
+func (n nearSpans) near(x [2]int, w int) bool {
+	j, _ := slices.BinarySearch(n.reach, x[0]-w)
+	return j < len(n.s) && n.s[j][0] <= x[1]+w
+}
+
+// anyNear reports a match of rules, in either view, that check accepts and
+// that is within w reading positions of one of spans. A match too far from
+// all of them is not checked.
+func (f *scannedField) anyNear(rules []rule, check matchCheck, spans nearSpans, w int) bool {
+	pos := f.readingPositions()
+	found := false
+	for _, r := range rules {
+		for _, vs := range f.views(r) {
+			vs.re.each(vs.v, func(m []int) bool {
+				if m[1] <= m[0] {
+					return true
+				}
+				a, b := vs.v.span(m[0], m[1])
+				if !spans.near([2]int{int(pos[a]) + f.offset, int(pos[b]) + f.offset}, w) {
+					return true
+				}
+				found = check == nil || vs.v.checked(check, m)
+				return !found
+			})
+			if found {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // schoolShootingWindow is how close, in readingPositions, a time to come has
@@ -3214,21 +4684,6 @@ func (f *scannedField) readingPositions() []int32 {
 	}
 	f.reading = pos
 	return pos
-}
-
-// near reports whether some span of b lies within w of some span of a.
-// Both are sorted by start; the scan is linear in their lengths.
-func near(a, b [][2]int, w int) bool {
-	j := 0
-	for _, x := range a {
-		for j < len(b) && b[j][1] < x[0]-w {
-			j++
-		}
-		if j < len(b) && b[j][0] <= x[1]+w {
-			return true
-		}
-	}
-	return false
 }
 
 func sortSpans(s [][2]int) {
@@ -3653,7 +5108,8 @@ func selfHarmCheck(v *view, m []int) bool {
 	switch {
 	case is(first, "rope"):
 		return !nextIn(0, setOf(`in into`))
-	case selfCompound(text, m[1]), gameDeath(next), gameInClauseBefore(text, m), mentioned(text, m, next):
+	case selfCompound(text, m[1]), gameDeath(next), gameInClauseBefore(text, m), mentioned(text, m, next),
+		glossed(text, m):
 		return false
 	case is(first, "just") && is(ws[1], "end"):
 		// "just end it" is a relationship or an argument as often: only with
@@ -3694,6 +5150,201 @@ func selfHarmCheck(v *view, m []int) bool {
 		return false
 	}
 	return true
+}
+
+// urgeCheck vets a selfHarmUrgeRules match. The acts need a frame that
+// says them to someone (urgeFramed); what judges the act itself needs it
+// said of someone else, not the poster ("for me, death is the only
+// option" is crisis language, which the support step answers). Either is
+// turned down when it is negated, talked about rather than said ("what
+// does kys mean"), in a game, or the act is a word with other uses here:
+// "overdose on caffeine", "stop breathing so loud", "jump into the pool",
+// "just do it" with no death in the post, "latak ja" on a bus.
+func urgeCheck(v *view, m []int) bool {
+	text := v.text
+	ws := wordsIn(text[m[0]:m[1]])
+	if len(ws) == 0 {
+		return false
+	}
+	first, last := ws[0], ws[len(ws)-1]
+	kysing := kysForm.MatchString(first)
+	// rope time, the act judged, Hinglish and "kys" say who it is for in
+	// themselves; any other act has to be said to someone, which is read
+	// first because it is the cheapest to turn down.
+	timed := len(ws) == 2 && is(last, "time")
+	judged := len(ws) >= 4 && (hasWord(ws, "better") || hasWord(ws, "solution") || hasWord(ws, "option") ||
+		hasWord(ws, "answer") || hasWord(ws, "out") || hasWord(ws, "choice") || hasWord(ws, "cure") ||
+		hasWord(ws, "fix") || hasWord(ws, "would") || hasWord(ws, "will") || hasWord(ws, "is"))
+	hindi := is(first, "zeher") || is(first, "zehar") || is(first, "zahar") || is(first, "jeher") ||
+		is(first, "zaher") || is(first, "apni") || strings.HasPrefix(first, "mar") || is(first, "latak") ||
+		is(first, "lattak")
+	if !timed && !judged && !hindi && !kysing && !urgeFramed(text, m[0]) {
+		return false
+	}
+	next := wordsIn(clauseAfter(text, m[1]))
+	sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+	if !(kysing && imagineNot(text, m[0])) && !notNegated(v, m) {
+		return false
+	}
+	if mentioned(text, m, next) || glossed(text, m) || gameDeath(next) || gameInClauseBefore(text, m) ||
+		anyIn(sentence, gameDeathWords) || selfCompound(text, m[1]) {
+		return false
+	}
+	if hasWord(ws, "cut") && len(next) > 0 && cutIdioms[next[0]] ||
+		(strings.HasSuffix(last, "self") || strings.HasSuffix(last, "selves")) && len(next) > 0 &&
+			strings.HasSuffix(next[0], "ing") && !is(next[0], "thing") {
+		return false // "cut yourself some slack", "kill yourself studying"
+	}
+	// Only what comes after the act may follow it: nothing, a filler, a
+	// time, or a place to do it in.
+	settled := func(from int) bool {
+		for _, w := range next[min(from, len(next)):] {
+			if !urgeTails[w] && !trailFillers[w] && !imperativeFillers[w] {
+				return false
+			}
+		}
+		return true
+	}
+	switch {
+	case timed:
+		// "rope time for OP".
+		return !hasFirstPerson(sentence) && (len(next) == 0 || is(next[0], "for") || settled(0))
+	case judged:
+		// The act judged: said of someone else, to them.
+		if hasFirstPerson(sentence) && !hasWord(ws, "we") {
+			return false
+		}
+		if hasWord(ws, "solution") || hasWord(ws, "option") || hasWord(ws, "answer") || hasWord(ws, "choice") ||
+			hasWord(ws, "cure") || hasWord(ws, "fix") || hasWord(ws, "out") && hasWord(ws, "way") {
+			return anyIn(sentence, secondPerson) || anyIn(sentence, othersWords)
+		}
+		return true
+	case is(first, "zeher") || is(first, "zehar") || is(first, "zahar") || is(first, "jeher") || is(first, "zaher") ||
+		is(first, "apni") || strings.HasPrefix(first, "mar"):
+		return true
+	case is(first, "latak") || is(first, "lattak"):
+		// "bus mein latak ja" is how a bus is boarded.
+		return !anyIn(sentence, hangOnWords) || anyIn(sentence, hangWords)
+	case kysing:
+		return true
+	}
+	switch {
+	case is(first, "overdose") || is(first, "od"):
+		// "overdose on caffeine", but "overdose on your pills".
+		if len(next) > 1 && is(next[0], "on") && !anyIn(next[1:min(len(next), 4)], pillWords) {
+			return false
+		}
+		return settled(0) || len(next) > 0 && is(next[0], "on")
+	case is(first, "rope") || is(first, "jump") && len(ws) == 1 || is(first, "die") && len(ws) == 1:
+		if anyIn(sentence, poolWords) || dyesSomething(next) || dieIdiom(next) || hillToDieOn(text, m, next) {
+			return false
+		}
+		return settled(0)
+	case is(first, "do"):
+		// "just do it already": only in a post about dying.
+		return settled(0) && deathAround(text, m)
+	case is(first, "stop") || is(first, "quit") || is(first, "cease"):
+		return settled(0)
+	case is(first, "self") || strings.HasPrefix(first, "selfharm"):
+		return settled(0) || len(next) > 0 && urgePlaces[next[0]]
+	}
+	return true
+}
+
+var (
+	// urgeTails may follow an act urged: "just jump already", "overdose
+	// tonight", "self harm in a corner".
+	urgeTails = canonSetOf(`already now tonight today tomorrow pls please plz asap immediately quickly fast
+		permanently forever bro dude lol lmao man op tbh ffs nobody cares`)
+	urgePlaces = canonSetOf(`in at somewhere quietly`)
+	// othersWords are who an act is judged for besides "you": "for someone
+	// with your marks", "for people like OP".
+	othersWords = canonSetOf(`someone somebody people op anyone everyone losers loser`)
+	poolWords   = canonSetOf(`pool water lake river sea beach trampoline bungee parachute skipping skip climbing gym
+		queue line conclusions conclusion gun ship bandwagon`)
+	pillWords = canonSetOf(`pills pill meds medication medicines medicine tablets tablet sleeping paracetamol`)
+	// hangOnWords make "latak ja" holding on, and hangWords hanging.
+	hangOnWords = canonSetOf(`bus train metro local auto gate door darwaza rod handle tree jhoola swing bar`)
+	hangWords   = canonSetOf(`pankha pankhe fan rassi rope phanda phansi fanda`)
+	// deathTopic words make "just do it" one about dying: "nobody would
+	// even come to your funeral. just do it".
+	deathTopic = canonSetOf(`funeral grave coffin die dying dead death suicide kys rope noose bridge jump overdose
+		unalive`)
+)
+
+// urgeFramed reports an act said to someone, in the clause that ends at
+// offset i of text: an imperative opening the clause, with only fillers
+// before it ("bro just rope"), "and" after a request that is not the
+// poster's own ("do us all a favour and overdose"), or a modal said to
+// them ("you should", "why don't you", "maybe you should", "time for you to",
+// "you need to go").
+func urgeFramed(text string, i int) bool {
+	before := clauseBefore(text, i)
+	if saidFirst(before) {
+		return true
+	}
+	ws := wordsIn(before)
+	k := len(ws)
+	for k > 0 && imperativeFillers[ws[k-1]] && !secondPerson[ws[k-1]] {
+		k--
+	}
+	ws = ws[:k]
+	switch {
+	case k == 0:
+		return false
+	case is(ws[k-1], "to") && k >= 3 && urgeModalsTo[ws[k-2]] && secondPerson[ws[k-3]]:
+		return true // "you need to", "you deserve to"
+	case is(ws[k-1], "to") && k >= 4 && (secondPerson[ws[k-2]] || othersWords[ws[k-2]]) && is(ws[k-3], "for") &&
+		is(ws[k-4], "time"):
+		return true // "time for you to"; "time to die" alone is a joke about exams
+	case urgeModals[ws[k-1]] && k >= 2 && secondPerson[ws[k-2]]:
+		return true // "you should", "u must"
+	case k >= 3 && is(ws[k-1], "you") && is(ws[k-2], "don't") && is(ws[k-3], "why"):
+		return true
+	case k >= 2 && (is(ws[k-1], "dont") || is(ws[k-1], "don't")) && is(ws[k-2], "why"):
+		return true
+	}
+	return false
+}
+
+var (
+	urgeModals   = canonSetOf(`should shud must better gotta can could`)
+	urgeModalsTo = canonSetOf(`need needs deserve deserves ought have has`)
+)
+
+// imagineNot reports "imagine ... and not" straight before offset i: a
+// taunt that says the thing it names should be done, "imagine posting this
+// and not kysing immediately".
+func imagineNot(text string, i int) bool {
+	ws := wordsIn(text[max(0, i-80):i])
+	n := len(ws)
+	return n >= 2 && is(ws[n-1], "not") && hasWord(ws, "imagine")
+}
+
+// glossed reports a word being explained rather than said: "kys = keep
+// yourself safe?", "kys means", "what does kys mean".
+func glossed(text string, m []int) bool {
+	after := strings.TrimLeft(text[m[1]:min(len(text), m[1]+24)], " ")
+	if strings.HasPrefix(after, "=") {
+		return true
+	}
+	next := wordsIn(after)
+	if len(next) > 0 && glossWords[next[0]] {
+		return true
+	}
+	before := wordsIn(text[max(0, m[0]-24):m[0]])
+	return len(before) >= 2 && is(before[len(before)-1], "does") && is(before[len(before)-2], "what")
+}
+
+var (
+	glossWords = canonSetOf(`means mean meant stands`)
+	kysForm    = regexp.MustCompile(`^k+y+s+(?:ing|in|ed)$`)
+)
+
+// deathAround reports a post about dying near offset m: within 120
+// characters either side.
+func deathAround(text string, m []int) bool {
+	return anyIn(wordsIn(text[max(0, m[0]-120):min(len(text), m[1]+120)]), deathTopic)
 }
 
 // saidFirst reports that an imperative is the first thing said in its
