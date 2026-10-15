@@ -1,11 +1,12 @@
 -- Captcha answers already used, so one answer works once (build plan 2.6).
 --
 -- A captcha challenge is signed, not stored, when it is issued: any instance
--- can check an answer to it without a lookup. Spending one is the only thing
--- that needs shared state, because the instances behind the load balancer
--- would each accept the same answer otherwise. A post or a code request that
--- carries an answer inserts its challenge here, and an insert that finds the
--- row already there is a replay.
+-- can check its signature without a lookup. Whether it was spent is the one
+-- shared fact, because the instances behind the load balancer would each
+-- accept the same answer otherwise. A post or a code request looks its
+-- challenge up here before flood control, so a replay is turned away before it
+-- costs anything, and inserts it once flood control lets it through; of two
+-- requests racing with one answer, the insert lets exactly one through.
 --
 -- A row holds a hash of the challenge's signature, a value the server made at
 -- random, and the challenge's expiry rounded up to the next UTC midnight, as a

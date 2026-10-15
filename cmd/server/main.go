@@ -2,8 +2,9 @@
 // embedded web UI that consumes it, backed by PostgreSQL.
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
-// archive_days have run out, with their media, and exits. That is the mode a
-// scheduled Cloud Run Job runs, from the same image.
+// archive_days have run out, with their media, and the spent captcha answers
+// past their day, and exits. That is the mode a scheduled Cloud Run Job runs,
+// from the same image.
 package main
 
 import (

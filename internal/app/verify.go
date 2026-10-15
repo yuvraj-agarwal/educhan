@@ -194,15 +194,21 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// a loop, and one client cannot walk a list of addresses.
 	emailHash := a.emailHash(addr.Key)
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allowAction(w, "requesting codes", []cooldown{
+	cooldowns := []cooldown{
 		{limiter: a.verifyLimiter, key: "ip|" + clientKey},
 		{limiter: a.verifyLimiter, key: "email|" + hex.EncodeToString(emailHash)},
-	}) {
+	}
+	if !a.waitedOut(w, "requesting codes", cooldowns) {
 		return
 	}
+	// The cooldowns start once the answer is spent, as for a post, so a
+	// request refused as used starts none: one answer sent many times at once,
+	// each copy naming another email address, cannot hold all of those
+	// addresses out of codes.
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
+	startAll(cooldowns...)
 
 	code, err := verificationCode()
 	if err != nil {

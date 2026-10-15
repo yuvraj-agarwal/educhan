@@ -420,6 +420,91 @@ func TestCodeRequestsNeedTheCaptcha(t *testing.T) {
 	}
 }
 
+// A reply is held to the same order as a thread: a captcha refusal starts no
+// cooldown, a reply flood control refuses keeps its answer, and the answer is
+// spent before the image is processed, so a refusal for an image that fails
+// to decode says the answer went with it.
+func TestReplyCaptchaAndFloodControl(t *testing.T) {
+	h := captchaServer(t, func(cfg *Config) {
+		cfg.PostCooldown = time.Hour
+		cfg.UploadCooldown = time.Hour
+	})
+	h.addBoard("general", "other", "third")
+	spent := func() bool { return h.lastHeader.Get(captchaSpentHeader) == "spent" }
+	replies := func(board string) string {
+		thread := h.createThreadWithCaptcha(board, "open")
+		return fmt.Sprintf("/api/boards/%s/threads/%d/posts", board, thread.ThreadNo)
+	}
+	general, other, third := replies("general"), replies("other"), replies("third")
+
+	status, refused := h.attempt(general, map[string]any{"body": "no answer"})
+	expectCaptchaRefusal(t, "reply without an answer", status, refused, captchaMissing)
+	var created createdPost
+	if status := h.post(general, map[string]any{"body": "answered", "captcha": h.solveCaptcha()}, &created); status != http.StatusCreated {
+		t.Fatalf("reply with an answer after a captcha refusal: status %d (%s), want 201: the refusal started a cooldown",
+			status, created.Error)
+	}
+
+	answer := h.solveCaptcha()
+	if status, refused := h.attempt(general, map[string]any{"body": "too soon", "captcha": answer}); status != http.StatusTooManyRequests || spent() {
+		t.Fatalf("second reply inside the cooldown: status %d (%s), spent header %q; want 429 with the answer kept",
+			status, refused.Error, h.lastHeader.Get(captchaSpentHeader))
+	}
+	if status := h.post(other, map[string]any{"body": "same answer, other board", "captcha": answer}, &created); status != http.StatusCreated {
+		t.Errorf("an answer held back by the reply cooldown, used on another board: status %d (%s), want 201",
+			status, created.Error)
+	}
+
+	status = h.upload(third, map[string]string{"body": "look", "captcha": h.solveCaptcha()},
+		"cut.png", pngBytes(t, 24, 24)[:33], &refused)
+	if status != http.StatusBadRequest || !strings.Contains(refused.Error, "image could not be decoded") || !spent() {
+		t.Errorf("a reply whose image fails to decode: status %d (%s), spent header %q; want 400 saying the answer was spent",
+			status, refused.Error, h.lastHeader.Get(captchaSpentHeader))
+	}
+}
+
+// A code request is held to the same order, with the answer checked straight
+// after the 18+ box: before the address is even parsed, before flood control,
+// and spent only once both cooldowns let the request through.
+func TestCodeRequestCaptchaAndFloodControl(t *testing.T) {
+	h := verifyServer(t, withCaptcha(func(cfg *Config) {
+		cfg.VerifyCooldown = time.Hour
+		cfg.TrustedProxyHops = 1
+	}))
+	request := func(ip, email, answer string) (int, captchaRefusal) {
+		body := map[string]any{"email": email, "adult": true}
+		if answer != "" {
+			body["captcha"] = answer
+		}
+		var refused captchaRefusal
+		return h.postFrom(ip, "/api/verify/request", body, &refused), refused
+	}
+
+	status, refused := request("203.0.113.1", "not an address", "")
+	expectCaptchaRefusal(t, "an unparseable address with no answer", status, refused, captchaMissing)
+	status, refused = request("203.0.113.1", "ana@iitb.ac.in", "")
+	expectCaptchaRefusal(t, "a request with no answer", status, refused, captchaMissing)
+	if status, refused := request("203.0.113.1", "ana@iitb.ac.in", h.solveCaptcha()); status != http.StatusAccepted {
+		t.Fatalf("the same request with an answer: status %d (%s), want 202: the captcha refusal started a cooldown",
+			status, refused.Error)
+	}
+
+	answer := h.solveCaptcha()
+	if status, refused := request("203.0.113.1", "ben@iitb.ac.in", answer); status != http.StatusTooManyRequests {
+		t.Fatalf("a second request from the address: status %d (%s), want 429", status, refused.Error)
+	}
+	if status, refused := request("203.0.113.2", "ana@iitb.ac.in", answer); status != http.StatusTooManyRequests {
+		t.Fatalf("a second request for the email address: status %d (%s), want 429", status, refused.Error)
+	}
+	if status, refused := request("203.0.113.2", "ben@iitb.ac.in", answer); status != http.StatusAccepted {
+		t.Errorf("the answer both cooldowns held back, from another address for another email: status %d (%s), want 202",
+			status, refused.Error)
+	}
+	if n := h.mail.count(); n != 2 {
+		t.Errorf("%d codes sent, want 2", n)
+	}
+}
+
 // Every instance behind the load balancer spends answers in the same table, so
 // an answer spent on one is refused on another.
 func TestASpentAnswerIsSpentOnEveryInstance(t *testing.T) {
@@ -481,6 +566,147 @@ func TestOneAnswerPostsOnceUnderConcurrency(t *testing.T) {
 	if n := h.countRows("threads"); n != 1 {
 		t.Errorf("%d threads stored, want 1", n)
 	}
+}
+
+// holdSpend spends answer in a transaction it leaves open, as a request a
+// moment ahead with the same answer would. A request checked meanwhile finds
+// the answer unspent, gets through flood control's check, and then waits at
+// its own spend until release commits the transaction, when it is refused as
+// used. pid is the open transaction's backend, which that request waits on.
+func (h *harness) holdSpend(answer string) (pid uint32, release func()) {
+	h.t.Helper()
+	ctx := context.Background()
+	ticket, err := h.app.captcha.check(answer, time.Now())
+	if err != nil {
+		h.t.Fatalf("check the answer: %v", err)
+	}
+	tx, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	h.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		h.t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		ticket.key, nextDayBoundary(ticket.expires)); err != nil {
+		h.t.Fatalf("spend the answer: %v", err)
+	}
+	return pid, func() {
+		if err := tx.Commit(ctx); err != nil {
+			h.t.Fatalf("commit the spend: %v", err)
+		}
+	}
+}
+
+// loseSpendRace sends a request carrying answer while holdSpend is spending
+// it, lets the spend commit once the request is waiting on it, and returns how
+// the request was answered. send runs on a client of its own.
+func (h *harness) loseSpendRace(answer string, send func(c *client, answer string) (int, captchaRefusal)) (int, captchaRefusal, http.Header) {
+	h.t.Helper()
+	pid, release := h.holdSpend(answer)
+
+	racer := &client{t: h.t, base: h.base, http: h.http}
+	var (
+		status  int
+		refused captchaRefusal
+	)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		status, refused = send(racer, answer)
+	}()
+
+	for deadline := time.Now().Add(10 * time.Second); ; {
+		select {
+		case <-done:
+			h.t.Fatalf("the request was answered %d (%s) before it reached its spend", status, refused.Error)
+		default:
+		}
+		var waiting bool
+		if err := h.app.pool.QueryRow(context.Background(),
+			`SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY (pg_blocking_pids(pid)))`,
+			int64(pid)).Scan(&waiting); err != nil {
+			h.t.Fatalf("look for the waiting request: %v", err)
+		}
+		if waiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			h.t.Fatal("the request never waited on the open spend")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	release()
+
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		h.t.Fatal("the request was not answered once the spend committed")
+	}
+	return status, refused, racer.lastHeader
+}
+
+// Two requests carrying one answer can both find it unspent; the second to
+// spend it is refused as used, and that refusal starts no cooldown, for a post
+// or a code request alike. Otherwise one answer sent to many boards at once, or
+// naming many email addresses, would hold every one of them back for a whole
+// cooldown at the cost of a single puzzle. Each case then shows the cooldown
+// the loser did not start is real: a fresh answer goes straight through, and
+// starts it.
+func TestALostSpendStartsNoCooldown(t *testing.T) {
+	race := func(t *testing.T, h *harness, what string, send func(c *client, answer string) (int, captchaRefusal), ok int) {
+		t.Helper()
+		status, refused, header := h.loseSpendRace(h.solveCaptcha(), send)
+		expectCaptchaRefusal(t, what+" that lost the spend", status, refused, captchaUsed)
+		if header.Get(captchaSpentHeader) != "" {
+			t.Errorf("%s that lost the spend: the refusal says the answer was spent by it", what)
+		}
+		if status, refused := send(h.client, h.solveCaptcha()); status != ok {
+			t.Fatalf("%s with a fresh answer: status %d (%s), want %d: the lost spend started a cooldown",
+				what, status, refused.Error, ok)
+		}
+		if status, refused := send(h.client, h.solveCaptcha()); status != http.StatusTooManyRequests {
+			t.Errorf("%s again: status %d (%s), want 429 from the cooldown the fresh answer started",
+				what, status, refused.Error)
+		}
+	}
+
+	t.Run("thread", func(t *testing.T) {
+		h := captchaServer(t, func(cfg *Config) {
+			cfg.ThreadCooldown = time.Hour
+			cfg.UploadCooldown = time.Hour
+		})
+		h.addBoard("general")
+		image := pngBytes(t, 24, 24)
+		// An image thread, so the upload cooldown is in play as well.
+		race(t, h, "an image thread", func(c *client, answer string) (int, captchaRefusal) {
+			var refused captchaRefusal
+			status := c.upload("/api/boards/general/threads", map[string]string{"body": "look", "captcha": answer},
+				"look.png", image, &refused)
+			return status, refused
+		}, http.StatusCreated)
+	})
+
+	t.Run("reply", func(t *testing.T) {
+		h := captchaServer(t, func(cfg *Config) { cfg.PostCooldown = time.Hour })
+		h.addBoard("general")
+		thread := h.createThreadWithCaptcha("general", "open")
+		path := fmt.Sprintf("/api/boards/general/threads/%d/posts", thread.ThreadNo)
+		race(t, h, "a reply", func(c *client, answer string) (int, captchaRefusal) {
+			return c.attempt(path, map[string]any{"body": "me too", "captcha": answer})
+		}, http.StatusCreated)
+	})
+
+	t.Run("code request", func(t *testing.T) {
+		h := verifyServer(t, withCaptcha(func(cfg *Config) { cfg.VerifyCooldown = time.Hour }))
+		race(t, h.harness, "a code request", func(c *client, answer string) (int, captchaRefusal) {
+			return c.attempt("/api/verify/request", map[string]any{"email": "ana@iitb.ac.in", "adult": true, "captcha": answer})
+		}, http.StatusAccepted)
+		if n := h.mail.count(); n != 1 {
+			t.Errorf("%d codes sent, want the one for the fresh answer", n)
+		}
+	})
 }
 
 func TestCaptchaRefusalReasons(t *testing.T) {
@@ -549,6 +775,22 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 	}
 	if last := scales[captchaChallengeLimit]; last != 1 {
 		t.Errorf("another address's first challenge at scale %d, want 1", last)
+	}
+
+	// An IPv6 client is counted by its /64, the block one connection is
+	// usually given: a second address in it carries on the first's count, and
+	// an address in the next block starts its own.
+	for range captchaFreeChallenges {
+		from("2001:db8:1:2::1")
+	}
+	from("2001:db8:1:2::2")
+	from("2001:db8:1:3::1")
+	scales = fake.issued()[captchaChallengeLimit+1:]
+	if got, want := scales[captchaFreeChallenges], captchaScale(captchaFreeChallenges+1); got != want {
+		t.Errorf("a second address in the /64 issued at scale %d, want %d: the block's count carried on", got, want)
+	}
+	if got := scales[captchaFreeChallenges+1]; got != 1 {
+		t.Errorf("an address in the next /64 issued at scale %d, want 1", got)
 	}
 }
 
@@ -638,6 +880,47 @@ func TestSpentCaptchasArePruned(t *testing.T) {
 	spend("yesterday", now.Add(-12*time.Hour), false)
 	sweep(now.Add(2*time.Minute), 1, 1)
 	spend("live", now.Add(10*time.Minute), false)
+}
+
+// A spend prunes only the rows no other spend is already deleting (SKIP
+// LOCKED), so posts arriving together never queue behind each other's pruning.
+func TestASpendDoesNotWaitOnAnotherSpendsPruning(t *testing.T) {
+	h := testServer(t, nil)
+	ctx := context.Background()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	key := func(s string) []byte { k := sha256.Sum256([]byte(s)); return k[:] }
+	for _, name := range []string{"held", "free"} {
+		h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+			key(name), now.Truncate(24*time.Hour).Add(-24*time.Hour))
+	}
+
+	// Another spend, part way through its pruning, holds a row it is deleting.
+	tx, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if _, err := tx.Exec(ctx, `SELECT 1 FROM captcha_spent WHERE signature_hash = $1 FOR UPDATE`, key("held")); err != nil {
+		t.Fatalf("hold the row: %v", err)
+	}
+
+	waiting, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	if fresh, err := h.app.store.SpendCaptcha(waiting, key("new"), now.Add(time.Hour), now); err != nil || !fresh {
+		t.Fatalf("a spend while another holds a row it is pruning: fresh %t, error %v; want it to go ahead at once", fresh, err)
+	}
+	if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("rollback: %v", err)
+	}
+	var held, free bool
+	if err := h.app.pool.QueryRow(ctx, `SELECT
+		EXISTS (SELECT 1 FROM captcha_spent WHERE signature_hash = $1),
+		EXISTS (SELECT 1 FROM captcha_spent WHERE signature_hash = $2)`, key("held"), key("free")).Scan(&held, &free); err != nil {
+		t.Fatal(err)
+	}
+	if !held || free {
+		t.Errorf("after the spend: held row kept %t, free row kept %t; want the held one left to its holder and the free one pruned", held, free)
+	}
 }
 
 // The captcha leaves nothing behind that could tie a post to who wrote it: no

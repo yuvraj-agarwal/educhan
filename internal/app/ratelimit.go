@@ -71,20 +71,38 @@ type cooldown struct {
 // requests for the same key can therefore both be admitted, which for flood
 // control is a much better trade than the lock ordering an atomic version
 // would need between limiters that are not always applied together.
+//
+// A handler that spends a captcha answer calls the two halves, longestWait and
+// startAll, itself, with the spend between them, so a request refused for its
+// answer starts no cooldown.
 func allowAll(cooldowns ...cooldown) (retryAfter time.Duration, ok bool) {
+	if wait := longestWait(cooldowns...); wait > 0 {
+		return wait, false
+	}
+	startAll(cooldowns...)
+	return 0, true
+}
+
+// longestWait is the longest of the waits the cooldowns still impose, recording
+// nothing: what allowAll would refuse with, for a caller that wants to know
+// before it does anything else with a request.
+func longestWait(cooldowns ...cooldown) time.Duration {
 	var longest time.Duration
 	for _, c := range cooldowns {
 		if wait := c.limiter.peek(c.key); wait > longest {
 			longest = wait
 		}
 	}
-	if longest > 0 {
-		return longest, false
-	}
+	return longest
+}
+
+// startAll starts every cooldown, as allowAll does once none of them refuses:
+// the second half of flood control, for a caller that checked with
+// longestWait and has since decided the action goes ahead.
+func startAll(cooldowns ...cooldown) {
 	for _, c := range cooldowns {
 		c.limiter.record(c.key)
 	}
-	return 0, true
 }
 
 // peek reports how long key must wait, recording nothing.

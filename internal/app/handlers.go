@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -207,16 +208,20 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Flood control in two halves around the spend. A post that has to wait
+	// is told so with its answer unspent. The answer is spent before the image
+	// is processed, and the cooldowns start only once it is, so a post refused
+	// as used, racing another that carried the same answer, starts none: one
+	// answer cannot be sent to many boards at once to hold them all.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
+	cooldowns := a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)
+	if !a.notCoolingDown(w, cooldowns) {
 		return
 	}
-	// Spent once flood control has let the post through, and before its image
-	// is processed: a replayed answer costs the replayer a cooldown and the
-	// server nothing more.
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
+	startAll(cooldowns...)
 
 	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
 	if err != nil {
@@ -308,18 +313,21 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
-	// As for a thread: checked before flood control, spent after it.
+	// As for a thread: checked before flood control, and spent between its
+	// two halves.
 	ticket, ok := a.checkCaptcha(w, r, sub.Captcha, badge.Label != "")
 	if !ok {
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
+	cooldowns := a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)
+	if !a.notCoolingDown(w, cooldowns) {
 		return
 	}
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
+	startAll(cooldowns...)
 
 	img, err := a.storeUpload(r.Context(), board.Slug, sub.Upload)
 	if err != nil {
@@ -409,26 +417,34 @@ func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey str
 	return cooldowns
 }
 
-// allow applies posting flood control, answering 429 with a Retry-After when
-// the caller must wait.
-func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
-	return a.allowAction(w, "posting", cooldowns)
+// notCoolingDown answers 429 for a post that flood control would refuse,
+// starting nothing: the first half of flood control. startAll is the second,
+// once the post's answer is spent. Two posts from one address that pass this
+// together both go ahead, as allowAll already lets them.
+func (a *App) notCoolingDown(w http.ResponseWriter, cooldowns []cooldown) bool {
+	return a.waitedOut(w, "posting", cooldowns)
 }
 
-// allowAction is allow for anything else that is rate limited; action names
-// what was refused, so a 429 from verification does not talk about posting.
-func (a *App) allowAction(w http.ResponseWriter, action string, cooldowns []cooldown) bool {
-	wait, ok := allowAll(cooldowns...)
-	if ok {
-		return true
+// waitedOut is notCoolingDown for anything else that is rate limited; action
+// names what was refused, so a 429 from verification does not talk about
+// posting.
+func (a *App) waitedOut(w http.ResponseWriter, action string, cooldowns []cooldown) bool {
+	if wait := longestWait(cooldowns...); wait > 0 {
+		tooQuickly(w, action, wait)
+		return false
 	}
+	return true
+}
+
+// tooQuickly answers an action flood control refused: 429, with how long to
+// wait in a Retry-After and in the body.
+func tooQuickly(w http.ResponseWriter, action string, wait time.Duration) {
 	seconds := int(math.Ceil(wait.Seconds()))
 	w.Header().Set("Retry-After", strconv.Itoa(seconds))
 	writeJSON(w, http.StatusTooManyRequests, map[string]any{
 		"error":       action + " too quickly, wait " + strconv.Itoa(seconds) + "s",
 		"retry_after": seconds,
 	})
-	return false
 }
 
 // fail maps a store error onto an HTTP response, logging only the unexpected

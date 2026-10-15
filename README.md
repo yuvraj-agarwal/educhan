@@ -182,8 +182,8 @@ can and cannot work out.
 - When a credential was issued: in the database, only to the *day*, because the
   stored expiry is rounded up to a UTC day boundary and nothing else in the
   verification tables is timestamped (the spent [captcha](#captcha) a code
-  request leaves behind stores only the day the same way); in the application's log, for as long as
-  it is kept, to the second, because the request line for
+  request leaves behind stores only the day the same way); in the application's
+  log, for as long as it is kept, to the second, because the request line for
   `POST /api/verify/confirm` and a bare `verification issued` line each carry a
   time. Neither line says which institution or address the credential was for
   (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
@@ -298,7 +298,7 @@ no handler and no SQL changes.
 | One credential per address | Re-verifying issues a new credential and revokes the previous one, so a mailbox is one identity however many browsers it uses |
 | Plus-addressing stripped | `ana+one@` and `ana+two@` are the same mailbox. Dots are *not* stripped: that is a Gmail convention, and applying it everywhere would fold two real people at one institution together |
 | Code request cooldown | `EDUCHAN_VERIFY_COOLDOWN`, applied per client address **and** per address hash, so neither a client can walk a list of addresses nor a mailbox be flooded from a pool of hosts |
-| Captcha | With `EDUCHAN_CAPTCHA_SECRET` set, every code request carries an answer to the [captcha](#captcha), checked before the address is parsed: a script walking a list of addresses solves a puzzle for each |
+| Captcha | With `EDUCHAN_CAPTCHA_SECRET` set, every code request carries an answer to the [captcha](#captcha), checked before the address is parsed and spent once both cooldowns let the request through: every code that goes out has cost a puzzle of its own |
 | Five wrong codes | The pending verification is destroyed and a fresh code is the only way on, which is what makes a six-digit code safe |
 | Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default. The credential is kept in `localStorage`, so this is the lifetime in practice rather than an upper bound the browser cuts short |
 
@@ -715,12 +715,12 @@ A refused request answers `429` with a `Retry-After` header in seconds and a
 request rejected for any other reason — an empty body, an oversized image, a
 file that is not an accepted image or whose header claims too many pixels, a
 reply to a missing, locked or archived thread or an image past a thread's cap —
-does not start a cooldown, so a typo never costs a wait. Three refusals come
+does not start a cooldown, so a typo never costs a wait. Two refusals come
 only after the cooldowns have started: an image whose header reads but whose
 pixels do not decode, which only decoding it can find, and decoding is the cost
-the upload cooldown is there for; the loser of two replies racing for a
-thread's last image slot (see the HTTP API); and the loser of two posts racing
-with one [captcha](#captcha) answer.
+the upload cooldown is there for; and the loser of two replies racing for a
+thread's last image slot (see the HTTP API). The loser of two posts racing with
+one [captcha](#captcha) answer is refused before its cooldowns start.
 
 The cooldowns are keyed on client addresses, and so is the
 [captcha](#captcha)'s count of challenges, which works like a one-minute
@@ -766,14 +766,14 @@ script from anywhere else runs on the page, and no cookie is set.
    random, from one to just under twice the work, and deriving PBKDF2 over the
    nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
-   copies and tries counters until a key starts with that half. That is 1500
-   attempts on average at the default work and never more than 2999, about two
-   seconds on a laptop and a few more on a slow phone, done while the post is
-   being written. (Chromium runs every copy's Web Crypto on one thread, so there
-   the copies take turns.) The worker needs Web Crypto, which a browser gives
-   only to a page on HTTPS or `localhost`; anywhere else, with the captcha on,
-   the page sends no unbadged post and no code request, and says the check could
-   not finish.
+   copies and tries counters until a key starts with that half. That is about
+   1500 attempts on average at the default work and never more than 3000, about
+   two seconds on a laptop and a few more on a slow phone, done while the post
+   is being written. (Chromium runs every copy's Web Crypto on one thread, so
+   there the copies take turns.) The worker needs Web Crypto, which a browser
+   gives only to a page on HTTPS or `localhost`; anywhere else, with the captcha
+   on, the page sends no unbadged post and no code request, and says the check
+   could not finish.
 3. The post carries the answer, the challenge and the key it found, as
    `"captcha"`. The server checks the signature, the expiry and an HMAC of the
    key, at most two HMACs and never a key derivation, so a wrong answer costs it
@@ -787,22 +787,23 @@ the badge, and gets it, goes without an answer. A code request never skips it.
 There is no limit per credential: its holder posts without puzzles from any
 address, under that address's flood control.
 
-The answer is checked, the lookup included, before flood control and spent
-after it, so a post refused by the captcha starts no cooldown, and a post
-refused by a cooldown keeps its answer for when it is let through. (Two posts
-racing with one answer can both pass the lookup; the spend lets one through
-and refuses the other as used, after its cooldowns have started.) A refusal answers `403` with
-`"captcha": "required" | "invalid" | "expired" | "used"` beside the message;
-the page solves a fresh puzzle and sends the post once more, so the reader
-presses the button once. A `used` answer was spent by an earlier request, which
-started its cooldowns, so the resend can meet one of them; the page then says
-how long to wait and keeps the fresh answer for the next press. Every response
-to a request whose answer was spent
-carries `Educhan-Captcha: spent`, a refusal written after the spend included
-(an image whose pixels fail to decode, or a thread that filled up meanwhile).
-The page keeps its answer through any refusal without that header, so the
-next press goes straight out, and starts the next puzzle as soon as one with
-it arrives.
+The answer is checked, the lookup included, before flood control. It is spent
+once flood control has found no cooldown to wait out, and only then are the
+post's cooldowns started. So a post refused by the captcha starts no cooldown,
+and a post refused by a cooldown keeps its answer for when it is let through.
+Two posts racing with one answer can both pass the lookup; the spend lets one
+through and refuses the other as used, with no cooldown started for it, so one
+answer sent to many boards at once holds none of them back. A refusal answers
+`403` with `"captcha": "required" | "invalid" | "expired" | "used"` beside the
+message; the page solves a fresh puzzle and sends the post once more, so the
+reader presses the button once. A `used` answer was spent by an earlier request,
+which started its cooldowns, so the resend can meet one of them; the page then
+says how long to wait and keeps the fresh answer for the next press. Every
+response to a request whose answer was spent carries `Educhan-Captcha: spent`, a
+refusal written after the spend included (an image whose pixels fail to decode,
+or a thread that filled up meanwhile). The page keeps its answer through any
+refusal without that header, so the next press goes straight out, and starts the
+next puzzle as soon as one with it arrives.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to
@@ -1119,9 +1120,9 @@ records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to
 delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists. Last, it deletes the spent
-[captcha](#captcha) answers past their day, the ones no later post came along
-to prune.
+image public with nothing left to say it exists. Last, whatever happened to
+the files, it deletes the spent [captcha](#captcha) answers past their day, the
+ones no later post or code request came along to prune.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
@@ -1133,13 +1134,13 @@ with a container's disk, or removed by hand) fails every sweep until its row is
 deleted from `media_deletions` by hand.
 
 It logs one line of counts (threads, posts, attachments, files removed, failed,
-and missing, and spent captchas deleted) and nothing about which boards or threads went, and exits
-non-zero if the database fails or any file could not be removed or was missing;
-the error it exits with says why without naming the file. It also refuses to
-run on a database a newer release has migrated (see below). It needs none of
-the web server's secrets — the poster-ID salt, the moderation key, the
-verification secret, the captcha secret — and, run without them, it does not warn about them:
-those warnings come from the server alone.
+and missing, and spent captchas deleted) and nothing about which boards or
+threads went, and exits non-zero if the database fails or any file could not be
+removed or was missing; the error it exits with says why without naming the
+file. It also refuses to run on a database a newer release has migrated (see
+below). It needs none of the web server's secrets — the poster-ID salt, the
+moderation key, the verification secret, the captcha secret — and, run without
+them, it does not warn about them: those warnings come from the server alone.
 
 On Google Cloud it is meant to run as a Cloud Run Job from the service's image,
 started by Cloud Scheduler: Cloud Run gives a service CPU only while it answers

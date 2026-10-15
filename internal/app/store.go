@@ -1451,8 +1451,10 @@ const (
 	// is still kept. An instance refuses a challenge once its own clock passes
 	// the expiry; an instance whose clock ran ahead must not delete the row
 	// while another, behind it, would still accept that answer as fresh. The
-	// stored expiry is already rounded up past the real one, so this only
-	// matters for a clock a day out.
+	// stored expiry is rounded up to the next midnight, which adds anything
+	// from a second to a day, so for a challenge that runs out just before
+	// midnight this margin is all the slack there is: it tolerates instance
+	// clocks up to a minute apart, far more than servers kept in time drift.
 	captchaPruneMargin = time.Minute
 	// captchaPruneBatch caps the spent answers one spend deletes. Each spend
 	// adds one, so a batch of more than one keeps up: the day's rows, which

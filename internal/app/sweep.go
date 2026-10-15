@@ -45,13 +45,15 @@ type SweepReport struct {
 	BlobFailures int
 	BlobsMissing int
 	// SpentCaptchas is how many spent captcha answers past their day the
-	// sweep deleted: the ones no post came along to prune.
+	// sweep deleted: the ones no later post or code request came along to
+	// prune.
 	SpentCaptchas int
 }
 
 // Sweep deletes every archived thread that has outlived its board's
-// archive_days, in batches of sweepBatchSize, and then removes the files those
-// threads had, along with any an earlier sweep could not.
+// archive_days, in batches of sweepBatchSize, then removes the files those
+// threads had, along with any an earlier sweep could not, and last deletes the
+// spent captcha answers past their day.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -80,28 +82,32 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		}
 	}
 
-	spent, err := a.store.PruneSpentCaptchas(ctx, asOf)
-	if err != nil {
-		a.logSweep(report)
-		return report, fmt.Errorf("sweep spent captchas: %w", err)
-	}
-	report.SpentCaptchas = spent
-
 	firstFailure, err := a.removeQueuedMedia(ctx, &report)
-	a.logSweep(report)
+	var mediaErr error
 	switch {
 	case err != nil:
-		return report, err
+		mediaErr = err
 	case report.BlobsMissing > 0:
-		return report, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
+		mediaErr = fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
 			"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
 			"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
 			report.BlobsMissing)
 	case report.BlobFailures > 0:
-		return report, fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
+		mediaErr = fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
 			"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
 	}
-	return report, nil
+
+	// Spent captcha answers go last, whatever happened to the files: the two
+	// have nothing to do with each other, so neither one's failure holds up the
+	// other, and deleted threads' images never wait on a captcha cleanup.
+	spent, err := a.store.PruneSpentCaptchas(ctx, asOf)
+	var pruneErr error
+	if err != nil {
+		pruneErr = fmt.Errorf("sweep spent captchas: %w", err)
+	}
+	report.SpentCaptchas = spent
+	a.logSweep(report)
+	return report, errors.Join(mediaErr, pruneErr)
 }
 
 // removeQueuedMedia works through media_deletions once, removing each file and
