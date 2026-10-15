@@ -590,6 +590,18 @@ says "plus any tax" beside the price. Three more settings have working defaults
 and need no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
 `EDUCHAN_PASS_COOLDOWN` (section 4).
 
+Re-running `first-deploy.sh` keeps these settings. To stop selling the Pass,
+take all five off together, or the server refuses to start:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --remove-secrets EDUCHAN_PASS_SECRET,EDUCHAN_STRIPE_SECRET_KEY,EDUCHAN_STRIPE_WEBHOOK_SECRET \
+  --remove-env-vars EDUCHAN_STRIPE_PRICE_ID,EDUCHAN_PUBLIC_URL
+```
+
+Passes already sold stop working while the Pass is off, and come back when it
+is turned on again with the same `educhan-pass-secret`.
+
 **Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
 payment record is a hash under it, so rotating it cancels every Pass that was
 sold, and leaves no record a refund could find.
