@@ -696,6 +696,37 @@ func TestABurstOfCodeRequestsFromOneClientSendsOneCode(t *testing.T) {
 	})
 }
 
+// A burst of code requests for one email address, each from another client and
+// with an answer of its own, sends one code too: the address's cooldown is
+// checked again as the cooldowns start, as the client's is.
+func TestABurstOfCodeRequestsForOneAddressSendsOneCode(t *testing.T) {
+	h := verifyServer(t, withCaptcha(func(cfg *Config) {
+		cfg.VerifyCooldown = time.Hour
+		cfg.TrustedProxyHops = 1
+		roomForABurst(cfg)
+	}))
+
+	outcomes := h.spendingBurst(h.solveCaptchas(burstSize), func(i int, answer string) *http.Request {
+		req := h.jsonRequest("/api/verify/request", map[string]any{
+			"email": "ana@iitb.ac.in", "adult": true, "captcha": answer,
+		})
+		req.Header.Set("X-Forwarded-For", fmt.Sprintf("203.0.113.%d", i+1))
+		return req
+	})
+	if n := h.mail.count(); n != 1 {
+		t.Errorf("%d codes sent by the burst, want 1", n)
+	}
+	expectOneThrough(t, "racing code requests for one address", outcomes, http.StatusAccepted, func(i int, answer string) (int, captchaRefusal) {
+		// From a client of its own, for another email address, so no cooldown
+		// the burst started holds it back.
+		var refused captchaRefusal
+		status := h.postFrom(fmt.Sprintf("198.51.100.%d", i+1), "/api/verify/request", map[string]any{
+			"email": fmt.Sprintf("again%d@iitb.ac.in", i), "adult": true, "captcha": answer,
+		}, &refused)
+		return status, refused
+	})
+}
+
 // A burst of badged posts posts once too. They spend no answer, so nothing
 // lies between flood control's two halves, and the first half alone holds the
 // burst to one: this shows a badged burst posts once, not that the second

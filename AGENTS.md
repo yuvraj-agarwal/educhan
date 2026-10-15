@@ -457,20 +457,22 @@ check before the test changes.
   a request refused as used, which only a replay racing its original can be at that
   point, starts no cooldown (`TestALostSpendStartsNoCooldown`), and of a burst from one
   address that all passed the first check and need the same cooldown (new threads or
-  replies on one board, or images anywhere), or of code requests from one client, at most
-  one goes ahead, and the second check refuses a request only for a cooldown one that
-  went ahead started (`TestABurstFromOneAddressPostsOnce` for threads,
-  `TestABurstOfRepliesFromOneAddressPostsOnce` for replies,
-  `TestABurstOfImagesFromOneAddressPostsOnce` for images on two boards and
-  `TestABurstOfCodeRequestsFromOneClientSendsOneCode` for code requests; each holds its
+  replies on one board, or images anywhere), or of code requests from one client or for
+  one email address, at most one goes ahead, and the second check refuses a request only
+  for a cooldown one that went ahead started (`TestABurstFromOneAddressPostsOnce` for
+  threads, `TestABurstOfRepliesFromOneAddressPostsOnce` for replies,
+  `TestABurstOfImagesFromOneAddressPostsOnce` for images on two boards, and
+  `TestABurstOfCodeRequestsFromOneClientSendsOneCode` and
+  `TestABurstOfCodeRequestsForOneAddressSendsOneCode` for code requests; each holds its
   burst at the spends (`spendingBurst`) until all of it has passed the first check, so it
-  fails on every run if the second check is dropped from its handler). A request refused
-  by the second check that carried an answer has spent it and carries the spent header;
-  one refused by the first kept its answer. A badged burst posts once too
-  (`TestABadgedBurstFromOneAddressPostsOnce`), but spends nothing between the halves, so
-  the first check alone holds it and the test does not pin the second. In the posting
-  handlers the check is the last refusal before flood control; in `handleVerifyRequest`
-  it comes straight after the 18+ attestation, before the address is parsed.
+  fails on every run if the second check, or one of its keys, is dropped from its
+  handler). A request refused by the second check that carried an answer has spent it and
+  carries the spent header; one refused by the first kept its answer. A badged burst
+  posts once too (`TestABadgedBurstFromOneAddressPostsOnce`), but spends nothing between
+  the halves, so the first check alone holds it and the test does not pin the second. In
+  the posting handlers the check is the last refusal before flood control; in
+  `handleVerifyRequest` it comes straight after the 18+ attestation, before the address
+  is parsed.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
