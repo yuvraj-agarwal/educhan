@@ -34,7 +34,8 @@ EDUCHAN_MOD_KEY=dev-mod-key go run ./cmd/server   # http://localhost:8080
 at startup, and `0006` seeds twenty boards: thirteen subject boards (`/math/` to
 `/lang/`), then seven student-life ones (`/adm/` to `/meta/`).
 Attachments go to `./data/uploads`, because `EDUCHAN_MEDIA_BACKEND` defaults to
-`local`.
+`local`, but image posts answer `403` until the server is started with
+`EDUCHAN_UPLOADS_ENABLED=1` as well, as the attachment example below needs.
 
 ```bash
 curl -s localhost:8080/healthz     # {"status":"ok"}
@@ -72,7 +73,9 @@ by submitting a build (section 2.5), not by building locally.
 **The short way.** In [Cloud Shell](https://shell.cloud.google.com), with a
 project that has billing linked, one script does every step in this section:
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
-the build, the deploy, and the request-log exclusion. It leaves image uploads
+the build, the deploy, the request-log exclusion, and the archive sweeper Job
+with its daily schedule. Re-running it from a newer checkout is how an update
+ships: it moves the service and the Job onto the new image together. It leaves image uploads
 and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
 the environment turns that off), prints the service URL, and is safe to re-run.
 
@@ -378,8 +381,9 @@ Once the service exists, every later release is just the new image:
 make cloud-build && make cloud-deploy
 ```
 
-`make cloud-deploy` is `gcloud run deploy educhan --image <the tag just built>`
-and nothing more. Cloud Run carries the rest of the configuration — the service
+`make cloud-deploy` is `gcloud run deploy educhan --image <the tag just built>`,
+plus moving the archive sweeper Job onto the same image once it exists (section
+2.9), and nothing more. Cloud Run carries the rest of the configuration — the service
 account, the Cloud SQL instance, the secrets, the environment — over from the
 current revision, so it is not duplicated in the Makefile and cannot drift from
 it. Changing any of that is a change to `service.yaml` (or to the long form
@@ -391,8 +395,8 @@ than quietly creating a bare one with no database attached.
 
 ```bash
 URL="$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')"
-curl -s "$URL/healthz"     # {"status":"ok"} — this also pings PostgreSQL
-curl -s "$URL/api/boards"  # the seeded boards, so migrations ran
+# Not /healthz: Cloud Run reserves some paths ending in "z" on run.app URLs.
+curl -s "$URL/api/boards"  # the seeded boards: the database answers and migrations ran
 open "$URL"                # the UI
 
 # Media round-trips through the bucket. Post an image, read its URL back, and
@@ -453,9 +457,10 @@ because a Cloud Run service only has CPU while it answers a request, so a timer
 inside it would fire whenever it happened to.
 
 The Job runs as the service's account and needs only what deleting takes: the
-database, and `storage.objects.get` and `storage.objects.delete` on the bucket,
-both already in the `roles/storage.objectAdmin` grant from section 2.3 (it checks
-that each file is there before deleting it). It gets neither the moderation key nor
+database, and `storage.objects.list`, `.get` and `.delete` on the bucket, all
+already in the `roles/storage.objectAdmin` grant from section 2.3 (startup lists
+the bucket to check it is usable, and the sweep checks that each file is there
+before deleting it). It gets neither the moderation key nor
 `EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
 with that secret set and no mail sender). The poster-ID salt is left out too, as
 nothing the sweeper does touches a poster ID.
