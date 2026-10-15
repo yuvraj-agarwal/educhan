@@ -328,9 +328,12 @@ The pushed tags stay in the registry, which is what makes a rollback a deploy of
 an older commit rather than a rebuild. **Never roll back across migration
 `0005`**, to an image from before the archive existed: that code lists archived
 threads as live, and its pruning deletes them with their images left in the
-bucket. A binary that finds migrations it does not know logs an error saying so
-and still serves, so read the log after any rollback. `-sweep` refuses to run at
-all in that state.
+bucket. **Nor across `0009`**, to an image from before posts could be held:
+that code knows nothing of `held_at`, so every post the content rules held back
+for a moderator (threats, self-harm encouragement, grooming cues) would show in
+its thread for anyone to read. A binary that finds migrations it does not know
+logs an error saying so and still serves, so read the log after any rollback.
+`-sweep` refuses to run at all in that state.
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
