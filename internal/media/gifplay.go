@@ -163,8 +163,8 @@ func clearRun(row []uint32, r image.Rectangle, y, x0 int) {
 // once. It visits only the rows the rectangles cover (coveredRows): a row
 // between two of them holds no run, and walking it would be work in
 // proportion to the gap, which nothing charges — the walk charges the frames'
-// pixels and playGIF's area the stored frames', and two one-pixel frames at
-// the top and the bottom of a tall canvas are two pixels.
+// rows and pixels and playGIF's area the stored frames' (gifCharge), and two
+// one-pixel frames at the top and the bottom of a tall canvas are two rows.
 func spans(a, b, c image.Rectangle, f func(y, x0, x1 int)) {
 	rects := [3]image.Rectangle{a, b, c}
 	ys, m := coveredRows(&rects)
@@ -262,10 +262,10 @@ type gifPlayer struct {
 	changed []uint64  // what the stored frame of the picture showing draws
 	next    []uint64  // what the stored frame of the next picture draws
 	box     image.Rectangle
-	time    int // how long the picture showing has shown, in hundredths
-	loop    int // the loop count, or -1 for a GIF played once
-	emitted int // the pictures written
-	area    int64
+	time    int   // how long the picture showing has shown, in hundredths
+	loop    int   // the loop count, or -1 for a GIF played once
+	emitted int   // the pictures written
+	area    int64 // the stored frames' charge, and tried's (gifCharge)
 	global  bool
 	// saved is, where the stored frame of the picture showing draws, what
 	// was there before it was drawn, which putting it back leaves. It is
@@ -479,16 +479,16 @@ func (p *gifPlayer) choose(box, toClear image.Rectangle) (disposal byte, r, next
 }
 
 // tried charges the rectangles that a way of disposing of a frame looked
-// at, and did not take, to area, the pixels of the stored frames, as if
-// frames of them had been written, and refuses the GIF once area passes
-// maxGIFFramePixels. Looking at a rectangle is work in proportion to its
-// pixels, as writing a frame of it is, and a way not taken is never
-// written: without the charge, a GIF of small frames far apart, where every
-// way but the last spans them all, could have choose look at most of a
-// large canvas for each picture, with nothing to stop it.
+// at, and did not take, to area, the charge of the stored frames
+// (gifCharge), as if frames of them had been written, and refuses the GIF
+// once area passes maxGIFFramePixels. Looking at a rectangle is work in
+// proportion to its rows and pixels, as writing a frame of it is, and a way
+// not taken is never written: without the charge, a GIF of small frames far
+// apart, where every way but the last spans them all, could have choose look
+// at most of a large canvas for each picture, with nothing to stop it.
 func (p *gifPlayer) tried(rs ...image.Rectangle) error {
 	for _, r := range rs {
-		p.area += int64(r.Dx()) * int64(r.Dy())
+		p.area += gifCharge(int64(r.Dx()), int64(r.Dy()))
 	}
 	if p.area > maxGIFFramePixels {
 		return ErrImageTooCostly
@@ -585,7 +585,7 @@ func (p *gifPlayer) frame(r image.Rectangle, delay int, disposal byte, still, bl
 	if r.Empty() {
 		r, blank = image.Rect(0, 0, 1, 1), true
 	}
-	p.area += int64(r.Dx()) * int64(r.Dy())
+	p.area += gifCharge(int64(r.Dx()), int64(r.Dy()))
 	if p.area > maxGIFFramePixels {
 		return ErrImageTooCostly
 	}
@@ -729,9 +729,10 @@ func (p *gifPlayer) ownTable(r image.Rectangle, next bool) (transparent, ok bool
 // loop count, or -1 for a GIF played once.
 //
 // It refuses a GIF it cannot store one frame to a picture (choose,
-// frameColours), or whose stored frames would have more pixels between them
-// than maxGIFFramePixels, counting the ways choose looked at and did not
-// take as frames (tried), with ErrImageTooCostly. The header is written before
+// frameColours), or whose stored frames would be charged more between them
+// than maxGIFFramePixels (gifCharge: their pixels, each row at least
+// gifRowPixels), counting the ways choose looked at and did not take as
+// frames (tried), with ErrImageTooCostly. The header is written before
 // anything is allocated for play, so a limit too small for it costs nothing.
 // Each frame is let go once it has been played, its place in frames set to
 // nil.

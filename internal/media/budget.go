@@ -31,13 +31,17 @@ const UploadBudget int64 = 64 << 20
 // for room, in either budget, so that what is left is time to decode,
 // re-encode and thumbnail it and to store both renditions. The slowest
 // upload measured of those Inspect admits from an 8 MiB limit, a 25-megapixel
-// PNG with transparency of nearly 8 MiB, took about eight seconds to process
-// on one core of a development machine; the slowest GIF, four 25-megapixel
-// frames (as many pixels as maxGIFFramePixels lets its frames come to) each
-// changing every pixel, about two and a half. A slower core, or other uploads
-// beside it, makes that longer, so the deadline still has the last word: Save
-// stores nothing once it has passed. A context without a deadline waits for
-// as long as it lasts.
+// PNG with transparency of nearly 8 MiB, took about eight seconds of CPU to
+// process on one core of a development machine. The slowest GIF found took
+// about four: an animation of many colours, 25 frames of a 2000×2000 canvas
+// each drawn from a table of its own and each leaving a pixel to clear,
+// 4.5 MB, which the frame cap (maxGIFFramePixels) lets come to 100 million
+// pixels. Four 5000×5000 frames of one table take two and a half, and frames
+// a pixel wide, whose rows the cap counts as 64 pixels each (gifRowPixels),
+// a few tenths. A slower core, or other uploads beside it, makes that longer,
+// so the deadline still has the last word: Save stores nothing once it has
+// passed, and the work stops when the context ends. A context without a
+// deadline waits for as long as it lasts.
 const processingAllowance = 15 * time.Second
 
 // budget shares out memory among the uploads using it at once, each taking

@@ -154,7 +154,36 @@ func transposedZig(k int) int {
 // have 300 frames) and no more memory than the largest JPEG. A GIF past it is
 // refused as too costly to process (ErrImageTooCostly), not as too large a
 // picture: its canvas may be small, and each frame smaller.
+//
+// It also bounds the work of playing a GIF, which goes through each frame,
+// and each frame it stores, a row at a time: what is held to it is each
+// frame's charge (gifCharge), its pixels with every row charged as at least
+// gifRowPixels, and playGIF holds the frames it stores and the rectangles it
+// looks at to it the same way.
 const maxGIFFramePixels = 4 * MaxPixels
+
+// gifRowPixels is the least each row of a GIF's frame is charged against
+// maxGIFFramePixels, in pixels (gifCharge). Decoding a frame, playing it and
+// writing what it shows each pass over it a row at a time, and every pass
+// sets each row up (the rows it compares, the frames drawn on them, a call
+// of the LZW writer) at a cost of its own, which a row a pixel wide costs as
+// much of as a wide one. Charged by its pixels alone, a GIF of the cap's
+// worth of frames a pixel wide and 65,535 tall, 1,525 of them and 100
+// million rows, took 21 seconds of CPU to play, where four 5000×5000 frames
+// take under three. At 64 pixels a row a GIF has at most 1.56 million rows,
+// whose setting up comes to a few tenths of a second whatever the path, and
+// a frame at least 64 pixels wide is charged its pixels, as before.
+const gifRowPixels = 64
+
+// gifCharge is what a GIF's frame, or a rectangle playGIF stores or looks
+// at, of w×h pixels is charged against maxGIFFramePixels: its pixels, with
+// each row charged as at least gifRowPixels.
+func gifCharge(w, h int64) int64 {
+	if w <= 0 || h <= 0 {
+		return 0
+	}
+	return max(w, gifRowPixels) * h
+}
 
 // storedBuffer collects an encoded original and refuses to hold more than
 // limit bytes (storedLimit), with ErrStoredTooLarge. It grows by doubling, as a
@@ -372,9 +401,9 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 // thumbnail is of the first picture the GIF shows, at the size of its canvas,
 // made before its frames are played. A GIF that cannot be stored one frame
 // to a picture, because a stored frame would need more colours than one
-// table holds, is refused, as is one whose stored frames would have more
-// pixels between them than maxGIFFramePixels (ErrImageTooCostly, from
-// playGIF).
+// table holds, is refused, as is one whose stored frames would be charged
+// more between them than maxGIFFramePixels (gifCharge; ErrImageTooCostly,
+// from playGIF).
 //
 // A frame's colours, delay and disposal method are taken from what the walk
 // read of it (gifFrameHead), as Chromium reads them, where that and
@@ -870,8 +899,11 @@ func foldPaletted(m *image.Paletted, uses []uint8, f *colourFolder) {
 // to have image/gif decode them.
 type gifFrames struct {
 	pixels, count int64
-	looped        bool // a loop extension gave a loop count,
-	loop          int  // which is this, as gif.GIF's LoopCount reads
+	// charged is what the frames are charged against maxGIFFramePixels
+	// (gifCharge): their pixels, with each row at least gifRowPixels.
+	charged int64
+	looped  bool // a loop extension gave a loop count,
+	loop    int  // which is this, as gif.GIF's LoopCount reads
 	// largest is the area of the largest frame. image/gif puts an
 	// interlaced frame's rows in order in a copy of it, and a frame may be
 	// larger than the canvas.
@@ -892,10 +924,10 @@ type gifFrames struct {
 	many bool
 }
 
-// gifFramePixels adds up the area of every frame a GIF declares, and counts
-// them, reading only the block structure: image descriptors are read, and
-// everything else, compressed pixels included, is stepped over. It allocates
-// nothing.
+// gifFramePixels adds up the area of every frame a GIF declares, and its
+// charge (gifCharge), and counts them, reading only the block structure:
+// image descriptors are read, and everything else, compressed pixels
+// included, is stepped over. It allocates nothing.
 //
 // It also reads the loop count, which image/gif reads only from a NETSCAPE2.0
 // application extension: from its first sub-block, when that is three bytes
@@ -925,7 +957,7 @@ type gifFrames struct {
 // canvas to hold it, Firefox moves it to the corner and makes the canvas its
 // size), and so is a frame reaching past the 65,535 pixels a header can say.
 //
-// It returns ErrImageTooCostly as soon as the area passes limit, and
+// It returns ErrImageTooCostly as soon as the charge passes limit, and
 // ErrCorruptImage when the walk does not end at the trailer or at the end of
 // a whole block: a file the decoder could not read to its end is refused
 // rather than half counted. TestGIFFramePixelsReadsWhatTheDecoderReads and
@@ -1059,8 +1091,9 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 			f.screen = image.Pt(max(f.screen.X, right), max(f.screen.Y, bottom))
 			f.count++
 			f.pixels += int64(w) * int64(h)
+			f.charged += gifCharge(int64(w), int64(h))
 			f.largest = max(f.largest, int64(w)*int64(h))
-			if f.pixels > limit {
+			if f.charged > limit {
 				return f, ErrImageTooCostly
 			}
 			i += descriptorLen

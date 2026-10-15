@@ -1246,6 +1246,89 @@ func TestGIFWaysNotTakenAreCharged(t *testing.T) {
 	}
 }
 
+// tallFrames is a GIF of n frames of w×65535 on a canvas of their size, each
+// drawing every pixel in a colour other than the one before, so each shows a
+// new picture and is stored as a frame of the whole canvas.
+func tallFrames(w, n int) rawGIF {
+	const h = 65535
+	g := rawGIF{w: w, h: h, global: shades(0, 4)}
+	for k := 0; k < n; k++ {
+		pix := make([]uint8, w*h)
+		for i := range pix {
+			pix[i] = uint8(1 + k%2)
+		}
+		g.frames = append(g.frames, rawFrame{controls: []rawControl{{keepFrame, 10, -1}}, at: image.Rect(0, 0, w, h), pix: pix})
+	}
+	return g
+}
+
+// sanitizeUnchecked is sanitize of a GIF as the walk reads it with no limit,
+// past Inspect, so that what playGIF charges its stored frames, and not the
+// walk's charge of the frames uploaded, is what decides whether it is
+// stored.
+func sanitizeUnchecked(t *testing.T, data []byte) (sanitized, error) {
+	t.Helper()
+	frames, err := walkGIF(data, math.MaxInt64, nil)
+	if err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	return sanitize(context.Background(), inspection{format: FormatGIF, limit: math.MaxInt64, frames: frames}, data)
+}
+
+// The frames playGIF stores, and the rectangles choose looks at for ways it
+// does not take, are charged against maxGIFFramePixels as the walk charges
+// the frames uploaded (gifCharge): writing a frame, and looking at a
+// rectangle, go through it a row at a time, and a row a pixel wide costs
+// about what a wide one does. 24 frames a pixel wide and 65,535 tall come to
+// more than the cap at 64 pixels a row, and 23 do not; by their pixels alone
+// all 24 would be stored. The walk refuses the 24 first, so they are played
+// here past it.
+func TestGIFStoredFramesAreChargedByTheirRows(t *testing.T) {
+	g := tallFrames(1, 23)
+	got, err := sanitizeUnchecked(t, g.bytes())
+	if err != nil {
+		t.Fatalf("23 frames: sanitize = %v, want them stored", err)
+	}
+	requireShowsAs(t, "23 frames", g, got.data)
+	if _, err := sanitizeUnchecked(t, tallFrames(1, 24).bytes()); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("24 frames, stored charged at 64 pixels a row: sanitize = %v, want ErrImageTooCostly", err)
+	}
+}
+
+// The rectangles choose looks at for ways it does not take are charged by
+// their rows as well (tried, gifCharge). TestGIFWaysNotTakenAreCharged's
+// animation, on a canvas 16 pixels wide and 65,535 tall, has choose look at
+// two rectangles of the whole canvas for each picture after a frame at the
+// top is put back. At 64 pixels a row those come to the cap at the twelfth
+// such picture, the 25th frame; charged by their pixels, a quarter of that,
+// it would take about 48.
+func TestGIFWaysNotTakenAreChargedByTheirRows(t *testing.T) {
+	const w, h = 16, 65535
+	top, bottom := image.Rect(0, 0, w, 16), image.Rect(0, h-16, w, h)
+	animation := func(n int) rawGIF {
+		g := rawGIF{w: w, h: h, frames: []rawFrame{
+			{controls: []rawControl{{keepFrame, 10, -1}}, at: top, local: shades(0, 256), pix: indices(256)},
+		}}
+		for k := 1; k < n; k++ {
+			at, table := top, shades(1000, 256)
+			if k%2 == 0 {
+				at, table = bottom, shades(2000, 256)
+			}
+			g.frames = append(g.frames, rawFrame{controls: []rawControl{{restoreFrame, 10, -1}}, at: at, local: table, pix: indices(256)})
+		}
+		return g
+	}
+	g := animation(24)
+	got, err := sanitizeUnchecked(t, g.bytes())
+	if err != nil {
+		t.Fatalf("24 frames: sanitize = %v, want them stored", err)
+	}
+	requireShowsAs(t, "24 frames", g, got.data)
+	if _, err := sanitizeUnchecked(t, animation(25).bytes()); !errors.Is(err, ErrImageTooCostly) {
+		t.Errorf("25 frames, twelve pictures after which choose looks at two canvases 16 pixels wide, charged at 64 pixels a row: sanitize = %v, want ErrImageTooCostly", err)
+	}
+}
+
 // randomGIF is a GIF of up to eight frames on a small canvas, drawn at
 // random from what a crafted file can say about its frames: where they are,
 // pixels that are mostly transparent or repeat what is under them, any of the

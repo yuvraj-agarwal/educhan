@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/color/palette"
@@ -1049,6 +1050,59 @@ func TestGIFFrameBudget(t *testing.T) {
 	}
 	if _, err := Inspect(tinyFrames(2_000)); err != nil {
 		t.Errorf("Inspect(2,000 one-pixel frames) = %v, want it within the budget", err)
+	}
+}
+
+// The walk charges a GIF's frames against maxGIFFramePixels by their pixels,
+// but every row as at least gifRowPixels (gifCharge): decoding, playing and
+// writing a frame go through it a row at a time, and a row a pixel wide costs
+// about what a wide one does. Frames a pixel wide and 65,535 tall are charged
+// 64 pixels a row, so 23 of them are admitted and 24 refused from the header,
+// where by their pixels alone 1,525 were admitted, and took 21 seconds of
+// CPU on one core to play. A frame 63 pixels wide is charged as one of 64,
+// and one 64 wide or wider by its pixels, as before (four canvases' worth of
+// 5000×5000 frames still come to the cap exactly, TestGIFFrameBudget).
+func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
+	const h = 65535
+	for _, c := range []struct {
+		w, n            int
+		pixels, charged int64
+		admitted        bool
+	}{
+		{1, 23, 23 * h, 23 * 64 * h, true},
+		{1, 24, 0, 0, false},
+		{63, 23, 23 * 63 * h, 23 * 64 * h, true},
+		{64, 23, 23 * 64 * h, 23 * 64 * h, true},
+		{64, 24, 0, 0, false},
+	} {
+		name := fmt.Sprintf("%d frames %d×%d", c.n, c.w, h)
+		// Each frame's pixel data is one sub-block of nonsense the walk
+		// never looks at, as in TestGIFFrameBudget.
+		data := []byte("GIF89a")
+		data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
+		data = binary.LittleEndian.AppendUint16(data, h)
+		data = append(data, 0x80, 0, 0, 0, 0, 0, 255, 255, 255)
+		for i := 0; i < c.n; i++ {
+			data = append(data, 0x21, 0xF9, 4, 0, 10, 0, 0, 0, 0x2C, 0, 0, 0, 0)
+			data = binary.LittleEndian.AppendUint16(data, uint16(c.w))
+			data = binary.LittleEndian.AppendUint16(data, h)
+			data = append(data, 0, 2, 1, 0x44, 0)
+		}
+		data = append(data, 0x3B)
+		frames, err := gifFramePixels(data, maxGIFFramePixels)
+		_, inspected := Inspect(data)
+		if !c.admitted {
+			if !errors.Is(err, ErrImageTooCostly) || !errors.Is(inspected, ErrImageTooCostly) {
+				t.Errorf("%s: gifFramePixels = %v, Inspect = %v; want both ErrImageTooCostly", name, err, inspected)
+			}
+			continue
+		}
+		if err != nil || inspected != nil {
+			t.Errorf("%s: gifFramePixels = %v, Inspect = %v; want both admitted", name, err, inspected)
+		}
+		if frames.pixels != c.pixels || frames.charged != c.charged {
+			t.Errorf("%s: pixels %d, charged %d; want %d and %d", name, frames.pixels, frames.charged, c.pixels, c.charged)
+		}
 	}
 }
 
