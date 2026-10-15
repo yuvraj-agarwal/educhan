@@ -132,7 +132,8 @@ func TestSweepDeletesOnlyExpiredArchivedThreadsAndTheirMedia(t *testing.T) {
 // of is an orphan rather than a broken post. Its key stays queued, the sweep
 // reports failure — which is what gives the job a non-zero exit — and the next
 // sweep tries again, so a storage outage costs a retry rather than files kept
-// public for good with nothing left to say they exist.
+// public for good with nothing left to say they exist. The failure holds up
+// nothing else: the spent captcha answers past their day go all the same.
 func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("stuck")
@@ -141,6 +142,9 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	thread := h.imageThread("stuck", "an image the store will not let go of")
 	h.archiveThread("stuck", thread.ThreadNo, time.Minute)
 	blobs := threadBlobs(t, h, "stuck", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent two days ago"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	store := h.app.media
 	h.app.media = refusingDeletes{store}
 
@@ -148,8 +152,11 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	if err == nil {
 		t.Fatal("a sweep that could not remove an attachment reported success")
 	}
-	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2}); report != want {
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2, SpentCaptchas: 1}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose files failed, want none", n)
 	}
 	if status := h.threadStatus("stuck", thread.ThreadNo); status != http.StatusNotFound {
 		t.Errorf("the thread's rows should be gone even so, GET answers %d", status)

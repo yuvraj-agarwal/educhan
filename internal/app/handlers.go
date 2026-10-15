@@ -215,8 +215,10 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	// starts none: one answer cannot be sent to many boards at once to hold
 	// them all. The second half checks again as it starts them, in one step,
 	// so of a burst of posts from one address needing the same cooldown (new
-	// threads on this board, or images anywhere) that all passed the first,
-	// one goes ahead.
+	// threads on this board, or images anywhere) that all passed the first, at
+	// most one goes ahead, and a post is refused there only for a cooldown one
+	// that went ahead started. It can be none, when another post from the
+	// address went ahead first with a cooldown each of them also needs.
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	cooldowns := a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)
 	if !a.notCoolingDown(w, cooldowns) {
@@ -457,6 +459,8 @@ func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
 
 // allowAction is allow for anything else that is rate limited; action names
 // what was refused, so a 429 from verification does not talk about posting.
+// A code request's second check can also meet a cooldown that a request for
+// the same email address started meanwhile, from any client.
 func (a *App) allowAction(w http.ResponseWriter, action string, cooldowns []cooldown) bool {
 	wait, ok := allowAll(cooldowns...)
 	if !ok {

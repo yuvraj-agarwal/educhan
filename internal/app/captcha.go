@@ -76,10 +76,10 @@ const (
 	// (captchaMaxScale). A counter is drawn from up to just under twice the
 	// work, and the worker tries every counter from zero up to it, so the base
 	// puzzle, the one people are given, asks at most 15,000 attempts: about
-	// twenty seconds on a laptop and under a minute on a slow phone, inside the
-	// two minutes app.js gives a puzzle before saying it could not finish. Only
-	// an address asking for challenges far faster than anyone posts is given
-	// more than that.
+	// twenty seconds on a laptop and at most a minute on a slow phone at 4 ms
+	// an attempt, inside the two minutes app.js gives a puzzle before saying
+	// it could not finish. Only an address asking for challenges far faster
+	// than anyone posts is given more than that.
 	maxCaptchaWork = 60000
 	// maxCaptchaPayload bounds an answer before it is decoded. A real one is
 	// about seven hundred bytes.
@@ -558,8 +558,9 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 
 // captchaSpentHeader is set, to "spent", on every response to a request whose
 // answer has been spent, a refusal written later included: a cooldown another
-// request from the same address started meanwhile, an image that cannot be
-// read, or a thread that filled up while the post was on its way.
+// request started meanwhile (one from the same client address, or, for a code
+// request, one for the same email address from anywhere), an image that
+// cannot be read, or a thread that filled up while the post was on its way.
 // The client keeps its answer through a refusal without it and solves the
 // next one as soon as a refusal with it arrives.
 const captchaSpentHeader = "Educhan-Captcha"
@@ -568,9 +569,10 @@ const captchaSpentHeader = "Educhan-Captcha"
 // comes once flood control's first check has found nothing to wait out and
 // before the request's cooldowns start, so a request refused here starts no
 // cooldown, and nothing costly or lasting has been done for it yet. A request
-// flood control then refuses on its second check, because another from the
-// same address started a cooldown in between, has spent its answer, and the
-// header says so.
+// flood control then refuses on its second check, because another request
+// started a cooldown in between (one from the same client address, or, for a
+// code request, one for the same email address from anywhere), has spent its
+// answer, and the header says so.
 func (a *App) spendCaptcha(w http.ResponseWriter, r *http.Request, ticket *captchaTicket) bool {
 	if ticket == nil {
 		return true

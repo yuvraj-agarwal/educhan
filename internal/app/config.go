@@ -284,9 +284,10 @@ func envPoolSize(key string, fallback int32) (int32, error) {
 	return int32(n), nil
 }
 
-// envCaptchaWork reads the captcha's base work, which must be at least one
-// attempt and at most maxCaptchaWork/captchaMaxScale: small enough that the
-// base puzzle stays inside the time app.js gives one, with room for a busy
+// envCaptchaWork reads the captcha's base work, the average counter an answer
+// is at, which must be at least one (an answer at counter one, two attempts)
+// and at most maxCaptchaWork/captchaMaxScale: small enough that the base
+// puzzle stays inside the time app.js gives one, with room for a busy
 // address's puzzles to be made harder.
 func envCaptchaWork(key string) (int, error) {
 	raw := strings.TrimSpace(os.Getenv(key))

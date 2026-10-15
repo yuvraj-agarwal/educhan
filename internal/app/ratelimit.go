@@ -79,12 +79,16 @@ var admission sync.Mutex
 // a rejected caller cannot extend its own cooldown by retrying.
 //
 // The check and the start are one step: allowAll holds admission across both,
-// so of simultaneous requests for one key exactly one is admitted, and a
-// request is refused only by a cooldown an admitted action started. Holding
-// one lock for every admission, rather than each limiter's own lock in turn,
-// needs no order between limiters that are not always applied together; an
-// admission is a few map operations, and now and then a sweep of one limiter
-// (record), so requests barely wait for it.
+// so of simultaneous requests for one key at most one is admitted, and a
+// request is refused only by a cooldown an admitted action started. It can be
+// none: requests that share one key may each need another that an admitted
+// request took first (two image threads to one board, refused by the upload
+// cooldown an image reply elsewhere started). Holding one lock for every
+// admission, rather than each limiter's own lock in turn, needs no order
+// between limiters that are not always applied together. An admission is a few
+// map operations, and a sweep of a limiter when record finds its map at the
+// larger of sweepAt, twice what its last sweep left, and
+// cooldownSweepThreshold, so requests barely wait for it.
 //
 // A handler that spends a captcha answer checks first with longestWait, which
 // starts nothing, so a request that has to wait keeps its answer, and calls
