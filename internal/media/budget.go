@@ -23,7 +23,8 @@ var ErrBusy = errors.New("media: no room to take the image in time")
 // Run's containerConcurrency) could be holding one. A body is reserved whole,
 // so none may be larger than this: a reservation is capped at the budget, and
 // a body past it would be read beyond what was reserved. The server refuses
-// to start with an upload size limit that allows one.
+// to start with an upload size limit that allows one, and with any over
+// MaxUploadBytes (cost.go), which is lower.
 const UploadBudget int64 = 64 << 20
 
 // processingAllowance is how long before its deadline an upload stops waiting

@@ -8,6 +8,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
 func TestConfigFromEnvDefaults(t *testing.T) {
@@ -190,10 +192,16 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 			t.Error("expected an error for an unparseable boolean")
 		}
 	})
-	// An attachment limit whose request would not fit the memory set aside
-	// for upload bodies, which is reserved for a body whole before it is read.
-	// The largest that fits is accepted.
-	t.Run("upload size over the upload budget", func(t *testing.T) {
+	// An attachment limit past the largest file the server can process,
+	// whatever picture it holds (TestLargestAttachmentLimitIsReachable), is
+	// refused, and the largest is accepted. The request carrying a file that
+	// large fits the memory set aside for upload bodies, which is reserved for
+	// a body whole before it is read.
+	t.Run("upload size over the most an attachment may be", func(t *testing.T) {
+		if maxUploadLimit+multipartOverhead > media.UploadBudget {
+			t.Errorf("the body of the largest attachment, %d bytes, is over the upload budget, %d",
+				maxUploadLimit+multipartOverhead, media.UploadBudget)
+		}
 		t.Setenv("EDUCHAN_MAX_UPLOAD_BYTES", strconv.FormatInt(maxUploadLimit+1, 10))
 		if _, err := ConfigFromEnv(); err == nil {
 			t.Error("expected an error for an attachment limit over maxUploadLimit")

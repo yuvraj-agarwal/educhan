@@ -53,6 +53,30 @@ import (
 // 512 MiB with that limit; the limit is the deployment's to set.
 const processingBudget int64 = 256 << 20
 
+// MaxUploadBytes is the most an upload size limit may be, 31 MiB: the
+// largest size, in whole MiB, at which the cheapest file of every format, a
+// picture of one pixel and bytes its decoder skips, is still processed within
+// the budget. From about 31.5 MiB every file is refused as too costly to
+// process (ErrImageTooCostly), whatever picture it holds, so the server
+// refuses to start with a limit over this one. What an upload is estimated to
+// hold grows with its size however little its picture is, since its stored
+// file may come to storedPerByte times its size (storedLimit) and the
+// encoder's buffer holds two of those as it grows (completedCost): eight bytes
+// for every byte of the upload. What is left of the budget once
+// processingSlack, storedLimit's floor twice over and cheapestRest are set
+// aside, at eight bytes a byte, comes to 31.36 MiB, and is rounded down to a
+// whole MiB. TestLargestAttachmentLimitIsReachable (internal/app) posts the
+// cheapest file of each format at that size, and holds the same file a MiB
+// larger to a refusal.
+const MaxUploadBytes = ((processingBudget - processingSlack - 2*storedFloor - cheapestRest) /
+	(2 * storedPerByte)) &^ (1<<20 - 1)
+
+// cheapestRest bounds what the cheapest upload of any size holds besides its
+// encoder's buffer: its picture of a pixel decoded, the thumbnail scaler's
+// scratch for it, a GIF's overhead for its one frame (gifFrameOverhead), a
+// few dozen kilobytes in all. It is set aside for MaxUploadBytes.
+const cheapestRest int64 = 1 << 20
+
 // processingSlack is what each estimate adds for what it does not itemise:
 // decoders' tables and row buffers, compressors' windows, a PNG's gamma tables
 // (applyPNGGamma, 128 KiB at most), the thumbnail's own pixels and encoding,
@@ -221,7 +245,7 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 // from its header, and a picture too large to store that way is refused
 // from it, as too costly to process (processingCost), before any cooldown.
 func storedLimit(format Format, data []byte, w, h int) int64 {
-	limit := 4*int64(len(data)) + int64(w)*int64(h)/2 + 64<<10
+	limit := storedPerByte*int64(len(data)) + int64(w)*int64(h)/2 + storedFloor
 	if format == FormatWebP {
 		if lossless, alpha, _ := webpPicture(data); !lossless && alpha {
 			limit = max(limit, pngLimit(w, h, 4))
@@ -229,6 +253,14 @@ func storedLimit(format Format, data []byte, w, h int) int64 {
 	}
 	return limit
 }
+
+// storedPerByte and storedFloor are storedLimit's terms besides the pixels:
+// four bytes for every byte of the upload, and 64 KiB whatever its size.
+// MaxUploadBytes is derived from them.
+const (
+	storedPerByte int64 = 4
+	storedFloor   int64 = 64 << 10
+)
 
 // pngLimit is the most image/png writes for a w×h picture of bpp bytes a
 // pixel, however badly it compresses: its rows with a filter byte each, which

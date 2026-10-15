@@ -593,7 +593,15 @@ server that would refuse what it sends.
   (150 by default), the opening post included. Past it a reply with an image answers
   `403` with `{"error":"image limit reached"}`; text replies carry on. Thread views report
   `images` and `at_image_limit` so a client can hide the picker before anyone tries.
-- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 63 MiB at most.
+- **Size limit**: 8 MiB by default (`EDUCHAN_MAX_UPLOAD_BYTES`), and 31 MiB at most. What
+  an upload is estimated to hold while it is processed grows by eight bytes for every
+  byte of it, whatever its picture, because its stored file may come to four times its
+  size and the encoder's buffer holds two of those as it grows. A file of one pixel fits
+  the processing budget (see **Memory**) at up to about 31.5 MiB, so a larger limit would
+  let in only files that are then refused as too large to process, whatever picture they
+  hold; the limit stops at the whole MiB below, and the server refuses to start with
+  more. How large a given picture's file can be within the limit depends on its pixels
+  and how it is encoded (see **Formats**).
 - **Thumbnails**: generated at upload time, 250px on the longest side, aspect ratio
   preserved and never upscaled. A thumbnail follows the stored format, not the uploaded
   one: an image stored as a JPEG (a JPEG upload, or a lossy, opaque WebP) has a JPEG
@@ -838,7 +846,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_UPLOAD_DIR` | `./data/uploads` | Root the `local` backend writes originals and thumbnails to; ignored by `gcs` |
 | `EDUCHAN_GCS_BUCKET` | empty | Cloud Storage bucket the `gcs` backend uses. **Required** when the backend is `gcs`, ignored otherwise |
 | `EDUCHAN_GCS_PREFIX` | empty | Optional key prefix inside that bucket, so it can be shared with other content |
-| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment; at most `66060288` (63 MiB), so the request carrying one fits the 64 MiB the server sets aside for upload bodies, and a larger value stops the server starting |
+| `EDUCHAN_MAX_UPLOAD_BYTES` | `8388608` (8 MiB) | Largest accepted attachment; at most `32505856` (31 MiB), the largest size in whole MiB at which a file of one pixel can still be processed (see **Size limit** under [Image attachments](#image-attachments)), and a larger value stops the server starting |
 | `EDUCHAN_UPLOADS_ENABLED` | off | Accept image attachments. Off refuses any post carrying an image with `403`, reading no more of it than a text post may be, and `GET /api/site` reports which |
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |

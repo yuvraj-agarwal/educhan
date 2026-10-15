@@ -752,8 +752,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   README gives for it. It reads `processingCost` with the frame header rewritten in place
   rather than calling `Inspect` millions of times, and checks `Inspect` agrees at the
   shapes that decide. A change to `cost.go` that moves a kind, or the shape a kind is
-  refused at, changes the README's lists in the same commit. `Save` then holds its
-  estimate of the budget from the start of decoding until both renditions are stored,
+  refused at, changes the README's lists in the same commit. The same model caps the
+  upload size limit: an upload is charged eight bytes for every byte of it whatever its
+  picture (its stored file may come to four times its size, and the encoder's buffer
+  holds two of those as it grows), so `media.MaxUploadBytes` (31 MiB), derived from
+  `processingBudget` and `storedLimit`'s terms in `cost.go`, is the largest size in whole
+  MiB at which the cheapest file of each format is admitted. `maxUploadLimit`
+  (`config.go`) is that, and the server refuses to start with a larger
+  `EDUCHAN_MAX_UPLOAD_BYTES`; `TestLargestAttachmentLimitIsReachable` posts the cheapest
+  file of each format at that size and holds one a MiB larger to a refusal. A change to
+  the budget or to `storedLimit` moves it, and the README's figure with it. `Save` then
+  holds its estimate of the budget from the start of decoding until both renditions are
+  stored,
   because until then it holds what it made (`acquireProcessing`, a first-come-first-served
   weighted semaphore in `budget.go`, so a large upload is not starved by small ones;
   `TestSaveHoldsItsShareUntilItIsStored`), and `processHeld` gives that share back by a

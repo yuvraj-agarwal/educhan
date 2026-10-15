@@ -6,10 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/crc32"
 	"image"
 	"image/color"
+	"image/gif"
 	"image/jpeg"
 	"image/png"
 	"io"
@@ -688,6 +690,117 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 	}
 	if status := c.postFrom(third, replies, map[string]any{"body": "and no image"}, &out); status != http.StatusTooManyRequests {
 		t.Errorf("text reply after an image too large once re-encoded: %d, want 429: encoding comes after flood control", status)
+	}
+}
+
+// cheapestUpload is a file of the given format of exactly size bytes that is
+// about as cheap to process as a file that size can be: a picture of one pixel
+// (for a WebP, the 64×48 of internal/media's lossy.webp, the smallest to hand,
+// since nothing here encodes one), made up to size by what its decoder skips:
+// comment segments after a JPEG's start, a chunk of no known kind before a
+// PNG's pixels, a comment extension after a GIF's frame, and a chunk of no
+// known kind after a WebP's picture. Its stored file and its thumbnail are
+// small, but nothing tells that from its header: what processing it is
+// estimated to hold grows with its size whatever it carries.
+func cheapestUpload(t *testing.T, format string, size int) []byte {
+	t.Helper()
+	be := binary.BigEndian
+	out := make([]byte, 0, size)
+	switch format {
+	case "jpeg":
+		small := jpegBytes(t, 1, 1)
+		out = append(out, small[:2]...)
+		for rest := size - len(small); rest > 0; {
+			n := min(rest, 4+0xFFFD) // a marker, a length, and at most 65,533 bytes
+			if rest-n > 0 && rest-n < 4 {
+				n -= 4
+			}
+			out = be.AppendUint16(append(out, 0xFF, 0xFE), uint16(n-2))
+			out = append(out, make([]byte, n-4)...)
+			rest -= n
+		}
+		out = append(out, small[2:]...)
+	case "png":
+		small := pngBytes(t, 1, 1)
+		const ihdrEnd = 8 + 25 // the signature, then IHDR's length, type, 13 bytes and CRC
+		out = append(out, small[:ihdrEnd]...)
+		start := len(out)
+		out = be.AppendUint32(out, uint32(size-len(small)-12))
+		out = append(out, "zzzz"...)
+		out = append(out, make([]byte, size-len(small)-12)...)
+		out = be.AppendUint32(out, crc32.ChecksumIEEE(out[start+4:]))
+		out = append(out, small[ihdrEnd:]...)
+	case "gif":
+		var buf bytes.Buffer
+		pixel := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black, color.White})
+		if err := gif.Encode(&buf, pixel, nil); err != nil {
+			t.Fatalf("encode gif: %v", err)
+		}
+		small := buf.Bytes()
+		out = append(out, small[:len(small)-1]...) // all but the trailer
+		out = append(out, 0x21, 0xFE)
+		// Sub-blocks of a length byte and up to 255 bytes, then a zero length
+		// to end them: never one of no bytes but that one.
+		for rest := size - len(small) - 3; rest > 0; {
+			n := min(rest, 256)
+			if rest-n == 1 {
+				n--
+			}
+			out = append(append(out, byte(n-1)), make([]byte, n-1)...)
+			rest -= n
+		}
+		out = append(out, 0x00, small[len(small)-1])
+	case "webp":
+		small, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+		if err != nil {
+			t.Fatalf("read fixture: %v", err)
+		}
+		if size%2 != 0 {
+			t.Fatalf("a WebP is made of chunks of even length, so it cannot be %d bytes", size)
+		}
+		out = append(out, small...)
+		out = binary.LittleEndian.AppendUint32(append(out, "zzzz"...), uint32(size-len(small)-8))
+		out = append(out, make([]byte, size-len(small)-8)...)
+		binary.LittleEndian.PutUint32(out[4:8], uint32(size-8))
+	default:
+		t.Fatalf("cheapestUpload: no format %q", format)
+	}
+	if len(out) != size {
+		t.Fatalf("cheapest %s is %d bytes, want %d", format, len(out), size)
+	}
+	return out
+}
+
+// TestLargestAttachmentLimitIsReachable: the most EDUCHAN_MAX_UPLOAD_BYTES
+// may be is a size a file can be posted at. The cheapest file of that size in
+// each format is processed and stored, and the same file a MiB larger is
+// refused from its header as too costly to process, so the next whole MiB is
+// not a size a file can be posted at. An upload costs about eight times its
+// size whatever its picture, because its stored file may come to four times
+// its size and the encoder's buffer holds two of those as it grows
+// (media.MaxUploadBytes).
+func TestLargestAttachmentLimitIsReachable(t *testing.T) {
+	c := testServer(t, func(cfg *Config) { cfg.MaxUploadBytes = maxUploadLimit })
+	c.addBoard("largest")
+	for _, format := range []string{"jpeg", "png", "gif", "webp"} {
+		var out createdPost
+		status := c.upload("/api/boards/largest/threads", map[string]string{"body": format},
+			"largest."+format, cheapestUpload(t, format, int(maxUploadLimit)), &out)
+		if status != http.StatusCreated {
+			t.Errorf("the cheapest %s of %d bytes, the most an attachment may be: status = %d (%s), want 201",
+				format, maxUploadLimit, status, out.Error)
+		}
+		larger := cheapestUpload(t, format, int(maxUploadLimit+1<<20))
+		if _, err := media.Inspect(larger); !errors.Is(err, media.ErrImageTooCostly) {
+			t.Errorf("the cheapest %s a MiB larger: Inspect = %v, want %v", format, err, media.ErrImageTooCostly)
+		}
+	}
+	var stored int
+	if err := c.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM attachments`).Scan(&stored); err != nil {
+		t.Fatalf("count attachments: %v", err)
+	}
+	if stored != 4 {
+		t.Errorf("stored %d attachments, want one of each format", stored)
 	}
 }
 

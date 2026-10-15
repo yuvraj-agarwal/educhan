@@ -107,19 +107,25 @@ const defaultDBMaxConns = 3
 // 8 MiB comfortably covers a phone photo without inviting abuse.
 const defaultMaxUploadBytes int64 = 8 << 20
 
-// maxUploadLimit is the most MaxUploadBytes may be, 63 MiB: the body that
-// carries an image, up to multipartOverhead more than the image, is reserved
-// whole in the memory set aside for request bodies (media.UploadBudget)
-// before it is read. A body larger than that budget would be reserved as the
-// whole of it and read past it, and the budget would no longer bound what the
-// uploads hold.
-const maxUploadLimit = media.UploadBudget - multipartOverhead
+// maxUploadLimit is the most MaxUploadBytes may be, 31 MiB: the largest
+// size, in whole MiB, at which the cheapest file of every format is still
+// processed within the processing budget (media.MaxUploadBytes). From about
+// 31.5 MiB even a file of one pixel is refused as too costly to process, after
+// its bytes have been read, so a limit past that would be one nothing could
+// reach. The body that carries an image, up to multipartOverhead more than
+// the image, must also fit the memory set aside for request bodies
+// (media.UploadBudget, 64 MiB), where it is reserved whole before it is read:
+// a body larger than that budget would be reserved as the whole of it and read
+// past it, and the budget would no longer bound what the uploads hold. That
+// allows 63 MiB, so the processing budget is what decides.
+const maxUploadLimit = min(media.MaxUploadBytes, media.UploadBudget-multipartOverhead)
 
 // checkUploadLimit refuses an attachment size limit over maxUploadLimit.
 func checkUploadLimit(cfg Config) error {
 	if cfg.MaxUploadBytes > maxUploadLimit {
-		return fmt.Errorf("EDUCHAN_MAX_UPLOAD_BYTES: %d is over the most an attachment may be, %d (%d MiB), "+
-			"so that the request carrying one fits the %d MiB set aside for upload bodies",
+		return fmt.Errorf("EDUCHAN_MAX_UPLOAD_BYTES: %d is over the most an attachment may be, %d (%d MiB): "+
+			"a file much larger is too costly to process whatever picture it holds, and the request "+
+			"carrying one this large fits the %d MiB set aside for upload bodies",
 			cfg.MaxUploadBytes, maxUploadLimit, maxUploadLimit>>20, media.UploadBudget>>20)
 	}
 	return nil
