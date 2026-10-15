@@ -1921,6 +1921,16 @@ const BADGE_AGE_REFUSAL =
   "The badge is for students aged 18 and over. You can still read and post anonymously without it.";
 const BADGE_AGE_REFUSED = "the badge is for students aged 18 and over; you can still read and post anonymously";
 
+// The server's refusals of a code after which no code is pending any more: it
+// has dropped the verification, so the code box can do nothing and the page
+// goes back to the address step, where a new code is asked for. They are known
+// by the server's own words, which TestClientKnowsWhenNoCodeIsPending checks
+// against what the server answers. A wrong code is not among them: the right
+// one still works.
+const NO_CODE_PENDING = "no verification in progress, request a code first";
+const CODE_EXPIRED = "that code has expired, request a new one";
+const CODE_GUESSES_SPENT = "too many wrong codes, request a new one";
+
 // The claim the page is making, in the words the README uses. It belongs on
 // screen next to the form, not only in the repository. Who the badge is for
 // comes first: most readers need to know they don't need one.
@@ -3541,6 +3551,18 @@ async function submitVerification(form) {
     verifyStep = { step: "email", label: "" };
     await renderVerify();
   } catch (err) {
+    // Nothing is pending any more, so the code box goes: back to the address
+    // step, still over a badge held here, which is kept until a new one is
+    // confirmed.
+    const ended = !requesting && [NO_CODE_PENDING, CODE_EXPIRED, CODE_GUESSES_SPENT].includes(err.message);
+    if (ended) {
+      verifyStep = { step: "email", label: "", replacing: true };
+      el.main.innerHTML = verifyViewHTML();
+      showNotice(errorMessage(err, { action: "code" }));
+      const input = document.getElementById("f-email");
+      if (input) input.focus();
+      return;
+    }
     // The server's refusal of a request without the attestation reads the same
     // as the page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;

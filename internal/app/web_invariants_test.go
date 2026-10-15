@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"io/fs"
 	"net/http"
 	"regexp"
@@ -422,5 +423,88 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	submit := withoutComments(jsFunction(t, script, "submitVerification"))
 	if !strings.Contains(submit, `verifyStep = { step: "code", label: sent.label || "" };`) {
 		t.Error("submitVerification no longer moves to the code step once the code is sent")
+	}
+}
+
+// When the server answers a code with a refusal that drops the verification —
+// nothing in progress, the code expired, too many wrong guesses — the page
+// takes the code box down and goes back to the address step, so a reader is
+// never left typing codes into a box nothing is waiting on. It knows those
+// refusals by the server's words, so they are checked against what the server
+// actually answers, and a wrong code, which leaves the verification pending,
+// must not be among them.
+func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+	names := []string{"NO_CODE_PENDING", "CODE_EXPIRED", "CODE_GUESSES_SPENT"}
+	words := map[string]string{}
+	for _, name := range names {
+		words[name] = jsString(t, script, name)
+		if n := strings.Count(code, `"`+words[name]+`"`); n != 1 {
+			t.Errorf("app.js spells out %q %d times; want once, as %s", words[name], n, name)
+		}
+	}
+	ended := `const ended = !requesting && [NO_CODE_PENDING, CODE_EXPIRED, CODE_GUESSES_SPENT].includes(err.message);`
+	at := strings.Index(submit, ended)
+	if at < 0 {
+		t.Fatal("submitVerification no longer recognises the refusals that end a pending verification")
+	}
+	branch := submit[at:]
+	if !strings.Contains(branch, `verifyStep = { step: "email", label: "", replacing: true };`) {
+		t.Error("submitVerification does not go back to the address step when no code is pending")
+	}
+
+	h := verifyServer(t, nil)
+	var refusals []string
+	check := func(name string, wantStatus, status int, got string) {
+		t.Helper()
+		refusals = append(refusals, got)
+		if status != wantStatus || got != words[name] {
+			t.Errorf("%s: the server answered %d %q, want %d %q", name, status, got, wantStatus, words[name])
+		}
+	}
+
+	status, out := h.confirmCode("123456")
+	check("NO_CODE_PENDING", http.StatusBadRequest, status, out.Error)
+
+	if status, out := h.requestCode("late@iitb.ac.in"); status != http.StatusAccepted {
+		t.Fatalf("request code: %d %s", status, out.Error)
+	}
+	sent := h.mail.last(t)
+	h.exec(`UPDATE verification_pending SET expires_at = now() - interval '1 minute'`)
+	status, out = h.confirmCode(sent.Code)
+	check("CODE_EXPIRED", http.StatusBadRequest, status, out.Error)
+
+	if status, out := h.requestCode("guess@iitb.ac.in"); status != http.StatusAccepted {
+		t.Fatalf("request code: %d %s", status, out.Error)
+	}
+	sent = h.mail.last(t)
+	wrong := 0
+	var wrongWords string
+	for i := 0; wrong < maxVerifyAttempts; i++ {
+		guess := fmt.Sprintf("%0*d", verifyCodeDigits, i)
+		if guess == sent.Code {
+			continue
+		}
+		wrong++
+		status, out := h.confirmCode(guess)
+		if status != http.StatusBadRequest {
+			t.Fatalf("wrong code %d: status %d (%s), want 400", wrong, status, out.Error)
+		}
+		wrongWords = out.Error
+	}
+	status, out = h.confirmCode(sent.Code)
+	check("CODE_GUESSES_SPENT", http.StatusTooManyRequests, status, out.Error)
+
+	// A wrong code leaves the verification pending, so the box stays for the
+	// right one.
+	for _, ending := range refusals {
+		if wrongWords == ending {
+			t.Errorf("a wrong code is answered %q, which the page reads as nothing pending", wrongWords)
+		}
+	}
+	if wrongWords == "" {
+		t.Error("no wrong code was answered")
 	}
 }
