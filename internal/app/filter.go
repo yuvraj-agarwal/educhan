@@ -2106,7 +2106,12 @@ var thereVerbs = canonSetOf(`comment reply dm message msg text talk chat explain
 // offBoardCheck wants a verb of talking said as an ask before talking off
 // the board: "anyone want to text instead of posting here", "let's chat
 // off here". Talking "somewhere else" or "elsewhere" is as often another
-// thread, so there the verb has to be a private one ("text", "dm").
+// thread, so there the verb has to be a private one ("text", "dm"). The
+// talk has to be with the poster or the reader, or about this talk ("dm me
+// instead of posting here", "let's take this convo off here"): sending the
+// reader to someone else ("talk to a counsellor instead of posting here",
+// "call 1098 instead of posting here", "message the mods instead") is advice
+// the rules want people to give.
 func offBoardCheck(v *view, m []int) bool {
 	text := v.text
 	ws, lo := readBack(text, m[0], 6, 64)
@@ -2116,11 +2121,22 @@ func offBoardCheck(v *view, m []int) bool {
 	for k := len(ws) - 1; k >= max(0, len(ws)-4); k-- {
 		w := ws[k].w
 		if privateVerbs[w] || !private && (talkVerbs[w] || is(w, "continue") || is(w, "move") || is(w, "take")) {
+			for _, o := range ws[k+1:] {
+				if !offBoardObjects[o.w] {
+					return false
+				}
+			}
 			return askMood(text, ws, k, true) && notNegated(v, []int{ws[k].from, m[1]})
 		}
 	}
 	return false
 }
+
+// offBoardObjects may come between the verb and talking off the board: the
+// poster or the reader, this talk, and the words an ask ends with. Anything
+// else is someone or something else to talk to.
+var offBoardObjects = canonSetOf(`me us you u ya yu each other to with this it that the our convo conversation
+	chat chats discussion talk privately directly personally pls plz please instead now then rn later`)
 
 var privateVerbs = canonSetOf(`text txt dm pm msg message call whatsapp snap`)
 
@@ -7800,14 +7816,16 @@ var (
 	// mathsResult is a calculation just before a number: "2^33 is", "13! =",
 	// and a comment after one in code: "print(2**33)  # 8589934592".
 	mathsResult = newWindowSearch(`[\d)][ \t]*(?:\^[ \t]*\d+|!|\*\*[ \t]*\d+)\)*[ \t]*(?:is|=|equals|\n?[ \t]*(?:#|//))?[ \t]*$`)
-	// dataWords, before a run of short groups, make it a set of values: "the
-	// mode of 7 9 6 8 ...", "batch sizes 256 512 1024", "scores 65-70-78".
+	// dataWords, before a run of short groups or a number's pieces, make it a
+	// set of values: "the mode of 7 9 6 8 ...", "batch sizes 256 512 1024",
+	// "scores 65-70-78", "Q 98, 45, 67", "routes 98 / 45 / 67".
 	dataWords = newWindowSearch(`\b(?:` + words(`mode`, `mean`, `median`, `average`, `avg`, `range`, `data`,
 		`dataset`, `values`, `sequence`, `series`, `list`, `array`, `numbers`, `set`, `digits`, `dice`,
 		`rolls`, `scores`, `marks`, `readings`, `samples`, `observations`, `sizes`, `dims`, `dimensions`,
 		`shape`, `resolution`, `prices`, `fees`, `salaries`, `cutoffs?`, `percentiles?`, `ranks`, `rankings?`,
 		`mocks`, `sgpas?`, `cgpas?`, `gpas?`, `pointers?`, `grades`, `sections`, `exercises?`, `chapters?`,
-		`questions`, `problems`, `pages`, `percentages`) + `)\b`)
+		`questions`, `q`, `qs`, `qns`, `ques`, `problems`, `pages`, `percentages`, `rooms`, `routes`, `buses`) +
+		`)\b`)
 	// phoneCue, shortly before a number, says it is one to call.
 	phoneCue = newWindowSearch(`\b(?:` + words(`call`, `text`, `txt`, `ring`, `phone`, `ph`, `mob`, `mobile`,
 		`cell`, `number`, `num`, `no`, `whatsapp`, `dial`, `contact`, `tel`, `sms`) + `)\b`)
@@ -7906,6 +7924,9 @@ func numberShape(v *view, run digitRun) (findingKind, bool) {
 			return kindPhone, true
 		}
 	}
+	if landline(d, run.groups) && officeLine(v, run) {
+		return 0, false
+	}
 	switch {
 	case indianMobile(d, run.groups, run.seps), nanpPhone(v, run), ukPhone(d, run.groups, run.seps),
 		auMobile(d, run.groups, run.seps), auLandline(d, run.groups), calledMobile(v, run):
@@ -7917,6 +7938,39 @@ func numberShape(v *view, run digitRun) (findingKind, bool) {
 	}
 	return 0, false
 }
+
+// landline reports a fixed line written the national way, which may be an
+// organisation's: a UK (or Indian) number starting 01, 02 or 03 in more than
+// one group, or an Australian landline (auLandline). A mobile is a person's.
+func landline(d string, g []int) bool {
+	return len(d) == 11 && d[0] == '0' && strings.IndexByte("123", d[1]) >= 0 && len(g) > 1 || auLandline(d, g)
+}
+
+// officeLine reports a landline named, in the four words before it, as an
+// organisation's: "UNSW switchboard is (02) 9385 1000", "UQ admissions (07)
+// 3365 1111", "Uni of Adelaide (08) 8313 4455", "headspace national office
+// (03) 9027 0100". A line said to be the poster's ("my office", "home
+// number"), or one a callCue asks the reader to call the poster on ("call me
+// at uni"), is not.
+func officeLine(v *view, run digitRun) bool {
+	if callCue.matchIn(v, windowBefore(v.text, run.from, 40)) {
+		return false
+	}
+	office := false
+	for _, w := range wordsBefore(v.text, run.from, 4) {
+		if personalLines[w] {
+			return false
+		}
+		office = office || officeWords[w]
+	}
+	return office
+}
+
+var (
+	officeWords = setOf(`switchboard admissions admission reception enquiries enquiry inquiries inquiry helpdesk
+		office offices department dept faculty registrar university uni college campus helpline hotline`)
+	personalLines = setOf(`my mine mera meri mere our home personal private me`)
+)
 
 // regrouped reads digits spaced out one at a time, with a dash or a point
 // between some of them, in the groups those marks set off: "8 4 3 2 - 1 0 9 7
@@ -7996,16 +8050,21 @@ func areaCoded(v *view, run digitRun) bool {
 // filter: three or more runs of digits joined by a word ("my num starts
 // with 99 then 30 then 412 then 875"), by a slash, a bar or a comma ("split
 // it so the mods dont catch: 98 / 1 / 67 / 45 / 231"), or quoted strings
-// joined by "+" ("PHONE = '+91' + '98450' + '17723' use this to reach me").
-// An unquoted "+" is a sum, and a list of values is a list, so a word that
-// only says a number is near ("number", "phone") will do only for the quoted
-// strings, which are put together rather than added.
+// joined by "+" ("PHONE = '+91' + '98450' + '17723' use this to reach me");
+// or two such runs straight after a contactCue ("call me on 98450/12345",
+// "my number is 98450 then 12345"). An unquoted "+" is a sum, and a list of
+// values is a list, so a word that only says a number is near ("number",
+// "phone") will do only for the quoted strings, which are put together
+// rather than added, and a dataWords word just before the pieces makes them
+// values whatever cue is near ("hmu if you get stuck on questions 87, 88,
+// 91, 92, 93", "my scores went 98 then 76 then 84 …, call me consistent"),
+// unless the cue comes straight before them.
 func piecedNumber(v *view, i int) (int, int, bool) {
 	t := v.text
 	quoted := i > 0 && strings.IndexByte(quoteMarks, t[i-1]) >= 0
 	var digits []byte
 	plus, pieces, end := false, 0, i
-	for j := i; pieces < maxPieces; pieces++ {
+	for j := i; pieces < maxPieces && len(digits) <= maxPiecedDigits; pieces++ {
 		k := j
 		if quoted && pieces > 0 {
 			if k >= len(t) || t[k] != t[i-1] {
@@ -8039,11 +8098,20 @@ func piecedNumber(v *view, i int) (int, int, bool) {
 		}
 	}
 	v.work += end - i
-	if pieces < 3 || !piecedPhone(string(digits), plus) {
+	if pieces < 2 || !piecedPhone(string(digits), plus) {
 		return 0, 0, false
 	}
 	before, after := windowBefore(t, i, 64), windowAfter(t, end, 48)
-	if callCue.matchIn(v, before) || callCue.matchIn(v, after) || evasionCue.matchIn(v, before) ||
+	near := windowBefore(t, i, 32)
+	if quoted {
+		near = windowBefore(t, i-1, 32)
+	}
+	cued := contactCue.matchIn(v, near)
+	if pieces == 2 && !cued {
+		return 0, 0, false
+	}
+	listed := !cued && !quoted && dataWords.matchIn(v, near)
+	if cued || !listed && (callCue.matchIn(v, before) || callCue.matchIn(v, after)) || evasionCue.matchIn(v, before) ||
 		evasionCue.matchIn(v, after) || quoted && phoneCue.matchIn(v, before) {
 		if quoted {
 			i-- // the opening quote
@@ -8057,9 +8125,14 @@ func piecedNumber(v *view, i int) (int, int, bool) {
 // in.
 const quoteMarks = `'"` + "`"
 
-// maxPieces is the most pieces piecedNumber reads, more than a phone number
-// is ever cut into.
-const maxPieces = 8
+// maxPieces is the most pieces piecedNumber reads, and maxPiecedDigits the
+// most digits: a phone number is at most 17 digits (classifyNumber), so
+// one digit at a time is the most pieces it can be cut into ("call me 9 / 8
+// / 4 / 5 / 0 / 1 / 7 / 7 / 2 / 3"), and more digits than that are not one.
+const (
+	maxPieces       = 17
+	maxPiecedDigits = 17
+)
 
 // pieceJoiners are the words a number given in pieces is joined with: "99
 // then 30 then 412", "98450 aur 17723", "followed by".
@@ -8129,19 +8202,21 @@ func piecedPhone(d string, plus bool) bool {
 }
 
 // calledMobile is an Indian mobile in any grouping of two or more digits at a
-// time, after a word that says it is a number to call: "call me 93 22 41 87
-// 60", "call me" and a pair on each line. Without the word, a run of pairs is
-// as often a list of marks (mobileGrouping).
+// time, one group of a single digit allowed among them, after a word that
+// says it is a number to call: "call me 93 22 41 87 60", "call me" and a pair
+// on each line. Without the word, a run of pairs is as often a list of marks
+// (mobileGrouping).
 func calledMobile(v *view, run digitRun) bool {
 	if len(run.groups) > 5 || !indianMobile(string(run.digits), []int{len(run.digits)}, nil) {
 		return false
 	}
+	singles := 0
 	for _, g := range run.groups {
 		if g < 2 {
-			return false
+			singles++
 		}
 	}
-	return callCue.matchIn(v, windowBefore(v.text, run.from, 40))
+	return singles <= 1 && callCue.matchIn(v, windowBefore(v.text, run.from, 40))
 }
 
 // aadhaarLabels and ssnLabels, as the word before a number (fillers such as
@@ -8602,12 +8677,14 @@ func dropLeading(groups []int, n int) []int {
 // be dialled: all together, in groups of two or more with at most two pairs
 // among them (98765 43210, 987-654-3210, 98 7654 3210, 98765 432 10, 987 654
 // 32 10), in pairs or longer set off by dashes or by points alone
-// (98-76-54-32-10, 98.76.54.32.10), or every digit spaced out the same way
-// (9 8 7 6 5 4 3 2 1 0, 9.8.7.6.5.4.3.2.1.0). It turns down runs of three or
-// more pairs set off by spaces or line breaks, which is how a list of marks or
-// scores reads (87 91 76 88 92), and single digits set off by points and
-// spaces in turn, which is a list of one-decimal values (SGPAs 8.1 8.4 8.7 9.0
-// 9.2, exercises 6.1 6.2 6.3 7.1 7.2).
+// (98-76-54-32-10, 98.76.54.32.10), every digit spaced out the same way
+// (9 8 7 6 5 4 3 2 1 0, 9.8.7.6.5.4.3.2.1.0), or one digit set apart among
+// groups of three or more (98450 1 2345, 07911 1 23456). It turns down runs of
+// three or more pairs set off by spaces or line breaks, which is how a list
+// of marks or scores reads (87 91 76 88 92), a single digit beside a pair or
+// another single digit, which is a list of small values, and single digits
+// set off by points and spaces in turn, which is a list of one-decimal values
+// (SGPAs 8.1 8.4 8.7 9.0 9.2, exercises 6.1 6.2 6.3 7.1 7.2).
 func mobileGrouping(g []int, seps []string) bool {
 	if len(g) == 0 {
 		return false
@@ -8619,28 +8696,23 @@ func mobileGrouping(g []int, seps []string) bool {
 	if ones {
 		return len(g) >= 9 && oneSeparatorKind(seps)
 	}
-	if dashed(seps) {
-		if len(g) > 5 {
-			return false
-		}
-		for _, n := range g {
-			if n < 2 {
-				return false
-			}
-		}
-		return true
-	}
 	if len(g) > 5 {
 		return false
 	}
-	pairs := 0
+	pairs, singles := 0, 0
 	for _, n := range g {
-		switch {
-		case n < 2:
-			return false
-		case n == 2:
+		switch n {
+		case 1:
+			singles++
+		case 2:
 			pairs++
 		}
+	}
+	switch {
+	case singles > 0:
+		return singles == 1 && pairs == 0 && len(g) <= 4
+	case dashed(seps):
+		return true
 	}
 	return pairs <= 2
 }
@@ -8738,7 +8810,8 @@ func nanp(d string) bool {
 
 // dramaNumber reports the numbers set aside for drama, which no one can be
 // called on: Ofcom's UK ranges, 07700 900000-900999, 020 7946 0000-0999 and
-// the 01xx 496 ones, with or without +44; and the Australian numbers ACMA
+// 496 0000-0999 in the area codes in ofcomDramaAreas, with or without +44;
+// and the Australian numbers ACMA
 // sets aside for the same use, the mobiles in acmaDramaMobiles (0491 570 006
 // and the rest) and the landlines (0X) 5550 xxxx and (0X) 7010 xxxx in each
 // area code, with or without +61. The NANP's 555-0100 to 555-0199 are nanp's.
@@ -8757,8 +8830,12 @@ func dramaNumber(d string) bool {
 		d = "0" + strings.TrimPrefix(d[2:], "0")
 	}
 	return strings.HasPrefix(d, "07700900") || strings.HasPrefix(d, "02079460") ||
-		(len(d) == 11 && strings.HasPrefix(d, "01") && d[4:7] == "496")
+		len(d) == 11 && ofcomDramaAreas[d[:4]] && d[4:8] == "4960"
 }
+
+// ofcomDramaAreas are the UK area codes in which Ofcom sets 496 0000-0999
+// aside for drama.
+var ofcomDramaAreas = setOf(`0113 0114 0115 0116 0117 0118 0121 0131 0141 0151 0161 0191`)
 
 // acmaDramaMobiles are the mobile numbers the Australian Communications and
 // Media Authority sets aside for films, TV and other creative works.

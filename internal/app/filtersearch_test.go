@@ -1,6 +1,7 @@
 package app
 
 import (
+	"hash/fnv"
 	"math/rand"
 	"reflect"
 	"regexp/syntax"
@@ -121,7 +122,10 @@ func (g *searchSampler) classRune(ranges []rune) rune {
 // filterSearchTexts is text made from every search's own pattern: for each,
 // strings it was written to match, drawn with a fixed seed from what it
 // allows, set among words and punctuation and strung together, a few
-// searches to a text, and a window search's also alone.
+// searches to a text, and a window search's also alone. Each search's
+// strings are drawn with a seed of its own, made from its pattern, so that
+// adding or changing one search does not change what every search after it
+// is tested on.
 func filterSearchTexts(t testing.TB, perSearch int) []string {
 	prepareSearches()
 	rnd := rand.New(rand.NewSource(20261015))
@@ -132,8 +136,11 @@ func filterSearchTexts(t testing.TB, perSearch int) []string {
 		if err != nil {
 			t.Fatal(err)
 		}
+		seed := fnv.New64a()
+		seed.Write([]byte(s.src))
+		own := rand.New(rand.NewSource(20261015 ^ int64(seed.Sum64())))
 		for range perSearch {
-			g := &searchSampler{rnd: rnd}
+			g := &searchSampler{rnd: own}
 			g.sample(re)
 			samples = append(samples, g.b.String())
 			// A window search is read on a few words cut out of a view, and
