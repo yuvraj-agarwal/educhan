@@ -2613,6 +2613,17 @@ func TestFilterReadsReportedSpeechAsSomeoneElses(t *testing.T) {
 		{"don't care + didn't ask, kys", selfHarm},
 		{"a girl in my dm's said \"add me on insta\"", publish},
 		{"he said: kys", publish},
+		// A quotation left open, as a post typed in a hurry or cut short
+		// leaves one, is read as it would be closed, and a stray
+		// apostrophe opens nothing. Either once made the filter panic,
+		// which refused the post, a crisis post included, with a server
+		// error.
+		{"why does every thread have one guy going 'add me on snap", publish},
+		{"he said 'add me on snap", publish},
+		{"'add me on snap", contact},
+		{"a 'b' c 'add me on snap", contact},
+		{"'ve been thinking about killing myself all evening and I'm not joking", support},
+		{"'s continue this on telegram, too many lurkers here", contact},
 	} {
 		if got := verdictName(bodyVerdict(c.body)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
