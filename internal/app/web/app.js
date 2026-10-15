@@ -1813,6 +1813,11 @@ let verifyStep = { step: "email", label: "" };
 // page that can do anything about it.
 let badgeLost = "";
 
+// How many times "Forget this browser" has been pressed on this page. A request
+// notes it at the press, and an answer that arrives after another press keeps
+// nothing: forgetting has to cover what was already on its way.
+let browserForgets = 0;
+
 // localStorage throws rather than degrading in some privacy modes, so every
 // access is guarded. Losing the credential costs a full re-verification: the
 // server hands a badge out once and cannot show the same one again.
@@ -1847,7 +1852,12 @@ function forgetCredential() {
 // threads, and see which posts there were yours — and the remembered name,
 // with its tripcode secret. The age answer stays: it says nothing about any
 // post. Like forgetting the badge, it is entirely local.
+// It also cancels what is on its way: a code request, a confirmation or a post
+// sent before it keeps nothing when its answer comes back after it
+// (browserForgets), neither the badge the server issued nor the code step nor
+// the name.
 function forgetBrowser() {
+  browserForgets += 1;
   forgetCredential();
   for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
     try {
@@ -3436,7 +3446,7 @@ const CAPTCHA_LIFETIME_MS = 25 * 60 * 1000;
 // solved, which a working server never sends, stops using the processor. The
 // hardest puzzle a server gives a reader posting at a person's pace asks at
 // most 15,000 attempts (maxCaptchaWork and captchaMaxScale in captcha.go):
-// under a minute for a slow phone at 4 ms an attempt, half of this
+// at most a minute for a slow phone at 4 ms an attempt, half of this
 // (TestClientAndServerAgreeOnTheCaptcha).
 const CAPTCHA_TIMEOUT_MS = 2 * 60 * 1000;
 // What a post or a code request says when the browser could not solve the
@@ -3454,7 +3464,7 @@ const CAPTCHA_TOO_SLOW = "The anti-spam check took too long, so nothing was sent
 // What it says when the server could not make a challenge.
 const CAPTCHA_UNAVAILABLE = "The anti-spam check couldn't start, so nothing was sent. Try again in a moment.";
 
-// The answer this page holds, until a request uses it: goodUntil is when it is
+// The answer this page holds, until a request takes it: goodUntil is when it is
 // replaced rather than sent, by this browser's clock. solving is the puzzle in
 // progress, which a post waits for rather than starting another; stop stops
 // it, and waiting counts the requests waiting for it.
@@ -3482,7 +3492,8 @@ function prepareCaptcha() {
 }
 
 // captchaAnswer resolves to an answer to send: the one held, if it is still
-// good, or a fresh one.
+// good, or a fresh one. Either stays held until a request takes it
+// (takeCaptcha).
 function captchaAnswer() {
   if (captcha.answer && Date.now() < captcha.goodUntil) {
     return Promise.resolve(captcha.answer);
@@ -3548,12 +3559,29 @@ function captchaBadgeToggled(box) {
   }
 }
 
-// dropCaptcha forgets an answer once a request has used it, or the server has
-// refused it. A different answer, solved since, is kept.
-function dropCaptcha(answer) {
-  if (answer && captcha.answer === answer) {
-    captcha.answer = "";
-    captcha.goodUntil = 0;
+// takeCaptcha takes an answer captchaAnswer gave out of the page, for one
+// request: no other request is handed it while that one is on its way, and a
+// press elsewhere meanwhile solves a fresh puzzle. The server would take one
+// answer from only one of two requests, and refuse the other as used. It says
+// what it took, and until when it is good, or null when another request took
+// it first.
+function takeCaptcha(answer) {
+  if (!answer || captcha.answer !== answer) {
+    return null;
+  }
+  const taken = { answer, goodUntil: captcha.goodUntil };
+  captcha.answer = "";
+  captcha.goodUntil = 0;
+  return taken;
+}
+
+// keepCaptcha puts back an answer a request took and did not spend: it was
+// not sent, or the server refused the request without using it. It goes back
+// only while the page holds no other answer, and only while it is still good.
+function keepCaptcha(taken) {
+  if (taken && !captcha.answer && Date.now() < taken.goodUntil) {
+    captcha.answer = taken.answer;
+    captcha.goodUntil = taken.goodUntil;
   }
 }
 
@@ -3667,34 +3695,49 @@ function runCaptchaWorkers(challenge, signal) {
 
 // sendWithCaptcha sends a request that may need the captcha: needsIt() says
 // whether it does, and send(answer) makes the request, with "" for no answer.
+// The answer is taken out of the page for this request alone (takeCaptcha):
+// another press while this request is on its way, from a form on another page
+// say, solves a fresh puzzle rather than sending the same answer, which the
+// server would let only one of the two use. It is put back (keepCaptcha) only
+// when this request leaves it unspent, as below.
 // A refusal of the answer itself, for being missing, out of date, used or
 // wrong, comes before anything is stored or sent, so the answer is dropped and
 // the request sent once more with a fresh one, and the reader presses the
 // button once. (A used answer was spent by an earlier request, whose cooldowns
 // can refuse the resend; that refusal keeps the fresh answer, as below.) Any
-// other refusal says whether the server spent the answer before refusing, as
-// it does for an image it then cannot read. One that did drops the answer and
-// starts the next puzzle at once, so it is ready, or nearly, when the reader
-// presses again. One that did not, a refusal of what was written or a
-// cooldown, leaves the answer held for the next press, which then goes
-// straight out. With no answer from the server at all the answer is kept too;
-// if it had been spent, the next request is refused as "used" and solves a
-// fresh one here.
+// other refusal says whether the server spent the answer before refusing, with
+// the Educhan-Captcha: spent header. A refusal with the header drops the
+// answer and starts the next puzzle at once, so it is ready, or nearly, when
+// the reader presses again: an image the server could not read once the
+// answer was spent, say, or a cooldown that another request from this address
+// started between flood control's check before the spend and its check after
+// it, a 429 like the one for a cooldown found before the spend. A refusal
+// without the header, of what was written or for a cooldown found before the
+// spend, leaves the answer held: it is put back for the next press, which then
+// goes straight out. With no answer from the server at all the answer is put
+// back too; if it had been spent, the next request is refused as "used" and
+// solves a fresh one here.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen). A request whose form has gone by the time its answer is
 // ready, because the reader went to another page or pressed Update, is not
-// sent at all: nothing has gone yet, the answer is kept for the next press,
-// and sendWithCaptcha throws, for a caller that shows nothing for a form that
-// is gone. Neither the second send nor the next puzzle is started for one.
+// sent at all: nothing has gone yet, the answer is put back for the next
+// press, and sendWithCaptcha throws, for a caller that shows nothing for a
+// form that is gone. Neither the second send nor the next puzzle is started
+// for one.
 async function sendWithCaptcha(needsIt, send, solving, onScreen) {
   for (let retried = false; ; retried = true) {
-    let answer = "";
+    let taken = null;
     if (needsIt()) {
       solving(true);
       captcha.waiting += 1;
       try {
-        answer = await captchaAnswer();
+        // Taken as soon as it is handed over, in the same step. An answer
+        // another request waiting on the same puzzle took first is not shared:
+        // this one solves another.
+        do {
+          taken = takeCaptcha(await captchaAnswer());
+        } while (!taken);
       } catch (err) {
         // The server has switched the captcha off since this page learned it
         // was on, so the request goes without an answer.
@@ -3707,23 +3750,23 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
         solving(false);
       }
     }
+    const answer = taken ? taken.answer : "";
     if (!onScreen()) {
+      keepCaptcha(taken);
       throw new Error("not sent: the form is no longer on screen");
     }
     try {
-      const result = await send(answer);
-      dropCaptcha(answer);
-      return result;
+      return await send(answer);
     } catch (err) {
       const reason = err.payload && err.payload.captcha;
       if (!reason) {
-        if (answer && err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent") {
-          dropCaptcha(answer);
-          if (needsIt() && onScreen()) prepareCaptcha();
+        if (!(err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent")) {
+          keepCaptcha(taken);
+        } else if (answer && needsIt() && onScreen()) {
+          prepareCaptcha();
         }
         throw err;
       }
-      dropCaptcha(answer);
       // The page was drawn without knowing the captcha is on: /api/site did
       // not answer, or the server has switched it on since.
       if (reason === "required") {
@@ -3752,7 +3795,9 @@ function formOnScreen(form, route) {
 // no others: a picker switched off for its own reason stays off. With refocus,
 // a form that had the focus at the press, which disabling the focused control
 // took away, gets it back on its button, ready to press again; put back in a
-// box to write in, it would start another puzzle.
+// box to write in, it would start another puzzle. That is only while the focus
+// is still lost, on the page itself or nowhere: a reader who moved it during
+// the wait, to read a post say, keeps it where they put it.
 function holdForm(form) {
   const controls = Array.from(form.elements).filter((control) => !control.disabled);
   const focused = form.contains(document.activeElement);
@@ -3763,7 +3808,8 @@ function holdForm(form) {
     for (const control of controls) {
       control.disabled = false;
     }
-    if (refocus && focused) {
+    const lost = !document.activeElement || document.activeElement === document.body;
+    if (refocus && focused && lost) {
       form.querySelector('button[type="submit"]')?.focus();
     }
   };
@@ -3835,6 +3881,7 @@ el.main.addEventListener("submit", async (event) => {
   const sending = file ? "Uploading…" : "Posting…";
   const route = state.route;
   const onScreen = () => formOnScreen(form, route);
+  const forgets = browserForgets;
   // Read above, and held from here until the post has gone or been refused, so
   // what the form shows meanwhile is what is sent.
   const release = holdForm(form);
@@ -3864,8 +3911,10 @@ el.main.addEventListener("submit", async (event) => {
       onScreen,
     );
     // The remembered name is the one for unbadged posts; a badged post's name
-    // is never offered on the next form, where the badge starts unticked.
-    if (!held) {
+    // is never offered on the next form, where the badge starts unticked. A
+    // post that went before "Forget this browser" and was answered after it
+    // leaves the name forgotten.
+    if (!held && forgets === browserForgets) {
       storageSet(NAME_STORAGE_KEY, name);
     }
     // A reader who left while the post was on its way has a page of their own
@@ -3980,7 +4029,12 @@ async function submitVerification(form) {
 
   const sending = requesting ? "Sending…" : "Verifying…";
   const route = state.route;
-  const onScreen = () => formOnScreen(form, route);
+  // "Forget this browser", pressed while the request is on its way, cancels
+  // it: nothing goes that has not gone yet, and what comes back keeps nothing,
+  // neither the badge nor the code step, and is said nowhere.
+  const forgets = browserForgets;
+  const forgotten = () => forgets !== browserForgets;
+  const onScreen = () => formOnScreen(form, route) && !forgotten();
   // Read above, and held from here until the request is answered, so what the
   // form shows meanwhile is what is sent: the address, and the box.
   const release = holdForm(form);
@@ -4005,6 +4059,9 @@ async function submitVerification(form) {
         },
         onScreen,
       );
+      if (forgotten()) {
+        return;
+      }
       // The code is on its way, so /verify asks for it next time it is drawn;
       // a reader who left meanwhile is not pulled back to it.
       verifyStep = { step: "code", label: sent.label || "" };
@@ -4022,6 +4079,9 @@ async function submitVerification(form) {
       method: "POST",
       body: JSON.stringify({ code: String(data.get("code") || "") }),
     });
+    if (forgotten()) {
+      return;
+    }
     storeCredential(issued.credential);
     verifyStep = { step: "email", label: "" };
     if (!onScreen()) {

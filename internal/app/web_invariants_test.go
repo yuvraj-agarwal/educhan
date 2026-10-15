@@ -442,13 +442,14 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 // sending an answer.
 var captchaFunctions = []string{
 	"captchaFormNeedsIt", "prepareCaptcha", "captchaAnswer", "stopCaptcha", "captchaBadgeToggled",
-	"dropCaptcha", "solveCaptcha", "runCaptchaWorkers", "sendWithCaptcha",
+	"takeCaptcha", "keepCaptcha", "solveCaptcha", "runCaptchaWorkers", "sendWithCaptcha",
 }
 
 // A captcha answer is good for one request and kept in memory only: never in
 // storage, a cookie or a draft, where it would outlive the page or be found by
-// the next person at a shared computer. It is set in one place, cleared in one
-// other, and read only where it is handed to a request.
+// the next person at a shared computer. It is set where it is solved, taken out
+// where a request takes it, put back where a request left it unspent, and read
+// nowhere else.
 func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	script := appScript(t)
 	banned := []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"}
@@ -499,19 +500,22 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 		}
 	}
 	code := withoutComments(script)
-	if n := strings.Count(code, "captcha.answer = "); n != 2 ||
+	if n := strings.Count(code, "captcha.answer = "); n != 3 ||
 		!strings.Contains(jsFunction(t, script, "solveCaptcha"), "captcha.answer = btoa(") ||
-		!strings.Contains(jsFunction(t, script, "dropCaptcha"), `captcha.answer = "";`) {
-		t.Errorf("captcha.answer is assigned %d times; want once in solveCaptcha and once, clearing it, in dropCaptcha", n)
+		!strings.Contains(jsFunction(t, script, "takeCaptcha"), `captcha.answer = "";`) ||
+		!strings.Contains(jsFunction(t, script, "keepCaptcha"), "captcha.answer = taken.answer;") {
+		t.Errorf("captcha.answer is assigned %d times; want once in solveCaptcha, once, clearing it, in takeCaptcha, "+
+			"and once, putting it back, in keepCaptcha", n)
 	}
 	// Read anywhere else, the held answer could go out on a request that
 	// should not carry one, a badged post's.
 	reads := strings.Count(code, "captcha.answer")
-	for _, name := range []string{"captchaAnswer", "dropCaptcha", "solveCaptcha"} {
+	for _, name := range []string{"captchaAnswer", "takeCaptcha", "keepCaptcha", "solveCaptcha"} {
 		reads -= strings.Count(withoutComments(jsFunction(t, script, name)), "captcha.answer")
 	}
 	if reads != 0 {
-		t.Errorf("captcha.answer is used %d times outside captchaAnswer, dropCaptcha and solveCaptcha; a request gets its answer from sendWithCaptcha", reads)
+		t.Errorf("captcha.answer is used %d times outside captchaAnswer, takeCaptcha, keepCaptcha and solveCaptcha; "+
+			"a request gets its answer from sendWithCaptcha", reads)
 	}
 }
 
@@ -559,7 +563,7 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	toggled := squash(withoutComments(jsFunction(t, script, "captchaBadgeToggled")))
 	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 3 ||
 		!strings.Contains(focus, `if (box.matches("textarea, input[type=text], input[type=email]") && captchaFormNeedsIt(box.form)) { prepareCaptcha(); }`) ||
-		!strings.Contains(send, `=== "spent") { dropCaptcha(answer); if (needsIt() && onScreen()) prepareCaptcha(); }`) ||
+		!strings.Contains(send, `=== "spent")) { keepCaptcha(taken); } else if (answer && needsIt() && onScreen()) { prepareCaptcha(); }`) ||
 		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) {
 		t.Errorf("prepareCaptcha() is called %d times in app.js; want three: from the focusin listener in a box to write "+
 			"in a form that needs an answer, on unticking the badge where the tick stopped a puzzle or something is "+
@@ -599,13 +603,19 @@ func TestCaptchaIsSkippedOnlyByABadgedPost(t *testing.T) {
 	script := appScript(t)
 	toggled := squash(withoutComments(jsFunction(t, script, "captchaBadgeToggled")))
 	stop := squash(withoutComments(jsFunction(t, script, "stopCaptcha")))
-	waits := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
+	waits := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
 	change := withoutComments(jsBlock(t, script, `el.main.addEventListener("change", (event) => {`, "});"))
 	if !strings.Contains(change, "captchaBadgeToggled(event.target);") ||
 		!strings.Contains(toggled, "if (box.checked) { if (stopCaptcha() && form) {") ||
-		!strings.Contains(stop, "if (captcha.stop && captcha.waiting === 0) {") ||
-		!strings.Contains(waits, "captcha.waiting += 1;") || !strings.Contains(waits, "captcha.waiting -= 1;") {
+		!strings.Contains(stop, "if (captcha.stop && captcha.waiting === 0) {") {
 		t.Error("ticking the badge no longer stops a puzzle nobody is waiting for")
+	}
+	// A request counts itself as waiting for the puzzle, and stops counting
+	// however the wait ends: an answer, a failed solve, a timeout. A count left
+	// up after a failure would stop stopCaptcha for good, and the badge with it.
+	if strings.Count(waits, "captcha.waiting") != 2 || !strings.Contains(waits, "solving(true); captcha.waiting += 1; try {") ||
+		!strings.Contains(waits, "} finally { captcha.waiting -= 1; solving(false); }") {
+		t.Error("sendWithCaptcha no longer counts a request waiting for the puzzle from just before its try to its finally")
 	}
 	// Stopping it aborts the solve, which terminates every copy of the worker
 	// (TestCaptchaWorkersAreAlwaysStopped), and forgets it, so the next start
@@ -622,9 +632,14 @@ func TestCaptchaIsSkippedOnlyByABadgedPost(t *testing.T) {
         () => state.site.captcha,`) {
 		t.Error("a code request no longer always carries an answer when the captcha is on")
 	}
-	needs := withoutComments(jsFunction(t, script, "captchaFormNeedsIt"))
+	needs := squash(withoutComments(jsFunction(t, script, "captchaFormNeedsIt")))
 	if !strings.Contains(needs, "!(badge && badge.checked)") {
 		t.Error("captchaFormNeedsIt no longer leaves a badged post's puzzle unsolved")
+	}
+	// And no form needs one while the captcha is off: on a site without it, a
+	// box to write in would otherwise fetch a challenge on every visit.
+	if !strings.HasPrefix(needs, "function captchaFormNeedsIt(form) { if (!state.site.captcha || !(form instanceof HTMLFormElement)) { return false; }") {
+		t.Error("captchaFormNeedsIt no longer starts by saying no form needs an answer while the captcha is off")
 	}
 }
 
@@ -663,7 +678,7 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	// time for the hardest puzzle the server gives at the base work. The work
 	// is at most maxCaptchaWork/captchaMaxScale (EDUCHAN_CAPTCHA_WORK's
 	// ceiling) and the counter under twice the work (captchaCounter), so that
-	// puzzle takes fewer than 2*maxCaptchaWork/captchaMaxScale attempts.
+	// puzzle takes at most 2*maxCaptchaWork/captchaMaxScale attempts.
 	// slowAttempt is what one attempt at captchaCost is allowed to cost a slow
 	// phone: three times the 1.3 ms or so a laptop's Chromium takes, by
 	// defaultCaptchaWork's two seconds for 1500.
@@ -697,10 +712,10 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		t.Errorf("a %q refusal no longer turns the captcha on for a page drawn without knowing", captchaMissing)
 	}
 	// A refusal of the answer drops it and sends once more, once: a loop here
-	// would hammer /api/captcha. The answer is dropped after a success, on a
-	// captcha refusal, and on a refusal that says it was spent, and nowhere else.
+	// would hammer /api/captcha. Which outcomes put the answer back is
+	// TestEachCaptchaAnswerGoesOnOneRequest's.
 	if !strings.Contains(send, "for (let retried = false; ; retried = true) {") ||
-		!strings.Contains(send, "if (retried || !needsIt() || !onScreen()) {") || strings.Count(send, "dropCaptcha(answer);") != 3 {
+		!strings.Contains(send, "if (retried || !needsIt() || !onScreen()) {") {
 		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
 	// Any other refusal keeps the answer unless the server says it spent it,
@@ -782,7 +797,8 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // A post or a code request may wait seconds on its puzzle, and the reader can
 // leave meanwhile: go to another page, or press Update, which draws the form
 // again with the post still in it. A request whose form has gone by the time
-// its answer is ready is not sent, and its answer is kept for the next press.
+// its answer is ready is not sent, and its answer is put back for the next
+// press.
 // Sent or not, a request whose form has gone neither navigates, resets nor
 // redraws anything, and says nothing on the page the reader went to.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
@@ -794,18 +810,15 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
 	inOrder(t, "sendWithCaptcha", send,
 		"async function sendWithCaptcha(needsIt, send, solving, onScreen) {",
-		"answer = await captchaAnswer();",
-		"if (!onScreen()) { throw new Error(",
-		"const result = await send(answer);",
+		"taken = takeCaptcha(await captchaAnswer());",
+		// A request not sent has not spent its answer, which goes back.
+		"if (!onScreen()) { keepCaptcha(taken); throw new Error(",
+		"return await send(answer);",
 	)
-	if check, sent := strings.Index(send, "if (!onScreen()) { throw"), strings.Index(send, "await send(answer)"); check >= 0 && sent > check &&
-		strings.Contains(send[check:sent], "dropCaptcha") {
-		t.Error("sendWithCaptcha drops the answer of a request it does not send")
-	}
 	for _, want := range []string{
 		// No second send, and no next puzzle, for a form that has gone.
 		"if (retried || !needsIt() || !onScreen()) { throw err; }",
-		"if (needsIt() && onScreen()) prepareCaptcha();",
+		"else if (answer && needsIt() && onScreen()) { prepareCaptcha(); }",
 	} {
 		if !strings.Contains(send, want) {
 			t.Errorf("sendWithCaptcha no longer stops for a form that has gone: missing %s", want)
@@ -816,9 +829,15 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
 	for name, fn := range map[string]string{"the submit handler": submit, "submitVerification": verify} {
 		// The page is the one on screen at the press, and sendWithCaptcha
-		// checks against it.
+		// checks against it; a code request's form also leaves the screen when
+		// the browser is forgotten (TestForgettingTheBrowserCancelsWhatIsOnItsWay).
+		onScreen := "const route = state.route; const onScreen = () => formOnScreen(form, route);"
+		if name == "submitVerification" {
+			onScreen = "const route = state.route; const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; " +
+				"const onScreen = () => formOnScreen(form, route) && !forgotten();"
+		}
 		inOrder(t, name, fn,
-			"const route = state.route; const onScreen = () => formOnScreen(form, route);",
+			onScreen,
 			"onScreen, );",
 			"} catch (err) { const shown = onScreen(); release(shown); button.textContent = label;",
 			"if (!shown) { return; }",
@@ -840,14 +859,102 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	)
 }
 
+// Each answer goes out on one request at most. The server takes an answer from
+// only one of two requests that carry it, and refuses the other as used, so a
+// page that handed its held answer to a second press while the first was on
+// its way, a slow upload say, would have one of its own posts refused, and
+// that one, its form gone, dropped without a word. So a request takes the
+// answer out of the page as it is handed over, in the same step, and a press
+// meanwhile solves a fresh puzzle. The answer goes back only when the request
+// left it unspent, and only into an empty place while it is still good.
+func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	take := squash(withoutComments(jsFunction(t, script, "takeCaptcha")))
+	if !strings.Contains(take, `{ if (!answer || captcha.answer !== answer) { return null; } `+
+		`const taken = { answer, goodUntil: captcha.goodUntil }; captcha.answer = ""; captcha.goodUntil = 0; return taken; }`) {
+		t.Error("takeCaptcha no longer takes the held answer out of the page, or hands out one another request took")
+	}
+	keep := squash(withoutComments(jsFunction(t, script, "keepCaptcha")))
+	if !strings.Contains(keep, "{ if (taken && !captcha.answer && Date.now() < taken.goodUntil) { "+
+		"captcha.answer = taken.answer; captcha.goodUntil = taken.goodUntil; } }") {
+		t.Error("keepCaptcha puts an answer back over another one, or past its time")
+	}
+	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
+	for call, want := range map[string]int{"takeCaptcha(": 1, "keepCaptcha(": 2} {
+		if n, in := strings.Count(code, call)-1, strings.Count(send, call); n != want || in != want {
+			t.Errorf("%s is called %d times in app.js, %d of them in sendWithCaptcha; want %d, all there", call, n, in, want)
+		}
+	}
+	for _, want := range []string{
+		// Taken in the step that hands it over, and another solved if a
+		// request waiting on the same puzzle took it first.
+		"let taken = null;",
+		"do { taken = takeCaptcha(await captchaAnswer()); } while (!taken);",
+		`const answer = taken ? taken.answer : "";`,
+		// Not sent: put back.
+		"if (!onScreen()) { keepCaptcha(taken); throw new Error(",
+		// Sent and taken: kept by nothing.
+		"try { return await send(answer); } catch (err) {",
+		// Refused without the spent header or a captcha reason, or never
+		// answered: put back. Refused with the header: the next puzzle starts.
+		`const reason = err.payload && err.payload.captcha; if (!reason) { ` +
+			`if (!(err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent")) { keepCaptcha(taken); } ` +
+			`else if (answer && needsIt() && onScreen()) { prepareCaptcha(); } throw err; }`,
+	} {
+		if !strings.Contains(send, want) {
+			t.Errorf("sendWithCaptcha no longer hands each answer to one request: missing %s", want)
+		}
+	}
+}
+
+// "Forget this browser" covers what is already on its way. A code request, a
+// confirmation or a post sent before the press and answered after it keeps
+// nothing: not the badge the server issued, not the code step, which would
+// greet the next person with the last one's institution, and not the name.
+// A code request not sent yet is not sent. Each request notes browserForgets
+// at the press, and forgetBrowser alone moves it.
+func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	// Two assignments: the declaration, and forgetBrowser's.
+	moves := regexp.MustCompile(`(\+\+|--)\s*browserForgets|browserForgets\s*([-+*/]?=[^=]|\+\+|--)`)
+	if !strings.Contains(code, "\nlet browserForgets = 0;\n") || len(moves.FindAllString(code, -1)) != 2 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "browserForgets += 1;") {
+		t.Error("browserForgets is no longer moved by forgetBrowser alone")
+	}
+	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
+	inOrder(t, "submitVerification", verify,
+		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; "+
+			"const onScreen = () => formOnScreen(form, route) && !forgotten();",
+		"const release = holdForm(form);",
+		"onScreen, ); if (forgotten()) { return; } verifyStep = { step: \"code\"",
+		`await api("/api/verify/confirm", { method: "POST", body: JSON.stringify({ code: String(data.get("code") || "") }), }); `+
+			"if (forgotten()) { return; } storeCredential(issued.credential);",
+	)
+	if strings.Count(verify, "verifyStep =") != 2 || strings.Count(verify, "storeCredential(") != 1 || strings.Count(verify, "readBadge(") != 1 {
+		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
+	}
+	submit := squash(withoutComments(submitHandler(t, script)))
+	inOrder(t, "the submit handler", submit,
+		"const forgets = browserForgets;",
+		"const release = holdForm(form);",
+		"if (!held && forgets === browserForgets) { storageSet(NAME_STORAGE_KEY, name); }",
+	)
+	if strings.Count(submit, "storageSet(") != 1 {
+		t.Error("the submit handler stores something besides the name it checks against browserForgets")
+	}
+}
+
 // From the press until the answer, a post's or a code request's form is
-// held: its controls switched off, once it has been read, so nothing the
-// reader changes meanwhile (a badge ticked, an address corrected, a line
-// added) is left out of what is sent, or wiped by the reset after it. A
-// refusal switches back on what was switched off, and nothing else, before
+// held: its controls switched off, once it has been read and checked, so
+// nothing the reader changes meanwhile (a badge ticked, an address corrected,
+// a line added) is left out of what is sent, or wiped by the reset after it.
+// A refusal switches back on what was switched off, and nothing else, before
 // the recovery that may switch the picker off for good, and gives the focus
-// that switching off took back to the form's button; and nothing writes into
-// a held form from outside it: not a quote, not a dropped image.
+// that switching off took back to the form's button, unless the reader has
+// put it somewhere since; and nothing writes into a held form from outside
+// it: not a quote, not a dropped image.
 func TestAPendingFormIsHeld(t *testing.T) {
 	script := appScript(t)
 	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))
@@ -864,22 +971,35 @@ func TestAPendingFormIsHeld(t *testing.T) {
 		t.Error("holdForm switches on controls it did not switch off")
 	}
 	// Switching off the focused control leaves the focus nowhere; a form that
-	// had it at the press, refused while on screen, has it back on its button.
+	// had it at the press, refused while on screen, has it back on its button,
+	// unless the reader moved it during the wait: then it stays where they put it.
 	inOrder(t, "holdForm", hold,
 		"const focused = form.contains(document.activeElement);",
 		"control.disabled = true;",
-		`if (refocus && focused) { form.querySelector('button[type="submit"]')?.focus(); }`,
+		"const lost = !document.activeElement || document.activeElement === document.body; "+
+			`if (refocus && focused && lost) { form.querySelector('button[type="submit"]')?.focus(); }`,
 	)
+	if strings.Count(hold, ".focus()") != 1 {
+		t.Error("holdForm moves the focus somewhere besides the one refocus, which is for a focus that was lost")
+	}
 	if n := strings.Count(withoutComments(script), "= holdForm(form);"); n != 2 {
 		t.Errorf("holdForm(form) is called %d times; want twice, in the submit handler and submitVerification", n)
 	}
 
 	submit := squash(withoutComments(submitHandler(t, script)))
 	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
-	inOrder(t, "the submit handler", submit, "const data = new FormData(form);", "const release = holdForm(form);",
-		"sendWithCaptcha(", "} catch (err) {", "release(shown);")
-	inOrder(t, "submitVerification", verify, "const data = new FormData(form);", "const release = holdForm(form);",
-		"sendWithCaptcha(", `await api("/api/verify/confirm"`, "} catch (err) {", "release(shown);")
+	// The hold starts once the form has been read and checked, and goes
+	// straight into the try whose catch releases it: a check that refused
+	// after the hold, or any return between the hold and the try, would leave
+	// the form switched off for good, and a hold before the file is read would
+	// read the picker as switched off and post without the image.
+	held := "const release = holdForm(form); button.textContent = sending; clearNotice(); try {"
+	inOrder(t, "the submit handler", submit, "const data = new FormData(form);",
+		"const file = image && !image.disabled && image.files[0];", "if (!body.trim() && !file) {", "if (wantsBadge && !held) {",
+		held, "sendWithCaptcha(", "} catch (err) {", "release(shown);")
+	inOrder(t, "submitVerification", verify, "const data = new FormData(form);",
+		"if (requesting && !(adult && adult.checked)) {",
+		held, "sendWithCaptcha(", `await api("/api/verify/confirm"`, "} catch (err) {", "release(shown);")
 	for name, fn := range map[string]string{"the submit handler": submit, "submitVerification": verify} {
 		// The button is held with the rest, and released only on a refusal:
 		// after a success the form is replaced.
