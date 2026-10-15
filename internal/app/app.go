@@ -113,7 +113,8 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter, a.pass.budget)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter,
+		a.pass.checkoutLimiter, a.pass.activateLimiter, a.pass.budget)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }
