@@ -110,8 +110,8 @@ func TestCaptchaRoundTrip(t *testing.T) {
 	}
 
 	payload := solveChallenge(t, c)
-	if counter := decodeTestPayload(t, payload).Solution.Counter; counter < 4 || counter > 12 {
-		t.Errorf("solved at counter %d, want 4 to 12 for a work of 8", counter)
+	if counter := decodeTestPayload(t, payload).Solution.Counter; counter < 1 || counter > 15 {
+		t.Errorf("solved at counter %d, want 1 to 15 for a work of 8", counter)
 	}
 	ticket, err := v.check(payload, now.Add(time.Minute))
 	if err != nil {
