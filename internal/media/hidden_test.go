@@ -3,6 +3,7 @@ package media
 import (
 	"bytes"
 	"compress/lzw"
+	"fmt"
 	"image"
 	"image/color"
 	"image/gif"
@@ -544,4 +545,163 @@ func TestGIFTransparentIndexPastItsTable(t *testing.T) {
 			t.Errorf("%v: stored as %q, Chromium shows %q", tc.pixels, got, want)
 		}
 	}
+}
+
+/* What a GIF's frames could carry ------------------------------------------- */
+
+// Every choice in how a GIF's frames make its pictures is bits nobody sees.
+// Each test below makes uploads that differ only in such a choice, with a
+// message in it, and requires them stored as the same bytes.
+
+// hiddenColours is the global table of the GIFs below: black, which their
+// frames mark transparent, then red, green and blue.
+var hiddenColours = [][3]byte{{0, 0, 0}, {220, 30, 30}, {30, 200, 30}, {30, 30, 220}}
+
+// requireStoredAlike requires that uploads which are different files, but
+// which a browser shows alike, are stored as the same bytes, which show
+// what they do. It returns those bytes.
+func requireStoredAlike(t *testing.T, name string, uploads ...rawGIF) []byte {
+	t.Helper()
+	first := uploads[0].bytes()
+	want := process(t, first).Data
+	requireShowsAs(t, name, uploads[0], want)
+	for i, g := range uploads[1:] {
+		upload := g.bytes()
+		if bytes.Equal(upload, first) {
+			t.Fatalf("%s: upload %d is the same file as the first; the test would show nothing", name, i+1)
+		}
+		if d := showDifference(chromiumReads(uploads[0]), chromiumReads(g)); d != "" {
+			t.Fatalf("%s: upload %d does not show what the first does: %s", name, i+1, d)
+		}
+		if got := process(t, upload).Data; !bytes.Equal(got, want) {
+			t.Errorf("%s: upload %d is stored differently from the first, so what tells them apart is kept", name, i+1)
+		}
+	}
+	return want
+}
+
+// A GIF whose frames draw one picture again and again, each after the frame
+// before it was cleared or put back, shows that one picture the whole time,
+// so the number of frames, how long each lasts and the loop count show
+// nothing. The delays spell a message here, sixteen bits a frame; the GIF is
+// stored as a still, the same whatever the message.
+func TestGIFFramesOfOnePictureCarryNothing(t *testing.T) {
+	redrawn := func(message string, disposal byte) rawGIF {
+		g := rawGIF{w: 16, h: 16, global: hiddenColours, loops: []rawLoop{{"NETSCAPE2.0", 0x4B1D}}}
+		red := func(disposal byte, delay int) rawFrame {
+			return rawFrame{controls: []rawControl{{disposal, delay, 0}}, at: image.Rect(0, 0, 1, 1), pix: []uint8{1}}
+		}
+		for i := 0; i+1 < len(message); i += 2 {
+			g.frames = append(g.frames, red(disposal, 2+(int(message[i])<<8|int(message[i+1]))%65534))
+		}
+		g.frames = append(g.frames, red(keepFrame, 10))
+		return g
+	}
+	for _, disposal := range []byte{clearFrame, restoreFrame} {
+		name := fmt.Sprintf("disposal %d", disposal)
+		stored := requireStoredAlike(t, name,
+			redrawn("the meeting is at 51.5N 0.12W; code 4492", disposal),
+			redrawn("an entirely different message", disposal))
+		g, err := gif.DecodeAll(bytes.NewReader(stored))
+		if err != nil {
+			t.Fatalf("%s: the stored GIF does not decode: %v", name, err)
+		}
+		if len(g.Image) != 1 || bytes.Contains(stored, []byte("NETSCAPE2.0")) {
+			t.Errorf("%s: stored %d frames and loop count %d; want a still", name, len(g.Image), g.LoopCount)
+		}
+	}
+}
+
+// overpainted is a side×side red square, and then a frame over all of it
+// that turns two corner pixels green and, between them, draws each pixel
+// red, over the red already there, or not at all, as a bit of message says.
+// Whatever the message, it shows a red square with green corners.
+func overpainted(side int, message []byte) rawGIF {
+	square := rawFrame{controls: []rawControl{{keepFrame, 50, 0}}, at: image.Rect(0, 0, side, side), pix: bytes.Repeat([]byte{1}, side*side)}
+	pix := make([]uint8, side*side)
+	for i := range pix {
+		pix[i] = 1
+		if bit := i - 1; bit >= 0 && bit/8 < len(message) && message[bit/8]>>(7-bit%8)&1 == 0 {
+			pix[i] = 0
+		}
+	}
+	pix[0], pix[len(pix)-1] = 2, 2
+	corners := rawFrame{controls: []rawControl{{keepFrame, 50, 0}}, at: square.at, pix: pix}
+	return rawGIF{w: side, h: side, global: hiddenColours, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{square, corners}}
+}
+
+// A pixel of a frame that draws the colour already under it shows the same
+// as one that draws nothing, so which of the two it is could carry a bit: a
+// 512×512 GIF carried a file of 32 KiB that way. The stored frame draws the
+// pixels that change and no others, whatever the message.
+func TestGIFPixelsThatChangeNothingCarryNothing(t *testing.T) {
+	requireStoredAlike(t, "a message",
+		overpainted(64, []byte("Priya Sharma, 51.5N 0.12W, room 4492")),
+		overpainted(64, []byte("an entirely different hidden message")))
+
+	files := make([][]byte, 2)
+	for i := range files {
+		files[i] = make([]byte, 32<<10-1)
+		rand.New(rand.NewSource(int64(i))).Read(files[i])
+	}
+	stored := requireStoredAlike(t, "a file", overpainted(512, files[0]), overpainted(512, files[1]))
+	g, err := gif.DecodeAll(bytes.NewReader(stored))
+	if err != nil {
+		t.Fatalf("the stored GIF does not decode: %v", err)
+	}
+	drawn := 0
+	for _, v := range g.Image[1].Pix {
+		if _, _, _, a := g.Image[1].Palette[v].RGBA(); a != 0 {
+			drawn++
+		}
+	}
+	if len(g.Image) != 2 || drawn != 2 {
+		t.Errorf("stored %d frames, the second drawing %d pixels; want two, the second drawing the two corners", len(g.Image), drawn)
+	}
+}
+
+// coveredDisposal is a blue canvas, a frame that draws red over part of it
+// and is then disposed of as given, and a frame that paints green over all
+// of the red frame's rectangle, which hides what the disposal did.
+func coveredDisposal(disposal byte, width int) rawGIF {
+	blue := rawFrame{controls: []rawControl{{keepFrame, 50, -1}}, at: image.Rect(0, 0, 8, 8), pix: bytes.Repeat([]byte{3}, 64)}
+	pix := make([]uint8, width*4)
+	for i := range pix {
+		if i%width < 3 {
+			pix[i] = 1
+		}
+	}
+	red := rawFrame{controls: []rawControl{{disposal, 50, 0}}, at: image.Rect(0, 0, width, 4), pix: pix}
+	green := rawFrame{controls: []rawControl{{keepFrame, 50, -1}}, at: image.Rect(0, 0, 8, 4), pix: bytes.Repeat([]byte{2}, 32)}
+	return rawGIF{w: 8, h: 8, global: hiddenColours, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{blue, red, green}}
+}
+
+// What a frame's disposal does shows only until the next frame is drawn, and
+// not at all where that frame paints over it, so the disposal method of a
+// frame painted over, and the size of its rectangle, show nothing.
+func TestGIFDisposalPaintedOverCarriesNothing(t *testing.T) {
+	requireStoredAlike(t, "disposal methods",
+		coveredDisposal(keepFrame, 4),
+		coveredDisposal(clearFrame, 4),
+		coveredDisposal(restoreFrame, 4),
+		coveredDisposal(4, 4),
+		coveredDisposal(7, 4),
+		coveredDisposal(clearFrame, 8))
+}
+
+// splitBeforeClear is a red square shown for 15 hundredths of a second, a
+// first part of them its own frame's delay and the rest that of a frame
+// after it that draws nothing and clears part of the square once it is over,
+// and then a green pixel.
+func splitBeforeClear(first int) rawGIF {
+	red := rawFrame{controls: []rawControl{{keepFrame, first, 0}}, at: image.Rect(0, 0, 4, 4), pix: bytes.Repeat([]byte{1}, 16)}
+	blank := rawFrame{controls: []rawControl{{clearFrame, 15 - first, 0}}, at: image.Rect(2, 2, 6, 6), pix: make([]uint8, 16)}
+	green := rawFrame{controls: []rawControl{{keepFrame, 30, -1}}, at: image.Rect(7, 7, 8, 8), pix: []uint8{2}}
+	return rawGIF{w: 8, h: 8, global: hiddenColours, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{red, blank, green}}
+}
+
+// How a picture's time is split between frames that show it does not show,
+// even where the last of them clears part of the picture once it is over.
+func TestGIFTimeSplitBetweenFramesCarriesNothing(t *testing.T) {
+	requireStoredAlike(t, "a red square's time", splitBeforeClear(10), splitBeforeClear(13), splitBeforeClear(2))
 }
