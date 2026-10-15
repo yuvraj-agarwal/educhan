@@ -512,8 +512,9 @@ the app keeps addresses out of them itself.
 
 A thread that falls off the end of its board is archived, and the sweeper
 deletes it, with its images, once its board's `archive_days` (7 by default)
-have passed. It is the same image run as `educhan -sweep`: one pass, then it
-exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
+have passed. The same run deletes spent captcha answers past their day. It is
+the same image run as `educhan -sweep`: one pass, then it exits. It runs as a
+Cloud Run **Job**, started once a day by Cloud Scheduler,
 because a Cloud Run service only has CPU while it answers a request, so a timer
 inside it would fire whenever it happened to.
 
