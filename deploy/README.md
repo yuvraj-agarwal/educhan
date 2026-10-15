@@ -602,7 +602,7 @@ gcloud run services update educhan --region "$REGION" \
 ```
 
 Checkout then refuses purchases and renewals alike with `403`, before it reads
-the request or asks Stripe anything, and the Pass page says "The Pass is not on
+the request's body or asks Stripe anything, and the Pass page says "The Pass is not on
 sale right now." where Buy and Renew were. Everything else goes on: Stripe's
 webhooks are still verified and recorded, so a checkout opened before the pause
 and paid after it is collected, and a refund or dispute still takes back what it
