@@ -21,6 +21,7 @@ import (
 	"runtime/debug"
 	"runtime/metrics"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -421,7 +422,7 @@ func liveHeap() int64 {
 // settles. peakLive therefore runs on at least two cores, raising GOMAXPROCS
 // for its own length when it has to (a plain `go test` already has more, so
 // only `-cpu=1`, GOMAXPROCS=1, or one allotted core needs this).
-func peakLive(t *testing.T, name string, work func() error) int64 {
+func peakLive(t testing.TB, name string, work func() error) int64 {
 	t.Helper()
 	if runtime.GOMAXPROCS(0) < 2 {
 		defer runtime.GOMAXPROCS(runtime.GOMAXPROCS(2))
@@ -478,7 +479,7 @@ func peakLive(t *testing.T, name string, work func() error) int64 {
 // alone can fail on a busy machine: a collection that runs on across a phase
 // boundary marks the garbage of the phase before it live alongside the next
 // phase's allocations, and it does not fall that way three times running.
-func leastPeak(t *testing.T, name string, want int64, work func() error) int64 {
+func leastPeak(t testing.TB, name string, want int64, work func() error) int64 {
 	t.Helper()
 	least := int64(math.MaxInt64)
 	for run := 0; run < 3 && least > want; run++ {
@@ -514,18 +515,22 @@ func leastPeak(t *testing.T, name string, want int64, work func() error) int64 {
 // `decoding`, and where that lets the real decode peak exceed it, the whole,
 // which includes the decode, exceeds it too, so the whole is not within
 // `decoding`, the limit-0 run is not skipped, and the decoded check still
-// fails (proved by dropping a term: TestDroppedDecodingTermIsStillCaught).
+// fails (TestDroppedDecodingTermIsStillCaught drops one and watches
+// checkProcessingCost catch it).
 func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 	for name, data := range costFixtures(t) {
-		checkProcessingCost(t, name, data)
+		checkProcessingCost(t, name, data, nil)
 	}
 }
 
 // checkProcessingCost holds one fixture to both bounds, measuring the whole
 // Process run first and the limit-0 decoding run only when the whole is not
 // already within the decoding estimate (see TestProcessingCostCoversWhatIsHeld).
-// It reports whether it measured the decoding run, for the proof test.
-func checkProcessingCost(t *testing.T, name string, data []byte) (ranDecoding bool) {
+// The decoding estimate is of decodingPhases' phases, passed through model
+// when it is not nil, which is how TestDroppedDecodingTermIsStillCaught
+// leaves a term out. It returns what the whole held, and whether it measured
+// the decoding run.
+func checkProcessingCost(t testing.TB, name string, data []byte, model func([]phase) []phase) (whole int64, ranDecoding bool) {
 	t.Helper()
 	in, err := inspect(data)
 	if err != nil {
@@ -536,9 +541,13 @@ func checkProcessingCost(t *testing.T, name string, data []byte) (ranDecoding bo
 		t.Fatalf("%s: DecodeConfig: %v", name, err)
 	}
 
-	decoding := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
+	phases := decodingPhases(in.format, data, cfg, in.frames)
+	if model != nil {
+		phases = model(phases)
+	}
+	decoding := peakOf(phases...) + processingSlack
 	completed := completedCost(in.format, data, cfg, in.frames)
-	whole := leastPeak(t, name, completed, func() error {
+	whole = leastPeak(t, name, completed, func() error {
 		_, err := Process(context.Background(), data)
 		return err
 	})
@@ -550,7 +559,7 @@ func checkProcessingCost(t *testing.T, name string, data []byte) (ranDecoding bo
 	if whole <= decoding {
 		t.Logf("%-28s %4d×%-4d all of it %5.1f MiB of %5.1f (within decoding %5.1f, decoding run skipped)",
 			name, cfg.Width, cfg.Height, mib(whole), mib(completed), mib(decoding))
-		return false
+		return whole, false
 	}
 
 	decoded := leastPeak(t, name, decoding, func() error {
@@ -566,23 +575,34 @@ func checkProcessingCost(t *testing.T, name string, data []byte) (ranDecoding bo
 	if decoded > decoding {
 		t.Errorf("%s: held %d bytes live before encoding, over the estimate of its decoding phases, %d", name, decoded, decoding)
 	}
-	return true
+	return whole, true
+}
+
+// errorsKept is a testing.TB that keeps the errors reported to it instead
+// of failing the test, and passes everything else on: a Fatalf, which only
+// a broken measurement reports, still fails it.
+type errorsKept struct {
+	testing.TB
+	errs []string
+}
+
+func (e *errorsKept) Errorf(format string, args ...any) {
+	e.errs = append(e.errs, fmt.Sprintf(format, args...))
 }
 
 // TestDroppedDecodingTermIsStillCaught proves that the skip in
 // checkProcessingCost — not measuring the limit-0 decoding run when the whole
 // is already within the decoding estimate — cannot hide a decoding term left
-// out of the model. It uses a decode-dominated fixture the skip is taken for
-// (a lossless WebP: its peak is in the decode, so the whole is within the
-// decoding estimate). It then drops the largest decoding phase, as a model
-// that forgot a term would, and shows two things with wide margin: the real
-// decode now exceeds the shrunk estimate, so the decoded check would fail;
-// and the whole exceeds it too, so the whole is not within the shrunk estimate
-// and the run is not skipped. The whole includes the decode, so wherever a
-// dropped term lifts the decode above the estimate it lifts the whole above
-// it as well — the skip and the check cannot disagree.
+// out of the model, by leaving one out and running checkProcessingCost
+// itself. The fixture is one the skip is taken for: a lossless WebP whose
+// peak is in the decode, so that the whole is within the model's decoding
+// estimate. With its largest decoding phase dropped, as a model that forgot
+// a term would have it, checkProcessingCost has to find the whole over the
+// shrunk estimate, run the decoding run it would otherwise skip, and report
+// the decode over the estimate. A wider skip condition fails this.
 func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
-	data := costFixtures(t)["WebP lossless"]
+	const name = "WebP lossless"
+	data := readTestdata(t, "cost-lossless.webp")
 	in, err := inspect(data)
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
@@ -591,41 +611,35 @@ func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
 	if err != nil {
 		t.Fatalf("DecodeConfig: %v", err)
 	}
-	phases := decodingPhases(in.format, data, cfg, in.frames)
-	decoding := peakOf(phases...) + processingSlack
+	decoding := peakOf(decodingPhases(in.format, data, cfg, in.frames)...) + processingSlack
 
-	decoded := leastPeak(t, "limit-0 decode", decoding, func() error {
-		unstored := in
-		unstored.limit = 0
-		if _, err := sanitize(context.Background(), unstored, data); !errors.Is(err, ErrStoredTooLarge) {
-			return fmt.Errorf("sanitize with nowhere to store = %v, want ErrStoredTooLarge", err)
+	dropLargest := func(phases []phase) []phase {
+		largest := 0
+		for i, p := range phases {
+			if p.alloc > phases[largest].alloc {
+				largest = i
+			}
 		}
-		return nil
-	})
-	whole := leastPeak(t, "whole", decoding, func() error {
-		_, err := Process(context.Background(), data)
-		return err
-	})
+		return append(append([]phase{}, phases[:largest]...), phases[largest+1:]...)
+	}
+	kept := &errorsKept{TB: t}
+	whole, ran := checkProcessingCost(kept, name+", largest decoding phase dropped", data, dropLargest)
 	if whole > decoding {
-		t.Fatalf("whole %d over decoding %d: the skip is not taken for this fixture, so it proves nothing", whole, decoding)
+		t.Fatalf("whole %d over the model's decoding estimate %d: the skip is not taken for this fixture, so it proves nothing", whole, decoding)
 	}
-
-	// Drop the largest decoding phase, as a model that left a term out would.
-	largest := 0
-	for i, p := range phases {
-		if p.alloc > phases[largest].alloc {
-			largest = i
+	if !ran {
+		t.Fatal("checkProcessingCost skipped the decoding run with a decoding term left out: the term is hidden")
+	}
+	caught := false
+	for _, e := range kept.errs {
+		if strings.Contains(e, "over the estimate of its decoding phases") {
+			caught = true
+		} else {
+			t.Errorf("unexpected error: %s", e)
 		}
 	}
-	shrunk := peakOf(append(append([]phase{}, phases[:largest]...), phases[largest+1:]...)...) + processingSlack
-	mib := func(n int64) float64 { return float64(n) / (1 << 20) }
-	t.Logf("decoded %.1f MiB, whole %.1f MiB, estimate %.1f MiB, with its largest phase dropped %.1f MiB",
-		mib(decoded), mib(whole), mib(decoding), mib(shrunk))
-	if decoded <= shrunk {
-		t.Fatalf("dropping the largest decoding phase left the estimate at %d, not below the measured decode %d: nothing to catch", shrunk, decoded)
-	}
-	if whole <= shrunk {
-		t.Fatalf("whole %d within the shrunk estimate %d: the decoding run would be skipped and the dropped term hidden", whole, shrunk)
+	if !caught {
+		t.Errorf("checkProcessingCost reported %q with a decoding term left out, want the decode over the estimate of its decoding phases", kept.errs)
 	}
 }
 
