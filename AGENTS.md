@@ -5,9 +5,9 @@ repository contains the working prototype: a Go HTTP API plus an embedded web UI
 by PostgreSQL. Boards, anonymous posting (tripcodes, per-thread poster IDs), image
 attachments, a paginated index, a catalog view, a per-board archive, threads with quote
 links and post markup (spoilers, highlighted code, maths, cross-board links), per-client
-flood control, key-authenticated moderation and board management, and optional
-institutional verification badges are implemented. Janitor accounts, bans, and reports are
-not.
+flood control, key-authenticated moderation and board management, optional institutional
+verification badges, and the optional educhan Pass (a captcha skip sold on Stripe's hosted
+checkout) are implemented. Janitor accounts, bans, and reports are not.
 
 ## Stack & layout
 
@@ -22,9 +22,13 @@ not.
   - `moderation.go` — moderation key check and the sticky/lock/delete handlers.
   - `boards.go` — board creation and settings updates, behind the same key.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
+  - `pass.go` — the educhan Pass: its handlers, code format and SQL; `pass_stripe.go`
+    — Stripe over plain HTTPS (hosted checkout, the price, webhook signatures);
+    `pass_config.go` — its settings: off unless `EDUCHAN_PASS_SECRET` is set, every
+    other one refused without it, and `EDUCHAN_PASS_SALES` to pause sales.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
-  - `store.go` — all SQL; `models.go` — the JSON-facing types.
+  - `store.go` — all SQL but the Pass's (`pass.go`); `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, the poster key, poster IDs; `text.go` —
     post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
     pair (`markupBlocks`), which the front end's `parseMarkup` mirrors.
@@ -131,7 +135,7 @@ field, and everything else stays the same. Uploads are off unless
 `GET /api/site` says which, with the size limit:
 
 ```bash
-curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608,"pass":false}
 
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
@@ -249,13 +253,31 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 `addInitScript`). Playwright's headless Chromium hides scrollbars unless launched with
 `ignoreDefaultArgs: ["--hide-scrollbars"]`; a check on the board row's scrollbar needs it.
 
+The Pass is off unless `EDUCHAN_PASS_SECRET` and the four Stripe settings are set
+(`pass_config.go`); any other Pass setting given without the secret refuses to start.
+A whole purchase needs Stripe to call the webhook, so its end-to-end checks live in
+`pass_api_test.go` against a fake Stripe (`fakeStripe`) rather than in curl, and they
+cover `EDUCHAN_PASS_SALES=paused` beside the default `open` (`TestPassSalesPaused`).
+Paused, checkout answers `403 the Pass is not on sale right now` and `GET /api/pass`
+says `"paused": true`; every other Pass endpoint and the webhook go on as usual. A real
+checkout uses Stripe's test mode: test keys, a test Price, and
+`stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
+with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued with
+`curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H 'Content-Type:
+application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a one-time link
+(`/pass#reissue=…`) for the buyer, never a code.
+
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
-that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
-`submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
-box never ticked in advance or kept, `/api/site` fetched only past the age screen,
-KaTeX's options, and the highlighting cap. They are
-a floor, not a proof; a change that trips one has changed one of those properties and
-needs a browser check before the test changes.
+that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass
+only in `submit` (the Pass also in the Pass page's own requests), the Pass never beside
+the credential, a reissue token out of the address before anything else, what a claim
+brings stored before anything looks at the page, a renewal checked against the Pass held
+before it is reported, a claim's nonce and the forgetting of a claim, the age screen
+storing its outcome alone and sending nothing, the badge's 18+ box and the Pass's never
+ticked in advance or kept, `/api/site` fetched only past the age screen, the header's Pass
+link only where there is a Pass, the paused wording the server's own, KaTeX's options, and
+the highlighting cap. They are a floor, not a proof; a change that trips one has changed
+one of those properties and needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -437,6 +459,53 @@ needs a browser check before the test changes.
   browser's key met its credential.
   `TestOnlyThePostingRequestCarriesThePosterKeyOrCredential` reads `app.js` and fails if
   either header is attached anywhere but that one line.
+- The educhan Pass lives in `localStorage` under `educhan:pass`, as the code and its
+  expiry, or the code alone marked run out. `submit` sends it in `X-Educhan-Pass` on
+  unbadged posts only (a badged post sends the credential and nothing else), and the Pass
+  page sends it in the body of the requests that use it on purpose: checking a code
+  (`/api/pass/activate`, one typed in or the one held, checked again) and renewing
+  (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else. Buying
+  and renewing leave for Stripe's hosted page by `location.assign`: no Stripe script,
+  frame or stylesheet ever loads on this origin, and the CSP has no exception for Stripe.
+  While `GET /api/pass` says `"claim"`, the page draws a collecting state with no form to
+  pay with (or, with a Pass already here, says another checkout is still open and keeps
+  Renew) and asks `/api/pass/claim` on every visit, with a pause that grows while it is
+  open (`collectPass`). Each checkout's claim holds its own order and no other, so
+  starting another stops this browser collecting the one before; Start again and the
+  open-checkout note say so, and that a payment made on the earlier one after all is still
+  the buyer's, by a reissue link asked for at the support address on Stripe's receipt.
+  Every claim carries the collection's nonce (`educhan:pass-nonce`, kept until an answer
+  says nothing more is waiting): the server derives the code from the claim cookie and the
+  nonce together, so a claim whose answer was lost is asked again and handed the same
+  code, and a nonce is worth nothing beside another cookie. What a claim brings is stored
+  (`keepClaimed`) before anything asks whether the reader is still on the page, and a code
+  just handed over stays in `passJustIssued`, drawn on every drawing, until the reader
+  leaves the Pass page, beside any code it took the place of. A renewal's date is never
+  stored from the claim's answer, since the Pass it renewed may not be the one held here
+  now: `confirmRenewal` checks the held code with `/api/pass/activate`, stores what that
+  says unless the Pass held changed meanwhile, and says the Pass is renewed only when the
+  date it checks is the renewal's and later than the one it had; a renewal a reissue link
+  brought is said to come from the link, not from a payment in this browser. A reissue
+  link's token rides in the fragment (`/pass#reissue=…`), leaves the address first thing
+  in `render` (`takePassReissueToken`), waits for "Use the link here" in a browser that
+  holds a Pass, and goes once in a claim's body with a nonce of its own
+  (`educhan:pass-reissue-nonce`), the code derived from the two. Remove the Pass, Forget
+  this browser and Stop collecting it here stop the collection under way (`passVisit`) and
+  drop both nonces before they drop the claim (`forgetPassClaim`, `{"forget": true}`), and
+  an answer to a claim or a reissue link that arrives after one of them is dropped
+  unstored (`passForgets`), so the next person at a shared computer collects nothing. A
+  page brought back from the back-forward cache is drawn again through `render` (the
+  `pageshow` listener), so the age screen still comes first. A post whose Pass was no good
+  is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`: the page forgets
+  the first, marks the second run out without a date, and says the post was sent. A code
+  typed in after it ran out is kept with the date the server gives. While sales are paused
+  the page says `PASS_PAUSED` where Buy and Renew were; `PASS_NOT_ON_SALE` is the server's
+  `passNotOnSale` word for word (`TestPassPageWhileSalesArePaused`). A browser that keeps
+  no cookies or storage is not sent to Stripe (`passCanBeKept`). The header's Pass link
+  (`data-pass-link`) stays hidden until `GET /api/site` says `"pass"` or the browser holds
+  one (`showPassLink`). `TestOnlyThePostingRequestCarriesThePass` pins the header and
+  every read of the held code; the Pass page's other promises have their own tests
+  beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the
@@ -445,9 +514,11 @@ needs a browser check before the test changes.
   values; `submit` sets the field after `form.reset()`).
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes
-  the credential, the poster key and the remembered name, and leaves the age answer. It
-  is what the FAQ's shared-computer advice points to: the key left behind would give the
-  next person at the computer the same IDs in the same threads.
+  the credential, the Pass, the poster key and the remembered name, drops any Pass
+  purchase still being collected, and leaves the age answer. It is what the FAQ's
+  shared-computer advice points to: the key left behind would give the next person at
+  the computer the same IDs in the same threads, and a claim left behind would hand them
+  the buyer's Pass.
 
 ### Child safety
 
@@ -468,6 +539,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
   `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
   hold the code to the badge alone today.
+- **The Pass gates the captcha skip and nothing else.** It is bought, which makes it the
+  nearest thing educhan has to an account. Like the badge, it is sold only after an
+  unticked 18+ confirmation that stores nothing about age. It carries no name, profile
+  or history, and its code travels only in `X-Educhan-Pass` on the posting request, and
+  in the body of the requests that check or renew it on the Pass page. A badged post
+  sends the credential instead. Nothing about a Pass is written on a post or used in a
+  poster ID, and nothing identifying a Pass is logged. Its hourly budget is kept in
+  memory, keyed on a hash of the token, and forgotten when the hour ends. A Pass that is
+  no good on a post is treated as no Pass, never refused with a status of its own,
+  because a request-log line only a Pass can cause would tie its holder to the thread
+  (`TestPassNoGoodOnPostsIsNoPass`). The Pass skips the captcha only, never the rules, a
+  refusal limit or a cooldown. `TestPassIsNeverStoredOrLogged`,
+  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it
+  there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what
@@ -604,7 +689,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   opening post read from the database. A new query over threads has to decide which set
   it means.
 - **The sweeper** (`educhan -sweep`, `sweep.go`) deletes archived threads once their
-  board's `archive_days` have passed. It is a one-shot mode rather than a timer because
+  board's `archive_days` have passed, and prunes the Pass tables (`prunePasses`), on sale
+  or not (`TestSweepPrunesThePassTables`), with no Pass setting: each order keeps the term
+  it was sold with (`pass_orders.days`, `TestPassOrderKeepsItsTerm`), so nothing about the
+  Pass has to be given to the Job. It is a one-shot mode rather than a timer because
   Cloud Run only gives a service CPU during requests; in production it is a Cloud Run Job
   on a Cloud Scheduler trigger, which `deploy/README.md` section 2.9 sets up. `SweepArchived` in
   `store.go` takes batches of `sweepBatchSize` (100) with `FOR UPDATE SKIP LOCKED` against
@@ -690,7 +778,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
   `EDUCHAN_VERIFY_DOMAINS`, `EDUCHAN_UPLOADS_ENABLED`, `EDUCHAN_MAIL_DEV`,
-  `EDUCHAN_DB_MAX_CONNS`. See `.env.example` and the README table.
+  `EDUCHAN_DB_MAX_CONNS`, and the Pass's: `EDUCHAN_PASS_SECRET`,
+  `EDUCHAN_STRIPE_SECRET_KEY`, `EDUCHAN_STRIPE_WEBHOOK_SECRET`, `EDUCHAN_STRIPE_PRICE_ID`,
+  `EDUCHAN_STRIPE_AUTOMATIC_TAX`, `EDUCHAN_PUBLIC_URL`, `EDUCHAN_PASS_DAYS` (1 to 36500,
+  stored on each order at checkout), `EDUCHAN_PASS_HOURLY_POSTS`, `EDUCHAN_PASS_COOLDOWN`
+  and `EDUCHAN_PASS_SALES` (`open` or `paused`). See `.env.example` and the README table.
   `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
   when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
@@ -709,13 +801,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   State is per process and in memory — a shared backend means replacing
   `cooldownLimiter`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
-  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
-  **While the process has CPU, an address is held in memory no longer than the
-  longest cooldown that applies to it plus one minute**, counted from its last action
-  that started one, busy server or quiet. A host that gives CPU only during requests,
-  which is Cloud Run's default (request-based billing), holds the timer back on an
-  idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
+  builds a `cooldownSweep` over every limiter (thread, post, upload, verification code,
+  and the Pass's checkout and code check) and the Pass's hourly budget, and starts its
+  timer, which drops every expired entry each `cooldownSweepInterval` (one minute), and
+  `Close` stops it. **While the process has CPU, an address is held in memory no longer
+  than the longest cooldown that applies to it plus one minute**, counted from its last
+  action that started one, busy server or quiet. A host that gives CPU only during
+  requests, which is Cloud Run's default (request-based billing), holds the timer back on
+  an idle instance, so `beforeEachRequest` (in `Routes`) runs an overdue sweep before a
   request is handled; until a request arrives or the instance stops, an idle instance
   still holds what it last saw, and on Cloud Run the one-minute bound needs CPU always
   allocated (`--no-cpu-throttling`). The README's Flood control section states the
@@ -891,22 +984,24 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
-  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
-  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
-  the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
-  `DATABASE_URL`), so
-  they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
+  `internal/app/pass_api_test.go`, and `TestClientKnowsTheServersImageRefusals` in
+  `internal/app/web_invariants_test.go`) run the whole app against an isolated schema in
+  `TEST_DATABASE_URL` (falling back to `DATABASE_URL`), so they are safe to run against
+  the development database. `testServer` builds its `Config` directly, which leaves every
   cooldown at zero unless a test asks for one, and gives the client a cookie jar so the
   two-step verification exchange behaves as it does in a browser. `verifyServer` adds a
   secret and a capturing `mailer.Sender`, which is how a test reads the code back; the
   credential it returns is then presented explicitly with `postWithCredential`, because
-  nothing attaches it on a caller's behalf. Poster ID tests post through `browser`
-  (`poster_id_test.go`), which sends what the client sends: the credential alone on a
-  post that asks for a badge, and the poster key on any other. A post carrying both is
-  never sent by the client, and the tests that cover it set the headers explicitly.
-  Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
-  ones, so they do not depend on which boards the migrations seed;
-  `TestBoardsAreSeeded` is the one test that names the seeded set.
+  nothing attaches it on a caller's behalf. `passServer` adds the Pass's settings and
+  `fakeStripe`, which stands in for Stripe's API; a test completes a checkout by sending
+  the webhook a signed event itself, and the cookie jar carries the claim as a browser's
+  would. Poster ID tests post through `browser` (`poster_id_test.go`), which sends what
+  the client sends: the credential alone on a post that asks for a badge, and the poster
+  key on any other. A post carrying both is never sent by the client, and the tests that
+  cover it set the headers explicitly. Tests post to boards they create with `addBoard`
+  (`api_test.go`), never to seeded ones, so they do not depend on which boards the
+  migrations seed; `TestBoardsAreSeeded` is the one test that names the seeded set.
   A migration's effect on existing data is tested by stopping a schema at an earlier
   version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
   starting a server on it with `serverOn`, which applies the rest. Sweep tests call

@@ -32,6 +32,7 @@ func (a *App) handleSite(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, Site{
 		Uploads:        a.cfg.UploadsEnabled,
 		MaxUploadBytes: a.cfg.MaxUploadBytes,
+		Pass:           a.passEnabled(),
 	})
 }
 
@@ -197,6 +198,10 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	pass, ok := a.postPass(w, r, sub.Badge)
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
@@ -222,7 +227,8 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not create thread")
 		return
 	}
-	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+	a.spendPassBudget(pass)
+	writeJSON(w, http.StatusCreated, passPostResponse(board, post, pass))
 }
 
 type createPostRequest struct {
@@ -280,6 +286,10 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !ok {
 		return
 	}
+	pass, ok := a.postPass(w, r, sub.Badge)
+	if !ok {
+		return
+	}
 	// A reply the thread would refuse anyway — gone, archived, locked, or an
 	// image for a thread at its cap — is turned away here, before flood
 	// control starts a cooldown for it and before its upload is stored. The
@@ -316,7 +326,8 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
-	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+	a.spendPassBudget(pass)
+	writeJSON(w, http.StatusCreated, passPostResponse(board, post, pass))
 }
 
 // newPostResponse is the acknowledgement for a created post. It carries the

@@ -138,6 +138,12 @@ func (l *cooldownLimiter) sweepExpired() {
 	l.sweep(l.now())
 }
 
+// expiring is what a cooldownSweep tidies: a cooldownLimiter, or the Pass's
+// hourly budget (passBudget), each of which drops what it no longer needs.
+type expiring interface {
+	sweepExpired()
+}
+
 // cooldownSweep drops the expired entries of a set of limiters once each
 // period. Two things run it. A goroutine of its own does, on a timer, so a
 // quiet server forgets without a request arriving to prompt it. And every
@@ -147,12 +153,12 @@ func (l *cooldownLimiter) sweepExpired() {
 // next request is the first moment the process is sure to run again.
 type cooldownSweep struct {
 	every    time.Duration
-	limiters []*cooldownLimiter
+	limiters []expiring
 	// last is when the most recent sweep began, in Unix nanoseconds.
 	last atomic.Int64
 }
 
-func newCooldownSweep(every time.Duration, limiters ...*cooldownLimiter) *cooldownSweep {
+func newCooldownSweep(every time.Duration, limiters ...expiring) *cooldownSweep {
 	s := &cooldownSweep{every: every, limiters: limiters}
 	s.last.Store(time.Now().UnixNano())
 	return s

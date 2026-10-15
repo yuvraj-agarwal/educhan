@@ -1,0 +1,2763 @@
+package app
+
+import (
+	"bytes"
+	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
+	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/cookiejar"
+	"net/http/httptest"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+)
+
+const (
+	testPassSecret    = "test-pass-secret-at-least-32-characters"
+	testWebhookSecret = "whsec_test_signing_secret"
+	testPriceID       = "price_test_pass"
+	testPublicURL     = "https://educhan.test"
+)
+
+// fakeStripe stands in for api.stripe.com: it opens checkout sessions, answers
+// for one price, and remembers what it was sent.
+type fakeStripe struct {
+	t   *testing.T
+	srv *httptest.Server
+
+	mu       sync.Mutex
+	sessions []url.Values
+	headers  []http.Header
+	price    map[string]any
+	// priceReads counts the times the price was asked for.
+	priceReads int
+	fail       bool
+	// sessionURL, when set, is the page a new session is said to be on.
+	sessionURL string
+	// opening, when set, runs while a session is being created, with the
+	// fake's lock released, to land something in between a checkout's steps.
+	opening func()
+}
+
+func newFakeStripe(t *testing.T) *fakeStripe {
+	t.Helper()
+	f := &fakeStripe{t: t, price: map[string]any{
+		"id": testPriceID, "active": true, "type": "one_time", "unit_amount": 2000, "currency": "usd",
+	}}
+	f.srv = httptest.NewServer(http.HandlerFunc(f.serve))
+	t.Cleanup(f.srv.Close)
+	return f
+}
+
+func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
+	f.mu.Lock()
+	opening := f.opening
+	f.mu.Unlock()
+	if opening != nil && r.URL.Path == "/v1/checkout/sessions" {
+		opening()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if r.Header.Get("Authorization") != "Bearer sk_test_key" {
+		w.WriteHeader(http.StatusUnauthorized)
+		return
+	}
+	if f.fail {
+		w.WriteHeader(http.StatusInternalServerError)
+		fmt.Fprint(w, `{"error":{"type":"api_error","message":"down"}}`)
+		return
+	}
+	switch {
+	case r.Method == http.MethodPost && r.URL.Path == "/v1/checkout/sessions":
+		if err := r.ParseForm(); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		f.sessions = append(f.sessions, r.PostForm)
+		f.headers = append(f.headers, r.Header.Clone())
+		id := "cs_test_" + strconv.Itoa(len(f.sessions))
+		page := "https://checkout.stripe.com/c/pay/" + id
+		if f.sessionURL != "" {
+			page = f.sessionURL
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "url": page})
+	case r.Method == http.MethodGet && r.URL.Path == "/v1/prices/"+testPriceID:
+		f.priceReads++
+		_ = json.NewEncoder(w).Encode(f.price)
+	default:
+		w.WriteHeader(http.StatusNotFound)
+		fmt.Fprint(w, `{"error":{"type":"invalid_request_error","message":"no such route"}}`)
+	}
+}
+
+func (f *fakeStripe) sessionCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.sessions)
+}
+
+func (f *fakeStripe) priceReadCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.priceReads
+}
+
+func testPassConfig(f *fakeStripe) PassConfig {
+	return PassConfig{
+		Secret:              testPassSecret,
+		StripeSecretKey:     "sk_test_key",
+		StripeWebhookSecret: testWebhookSecret,
+		StripePriceID:       testPriceID,
+		PublicURL:           testPublicURL,
+		Days:                365,
+		HourlyPosts:         30,
+		stripeAPI:           f.srv.URL,
+		stripeHTTP:          f.srv.Client(),
+	}
+}
+
+type passHarness struct {
+	*harness
+	stripe *fakeStripe
+	// nonce is the one the page would be sending with its claims, as the page
+	// keeps it: drawn when a collection starts, and dropped once an answer
+	// says nothing is waiting any more (keepNonce).
+	nonce string
+}
+
+// collectNonce is the nonce this browser's next claim or reissue sends.
+func (p *passHarness) collectNonce() string {
+	p.t.Helper()
+	if p.nonce == "" {
+		var err error
+		if p.nonce, err = randomToken(); err != nil {
+			p.t.Fatal(err)
+		}
+	}
+	return p.nonce
+}
+
+// keepNonce drops the nonce as the page does: once an answer arrives that
+// says nothing is waiting under the claim, or refuses the request.
+func (p *passHarness) keepNonce(status int, out passResponse) {
+	if status >= 300 || !out.Claim {
+		p.nonce = ""
+	}
+}
+
+func passServer(t *testing.T, tune func(*Config)) *passHarness {
+	t.Helper()
+	return passServerLogging(t, tune, io.Discard)
+}
+
+func passServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *passHarness {
+	t.Helper()
+	f := newFakeStripe(t)
+	h := testServerLogging(t, func(cfg *Config) {
+		cfg.Pass = testPassConfig(f)
+		if tune != nil {
+			tune(cfg)
+		}
+	}, logs)
+	// Tests check codes back to back; TestPassActivationIsPaced keeps the pace.
+	h.app.pass.activateLimiter = newCooldownLimiter(0)
+	return &passHarness{harness: h, stripe: f}
+}
+
+type passResponse struct {
+	Enabled      bool       `json:"enabled"`
+	Days         int        `json:"days"`
+	HourlyPosts  int        `json:"hourly_posts"`
+	Price        *passPrice `json:"price"`
+	AutomaticTax bool       `json:"automatic_tax"`
+	Paused       bool       `json:"paused"`
+	URL          string     `json:"url"`
+	Status       string     `json:"status"`
+	Pass         string     `json:"pass"`
+	ExpiresAt    time.Time  `json:"expires_at"`
+	Claim        bool       `json:"claim"`
+	Code         string     `json:"code"`
+	Error        string     `json:"error"`
+}
+
+// refusalState reads the machine-readable refusal, which shares the "pass" key
+// with an issued code.
+func refusalState(t *testing.T, out passResponse) string {
+	t.Helper()
+	if out.Error == "" {
+		t.Fatalf("expected a refusal, got %+v", out)
+	}
+	return out.Pass
+}
+
+// checkout starts a purchase in this harness's browser (its cookie jar) and
+// returns the Stripe session id the fake handed out.
+func (p *passHarness) checkout(renew string) string {
+	p.t.Helper()
+	var out passResponse
+	body := map[string]any{"adult": true}
+	if renew != "" {
+		body["renew"] = renew
+	}
+	if status := p.post("/api/pass/checkout", body, &out); status != http.StatusOK {
+		p.t.Fatalf("checkout: status %d (%s)", status, out.Error)
+	}
+	if !strings.HasPrefix(out.URL, "https://checkout.stripe.com/c/pay/") {
+		p.t.Fatalf("checkout url %q", out.URL)
+	}
+	return out.URL[strings.LastIndexByte(out.URL, '/')+1:]
+}
+
+// webhook delivers a signed event, as Stripe does.
+func (p *passHarness) webhook(eventType string, object map[string]any) int {
+	p.t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"id": "evt_test", "object": "event", "type": eventType,
+		"data": map[string]any{"object": object},
+	})
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	return p.rawWebhook(body, signStripe(body, testWebhookSecret, time.Now()))
+}
+
+func (p *passHarness) rawWebhook(body []byte, signature string) int {
+	p.t.Helper()
+	req, err := http.NewRequest(http.MethodPost, p.base+"/api/pass/stripe-webhook", strings.NewReader(string(body)))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	if signature != "" {
+		req.Header.Set("Stripe-Signature", signature)
+	}
+	return p.send(req, nil)
+}
+
+func signStripe(body []byte, secret string, at time.Time) string {
+	ts := strconv.FormatInt(at.Unix(), 10)
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(ts + "." + string(body)))
+	return "t=" + ts + ",v1=" + hex.EncodeToString(mac.Sum(nil))
+}
+
+func (p *passHarness) paid(session, paymentIntent string) {
+	p.t.Helper()
+	if status := p.webhook(stripeCheckoutCompleted, map[string]any{
+		"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "paid", "payment_intent": paymentIntent,
+		"customer_details": map[string]any{"email": "buyer@example.com", "name": "Bea Buyer"},
+	}); status != http.StatusOK {
+		p.t.Fatalf("paid webhook: status %d", status)
+	}
+}
+
+func (p *passHarness) claim() (int, passResponse) {
+	p.t.Helper()
+	status, out := p.claimWith(p.collectNonce())
+	p.keepNonce(status, out)
+	return status, out
+}
+
+// claimWith collects with the nonce given, as a page asking again after an
+// answer it never received would.
+func (p *passHarness) claimWith(nonce string) (int, passResponse) {
+	p.t.Helper()
+	var out passResponse
+	status := p.post("/api/pass/claim", map[string]any{"nonce": nonce}, &out)
+	return status, out
+}
+
+// buy runs a whole purchase and returns the issued code.
+func (p *passHarness) buy(paymentIntent string) passResponse {
+	p.t.Helper()
+	p.paid(p.checkout(""), paymentIntent)
+	status, out := p.claim()
+	if status != http.StatusOK || out.Status != "issued" {
+		p.t.Fatalf("claim: status %d, %+v", status, out)
+	}
+	return out
+}
+
+func (p *passHarness) activate(code string) (int, passResponse) {
+	p.t.Helper()
+	var out passResponse
+	status := p.post("/api/pass/activate", map[string]any{"pass": code}, &out)
+	return status, out
+}
+
+// postWithPass opens a thread on board carrying the Pass and, optionally, the
+// forwarded address a request appears to come from.
+func (p *passHarness) postWithPass(board, code, from string, extra map[string]any) (int, passResponse) {
+	p.t.Helper()
+	header := http.Header{}
+	if code != "" {
+		header.Set(passHeader, code)
+	}
+	if from != "" {
+		header.Set("X-Forwarded-For", from)
+	}
+	body := map[string]any{"body": "posted with a pass"}
+	for k, v := range extra {
+		body[k] = v
+	}
+	var out passResponse
+	status := p.postWithHeaders(header, "/api/boards/"+board+"/threads", body, &out)
+	return status, out
+}
+
+func TestPassStatus(t *testing.T) {
+	off := testServer(t, nil)
+	var out passResponse
+	off.get("/api/pass", &out)
+	if out.Enabled {
+		t.Fatal("the Pass is on sale with no configuration")
+	}
+
+	p := passServer(t, nil)
+	p.get("/api/pass", &out)
+	if !out.Enabled || out.Days != 365 || out.HourlyPosts != 30 || out.Price == nil || out.Price.Amount != 2000 ||
+		out.Price.Currency != "usd" || out.AutomaticTax || out.Claim {
+		t.Fatalf("status: %+v", out)
+	}
+
+	// With Stripe Tax on, the page is told the price is before tax.
+	taxed := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
+	var withTax passResponse
+	taxed.get("/api/pass", &withTax)
+	if !withTax.AutomaticTax {
+		t.Fatalf("status with Stripe Tax on: %+v", withTax)
+	}
+}
+
+func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
+	p := passServer(t, nil)
+	p.stripe.mu.Lock()
+	p.stripe.price["type"] = "recurring"
+	p.stripe.mu.Unlock()
+	var out passResponse
+	p.get("/api/pass", &out)
+	if !out.Enabled || out.Price != nil {
+		t.Fatalf("a recurring price must be refused but the page still offered: %+v", out)
+	}
+}
+
+func TestPassPurchase(t *testing.T) {
+	p := passServer(t, nil)
+
+	// No box ticked: refused before Stripe is asked for anything.
+	var out passResponse
+	if status := p.post("/api/pass/checkout", map[string]any{}, &out); status != http.StatusBadRequest ||
+		!strings.Contains(out.Error, "18") {
+		t.Fatalf("checkout without the 18+ box: status %d (%s)", status, out.Error)
+	}
+	if n := p.stripe.sessionCount(); n != 0 {
+		t.Fatalf("Stripe saw %d sessions for a refused checkout", n)
+	}
+	if status, _ := p.claim(); status != http.StatusBadRequest {
+		t.Fatalf("claim with no purchase: status %d", status)
+	}
+
+	session := p.checkout("")
+	form := p.stripe.sessions[0]
+	for key, want := range map[string]string{
+		"mode":                    "payment",
+		"line_items[0][price]":    testPriceID,
+		"line_items[0][quantity]": "1",
+		"success_url":             testPublicURL + "/pass?paid",
+		"cancel_url":              testPublicURL + "/pass?cancelled",
+	} {
+		if got := form.Get(key); got != want {
+			t.Errorf("Stripe got %s=%q, want %q", key, got, want)
+		}
+	}
+	// Stripe learns that a Pass was bought and nothing about who on educhan
+	// bought it.
+	for key := range form {
+		if strings.HasPrefix(key, "metadata") || strings.HasPrefix(key, "client_reference_id") ||
+			strings.HasPrefix(key, "customer") || strings.HasPrefix(key, "automatic_tax") {
+			t.Errorf("Stripe was sent %s", key)
+		}
+	}
+	if p.stripe.headers[0].Get("Idempotency-Key") == "" || p.stripe.headers[0].Get("Stripe-Version") != stripeAPIVersion {
+		t.Errorf("checkout headers: %v", p.stripe.headers[0])
+	}
+
+	// Back from Stripe before the webhook: try again shortly.
+	if status, out := p.claim(); status != http.StatusAccepted || out.Status != "pending" {
+		t.Fatalf("claim before payment: status %d, %+v", status, out)
+	}
+
+	// A webhook that is not Stripe's changes nothing.
+	forged, _ := json.Marshal(map[string]any{"type": stripeCheckoutCompleted, "data": map[string]any{"object": map[string]any{
+		"id": session, "mode": "payment", "payment_status": "paid", "payment_intent": "pi_forged"}}})
+	for name, sig := range map[string]string{
+		"unsigned":        "",
+		"wrong secret":    signStripe(forged, "whsec_other", time.Now()),
+		"stale":           signStripe(forged, testWebhookSecret, time.Now().Add(-10*time.Minute)),
+		"from the future": signStripe(forged, testWebhookSecret, time.Now().Add(10*time.Minute)),
+	} {
+		if status := p.rawWebhook(forged, sig); status != http.StatusBadRequest {
+			t.Errorf("%s webhook: status %d, want 400", name, status)
+		}
+	}
+	if status, _ := p.claim(); status != http.StatusAccepted {
+		t.Fatalf("a forged webhook paid for the order: status %d", status)
+	}
+
+	p.paid(session, "pi_test_1")
+	p.paid(session, "pi_test_1") // Stripe may deliver twice.
+	status, issued := p.claim()
+	if status != http.StatusOK || issued.Status != "issued" {
+		t.Fatalf("claim: status %d, %+v", status, issued)
+	}
+	if !passCodeShape(issued.Pass) {
+		t.Fatalf("issued code %q is not XXXXX-XXXXX-XXXXX-XXXXX", issued.Pass)
+	}
+	wantExpiry := passExpiry(time.Now(), 365)
+	if !issued.ExpiresAt.Equal(wantExpiry) {
+		t.Errorf("expires %v, want %v (a year, rounded up to a day)", issued.ExpiresAt, wantExpiry)
+	}
+
+	// The code is shown once; the claim is spent.
+	if status, _ := p.claim(); status != http.StatusBadRequest {
+		t.Fatalf("second claim: status %d", status)
+	}
+
+	status, active := p.activate(strings.ToLower(strings.ReplaceAll(issued.Pass, "-", " ")))
+	if status != http.StatusOK || active.Pass != issued.Pass || !active.ExpiresAt.Equal(issued.ExpiresAt) {
+		t.Fatalf("activate: status %d, %+v", status, active)
+	}
+}
+
+func passCodeShape(code string) bool {
+	groups := strings.Split(code, "-")
+	if len(groups) != 4 {
+		return false
+	}
+	for _, g := range groups {
+		if len(g) != 5 || strings.Trim(g, passAlphabet) != "" {
+			return false
+		}
+	}
+	return true
+}
+
+func TestPassCheckoutCooldownAndStripeFailure(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.Pass.CheckoutCooldown = time.Minute })
+	p.checkout("")
+	var out passResponse
+	if status := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusTooManyRequests {
+		t.Fatalf("second checkout inside the cooldown: status %d", status)
+	}
+
+	q := passServer(t, nil)
+	q.stripe.mu.Lock()
+	q.stripe.fail = true
+	q.stripe.mu.Unlock()
+	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusBadGateway {
+		t.Fatalf("checkout with Stripe down: status %d", status)
+	}
+	if status, _ := q.claim(); status != http.StatusBadRequest {
+		t.Fatalf("a failed checkout left a claim behind: status %d", status)
+	}
+}
+
+func TestPassActivationIsPaced(t *testing.T) {
+	p := passServer(t, nil)
+	p.app.pass.activateLimiter = newCooldownLimiter(passActivateCooldown)
+	if status, _ := p.activate("ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"); status != http.StatusForbidden {
+		t.Fatalf("first check: status %d", status)
+	}
+	if status, _ := p.activate("ZZZZZ-ZZZZZ-ZZZZZ-ZZZZY"); status != http.StatusTooManyRequests {
+		t.Fatalf("second check at once: status %d", status)
+	}
+}
+
+func TestPassAsyncPayment(t *testing.T) {
+	p := passServer(t, nil)
+	session := p.checkout("")
+	object := map[string]any{"id": session, "mode": "payment", "payment_status": "unpaid", "payment_intent": "pi_slow"}
+	if status := p.webhook(stripeCheckoutCompleted, object); status != http.StatusOK {
+		t.Fatalf("completed webhook: status %d", status)
+	}
+	if status, _ := p.claim(); status != http.StatusAccepted {
+		t.Fatalf("an unpaid session issued a Pass: status %d", status)
+	}
+	object["payment_status"] = "paid"
+	if status := p.webhook(stripeCheckoutAsyncSuccess, object); status != http.StatusOK {
+		t.Fatalf("async webhook: status %d", status)
+	}
+	if status, out := p.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("claim after the async payment: status %d, %+v", status, out)
+	}
+}
+
+// TestPassCheckoutGoesOnlyToStripe holds the page a checkout sends the buyer
+// to to Stripe's own checkout host. A session URL that comes back as anything
+// else is refused before an order or a claim is made.
+func TestPassCheckoutGoesOnlyToStripe(t *testing.T) {
+	p := passServer(t, nil)
+	for _, page := range []string{
+		"http://checkout.stripe.com/c/pay/cs_test_x",
+		"https://checkout.stripe.com.example.test/c/pay/cs_test_x",
+		"https://pay.example.test/c/pay/cs_test_x",
+		"https://someone@checkout.stripe.com/c/pay/cs_test_x",
+		"//checkout.stripe.com/c/pay/cs_test_x",
+		"https://checkout.stripe.com:8443/c/pay/cs_test_x",
+	} {
+		p.stripe.mu.Lock()
+		p.stripe.sessionURL = page
+		p.stripe.mu.Unlock()
+		var out passResponse
+		if status := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusBadGateway || out.URL != "" {
+			t.Errorf("a session on %s: status %d, %+v", page, status, out)
+		}
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("refused sessions left %d orders", n)
+	}
+	if p.reportsClaim() {
+		t.Fatal("a refused session left a claim in the browser")
+	}
+}
+
+// reportsClaim asks GET /api/pass whether this harness's browser has a
+// purchase to collect.
+func (p *passHarness) reportsClaim() bool {
+	p.t.Helper()
+	var out passResponse
+	p.get("/api/pass", &out)
+	return out.Claim
+}
+
+// claimCookie reads the claim cookie in this harness's browser.
+func (p *passHarness) claimCookie() (string, bool) {
+	p.t.Helper()
+	u, err := url.Parse(p.base + passCookiePath)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	for _, c := range p.http.Jar.Cookies(u) {
+		if c.Name == passClaimCookie {
+			return c.Value, true
+		}
+	}
+	return "", false
+}
+
+// TestPassCollectsOnlyThroughItsOwnClaim holds every order to the claim its
+// own checkout set: a second checkout gives the browser a new claim with only
+// its own order under it, and nothing from one checkout is ever added to what
+// another buys, whoever paid for it. A payment on an earlier checkout is no
+// longer collected by that browser; it is still its buyer's, and a reissue
+// link from its receipt makes it a Pass of its own.
+func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	if p.reportsClaim() {
+		t.Fatal("a browser that bought nothing has a claim")
+	}
+
+	first := p.checkout("")
+	cookie, _ := p.claimCookie()
+	second := p.checkout("")
+	if again, _ := p.claimCookie(); again == cookie {
+		t.Fatal("a second checkout kept the browser's old claim token")
+	}
+	var claims, orders int
+	if err := p.app.pool.QueryRow(context.Background(), `
+		SELECT count(DISTINCT claim_hash), count(*) FROM pass_orders`).Scan(&claims, &orders); err != nil || claims != 2 || orders != 2 {
+		t.Fatalf("two checkouts in one browser made %d orders under %d claims (%v), want one under each of 2", orders, claims, err)
+	}
+	// The claim index is unique, which is what holds a claim to one order:
+	// claimPass reads, and deletes, by the claim alone.
+	if _, err := p.app.pool.Exec(context.Background(), `
+		INSERT INTO pass_orders (session_hash, claim_hash, days, expires_at)
+		SELECT '\xee', claim_hash, days, expires_at FROM pass_orders LIMIT 1`); !isUniqueViolation(err) {
+		t.Fatalf("a second order under one claim: %v, want a unique violation", err)
+	}
+	if !p.reportsClaim() {
+		t.Fatal("GET /api/pass did not say the browser has a purchase to collect")
+	}
+
+	// The second tab is paid: its Pass is issued, and nothing is left to
+	// collect here.
+	p.paid(second, "pi_second")
+	code, issued := p.claim()
+	if want := passExpiry(time.Now(), 365); code != http.StatusOK || issued.Status != "issued" || issued.Claim || !issued.ExpiresAt.Equal(want) {
+		t.Fatalf("claim of the latest checkout: status %d, %+v; want a Pass to %v", code, issued, want)
+	}
+	// The first tab, paid later, is not collected here and changes nothing
+	// about the Pass the second one made.
+	p.paid(first, "pi_first")
+	if p.reportsClaim() {
+		t.Fatal("the browser is told to collect an earlier checkout's payment")
+	}
+	if code, out := p.claim(); code != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("claim after the earlier tab was paid: status %d, %+v", code, out)
+	}
+	if _, ok := p.claimCookie(); !ok {
+		t.Fatal("a claim with nothing to collect took the claim cookie out of the browser")
+	}
+	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(issued.ExpiresAt) {
+		t.Fatalf("an earlier checkout's payment moved the Pass to %v, want %v", got, issued.ExpiresAt)
+	}
+	// It is still its buyer's: a link from its receipt makes it a Pass of its
+	// own, and the first Pass goes on as it was.
+	status, _, token := p.reissueLink("mod-key", "pi_first")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of the earlier tab's payment: status %d", status)
+	}
+	code, own := p.otherBrowser().redeem(token)
+	if code != http.StatusOK || own.Status != "issued" || own.Pass == issued.Pass || !own.ExpiresAt.Equal(passExpiry(time.Now(), 365)) {
+		t.Fatalf("redeem of the earlier tab's payment: status %d, %+v", code, own)
+	}
+	for _, c := range []string{issued.Pass, own.Pass} {
+		if status, _ := p.activate(c); status != http.StatusOK {
+			t.Fatalf("code %s after both were collected: status %d", c, status)
+		}
+	}
+
+	// At a shared computer, somebody starts a checkout, keeps its Stripe page
+	// and leaves; the next person buys there, and the first pays from
+	// elsewhere before the second collects. The buyer's Pass is made from the
+	// buyer's payment alone, and the first payment's receipt reissues a Pass
+	// of its own, never the buyer's.
+	shared := p.otherBrowser()
+	left := shared.checkout("")
+	bought := shared.checkout("")
+	shared.paid(left, "pi_left_open")
+	shared.paid(bought, "pi_buyer")
+	code, buyer := shared.claim()
+	if code != http.StatusOK || buyer.Status != "issued" || !buyer.ExpiresAt.Equal(passExpiry(time.Now(), 365)) {
+		t.Fatalf("the buyer's claim: status %d, %+v", code, buyer)
+	}
+	var origin bool
+	var payments int
+	if err := p.app.pool.QueryRow(context.Background(), `
+		SELECT bool_and(origin AND payment_hash = $2), count(*) FROM pass_payments
+		WHERE pass_id = (SELECT id FROM passes WHERE token_hash = $1)`,
+		p.app.passTokenHash(strings.ReplaceAll(buyer.Pass, "-", "")), p.app.passPaymentHash("pi_buyer")).Scan(&origin, &payments); err != nil ||
+		!origin || payments != 1 {
+		t.Fatalf("the buyer's Pass has %d payments, the buyer's its only origin: %v (%v)", payments, origin, err)
+	}
+	status, _, token = p.reissueLink("mod-key", "pi_left_open")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of the payment left open: status %d", status)
+	}
+	if code, out := p.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" || out.Pass == buyer.Pass {
+		t.Fatalf("redeem of the payment left open: status %d, %+v", code, out)
+	}
+	if status, _ := p.activate(buyer.Pass); status != http.StatusOK {
+		t.Fatalf("another payment's reissue stopped the buyer's code: status %d", status)
+	}
+	if status, _, _ := p.reissueLink("mod-key", "pi_buyer"); status != http.StatusOK {
+		t.Fatalf("the buyer's own receipt: status %d", status)
+	}
+
+	// A bank debit is still clearing when the next person buys at the same
+	// browser. Its money renews nobody's Pass: once cleared, its receipt
+	// reissues a Pass of its own, and the next person's is as they bought it.
+	library := p.otherBrowser()
+	slow := map[string]any{"id": library.checkout(""), "object": "checkout.session", "mode": "payment",
+		"payment_status": "unpaid", "payment_intent": "pi_debit_clearing"}
+	library.webhook(stripeCheckoutCompleted, slow)
+	next := library.buy("pi_next_person")
+	slow["payment_status"] = "paid"
+	library.webhook(stripeCheckoutAsyncSuccess, slow)
+	if library.reportsClaim() {
+		t.Fatal("the next person is told to collect the cleared debit")
+	}
+	status, _, token = p.reissueLink("mod-key", "pi_debit_clearing")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of the cleared debit: status %d", status)
+	}
+	if code, out := p.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" || out.Pass == next.Pass {
+		t.Fatalf("redeem of the cleared debit: status %d, %+v", code, out)
+	}
+	if got, _ := p.passExpiresAt(next.Pass); !got.Equal(next.ExpiresAt) {
+		t.Fatalf("the cleared debit moved the next person's Pass to %v, want %v", got, next.ExpiresAt)
+	}
+
+	// A cookie this server could not have made is no claim, and a checkout
+	// replaces it.
+	u, _ := url.Parse(p.base + passCookiePath)
+	p.http.Jar.SetCookies(u, []*http.Cookie{{Name: passClaimCookie, Value: "not-a-claim", Path: passCookiePath}})
+	if p.reportsClaim() {
+		t.Fatal("a malformed claim cookie was reported as a claim")
+	}
+	p.checkout("")
+	if value, _ := p.claimCookie(); value == "not-a-claim" {
+		t.Fatal("a checkout kept a claim cookie this server could not have made")
+	}
+}
+
+// TestPassOrderDeadlineIsAMidnight holds an order's deadline to the day, so
+// the row does not date its checkout to the microsecond.
+func TestPassOrderDeadlineIsAMidnight(t *testing.T) {
+	p := passServer(t, nil)
+	before := time.Now()
+	p.checkout("")
+	var deadline time.Time
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT expires_at FROM pass_orders`).Scan(&deadline); err != nil {
+		t.Fatal(err)
+	}
+	if !deadline.Equal(dayCeil(deadline)) || deadline.Before(before.Add(passClaimTTL)) ||
+		deadline.After(time.Now().Add(passClaimTTL+24*time.Hour)) {
+		t.Fatalf("order deadline %v: want the first UTC midnight a week on", deadline.UTC())
+	}
+}
+
+// TestPassPaidAfterItsDeadlineIsKept holds a paid order to its payment: paid
+// after its deadline, or paid in time and collected late, it is still a Pass.
+// Only an order nobody paid for lapses.
+func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
+	p := passServer(t, nil)
+	session := p.checkout("")
+	p.exec(`UPDATE pass_orders SET expires_at = $1`, time.Now().Add(-time.Hour))
+	p.paid(session, "pi_paid_late")
+	if status, out := p.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("an order paid after its deadline: status %d, %+v", status, out)
+	}
+
+	session = p.checkout("")
+	p.paid(session, "pi_collected_late")
+	p.exec(`UPDATE pass_orders SET expires_at = $1`, time.Now().Add(-time.Hour))
+	if status, out := p.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("a paid order collected after its deadline: status %d, %+v", status, out)
+	}
+
+	p.checkout("")
+	p.exec(`UPDATE pass_orders SET expires_at = $1`, time.Now().Add(-time.Hour))
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
+		t.Fatalf("an unpaid order past its deadline: status %d, %+v", status, out)
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("a lapsed unpaid order was kept: %d rows", n)
+	}
+}
+
+// claimSetCookie collects in this harness's browser and returns the claim
+// cookie the answer set.
+func (p *passHarness) claimSetCookie() (int, *http.Cookie) {
+	p.t.Helper()
+	res, err := p.http.Do(p.claimRequest())
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	for _, c := range res.Cookies() {
+		if c.Name == passClaimCookie {
+			return res.StatusCode, c
+		}
+	}
+	return res.StatusCode, nil
+}
+
+// TestPassSlowPaymentIsWaitedFor holds a checkout completed with a payment
+// that takes days to clear, a bank debit say, until it does: neither the
+// order nor the browser's claim lapses at the week a card payment gets. The
+// claim cookie is set for that long at checkout, since only a webhook holds
+// the order and a buyer may not come back until the debit has cleared.
+func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
+	p := passServer(t, nil)
+	session, cookie := p.checkoutSetCookie("")
+	if cookie == nil || time.Duration(cookie.MaxAge)*time.Second < stripeCheckoutTTL+passPendingPaymentTTL-time.Minute {
+		t.Fatalf("the checkout's claim cookie %v lapses before a slow payment's hold could", cookie)
+	}
+	object := map[string]any{"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "unpaid", "payment_intent": "pi_debit"}
+	if status := p.webhook(stripeCheckoutCompleted, object); status != http.StatusOK {
+		t.Fatalf("completed webhook: status %d", status)
+	}
+	var held time.Time
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT expires_at FROM pass_orders`).Scan(&held); err != nil {
+		t.Fatal(err)
+	}
+	if !held.Equal(dayCeil(held)) || held.Before(time.Now().Add(passPendingPaymentTTL-time.Minute)) {
+		t.Fatalf("a checkout waiting on its payment is held until %v, want a midnight %v on", held.UTC(), passPendingPaymentTTL)
+	}
+	// The cookie set at checkout outlives the hold, and asking after the
+	// purchase neither sets nor clears it.
+	if time.Now().Add(time.Duration(cookie.MaxAge) * time.Second).Before(held) {
+		t.Fatalf("the claim cookie lapses before the order it holds (%v)", held.UTC())
+	}
+	if status, set := p.claimSetCookie(); status != http.StatusAccepted || set != nil {
+		t.Fatalf("claim while the payment clears: status %d, cookie %v", status, set)
+	}
+	// Only forgetting the claim clears it: a claim told to wait, or refused
+	// for its body, leaves it in the browser to collect with.
+	var refused passResponse
+	if status := p.post("/api/pass/claim", map[string]any{}, &refused); status != http.StatusBadRequest {
+		t.Fatalf("claim with no nonce: status %d", status)
+	}
+	if value, ok := p.claimCookie(); !ok || value != cookie.Value {
+		t.Fatal("a claim answered 202 or 400 took the claim cookie out of the browser")
+	}
+	// A week and a day on, the debit has not cleared yet and the order stays.
+	if err := p.app.store.prunePasses(context.Background(), time.Now().AddDate(0, 0, 8)); err != nil {
+		t.Fatal(err)
+	}
+	if n := p.count("pass_orders"); n != 1 {
+		t.Fatalf("an order waiting on a slow payment was pruned at its week: %d rows", n)
+	}
+	object["payment_status"] = "paid"
+	if status := p.webhook(stripeCheckoutAsyncSuccess, object); status != http.StatusOK {
+		t.Fatalf("async webhook: status %d", status)
+	}
+	if status, out := p.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("claim after the debit cleared: status %d, %+v", status, out)
+	}
+
+	// A debit that fails can never be paid, and its order goes at once.
+	session = p.checkout("")
+	object = map[string]any{"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "unpaid", "payment_intent": "pi_bounced"}
+	p.webhook(stripeCheckoutCompleted, object)
+	if status := p.webhook(stripeCheckoutAsyncFailure, object); status != http.StatusOK {
+		t.Fatalf("async failure webhook: status %d", status)
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
+		t.Fatalf("claim after the debit failed: status %d, %+v", status, out)
+	}
+}
+
+// TestPassExpiredCheckoutIsDropped holds an order to its Stripe session: one
+// Stripe closed unpaid is dropped, so the browser stops waiting for it, and
+// no other order goes with it.
+func TestPassExpiredCheckoutIsDropped(t *testing.T) {
+	p := passServer(t, nil)
+	expired := func(session string) {
+		t.Helper()
+		if status := p.webhook(stripeCheckoutExpired, map[string]any{"id": session, "object": "checkout.session",
+			"mode": "payment", "status": "expired", "payment_status": "unpaid"}); status != http.StatusOK {
+			t.Fatalf("expired webhook: status %d", status)
+		}
+	}
+	abandoned := p.checkout("")
+	open := p.checkout("")
+	expired(abandoned)
+	if n := p.count("pass_orders"); n != 1 {
+		t.Fatalf("%d orders left after one of two checkouts expired, want 1", n)
+	}
+	if status, out := p.claim(); status != http.StatusAccepted || !out.Claim {
+		t.Fatalf("claim with one checkout expired and one open: status %d, %+v", status, out)
+	}
+	expired(open)
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
+		t.Fatalf("claim with every checkout expired: status %d, %+v", status, out)
+	}
+	if p.reportsClaim() {
+		t.Fatal("the claim outlived its expired checkouts")
+	}
+
+	// An expiry never takes a paid order with it.
+	paid := p.checkout("")
+	p.paid(paid, "pi_paid_then_expired")
+	expired(paid)
+	if status, out := p.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("a paid order after an expiry event: status %d, %+v", status, out)
+	}
+}
+
+// TestPassRenewalOfAPassThatIsGone answers a renewal of a Pass that cannot be
+// renewed any more as such, where it once failed the order's foreign key with
+// a 500 after Stripe had opened a checkout.
+func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
+	p := passServer(t, nil)
+
+	// Past its grace month: refused before Stripe is asked for anything.
+	lapsed := p.buy("pi_lapsed_long_ago")
+	p.exec(`UPDATE passes SET expires_at = $1`, time.Now().Add(-passExpiredGrace-time.Hour))
+	var out passResponse
+	if status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": lapsed.Pass}, &out); status != http.StatusForbidden ||
+		refusalState(t, out) != passInvalid {
+		t.Fatalf("renewing a Pass past its grace month: status %d, %+v", status, out)
+	}
+	if n := p.stripe.sessionCount(); n != 1 {
+		t.Fatalf("Stripe opened %d sessions, want only the purchase's", n)
+	}
+
+	// Refunded while Stripe was opening the renewal's checkout.
+	live := p.buy("pi_refunded_meanwhile")
+	before, _ := p.claimCookie()
+	var revokeErr error
+	p.stripe.mu.Lock()
+	p.stripe.opening = func() {
+		_, revokeErr = p.app.store.revokePassPayment(context.Background(), p.app.passPaymentHash("pi_refunded_meanwhile"), time.Now())
+	}
+	p.stripe.mu.Unlock()
+	status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": live.Pass}, &out)
+	if revokeErr != nil {
+		t.Fatal(revokeErr)
+	}
+	if status != http.StatusConflict || out.Pass != passInvalid || !strings.Contains(out.Error, "buy a new one") {
+		t.Fatalf("renewal of a Pass refunded mid-checkout: status %d, %+v", status, out)
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("a renewal of a refunded Pass left %d orders", n)
+	}
+	if after, _ := p.claimCookie(); after != before || p.reportsClaim() {
+		t.Fatal("a refused renewal gave the browser a claim")
+	}
+
+	// Run past its grace month while Stripe was opening the checkout, but not
+	// pruned yet: the order is refused all the same.
+	ageing := p.buy("pi_aged_meanwhile")
+	p.stripe.mu.Lock()
+	p.stripe.opening = func() {
+		_, revokeErr = p.app.pool.Exec(context.Background(), `UPDATE passes SET expires_at = $1 WHERE token_hash = $2`,
+			time.Now().Add(-passExpiredGrace-time.Minute), p.app.passTokenHash(strings.ReplaceAll(ageing.Pass, "-", "")))
+	}
+	p.stripe.mu.Unlock()
+	status = p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": ageing.Pass}, &out)
+	if revokeErr != nil {
+		t.Fatal(revokeErr)
+	}
+	if status != http.StatusConflict || out.Pass != passInvalid {
+		t.Fatalf("renewal of a Pass that ran past its grace month mid-checkout: status %d, %+v", status, out)
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("a renewal of a lapsed Pass left %d orders", n)
+	}
+
+	// The foreign key itself is read as the same refusal.
+	_, err := p.app.pool.Exec(context.Background(), `
+		INSERT INTO pass_orders (claim_hash, session_hash, renew_pass_id, days, expires_at)
+		VALUES ('\x00', '\x00', 999999999, 365, now())`)
+	if !isForeignKeyViolation(err) {
+		t.Fatalf("an order for a missing Pass: %v, want a foreign key violation", err)
+	}
+}
+
+func TestPassRefundsAndDisputes(t *testing.T) {
+	p := passServer(t, nil)
+
+	refunded := p.buy("pi_refund")
+	// A partial refund leaves the Pass alone.
+	p.webhook(stripeChargeRefunded, map[string]any{"object": "charge", "payment_intent": "pi_refund", "refunded": false})
+	if status, _ := p.activate(refunded.Pass); status != http.StatusOK {
+		t.Fatalf("a partial refund cancelled the Pass: status %d", status)
+	}
+	p.webhook(stripeChargeRefunded, map[string]any{"object": "charge", "payment_intent": "pi_refund", "refunded": true})
+	if status, out := p.activate(refunded.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a refunded Pass still works: status %d, %+v", status, out)
+	}
+
+	disputed := p.buy("pi_dispute")
+	p.webhook(stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_dispute"})
+	if status, _ := p.activate(disputed.Pass); status != http.StatusForbidden {
+		t.Fatalf("a disputed Pass still works: status %d", status)
+	}
+
+	// Refunded after paying and before collecting: nothing to collect.
+	session := p.checkout("")
+	p.paid(session, "pi_uncollected")
+	p.webhook(stripeChargeRefunded, map[string]any{"object": "charge", "payment_intent": "pi_uncollected", "refunded": true})
+	if status, _ := p.claim(); status != http.StatusBadRequest {
+		t.Fatalf("a refunded order could still be collected: status %d", status)
+	}
+
+	// The refund arrives ahead of a retried "paid": the late event must not
+	// turn the refunded purchase into a Pass, and the order, which can never
+	// be paid now, goes, so the browser stops waiting for it.
+	session = p.checkout("")
+	p.webhook(stripeChargeRefunded, map[string]any{"object": "charge", "payment_intent": "pi_early", "refunded": true})
+	p.paid(session, "pi_early")
+	if p.reportsClaim() {
+		t.Fatal("the browser is still told to wait for a refunded payment")
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
+		t.Fatalf("a late paid event for a refunded payment: status %d, %+v", status, out)
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("the refunded payment's order was kept: %d rows", n)
+	}
+}
+
+func TestPassRenewal(t *testing.T) {
+	p := passServer(t, nil)
+	issued := p.buy("pi_first")
+	// Bring the expiry close, so the renewal is seen to add to it.
+	soon := dayCeil(time.Now().AddDate(0, 0, 10))
+	p.exec(`UPDATE passes SET expires_at = $1`, soon)
+
+	var out passResponse
+	if status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": "AAAAA-AAAAA-AAAAA-AAAAA"}, &out); status != http.StatusForbidden {
+		t.Fatalf("renewing an unknown code: status %d", status)
+	}
+
+	p.paid(p.checkout(issued.Pass), "pi_renewal")
+	status, renewed := p.claim()
+	if status != http.StatusOK || renewed.Status != "renewed" || renewed.Pass != "" {
+		t.Fatalf("renewal claim: status %d, %+v", status, renewed)
+	}
+	// A Pass that has not run out gains exactly the term: its expiry is on a
+	// midnight already, so there is nothing to round.
+	if want := soon.AddDate(0, 0, 365); !renewed.ExpiresAt.Equal(want) {
+		t.Fatalf("renewed to %v, want %v", renewed.ExpiresAt, want)
+	}
+	if status, active := p.activate(issued.Pass); status != http.StatusOK || !active.ExpiresAt.Equal(renewed.ExpiresAt) {
+		t.Fatalf("the renewed code: status %d, %+v", status, active)
+	}
+
+	// An expired Pass can still be renewed within its grace month, from now.
+	// Checked as typed, in lower case and without its dashes, it is refused
+	// with the code as the server writes it and the day it ran out, so the
+	// page can keep it to renew.
+	ranOut := dayCeil(time.Now().Add(-72 * time.Hour))
+	p.exec(`UPDATE passes SET expires_at = $1`, ranOut)
+	typed := strings.ToLower(strings.ReplaceAll(issued.Pass, "-", ""))
+	if status, out := p.activate(typed); status != http.StatusForbidden || refusalState(t, out) != passExpired ||
+		out.Code != issued.Pass || !out.ExpiresAt.Equal(ranOut) {
+		t.Fatalf("an expired Pass: status %d, %+v", status, out)
+	}
+	p.paid(p.checkout(issued.Pass), "pi_late_renewal")
+	if status, out := p.claim(); status != http.StatusOK ||
+		!out.ExpiresAt.Equal(dayCeil(time.Now().AddDate(0, 0, 365))) {
+		t.Fatalf("renewing an expired Pass: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("the code after renewing an expired Pass: status %d", status)
+	}
+}
+
+// passExpiresAt reads a Pass's stored expiry by its code.
+func (p *passHarness) passExpiresAt(code string) (time.Time, bool) {
+	p.t.Helper()
+	canonical, _ := parsePassCode(code)
+	_, expires, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return expires, true
+}
+
+func (p *passHarness) refund(paymentIntent string) {
+	p.t.Helper()
+	if status := p.webhook(stripeChargeRefunded, map[string]any{
+		"object": "charge", "payment_intent": paymentIntent, "refunded": true,
+	}); status != http.StatusOK {
+		p.t.Fatalf("refund webhook: status %d", status)
+	}
+}
+
+func (p *passHarness) renew(code, paymentIntent string) passResponse {
+	p.t.Helper()
+	p.paid(p.checkout(code), paymentIntent)
+	status, out := p.claim()
+	if status != http.StatusOK || out.Status != "renewed" {
+		p.t.Fatalf("renewal claim: status %d, %+v", status, out)
+	}
+	return out
+}
+
+// TestPassRefundTakesOffOneTerm holds a refund or a dispute to the payment it
+// is for: it takes that payment's term off the Pass, and a Pass is cancelled
+// only when nothing of its time is left.
+func TestPassRefundTakesOffOneTerm(t *testing.T) {
+	p := passServer(t, nil)
+	issued := p.buy("pi_bought")
+	bought, _ := p.passExpiresAt(issued.Pass)
+	p.renew(issued.Pass, "pi_renewed")
+	p.renew(issued.Pass, "pi_renewed_again")
+	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(bought.AddDate(0, 0, 730)) {
+		t.Fatalf("two renewals took the Pass to %v, want %v", got, bought.AddDate(0, 0, 730))
+	}
+
+	// Refunding the middle renewal takes its year off and leaves the rest.
+	p.refund("pi_renewed")
+	if got, ok := p.passExpiresAt(issued.Pass); !ok || !got.Equal(bought.AddDate(0, 0, 365)) {
+		t.Fatalf("after refunding one renewal the Pass runs to %v (kept: %v), want %v", got, ok, bought.AddDate(0, 0, 365))
+	}
+	// Stripe delivers events more than once; a repeat takes nothing more.
+	p.refund("pi_renewed")
+	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(bought.AddDate(0, 0, 365)) {
+		t.Fatalf("a repeated refund took more off: %v", got)
+	}
+
+	// Refunding the purchase itself leaves the renewal paid after it.
+	p.refund("pi_bought")
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("refunding the purchase wiped the renewal paid after it: status %d", status)
+	}
+	// The last term refunded, nothing is left, and the Pass goes with it.
+	p.refund("pi_renewed_again")
+	if status, out := p.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a Pass with every term refunded still works: status %d, %+v", status, out)
+	}
+	var left int
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM pass_payments`).Scan(&left); err != nil || left != 0 {
+		t.Fatalf("payments of a cancelled Pass left behind: %d (%v)", left, err)
+	}
+
+	// Somebody who renews another person's Pass and then disputes it takes
+	// back only what they gave.
+	victim := p.buy("pi_victim")
+	before, _ := p.passExpiresAt(victim.Pass)
+	p.renew(victim.Pass, "pi_gift")
+	p.webhook(stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_gift"})
+	if got, ok := p.passExpiresAt(victim.Pass); !ok || !got.Equal(before) {
+		t.Fatalf("a disputed renewal left the Pass at %v (kept: %v), want %v as before it", got, ok, before)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("a disputed renewal cost the holder their Pass: status %d", status)
+	}
+
+	// A renewal of a Pass that had run out, refunded, leaves nothing over: the
+	// part of a day the expiry was rounded up by goes with it.
+	lapsed := p.buy("pi_lapsed")
+	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`,
+		dayCeil(time.Now()).AddDate(0, 0, -3), p.app.passTokenHash(strings.ReplaceAll(lapsed.Pass, "-", "")))
+	p.renew(lapsed.Pass, "pi_revival")
+	p.refund("pi_revival")
+	if status, _ := p.activate(lapsed.Pass); status != http.StatusForbidden {
+		t.Fatalf("a refunded renewal of a lapsed Pass left it working: status %d", status)
+	}
+}
+
+// reissueLink asks for a reissue link as the owner, and returns the status,
+// the answer and the link's token.
+func (p *passHarness) reissueLink(key, paymentIntent string) (int, passResponse, string) {
+	p.t.Helper()
+	var out passResponse
+	status := p.postWithHeaders(http.Header{modKeyHeader: {key}}, "/api/pass/reissue",
+		map[string]any{"payment_intent": paymentIntent}, &out)
+	token, _ := strings.CutPrefix(out.URL, testPublicURL+"/pass#reissue=")
+	return status, out, token
+}
+
+// otherBrowser is a browser with no cookies of this harness's, as a buyer
+// opening a reissue link somewhere else would be.
+func (p *passHarness) otherBrowser() *passHarness {
+	p.t.Helper()
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	h := &harness{client: &client{t: p.t, base: p.base, http: &http.Client{Jar: jar}}, app: p.app}
+	return &passHarness{harness: h, stripe: p.stripe}
+}
+
+// redeem opens a reissue link on the Pass page, which sends its token in the
+// claim's body.
+func (p *passHarness) redeem(token string) (int, passResponse) {
+	p.t.Helper()
+	status, out := p.redeemWith(token, p.collectNonce())
+	p.keepNonce(status, out)
+	return status, out
+}
+
+func (p *passHarness) redeemWith(token, nonce string) (int, passResponse) {
+	p.t.Helper()
+	var out passResponse
+	status := p.post("/api/pass/claim", map[string]any{"reissue": token, "nonce": nonce}, &out)
+	return status, out
+}
+
+// TestPassReissue holds a reissue to a one-time link the owner passes on and
+// never sees a code through, for the payment that bought a Pass or a paid
+// order nobody collected.
+func TestPassReissue(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_lost")
+
+	if status, _, _ := p.reissueLink("wrong", "pi_lost"); status != http.StatusForbidden {
+		t.Fatalf("reissue without the moderation key: status %d", status)
+	}
+	if status, _, _ := p.reissueLink("mod-key", "pi_unknown"); status != http.StatusNotFound {
+		t.Fatalf("reissue of an unknown payment: status %d", status)
+	}
+	status, link, token := p.reissueLink("mod-key", "pi_lost")
+	if status != http.StatusOK || token == "" || link.Pass != "" || !link.ExpiresAt.Equal(dayCeil(link.ExpiresAt)) {
+		t.Fatalf("reissue: status %d, %+v", status, link)
+	}
+	if raw, err := base64.RawURLEncoding.DecodeString(token); err != nil || len(raw) != 16 {
+		t.Fatalf("reissue link %q does not carry a 16-byte token in its fragment", link.URL)
+	}
+	// Making the link changes nothing: the code works until the link is used.
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("making a link stopped the code: status %d", status)
+	}
+
+	// Opened anywhere, the link gives a new code for the same Pass, once.
+	buyer := p.otherBrowser()
+	status, fresh := buyer.redeem(token)
+	if status != http.StatusOK || fresh.Status != "issued" || !passCodeShape(fresh.Pass) || fresh.Pass == issued.Pass ||
+		!fresh.ExpiresAt.Equal(issued.ExpiresAt) {
+		t.Fatalf("redeeming the link: status %d, %+v", status, fresh)
+	}
+	if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
+		t.Fatalf("the replaced code still works: status %d", status)
+	}
+	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
+		t.Fatalf("the reissued code: status %d", status)
+	}
+	if status, out := buyer.redeem(token); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a link used twice: status %d, %+v", status, out)
+	}
+	if status, _ := buyer.redeem("not a token"); status != http.StatusForbidden {
+		t.Fatalf("a malformed link: status %d", status)
+	}
+
+	// A newer link replaces the one before it, and a link lapses at its
+	// deadline.
+	_, _, older := p.reissueLink("mod-key", "pi_lost")
+	_, _, newer := p.reissueLink("mod-key", "pi_lost")
+	if status, _ := buyer.redeem(older); status != http.StatusForbidden {
+		t.Fatalf("a replaced link still works: status %d", status)
+	}
+	p.exec(`UPDATE pass_reissues SET expires_at = now() - interval '1 second'`)
+	if status, _ := buyer.redeem(newer); status != http.StatusForbidden {
+		t.Fatalf("a link past its deadline still works: status %d", status)
+	}
+
+	// Paid for and never collected: the link collects it, and the browser's
+	// claim has nothing left.
+	p.paid(p.checkout(""), "pi_never_collected")
+	_, _, token = p.reissueLink("mod-key", "pi_never_collected")
+	if status, rescued := buyer.redeem(token); status != http.StatusOK || rescued.Status != "issued" || !passCodeShape(rescued.Pass) {
+		t.Fatalf("redeeming a link for an uncollected Pass: status %d, %+v", status, rescued)
+	}
+	if status, _ := p.claim(); status != http.StatusBadRequest {
+		t.Fatalf("an order collected through a link could be collected again: status %d", status)
+	}
+
+	// A refund cancels a link not yet used, and a refunded payment gets none.
+	refunded := p.buy("pi_refunded_after_link")
+	_, _, token = p.reissueLink("mod-key", "pi_refunded_after_link")
+	p.refund("pi_refunded_after_link")
+	if status, _ := buyer.redeem(token); status != http.StatusForbidden {
+		t.Fatalf("a link for a refunded payment still works: status %d", status)
+	}
+	if status, _, _ := p.reissueLink("mod-key", "pi_refunded_after_link"); status != http.StatusNotFound {
+		t.Fatalf("a link for a refunded payment: status %d", status)
+	}
+	if status, _ := p.activate(refunded.Pass); status != http.StatusForbidden {
+		t.Fatalf("a refunded Pass works: status %d", status)
+	}
+}
+
+// TestPassReissueCannotTakeOverAPass holds a reissue to the payment that
+// bought the Pass. Somebody who sees a code once, pays to renew it and asks
+// for a reissue with their own payment gets no link, and the holder keeps the
+// Pass; one whose renewal was never collected gets only the renewal.
+func TestPassReissueCannotTakeOverAPass(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	victim := p.buy("pi_victim")
+
+	intruder := p.otherBrowser()
+	intruder.renew(victim.Pass, "pi_intruder")
+	if status, out, token := p.reissueLink("mod-key", "pi_intruder"); status != http.StatusConflict || token != "" ||
+		!strings.Contains(out.Error, "payment that bought the Pass") {
+		t.Fatalf("reissue with a renewal's payment: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("the holder lost their Pass to a renewal: status %d", status)
+	}
+
+	// A link made while a renewal was uncollected, used after it was collected
+	// as a renewal, gives nothing either.
+	intruder.paid(intruder.checkout(victim.Pass), "pi_collected_after_link")
+	_, _, early := p.reissueLink("mod-key", "pi_collected_after_link")
+	if status, out := intruder.claim(); status != http.StatusOK || out.Status != "renewed" {
+		t.Fatalf("collect the renewal: status %d, %+v", status, out)
+	}
+	if status, out := intruder.redeem(early); status != http.StatusForbidden || out.Pass != passInvalid {
+		t.Fatalf("a link for a renewal collected since: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("the holder lost their Pass to a renewal's early link: status %d", status)
+	}
+
+	// Renewed and never collected: the link collects the renewal, which
+	// renews the Pass and shows no code.
+	before, _ := p.passExpiresAt(victim.Pass)
+	intruder.paid(intruder.checkout(victim.Pass), "pi_uncollected_renewal")
+	status, _, token := p.reissueLink("mod-key", "pi_uncollected_renewal")
+	if status != http.StatusOK {
+		t.Fatalf("reissue of an uncollected renewal: status %d", status)
+	}
+	status, out := intruder.redeem(token)
+	if status != http.StatusOK || out.Status != "renewed" || out.Pass != "" || !out.ExpiresAt.Equal(before.AddDate(0, 0, 365)) {
+		t.Fatalf("redeeming an uncollected renewal: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("the holder lost their Pass to an uncollected renewal's link: status %d", status)
+	}
+	// Collected now, that payment is a renewal like any other.
+	if status, _, _ := p.reissueLink("mod-key", "pi_uncollected_renewal"); status != http.StatusConflict {
+		t.Fatalf("reissue of a collected renewal: status %d", status)
+	}
+}
+
+// TestPassSharesOneHourlyBudget holds the Pass to its one perk: it adds no
+// cooldown and lifts none, everyone using one code draws on one hourly
+// budget, and only a post that is saved is counted against it.
+func TestPassSharesOneHourlyBudget(t *testing.T) {
+	p := passServer(t, func(cfg *Config) {
+		cfg.TrustedProxyHops = 1
+		cfg.ThreadCooldown = time.Minute
+		cfg.PostCooldown = time.Minute
+		cfg.Pass.HourlyPosts = 2
+	})
+	p.addBoard("pass-board")
+	issued := p.buy("pi_shared")
+	code, _ := parsePassCode(issued.Pass)
+	key := p.app.passBudgetKey(code)
+	spent := func() int {
+		p.app.pass.budget.mu.Lock()
+		defer p.app.pass.budget.mu.Unlock()
+		return p.app.pass.budget.hours[key].count
+	}
+
+	var thread createdPost
+	if status := p.postWithHeaders(http.Header{passHeader: {issued.Pass}, "X-Forwarded-For": {"10.0.0.1"}},
+		"/api/boards/pass-board/threads", map[string]any{"body": "a thread with a pass"}, &thread); status != http.StatusCreated {
+		t.Fatalf("first post with the Pass: status %d (%s)", status, thread.Error)
+	}
+	// Somebody else, elsewhere, with the same Pass: no cooldown is shared, so
+	// a post tells nobody when the Pass last posted. The count is shared.
+	var reply createdPost
+	if status := p.postWithHeaders(http.Header{passHeader: {issued.Pass}, "X-Forwarded-For": {"10.0.0.2"}},
+		fmt.Sprintf("/api/boards/pass-board/threads/%d/posts", thread.ThreadNo), map[string]any{"body": "a reply with a pass"}, &reply); status != http.StatusCreated {
+		t.Fatalf("a shared Pass was held to the other poster's cooldown: status %d (%s)", status, reply.Error)
+	}
+	if n := spent(); n != 2 || p.app.pass.budget.left(key, time.Now()) {
+		t.Fatalf("two posts with one Pass spent %d of its budget, left %v", n, p.app.pass.budget.left(key, time.Now()))
+	}
+	// The budget spent, a post with the Pass is still taken: it is a meter for
+	// the captcha, never a refusal.
+	if status, out := p.postWithPass("pass-board", issued.Pass, "10.0.0.3", nil); status != http.StatusCreated {
+		t.Fatalf("a post past the Pass's budget: status %d (%s)", status, out.Error)
+	}
+	// A Pass never lifts an address's own cooldown, and a post refused by it
+	// costs the Pass nothing.
+	before := spent()
+	if status, _ := p.postWithPass("pass-board", issued.Pass, "10.0.0.1", nil); status != http.StatusTooManyRequests {
+		t.Fatalf("a Pass lifted the address's cooldown: status %d", status)
+	}
+	// Nor does a post that fails: a reply to a thread that is not there.
+	var out passResponse
+	if status := p.postWithHeaders(http.Header{passHeader: {issued.Pass}, "X-Forwarded-For": {"10.0.0.4"}},
+		"/api/boards/pass-board/threads/999999/posts", map[string]any{"body": "nowhere"}, &out); status != http.StatusNotFound {
+		t.Fatalf("a reply to a missing thread with a Pass: status %d (%s)", status, out.Error)
+	}
+	if n := spent(); n != before {
+		t.Fatalf("refused and failed posts spent the budget: %d, was %d", n, before)
+	}
+
+	// The count is for one clock hour and is forgotten when the hour ends: the
+	// flood-control sweep drops it.
+	p.app.pass.budget.mu.Lock()
+	p.app.pass.budget.hours[key] = passHour{hour: clockHour(time.Now()) - 1, count: 99}
+	p.app.pass.budget.mu.Unlock()
+	p.app.cooldownSweep.run(time.Now())
+	p.app.pass.budget.mu.Lock()
+	_, kept := p.app.pass.budget.hours[key]
+	p.app.pass.budget.mu.Unlock()
+	if kept {
+		t.Fatal("the sweep kept a Pass's count from an hour that has ended")
+	}
+}
+
+// TestPassNoGoodOnPostsIsNoPass holds a post that presents a Pass that is no
+// good, refunded, replaced or run out, to what a post without one gets: no
+// status of its own for the log to record beside the thread's path, and the
+// Pass's state in the answer's body, which no log records, for the page.
+func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
+	var logs syncBuffer
+	p := passServerLogging(t, nil, &logs)
+	p.addBoard("pass-board")
+	issued := p.buy("pi_post")
+
+	if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusCreated || out.Pass != "" {
+		t.Fatalf("posting with a Pass: status %d, %+v", status, out)
+	}
+	for name, code := range map[string]string{
+		"malformed": "not a pass",
+		"unknown":   "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ",
+	} {
+		status, out := p.postWithPass("pass-board", code, "", nil)
+		if status != http.StatusCreated || out.Pass != passInvalid {
+			t.Errorf("%s Pass: status %d, %+v", name, status, out)
+		}
+	}
+	p.exec(`UPDATE passes SET expires_at = now() - interval '1 hour'`)
+	if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusCreated || out.Pass != passExpired {
+		t.Fatalf("expired Pass: status %d, %+v", status, out)
+	}
+
+	// Refunded, its holder's next reply leaves the same line a reply without
+	// a Pass does.
+	thread := p.createThread("pass-board", "", "", "a thread")
+	refunded := p.buy("pi_post_refunded")
+	p.refund("pi_post_refunded")
+	path := fmt.Sprintf("/api/boards/pass-board/threads/%d/posts", thread.ThreadNo)
+	var with, without passResponse
+	if status := p.postWithHeaders(http.Header{passHeader: {refunded.Pass}}, path, map[string]any{"body": "with"}, &with); status != http.StatusCreated || with.Pass != passInvalid {
+		t.Fatalf("a reply with a refunded Pass: status %d, %+v", status, with)
+	}
+	if status := p.postWithHeaders(nil, path, map[string]any{"body": "without"}, &without); status != http.StatusCreated || without.Pass != "" {
+		t.Fatalf("a reply without a Pass: status %d, %+v", status, without)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, path) {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("log line %q: %v", line, err)
+			}
+			delete(entry, "time")
+			delete(entry, "duration")
+			delete(entry, "duration_ms")
+			again, _ := json.Marshal(entry)
+			lines = append(lines, string(again))
+		}
+	}
+	if len(lines) != 2 || lines[0] != lines[1] {
+		t.Fatalf("the replies with and without a refunded Pass were logged differently:\n%s", strings.Join(lines, "\n"))
+	}
+
+	// A badged post is the credential's request: the Pass header is not read,
+	// so a bad one does not stand in its way, and a good one is not looked up
+	// or counted against its hour.
+	mail := &captureSender{}
+	v := passServer(t, func(cfg *Config) {
+		cfg.VerifySecret = "test-verification-secret"
+		cfg.VerifyCodeTTL = defaultVerifyCodeTTL
+		cfg.VerifyCredentialTTL = defaultVerifyCredentialTTL
+		cfg.Sender = mail
+	})
+	v.addBoard("pass-board")
+	credential := (&verifyHarness{harness: v.harness, mail: mail}).verify("ana@iitb.ac.in").Credential
+	held := v.buy("pi_beside_a_badge")
+	heldCode, _ := parsePassCode(held.Pass)
+	for name, code := range map[string]string{"a bad": "not a pass", "a good": held.Pass} {
+		var badged passResponse
+		if status := v.postWithHeaders(http.Header{credentialHeader: {credential}, passHeader: {code}},
+			"/api/boards/pass-board/threads", map[string]any{"body": "badged", "badge": true}, &badged); status != http.StatusCreated || badged.Pass != "" {
+			t.Fatalf("badged post with %s Pass header: status %d, %+v", name, status, badged)
+		}
+	}
+	v.app.pass.budget.mu.Lock()
+	_, counted := v.app.pass.budget.hours[v.app.passBudgetKey(heldCode)]
+	v.app.pass.budget.mu.Unlock()
+	if counted {
+		t.Fatal("a badged post counted the Pass beside it against its hour")
+	}
+
+	// A deployment that has retired the Pass ignores Passes rather than
+	// refusing posts, or answering for them.
+	off := testServer(t, nil)
+	off.addBoard("pass-board")
+	var created passResponse
+	if status := off.postWithHeaders(http.Header{passHeader: {"not a pass"}},
+		"/api/boards/pass-board/threads", map[string]any{"body": "hi"}, &created); status != http.StatusCreated || created.Pass != "" {
+		t.Fatalf("posting with a Pass header where the Pass is off: status %d, %+v", status, created)
+	}
+}
+
+// TestPassLookupFailureNamesNoThread holds a failed Pass lookup on a post to
+// a log line without the post's path, which names the board and the thread:
+// beside the time, it would say a Pass holder posted there.
+func TestPassLookupFailureNamesNoThread(t *testing.T) {
+	var logs syncBuffer
+	p := passServerLogging(t, nil, &logs)
+	p.addBoard("telltale")
+	thread := p.createThread("telltale", "", "", "a thread")
+	p.exec(`ALTER TABLE passes RENAME TO passes_unreadable`)
+	status, _ := p.postWithHeadersStatus(http.Header{passHeader: {"ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"}},
+		fmt.Sprintf("/api/boards/telltale/threads/%d/posts", thread.ThreadNo), map[string]any{"body": "with a pass"})
+	if status != http.StatusInternalServerError {
+		t.Fatalf("a post whose Pass could not be read: status %d", status)
+	}
+	var found bool
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line %q: %v", line, err)
+		}
+		if entry["msg"] != "could not read the Pass" {
+			continue
+		}
+		found = true
+		if _, ok := entry["path"]; ok || strings.Contains(line, "telltale") {
+			t.Errorf("the Pass lookup failure names the thread: %s", line)
+		}
+	}
+	if !found {
+		t.Fatalf("no Pass lookup failure in the log:\n%s", logs.String())
+	}
+}
+
+// postWithHeadersStatus is postWithHeaders for a test that wants the status
+// and the error only.
+func (p *passHarness) postWithHeadersStatus(header http.Header, path string, body any) (int, string) {
+	p.t.Helper()
+	var out passResponse
+	status := p.postWithHeaders(header, path, body, &out)
+	return status, out.Error
+}
+
+// TestPassEndpointsTakeOnlyJSONFromThisSite holds the Pass's POST endpoints
+// to requests another site cannot make a browser send: a body declared as
+// JSON, and no Sec-Fetch-Site saying the request came from another site.
+func TestPassEndpointsTakeOnlyJSONFromThisSite(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_guarded")
+	send := func(path, contentType, site, body string) (int, string) {
+		t.Helper()
+		req, err := http.NewRequest(http.MethodPost, p.base+path, strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if contentType != "" {
+			req.Header.Set("Content-Type", contentType)
+		}
+		if site != "" {
+			req.Header.Set("Sec-Fetch-Site", site)
+		}
+		req.Header.Set(modKeyHeader, "mod-key")
+		var out passResponse
+		status := p.send(req, &out)
+		return status, out.Error
+	}
+	sessions := p.stripe.sessionCount()
+	for path, body := range map[string]string{
+		"/api/pass/checkout": `{"adult":true}`,
+		"/api/pass/claim":    `{}`,
+		"/api/pass/activate": `{"pass":"` + issued.Pass + `"}`,
+		"/api/pass/reissue":  `{"payment_intent":"pi_guarded"}`,
+	} {
+		for _, contentType := range []string{"", "text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"} {
+			if status, _ := send(path, contentType, "", body); status != http.StatusUnsupportedMediaType {
+				t.Errorf("%s with Content-Type %q: status %d, want 415", path, contentType, status)
+			}
+		}
+		if status, msg := send(path, "application/json", "cross-site", body); status != http.StatusForbidden ||
+			!strings.Contains(msg, "other sites") {
+			t.Errorf("%s from another site: status %d (%s), want 403", path, status, msg)
+		}
+		for _, site := range []string{"", "same-origin", "none"} {
+			status, msg := send(path, "application/json; charset=utf-8", site, body)
+			if status == http.StatusUnsupportedMediaType || strings.Contains(msg, "other sites") {
+				t.Errorf("%s with Sec-Fetch-Site %q: status %d (%s)", path, site, status, msg)
+			}
+		}
+	}
+	// Three checkouts went through, one per same-site try, and the refused
+	// ones never reached Stripe.
+	if n := p.stripe.sessionCount() - sessions; n != 3 {
+		t.Errorf("Stripe opened %d sessions, want 3", n)
+	}
+}
+
+// TestPassPriceSurvivesACancelledRequest holds the cached price to Stripe's
+// answer, not to the request that happened to ask: a client that went away
+// mid-fetch would otherwise blank the price for everyone for a minute.
+func TestPassPriceSurvivesACancelledRequest(t *testing.T) {
+	p := passServer(t, nil)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	price, err := p.app.passPrice(ctx)
+	if err != nil || price.Amount != 2000 {
+		t.Fatalf("price for a cancelled request: %+v, %v", price, err)
+	}
+	var out passResponse
+	if p.get("/api/pass", &out); out.Price == nil {
+		t.Fatal("a cancelled request left the price out of the cache")
+	}
+}
+
+func TestPassDisabled(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	var out passResponse
+	for _, path := range []string{"/api/pass/checkout", "/api/pass/claim", "/api/pass/activate"} {
+		if status := h.post(path, map[string]any{}, &out); status != http.StatusForbidden {
+			t.Errorf("%s with the Pass off: status %d", path, status)
+		}
+	}
+	if status := h.postWithHeaders(http.Header{modKeyHeader: {"mod-key"}}, "/api/pass/reissue",
+		map[string]any{"payment_intent": "pi_x"}, &out); status != http.StatusForbidden {
+		t.Errorf("reissue with the Pass off: status %d", status)
+	}
+	if status := h.post("/api/pass/stripe-webhook", map[string]any{}, &out); status != http.StatusNotFound {
+		t.Errorf("webhook with the Pass off: status %d", status)
+	}
+}
+
+// TestPassIsNeverStoredOrLogged holds the Pass to the poster key's standard:
+// a code used on every posting path (a thread and a reply, each as JSON and
+// with an image, and a reply by thread id) is found in no table but its own,
+// nowhere in the log, and neither are the buyer's details from the webhook,
+// nor the nonce a code was collected with.
+func TestPassIsNeverStoredOrLogged(t *testing.T) {
+	var logs syncBuffer
+	p := passServerLogging(t, func(cfg *Config) { cfg.ModKey = "mod-key" }, &logs)
+	p.addBoard("scan")
+	p.paid(p.checkout(""), "pi_scan_payment")
+	claimToken, _ := p.claimCookie()
+	nonce := p.collectNonce()
+	_, issued := p.claim()
+	code, _ := parsePassCode(issued.Pass)
+	const marker = "body-marker-for-the-pass-scan"
+
+	b := browser{harness: p.harness, key: newPosterKey(t)}
+	header := b.headers(false)
+	header.Set(passHeader, issued.Pass)
+	var created createdPost
+	if status := p.postWithHeaders(header, "/api/boards/scan/threads", map[string]any{"body": marker}, &created); status != http.StatusCreated {
+		t.Fatalf("thread with a Pass: status %d (%s)", status, created.Error)
+	}
+	thread := created.ThreadNo
+	if status := p.postWithHeaders(header, fmt.Sprintf("/api/boards/scan/threads/%d/posts", thread),
+		map[string]any{"body": "reply with a pass"}, &created); status != http.StatusCreated {
+		t.Fatalf("reply with a Pass: status %d (%s)", status, created.Error)
+	}
+	if status := p.uploadWithHeaders(header, fmt.Sprintf("/api/boards/scan/threads/%d/posts", thread),
+		map[string]string{"body": "image reply with a pass"}, "pass.png", pngBytes(t, 16, 16), &created); status != http.StatusCreated {
+		t.Fatalf("image reply with a Pass: status %d (%s)", status, created.Error)
+	}
+	if status := p.uploadWithHeaders(header, "/api/boards/scan/threads",
+		map[string]string{"body": "image thread with a pass"}, "pass.png", pngBytes(t, 16, 16), &created); status != http.StatusCreated {
+		t.Fatalf("image thread with a Pass: status %d (%s)", status, created.Error)
+	}
+	if status := p.postWithHeaders(header, fmt.Sprintf("/api/threads/%d/posts", p.threadID("scan", thread)),
+		map[string]any{"body": "reply by thread id with a pass"}, &created); status != http.StatusCreated {
+		t.Fatalf("reply by thread id with a Pass: status %d (%s)", status, created.Error)
+	}
+	if status, out := p.postWithPass("scan", "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ", "", nil); status != http.StatusCreated || out.Pass != passInvalid {
+		t.Fatalf("unknown Pass: status %d, %+v", status, out)
+	}
+	// The code is lost and reissued through a link, and the new one posts too.
+	_, _, linkToken := p.reissueLink("mod-key", "pi_scan_payment")
+	elsewhere := p.otherBrowser()
+	linkNonce := elsewhere.collectNonce()
+	status, reissued := elsewhere.redeem(linkToken)
+	if status != http.StatusOK || reissued.Status != "issued" {
+		t.Fatalf("redeem the reissue link: status %d, %+v", status, reissued)
+	}
+	if status, out := p.postWithPass("scan", reissued.Pass, "", nil); status != http.StatusCreated {
+		t.Fatalf("thread with the reissued Pass: status %d (%s)", status, out.Error)
+	}
+	newCode, _ := parsePassCode(reissued.Pass)
+
+	stored := p.app.passTokenHash(newCode)
+	// Positive controls: the scan finds the post body in posts, and the stored
+	// hash in passes, so a scan that finds nothing has looked.
+	if n := p.rowsContaining("posts", []byte(marker)); n != 1 {
+		t.Fatalf("the scan found the marker in %d posts, want 1; it cannot be trusted", n)
+	}
+	if n := p.rowsContaining("passes", stored); n != 1 {
+		t.Fatalf("the scan found the stored hash in %d passes rows, want 1; it misses bytea columns", n)
+	}
+	budgetKey := p.app.passBudgetKey(code)
+	for name, needle := range map[string][]byte{
+		"the code":                 []byte(issued.Pass),
+		"the canonical code":       []byte(code),
+		"the replaced code's hash": p.app.passTokenHash(code),
+		"the reissued code":        []byte(reissued.Pass),
+		"the canonical new code":   []byte(newCode),
+		"the reissue link token":   []byte(linkToken),
+		"the claim token":          []byte(claimToken),
+		"the claim's nonce":        []byte(nonce),
+		"the reissue's nonce":      []byte(linkNonce),
+		"the stored hash":          stored,
+		"the budget key":           []byte(budgetKey),
+		"the unknown code":         []byte("ZZZZZZZZZZZZZZZZZZZZ"),
+		"SHA-256 of the code":      sha(code),
+		"the payment intent":       []byte("pi_scan_payment"),
+		"the buyer's email":        []byte("buyer@example.com"),
+		"the buyer's name":         []byte("Bea Buyer"),
+		"the checkout session id":  []byte("cs_test_1"),
+	} {
+		for _, table := range p.tables() {
+			if table == "passes" && name == "the stored hash" {
+				continue
+			}
+			if n := p.rowsContaining(table, needle); n != 0 {
+				t.Errorf("%d rows of %s contain %s", n, table, name)
+			}
+		}
+	}
+
+	out := logs.String()
+	if !strings.Contains(out, `"path":"/api/pass/stripe-webhook"`) || !strings.Contains(out, `"path":"/api/boards/scan/threads"`) {
+		t.Fatalf("expected the webhook and the posts in the log, got:\n%s", out)
+	}
+	for name, needle := range map[string]string{
+		"the code":           issued.Pass,
+		"the canonical code": code,
+		"the reissued code":  reissued.Pass,
+		"the new code":       newCode,
+		"the reissue link":   linkToken,
+		"the claim token":    claimToken,
+		"the claim's nonce":  nonce,
+		"the reissue nonce":  linkNonce,
+		"the stored hash":    hex.EncodeToString(stored),
+		"the budget key":     budgetKey,
+		"the payment intent": "pi_scan_payment",
+		"the buyer's email":  "buyer@example.com",
+		"the buyer's name":   "Bea Buyer",
+		"the session id":     "cs_test_1",
+	} {
+		if strings.Contains(out, needle) {
+			t.Errorf("the log contains %s:\n%s", name, out)
+		}
+	}
+}
+
+func sha(s string) []byte {
+	sum := sha256.Sum256([]byte(s))
+	return sum[:]
+}
+
+// TestPassTablesCannotBeJoinedToPosts pins the Pass tables the way the
+// verification tables are pinned: every column is a decision, none of them
+// can be joined to a post, and their only references are to each other.
+func TestPassTablesCannotBeJoinedToPosts(t *testing.T) {
+	h := testServer(t, nil)
+
+	want := map[string][]string{
+		"passes":           {"expires_at", "id", "token_hash"},
+		"pass_payments":    {"days", "ends_at", "origin", "pass_id", "payment_hash"},
+		"pass_orders":      {"claim_hash", "days", "expires_at", "payment_hash", "renew_pass_id", "session_hash"},
+		"pass_revocations": {"expires_at", "payment_hash"},
+		"pass_reissues":    {"expires_at", "payment_hash", "token_hash"},
+	}
+	for table, columns := range want {
+		if got := h.columns(table); strings.Join(got, ",") != strings.Join(columns, ",") {
+			t.Errorf("%s has columns %v, want exactly %v", table, got, columns)
+		}
+		rows, err := h.app.pool.Query(context.Background(), `
+			SELECT confrelid::regclass::text FROM pg_constraint
+			WHERE conrelid = $1::regclass AND contype = 'f'`, table)
+		if err != nil {
+			t.Fatalf("foreign keys of %s: %v", table, err)
+		}
+		for rows.Next() {
+			var target string
+			if err := rows.Scan(&target); err != nil {
+				t.Fatal(err)
+			}
+			if target != "passes" {
+				t.Errorf("%s references %s; the Pass tables reference only each other", table, target)
+			}
+		}
+		rows.Close()
+	}
+
+	for _, column := range h.columns("posts") {
+		if strings.Contains(column, "pass") || strings.Contains(column, "payment") {
+			t.Errorf("posts.%s links a post to a Pass", column)
+		}
+	}
+}
+
+// TestSweepPrunesThePassTables holds the Pass tables to their stated
+// lifetimes on a server where nobody starts a checkout: the daily sweep
+// prunes them too, whether or not the Pass is on sale.
+func TestSweepPrunesThePassTables(t *testing.T) {
+	for _, on := range []bool{true, false} {
+		t.Run(fmt.Sprintf("on sale %v", on), func(t *testing.T) {
+			var h *harness
+			if on {
+				h = passServer(t, nil).harness
+			} else {
+				h = testServer(t, nil)
+			}
+			now := time.Now()
+			days := func(n int) time.Time { return now.AddDate(0, 0, n) }
+			h.exec(`INSERT INTO passes (id, token_hash, expires_at) VALUES
+				(1, '\x01', $1), (2, '\x02', $2)`, days(-31), days(-1))
+			// Each paid order is kept for its own term past its deadline: a
+			// two-year one 400 days on, a 30-day one not 31 days on. The
+			// sweeper is run without EDUCHAN_PASS_DAYS (the server that is not
+			// on sale here has none), and needs none.
+			h.exec(`INSERT INTO pass_orders (session_hash, claim_hash, payment_hash, days, expires_at) VALUES
+				('\xa1', '\xc1', NULL, 365, $1),
+				('\xa2', '\xc2', NULL, 365, $2),
+				('\xa3', '\xc3', '\xb3', 365, $3),
+				('\xa4', '\xc4', '\xb4', 365, $4),
+				('\xa5', '\xc5', '\xb5', 730, $5),
+				('\xa6', '\xc6', '\xb6', 30, $6)`,
+				now.Add(-time.Hour), days(1), days(-10), days(-366), days(-400), days(-31))
+			h.exec(`INSERT INTO pass_revocations (payment_hash, expires_at) VALUES
+				('\xb7', $1), ('\xb8', $2)`, now.Add(-time.Hour), days(1))
+			h.exec(`INSERT INTO pass_reissues (token_hash, payment_hash, expires_at) VALUES
+				('\xd7', '\xb7', $1), ('\xd8', '\xb8', $2)`, now.Add(-time.Hour), days(1))
+			if _, err := h.app.Sweep(context.Background()); err != nil {
+				t.Fatalf("sweep: %v", err)
+			}
+			for table, want := range map[string]string{
+				// A Pass a month past expiry goes; one within its grace month stays.
+				"SELECT string_agg(id::text, ',' ORDER BY id) FROM passes": "2",
+				// Unpaid past its deadline goes; paid stays a term past it.
+				"SELECT string_agg(encode(session_hash, 'hex'), ',' ORDER BY session_hash) FROM pass_orders": "a2,a3,a5",
+				"SELECT string_agg(encode(payment_hash, 'hex'), ',') FROM pass_revocations":                  "b8",
+				// A reissue link goes at its deadline.
+				"SELECT string_agg(encode(token_hash, 'hex'), ',') FROM pass_reissues": "d8",
+			} {
+				var got string
+				if err := h.app.pool.QueryRow(context.Background(), table).Scan(&got); err != nil {
+					t.Fatalf("%s: %v", table, err)
+				}
+				if got != want {
+					t.Errorf("%s after the sweep: %q, want %q", table, got, want)
+				}
+			}
+		})
+	}
+}
+
+/* Races --------------------------------------------------------------------- */
+
+// The Pass's writes are applied one at a time under one advisory lock
+// (passLockID). These tests take that lock in a transaction of their own,
+// fire the racing requests while it is held, and wait until each is queued
+// behind it, which fails if any of them does not take the lock first. Released,
+// the requests take the lock in the order they asked for it, so each race is
+// run both ways round and its outcome checked for each.
+
+type racedResponse struct {
+	status int
+	body   passResponse
+	err    error
+}
+
+// fire sends req on a goroutine of its own and delivers the answer on the
+// returned channel. Nothing there may fail the test, which only the test's
+// own goroutine can do, so the request is built beforehand.
+func (p *passHarness) fire(req *http.Request) <-chan racedResponse {
+	done := make(chan racedResponse, 1)
+	go func() {
+		res, err := p.http.Do(req)
+		if err != nil {
+			done <- racedResponse{err: err}
+			return
+		}
+		defer res.Body.Close()
+		var out passResponse
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		done <- racedResponse{status: res.StatusCode, body: out}
+	}()
+	return done
+}
+
+func (p *passHarness) request(path string, body any, header http.Header) *http.Request {
+	p.t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, p.base+path, bytes.NewReader(encoded))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	return req
+}
+
+func (p *passHarness) claimRequest() *http.Request {
+	return p.request("/api/pass/claim", map[string]any{"nonce": p.collectNonce()}, nil)
+}
+
+func (p *passHarness) webhookRequest(eventType string, object map[string]any) *http.Request {
+	p.t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"id": "evt_test", "object": "event", "type": eventType,
+		"data": map[string]any{"object": object},
+	})
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, p.base+"/api/pass/stripe-webhook", bytes.NewReader(body))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Stripe-Signature", signStripe(body, testWebhookSecret, time.Now()))
+	return req
+}
+
+func (p *passHarness) paidRequest(session, paymentIntent string) *http.Request {
+	return p.webhookRequest(stripeCheckoutCompleted, map[string]any{
+		"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "paid", "payment_intent": paymentIntent,
+	})
+}
+
+func (p *passHarness) refundRequest(paymentIntent string) *http.Request {
+	return p.webhookRequest(stripeChargeRefunded, map[string]any{
+		"object": "charge", "payment_intent": paymentIntent, "refunded": true,
+	})
+}
+
+// passLock is the Pass lock held by the test.
+type passLock struct {
+	p    *passHarness
+	conn *pgx.Conn
+	tx   pgx.Tx
+	pid  int
+}
+
+func (p *passHarness) holdPassLock() *passLock {
+	p.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, p.app.cfg.DatabaseURL)
+	if err != nil {
+		p.t.Fatalf("connect: %v", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		p.t.Fatalf("begin: %v", err)
+	}
+	l := &passLock{p: p, conn: conn, tx: tx}
+	p.t.Cleanup(l.release)
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&l.pid); err != nil {
+		p.t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, hashtext(current_schema()))`, passLockID); err != nil {
+		p.t.Fatalf("take the Pass lock: %v", err)
+	}
+	return l
+}
+
+// queued waits until n requests are waiting on the lock: the one holding it,
+// or another waiting ahead of them.
+func (l *passLock) queued(n int, what string) {
+	l.p.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		// Asked on the holder's own connection: the requests waiting have taken
+		// connections from the server's pool, which may have none left.
+		if err := l.tx.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted
+			  AND classid = $1::int::oid AND objid = hashtext(current_schema())::oid`,
+			passLockID).Scan(&waiting); err != nil {
+			l.p.t.Fatalf("look for requests waiting on the Pass lock: %v", err)
+		}
+		if waiting >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			l.p.t.Fatalf("%s never waited on the Pass lock (%d of %d waiting)", what, waiting, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (l *passLock) release() {
+	if l.conn == nil {
+		return
+	}
+	ctx := context.Background()
+	_ = l.tx.Rollback(ctx)
+	_ = l.conn.Close(ctx)
+	l.conn = nil
+}
+
+// race fires two requests in turn behind the Pass lock, so they run in that
+// order, and returns their answers.
+func (p *passHarness) race(first, second *http.Request, names [2]string) (racedResponse, racedResponse) {
+	p.t.Helper()
+	lock := p.holdPassLock()
+	a := p.fire(first)
+	lock.queued(1, names[0])
+	b := p.fire(second)
+	lock.queued(2, names[1])
+	lock.release()
+	ra, rb := <-a, <-b
+	for i, r := range []racedResponse{ra, rb} {
+		if r.err != nil || r.status >= 500 {
+			p.t.Fatalf("%s: status %d, %v (%s)", names[i], r.status, r.err, r.body.Error)
+		}
+	}
+	return ra, rb
+}
+
+func (p *passHarness) count(table string) int {
+	p.t.Helper()
+	var n int
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM `+table).Scan(&n); err != nil {
+		p.t.Fatalf("count %s: %v", table, err)
+	}
+	return n
+}
+
+// A refund racing the claim of what it refunds: whichever goes first, the
+// refunded payment ends up buying nothing.
+func TestPassRefundRacingAClaim(t *testing.T) {
+	for _, claimFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("claim first %v", claimFirst), func(t *testing.T) {
+			p := passServer(t, nil)
+			p.paid(p.checkout(""), "pi_race")
+			claim, refund := p.claimRequest(), p.refundRequest("pi_race")
+			var claimed racedResponse
+			if claimFirst {
+				claimed, _ = p.race(claim, refund, [2]string{"the claim", "the refund"})
+				if claimed.status != http.StatusOK || claimed.body.Status != "issued" {
+					t.Fatalf("claim ahead of the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+				if status, _ := p.activate(claimed.body.Pass); status != http.StatusForbidden {
+					t.Fatalf("the refunded Pass still works: status %d", status)
+				}
+			} else {
+				_, claimed = p.race(refund, claim, [2]string{"the refund", "the claim"})
+				if claimed.status != http.StatusBadRequest {
+					t.Fatalf("claim behind the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+			}
+			for _, table := range []string{"passes", "pass_payments", "pass_orders"} {
+				if n := p.count(table); n != 0 {
+					t.Errorf("%d rows left in %s after a refund", n, table)
+				}
+			}
+		})
+	}
+}
+
+// A refund racing the "paid" event of the same payment: whichever goes
+// first, no Pass comes of it.
+func TestPassPaymentRacingARefund(t *testing.T) {
+	for _, paidFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("paid first %v", paidFirst), func(t *testing.T) {
+			p := passServer(t, nil)
+			session := p.checkout("")
+			paid, refund := p.paidRequest(session, "pi_race"), p.refundRequest("pi_race")
+			if paidFirst {
+				p.race(paid, refund, [2]string{"the paid event", "the refund"})
+			} else {
+				p.race(refund, paid, [2]string{"the refund", "the paid event"})
+			}
+			status, out := p.claim()
+			if status == http.StatusOK || p.count("passes") != 0 {
+				t.Fatalf("a refunded payment was collected: status %d, %+v", status, out)
+			}
+			if p.count("pass_revocations") != 1 {
+				t.Fatal("the refund was not remembered")
+			}
+		})
+	}
+}
+
+// Collecting a renewal racing a refund of the Pass it renews: it once
+// deadlocked, and whichever goes first now, each payment keeps its own term.
+func TestPassRenewalRacingARefund(t *testing.T) {
+	for _, claimFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("claim first %v", claimFirst), func(t *testing.T) {
+			p := passServer(t, nil)
+			issued := p.buy("pi_origin")
+			bought, _ := p.passExpiresAt(issued.Pass)
+			p.paid(p.checkout(issued.Pass), "pi_renewal")
+			claim, refund := p.claimRequest(), p.refundRequest("pi_origin")
+			if claimFirst {
+				claimed, _ := p.race(claim, refund, [2]string{"the renewal's claim", "the refund"})
+				if claimed.status != http.StatusOK || claimed.body.Status != "renewed" {
+					t.Fatalf("renewal ahead of the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+				// The renewal's year stands; the purchase's is gone.
+				got, ok := p.passExpiresAt(issued.Pass)
+				if !ok || !got.After(time.Now()) || !got.Before(bought.AddDate(0, 0, 365)) {
+					t.Fatalf("after the refund the Pass runs to %v (kept: %v); want the renewal's year only", got, ok)
+				}
+			} else {
+				_, claimed := p.race(refund, claim, [2]string{"the refund", "the renewal's claim"})
+				// The Pass it renewed is gone, so the renewal is a Pass of its own.
+				if claimed.status != http.StatusOK || claimed.body.Status != "issued" {
+					t.Fatalf("renewal behind the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+				if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
+					t.Fatalf("the refunded Pass still works: status %d", status)
+				}
+				if status, _ := p.activate(claimed.body.Pass); status != http.StatusOK {
+					t.Fatalf("the renewal's own Pass: status %d", status)
+				}
+			}
+		})
+	}
+}
+
+// Every request that writes a Pass table, and the sweep, queues for the Pass
+// lock.
+func TestEveryPassWriteTakesThePassLock(t *testing.T) {
+	p := passServer(t, func(cfg *Config) {
+		cfg.ModKey = "mod-key"
+		// Each request waiting on the lock holds a connection.
+		cfg.DBMaxConns = 16
+	})
+	p.buy("pi_reissue")
+	_, _, token := p.reissueLink("mod-key", "pi_reissue")
+	session := p.checkout("")
+	unpaid := map[string]any{"id": session, "object": "checkout.session", "mode": "payment", "payment_status": "unpaid"}
+	request := func(req *http.Request) func() <-chan racedResponse {
+		return func() <-chan racedResponse { return p.fire(req) }
+	}
+	writes := []struct {
+		name  string
+		start func() <-chan racedResponse
+	}{
+		{"a checkout", request(p.request("/api/pass/checkout", map[string]any{"adult": true}, nil))},
+		{"a claim", request(p.claimRequest())},
+		{"a slow payment", request(p.webhookRequest(stripeCheckoutCompleted, unpaid))},
+		{"an expired checkout", request(p.webhookRequest(stripeCheckoutExpired, unpaid))},
+		{"a paid event", request(p.paidRequest(session, "pi_paid"))},
+		{"a refund", request(p.refundRequest("pi_refund"))},
+		{"a dispute", request(p.webhookRequest(stripeDisputeCreated, map[string]any{"payment_intent": "pi_dispute"}))},
+		{"a reissue", request(p.request("/api/pass/reissue", map[string]any{"payment_intent": "pi_reissue"},
+			http.Header{modKeyHeader: {"mod-key"}}))},
+		{"a reissue link redeemed", request(p.request("/api/pass/claim", map[string]any{"reissue": token, "nonce": p.collectNonce()}, nil))},
+		{"a claim forgotten", request(p.request("/api/pass/claim", map[string]any{"forget": true}, nil))},
+		{"the sweep", func() <-chan racedResponse {
+			done := make(chan racedResponse, 1)
+			go func() {
+				_, err := p.app.Sweep(context.Background())
+				done <- racedResponse{status: http.StatusOK, err: err}
+			}()
+			return done
+		}},
+	}
+	lock := p.holdPassLock()
+	var answers []<-chan racedResponse
+	for i, w := range writes {
+		answers = append(answers, w.start())
+		lock.queued(i+1, w.name)
+	}
+	lock.release()
+	for i, a := range answers {
+		if r := <-a; r.err != nil || r.status >= 500 {
+			t.Errorf("%s: status %d, %v", writes[i].name, r.status, r.err)
+		}
+	}
+}
+
+/* Round two ---------------------------------------------------------------- */
+
+// checkoutSetCookie starts a checkout in this harness's browser and returns
+// the Stripe session id and the claim cookie the answer set.
+func (p *passHarness) checkoutSetCookie(renew string) (string, *http.Cookie) {
+	p.t.Helper()
+	body := map[string]any{"adult": true}
+	if renew != "" {
+		body["renew"] = renew
+	}
+	res, err := p.http.Do(p.request("/api/pass/checkout", body, nil))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out passResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil || res.StatusCode != http.StatusOK {
+		p.t.Fatalf("checkout: status %d, %+v (%v)", res.StatusCode, out, err)
+	}
+	var cookie *http.Cookie
+	for _, c := range res.Cookies() {
+		if c.Name == passClaimCookie {
+			cookie = c
+		}
+	}
+	return out.URL[strings.LastIndexByte(out.URL, '/')+1:], cookie
+}
+
+// setClaimCookie puts a claim token in this harness's browser, as somebody
+// copying one off another browser, or planting one, would.
+func (p *passHarness) setClaimCookie(value string) {
+	p.t.Helper()
+	u, err := url.Parse(p.base + passCookiePath)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	p.http.Jar.SetCookies(u, []*http.Cookie{{Name: passClaimCookie, Value: value, Path: passCookiePath}})
+}
+
+// forget drops this browser's claim, as Forget this browser and Remove the
+// Pass do.
+func (p *passHarness) forget() (int, passResponse) {
+	p.t.Helper()
+	var out passResponse
+	status := p.post("/api/pass/claim", map[string]any{"forget": true}, &out)
+	return status, out
+}
+
+// twin is a second server on this one's database with its Pass settings
+// changed, as the same deployment restarted with new settings would be. It
+// shares this browser: the same cookies go to both.
+func (p *passHarness) twin(tune func(*PassConfig)) *passHarness {
+	p.t.Helper()
+	cfg := p.app.cfg
+	tune(&cfg.Pass)
+	app, err := New(context.Background(), cfg, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		p.t.Fatalf("start the twin: %v", err)
+	}
+	p.t.Cleanup(app.Close)
+	srv := httptest.NewServer(app.Routes())
+	p.t.Cleanup(srv.Close)
+	app.pass.activateLimiter = newCooldownLimiter(0)
+	h := &harness{client: &client{t: p.t, base: srv.URL, http: p.http}, app: app}
+	return &passHarness{harness: h, stripe: p.stripe}
+}
+
+// TestPassClaimCanBeAskedAgain holds collecting to being safe to repeat: a
+// page whose answer never arrived asks again with the cookie and the nonce it
+// kept and is given the same code, where it was once told there was nothing
+// to collect and the paid code was lost for good. Only both together are: the
+// cookie copied without the nonce, or the nonce copied, planted or left
+// behind and sent with any other cookie or link, gets nothing, and a code
+// refunded away or replaced by a reissue does not come back.
+func TestPassClaimCanBeAskedAgain(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	p.paid(p.checkout(""), "pi_lost_answer")
+	cookie, _ := p.claimCookie()
+	nonce := p.collectNonce()
+	status, first := p.claimWith(nonce)
+	if status != http.StatusOK || first.Status != "issued" || first.Claim {
+		t.Fatalf("claim: status %d, %+v", status, first)
+	}
+	// The answer never reached the page, which asks again.
+	status, again := p.claimWith(nonce)
+	if status != http.StatusOK || again.Status != "issued" || again.Pass != first.Pass ||
+		!again.ExpiresAt.Equal(first.ExpiresAt) || again.Claim {
+		t.Fatalf("the same claim asked again: status %d, %+v; want %s again", status, again, first.Pass)
+	}
+	if n := p.count("passes"); n != 1 {
+		t.Fatalf("asking again made %d Passes, want 1", n)
+	}
+	other, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, out := p.claimWith(other); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("a claim with another nonce: status %d, %+v", status, out)
+	}
+	var out passResponse
+	if status := p.post("/api/pass/claim", map[string]any{}, &out); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("a claim with no nonce: status %d, %+v", status, out)
+	}
+	thief := p.otherBrowser()
+	thief.setClaimCookie(cookie)
+	if status, out := thief.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the claim cookie copied without the nonce: status %d, %+v", status, out)
+	}
+	madeUp, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonceThief := p.otherBrowser()
+	if status, out := nonceThief.claimWith(nonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the nonce copied without the cookie: status %d, %+v", status, out)
+	}
+	nonceThief.setClaimCookie(madeUp)
+	if status, out := nonceThief.claimWith(nonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the nonce copied with a made-up cookie: status %d, %+v", status, out)
+	}
+
+	// A nonce planted in a shared browser by somebody who started a checkout
+	// there: the next person is told to wait, buys and collects with it, and
+	// the planter, with the nonce and the cookie of their own checkout or one
+	// made up, gets nothing of what was bought.
+	shared := p.otherBrowser()
+	shared.checkout("")
+	plantersCookie, _ := shared.claimCookie()
+	planted := shared.collectNonce()
+	if status, out := shared.claim(); status != http.StatusAccepted || !out.Claim {
+		t.Fatalf("the next person's first claim: status %d, %+v", status, out)
+	}
+	shared.paid(shared.checkout(""), "pi_shared")
+	if status, out := shared.claimWith(planted); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the next person's purchase: status %d, %+v", status, out)
+	}
+	planter := p.otherBrowser()
+	for name, c := range map[string]string{"their own checkout's": plantersCookie, "a made-up": madeUp} {
+		planter.setClaimCookie(c)
+		if status, out := planter.claimWith(planted); status == http.StatusOK || out.Pass != "" {
+			t.Fatalf("the planted nonce with %s cookie: status %d, %+v", name, status, out)
+		}
+	}
+
+	// A reissue link spent by a request whose answer was lost is answered
+	// again the same way, and only to that nonce.
+	_, _, token := p.reissueLink("mod-key", "pi_lost_answer")
+	buyer := p.otherBrowser()
+	linkNonce := buyer.collectNonce()
+	status, fresh := buyer.redeemWith(token, linkNonce)
+	if status != http.StatusOK || fresh.Status != "issued" || fresh.Pass == first.Pass {
+		t.Fatalf("redeem: status %d, %+v", status, fresh)
+	}
+	status, refetched := buyer.redeemWith(token, linkNonce)
+	if status != http.StatusOK || refetched.Status != "issued" || refetched.Pass != fresh.Pass || !refetched.ExpiresAt.Equal(fresh.ExpiresAt) {
+		t.Fatalf("the same redeem asked again: status %d, %+v; want %s again", status, refetched, fresh.Pass)
+	}
+	if status, out := buyer.redeemWith(token, other); status != http.StatusForbidden || out.Pass != passInvalid {
+		t.Fatalf("the spent link with another nonce: status %d, %+v", status, out)
+	}
+	if status, out := buyer.redeemWith(madeUp, linkNonce); status != http.StatusForbidden || out.Pass != passInvalid {
+		t.Fatalf("the link's nonce with a made-up link: status %d, %+v", status, out)
+	}
+	if status, _ := p.activate(first.Pass); status != http.StatusForbidden {
+		t.Fatalf("the replaced code still works: status %d", status)
+	}
+	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
+		t.Fatalf("the reissued code: status %d", status)
+	}
+	// The claim that collected the replaced code, asked again, does not bring
+	// it back.
+	if status, out := p.claimWith(nonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the claim asked again after a reissue: status %d, %+v", status, out)
+	}
+
+	// A nonce left behind in a browser by a link whose answer was lost, sent
+	// with another link, gets that link's own code and leaves the first alone.
+	p.otherBrowser().buy("pi_second_lost")
+	_, _, second := p.reissueLink("mod-key", "pi_second_lost")
+	status, leftover := buyer.redeemWith(second, linkNonce)
+	if status != http.StatusOK || leftover.Status != "issued" || leftover.Pass == fresh.Pass {
+		t.Fatalf("another link with the nonce left behind: status %d, %+v", status, leftover)
+	}
+	for _, code := range []string{fresh.Pass, leftover.Pass} {
+		if status, _ := p.activate(code); status != http.StatusOK {
+			t.Fatalf("code %s after a second link with the same nonce: status %d", code, status)
+		}
+	}
+
+	// A claim asked again after its Pass was refunded away gets nothing.
+	refunded := p.otherBrowser()
+	refunded.paid(refunded.checkout(""), "pi_refunded_away")
+	refundedNonce := refunded.collectNonce()
+	if status, out := refunded.claimWith(refundedNonce); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("claim before the refund: status %d, %+v", status, out)
+	}
+	refunded.refund("pi_refunded_away")
+	if status, out := refunded.claimWith(refundedNonce); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the claim asked again after a refund: status %d, %+v", status, out)
+	}
+}
+
+// TestPassCheckoutGivesANewClaim holds every checkout to a claim token only
+// that browser has: a token copied off a shared browser, or planted in it,
+// before somebody buys there collects nothing of what they buy.
+func TestPassCheckoutGivesANewClaim(t *testing.T) {
+	p := passServer(t, nil)
+	// Somebody starts a checkout on a shared computer, copies its claim
+	// cookie out of the browser and leaves without paying.
+	p.checkout("")
+	copied, _ := p.claimCookie()
+	thief := p.otherBrowser()
+	thief.setClaimCookie(copied)
+	// The next person at the computer buys a Pass.
+	p.paid(p.checkout(""), "pi_student")
+	if now, _ := p.claimCookie(); now == copied {
+		t.Fatal("the checkout kept the claim token that was copied before it")
+	}
+	// The copied token still reaches the checkout it was copied from, which
+	// nobody paid, and nothing else.
+	if status, out := thief.claim(); status != http.StatusAccepted || out.Pass != "" {
+		t.Fatalf("the copied token: status %d, %+v; want the abandoned checkout still waiting", status, out)
+	}
+	status, bought := p.claim()
+	if status != http.StatusOK || bought.Status != "issued" || bought.Claim {
+		t.Fatalf("the buyer's claim: status %d, %+v", status, bought)
+	}
+	if status, out := thief.claim(); status != http.StatusAccepted || out.Pass != "" {
+		t.Fatalf("the copied token after the buyer collected: status %d, %+v", status, out)
+	}
+
+	// A token chosen elsewhere and planted in a browser covers nothing that
+	// browser buys after it.
+	victim := p.otherBrowser()
+	planted, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim.setClaimCookie(planted)
+	victim.paid(victim.checkout(""), "pi_victim")
+	attacker := p.otherBrowser()
+	attacker.setClaimCookie(planted)
+	if status, out := attacker.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("a planted token collected the victim's Pass: status %d, %+v", status, out)
+	}
+	if status, out := victim.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the victim's claim: status %d, %+v", status, out)
+	}
+}
+
+// TestPassForgetDropsTheClaim holds Forget this browser, Remove the Pass and
+// Stop collecting it here to forgetting a purchase still being collected:
+// whoever uses the browser next collects nothing of it, even with a copy of
+// the claim cookie taken before, and the buyer gets it from their receipt
+// through a reissue.
+func TestPassForgetDropsTheClaim(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	session := p.checkout("")
+	slow := map[string]any{"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "unpaid", "payment_intent": "pi_forgotten"}
+	p.webhook(stripeCheckoutCompleted, slow)
+	if !p.reportsClaim() {
+		t.Fatal("no purchase to collect before forgetting")
+	}
+	// The page has asked once, and been told to wait.
+	nonce := p.collectNonce()
+	if status, out := p.claimWith(nonce); status != http.StatusAccepted || !out.Claim {
+		t.Fatalf("claim before forgetting: status %d, %+v", status, out)
+	}
+	copied, _ := p.claimCookie()
+	if status, out := p.forget(); status != http.StatusOK || out.Claim {
+		t.Fatalf("forget: status %d, %+v", status, out)
+	}
+	if _, ok := p.claimCookie(); ok {
+		t.Fatal("forgetting left the claim cookie in the browser")
+	}
+	// The bank debit clears after the buyer has left.
+	slow["payment_status"] = "paid"
+	p.webhook(stripeCheckoutAsyncSuccess, slow)
+	if p.reportsClaim() {
+		t.Fatal("the next person at the browser is told there is a purchase to collect")
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the next person collected the forgotten purchase: status %d, %+v", status, out)
+	}
+	fresh, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	replay := p.otherBrowser()
+	replay.setClaimCookie(copied)
+	for name, n := range map[string]string{"the nonce it had": nonce, "a fresh nonce": fresh} {
+		if status, out := replay.claimWith(n); status != http.StatusBadRequest || out.Pass != "" {
+			t.Fatalf("the claim cookie copied before forgetting, with %s: status %d, %+v", name, status, out)
+		}
+	}
+	if n := p.count("passes"); n != 0 {
+		t.Fatalf("a forgotten purchase was collected: %d Passes", n)
+	}
+	// The buyer writes in with their receipt.
+	_, _, token := p.reissueLink("mod-key", "pi_forgotten")
+	if status, out := p.otherBrowser().redeem(token); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("reissue of the forgotten purchase: status %d, %+v", status, out)
+	}
+	// Forgetting with nothing to forget is no error.
+	if status, _ := p.forget(); status != http.StatusOK {
+		t.Fatalf("forget with no claim: status %d", status)
+	}
+}
+
+// TestPassRefundTakesOffOnlyWhatIsLeft holds a refund to the part of its
+// payment's term still to come: a purchase refunded after its term has run
+// takes nothing off the renewal paid after it, where it once took the
+// renewal's time and deleted the Pass.
+func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
+	// A month's Pass runs out and is renewed in its grace month; then the
+	// purchase is disputed.
+	p := passServer(t, func(cfg *Config) { cfg.Pass.Days = 30 })
+	issued := p.buy("pi_month")
+	lapsed := dayCeil(time.Now()).AddDate(0, 0, -10)
+	p.exec(`UPDATE passes SET expires_at = $1`, lapsed)
+	p.exec(`UPDATE pass_payments SET ends_at = $1`, lapsed)
+	renewed := p.renew(issued.Pass, "pi_next_month")
+	p.webhook(stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_month"})
+	if got, ok := p.passExpiresAt(issued.Pass); !ok || !got.Equal(renewed.ExpiresAt) {
+		t.Fatalf("disputing a purchase whose month had run left the Pass at %v (kept: %v), want %v", got, ok, renewed.ExpiresAt)
+	}
+	// Refunding the renewal, all of it still to come, ends the Pass.
+	p.refund("pi_next_month")
+	if status, out := p.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a Pass with its only time to come refunded: status %d, %+v", status, out)
+	}
+
+	// A year's Pass, renewed at once: the purchase refunded after its year
+	// takes nothing off, and the renewal refunded part way through its year
+	// takes off what is left of it, to the day.
+	q := passServer(t, nil)
+	bought := q.buy("pi_year")
+	again := q.renew(bought.Pass, "pi_second_year")
+	later := time.Now().AddDate(0, 0, 370)
+	if res, err := q.app.store.revokePassPayment(context.Background(), q.app.passPaymentHash("pi_year"), later); err != nil || res != revokedTerm {
+		t.Fatalf("refund of the purchase after its year: %v, %v", res, err)
+	}
+	if got, ok := q.passExpiresAt(bought.Pass); !ok || !got.Equal(again.ExpiresAt) {
+		t.Fatalf("refunding a purchase whose year had run left the Pass at %v (kept: %v), want %v", got, ok, again.ExpiresAt)
+	}
+	if res, err := q.app.store.revokePassPayment(context.Background(), q.app.passPaymentHash("pi_second_year"), later); err != nil || res != revokedPass {
+		t.Fatalf("refund of the renewal part way through: %v, %v", res, err)
+	}
+
+	// Bought and renewed twice, a year each. The purchase refunded with 265
+	// and a half days of it left takes 266 off, and moves the renewals' terms
+	// back by as much: the first now ends 99 days past the purchase's end,
+	// not 365. Refunded ten days later, that renewal takes off the 355 days
+	// left of it and no more, and the last renewal keeps its whole year.
+	r := passServer(t, nil)
+	first := r.buy("pi_three_terms")
+	end := first.ExpiresAt
+	r.renew(first.Pass, "pi_three_terms_second")
+	r.renew(first.Pass, "pi_three_terms_third")
+	refundedAt := end.Add(-(265*24 + 12) * time.Hour)
+	if res, err := r.app.store.revokePassPayment(context.Background(), r.app.passPaymentHash("pi_three_terms"), refundedAt); err != nil || res != revokedTerm {
+		t.Fatalf("refund of the purchase: %v, %v", res, err)
+	}
+	if got, ok := r.passExpiresAt(first.Pass); !ok || !got.Equal(end.AddDate(0, 0, 464)) {
+		t.Fatalf("after refunding the purchase the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 464))
+	}
+	if res, err := r.app.store.revokePassPayment(context.Background(), r.app.passPaymentHash("pi_three_terms_second"), refundedAt.AddDate(0, 0, 10)); err != nil || res != revokedTerm {
+		t.Fatalf("refund of the first renewal: %v, %v", res, err)
+	}
+	if got, ok := r.passExpiresAt(first.Pass); !ok || !got.Equal(end.AddDate(0, 0, 109)) {
+		t.Fatalf("after refunding the first renewal the Pass runs to %v (kept: %v), want %v", got, ok, end.AddDate(0, 0, 109))
+	}
+	var lastEnds time.Time
+	if err := r.app.pool.QueryRow(context.Background(), `SELECT ends_at FROM pass_payments WHERE payment_hash = $1`,
+		r.app.passPaymentHash("pi_three_terms_third")).Scan(&lastEnds); err != nil || !lastEnds.Equal(end.AddDate(0, 0, 109)) {
+		t.Fatalf("the last renewal's term ends %v (%v), want with the Pass at %v", lastEnds, err, end.AddDate(0, 0, 109))
+	}
+}
+
+// TestPassReissueAfterTheOriginIsRefunded holds a Pass that goes on after its
+// purchase is refunded to being reissued still: the earliest renewal left
+// becomes its origin, and the 409 for any other renewal says so.
+func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_origin_refunded")
+	p.renew(issued.Pass, "pi_kept_renewal")
+	p.renew(issued.Pass, "pi_later_renewal")
+	p.refund("pi_origin_refunded")
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("refunding the purchase ended a Pass with renewals: status %d", status)
+	}
+	if status, _, _ := p.reissueLink("mod-key", "pi_origin_refunded"); status != http.StatusNotFound {
+		t.Fatalf("reissue with the refunded purchase: status %d", status)
+	}
+	if status, out, _ := p.reissueLink("mod-key", "pi_later_renewal"); status != http.StatusConflict || out.Error != passReissueRenewal {
+		t.Fatalf("reissue with the later renewal: status %d, %+v", status, out)
+	}
+	status, _, token := p.reissueLink("mod-key", "pi_kept_renewal")
+	if status != http.StatusOK {
+		t.Fatalf("reissue with the earliest renewal left: status %d", status)
+	}
+	status, fresh := p.otherBrowser().redeem(token)
+	if status != http.StatusOK || fresh.Status != "issued" || fresh.Pass == issued.Pass {
+		t.Fatalf("redeem: status %d, %+v", status, fresh)
+	}
+	if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
+		t.Fatalf("the replaced code still works: status %d", status)
+	}
+	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
+		t.Fatalf("the reissued code: status %d", status)
+	}
+}
+
+// TestPassOrderKeepsItsTerm holds each order to the term it was sold with:
+// EDUCHAN_PASS_DAYS changed after a checkout changes nothing it bought,
+// whether it is collected as a Pass or a renewal, or reissued uncollected.
+func TestPassOrderKeepsItsTerm(t *testing.T) {
+	p := passServer(t, func(cfg *Config) {
+		cfg.ModKey = "mod-key"
+		cfg.Pass.Days = 30
+	})
+	bought := p.checkout("")
+	uncollected := p.otherBrowser().checkout("")
+	// The operator sells two years from now on, and restarts.
+	q := p.twin(func(c *PassConfig) { c.Days = 730 })
+	var status passResponse
+	if q.get("/api/pass", &status); status.Days != 730 {
+		t.Fatalf("the restarted server sells %d days", status.Days)
+	}
+	q.paid(bought, "pi_month")
+	code, issued := q.claim()
+	if want := passExpiry(time.Now(), 30); code != http.StatusOK || issued.Status != "issued" || !issued.ExpiresAt.Equal(want) {
+		t.Fatalf("a month's order collected after the change: status %d, %+v; want it to run to %v", code, issued, want)
+	}
+	q.paid(p.checkout(issued.Pass), "pi_month_renewal")
+	if code, renewed := q.claim(); code != http.StatusOK || renewed.Status != "renewed" ||
+		!renewed.ExpiresAt.Equal(issued.ExpiresAt.AddDate(0, 0, 30)) {
+		t.Fatalf("a month's renewal collected after the change: status %d, %+v", code, renewed)
+	}
+	q.paid(uncollected, "pi_uncollected_month")
+	_, _, token := q.reissueLink("mod-key", "pi_uncollected_month")
+	if code, out := q.otherBrowser().redeem(token); code != http.StatusOK || out.Status != "issued" ||
+		!out.ExpiresAt.Equal(passExpiry(time.Now(), 30)) {
+		t.Fatalf("a month's order reissued after the change: status %d, %+v", code, out)
+	}
+}
+
+// TestPassSalesPaused holds EDUCHAN_PASS_SALES=paused to stopping sales and
+// nothing else: checkout refuses a purchase and a renewal alike, and the page
+// is told; webhooks are verified and recorded, a paid order is collected, a
+// Pass still posts and checks, and reissue links and forgetting still work.
+// Open, the default, sells.
+func TestPassSalesPaused(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	p.addBoard("paused-board")
+	var open passResponse
+	if p.get("/api/pass", &open); !open.Enabled || open.Paused || open.Price == nil {
+		t.Fatalf("open: %+v", open)
+	}
+	held := p.buy("pi_before_pause")
+	pending := p.checkout("")
+
+	q := p.twin(func(c *PassConfig) { c.SalesPaused = true })
+	prices := q.stripe.priceReadCount()
+	var paused passResponse
+	if q.get("/api/pass", &paused); !paused.Enabled || !paused.Paused || paused.Price != nil || !paused.Claim {
+		t.Fatalf("paused: %+v", paused)
+	}
+	sessions := q.stripe.sessionCount()
+	for name, body := range map[string]map[string]any{
+		"a purchase": {"adult": true},
+		"a renewal":  {"adult": true, "renew": held.Pass},
+		// Refused before the body is read: a body that would be refused for
+		// itself is told sales are paused, the reason that will not change
+		// by asking again.
+		"no box":           {},
+		"the box unticked": {"adult": false},
+		"an unknown field": {"adult": true, "email": "buyer@example.com"},
+	} {
+		var out passResponse
+		if status := q.post("/api/pass/checkout", body, &out); status != http.StatusForbidden || out.Error != passNotOnSale {
+			t.Errorf("%s while paused: status %d, %+v", name, status, out)
+		}
+	}
+	malformed, err := http.NewRequest(http.MethodPost, q.base+"/api/pass/checkout", strings.NewReader(`{"adult":`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	malformed.Header.Set("Content-Type", "application/json")
+	var out passResponse
+	if status := q.send(malformed, &out); status != http.StatusForbidden || out.Error != passNotOnSale {
+		t.Errorf("a malformed body while paused: status %d, %+v", status, out)
+	}
+	if n := q.stripe.sessionCount() - sessions; n != 0 {
+		t.Fatalf("Stripe opened %d sessions while sales were paused", n)
+	}
+	if n := q.stripe.priceReadCount() - prices; n != 0 {
+		t.Fatalf("the price was asked for %d times while sales were paused", n)
+	}
+
+	// Webhooks are still checked, and still recorded.
+	forged, _ := json.Marshal(map[string]any{"type": stripeCheckoutCompleted, "data": map[string]any{"object": map[string]any{
+		"id": pending, "mode": "payment", "payment_status": "paid", "payment_intent": "pi_forged"}}})
+	if status := q.rawWebhook(forged, signStripe(forged, "whsec_other", time.Now())); status != http.StatusBadRequest {
+		t.Fatalf("a forged webhook while paused: status %d", status)
+	}
+	q.paid(pending, "pi_during_pause")
+	status, collected := q.claim()
+	if status != http.StatusOK || collected.Status != "issued" {
+		t.Fatalf("collecting a purchase paid while paused: status %d, %+v", status, collected)
+	}
+	for _, code := range []string{held.Pass, collected.Pass} {
+		if status, _ := q.activate(code); status != http.StatusOK {
+			t.Errorf("checking a code while paused: status %d", status)
+		}
+		if status, out := q.postWithPass("paused-board", code, "", nil); status != http.StatusCreated || out.Pass != "" {
+			t.Errorf("posting with a Pass while paused: status %d, %+v", status, out)
+		}
+	}
+	_, _, token := q.reissueLink("mod-key", "pi_before_pause")
+	if status, out := q.otherBrowser().redeem(token); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("a reissue while paused: status %d, %+v", status, out)
+	}
+	q.refund("pi_during_pause")
+	if status, _ := q.activate(collected.Pass); status != http.StatusForbidden {
+		t.Fatalf("a refund while paused was not recorded: status %d", status)
+	}
+	if status, _ := q.forget(); status != http.StatusOK {
+		t.Fatalf("forget while paused: status %d", status)
+	}
+}
+
+// TestPassRefusedCheckoutTakesNoLock holds a checkout refused by its cooldown
+// to an answer before the Pass lock, so a burst of them queues no webhook or
+// claim behind it.
+func TestPassRefusedCheckoutTakesNoLock(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.Pass.CheckoutCooldown = time.Hour })
+	p.checkout("")
+	lock := p.holdPassLock()
+	defer lock.release()
+	answer := p.fire(p.request("/api/pass/checkout", map[string]any{"adult": true}, nil))
+	select {
+	case r := <-answer:
+		if r.err != nil || r.status != http.StatusTooManyRequests {
+			t.Fatalf("a checkout inside the cooldown: status %d, %v", r.status, r.err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a checkout refused by its cooldown waited on the Pass lock")
+	}
+}
+
+// TestPassOrderTakesTheLock holds the write a checkout makes after Stripe
+// answers, its order, to the Pass lock: taken while Stripe is opening the
+// session, the lock holds the order back.
+func TestPassOrderTakesTheLock(t *testing.T) {
+	p := passServer(t, nil)
+	p.checkout("")
+	reached, proceed := make(chan struct{}), make(chan struct{})
+	p.stripe.mu.Lock()
+	p.stripe.opening = func() {
+		close(reached)
+		<-proceed
+	}
+	p.stripe.mu.Unlock()
+	answer := p.fire(p.request("/api/pass/checkout", map[string]any{"adult": true}, nil))
+	select {
+	case <-reached:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the checkout never asked Stripe for a session")
+	}
+	lock := p.holdPassLock()
+	close(proceed)
+	lock.queued(1, "the checkout's order")
+	lock.release()
+	if r := <-answer; r.err != nil || r.status != http.StatusOK {
+		t.Fatalf("checkout: status %d, %v (%s)", r.status, r.err, r.body.Error)
+	}
+	var claims, orders int
+	if err := p.app.pool.QueryRow(context.Background(), `
+		SELECT count(DISTINCT claim_hash), count(*) FROM pass_orders`).Scan(&claims, &orders); err != nil || claims != 2 || orders != 2 {
+		t.Fatalf("%d orders under %d claims (%v), want one under each of 2", orders, claims, err)
+	}
+}
+
+// TestPassRevocationIsDayRounded holds the record of a refund to the day,
+// like every other date in the Pass tables.
+func TestPassRevocationIsDayRounded(t *testing.T) {
+	p := passServer(t, nil)
+	p.buy("pi_rounded")
+	p.refund("pi_rounded")
+	p.refund("pi_not_ours")
+	rows, err := p.app.pool.Query(context.Background(), `SELECT expires_at FROM pass_revocations`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var n int
+	for rows.Next() {
+		var at time.Time
+		if err := rows.Scan(&at); err != nil {
+			t.Fatal(err)
+		}
+		n++
+		if !at.Equal(dayCeil(at)) || at.Before(time.Now().Add(passRevocationTTL)) {
+			t.Errorf("a refund is remembered until %v, want the first UTC midnight a month on", at.UTC())
+		}
+	}
+	if n != 2 {
+		t.Fatalf("%d refunds remembered, want 2", n)
+	}
+}
