@@ -1304,10 +1304,12 @@ var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandl
 
 // meetingIDRule is a call's meeting ID given without its link, which is as
 // good as the link to anyone reading: "zoom id 845 2219 6630 pass: physics",
-// "meeting ID: 845 2219 6630". "Zoom" alone, and a meeting's number in
-// minutes, are not one.
+// "meeting ID: 845 2219 6630", or a Meet code in its own shape, "meet code:
+// qvx-trmk-hpd". "Zoom" alone, and a meeting's number in minutes, are not
+// one.
 var meetingIDRule = plainOnly(`\b(?:` + words(`zoom`, `webex`, `teams`, `meet`) + `~(?:meeting~)?` +
-	words(`id`, `code`, `no`, `number`) + `|meeting~id)(?:~is)?~\d(?:~?\d){8,10}\b`)
+	words(`id`, `code`, `no`, `number`) + `|meeting~` + words(`id`, `code`) + `)(?:~is)?~` +
+	`(?:\d(?:~?\d){8,10}|[a-z]{3}-[a-z]{4}-[a-z]{3})\b`)
 
 // accountNumberRules are accounts written as numbers no other rule reads: a
 // Session messenger ID, 66 hexadecimal digits starting "05", which nothing
