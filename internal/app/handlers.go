@@ -228,7 +228,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.spendPassBudget(pass)
-	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+	writeJSON(w, http.StatusCreated, passPostResponse(board, post, pass))
 }
 
 type createPostRequest struct {
@@ -327,7 +327,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		return
 	}
 	a.spendPassBudget(pass)
-	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
+	writeJSON(w, http.StatusCreated, passPostResponse(board, post, pass))
 }
 
 // newPostResponse is the acknowledgement for a created post. It carries the

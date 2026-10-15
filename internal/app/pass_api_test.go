@@ -1238,26 +1238,62 @@ func TestPassSharesOneHourlyBudget(t *testing.T) {
 	}
 }
 
-func TestPassRefusedOnPosts(t *testing.T) {
-	p := passServer(t, nil)
+// TestPassNoGoodOnPostsIsNoPass holds a post that presents a Pass that is no
+// good, refunded, replaced or run out, to what a post without one gets: no
+// status of its own for the log to record beside the thread's path, and the
+// Pass's state in the answer's body, which no log records, for the page.
+func TestPassNoGoodOnPostsIsNoPass(t *testing.T) {
+	var logs syncBuffer
+	p := passServerLogging(t, nil, &logs)
 	p.addBoard("pass-board")
 	issued := p.buy("pi_post")
 
-	if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusCreated {
-		t.Fatalf("posting with a Pass: status %d (%s)", status, out.Error)
+	if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusCreated || out.Pass != "" {
+		t.Fatalf("posting with a Pass: status %d, %+v", status, out)
 	}
 	for name, code := range map[string]string{
 		"malformed": "not a pass",
 		"unknown":   "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ",
 	} {
 		status, out := p.postWithPass("pass-board", code, "", nil)
-		if status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		if status != http.StatusCreated || out.Pass != passInvalid {
 			t.Errorf("%s Pass: status %d, %+v", name, status, out)
 		}
 	}
 	p.exec(`UPDATE passes SET expires_at = now() - interval '1 hour'`)
-	if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusForbidden || refusalState(t, out) != passExpired {
+	if status, out := p.postWithPass("pass-board", issued.Pass, "", nil); status != http.StatusCreated || out.Pass != passExpired {
 		t.Fatalf("expired Pass: status %d, %+v", status, out)
+	}
+
+	// Refunded, its holder's next reply leaves the same line a reply without
+	// a Pass does.
+	thread := p.createThread("pass-board", "", "", "a thread")
+	refunded := p.buy("pi_post_refunded")
+	p.refund("pi_post_refunded")
+	path := fmt.Sprintf("/api/boards/pass-board/threads/%d/posts", thread.ThreadNo)
+	var with, without passResponse
+	if status := p.postWithHeaders(http.Header{passHeader: {refunded.Pass}}, path, map[string]any{"body": "with"}, &with); status != http.StatusCreated || with.Pass != passInvalid {
+		t.Fatalf("a reply with a refunded Pass: status %d, %+v", status, with)
+	}
+	if status := p.postWithHeaders(nil, path, map[string]any{"body": "without"}, &without); status != http.StatusCreated || without.Pass != "" {
+		t.Fatalf("a reply without a Pass: status %d, %+v", status, without)
+	}
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+		if strings.Contains(line, path) {
+			var entry map[string]any
+			if err := json.Unmarshal([]byte(line), &entry); err != nil {
+				t.Fatalf("log line %q: %v", line, err)
+			}
+			delete(entry, "time")
+			delete(entry, "duration")
+			delete(entry, "duration_ms")
+			again, _ := json.Marshal(entry)
+			lines = append(lines, string(again))
+		}
+	}
+	if len(lines) != 2 || lines[0] != lines[1] {
+		t.Fatalf("the replies with and without a refunded Pass were logged differently:\n%s", strings.Join(lines, "\n"))
 	}
 
 	// A badged post is the credential's request: the Pass header is not read,
@@ -1277,7 +1313,8 @@ func TestPassRefusedOnPosts(t *testing.T) {
 		t.Fatalf("badged post with a Pass header: status %d (%s)", status, badged.Error)
 	}
 
-	// A deployment that stops selling ignores Passes rather than refusing posts.
+	// A deployment that has retired the Pass ignores Passes rather than
+	// refusing posts.
 	off := testServer(t, nil)
 	off.addBoard("pass-board")
 	var created createdPost
@@ -1417,8 +1454,9 @@ func TestPassDisabled(t *testing.T) {
 }
 
 // TestPassIsNeverStoredOrLogged holds the Pass to the poster key's standard:
-// a code used on every posting path is found in no table but its own, nowhere
-// in the log, and neither are the buyer's details from the webhook.
+// a code used on every posting path (a thread and a reply, each as JSON and
+// with an image, and a reply by thread id) is found in no table but its own,
+// nowhere in the log, and neither are the buyer's details from the webhook.
 func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	var logs syncBuffer
 	p := passServerLogging(t, func(cfg *Config) { cfg.ModKey = "mod-key" }, &logs)
@@ -1443,8 +1481,16 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		map[string]string{"body": "image reply with a pass"}, "pass.png", pngBytes(t, 16, 16), &created); status != http.StatusCreated {
 		t.Fatalf("image reply with a Pass: status %d (%s)", status, created.Error)
 	}
-	if status, _ := p.postWithPass("scan", "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ", "", nil); status != http.StatusForbidden {
-		t.Fatalf("unknown Pass: status %d", status)
+	if status := p.uploadWithHeaders(header, "/api/boards/scan/threads",
+		map[string]string{"body": "image thread with a pass"}, "pass.png", pngBytes(t, 16, 16), &created); status != http.StatusCreated {
+		t.Fatalf("image thread with a Pass: status %d (%s)", status, created.Error)
+	}
+	if status := p.postWithHeaders(header, fmt.Sprintf("/api/threads/%d/posts", p.threadID("scan", thread)),
+		map[string]any{"body": "reply by thread id with a pass"}, &created); status != http.StatusCreated {
+		t.Fatalf("reply by thread id with a Pass: status %d (%s)", status, created.Error)
+	}
+	if status, out := p.postWithPass("scan", "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ", "", nil); status != http.StatusCreated || out.Pass != passInvalid {
+		t.Fatalf("unknown Pass: status %d, %+v", status, out)
 	}
 	// The code is lost and reissued through a link, and the new one posts too.
 	_, _, linkToken := p.reissueLink("mod-key", "pi_scan_payment")

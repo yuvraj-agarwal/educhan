@@ -598,35 +598,19 @@ func (a *App) handlePassActivate(w http.ResponseWriter, r *http.Request) {
 		refusePass(w, passInvalid, "that is not a Pass code; it is 20 letters and digits")
 		return
 	}
-	expires, ok := a.checkPass(w, r, code)
-	if !ok {
-		return
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"pass": formatPassCode(code), "expires_at": expires})
-}
-
-// checkPass looks a code up and refuses it, writing the response, when it is
-// unknown or expired. It returns the expiry of a Pass that is good.
-func (a *App) checkPass(w http.ResponseWriter, r *http.Request, code string) (time.Time, bool) {
 	_, expires, err := a.store.passByToken(r.Context(), a.passTokenHash(code))
 	switch {
 	case errors.Is(err, errNotFound):
-		refusePass(w, passInvalid, "this Pass is not valid; it may have been refunded or replaced")
-		return time.Time{}, false
+		refusePass(w, passInvalid, "this Pass is not valid; it may have run out more than a month ago, or been refunded or replaced")
+		return
 	case err != nil:
-		// Not a.fail, which logs the request's path: on a post that names the
-		// board and the thread, and a line saying a Pass was read there, at
-		// that moment, would tie the Pass's holder to the thread.
-		if r.Context().Err() == nil {
-			a.log.Error("could not read the Pass", "error", err)
-		}
-		writeError(w, http.StatusInternalServerError, "could not read the Pass")
-		return time.Time{}, false
+		a.fail(w, r, err, "could not read the Pass")
+		return
 	case !time.Now().Before(expires):
-		refusePass(w, passExpired, "this Pass has expired; renew it on the Pass page")
-		return time.Time{}, false
+		refusePass(w, passExpired, "this Pass has run out; you can renew it on the Pass page")
+		return
 	}
-	return expires, true
+	writeJSON(w, http.StatusOK, map[string]any{"pass": formatPassCode(code), "expires_at": expires})
 }
 
 func refusePass(w http.ResponseWriter, state, msg string) {
@@ -641,6 +625,11 @@ func refusePass(w http.ResponseWriter, state, msg string) {
 type passGrant struct {
 	Valid     bool
 	BudgetKey string
+	// Refused is passInvalid or passExpired for a Pass that was presented and
+	// is no good. The post goes on as one made without a Pass, and its answer
+	// carries this (passPostResponse), so the page can forget the code, or
+	// offer to renew it.
+	Refused string
 }
 
 // postPass resolves the Pass a post presents. A post made without one gets
@@ -648,16 +637,24 @@ type passGrant struct {
 //
 // A badged post never reads the header: it is the credential's request, and a
 // payment and an institution are not to meet in one. With sales switched off a
-// presented Pass is ignored rather than refused, so a deployment that stops
-// selling does not stop its holders posting.
+// presented Pass is ignored, so a deployment that stops selling does not stop
+// its holders posting.
 //
-// A Pass that is presented and no good is refused rather than ignored, the way
-// a badge is: the poster believes they hold one, and the page needs to hear
-// that they do not, so it can forget the code and say why.
+// A Pass that is presented and no good, because it was refunded, replaced or
+// has run out, is treated as no Pass at all rather than refused. A refusal of
+// its own would put a status in the request log, on the path that names the
+// thread, that only a Pass can cause; that line, then the same thread's 201
+// once the poster posts again, would tie the Pass's holder, whom the refund
+// names to the operator in Stripe, to the post. Treated as absent, the post
+// is held to the captcha like any other, and whatever it is refused for is
+// what any post without a Pass can be refused for. The page hears that the
+// Pass is no good from the answer's body (passGrant.Refused), which no log
+// records.
 //
 // A good Pass changes nothing here: no cooldown is added or lifted, and a post
 // that is refused after this, by flood control or anything else, costs its
-// budget nothing.
+// budget nothing. Only a failure to read the Pass is an error, and it is
+// answered without logging the path, which names the thread.
 func (a *App) postPass(w http.ResponseWriter, r *http.Request, badged bool) (passGrant, bool) {
 	if badged || !a.passEnabled() {
 		return passGrant{}, true
@@ -668,13 +665,32 @@ func (a *App) postPass(w http.ResponseWriter, r *http.Request, badged bool) (pas
 	}
 	code, ok := parsePassCode(presented)
 	if !ok {
-		refusePass(w, passInvalid, "this Pass is not valid; it may have been refunded or replaced")
-		return passGrant{}, false
+		return passGrant{Refused: passInvalid}, true
 	}
-	if _, ok := a.checkPass(w, r, code); !ok {
+	_, expires, err := a.store.passByToken(r.Context(), a.passTokenHash(code))
+	switch {
+	case errors.Is(err, errNotFound):
+		return passGrant{Refused: passInvalid}, true
+	case err != nil:
+		if r.Context().Err() == nil {
+			a.log.Error("could not read the Pass", "error", err)
+		}
+		writeError(w, http.StatusInternalServerError, "could not read the Pass")
 		return passGrant{}, false
+	case !time.Now().Before(expires):
+		return passGrant{Refused: passExpired}, true
 	}
 	return passGrant{Valid: true, BudgetKey: a.passBudgetKey(code)}, true
+}
+
+// passPostResponse is a created post's answer, with the state of the Pass it
+// presented when that Pass was no good.
+func passPostResponse(board Board, post Post, g passGrant) map[string]any {
+	out := newPostResponse(board, post)
+	if g.Refused != "" {
+		out["pass"] = g.Refused
+	}
+	return out
 }
 
 // spendPassBudget counts a saved post against the hourly budget of the Pass
