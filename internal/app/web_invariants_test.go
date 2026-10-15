@@ -326,22 +326,25 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 		}
 	}
 	// Where the code may go besides a post: the body of a renewal
-	// (submitPass) and of a check of the Pass held (checkHeldPass), back into
-	// storage with the expiry a claim brought (keepClaimed), and onto the
-	// screen when the visitor asks to see it (showPassCode). The readers are
+	// (submitPass) and of a check of the Pass held (checkHeldPass, and
+	// confirmRenewal after a renewal was collected), back into storage with
+	// the expiry a claim or a check brought (keepClaimed, confirmRenewal), and
+	// onto the screen when the visitor asks to see it (showPassCode). The
+	// readers are
 	// pinned rather than a variable name: the stored Pass is read through
 	// storedPass, only in these functions, and its key and header are spelled
 	// out once each, so nothing reads it any other way. Each is a deliberate
 	// use; a new one is a new place the code goes.
 	code := withoutComments(script)
 	readers := []string{
-		"storePass",     // reads back what it stored
-		"showPassLink",  // whether to show the header's link
-		"passViewHTML",  // whether to draw the held Pass
-		"showPassCode",  // the screen, on request
-		"keepClaimed",   // storage, with a claim's expiry
-		"checkHeldPass", // the body of /api/pass/activate
-		"submitPass",    // the body of a renewal
+		"storePass",      // reads back what it stored
+		"showPassLink",   // whether to show the header's link
+		"passViewHTML",   // whether to draw the held Pass
+		"showPassCode",   // the screen, on request
+		"keepClaimed",    // storage, with a claim's expiry
+		"checkHeldPass",  // the body of /api/pass/activate
+		"confirmRenewal", // the body of /api/pass/activate, after a renewal
+		"submitPass",     // the body of a renewal
 	}
 	allowed := strings.Count(submit, "storedPass(")
 	for _, name := range readers {
@@ -364,9 +367,12 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 		t.Errorf("PASS_STORAGE_KEY appears %d times in app.js; want its declaration and %d uses, in storedPass, "+
 			"storePass, markPassExpired and forgetPass", n, keyUsers)
 	}
-	if check := withoutComments(jsFunction(t, script, "checkHeldPass")); !strings.Contains(check,
-		`api("/api/pass/activate", { method: "POST", body: JSON.stringify({ pass: held.code }) })`) {
-		t.Error("checkHeldPass no longer sends the code only in the body of /api/pass/activate")
+	for _, name := range []string{"checkHeldPass", "confirmRenewal"} {
+		check := withoutComments(jsFunction(t, script, name))
+		if !strings.Contains(check, `api("/api/pass/activate", { method: "POST", body: JSON.stringify({ pass: held.code }) })`) ||
+			strings.Count(check, "api(") != 1 || strings.Contains(check, "${held.code") || strings.Contains(check, "${esc(held.code") {
+			t.Errorf("%s no longer sends the code only in the body of /api/pass/activate, or puts it in its words", name)
+		}
 	}
 	if show := withoutComments(jsFunction(t, script, "showPassCode")); strings.Count(show, "held.code") != 1 ||
 		!strings.Contains(show, "${esc(held.code)}") || strings.Contains(show, "api(") {
@@ -444,8 +450,28 @@ func words(text string) string {
 func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 	script := appScript(t)
 	keep := withoutComments(jsFunction(t, script, "keepClaimed"))
-	if !strings.Contains(keep, "storePass(res.pass, res.expires_at)") || !strings.Contains(keep, "storePass(held.code, res.expires_at)") {
-		t.Error("keepClaimed no longer stores an issued Pass and a renewed expiry")
+	if !strings.Contains(keep, "storePass(res.pass, res.expires_at)") {
+		t.Error("keepClaimed no longer stores an issued Pass")
+	}
+	// A renewal is of the Pass its checkout was for, which may not be the one
+	// held now: its expiry is never written onto the held Pass on trust. The
+	// held code is checked again, and what the server says of it is stored.
+	if !strings.Contains(keep, "if (res.status === \"renewed\") {\n    return \"renewed\";\n  }\n  if (res.status !== \"issued\") {") ||
+		strings.Contains(keep, "storePass(held.code") {
+		t.Error("keepClaimed writes a renewal's expiry onto the Pass this browser holds")
+	}
+	confirm := withoutComments(jsFunction(t, script, "confirmRenewal"))
+	checked := strings.Index(confirm, `await api("/api/pass/activate"`)
+	if checked < 0 || !strings.Contains(confirm[checked:], "storePass(res.pass, res.expires_at);") ||
+		regexp.MustCompile(`storePass\([^)]*renewed`).MatchString(confirm) {
+		t.Error("confirmRenewal no longer stores the expiry the server gives for the held code, and only that")
+	}
+	for _, name := range []string{"collectPass", "redeemPassReissue"} {
+		body := withoutComments(jsFunction(t, script, name))
+		kept, confirmed := strings.Index(body, "keepClaimed(res"), strings.Index(body, `const notice = news === "renewed" ? await confirmRenewal(res) : "";`)
+		if confirmed < kept {
+			t.Errorf("%s no longer checks the held Pass after a renewal, once what the claim brought is kept", name)
+		}
 	}
 	for _, check := range []string{"state.route", "passVisit"} {
 		if strings.Contains(keep, check) {
@@ -542,6 +568,20 @@ func TestPassPageCollectsAPendingPurchase(t *testing.T) {
 	}
 	if strings.Contains(withoutComments(jsFunction(t, script, "passOpenCheckoutHTML")), "Collecting your Pass") {
 		t.Error("a browser that has a Pass is told its Pass is being collected")
+	}
+	// A checkout gives the browser a new claim, and what was under the old
+	// one is no longer collected here: both panels say so before the reader
+	// starts another, and nothing promises an earlier payment is added on.
+	for name, want := range map[string]string{
+		"passCollectingHTML":   "Once you buy again, this browser stops collecting the earlier checkout.",
+		"passOpenCheckoutHTML": "Starting another checkout here, a renewal included, stops this browser collecting this one.",
+	} {
+		if !strings.Contains(words(withoutComments(jsFunction(t, script, name))), want) {
+			t.Errorf("%s no longer says that another checkout stops this one being collected here", name)
+		}
+	}
+	if section := words(withoutComments(passSection(t, script))); strings.Contains(section, "added to your Pass") {
+		t.Error("the Pass page promises an earlier payment is added to the Pass a later checkout buys")
 	}
 }
 
@@ -699,10 +739,41 @@ func TestPassPageDetails(t *testing.T) {
 			t.Error("a code just handed over is drawn without moving focus to it")
 		}
 	})
-	t.Run("drawn again when brought back from the back-forward cache", func(t *testing.T) {
+	t.Run("drawn again when brought back from the back-forward cache, behind the age screen", func(t *testing.T) {
 		show := withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});"))
-		if !strings.Contains(show, `event.persisted && state.route.view === "pass"`) || !strings.Contains(show, "renderPass();") {
+		if !strings.Contains(show, `event.persisted && state.route.view === "pass"`) || !strings.Contains(show, "render();") {
 			t.Error("the Pass page is not drawn again when Back brings it out of the cache")
+		}
+		// render asks the age screen first; renderPass would draw the page, and
+		// fetch and spend what it does, over a screen not yet answered or a
+		// refusal.
+		if strings.Contains(show, "renderPass(") {
+			t.Error("Back draws the Pass page without asking the age screen first")
+		}
+		render := withoutComments(jsFunction(t, script, "render"))
+		gate, pass := strings.Index(render, "const age = ageStatus();"), strings.Index(render, "renderPass(")
+		if gate < 0 || pass < gate {
+			t.Error("render draws the Pass page before it asks the age screen")
+		}
+	})
+	t.Run("Renew with the Pass gone from this browser starts no purchase", func(t *testing.T) {
+		submit := withoutComments(jsFunction(t, script, "submitPass"))
+		gone, checkout := strings.Index(submit, `if (kind === "renew" && !held) {`), strings.Index(submit, `"/api/pass/checkout"`)
+		if gone < 0 || checkout < gone || !strings.Contains(submit, "if (kind === \"renew\") {\n      body.renew = held.code;") {
+			t.Error("Renew on Stripe buys a new Pass when the one it was for has left this browser")
+		}
+	})
+	t.Run("a post with a run-out Pass promises no renewal", func(t *testing.T) {
+		// Sales may be paused; the Pass page says what can be done.
+		if submit := words(withoutComments(submitHandler(t, script))); strings.Contains(submit, "You can renew it on the Pass page") ||
+			!strings.Contains(submit, "The Pass page says whether it can be renewed.") {
+			t.Error("a post made with a Pass that ran out promises a renewal the Pass page may not offer")
+		}
+	})
+	t.Run("the FAQ says every request that holds an address", func(t *testing.T) {
+		faq := words(faqAnswer(t, script, "faq-anonymity"))
+		if !strings.Contains(faq, "When you post, ask for a badge code, start buying a Pass or check a Pass code, the server holds your IP address in its memory") {
+			t.Error("the FAQ no longer lists every request whose address flood control holds")
 		}
 	})
 	t.Run("the price says when tax is added", func(t *testing.T) {
@@ -847,8 +918,18 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	if !strings.Contains(keep, "passJustIssued = {") {
 		t.Error("keepClaimed no longer keeps a code just handed over for the page to draw")
 	}
-	if !strings.Contains(keep, `return "renewed elsewhere";`) {
+	// The page says a Pass here was renewed only once the server, asked about
+	// the code held here, gives it the renewal's expiry.
+	confirm := words(withoutComments(jsFunction(t, script, "confirmRenewal")))
+	if !strings.Contains(confirm, "if (!held) { return `A payment from this browser renewed a Pass this browser doesn't have") {
 		t.Error("a renewal with no Pass in this browser is said to renew the Pass here")
+	}
+	renewed := "`Your Pass is renewed until"
+	asked := strings.Index(confirm, `await api("/api/pass/activate"`)
+	compared := strings.Index(confirm, "if (checked.getTime() === new Date(renewed.expires_at).getTime() && !(held.expires && held.expires >= checked)) {")
+	if strings.Count(words(withoutComments(passSection(t, script))), renewed) != 1 ||
+		asked < 0 || compared < asked || strings.Index(confirm, renewed) < compared {
+		t.Error("the page says the Pass here was renewed without checking the code held here")
 	}
 	view := withoutComments(jsFunction(t, script, "passViewHTML"))
 	if !strings.Contains(view, "const issued = passJustIssued;") || !strings.Contains(view, "parts.push(passIssuedHTML(issued));") {
@@ -899,9 +980,12 @@ func TestPassReissueLinkAsksBeforeReplacingAPass(t *testing.T) {
 // answer says nothing more is waiting, so a claim whose answer was lost is
 // answered again with the same code. A shared computer can drop the claim:
 // forgetting the browser, removing the Pass and the collecting panels all ask
-// the server to, since the claim is a cookie the page cannot see.
+// the server to, since the claim is a cookie the page cannot see, after the
+// page has dropped the nonces and stopped collecting. The nonces, like the
+// code they are spent for, go nowhere but the bodies of the claims.
 func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	script := appScript(t)
+	code := withoutComments(script)
 	collect := withoutComments(jsFunction(t, script, "collectPass"))
 	if !strings.Contains(collect, "body: JSON.stringify({ nonce: passNonce(PASS_NONCE_STORAGE_KEY) }),") {
 		t.Error("collectPass no longer sends the collection's nonce")
@@ -910,17 +994,68 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		!strings.Contains(collect, "if (res.claim !== true) {\n        dropPassNonce(PASS_NONCE_STORAGE_KEY);") {
 		t.Error("collectPass drops the nonce other than once nothing more is waiting, or the claim is refused")
 	}
+	// A collection stopped (forgetPassClaim) or replaced sends no claim and
+	// draws no nonce: the check comes first in every turn of the loop.
+	stopped := strings.Index(collect, "for (;;) {\n    if (visit !== passVisit || state.route.view !== \"pass\") {\n      return;\n    }")
+	if stopped < 0 || strings.Index(collect, "passNonce(") < stopped {
+		t.Error("collectPass can send a claim, and draw a nonce, after collecting has stopped")
+	}
+	reissue := withoutComments(jsFunction(t, script, "redeemPassReissue"))
+	if !strings.Contains(reissue, "body: JSON.stringify({ reissue: token, nonce: passNonce(PASS_REISSUE_NONCE_STORAGE_KEY) }),") ||
+		strings.Count(reissue, "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);") != 2 {
+		t.Error("redeemPassReissue no longer sends the link's own nonce, or no longer drops it once answered")
+	}
+	if n := len(regexp.MustCompile(`\bpassNonce\(`).FindAllString(code, -1)); n != 3 {
+		t.Errorf("passNonce( appears %d times; want its definition and the bodies of a claim and a reissue", n)
+	}
+	// The keys are spelled out once, and used only by the nonce helpers, the
+	// two requests that send a nonce, and forgetting; passNonces only by the
+	// helpers.
+	nonceUsers := map[string][]string{
+		"PASS_NONCE_STORAGE_KEY":         {"passNoncePending", "collectPass", "forgetPassClaim"},
+		"PASS_REISSUE_NONCE_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim"},
+		"passNonces":                     {"passNonce", "passNoncePending", "dropPassNonce"},
+	}
+	for name, users := range nonceUsers {
+		want := 1
+		for _, user := range users {
+			want += strings.Count(withoutComments(jsFunction(t, script, user)), name)
+		}
+		if n := len(regexp.MustCompile(`\b`+name+`\b`).FindAllString(code, -1)); n != want {
+			t.Errorf("%s appears %d times in app.js; want its declaration and %d uses, in %s", name, n, want-1, strings.Join(users, ", "))
+		}
+	}
+	// The code a claim handed over is read only to tell it from another, and
+	// drawn only on its own panel.
+	if n, want := strings.Count(code, "passJustIssued.code"), strings.Count(withoutComments(jsFunction(t, script, "keepClaimed")), "passJustIssued.code"); n != want {
+		t.Errorf("passJustIssued.code is read %d times, %d of them in keepClaimed; want none elsewhere", n, want)
+	}
+	issuedCode := regexp.MustCompile(`\bissued\.code\b`)
+	want := len(issuedCode.FindAllString(withoutComments(jsFunction(t, script, "passIssuedHTML")), -1)) +
+		len(issuedCode.FindAllString(withoutComments(jsFunction(t, script, "passViewHTML")), -1))
+	if n := len(issuedCode.FindAllString(code, -1)); n != want {
+		t.Errorf("issued.code is read %d times, %d of them in passIssuedHTML and passViewHTML; want none elsewhere", n, want)
+	}
+	load := withoutComments(jsFunction(t, script, "loadPassInfo"))
+	if !strings.Contains(load, `const info = await api("/api/pass");`) || strings.Count(load, "api(") != 1 {
+		t.Error("loadPassInfo sends GET /api/pass with something added")
+	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "newPassNonce")), "crypto.getRandomValues(new Uint8Array(16))") {
 		t.Error("the nonce is no longer 16 random bytes")
 	}
 	forget := withoutComments(jsFunction(t, script, "forgetPassClaim"))
-	if !strings.Contains(forget, `api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true }) })`) {
+	asked := strings.Index(forget, `await api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true }) })`)
+	if asked < 0 {
 		t.Error("forgetPassClaim no longer asks the server to drop the claim")
+	}
+	for _, first := range []string{"passVisit += 1;", "dropPassNonce(PASS_NONCE_STORAGE_KEY);", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);"} {
+		if at := strings.Index(forget, first); at < 0 || at > asked {
+			t.Errorf("forgetPassClaim no longer does %q before it asks the server", first)
+		}
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "return forgetPassClaim();") {
 		t.Error("Forget this browser no longer drops a purchase still being collected")
 	}
-	code := withoutComments(script)
 	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 	remove = remove[:strings.Index(remove, "\n  }\n")]
 	if !strings.Contains(remove, "const dropped = forgetPassClaim();") {
@@ -937,8 +1072,10 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 			t.Errorf("%s no longer offers to stop collecting here", name)
 		}
 	}
-	if !strings.Contains(code, `const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`) {
-		t.Error("Stop collecting it here does nothing")
+	stop := code[strings.Index(code, `const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`):]
+	stop = stop[:strings.Index(stop, "\n    return;\n  }")]
+	if !strings.Contains(stop, "forgetPassClaim().then((done) => {") {
+		t.Error("Stop collecting it here no longer drops the claim")
 	}
 	for name, text := range map[string]string{
 		"Forget this browser": words(jsFunction(t, script, "forgetBrowserHTML")),
@@ -954,9 +1091,10 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 // After a button on the Pass page draws it again, focus goes to what took the
 // button's place, not the top of the document.
 func TestPassPageButtonsKeepFocus(t *testing.T) {
-	code := withoutComments(appScript(t))
+	script := appScript(t)
+	code := withoutComments(script)
 	for _, action := range []string{"collect-pass", "restart-pass", "forget-pass", "skip-reissue"} {
-		start := strings.Index(code, `'[data-action="`+action+`"]'`)
+		start := strings.Index(code, `event.target.closest('[data-action="`+action+`"]')`)
 		if start < 0 {
 			t.Fatalf("no handler for %s", action)
 		}
@@ -967,9 +1105,30 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 		}
 	}
 	for _, name := range []string{"checkHeldPass", "submitPass"} {
-		if n := strings.Count(withoutComments(jsFunction(t, appScript(t), name)), "passFocus("); n < 2 {
+		if n := strings.Count(withoutComments(jsFunction(t, script, name)), "passFocus("); n < 2 {
 			t.Errorf("%s moves focus after %d of its redraws", name, n)
 		}
+	}
+	// What arrives after a button was pressed (Check now's claim, Use the link
+	// here) draws the page again through redrawPass, which moves focus that
+	// was on the page to what took the button's place.
+	redraw := withoutComments(jsFunction(t, script, "redrawPass"))
+	if !strings.Contains(redraw, "const focused = el.main.contains(document.activeElement);") ||
+		!strings.Contains(redraw, "passFocus(...selectors);") {
+		t.Error("redrawPass no longer keeps focus that was on the page")
+	}
+	for name, want := range map[string]string{
+		"showClaimed":       `redrawPass({ ...lastPassInfo, claim }, '[data-action="collect-pass"]', "#pass-held", "form[data-pass] input");`,
+		"redeemPassReissue": `redrawPass(lastPassInfo, "#pass-held", "form[data-pass] input");`,
+	} {
+		body := withoutComments(jsFunction(t, script, name))
+		// drawPass( is in redrawPass( too, so equal counts mean no bare drawPass.
+		if !strings.Contains(body, want) || strings.Count(body, "drawPass(") != strings.Count(body, "redrawPass(") {
+			t.Errorf("%s draws the page again without keeping focus", name)
+		}
+	}
+	if !strings.Contains(code, "redeemPassReissue(token, passVisit);") {
+		t.Error("Use the link here no longer spends the link through redeemPassReissue")
 	}
 }
 
@@ -1082,7 +1241,7 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	if got := jsString(t, script, "PASS_GONE_REASONS"); got != "It may have run out more than a month ago, or been refunded or replaced." {
 		t.Errorf("PASS_GONE_REASONS says %q", got)
 	}
-	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 3 {
-		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a post's answer and its notice", n)
+	if n := strings.Count(withoutComments(script), "${PASS_GONE_REASONS}"); n != 4 {
+		t.Errorf("the reasons a Pass may have gone are given in %d places; want a check, a renewal's check, a post's answer and its notice", n)
 	}
 }
