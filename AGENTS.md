@@ -694,15 +694,29 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   encoders cannot compress the way it came is refused rather than stored many times
   larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held
   to `pngLimit` of its size instead, which the header gives, so its cost refuses it up
-  front rather than after decoding), and the thumbnail scaler's scratch.
+  front rather than after decoding), and the thumbnail scaler's scratch (`thumbScratch`,
+  for the picture as it is stored, turned upright by `storedOnItsSide`): its buffer, as
+  wide as the thumbnail and as tall as the picture, and its tables of weights, 64 bytes
+  for every pixel of the two sides, which are most of it for a long strip — a PNG a
+  pixel wide and 25 million long would have taken 1.6 GB of them before they were
+  charged. `TestThumbScratchCoversTheScaler` measures both, and the turned PNG strip in
+  `costFixtures` the whole.
   `peakOf` takes them phase by phase and counts each phase's first allocation on top of
   the previous phase's peak, because a collection that began before the boundary still
   holds that phase's scratch. An estimate over `processingBudget` (256 MiB) is refused
   from the header as `ErrImageTooLarge`, before any cooldown. Which kinds that refuses
-  at 25 megapixels is listed in the README, and `TestCostlyEncodingsAreRefusedFromTheirHeader`
-  holds the lists to the model: each accepted kind at its dearest (a square, from an
-  8 MiB upload), each refused kind at its cheapest (a wide picture from a small one), and
-  every kind accepted at a quarter of the size. A change to `cost.go` that moves a kind
+  at 25 megapixels is listed in the README, and two tests hold the lists to the model.
+  `TestCostlyEncodingsAreRefusedFromTheirHeader` takes each accepted kind as a square
+  from an 8 MiB upload, each refused kind at its cheapest (a wide picture from a small
+  upload), and every kind at a quarter of the size. A square is not the dearest shape,
+  though: a JPEG's sides are rounded up to whole blocks, a turn that cannot keep the
+  subsampling copies at 4:4:4, and the thumbnail's weights grow with the longer side, so
+  `TestEncodingsAreJudgedAtEveryShape` takes every shape of the full size each format
+  allows (`eachShape`: for every shorter side, the four longest sides that fit, both ways
+  round), at every orientation, and holds each kind to the shape the README gives for
+  it. It reads `processingCost` with the frame header rewritten in place rather than
+  calling `Inspect` millions of times, and checks `Inspect` agrees at the shapes that
+  decide. A change to `cost.go` that moves a kind, or the shape a kind is refused at,
   changes the README's lists in the same commit. `Save` then holds its estimate of the
   budget from the start of decoding until both renditions are stored, because until
   then it holds what it made (`acquireProcessing`, a first-come-first-served weighted

@@ -378,25 +378,37 @@ client can leave the image picker off a server that would refuse what it sends.
   memory to process than the server sets aside for all of them at once, is refused with
   `400` before anything is decoded and before flood control. A GIF that ends after its
   last frame without the closing byte, or whose later frames reach past its canvas, is
-  stored as browsers show it: whole, and with each frame cut to the part on the canvas. The memory depends on the
-  encoding as well as the size. At the full 25 megapixels, from an upload of up to the
-  default 8 MiB:
+  stored as browsers show it: whole, and with each frame cut to the part on the canvas.
+  The memory depends on the encoding as well as the size, and on the shape: a longer,
+  thinner picture costs more for its pixels, because a JPEG's sides are rounded up to
+  whole blocks and making the thumbnail takes 64 bytes and more for every pixel of the
+  longer side. At the full 25 megapixels, from an upload of up to the default 8 MiB, at
+  any shape the format allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
-    a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey; baseline CMYK and RGB
-    JPEGs, and progressive 4:2:2 and 4:4:0 ones, that need no turning; palette PNGs and
-    grey PNGs with no transparency; 8-bit colour PNGs, unless they are interlaced and
-    have to be turned; and opaque lossy WebPs, stored as JPEGs. A grey PNG with a
-    transparent colour or an alpha channel counts as a colour PNG throughout here, since
-    it decodes the same way — four bytes a pixel at 8 bits, eight at 16.
+    a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
+    4:1:1 one that a turn stores at 4:4:4 (below); baseline CMYK and RGB JPEGs that need
+    no turning; palette PNGs and grey PNGs with no transparency; 8-bit colour PNGs,
+    unless they are interlaced and have to be turned; and opaque lossy WebPs, stored as
+    JPEGs. A grey PNG with a transparent colour or an alpha channel counts as a colour
+    PNG throughout here, since it decodes the same way — four bytes a pixel at 8 bits,
+    eight at 16. The PNGs are accepted until their longer side passes about 750,000
+    pixels in colour, or 1.3 to 1.5 million otherwise: at this size, tens of thousands
+    of times longer than they are wide, which only a PNG can be (a JPEG's sides stop at
+    65,535 pixels and a WebP's at 16,383).
   - *refused*: progressive JPEGs with full-resolution colour or in CMYK; CMYK, RGB and
     progressive 4:2:2 and 4:4:0 JPEGs, and interlaced 8-bit colour PNGs, that have to be
     turned; 16-bit colour PNGs that are interlaced or have to be turned; and lossy WebPs
     with transparency, which are stored as PNGs (below) and so take four bytes a pixel.
-  - *either*, by the picture's shape and the upload's size: a 16-bit colour PNG that is
-    neither interlaced nor turned.
+  - *either*, by the picture's shape: a progressive 4:2:0 or 4:1:1 JPEG that a turn
+    stores at 4:4:4, accepted at every shape up to about 8:1 at 4:2:0 and about 2:1 at
+    4:1:1 and refused at some shapes past that; progressive 4:2:2 and 4:4:0 JPEGs that
+    need no turning, accepted up to about 60:1; and, by its shape and the upload's size,
+    a 16-bit colour PNG that is neither interlaced nor turned.
 
-  At a quarter of the size, every kind is accepted. A GIF of many thousands of frames is
+  At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
+  and a PNG of any size is refused once its longer side passes about 4 million pixels,
+  however narrow it is. A GIF of many thousands of frames is
   refused however small they are. An animated WebP is refused with `400`
   (`image could not be decoded`) once it is decoded: nothing in Go can decode one to
   thumbnail it. So, once it is encoded, is an image whose rewritten file would come to

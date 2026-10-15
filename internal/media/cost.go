@@ -105,7 +105,12 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 	held := phases[len(phases)-1].after
 	upload := int64(len(data))
 	limit := storedLimit(format, data, cfg.Width, cfg.Height)
-	scratch := thumbScratch(cfg.Width, cfg.Height)
+	// The thumbnail is made of the picture as it is stored, turned upright.
+	tw, th := cfg.Width, cfg.Height
+	if storedOnItsSide(format, data) {
+		tw, th = th, tw
+	}
+	scratch := thumbScratch(tw, th)
 	phases = append(phases,
 		// The encoder writes into a buffer the size of the upload, which
 		// doubles up to limit, holding the old and the new while it grows
@@ -119,6 +124,20 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 		phase{first: scratch, alloc: scratch, after: limit},
 	)
 	return peakOf(phases...) + processingSlack
+}
+
+// storedOnItsSide reports whether an upload's EXIF orientation turns it on
+// its side (5 to 8), so that it is stored with its width and height swapped:
+// a JPEG's or a PNG's, which sanitize turns upright, and never a GIF's or a
+// WebP's, which it does not.
+func storedOnItsSide(format Format, data []byte) bool {
+	switch format.Name {
+	case FormatJPEG.Name:
+		return jpegOrientation(data) >= 5
+	case FormatPNG.Name:
+		return pngOrientation(data) >= 5
+	}
+	return false
 }
 
 // decodingPhases are the phases of processing an upload before it is
@@ -195,12 +214,23 @@ func pngLimit(w, h, bpp int) int64 {
 	return rows + rows/1024 + 64<<10
 }
 
-// thumbScratch bounds the scratch buffer golang.org/x/image/draw's kernel
-// scaler allocates to make a thumbnail: four float64s for every pixel of a
-// picture as wide as the thumbnail and as tall as the source. That is at most
-// 32 bytes × ThumbMaxDim × the source's shorter side.
+// thumbScratch bounds what golang.org/x/image/draw's kernel scaler allocates
+// to make the thumbnail of a w×h picture. It works through a buffer of four
+// float64s for every pixel of a picture as wide as the thumbnail and as tall
+// as the source: 32 bytes × ThumbMaxDim × the shorter side, but for a picture
+// more than ThumbMaxDim times taller than it is wide, whose thumbnail is still
+// a pixel wide, so that its buffer is 32 bytes for every row. And it holds a
+// table of weights for each axis (newDistrib): 24 bytes for every thumbnail
+// pixel along it, and a 16-byte weight for each source pixel the kernel
+// spreads over each of them, at most four for every source pixel and six
+// for every thumbnail pixel. The tables come to 64 bytes for every pixel of
+// the two sides, which a square barely notices and is most of the scratch
+// for a long, thin strip: a PNG of 25 megapixels in one row would take
+// 1.6 GB of them, from an upload of kilobytes.
 func thumbScratch(w, h int) int64 {
-	return 32 * ThumbMaxDim * int64(min(w, h))
+	tw, th := ThumbSize(w, h, ThumbMaxDim)
+	weights := func(dst, src int) int64 { return 24*int64(dst) + 16*(4*int64(src)+6*int64(dst)) }
+	return 32*int64(tw)*int64(h) + weights(tw, w) + weights(th, h)
 }
 
 // jpegPhases models image/jpeg and what sanitizeJPEG does after it. The

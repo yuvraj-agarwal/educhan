@@ -285,9 +285,13 @@ func greyQuadrants(w, h int) *image.Gray {
 // somewhere: 2400×1800 as Pillow made it, whose planes are megabytes and
 // whose file is not; 144×48 with 8 MiB more at the end of its bitstream
 // (paddedBitstream), whose two copies are megabytes and whose planes are not;
-// and 2400×1800 padded, where both are. Those marked "o6" carry an EXIF
-// orientation of 6, so they are turned on their side too, and "o3" one of 3,
-// turned around.
+// and 2400×1800 padded, where both are. The PNG strip is a row of 524288
+// grey pixels four deep, whose thumbnail scaler holds tables of weights of
+// 64 bytes for each of them (thumbScratch); turned on its side, it is stored
+// four pixels wide, so its thumbnail is a pixel wide and the scaler's buffer
+// is 32 bytes for every one of its rows as well, which only reading the
+// orientation charges. Those marked "o6" carry an EXIF orientation of 6, so
+// they are turned on their side too, and "o3" one of 3, turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -315,6 +319,8 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"PNG grey 16-bit interlaced": rawPNG(t, w, h, 0, 16, true, false),
 		"PNG RGB 16-bit interlaced":  rawPNG(t, small, short, 2, 16, true, false),
 		"PNG RGBA 16-bit o6": withPNGChunks(rawPNG(t, small, short, 6, 16, false, false),
+			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
+		"PNG strip o6": withPNGChunks(rawPNG(t, 1<<19, 4, 0, 8, false, false),
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
@@ -483,11 +489,15 @@ func TestProcessingCostCoversWhatIsHeld(t *testing.T) {
 // The thumbnail scaler's scratch is no more than thumbScratch, for a picture
 // wider than it is tall and for one taller than it is wide: the scaler works
 // on a picture as wide as the thumbnail and as tall as the source, so it is
-// the shorter side that counts. In the cost of the whole it sits on top of a
-// bound for the encoder's output that is far above what a flat picture
-// needs, which would hide a scratch smaller than the scaler's.
+// the shorter side that counts. Its tables of weights, which grow with the
+// longer side, are most of it for a long, thin strip, and a strip taller
+// than ThumbMaxDim times its width has a thumbnail a pixel wide, so its
+// buffer grows with the longer side too. In the cost of the whole the
+// scratch sits on top of a bound for the encoder's output that is far above
+// what a flat picture needs, which would hide a scratch smaller than the
+// scaler's.
 func TestThumbScratchCoversTheScaler(t *testing.T) {
-	for _, size := range []image.Point{{2400, 1800}, {1800, 2400}} {
+	for _, size := range []image.Point{{2400, 1800}, {1800, 2400}, {1 << 19, 4}, {4, 1 << 19}} {
 		pic := image.NewYCbCr(image.Rect(0, 0, size.X, size.Y), image.YCbCrSubsampleRatio420)
 		name := fmt.Sprintf("%dx%d", size.X, size.Y)
 		want := thumbScratch(size.X, size.Y) + processingSlack
@@ -623,98 +633,108 @@ func webpHeader(kind string, w, h int) []byte {
 	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: make([]byte, 10)})
 }
 
+// headJPEG, headRGBJPEG, headPNG, headPNGWithTRNS and headWebP make the
+// header of a file of one kind at any size, for headerUpload.
+func headJPEG(marker byte, samplings ...byte) func(w, h int) []byte {
+	return func(w, h int) []byte { return jpegHeader(marker, w, h, samplings...) }
+}
+
+// headRGBJPEG has an Adobe segment with transform 0 instead of JFIF.
+func headRGBJPEG(marker byte) func(w, h int) []byte {
+	return func(w, h int) []byte {
+		j := jpegHeader(marker, w, h, 0x11, 0x11, 0x11)
+		return withSegments(append([]byte{0xFF, 0xD8}, j[2+18:]...), jpegSegment(0xEE, []byte("Adobe\x00\x64\x00\x00\x00\x00\x00")))
+	}
+}
+
+func headPNG(colour, depth byte, interlaced bool) func(w, h int) []byte {
+	return func(w, h int) []byte { return pngHeader(w, h, colour, depth, interlaced) }
+}
+
+// headPNGWithTRNS is a grey (0) or truecolour (2) PNG with a tRNS chunk
+// before its pixels, which decodes to NRGBA(64), four or eight bytes a pixel,
+// as pngBytesPerPixel reads from the chunk. headerUpload does not add one.
+func headPNGWithTRNS(colour, depth byte, interlaced bool) func(w, h int) []byte {
+	return func(w, h int) []byte {
+		return append(pngHeader(w, h, colour, depth, interlaced),
+			pngChunk("tRNS", make([]byte, map[byte]int{0: 2, 2: 6}[colour]))...)
+	}
+}
+
+func headWebP(kind string) func(w, h int) []byte {
+	return func(w, h int) []byte { return webpHeader(kind, w, h) }
+}
+
 // At the largest resolution allowed, how a file is encoded decides whether it
 // can be processed within the budget, and Inspect says so from the header,
 // before anything is decoded or a cooldown is charged. These are the lists
-// the README gives. What is accepted is accepted at its dearest: a square
-// picture, whose thumbnail scaler needs the most scratch, from an upload of
-// the default 8 MiB limit, whose stored file may be the largest. What is
-// refused is refused at its cheapest: a wide picture from a small upload. At
-// a quarter of the size, everything is accepted at its dearest.
+// the README gives. What is accepted is accepted as a square, whose
+// thumbnail scaler needs the most scratch for its pixels, from an upload of
+// the default 8 MiB limit, whose stored file may be the largest; a square is
+// not the dearest shape of every kind, and TestEncodingsAreJudgedAtEveryShape
+// takes all the others. What is refused is refused at its cheapest: a wide
+// picture from a small upload. At a quarter of the size, everything is
+// accepted as a square.
 func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	type kind struct {
 		name string
 		head func(w, h int) []byte
 		o    uint16
 	}
-	jpg := func(marker byte, samplings ...byte) func(w, h int) []byte {
-		return func(w, h int) []byte { return jpegHeader(marker, w, h, samplings...) }
-	}
-	rgbJPEG := func(marker byte) func(w, h int) []byte {
-		return func(w, h int) []byte { // an Adobe segment with transform 0 instead of JFIF
-			j := jpegHeader(marker, w, h, 0x11, 0x11, 0x11)
-			return withSegments(append([]byte{0xFF, 0xD8}, j[2+18:]...), jpegSegment(0xEE, []byte("Adobe\x00\x64\x00\x00\x00\x00\x00")))
-		}
-	}
-	pngOf := func(colour, depth byte, interlaced bool) func(w, h int) []byte {
-		return func(w, h int) []byte { return pngHeader(w, h, colour, depth, interlaced) }
-	}
-	// A grey (0) or truecolour (2) PNG with a tRNS chunk before its pixels
-	// decodes to NRGBA(64), four or eight bytes a pixel, which pngBytesPerPixel
-	// reads from the chunk. headerUpload does not add one, so it goes on here.
-	pngTRNS := func(colour, depth byte, interlaced bool) func(w, h int) []byte {
-		return func(w, h int) []byte {
-			return append(pngHeader(w, h, colour, depth, interlaced),
-				pngChunk("tRNS", make([]byte, map[byte]int{0: 2, 2: 6}[colour]))...)
-		}
-	}
-	webpOf := func(k string) func(w, h int) []byte {
-		return func(w, h int) []byte { return webpHeader(k, w, h) }
-	}
 	var accepted, refused []kind
 	for _, o := range []uint16{1, 6} {
 		accepted = append(accepted,
-			kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), o},
-			kind{"baseline 4:2:2 JPEG", jpg(0xC0, 0x21, 0x11, 0x11), o},
-			kind{"baseline 4:4:4 JPEG", jpg(0xC0, 0x11, 0x11, 0x11), o},
-			kind{"baseline 4:1:1 JPEG", jpg(0xC0, 0x41, 0x11, 0x11), o},
-			kind{"baseline 4:4:0 JPEG", jpg(0xC0, 0x12, 0x11, 0x11), o},
-			kind{"baseline 4:1:0 JPEG", jpg(0xC0, 0x42, 0x11, 0x11), o},
-			kind{"baseline grey JPEG", jpg(0xC0, 0x11), o},
-			kind{"progressive 4:2:0 JPEG", jpg(0xC2, 0x22, 0x11, 0x11), o},
-			kind{"progressive 4:1:1 JPEG", jpg(0xC2, 0x41, 0x11, 0x11), o},
-			kind{"progressive 4:1:0 JPEG", jpg(0xC2, 0x42, 0x11, 0x11), o},
-			kind{"progressive grey JPEG", jpg(0xC2, 0x11), o},
-			kind{"palette PNG", pngOf(3, 8, false), o},
-			kind{"interlaced palette PNG", pngOf(3, 8, true), o},
-			kind{"8-bit grey PNG", pngOf(0, 8, false), o},
-			kind{"16-bit grey PNG", pngOf(0, 16, false), o},
-			kind{"interlaced 16-bit grey PNG", pngOf(0, 16, true), o},
-			kind{"8-bit RGB PNG", pngOf(2, 8, false), o},
-			kind{"8-bit RGBA PNG", pngOf(6, 8, false), o},
-			kind{"8-bit grey+alpha PNG", pngOf(4, 8, false), o},
+			kind{"baseline 4:2:0 JPEG", headJPEG(0xC0, 0x22, 0x11, 0x11), o},
+			kind{"baseline 4:2:2 JPEG", headJPEG(0xC0, 0x21, 0x11, 0x11), o},
+			kind{"baseline 4:4:4 JPEG", headJPEG(0xC0, 0x11, 0x11, 0x11), o},
+			kind{"baseline 4:1:1 JPEG", headJPEG(0xC0, 0x41, 0x11, 0x11), o},
+			kind{"baseline 4:4:0 JPEG", headJPEG(0xC0, 0x12, 0x11, 0x11), o},
+			kind{"baseline 4:1:0 JPEG", headJPEG(0xC0, 0x42, 0x11, 0x11), o},
+			kind{"baseline grey JPEG", headJPEG(0xC0, 0x11), o},
+			kind{"progressive 4:2:0 JPEG", headJPEG(0xC2, 0x22, 0x11, 0x11), o},
+			kind{"progressive 4:1:1 JPEG", headJPEG(0xC2, 0x41, 0x11, 0x11), o},
+			kind{"progressive 4:1:0 JPEG", headJPEG(0xC2, 0x42, 0x11, 0x11), o},
+			kind{"progressive grey JPEG", headJPEG(0xC2, 0x11), o},
+			kind{"palette PNG", headPNG(3, 8, false), o},
+			kind{"interlaced palette PNG", headPNG(3, 8, true), o},
+			kind{"8-bit grey PNG", headPNG(0, 8, false), o},
+			kind{"16-bit grey PNG", headPNG(0, 16, false), o},
+			kind{"interlaced 16-bit grey PNG", headPNG(0, 16, true), o},
+			kind{"8-bit RGB PNG", headPNG(2, 8, false), o},
+			kind{"8-bit RGBA PNG", headPNG(6, 8, false), o},
+			kind{"8-bit grey+alpha PNG", headPNG(4, 8, false), o},
 		)
 		refused = append(refused,
-			kind{"progressive 4:4:4 JPEG", jpg(0xC2, 0x11, 0x11, 0x11), o},
-			kind{"progressive CMYK JPEG", jpg(0xC2, 0x11, 0x11, 0x11, 0x11), o},
-			kind{"progressive RGB JPEG", rgbJPEG(0xC2), o},
-			kind{"interlaced 16-bit RGB PNG", pngOf(2, 16, true), o},
-			kind{"interlaced 16-bit RGBA PNG", pngOf(6, 16, true), o},
-			kind{"interlaced 16-bit grey+tRNS PNG", pngTRNS(0, 16, true), o},
+			kind{"progressive 4:4:4 JPEG", headJPEG(0xC2, 0x11, 0x11, 0x11), o},
+			kind{"progressive CMYK JPEG", headJPEG(0xC2, 0x11, 0x11, 0x11, 0x11), o},
+			kind{"progressive RGB JPEG", headRGBJPEG(0xC2), o},
+			kind{"interlaced 16-bit RGB PNG", headPNG(2, 16, true), o},
+			kind{"interlaced 16-bit RGBA PNG", headPNG(6, 16, true), o},
+			kind{"interlaced 16-bit grey+tRNS PNG", headPNGWithTRNS(0, 16, true), o},
 		)
 	}
 	accepted = append(accepted,
-		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 1},
-		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 1},
-		kind{"progressive 4:2:2 JPEG", jpg(0xC2, 0x21, 0x11, 0x11), 1},
-		kind{"progressive 4:4:0 JPEG", jpg(0xC2, 0x12, 0x11, 0x11), 1},
-		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 1},
-		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 1},
-		kind{"interlaced 8-bit grey+alpha PNG", pngOf(4, 8, true), 1},
-		kind{"lossy WebP", webpOf("lossy"), 1},
+		kind{"baseline CMYK JPEG", headJPEG(0xC0, 0x11, 0x11, 0x11, 0x11), 1},
+		kind{"baseline RGB JPEG", headRGBJPEG(0xC0), 1},
+		kind{"progressive 4:2:2 JPEG", headJPEG(0xC2, 0x21, 0x11, 0x11), 1},
+		kind{"progressive 4:4:0 JPEG", headJPEG(0xC2, 0x12, 0x11, 0x11), 1},
+		kind{"interlaced 8-bit RGB PNG", headPNG(2, 8, true), 1},
+		kind{"interlaced 8-bit RGBA PNG", headPNG(6, 8, true), 1},
+		kind{"interlaced 8-bit grey+alpha PNG", headPNG(4, 8, true), 1},
+		kind{"lossy WebP", headWebP("lossy"), 1},
 	)
-	refused = append(refused, kind{"lossy WebP with transparency", webpOf("alpha"), 1})
+	refused = append(refused, kind{"lossy WebP with transparency", headWebP("alpha"), 1})
 	refused = append(refused,
-		kind{"baseline CMYK JPEG", jpg(0xC0, 0x11, 0x11, 0x11, 0x11), 6},
-		kind{"baseline RGB JPEG", rgbJPEG(0xC0), 6},
-		kind{"progressive 4:2:2 JPEG", jpg(0xC2, 0x21, 0x11, 0x11), 6},
-		kind{"progressive 4:4:0 JPEG", jpg(0xC2, 0x12, 0x11, 0x11), 6},
-		kind{"interlaced 8-bit RGB PNG", pngOf(2, 8, true), 6},
-		kind{"interlaced 8-bit RGBA PNG", pngOf(6, 8, true), 6},
-		kind{"interlaced 8-bit grey+alpha PNG", pngOf(4, 8, true), 6},
-		kind{"16-bit RGB PNG", pngOf(2, 16, false), 6},
-		kind{"16-bit RGBA PNG", pngOf(6, 16, false), 6},
-		kind{"16-bit grey+tRNS PNG", pngTRNS(0, 16, false), 6},
+		kind{"baseline CMYK JPEG", headJPEG(0xC0, 0x11, 0x11, 0x11, 0x11), 6},
+		kind{"baseline RGB JPEG", headRGBJPEG(0xC0), 6},
+		kind{"progressive 4:2:2 JPEG", headJPEG(0xC2, 0x21, 0x11, 0x11), 6},
+		kind{"progressive 4:4:0 JPEG", headJPEG(0xC2, 0x12, 0x11, 0x11), 6},
+		kind{"interlaced 8-bit RGB PNG", headPNG(2, 8, true), 6},
+		kind{"interlaced 8-bit RGBA PNG", headPNG(6, 8, true), 6},
+		kind{"interlaced 8-bit grey+alpha PNG", headPNG(4, 8, true), 6},
+		kind{"16-bit RGB PNG", headPNG(2, 16, false), 6},
+		kind{"16-bit RGBA PNG", headPNG(6, 16, false), 6},
+		kind{"16-bit grey+tRNS PNG", headPNGWithTRNS(0, 16, false), 6},
 	)
 
 	const side = 5000 // a square of MaxPixels
@@ -737,19 +757,21 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		check(k, side/2, side/2, large, nil)
 	}
 	// The "either" kinds: a 16-bit colour PNG that is neither interlaced nor
-	// turned (eight bytes a pixel) is refused at a square, its dearest shape,
-	// but stored when wide. A grey PNG with a transparent colour counts as a
-	// colour PNG here: with the key applied it decodes to NRGBA64 the same way.
+	// turned (eight bytes a pixel) is refused at a square from a large upload,
+	// but stored when wide from a small one. A grey PNG with a transparent
+	// colour counts as a colour PNG here: with the key applied it decodes to
+	// NRGBA64 the same way. The JPEGs that are either by their shape are
+	// TestEncodingsAreJudgedAtEveryShape's.
 	for _, k := range []kind{
-		{"16-bit RGB PNG", pngOf(2, 16, false), 1},
-		{"16-bit RGBA PNG", pngOf(6, 16, false), 1},
-		{"16-bit grey+tRNS PNG", pngTRNS(0, 16, false), 1},
+		{"16-bit RGB PNG", headPNG(2, 16, false), 1},
+		{"16-bit RGBA PNG", headPNG(6, 16, false), 1},
+		{"16-bit grey+tRNS PNG", headPNGWithTRNS(0, 16, false), 1},
 	} {
 		check(k, side, side, large, ErrImageTooLarge)
 		check(k, 4*side, side/4, small, nil)
 	}
 	// One pixel more than the cap is refused whatever it is.
-	check(kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
+	check(kind{"baseline 4:2:0 JPEG", headJPEG(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
 
 	// Lossless WebP and a VP8L-compressed alpha plane are the one case refused
 	// by the size of a bitstream rather than the picture's resolution:
@@ -775,7 +797,325 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	}
 	// An uncompressed alpha plane needs no such limit: it is not decoded
 	// through vp8l, so a large upload of one is accepted at a small size.
-	check(kind{"lossy WebP, uncompressed alpha", webpOf("alpha"), 1}, 256, 256, large, nil)
+	check(kind{"lossy WebP, uncompressed alpha", headWebP("alpha"), 1}, 256, 256, large, nil)
+}
+
+// shapeClaim is what the README says of one kind of file at the full size,
+// from an upload of the default 8 MiB, at each orientation in turns.
+type shapeClaim struct {
+	name   string
+	head   func(w, h int) []byte
+	format Format
+	turns  []uint16
+	// upTo, when it is not 0, is the ratio of the longer side to the shorter
+	// below which every shape is accepted, and some shape within a tenth past
+	// it is refused; at444, when it is set, narrows that to the shapes a turn
+	// stores at 4:4:4 at that subsampling (turnedSubsampling), and the rest
+	// are accepted at every shape.
+	upTo  float64
+	at444 image.YCbCrSubsampleRatio
+	// longest, for a PNG, is the longer side below which every shape is
+	// accepted, and some shape within a tenth past it is refused. A JPEG's and
+	// a WebP's sides stop far short of it.
+	longest int
+}
+
+// everyTurn is every EXIF orientation.
+var everyTurn = []uint16{1, 2, 3, 4, 5, 6, 7, 8}
+
+// largestSide is the longest side a file of format can have: a JPEG's is a
+// 16-bit field, and a lossy WebP's a 14-bit one in its bitstream, which has
+// to be the size the VP8X chunk says (stillImage). A PNG's is limited only
+// by MaxPixels.
+func largestSide(format Format) int {
+	switch format.Name {
+	case FormatJPEG.Name:
+		return 0xFFFF
+	case FormatWebP.Name:
+		return 0x3FFF
+	}
+	return MaxPixels
+}
+
+// eachShape calls f with the largest pictures of every shape that fit in
+// area pixels and sides of max: for each shorter side, the longest side
+// that fits and the three below it, which between them take every remainder
+// the chroma samples of a turned JPEG depend on, one way round and the
+// other.
+func eachShape(area int64, max int, f func(w, h int)) {
+	for s := 1; int64(s)*int64(s) <= area; s++ {
+		top := min(int(area/int64(s)), max)
+		for l := top; l > top-4 && l >= s; l-- {
+			f(l, s)
+			if l != s {
+				f(s, l)
+			}
+		}
+	}
+}
+
+// keepsSubsampling reports whether turning a w×h YCbCr picture at ratio by
+// orientation o keeps it in its planes, rather than at 4:4:4.
+func keepsSubsampling(ratio image.YCbCrSubsampleRatio, o uint16, w, h int) bool {
+	_, ok := turnedSubsampling(ratio, int(o), w, h)
+	return ok
+}
+
+// jpegFrameAt is where a JPEG's frame header starts, or -1.
+func jpegFrameAt(data []byte) int {
+	for i := 2; i+4 <= len(data) && data[i] == 0xFF; i += 2 + int(binary.BigEndian.Uint16(data[i+2:])) {
+		if m := data[i+1]; m >= 0xC0 && m <= 0xC2 {
+			return i
+		}
+	}
+	return -1
+}
+
+// The lists above hold at every shape, not only as a square: a picture of
+// the same size costs more the longer and thinner it is, because a JPEG's
+// sides are rounded up to whole blocks, a turned one whose chroma samples do
+// not line up is copied at 4:4:4 (turnedSubsampling), and the thumbnail's
+// scaler holds 64 bytes and more for every pixel of the longer side
+// (thumbScratch). So every kind the README lists as accepted, or accepted up
+// to a shape, is judged at every shape of the full size its format can have
+// (eachShape) and at every orientation it is listed at, from an upload of
+// the default 8 MiB: a progressive 4:2:0 or 4:1:1 JPEG that a turn stores at
+// 4:4:4 is accepted up to about 8:1 or 2:1, a progressive 4:2:2 or 4:4:0 one
+// that is not turned up to about 60:1, and a PNG until its longer side passes
+// about 750,000 pixels in colour or 1.3 to 1.5 million otherwise; everything
+// else in the accepted list at every shape. At a quarter of the size, every
+// kind is accepted at every shape up to a thousand to one, and a PNG of any
+// size is refused once its longer side passes about 4 million.
+//
+// That is millions of shapes, so this reads the estimate Inspect compares
+// with the budget (processingCost), with a JPEG's frame header rewritten in
+// place for each, in as many goroutines as there are cores; Inspect itself is
+// asked about the dearest shape of each kind and orientation, and the least
+// elongated it refuses, and has to agree.
+func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
+	const upload = 8 << 20
+	jpg, png, webp := FormatJPEG, FormatPNG, FormatWebP
+	claims := []shapeClaim{
+		{name: "baseline 4:2:0 JPEG", head: headJPEG(0xC0, 0x22, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline 4:2:2 JPEG", head: headJPEG(0xC0, 0x21, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline 4:4:4 JPEG", head: headJPEG(0xC0, 0x11, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline 4:1:1 JPEG", head: headJPEG(0xC0, 0x41, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline 4:4:0 JPEG", head: headJPEG(0xC0, 0x12, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline 4:1:0 JPEG", head: headJPEG(0xC0, 0x42, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline grey JPEG", head: headJPEG(0xC0, 0x11), format: jpg, turns: everyTurn},
+		{name: "baseline CMYK JPEG", head: headJPEG(0xC0, 0x11, 0x11, 0x11, 0x11), format: jpg, turns: []uint16{1}},
+		{name: "baseline RGB JPEG", head: headRGBJPEG(0xC0), format: jpg, turns: []uint16{1}},
+		{name: "progressive 4:1:0 JPEG", head: headJPEG(0xC2, 0x42, 0x11, 0x11), format: jpg, turns: everyTurn},
+		{name: "progressive grey JPEG", head: headJPEG(0xC2, 0x11), format: jpg, turns: everyTurn},
+		{name: "progressive 4:2:0 JPEG", head: headJPEG(0xC2, 0x22, 0x11, 0x11), format: jpg, turns: everyTurn,
+			upTo: 8, at444: image.YCbCrSubsampleRatio420},
+		{name: "progressive 4:1:1 JPEG", head: headJPEG(0xC2, 0x41, 0x11, 0x11), format: jpg, turns: everyTurn,
+			upTo: 2, at444: image.YCbCrSubsampleRatio411},
+		{name: "progressive 4:2:2 JPEG", head: headJPEG(0xC2, 0x21, 0x11, 0x11), format: jpg, turns: []uint16{1}, upTo: 60},
+		{name: "progressive 4:4:0 JPEG", head: headJPEG(0xC2, 0x12, 0x11, 0x11), format: jpg, turns: []uint16{1}, upTo: 60},
+		{name: "palette PNG", head: headPNG(3, 8, false), format: png, turns: everyTurn, longest: 1_500_000},
+		{name: "interlaced palette PNG", head: headPNG(3, 8, true), format: png, turns: everyTurn, longest: 1_500_000},
+		{name: "8-bit grey PNG", head: headPNG(0, 8, false), format: png, turns: everyTurn, longest: 1_500_000},
+		{name: "16-bit grey PNG", head: headPNG(0, 16, false), format: png, turns: everyTurn, longest: 1_300_000},
+		{name: "interlaced 16-bit grey PNG", head: headPNG(0, 16, true), format: png, turns: everyTurn, longest: 1_300_000},
+		{name: "8-bit RGB PNG", head: headPNG(2, 8, false), format: png, turns: everyTurn, longest: 750_000},
+		{name: "8-bit RGBA PNG", head: headPNG(6, 8, false), format: png, turns: everyTurn, longest: 750_000},
+		{name: "8-bit grey+alpha PNG", head: headPNG(4, 8, false), format: png, turns: everyTurn, longest: 750_000},
+		{name: "8-bit grey+tRNS PNG", head: headPNGWithTRNS(0, 8, false), format: png, turns: everyTurn, longest: 750_000},
+		{name: "interlaced 8-bit RGB PNG", head: headPNG(2, 8, true), format: png, turns: []uint16{1}, longest: 750_000},
+		{name: "interlaced 8-bit RGBA PNG", head: headPNG(6, 8, true), format: png, turns: []uint16{1}, longest: 750_000},
+		{name: "interlaced 8-bit grey+alpha PNG", head: headPNG(4, 8, true), format: png, turns: []uint16{1}, longest: 750_000},
+		{name: "lossy WebP", head: headWebP("lossy"), format: webp, turns: []uint16{1}},
+	}
+	// The refused kinds, and the 16-bit colour PNGs that are refused or
+	// accepted by their shape and the upload's size, are judged at a quarter
+	// of the size along with the rest.
+	quarter := append(append([]shapeClaim(nil), claims...), []shapeClaim{
+		{name: "progressive 4:4:4 JPEG", head: headJPEG(0xC2, 0x11, 0x11, 0x11), format: jpg},
+		{name: "progressive CMYK JPEG", head: headJPEG(0xC2, 0x11, 0x11, 0x11, 0x11), format: jpg},
+		{name: "progressive RGB JPEG", head: headRGBJPEG(0xC2), format: jpg},
+		{name: "16-bit RGB PNG", head: headPNG(2, 16, false), format: png},
+		{name: "16-bit RGBA PNG", head: headPNG(6, 16, false), format: png},
+		{name: "16-bit grey+tRNS PNG", head: headPNGWithTRNS(0, 16, false), format: png},
+		{name: "interlaced 16-bit RGB PNG", head: headPNG(2, 16, true), format: png},
+		{name: "interlaced 16-bit RGBA PNG", head: headPNG(6, 16, true), format: png},
+		{name: "interlaced 16-bit grey+tRNS PNG", head: headPNGWithTRNS(0, 16, true), format: png},
+		{name: "lossy WebP with transparency", head: headWebP("alpha"), format: webp},
+	}...)
+	for i := range quarter {
+		quarter[i].turns = everyTurn
+		if quarter[i].format == webp {
+			quarter[i].turns = []uint16{1}
+		}
+	}
+
+	// judge runs one kind at one orientation, at every shape of area, and
+	// returns what it found wrong.
+	judge := func(data []byte, k shapeClaim, o uint16, area int64, ratio float64) []string {
+		// data is the upload, of the default 8 MiB. Its header is the
+		// file's, ending in its last chunk or the start of its scan, and
+		// the rest is nothing, as headerUpload makes it, but for a PNG's
+		// filler chunk: what the estimate reads of a file is its header and
+		// its length.
+		head := headerUpload(k.head(1000, 1000), o, 0)
+		if len(head) > 4<<10 {
+			return []string{"a header over 4 KiB"}
+		}
+		clear(data[:4<<10])
+		copy(data, head)
+		frame := -1
+		if k.format == jpg {
+			if frame = jpegFrameAt(data); frame < 0 {
+				return []string{"no frame header"}
+			}
+		}
+		var (
+			wrong       []string
+			wrongCount  int
+			gated       bool
+			least       = math.Inf(1) // the least ratio, or longer side, that is refused where a limit applies
+			leastShape  image.Point
+			leastCost   int64
+			dearest     image.Point
+			dearestCost int64
+		)
+		eachShape(area, largestSide(k.format), func(w, h int) {
+			if frame >= 0 {
+				binary.BigEndian.PutUint16(data[frame+5:], uint16(h))
+				binary.BigEndian.PutUint16(data[frame+7:], uint16(w))
+			}
+			cost := processingCost(k.format, data, image.Config{Width: w, Height: h}, gifFrames{})
+			if cost > dearestCost {
+				dearest, dearestCost = image.Pt(w, h), cost
+			}
+			refused := cost > processingBudget
+			long, short := max(w, h), min(w, h)
+			shape := float64(long) / float64(short)
+			limit, at := math.Inf(1), 0.0
+			switch {
+			case ratio > 0: // at a quarter of the size
+				if shape > ratio {
+					return
+				}
+			case k.upTo > 0:
+				if k.at444 == 0 || !keepsSubsampling(k.at444, o, w, h) {
+					gated, limit, at = true, k.upTo, shape
+				}
+			case k.longest > 0:
+				gated, limit, at = true, float64(k.longest), float64(long)
+			}
+			if refused && at < least && gated {
+				least, leastShape, leastCost = at, image.Pt(w, h), cost
+			}
+			if refused && at < limit {
+				if wrongCount++; wrongCount <= 3 {
+					wrong = append(wrong, fmt.Sprintf("%dx%d refused (%.0f MiB)", w, h, float64(cost)/(1<<20)))
+				}
+			}
+		})
+		if wrongCount > 3 {
+			wrong = append(wrong, fmt.Sprintf("and %d more shapes refused", wrongCount-3))
+		}
+		if ratio == 0 && gated {
+			limit := k.upTo
+			if limit == 0 {
+				limit = float64(k.longest)
+			}
+			switch {
+			case math.IsInf(least, 1):
+				wrong = append(wrong, fmt.Sprintf("accepted at every shape, where the README has it refused from about %g", limit))
+			case least >= 1.1*limit:
+				wrong = append(wrong, fmt.Sprintf("refused from %.1f, more than a tenth past the %g the README gives", least, limit))
+			}
+		}
+		// The estimate of the shapes above, read with the frame header
+		// rewritten, is the estimate of a header made at that size, and
+		// Inspect refuses by it, at the dearest shape and the least
+		// elongated refused. Once for each kind, the header comes with the
+		// rest of the upload as headerUpload makes it, too.
+		for p, cost := range map[image.Point]int64{dearest: dearestCost, leastShape: leastCost} {
+			if p == (image.Point{}) {
+				continue
+			}
+			head := headerUpload(k.head(p.X, p.Y), o, 0)
+			clear(data[:4<<10])
+			copy(data, head)
+			files := [][]byte{data}
+			if ratio == 0 && o == k.turns[0] && p == dearest {
+				files = append(files, headerUpload(k.head(p.X, p.Y), o, upload))
+			}
+			for _, file := range files {
+				if c := processingCost(k.format, file, image.Config{Width: p.X, Height: p.Y}, gifFrames{}); c != cost {
+					wrong = append(wrong, fmt.Sprintf("%dx%d estimated at %d as a file of its own, %d in the scan", p.X, p.Y, c, cost))
+				}
+				_, err := Inspect(file)
+				if refused := cost > processingBudget; refused != errors.Is(err, ErrImageTooLarge) || !refused && err != nil {
+					wrong = append(wrong, fmt.Sprintf("Inspect(%dx%d) = %v where the estimate is %d", p.X, p.Y, err, cost))
+				}
+			}
+		}
+		return wrong
+	}
+
+	type job struct {
+		k     shapeClaim
+		o     uint16
+		area  int64
+		ratio float64
+	}
+	var jobs []job
+	for _, k := range claims {
+		for _, o := range k.turns {
+			jobs = append(jobs, job{k, o, MaxPixels, 0})
+		}
+	}
+	for _, k := range quarter {
+		for _, o := range k.turns {
+			jobs = append(jobs, job{k, o, MaxPixels / 4, 1000})
+		}
+	}
+	work := make(chan job)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			data := make([]byte, upload)
+			for j := range work {
+				size := "full size"
+				if j.ratio > 0 {
+					size = "a quarter of the size"
+				}
+				for _, w := range judge(data, j.k, j.o, j.area, j.ratio) {
+					t.Errorf("%s, o%d, at %s: %s", j.k.name, j.o, size, w)
+				}
+			}
+		}()
+	}
+	for _, j := range jobs {
+		work <- j
+	}
+	close(work)
+	wg.Wait()
+
+	// However narrow a PNG is, it is refused once its longer side passes
+	// about 4 million pixels: every kind at every orientation, from an
+	// upload of a kilobyte, as a row and as a column.
+	for _, k := range quarter {
+		if k.format != png {
+			continue
+		}
+		for _, o := range k.turns {
+			for _, size := range []image.Point{{4_100_000, 1}, {1, 4_100_000}} {
+				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); !errors.Is(err, ErrImageTooLarge) {
+					t.Errorf("Inspect(%s, o%d, %dx%d, 1 KiB) = %v, want it refused", k.name, o, size.X, size.Y, err)
+				}
+			}
+		}
+	}
+	if _, err := Inspect(headerUpload(headPNG(3, 8, false)(4_000_000, 1), 1, 1<<10)); err != nil {
+		t.Errorf("Inspect(palette PNG, 4000000x1, 1 KiB) = %v, want it accepted: the limit is about 4 million", err)
+	}
 }
 
 // The photos phones and cameras save at 24 megapixels are taken at their full
