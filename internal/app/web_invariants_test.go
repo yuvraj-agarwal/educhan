@@ -383,27 +383,41 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 // captchaFunctions are the client's captcha, from fetching a challenge to
 // sending an answer.
 var captchaFunctions = []string{
-	"captchaFormNeedsIt", "prepareCaptcha", "captchaAnswer", "dropCaptcha",
-	"solveCaptcha", "runCaptchaWorkers", "sendWithCaptcha",
+	"captchaFormNeedsIt", "prepareCaptcha", "captchaAnswer", "stopCaptcha", "captchaBadgeToggled",
+	"dropCaptcha", "solveCaptcha", "runCaptchaWorkers", "sendWithCaptcha",
 }
 
 // A captcha answer is good for one request and kept in memory only: never in
 // storage, a cookie or a draft, where it would outlive the page or be found by
-// the next person at a shared computer. It is set in one place and cleared in
-// one other.
+// the next person at a shared computer. It is set in one place, cleared in one
+// other, and read only where it is handed to a request.
 func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	script := appScript(t)
+	banned := []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"}
 	for _, name := range captchaFunctions {
 		fn := withoutComments(jsFunction(t, script, name))
-		for _, banned := range []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"} {
-			if strings.Contains(fn, banned) {
-				t.Errorf("%s uses %s; the captcha answer stays in memory", name, banned)
+		for _, b := range banned {
+			if strings.Contains(fn, b) {
+				t.Errorf("%s uses %s; the captcha answer stays in memory", name, b)
 			}
 		}
 	}
-	for _, name := range []string{"captureDraft", "restoreDraft"} {
+	for _, name := range []string{"captureDraft", "restoreDraft", "keepUnsentDraft"} {
 		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(fn), "captcha") {
 			t.Errorf("%s handles the captcha; a draft carries what the poster wrote and nothing else", name)
+		}
+	}
+	// The two requests that carry an answer may keep other things, a post's
+	// name say, but nothing that mentions the answer.
+	keeps := regexp.MustCompile(`(` + strings.Join(append(banned, "captureDraft", "keepUnsentDraft"), "|") + `)[^;]*`)
+	for name, fn := range map[string]string{
+		"the submit handler": submitHandler(t, script),
+		"submitVerification": jsFunction(t, script, "submitVerification"),
+	} {
+		for _, call := range keeps.FindAllString(withoutComments(fn), -1) {
+			if lower := strings.ToLower(call); strings.Contains(lower, "answer") || strings.Contains(lower, "captcha") {
+				t.Errorf("%s keeps the captcha answer: %s", name, call)
+			}
 		}
 	}
 	code := withoutComments(script)
@@ -412,18 +426,27 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 		!strings.Contains(jsFunction(t, script, "dropCaptcha"), `captcha.answer = "";`) {
 		t.Errorf("captcha.answer is assigned %d times; want once in solveCaptcha and once, clearing it, in dropCaptcha", n)
 	}
+	// Read anywhere else, the held answer could go out on a request that
+	// should not carry one, a badged post's.
+	reads := strings.Count(code, "captcha.answer")
+	for _, name := range []string{"captchaAnswer", "dropCaptcha", "solveCaptcha"} {
+		reads -= strings.Count(withoutComments(jsFunction(t, script, name)), "captcha.answer")
+	}
+	if reads != 0 {
+		t.Errorf("captcha.answer is used %d times outside captchaAnswer, dropCaptcha and solveCaptcha; a request gets its answer from sendWithCaptcha", reads)
+	}
 }
 
 // A reader who never starts to write never asks for a captcha: the challenge
 // is fetched in one place, and the only things that start a fetch before a
-// request needs it are a reader moving into a box to write in, and a post or
-// code request refused after the server spent its answer, which the reader is
-// about to send again.
+// request needs it are a reader moving into a box to write in, or unticking
+// the badge in a form they are writing in, and a post or code request refused
+// after the server spent its answer, which the reader is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 
-	if n := strings.Count(code, `"/api/captcha"`); n != 1 || !strings.Contains(jsFunction(t, script, "solveCaptcha"), `api("/api/captcha")`) {
+	if n := strings.Count(code, `"/api/captcha"`); n != 1 || !strings.Contains(jsFunction(t, script, "solveCaptcha"), `api("/api/captcha", { signal })`) {
 		t.Errorf(`"/api/captcha" appears %d times in app.js; want once, in solveCaptcha`, n)
 	}
 	calls := map[string]struct {
@@ -446,11 +469,14 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	}
 	focus := jsBlock(t, script, `el.main.addEventListener("focusin", (event) => {`, "});")
 	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
-	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 2 || !strings.Contains(focus, "prepareCaptcha()") ||
+	toggled := withoutComments(jsFunction(t, script, "captchaBadgeToggled"))
+	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 3 || !strings.Contains(focus, "prepareCaptcha()") ||
 		!strings.Contains(send, `=== "spent") {
           dropCaptcha(answer);
-          if (needsIt()) prepareCaptcha();`) {
-		t.Errorf("prepareCaptcha() is called %d times in app.js; want twice, from the focusin listener and after a refusal that spent the answer", n)
+          if (needsIt()) prepareCaptcha();`) ||
+		!strings.Contains(toggled, `} else if (captchaFormNeedsIt(box.form)) {
+    prepareCaptcha();`) {
+		t.Errorf("prepareCaptcha() is called %d times in app.js; want three, from the focusin listener, on unticking the badge, and after a refusal that spent the answer", n)
 	}
 	if !strings.Contains(focus, `box.matches("textarea, input[type=text], input[type=email]")`) {
 		t.Error("the focusin listener no longer starts the puzzle only from a box to write in")
@@ -462,10 +488,21 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	}
 }
 
-// A badged post skips the captcha, so it never fetches a challenge or carries
-// an answer; a code request always needs one when the captcha is on.
+// A badged post skips the captcha, so it never waits for or carries an answer,
+// and ticking the badge stops a puzzle the reader started by writing first; a
+// code request always needs one when the captcha is on.
 func TestCaptchaIsSkippedOnlyByABadgedPost(t *testing.T) {
 	script := appScript(t)
+	toggled := withoutComments(jsFunction(t, script, "captchaBadgeToggled"))
+	stop := withoutComments(jsFunction(t, script, "stopCaptcha"))
+	waits := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
+	change := withoutComments(jsBlock(t, script, `el.main.addEventListener("change", (event) => {`, "});"))
+	if !strings.Contains(change, "captchaBadgeToggled(event.target);") ||
+		!strings.Contains(toggled, "if (box.checked) {\n    stopCaptcha();") ||
+		!strings.Contains(stop, "if (captcha.stop && captcha.waiting === 0) {") ||
+		!strings.Contains(waits, "captcha.waiting += 1;") || !strings.Contains(waits, "captcha.waiting -= 1;") {
+		t.Error("ticking the badge no longer stops a puzzle nobody is waiting for")
+	}
 	submit := withoutComments(submitHandler(t, script))
 	if !strings.Contains(submit, "() => state.site.captcha && !held,") {
 		t.Error("the submit handler no longer skips the captcha for a badged post, and only for one")

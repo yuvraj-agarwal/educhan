@@ -641,7 +641,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 | `EDUCHAN_CAPTCHA_SECRET` | empty | Keys the [captcha](#captcha): the signature on every challenge. **Unset switches the captcha off**, so posts and code requests need no answer. At least 32 characters (`openssl rand -hex 32`), the same on every instance; rotating it only invalidates the challenges out at the time |
-| `EDUCHAN_CAPTCHA_WORK` | `1500` | Average number of PBKDF2 attempts a challenge asks of the browser, before an address asking fast is given harder ones; 1 to 10000. At the default a phone takes a second or two; above a few thousand a slow phone waits a long while before every post |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` | Average number of PBKDF2 attempts a challenge asks of the browser, before an address asking fast is given harder ones; 1 to 7500. At the default a laptop takes about two seconds and a slow phone a few more; above a few thousand a slow phone waits a long while before every post |
 
 ### Storage backends
 
@@ -762,12 +762,18 @@ script from anywhere else runs on the page, and no cookie is set.
 1. When a reader first moves into a box to write in, the page asks
    `GET /api/captcha` for a challenge: a random salt and nonce, a PBKDF2-SHA-256
    cost, the first half of a key, an expiry half an hour away, and the server's
-   HMAC over all of it. The server made the key by choosing a counter and
-   deriving PBKDF2 over the nonce with that counter appended.
+   HMAC over all of it. The server made the key by choosing a counter at
+   random, from one to just under twice the work, and deriving PBKDF2 over the
+   nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
-   copies and tries counters from zero until a key starts with that half. That is
-   about 1500 attempts at the default work, a second or two of arithmetic, done
-   while the post is being written.
+   copies and tries counters until a key starts with that half. That is 1500
+   attempts on average at the default work and never more than 2999, about two
+   seconds on a laptop and a few more on a slow phone, done while the post is
+   being written. (Chromium runs every copy's Web Crypto on one thread, so there
+   the copies take turns.) The worker needs Web Crypto, which a browser gives
+   only to a page on HTTPS or `localhost`; anywhere else, with the captcha on,
+   the page sends no unbadged post and no code request, and says the check could
+   not finish.
 3. The post carries the answer, the challenge and the key it found, as
    `"captcha"`. The server checks the signature, the expiry and an HMAC of the
    key, at most two HMACs and never a key derivation, so a wrong answer costs it
@@ -778,6 +784,8 @@ script from anywhere else runs on the page, and no cookie is set.
 A **badged post skips the captcha**: the credential has already cost its holder
 more than a puzzle would. Holding one is not enough; only a post that asks for
 the badge, and gets it, goes without an answer. A code request never skips it.
+There is no limit per credential: its holder posts without puzzles from any
+address, under that address's flood control.
 
 The answer is checked, the lookup included, before flood control and spent
 after it, so a post refused by the captcha starts no cooldown, and a post
@@ -795,11 +803,15 @@ it arrives.
 
 An address that asks for challenges faster than people post gets harder ones:
 up to 60 a minute at the base work, then double for every further 60, up to
-eight times, and past 600 in a minute `GET /api/captcha` answers `429`. The
-count is kept per client address in one-minute windows, in each instance's
-memory like flood control, and swept with the cooldowns (see
+eight times, and past 300 in a minute `GET /api/captcha` answers `429`. The
+count is kept per client address, an IPv6 address counted by its `/64` (the
+block one connection is usually given), in one-minute windows, in each
+instance's memory like flood control, and swept with the cooldowns (see
 [Flood control](#flood-control)); behind several instances an address can ask
-each of them for that many. Spent challenges are kept in `captcha_spent`, shared
+each of them for that many. A challenge is not tied to the address that
+fetched it, which would fail a phone moving between networks, so the harder
+puzzles slow a script that asks from one address, not one that fetches from
+many. Spent challenges are kept in `captcha_spent`, shared
 by every instance so they agree on what was used, as a hash of the challenge's
 signature and its expiry rounded up to the next UTC midnight, as a credential's
 is: a row dates the post or code request it let through only to the day. Each
@@ -847,7 +859,7 @@ that overwrites the header with just the peer address are each a single hop.
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
 | `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes","captcha"}`: whether posts may carry an image, the largest one taken, and whether posts need a captcha answer. The same answer for every caller; it reads nothing from the request |
-| `GET` | `/api/captcha` | A captcha challenge — `{"parameters","signature"}`, ALTCHA's format; `404` when the captcha is off, `429` past 600 a minute from one address. See [Captcha](#captcha) |
+| `GET` | `/api/captcha` | A captcha challenge — `{"parameters","signature"}`, ALTCHA's format; `404` when the captcha is off, `429` past 300 a minute from one address. See [Captcha](#captcha) |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |

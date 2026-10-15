@@ -168,9 +168,11 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, adultRequired)
 		return
 	}
-	// Next the captcha, before the address is so much as parsed, so a script
-	// walking a list of addresses solves a puzzle for each. It is spent below,
-	// once both cooldowns have let the request through.
+	// Next the captcha, checked before the address is parsed and spent below,
+	// once both cooldowns have let the request through, so every request that
+	// gets as far as sending mail has cost a puzzle of its own. A request
+	// refused before the spend, for its address or a cooldown, keeps its
+	// answer.
 	ticket, ok := a.checkCaptcha(w, r, req.Captcha, false)
 	if !ok {
 		return

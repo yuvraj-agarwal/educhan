@@ -393,16 +393,21 @@ needs a browser check before the test changes.
 - **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
   reads `captcha` from `GET /api/site` into `state.site.captcha`. The puzzle starts only
   when a reader focuses a box to write in (the `focusin` listener, never on render or
-  on the badge box), runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
-  copies with interleaved counters, and the answer is kept in the `captcha` object in
-  memory only, never in storage or a draft. `sendWithCaptcha` sends a post or a code
+  on the badge box) or unticks the badge, and ticking the badge stops it unless a
+  request is waiting for it (`captchaBadgeToggled`, `stopCaptcha`). It runs ALTCHA's
+  vendored worker in up to `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side
+  by side where the browser allows; Chromium runs their Web Crypto on one thread), and
+  only in a secure context with `Worker` and `crypto.subtle`, failing before any fetch
+  otherwise. The answer is kept in the `captcha` object in memory only, never in
+  storage or a draft, and read only by `captchaAnswer`, `dropCaptcha` and
+  `solveCaptcha`. `sendWithCaptcha` sends a post or a code
   request, solving first when needed. The answer is dropped when the request succeeds;
   a refusal carrying `"captcha"` drops it and sends once more with a fresh one, and
   `"required"` also turns `state.site.captcha` on for a page drawn without knowing. Any
   other refusal keeps the answer, unless it carries `Educhan-Captcha: spent`
   (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`), which drops it and starts the next
-  puzzle at once. A badged post never solves one (`() => state.site.captcha && !held`),
-  and a code request always does. `CAPTCHA_LIFETIME_MS` must be no more than the
+  puzzle at once. A badged post never waits for or sends an answer
+  (`() => state.site.captcha && !held`), and a code request always does. `CAPTCHA_LIFETIME_MS` must be no more than the
   server's `captchaTTL` less a minute. `TestCaptchaAnswerStaysInMemory`,
   `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`, `TestCaptchaIsSkippedOnlyByABadgedPost`
   and `TestClientAndServerAgreeOnTheCaptcha` pin these; the worker needs no CSP change

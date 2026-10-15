@@ -11,9 +11,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"sync"
 	"time"
@@ -64,18 +66,19 @@ const (
 	// the client solves a fresh one if its answer is about to run out.
 	captchaTTL = 30 * time.Minute
 	// defaultCaptchaWork is the average number of attempts a challenge asks
-	// for. At captchaCost that is a second or two on a phone and well under one
-	// on a laptop, spread over the browser's cores.
+	// for. At captchaCost that is about two seconds on a laptop in Chromium,
+	// which runs every worker's Web Crypto on one thread, and a few more on a
+	// slow phone, spent while the post is being written.
 	defaultCaptchaWork = 1500
 	// maxCaptchaWork caps the work a challenge asks for, scaled up for a busy
 	// address included, and EDUCHAN_CAPTCHA_WORK is held to an eighth of it
-	// (captchaMaxScale). A counter is drawn from up to one and a half times
-	// the work, so the base puzzle, the one people are given, asks at most
-	// 15,000 attempts: about twenty seconds on one laptop core and under a
-	// minute on a slow phone, inside the two minutes app.js gives a puzzle
-	// before saying it could not finish. Only an address asking for
-	// challenges far faster than anyone posts is given more than that.
-	maxCaptchaWork = 80000
+	// (captchaMaxScale). A counter is drawn from up to just under twice the
+	// work, so the base puzzle, the one people are given, asks at most 14,999
+	// attempts: about twenty seconds on a laptop and under a minute on a slow
+	// phone, inside the two minutes app.js gives a puzzle before saying it
+	// could not finish. Only an address asking for challenges far faster than
+	// anyone posts is given more than that.
+	maxCaptchaWork = 60000
 	// maxCaptchaPayload bounds an answer before it is decoded. A real one is
 	// about six hundred bytes.
 	maxCaptchaPayload = 4096
@@ -96,9 +99,10 @@ const (
 	// doubles for every further captchaFreeChallenges in the window.
 	captchaMaxScale = 8
 	// captchaChallengeLimit is how many challenges one address may have in a
-	// window at all. Each costs the server a key derivation, so past this the
-	// endpoint answers 429.
-	captchaChallengeLimit = 600
+	// window at all. Each costs the server a key derivation, about a
+	// millisecond of a core, so past this the endpoint answers 429. Every
+	// challenge past 180 in a window is already at captchaMaxScale.
+	captchaChallengeLimit = 300
 )
 
 // The refusals a captcha answer can earn, sent beside the message so the
@@ -225,17 +229,19 @@ func (v *altchaVerifier) issue(now time.Time, scale int) (captchaChallenge, erro
 }
 
 // captchaCounter draws the counter a challenge's answer is at: uniformly from
-// half to one and a half times the work asked for, so every challenge costs
-// about the same and none is free. The worker counts up from zero, so the
-// counter is also the number of attempts the answer takes.
+// one to just under twice the work asked for, so it averages the work and is
+// never the free counter zero. The worker counts up from zero, so the counter
+// is also the number of attempts the answer takes. Every counter in the range
+// is as likely as any other, so counting up from the bottom is the best anyone
+// can do: a script that knows the range saves nothing over a browser, as it
+// would if the range started above zero and the browser did not.
 func captchaCounter(work, scale int) (uint32, error) {
-	mean := min(int64(work)*int64(max(scale, 1)), maxCaptchaWork)
-	low := max(mean/2, 1)
-	n, err := rand.Int(rand.Reader, big.NewInt(mean+1))
+	mean := min(max(int64(work), 1)*int64(max(scale, 1)), maxCaptchaWork)
+	n, err := rand.Int(rand.Reader, big.NewInt(2*mean-1))
 	if err != nil {
 		return 0, fmt.Errorf("captcha counter: %w", err)
 	}
-	return uint32(low + n.Int64()), nil
+	return uint32(1 + n.Int64()), nil
 }
 
 // captchaKey is the key an answer has to reproduce: PBKDF2 over the nonce with
@@ -294,9 +300,11 @@ func (v *altchaVerifier) check(payload string, now time.Time) (captchaTicket, er
 	if err != nil || len(key) != captchaKeyLength || !isLowerHex(p.Solution.DerivedKey) {
 		return captchaTicket{}, errCaptchaInvalid
 	}
+	// The key signature is the server's own, under the challenge signature, so
+	// a key that matches it is the key the challenge was made from, and its
+	// first half is the signed prefix: there is nothing else to compare.
 	keySignature, _ := hex.DecodeString(params.KeySignature) // well formed, checked above
-	if !hmac.Equal(hmacBytes(v.keySignKey, key), keySignature) ||
-		hex.EncodeToString(key[:captchaPrefixLength]) != params.KeyPrefix {
+	if !hmac.Equal(hmacBytes(v.keySignKey, key), keySignature) {
 		return captchaTicket{}, errCaptchaInvalid
 	}
 
@@ -307,9 +315,13 @@ func (v *altchaVerifier) check(payload string, now time.Time) (captchaTicket, er
 	return captchaTicket{key: spent[:], expires: expires}, nil
 }
 
-// decodeCaptchaPayload undoes the client's btoa(JSON.stringify(…)). Anything
-// that is not exactly a challenge and a solution is refused, including the
-// widget's own test-mode answer, whose challenge and solution are null.
+// decodeCaptchaPayload undoes the client's btoa(JSON.stringify(…)). It refuses
+// an answer too long to be real, other fields, anything after the one value,
+// and the widget's own test-mode answer, whose challenge and solution are
+// null. It is not stricter than encoding/json, which matches keys in any case
+// and keeps the last of a repeated one, and need not be: what is checked and
+// spent is the signature, which only the server's own HMAC matches, written
+// one way.
 func decodeCaptchaPayload(payload string) (captchaPayload, error) {
 	if len(payload) > maxCaptchaPayload {
 		return captchaPayload{}, errCaptchaInvalid
@@ -321,7 +333,10 @@ func decodeCaptchaPayload(payload string) (captchaPayload, error) {
 	dec := json.NewDecoder(bytes.NewReader(raw))
 	dec.DisallowUnknownFields()
 	var p captchaPayload
-	if err := dec.Decode(&p); err != nil || dec.More() {
+	if err := dec.Decode(&p); err != nil {
+		return captchaPayload{}, errCaptchaInvalid
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
 		return captchaPayload{}, errCaptchaInvalid
 	}
 	if p.Challenge == nil || p.Solution == nil {
@@ -331,14 +346,13 @@ func decodeCaptchaPayload(payload string) (captchaPayload, error) {
 }
 
 // wellFormedCaptcha reports whether parameters have the shape this server
-// issues, which is all it will sign: the algorithm and key length it uses, and
+// issues, before anything is hashed: the algorithm and key length it uses, and
 // lowercase hex of the right length everywhere hex belongs. A value that could
-// be written two ways would let one challenge's signature cover two texts.
+// be written two ways would let one challenge's signature cover two texts. The
+// cost and expiry need no check of their own: the signature covers them.
 func wellFormedCaptcha(p captchaParameters) bool {
 	return p.Algorithm == captchaAlgorithm &&
 		p.KeyLength == captchaKeyLength &&
-		p.Cost > 0 &&
-		p.ExpiresAt > 0 &&
 		isHexOfLength(p.KeyPrefix, captchaPrefixLength) &&
 		isHexOfLength(p.KeySignature, sha256.Size) &&
 		isHexOfLength(p.Nonce, 16) &&
@@ -378,6 +392,10 @@ type captchaMeter struct {
 
 	mu     sync.Mutex
 	counts map[string]captchaCount
+	// swept is the window take last swept in, so a map that is large with
+	// the current window's own addresses is scanned once per window rather
+	// than on every challenge.
+	swept int64
 }
 
 type captchaCount struct {
@@ -397,8 +415,9 @@ func (m *captchaMeter) take(key string) (scale int, retryAfter time.Duration, ok
 
 	now := m.now()
 	window := now.UnixNano() / int64(m.window)
-	if len(m.counts) >= cooldownSweepThreshold {
+	if len(m.counts) >= cooldownSweepThreshold && m.swept != window {
 		m.sweep(window)
+		m.swept = window
 	}
 	c := m.counts[key]
 	if c.window != window {
@@ -410,6 +429,23 @@ func (m *captchaMeter) take(key string) (scale int, retryAfter time.Duration, ok
 	c.n++
 	m.counts[key] = c
 	return captchaScale(c.n), 0, true
+}
+
+// captchaMeterKey is the address a challenge is counted against: the client
+// address, except that an IPv6 address counts as its /64, the block one
+// subscriber is usually given whole, so a client cannot start a fresh count by
+// moving to the next address in its own block. An address that does not parse
+// is counted as it is.
+func captchaMeterKey(ip string) string {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil || !addr.Is6() || addr.Is4In6() {
+		return ip
+	}
+	prefix, err := addr.WithZone("").Prefix(64)
+	if err != nil {
+		return ip
+	}
+	return prefix.String()
 }
 
 // captchaScale is the difficulty for the nth challenge an address has asked
@@ -455,7 +491,7 @@ func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusNotFound, "the captcha is not switched on here")
 		return
 	}
-	scale, wait, ok := a.captchaMeter.take(clientIP(r, a.cfg.TrustedProxyHops))
+	scale, wait, ok := a.captchaMeter.take(captchaMeterKey(clientIP(r, a.cfg.TrustedProxyHops)))
 	if !ok {
 		seconds := int(math.Ceil(wait.Seconds()))
 		w.Header().Set("Retry-After", strconv.Itoa(seconds))

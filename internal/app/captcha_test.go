@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"slices"
 	"strings"
 	"testing"
@@ -166,14 +167,42 @@ func TestCaptchaRefusesWrongAnswers(t *testing.T) {
 		t.Fatalf("issue: %v", err)
 	}
 	raw, _ := base64.StdEncoding.DecodeString(good)
+	// padded is the right answer's JSON after the fewest leading spaces, which
+	// JSON ignores, that leave its length off a multiple of three, so that its
+	// standard base64 ends in padding and the unpadded case below is the right
+	// answer refused for its encoding alone. (There is no such case for
+	// URL-safe base64: it differs from the standard kind only in + and /,
+	// which ASCII text never encodes to unless it holds >, ? or ~, so a real
+	// answer reads the same in both.)
+	var padded []byte
+	for n := 0; len(padded)%3 == 0; n++ {
+		padded = append(bytes.Repeat([]byte(" "), n), raw...)
+	}
+	withTail := func(tail string) string {
+		return base64.StdEncoding.EncodeToString(append(append([]byte{}, raw...), tail...))
+	}
+
+	// The same answers as the cases below, in the encoding and length the
+	// server reads, are accepted: what those cases change is nothing else.
+	for name, payload := range map[string]string{
+		"leading spaces":      base64.StdEncoding.EncodeToString(padded),
+		"trailing whitespace": withTail(" \n"),
+	} {
+		if _, err := v.check(payload, now); err != nil {
+			t.Fatalf("check the right answer, %s: %v", name, err)
+		}
+	}
 
 	cases := map[string]string{
-		"empty":         "",
-		"not base64":    "not base64!",
-		"url base64":    base64.URLEncoding.EncodeToString(bytes.Repeat([]byte{0xfb, 0xff}, 40)),
-		"not JSON":      base64.StdEncoding.EncodeToString([]byte("challenge=1")),
-		"trailing data": base64.StdEncoding.EncodeToString(append(append([]byte{}, raw...), []byte(` {}`)...)),
-		"too long":      base64.StdEncoding.EncodeToString(append(append([]byte{}, raw[:len(raw)-1]...), []byte(`,"x":"`+strings.Repeat("a", maxCaptchaPayload)+`"}`)...)),
+		"empty":           "",
+		"not base64":      "not base64!",
+		"unpadded base64": base64.RawStdEncoding.EncodeToString(padded),
+		"not JSON":        base64.StdEncoding.EncodeToString([]byte("challenge=1")),
+		"trailing data":   withTail(` {}`),
+		"trailing brace":  withTail(`}`),
+		// Refused only by its length: whitespace after the right answer is
+		// otherwise accepted, as above.
+		"too long":      withTail(strings.Repeat(" ", maxCaptchaPayload)),
 		"unknown field": base64.StdEncoding.EncodeToString(append(append([]byte{}, raw[:len(raw)-1]...), []byte(`,"test":true}`)...)),
 		// The widget's test mode, which answers without doing any work.
 		"widget test mode": encodeCaptchaPayload(t, map[string]any{"challenge": nil, "solution": nil, "test": true}),
@@ -208,11 +237,6 @@ func TestCaptchaRefusesWrongAnswers(t *testing.T) {
 		}),
 		"key not hex":       altered(func(p *captchaPayload) { p.Solution.DerivedKey = strings.Repeat("zz", captchaKeyLength) }),
 		"key one byte long": altered(func(p *captchaPayload) { p.Solution.DerivedKey += "00" }),
-	}
-	// Padding is what tells standard base64 from the unpadded kind, so the
-	// unpadded case is only a different text when the answer needs padding.
-	if unpadded := strings.TrimRight(good, "="); unpadded != good {
-		cases["unpadded base64"] = unpadded
 	}
 	if len(cases["too long"]) <= maxCaptchaPayload {
 		t.Fatalf("the too-long case is only %d bytes", len(cases["too long"]))
@@ -331,16 +355,19 @@ func TestCaptchaCounterRange(t *testing.T) {
 		work, scale int
 		low, high   uint32
 	}{
-		{work: 1500, scale: 1, low: 750, high: 2250},
-		{work: 1500, scale: 4, low: 3000, high: 9000},
-		{work: 1500, scale: 0, low: 750, high: 2250}, // a scale below one is one
-		{work: 1, scale: 1, low: 1, high: 2},         // never the free counter zero
-		{work: 3, scale: 1, low: 1, high: 4},
-		{work: maxCaptchaWork, scale: captchaMaxScale, low: maxCaptchaWork / 2, high: maxCaptchaWork / 2 * 3},
+		{work: 1500, scale: 1, low: 1, high: 2999},
+		{work: 1500, scale: 4, low: 1, high: 11999},
+		{work: 1500, scale: 0, low: 1, high: 2999}, // a scale below one is one
+		{work: 1, scale: 1, low: 1, high: 1},       // never the free counter zero
+		{work: 0, scale: 1, low: 1, high: 1},       // work below one is one
+		{work: 3, scale: 1, low: 1, high: 5},
+		{work: maxCaptchaWork, scale: captchaMaxScale, low: 1, high: 2*maxCaptchaWork - 1},
 	}
 	for _, tc := range cases {
 		seen := map[uint32]bool{}
-		for range 2000 {
+		var sum float64
+		const draws = 2000
+		for range draws {
 			n, err := captchaCounter(tc.work, tc.scale)
 			if err != nil {
 				t.Fatalf("captchaCounter: %v", err)
@@ -349,9 +376,17 @@ func TestCaptchaCounterRange(t *testing.T) {
 				t.Fatalf("captchaCounter(%d, %d) = %d, want %d to %d", tc.work, tc.scale, n, tc.low, tc.high)
 			}
 			seen[n] = true
+			sum += float64(n)
 		}
 		if tc.high-tc.low < 10 && (!seen[tc.low] || !seen[tc.high]) {
 			t.Errorf("captchaCounter(%d, %d) never drew both ends of %d to %d", tc.work, tc.scale, tc.low, tc.high)
+		}
+		// Uniform from the bottom of the range, so the average is the work
+		// asked for: within five standard errors of it.
+		mean := float64(tc.low+tc.high) / 2
+		spread := float64(tc.high-tc.low) / math.Sqrt(12) / math.Sqrt(draws)
+		if got := sum / draws; math.Abs(got-mean) > 5*spread+0.5 {
+			t.Errorf("captchaCounter(%d, %d) averaged %.0f, want about %.0f", tc.work, tc.scale, got, mean)
 		}
 	}
 }
@@ -424,12 +459,39 @@ func TestCaptchaMeterSweepsWhenFull(t *testing.T) {
 	for i := range cooldownSweepThreshold {
 		m.take(fmt.Sprintf("198.51.100.%d:%d", i%256, i/256))
 	}
+	// Full of this window's own addresses, the meter is scanned once and not
+	// again until the window changes.
+	m.take("one more")
+	m.mu.Lock()
+	if want := now.UnixNano() / int64(captchaWindow); m.swept != want || len(m.counts) != cooldownSweepThreshold+1 {
+		t.Errorf("after filling up: swept window %d, %d addresses; want %d, %d", m.swept, len(m.counts), want, cooldownSweepThreshold+1)
+	}
+	m.mu.Unlock()
+
 	now = now.Add(captchaWindow)
 	m.take("new")
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if len(m.counts) != 1 {
 		t.Errorf("meter holds %d addresses after filling up, want only this window's one", len(m.counts))
+	}
+}
+
+// An IPv6 client is counted by its /64, so moving to another address in the
+// block it was given does not start a fresh count.
+func TestCaptchaMeterKey(t *testing.T) {
+	for ip, want := range map[string]string{
+		"203.0.113.7":                    "203.0.113.7",
+		"2001:db8:1:2:3:4:5:6":           "2001:db8:1:2::/64",
+		"2001:db8:1:2:ffff:ffff:ffff:ff": "2001:db8:1:2::/64",
+		"2001:db8:1:3::1":                "2001:db8:1:3::/64",
+		"fe80::1%eth0":                   "fe80::/64",
+		"::ffff:203.0.113.7":             "::ffff:203.0.113.7",
+		"not an address":                 "not an address",
+	} {
+		if got := captchaMeterKey(ip); got != want {
+			t.Errorf("captchaMeterKey(%q) = %q, want %q", ip, got, want)
+		}
 	}
 }
 
@@ -463,7 +525,7 @@ func TestCaptchaConfig(t *testing.T) {
 			t.Errorf("verifier = %#v, want ALTCHA's at work 3000", newCaptcha(cfg))
 		}
 	})
-	for _, raw := range []string{"0", "-5", "lots", "1.5", "10001"} {
+	for _, raw := range []string{"0", "-5", "lots", "1.5", "7501"} {
 		t.Run("work "+raw, func(t *testing.T) {
 			t.Setenv("EDUCHAN_CAPTCHA_WORK", raw)
 			if _, err := ConfigFromEnv(); err == nil {
@@ -472,7 +534,7 @@ func TestCaptchaConfig(t *testing.T) {
 		})
 	}
 	t.Run("largest work", func(t *testing.T) {
-		t.Setenv("EDUCHAN_CAPTCHA_WORK", "10000")
+		t.Setenv("EDUCHAN_CAPTCHA_WORK", "7500")
 		if _, err := ConfigFromEnv(); err != nil {
 			t.Errorf("EDUCHAN_CAPTCHA_WORK at its largest: %v", err)
 		}
