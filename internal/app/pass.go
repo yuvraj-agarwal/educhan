@@ -19,12 +19,13 @@ import (
 // bought for a small fee that helps keep the site running.
 //
 // It gives exactly one thing. A post that presents a valid Pass skips the
-// captcha; it still clears the content rules, the refusal limit and every
-// cooldown, and it gets no badge, no name and no mark of any kind. 4chan's Pass
-// also lifts IP range and country blocks, which educhan does not have, and is
-// tied to one IP address at a time, which would mean keeping addresses: here a
-// Pass is instead one cooldown bucket however many people use it, so sharing
-// one gains nothing.
+// captcha, up to an hourly budget of posts; past that it solves the captcha
+// like any other until the hour ends. It is held to the rules and to every
+// cooldown like any other post, and it gets no badge, no name and no mark of
+// any kind. 4chan's Pass also lifts IP range and country blocks, which educhan
+// does not have, and is tied to one IP address at a time, which would mean
+// keeping addresses: here a Pass instead has one hourly budget however many
+// people use it, so sharing one shares the budget.
 //
 // The rules that hold it up, in the spirit of verification's (verify.go):
 //
@@ -141,11 +142,11 @@ func (a *App) passTokenHash(code string) []byte {
 	return hmacSum([]byte(a.cfg.Pass.Secret), "pass-token:"+code)
 }
 
-// passCooldownKey is what a Pass is counted against in flood control. It is a
-// different HMAC from the stored one, so the in-memory limiter holds nothing
+// passBudgetKey is what a Pass's hourly budget is counted against. It is a
+// different HMAC from the stored one, so the budget in memory holds nothing
 // that matches a database row.
-func (a *App) passCooldownKey(code string) string {
-	return "pass|" + hex.EncodeToString(hmacSum([]byte(a.cfg.Pass.Secret), "pass-cooldown:"+code))
+func (a *App) passBudgetKey(code string) string {
+	return "pass|" + hex.EncodeToString(hmacSum([]byte(a.cfg.Pass.Secret), "pass-budget:"+code))
 }
 
 func (a *App) passSessionHash(id string) []byte {
@@ -166,11 +167,12 @@ func (a *App) passExpiry(from time.Time) time.Time {
 /* Handlers ------------------------------------------------------------------ */
 
 // passState is the part of App the Pass needs beyond Config: the Stripe client,
-// the limiters, and the cached price.
+// the limiters, the hourly budget, and the cached price.
 type passState struct {
 	stripe          *stripeClient
 	checkoutLimiter *cooldownLimiter
 	activateLimiter *cooldownLimiter
+	budget          *passBudget
 	priceMu         sync.Mutex
 	price           passPrice
 	priceErr        error
@@ -182,6 +184,7 @@ func newPassState(cfg PassConfig) *passState {
 		stripe:          newStripeClient(cfg),
 		checkoutLimiter: newCooldownLimiter(cfg.CheckoutCooldown),
 		activateLimiter: newCooldownLimiter(passActivateCooldown),
+		budget:          newPassBudget(cfg.HourlyPosts),
 	}
 }
 
@@ -196,14 +199,15 @@ func (a *App) requirePass(w http.ResponseWriter) bool {
 }
 
 // handlePassStatus tells the Pass page whether the Pass is on sale, for how
-// long one lasts, and its price. Like /api/verify it looks at nothing the
-// caller holds: a browser knows its own Pass and when it runs out.
+// long one lasts, how many posts an hour it skips the captcha for, and its
+// price. Like /api/verify it looks at nothing the caller holds: a browser
+// knows its own Pass and when it runs out.
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
-	out := map[string]any{"enabled": true, "days": a.cfg.Pass.Days}
+	out := map[string]any{"enabled": true, "days": a.cfg.Pass.Days, "hourly_posts": a.cfg.Pass.HourlyPosts}
 	// The price is shown when Stripe could be asked for it. Without it the page
 	// still sells: Stripe's own page always shows the price before anyone pays.
 	if price, err := a.passPrice(r.Context()); err == nil {
@@ -429,8 +433,18 @@ func refusePass(w http.ResponseWriter, state, msg string) {
 	writeJSON(w, http.StatusForbidden, map[string]any{"error": msg, "pass": state})
 }
 
-// postPass resolves the Pass a post presents, answering the cooldown key it is
-// counted against, or "" for a post made without one.
+// passGrant is what a post's Pass comes to: whether it presented a valid,
+// unexpired one, and the key that Pass's hourly budget is counted against.
+// The captcha lets a post with a valid Pass through while the budget has
+// posts left (budget.left), and a post counts against it only once it is
+// saved (spendPassBudget).
+type passGrant struct {
+	Valid     bool
+	BudgetKey string
+}
+
+// postPass resolves the Pass a post presents. A post made without one gets
+// the zero passGrant.
 //
 // A badged post never reads the header: it is the credential's request, and a
 // payment and an institution are not to meet in one. With sales switched off a
@@ -440,23 +454,126 @@ func refusePass(w http.ResponseWriter, state, msg string) {
 // A Pass that is presented and no good is refused rather than ignored, the way
 // a badge is: the poster believes they hold one, and the page needs to hear
 // that they do not, so it can forget the code and say why.
-func (a *App) postPass(w http.ResponseWriter, r *http.Request, badged bool) (string, bool) {
+//
+// A good Pass changes nothing here: no cooldown is added or lifted, and a post
+// that is refused after this, by flood control or anything else, costs its
+// budget nothing.
+func (a *App) postPass(w http.ResponseWriter, r *http.Request, badged bool) (passGrant, bool) {
 	if badged || !a.passEnabled() {
-		return "", true
+		return passGrant{}, true
 	}
 	presented := strings.TrimSpace(r.Header.Get(passHeader))
 	if presented == "" {
-		return "", true
+		return passGrant{}, true
 	}
 	code, ok := parsePassCode(presented)
 	if !ok {
 		refusePass(w, passInvalid, "this Pass is not valid; it may have been refunded or replaced")
-		return "", false
+		return passGrant{}, false
 	}
 	if _, ok := a.checkPass(w, r, code); !ok {
-		return "", false
+		return passGrant{}, false
 	}
-	return a.passCooldownKey(code), true
+	return passGrant{Valid: true, BudgetKey: a.passBudgetKey(code)}, true
+}
+
+// spendPassBudget counts a saved post against the hourly budget of the Pass
+// it was made with, if any. It is called once the post is in the database, so
+// a post that was refused or failed costs nothing.
+func (a *App) spendPassBudget(g passGrant) {
+	if g.Valid {
+		a.pass.budget.spend(g.BudgetKey, time.Now())
+	}
+}
+
+/* Hourly budget ------------------------------------------------------------- */
+
+// passBudget counts the posts each Pass has made in the current clock hour, so
+// that it skips the captcha for at most HourlyPosts of them. Sharing a Pass
+// shares its budget: everyone using one code draws on the same count.
+//
+// It is kept in memory, per process like flood control, keyed on
+// passBudgetKey. What it holds about a Pass is which clock hour its count is
+// for and the count: no timestamp, so nothing in memory says when a Pass
+// posted, to line up against a post. An entry for an hour that has ended is
+// dropped when it is next looked at and by the flood-control sweep
+// (cooldownSweep), which runs once a minute, so a Pass's count is forgotten
+// within a minute of its hour ending while the process has CPU.
+//
+// Running out never refuses a post: the Pass just stops skipping the captcha
+// until the next hour. left and spend are separate calls, so two posts saved
+// at once can both be let through on the last post left; the budget is a
+// meter, not a lock, and one post over costs nothing worth a lock.
+type passBudget struct {
+	size int
+
+	mu    sync.Mutex
+	hours map[string]passHour
+}
+
+// passHour is everything passBudget keeps about a Pass.
+type passHour struct {
+	// hour is the clock hour the count is for, in hours since the Unix epoch.
+	hour  int64
+	count int
+}
+
+func newPassBudget(size int) *passBudget {
+	return &passBudget{size: size, hours: map[string]passHour{}}
+}
+
+// clockHour is the UTC clock hour t falls in, counted from the Unix epoch.
+func clockHour(t time.Time) int64 {
+	return t.Unix() / 3600
+}
+
+// left reports whether key has posts left in now's hour.
+func (b *passBudget) left(key string, now time.Time) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e, ok := b.hours[key]
+	if ok && e.hour != clockHour(now) {
+		delete(b.hours, key)
+		ok = false
+	}
+	return !ok || e.count < b.size
+}
+
+// spend counts one saved post against key in now's hour.
+func (b *passBudget) spend(key string, now time.Time) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	hour := clockHour(now)
+	if len(b.hours) >= cooldownSweepThreshold {
+		b.sweep(hour)
+	}
+	e := b.hours[key]
+	if e.hour != hour {
+		e = passHour{hour: hour}
+	}
+	e.count++
+	b.hours[key] = e
+}
+
+// sweep drops every entry for an hour other than hour. Callers must hold the
+// mutex.
+func (b *passBudget) sweep(hour int64) {
+	for key, e := range b.hours {
+		if e.hour != hour {
+			delete(b.hours, key)
+		}
+	}
+}
+
+// sweepExpired drops the entries of every hour that has ended, for
+// cooldownSweep.
+func (b *passBudget) sweepExpired() {
+	if b == nil {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.sweep(clockHour(time.Now()))
 }
 
 type passReissueBody struct {

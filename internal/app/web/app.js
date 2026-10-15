@@ -2157,8 +2157,9 @@ function passIntroHTML(info) {
     <ul class="verify-note pass-list">
       <li>Your posts look exactly like everyone else's. A Pass adds no name, badge or mark,
         and the rules, filters and wait times between posts apply as usual.</li>
-      <li>One Pass is for one person. Everyone using a shared Pass shares one wait time
-        between posts, so sharing it gains nobody anything.</li>
+      <li>A Pass skips the captcha for up to ${esc(info.enabled ? plural(info.hourly_posts, "post", "posts") : "a set number of posts")}
+        an hour. After that you solve the captcha as usual until the hour ends. Everyone
+        using a shared Pass shares that budget.</li>
       <li>A Pass is sold only to people aged 18 and over. Buying one means confirming that
         you're 18 or over, and that answer isn't saved anywhere.</li>
     </ul>
@@ -2626,7 +2627,8 @@ const FAQ_SECTIONS = [
           Posts with the verified badge don't send it.</li>
         <li>Nothing on a post shows or records that a Pass was used, and educhan keeps no
           link from a Pass to any post. The rules, the filters and the wait between posts
-          apply as usual, and everyone sharing one Pass shares one wait.</li>
+          apply as usual. A Pass skips the captcha for a set number of posts an hour, and
+          everyone sharing one Pass shares that number.</li>
       </ul>
       <p>On a shared computer, remove the Pass on the <a href="/pass">Pass</a> page, or use
         <strong>Forget this browser</strong> on the <a href="/verify#forget-browser">Verify</a>

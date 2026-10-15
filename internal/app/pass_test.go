@@ -1,7 +1,10 @@
 package app
 
 import (
+	"fmt"
+	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -98,7 +101,7 @@ func TestPassConfigFromEnv(t *testing.T) {
 		for k := range full {
 			t.Setenv(k, "")
 		}
-		for _, k := range []string{"EDUCHAN_PASS_DAYS", "EDUCHAN_PASS_COOLDOWN", "EDUCHAN_STRIPE_AUTOMATIC_TAX"} {
+		for _, k := range []string{"EDUCHAN_PASS_DAYS", "EDUCHAN_PASS_HOURLY_POSTS", "EDUCHAN_PASS_COOLDOWN", "EDUCHAN_STRIPE_AUTOMATIC_TAX"} {
 			t.Setenv(k, "")
 		}
 		for k, v := range env {
@@ -115,24 +118,27 @@ func TestPassConfigFromEnv(t *testing.T) {
 	set(t, full)
 	cfg, err = passConfigFromEnv()
 	if err != nil || !cfg.Enabled() || cfg.PublicURL != "https://educhan.example" || cfg.Days != 365 ||
-		cfg.CheckoutCooldown != defaultPassCheckoutCooldown || cfg.StripeAutomaticTax {
+		cfg.HourlyPosts != 30 || cfg.CheckoutCooldown != defaultPassCheckoutCooldown || cfg.StripeAutomaticTax {
 		t.Fatalf("full: %+v, %v", cfg, err)
 	}
 
 	bad := map[string]map[string]string{
-		"secret without stripe":   {"EDUCHAN_STRIPE_SECRET_KEY": "", "EDUCHAN_STRIPE_WEBHOOK_SECRET": "", "EDUCHAN_STRIPE_PRICE_ID": "", "EDUCHAN_PUBLIC_URL": ""},
-		"stripe without secret":   {"EDUCHAN_PASS_SECRET": ""},
-		"short secret":            {"EDUCHAN_PASS_SECRET": "short"},
-		"webhook secret shape":    {"EDUCHAN_STRIPE_WEBHOOK_SECRET": "sk_x"},
-		"price shape":             {"EDUCHAN_STRIPE_PRICE_ID": "prod_x"},
-		"http public url":         {"EDUCHAN_PUBLIC_URL": "http://educhan.example"},
-		"public url with a path":  {"EDUCHAN_PUBLIC_URL": "https://educhan.example/board"},
-		"public url with a query": {"EDUCHAN_PUBLIC_URL": "https://educhan.example?x=1"},
-		"public url with a user":  {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
-		"not a url":               {"EDUCHAN_PUBLIC_URL": "educhan"},
-		"zero days":               {"EDUCHAN_PASS_DAYS": "0"},
-		"days not a number":       {"EDUCHAN_PASS_DAYS": "a year"},
-		"tax not a boolean":       {"EDUCHAN_STRIPE_AUTOMATIC_TAX": "maybe"},
+		"secret without stripe":     {"EDUCHAN_STRIPE_SECRET_KEY": "", "EDUCHAN_STRIPE_WEBHOOK_SECRET": "", "EDUCHAN_STRIPE_PRICE_ID": "", "EDUCHAN_PUBLIC_URL": ""},
+		"stripe without secret":     {"EDUCHAN_PASS_SECRET": ""},
+		"short secret":              {"EDUCHAN_PASS_SECRET": "short"},
+		"webhook secret shape":      {"EDUCHAN_STRIPE_WEBHOOK_SECRET": "sk_x"},
+		"price shape":               {"EDUCHAN_STRIPE_PRICE_ID": "prod_x"},
+		"http public url":           {"EDUCHAN_PUBLIC_URL": "http://educhan.example"},
+		"public url with a path":    {"EDUCHAN_PUBLIC_URL": "https://educhan.example/board"},
+		"public url with a query":   {"EDUCHAN_PUBLIC_URL": "https://educhan.example?x=1"},
+		"public url with a user":    {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
+		"not a url":                 {"EDUCHAN_PUBLIC_URL": "educhan"},
+		"zero days":                 {"EDUCHAN_PASS_DAYS": "0"},
+		"days not a number":         {"EDUCHAN_PASS_DAYS": "a year"},
+		"zero hourly posts":         {"EDUCHAN_PASS_HOURLY_POSTS": "0"},
+		"hourly posts negative":     {"EDUCHAN_PASS_HOURLY_POSTS": "-5"},
+		"hourly posts not a number": {"EDUCHAN_PASS_HOURLY_POSTS": "many"},
+		"tax not a boolean":         {"EDUCHAN_STRIPE_AUTOMATIC_TAX": "maybe"},
 	}
 	for name, change := range bad {
 		env := map[string]string{}
@@ -149,14 +155,107 @@ func TestPassConfigFromEnv(t *testing.T) {
 	}
 
 	env := map[string]string{"EDUCHAN_PUBLIC_URL": "http://localhost:8080", "EDUCHAN_PASS_DAYS": "30",
-		"EDUCHAN_STRIPE_AUTOMATIC_TAX": "1", "EDUCHAN_PASS_COOLDOWN": "0"}
+		"EDUCHAN_PASS_HOURLY_POSTS": "5", "EDUCHAN_STRIPE_AUTOMATIC_TAX": "1", "EDUCHAN_PASS_COOLDOWN": "0"}
 	for k, v := range full {
 		if _, ok := env[k]; !ok {
 			env[k] = v
 		}
 	}
 	set(t, env)
-	if cfg, err := passConfigFromEnv(); err != nil || cfg.Days != 30 || !cfg.StripeAutomaticTax || cfg.CheckoutCooldown != 0 {
+	if cfg, err := passConfigFromEnv(); err != nil || cfg.Days != 30 || cfg.HourlyPosts != 5 || !cfg.StripeAutomaticTax || cfg.CheckoutCooldown != 0 {
 		t.Fatalf("local: %+v, %v", cfg, err)
+	}
+}
+
+func TestPassBudget(t *testing.T) {
+	b := newPassBudget(3)
+	hour := time.Date(2026, 3, 1, 14, 0, 0, 0, time.UTC)
+
+	// Counted within one clock hour, wherever in it the posts fall.
+	for i, at := range []time.Duration{0, 20 * time.Minute, 59*time.Minute + 59*time.Second} {
+		if !b.left("a", hour.Add(at)) {
+			t.Fatalf("post %d: no budget left after %d posts", i+1, i)
+		}
+		b.spend("a", hour.Add(at))
+	}
+	if b.left("a", hour.Add(59*time.Minute)) {
+		t.Fatal("budget left after three posts of three")
+	}
+	// Spending past the budget is counted and refuses nothing.
+	b.spend("a", hour.Add(59*time.Minute))
+	if b.hours["a"].count != 4 {
+		t.Fatalf("count %d, want 4", b.hours["a"].count)
+	}
+	// Each Pass has its own.
+	if !b.left("b", hour) {
+		t.Fatal("another Pass shares the first one's budget")
+	}
+
+	// The next hour starts afresh, and looking at a past hour's entry drops it.
+	next := hour.Add(time.Hour)
+	if !b.left("a", next) {
+		t.Fatal("no budget left in the next hour")
+	}
+	if _, kept := b.hours["a"]; kept {
+		t.Fatal("a past hour's count was kept after it was looked at")
+	}
+	b.spend("a", next)
+	if e := b.hours["a"]; e.hour != clockHour(next) || e.count != 1 {
+		t.Fatalf("next hour's entry %+v, want one post in hour %d", e, clockHour(next))
+	}
+
+	// The sweep forgets every hour but the current one.
+	b.spend("c", hour)
+	b.mu.Lock()
+	b.sweep(clockHour(next))
+	b.mu.Unlock()
+	if _, kept := b.hours["c"]; kept {
+		t.Fatal("the sweep kept a past hour's count")
+	}
+	if _, kept := b.hours["a"]; !kept {
+		t.Fatal("the sweep dropped the current hour's count")
+	}
+	// A nil budget, as a sweep might hold, sweeps nothing and does not panic.
+	var none *passBudget
+	none.sweepExpired()
+
+	// What is kept about a Pass is an hour and a count, and nothing that says
+	// when within the hour it posted.
+	var got []string
+	for _, f := range reflect.VisibleFields(reflect.TypeOf(passHour{})) {
+		got = append(got, f.Name+" "+f.Type.String())
+	}
+	if strings.Join(got, ", ") != "hour int64, count int" {
+		t.Errorf("passHour holds %v, want only the hour and the count", got)
+	}
+}
+
+// TestPassBudgetIsSafeForConcurrentPosts spends one budget from many
+// goroutines at once; run with -race, it also checks the locking.
+func TestPassBudgetIsSafeForConcurrentPosts(t *testing.T) {
+	b := newPassBudget(1000)
+	now := time.Now()
+	const posters, posts = 16, 50
+	var wg sync.WaitGroup
+	for i := range posters {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for range posts {
+				b.left("shared", now)
+				b.spend("shared", now)
+				b.spend(fmt.Sprintf("own-%d", i), now)
+				b.sweepExpired()
+			}
+		}(i)
+	}
+	wg.Wait()
+	if n := b.hours["shared"].count; n != posters*posts {
+		t.Fatalf("shared count %d, want %d", n, posters*posts)
+	}
+	for i := range posters {
+		if n := b.hours[fmt.Sprintf("own-%d", i)].count; n != posts {
+			t.Fatalf("own-%d count %d, want %d", i, n, posts)
+		}
 	}
 }

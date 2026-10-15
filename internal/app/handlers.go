@@ -197,12 +197,12 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	passKey, ok := a.postPass(w, r, sub.Badge)
+	pass, ok := a.postPass(w, r, sub.Badge)
 	if !ok {
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, passKey, sub.Upload != nil)) {
+	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
 
@@ -226,6 +226,7 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not create thread")
 		return
 	}
+	a.spendPassBudget(pass)
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
 }
 
@@ -284,7 +285,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 	if !ok {
 		return
 	}
-	passKey, ok := a.postPass(w, r, sub.Badge)
+	pass, ok := a.postPass(w, r, sub.Badge)
 	if !ok {
 		return
 	}
@@ -299,7 +300,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		return
 	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
-	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, passKey, sub.Upload != nil)) {
+	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
 		return
 	}
 
@@ -324,6 +325,7 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	a.spendPassBudget(pass)
 	writeJSON(w, http.StatusCreated, newPostResponse(board, post))
 }
 
@@ -383,20 +385,10 @@ func (a *App) resolveThreadID(w http.ResponseWriter, r *http.Request) (Board, in
 // Both are keyed on the client address even when the poster ID comes from a
 // poster key. The key is chosen by the client, so a limit keyed on it would be
 // one any client could step around by sending a new key with every post.
-//
-// A post with a Pass is counted against the Pass as well (passKey, from
-// postPass), so everyone using one shared Pass waits on one shared cooldown.
-// It is only ever added: a Pass never loosens the address's own limits.
-func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey, passKey string, hasUpload bool) []cooldown {
+func (a *App) postCooldowns(limiter *cooldownLimiter, board Board, clientKey string, hasUpload bool) []cooldown {
 	cooldowns := []cooldown{{limiter: limiter, key: board.Slug + "|" + clientKey}}
-	if passKey != "" {
-		cooldowns = append(cooldowns, cooldown{limiter: limiter, key: board.Slug + "|" + passKey})
-	}
 	if hasUpload {
 		cooldowns = append(cooldowns, cooldown{limiter: a.uploadLimiter, key: clientKey})
-		if passKey != "" {
-			cooldowns = append(cooldowns, cooldown{limiter: a.uploadLimiter, key: passKey})
-		}
 	}
 	return cooldowns
 }

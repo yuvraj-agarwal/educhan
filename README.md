@@ -305,16 +305,31 @@ at all — see above.
 
 ## educhan Pass
 
-The educhan Pass works like 4chan's: a year of posting and reporting without
-the captcha, bought for a small fee that helps run the site. It is optional,
-sold only to people who tick an unticked "I confirm I am 18 or over" box, and
-it gives nothing else. A post made with a Pass looks exactly like any other,
-and the content rules, the refusal limit and every cooldown still apply.
+The educhan Pass is modelled on 4chan's: a year of posting without solving the
+captcha, bought for a small fee that helps run the site. It is optional, sold
+only to people who tick an unticked "I confirm I am 18 or over" box, and it
+gives nothing else. A post made with a Pass looks exactly like any other, and
+the rules and every cooldown still apply.
 
 Two of 4chan's Pass rules don't carry over. 4chan ties a Pass to one IP
-address at a time, which would mean keeping addresses; here everyone using one
-Pass shares one cooldown instead, so sharing it gains nothing. And 4chan's Pass
+address at a time, which would mean keeping addresses; here a Pass has an
+hourly budget instead, and everyone using one Pass shares it. And 4chan's Pass
 lifts IP range and country blocks, which educhan doesn't have.
+
+**The hourly budget.** A Pass skips the captcha for at most
+`EDUCHAN_PASS_HOURLY_POSTS` posts (30 by default) in each clock hour. A post
+counts only once it is saved: one that is refused, fails or is turned away by
+flood control costs nothing. When the hour's budget is spent, the Pass simply
+stops skipping the captcha until the hour ends, and posts with it solve the
+captcha like anyone else's; no post is ever refused because of the budget.
+Sharing a Pass shares the budget. The count lives in the server's memory, per
+instance like flood control, keyed on an HMAC of the code that matches nothing
+in the database, and all it holds is which hour it is for and how many posts:
+no timestamps, so nothing in memory says when a Pass posted. The flood-control
+sweep forgets it within a minute of its hour ending, on the same terms as an
+address (see [Flood control](#flood-control) for an idle Cloud Run instance).
+A Pass adds no cooldown and lifts none, so a post answers exactly as it would
+without one, and its answer says nothing about when the Pass was last used.
 
 **How it is bought.** The Pass page asks the server for a checkout, and the
 browser goes to Stripe's own hosted page by an ordinary navigation: no Stripe
@@ -688,6 +703,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax add sales tax, VAT or GST at checkout; switch Stripe Tax on in the account first |
 | `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back |
 | `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts |
+| `EDUCHAN_PASS_HOURLY_POSTS` | `30` | A Pass's hourly budget: how many posts in one clock hour skip the captcha. At least 1 |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (seconds) | Minimum interval between checkouts from one client |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 
@@ -842,7 +858,7 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","price":{"amount","currency"}}`; `price` is left out when Stripe can't be asked |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency"}}`; `price` is left out when Stripe can't be asked |
 | `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, Stripe's page, and sets the claim cookie |
 | `POST` | `/api/pass/claim` | Collect a paid Pass with the claim cookie — `202 {"status":"pending"}` until Stripe reports the payment, then `{"status":"issued","pass","expires_at"}` or `{"status":"renewed","expires_at"}` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}` |
@@ -1121,11 +1137,13 @@ old caveat still applies — `/tmp` is per-instance and in-memory, so an image
 uploaded to one instance answers `404` from another and is lost when the
 container stops.
 
-One thing remains per instance:
+Two things remain per instance:
 
 - **Flood control.** `cooldownLimiter` keeps its state in process memory, so N
   instances enforce the cooldowns N times over. Moving it to shared storage means
   replacing that one type, which nothing else depends on.
+- **The Pass's hourly budget.** `passBudget` counts in process memory too, so with
+  N instances a Pass can skip the captcha up to N times its budget in an hour.
 
 ## Development
 

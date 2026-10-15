@@ -92,6 +92,7 @@ func testPassConfig(f *fakeStripe) PassConfig {
 		StripePriceID:       testPriceID,
 		PublicURL:           testPublicURL,
 		Days:                365,
+		HourlyPosts:         30,
 		stripeAPI:           f.srv.URL,
 		stripeHTTP:          f.srv.Client(),
 	}
@@ -122,14 +123,15 @@ func passServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *passHa
 }
 
 type passResponse struct {
-	Enabled   bool       `json:"enabled"`
-	Days      int        `json:"days"`
-	Price     *passPrice `json:"price"`
-	URL       string     `json:"url"`
-	Status    string     `json:"status"`
-	Pass      string     `json:"pass"`
-	ExpiresAt time.Time  `json:"expires_at"`
-	Error     string     `json:"error"`
+	Enabled     bool       `json:"enabled"`
+	Days        int        `json:"days"`
+	HourlyPosts int        `json:"hourly_posts"`
+	Price       *passPrice `json:"price"`
+	URL         string     `json:"url"`
+	Status      string     `json:"status"`
+	Pass        string     `json:"pass"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	Error       string     `json:"error"`
 }
 
 // refusalState reads the machine-readable refusal, which shares the "pass" key
@@ -259,7 +261,7 @@ func TestPassStatus(t *testing.T) {
 
 	p := passServer(t, nil)
 	p.get("/api/pass", &out)
-	if !out.Enabled || out.Days != 365 || out.Price == nil || out.Price.Amount != 2000 || out.Price.Currency != "usd" {
+	if !out.Enabled || out.Days != 365 || out.HourlyPosts != 30 || out.Price == nil || out.Price.Amount != 2000 || out.Price.Currency != "usd" {
 		t.Fatalf("status: %+v", out)
 	}
 }
@@ -549,29 +551,73 @@ func TestPassReissue(t *testing.T) {
 	}
 }
 
-func TestPassSharesOneCooldown(t *testing.T) {
+// TestPassSharesOneHourlyBudget holds the Pass to its one perk: it adds no
+// cooldown and lifts none, everyone using one code draws on one hourly
+// budget, and only a post that is saved is counted against it.
+func TestPassSharesOneHourlyBudget(t *testing.T) {
 	p := passServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
 		cfg.ThreadCooldown = time.Minute
+		cfg.PostCooldown = time.Minute
+		cfg.Pass.HourlyPosts = 2
 	})
 	p.addBoard("pass-board")
 	issued := p.buy("pi_shared")
+	code, _ := parsePassCode(issued.Pass)
+	key := p.app.passBudgetKey(code)
+	spent := func() int {
+		p.app.pass.budget.mu.Lock()
+		defer p.app.pass.budget.mu.Unlock()
+		return p.app.pass.budget.hours[key].count
+	}
 
-	if status, out := p.postWithPass("pass-board", issued.Pass, "10.0.0.1", nil); status != http.StatusCreated {
-		t.Fatalf("first post with the Pass: status %d (%s)", status, out.Error)
+	var thread createdPost
+	if status := p.postWithHeaders(http.Header{passHeader: {issued.Pass}, "X-Forwarded-For": {"10.0.0.1"}},
+		"/api/boards/pass-board/threads", map[string]any{"body": "a thread with a pass"}, &thread); status != http.StatusCreated {
+		t.Fatalf("first post with the Pass: status %d (%s)", status, thread.Error)
 	}
-	// Somebody else, elsewhere, with the same Pass: one Pass, one cooldown.
-	if status, _ := p.postWithPass("pass-board", issued.Pass, "10.0.0.2", nil); status != http.StatusTooManyRequests {
-		t.Fatalf("a shared Pass escaped its cooldown: status %d", status)
+	// Somebody else, elsewhere, with the same Pass: no cooldown is shared, so
+	// a post tells nobody when the Pass last posted. The count is shared.
+	var reply createdPost
+	if status := p.postWithHeaders(http.Header{passHeader: {issued.Pass}, "X-Forwarded-For": {"10.0.0.2"}},
+		fmt.Sprintf("/api/boards/pass-board/threads/%d/posts", thread.ThreadNo), map[string]any{"body": "a reply with a pass"}, &reply); status != http.StatusCreated {
+		t.Fatalf("a shared Pass was held to the other poster's cooldown: status %d (%s)", status, reply.Error)
 	}
-	// The same person without the Pass is limited only by their address.
-	if status, out := p.postWithPass("pass-board", "", "10.0.0.2", nil); status != http.StatusCreated {
-		t.Fatalf("posting without a Pass: status %d (%s)", status, out.Error)
+	if n := spent(); n != 2 || p.app.pass.budget.left(key, time.Now()) {
+		t.Fatalf("two posts with one Pass spent %d of its budget, left %v", n, p.app.pass.budget.left(key, time.Now()))
 	}
-	// And a Pass never lifts an address's own cooldown.
-	other := p.buy("pi_other")
-	if status, _ := p.postWithPass("pass-board", other.Pass, "10.0.0.1", nil); status != http.StatusTooManyRequests {
+	// The budget spent, a post with the Pass is still taken: it is a meter for
+	// the captcha, never a refusal.
+	if status, out := p.postWithPass("pass-board", issued.Pass, "10.0.0.3", nil); status != http.StatusCreated {
+		t.Fatalf("a post past the Pass's budget: status %d (%s)", status, out.Error)
+	}
+	// A Pass never lifts an address's own cooldown, and a post refused by it
+	// costs the Pass nothing.
+	before := spent()
+	if status, _ := p.postWithPass("pass-board", issued.Pass, "10.0.0.1", nil); status != http.StatusTooManyRequests {
 		t.Fatalf("a Pass lifted the address's cooldown: status %d", status)
+	}
+	// Nor does a post that fails: a reply to a thread that is not there.
+	var out passResponse
+	if status := p.postWithHeaders(http.Header{passHeader: {issued.Pass}, "X-Forwarded-For": {"10.0.0.4"}},
+		"/api/boards/pass-board/threads/999999/posts", map[string]any{"body": "nowhere"}, &out); status != http.StatusNotFound {
+		t.Fatalf("a reply to a missing thread with a Pass: status %d (%s)", status, out.Error)
+	}
+	if n := spent(); n != before {
+		t.Fatalf("refused and failed posts spent the budget: %d, was %d", n, before)
+	}
+
+	// The count is for one clock hour and is forgotten when the hour ends: the
+	// flood-control sweep drops it.
+	p.app.pass.budget.mu.Lock()
+	p.app.pass.budget.hours[key] = passHour{hour: clockHour(time.Now()) - 1, count: 99}
+	p.app.pass.budget.mu.Unlock()
+	p.app.cooldownSweep.run(time.Now())
+	p.app.pass.budget.mu.Lock()
+	_, kept := p.app.pass.budget.hours[key]
+	p.app.pass.budget.mu.Unlock()
+	if kept {
+		t.Fatal("the sweep kept a Pass's count from an hour that has ended")
 	}
 }
 
@@ -681,12 +727,12 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	if n := p.rowsContaining("passes", stored); n != 1 {
 		t.Fatalf("the scan found the stored hash in %d passes rows, want 1; it misses bytea columns", n)
 	}
-	cooldownKey := p.app.passCooldownKey(code)
+	budgetKey := p.app.passBudgetKey(code)
 	for name, needle := range map[string][]byte{
 		"the code":                []byte(issued.Pass),
 		"the canonical code":      []byte(code),
 		"the stored hash":         stored,
-		"the cooldown key":        []byte(cooldownKey),
+		"the budget key":          []byte(budgetKey),
 		"the unknown code":        []byte("ZZZZZZZZZZZZZZZZZZZZ"),
 		"SHA-256 of the code":     sha(code),
 		"the payment intent":      []byte("pi_scan_payment"),
@@ -712,7 +758,7 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the code":           issued.Pass,
 		"the canonical code": code,
 		"the stored hash":    hex.EncodeToString(stored),
-		"the cooldown key":   cooldownKey,
+		"the budget key":     budgetKey,
 		"the payment intent": "pi_scan_payment",
 		"the buyer's email":  "buyer@example.com",
 		"the buyer's name":   "Bea Buyer",

@@ -32,8 +32,9 @@ type App struct {
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
 	// cooldownSweep drops the limiters' expired entries, which are client
-	// addresses: on a timer, and before a request when the timer has fallen
-	// behind. stopCooldownSweep stops the timer; Close calls it.
+	// addresses, and the Pass budget's past hours: on a timer, and before a
+	// request when the timer has fallen behind. stopCooldownSweep stops the
+	// timer; Close calls it.
 	cooldownSweep     *cooldownSweep
 	stopCooldownSweep func()
 
@@ -112,7 +113,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter, a.pass.budget)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }

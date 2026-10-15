@@ -496,11 +496,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   unticked 18+ confirmation that stores nothing about age. It carries no name, profile
   or history, and its code travels only in `X-Educhan-Pass` on the posting request, and
   in the body of the requests that check or renew it on the Pass page. A badged post
-  sends the credential instead. Nothing about a Pass is written on a post, logged, or
-  used in a poster ID. Its shared cooldown bucket is keyed on a hash of the code and
-  forgotten with the cooldown. The Pass skips the captcha only, never the content rules,
-  the refusal limit or a cooldown. `TestPassIsNeverStoredOrLogged`,
-  `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneCooldown` hold it there.
+  sends the credential instead. Nothing about a Pass is written on a post or used in a
+  poster ID, and nothing identifying a Pass is logged. Its hourly budget is kept in
+  memory, keyed on a hash of the token, and forgotten when the hour ends. The Pass skips
+  the captcha only, never the rules, a refusal limit or a cooldown.
+  `TestPassIsNeverStoredOrLogged`, `TestPassTablesCannotBeJoinedToPosts` and
+  `TestPassSharesOneHourlyBudget` hold it there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what

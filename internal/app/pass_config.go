@@ -41,6 +41,10 @@ type PassConfig struct {
 	PublicURL string
 	// Days is how long a Pass lasts from the day it is bought.
 	Days int
+	// HourlyPosts is a Pass's hourly budget: how many posts in one clock hour
+	// it lets skip the captcha. Past that, posts with it solve the captcha
+	// like any other until the hour ends; none is refused for it.
+	HourlyPosts int
 	// CheckoutCooldown is the minimum interval between two checkouts started
 	// from one client address.
 	CheckoutCooldown time.Duration
@@ -56,6 +60,7 @@ func (c PassConfig) Enabled() bool { return c.Secret != "" }
 
 const (
 	defaultPassDays             = 365
+	defaultPassHourlyPosts      = 30
 	defaultPassCheckoutCooldown = 30 * time.Second
 )
 
@@ -70,6 +75,7 @@ func passConfigFromEnv() (PassConfig, error) {
 		StripePriceID:       strings.TrimSpace(os.Getenv("EDUCHAN_STRIPE_PRICE_ID")),
 		PublicURL:           strings.TrimRight(strings.TrimSpace(os.Getenv("EDUCHAN_PUBLIC_URL")), "/"),
 		Days:                defaultPassDays,
+		HourlyPosts:         defaultPassHourlyPosts,
 	}
 	var err error
 	if cfg.StripeAutomaticTax, err = envBool("EDUCHAN_STRIPE_AUTOMATIC_TAX"); err != nil {
@@ -78,6 +84,11 @@ func passConfigFromEnv() (PassConfig, error) {
 	if raw := strings.TrimSpace(os.Getenv("EDUCHAN_PASS_DAYS")); raw != "" {
 		if cfg.Days, err = strconv.Atoi(raw); err != nil {
 			return PassConfig{}, fmt.Errorf("EDUCHAN_PASS_DAYS: %w", err)
+		}
+	}
+	if raw := strings.TrimSpace(os.Getenv("EDUCHAN_PASS_HOURLY_POSTS")); raw != "" {
+		if cfg.HourlyPosts, err = strconv.Atoi(raw); err != nil {
+			return PassConfig{}, fmt.Errorf("EDUCHAN_PASS_HOURLY_POSTS: %w", err)
 		}
 	}
 	if cfg.CheckoutCooldown, err = envDuration("EDUCHAN_PASS_COOLDOWN", defaultPassCheckoutCooldown); err != nil {
@@ -132,6 +143,9 @@ func validatePassConfig(c PassConfig) error {
 	}
 	if c.Days < 1 {
 		return errors.New("EDUCHAN_PASS_DAYS must be at least 1")
+	}
+	if c.HourlyPosts < 1 {
+		return errors.New("EDUCHAN_PASS_HOURLY_POSTS must be at least 1")
 	}
 	if c.CheckoutCooldown < 0 {
 		return errors.New("EDUCHAN_PASS_COOLDOWN must not be negative")
