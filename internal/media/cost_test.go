@@ -150,18 +150,25 @@ func interlaced(t *testing.T, data []byte) []byte {
 	return nil
 }
 
-// paddedBitstream is a simple lossy WebP with n more bytes at the end of its
-// VP8 chunk. Stripping keeps the chunk whole, and the decoder copies all of
-// it before it decodes the picture and then ignores what the picture does
-// not need, as it would a file hidden there (sanitizeWebP).
+// paddedBitstream is a lossy WebP with n more bytes at the end of its VP8
+// chunk. Stripping keeps the chunk whole, and the decoder copies all of it
+// before it decodes the picture and then ignores what the picture does not
+// need, as it would a file hidden there (sanitizeWebP). For the cost model it
+// is a larger lossy bitstream, which is what a larger picture or a higher
+// quality would make.
 func paddedBitstream(t *testing.T, data []byte, n int) []byte {
 	t.Helper()
 	chunks := webpChunks(t, data)
-	if len(chunks) != 1 || chunks[0].id != "VP8 " {
-		t.Fatalf("chunks %v, want a simple lossy WebP", chunkIDs(chunks))
+	padded := 0
+	for i, c := range chunks {
+		if c.id == "VP8 " {
+			chunks[i].payload = append(c.payload[:len(c.payload):len(c.payload)], make([]byte, n)...)
+			padded++
+		}
 	}
-	vp8 := chunks[0].payload
-	chunks[0].payload = append(vp8[:len(vp8):len(vp8)], make([]byte, n)...)
+	if padded != 1 {
+		t.Fatalf("chunks %v, want a lossy WebP", chunkIDs(chunks))
+	}
 	return webpFile(chunks...)
 }
 
@@ -710,13 +717,26 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	check(kind{"baseline 4:2:0 JPEG", jpg(0xC0, 0x22, 0x11, 0x11), 1}, side+1, side, small, ErrImageTooLarge)
 
 	// Lossless WebP and a VP8L-compressed alpha plane are the one case refused
-	// by the size of the upload rather than its resolution: golang.org/x/image's
-	// vp8l decoder sizes its Huffman groups and tree nodes from the bitstream,
-	// not from any header field, so a file over about a third of a megabyte is
-	// refused whatever its resolution, and a small one accepted (vp8lMemory).
+	// by the size of a bitstream rather than the picture's resolution:
+	// golang.org/x/image's vp8l decoder sizes its Huffman groups and tree nodes
+	// from the bitstream it reads, not from any header field, so one over
+	// about 224 KiB is refused whatever its resolution, and a small one
+	// accepted however large the rest of the upload (vp8lMemory,
+	// TestVP8LHuffmanMemoryIsCharged).
 	for _, k := range []string{"lossless", "calpha"} {
-		check(kind{k + " WebP", webpOf(k), 1}, 256, 256, small, nil)
-		check(kind{k + " WebP, large upload", webpOf(k), 1}, 256, 256, large, ErrImageTooLarge)
+		for _, c := range []struct {
+			n, size int
+			want    error
+		}{
+			{small, small, nil},
+			{1 << 20, 1 << 20, ErrImageTooLarge},
+			{small, large, nil},
+		} {
+			data := webpOfBitstream(k, 256, 256, c.n, c.size)
+			if _, err := Inspect(data); !errors.Is(err, c.want) {
+				t.Errorf("Inspect(%s WebP, 256x256, %d KiB of bitstream in %d KiB) = %v, want %v", k, c.n>>10, len(data)>>10, err, c.want)
+			}
+		}
 	}
 	// An uncompressed alpha plane needs no such limit: it is not decoded
 	// through vp8l, so a large upload of one is accepted at a small size.
@@ -786,7 +806,7 @@ func TestStoredFileCannotOutgrowItsUpload(t *testing.T) {
 // PNG of its size can come to, which its cost counts from the header.
 func TestCutOutWebPIsStoredAsTheLargerPNGItMakes(t *testing.T) {
 	upload := readTestdata(t, "cutout-alpha.webp")
-	if lossless, alpha := webpPicture(upload); lossless || !alpha {
+	if lossless, alpha, _ := webpPicture(upload); lossless || !alpha {
 		t.Fatalf("the fixture is not a lossy WebP with an alpha plane")
 	}
 	got, err := Process(context.Background(), upload)

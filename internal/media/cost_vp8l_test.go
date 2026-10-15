@@ -4,17 +4,19 @@ import (
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"testing"
 )
 
 // golang.org/x/image's vp8l decoder sizes two allocations from the compressed
 // bitstream rather than from the header: an hGroup for every meta-image index
 // (up to 65536, 2680 bytes each) and a node slice for every Huffman tree (up
-// to 2*alphabet-1 nodes). A crafted lossless WebP of a few hundred kilobytes
-// makes it hold over a gigabyte, which no resolution cap catches. cost.go
-// charges that memory (vp8lMemory) so Inspect refuses an oversized file from
-// its header, and these tests pin that it does and that the charge covers
-// what is held. See the probe in the branch history for the full 1 GiB file.
+// to 2*alphabet-1 nodes). A crafted 1×1 lossless WebP of 160 KiB makes it hold
+// about 170 MiB (TestVP8LHuffmanMemoryIsHeldWithinTheEstimate), which no
+// resolution cap catches, and a larger one more. cost.go charges that memory
+// (vp8lMemory) on the bytes the decoder reads, so Inspect refuses an
+// oversized bitstream from its header, and these tests pin that it does,
+// where the line falls, and that the charge covers what is held.
 
 // vp8lBitWriter writes a VP8L bitstream the way golang.org/x/image's decoder
 // reads one: bits low-order first within each byte.
@@ -133,26 +135,81 @@ func adversarialLosslessWebP(groups int, full bool) []byte {
 	return out
 }
 
+// webpOfBitstream is a w×h WebP whose bytes for the vp8l decoder are n long
+// — the VP8L chunk of a lossless picture ("lossless"), or the ALPH chunk of a
+// lossy one whose alpha plane is compressed with VP8L ("calpha") — made up to
+// an upload of size bytes, when that is more, by what else such a file
+// carries: an EXIF chunk after the lossless picture, a larger lossy
+// bitstream after the alpha plane. Nothing past the header is read before
+// decoding, so the bytes are zero.
+func webpOfBitstream(kind string, w, h, n, size int) []byte {
+	var chunks []riffChunk
+	switch kind {
+	case "lossless":
+		chunks = []riffChunk{vp8xChunk(vp8xFlagEXIF, w, h), {id: "VP8L", payload: make([]byte, n)}, {id: "EXIF"}}
+	case "calpha":
+		alph := make([]byte, n)
+		alph[0] = 1 // compressed with VP8L
+		chunks = []riffChunk{vp8xChunk(vp8xFlagAlpha, w, h), {id: "ALPH", payload: alph}, {id: "VP8 ", payload: make([]byte, 10)}}
+	default:
+		panic("webpOfBitstream: unknown kind " + kind)
+	}
+	if rest := size - len(webpFile(chunks...)); rest > 0 {
+		last := &chunks[len(chunks)-1]
+		last.payload = append(last.payload, make([]byte, rest)...)
+	}
+	return webpFile(chunks...)
+}
+
 // TestVP8LHuffmanMemoryIsCharged: a lossless WebP, and a VP8L-compressed
-// alpha plane, carry the Huffman-group floor in their estimate, so a small
-// one is accepted and a large one refused from its header, whatever its
-// resolution.
+// alpha plane, carry the Huffman-group charge for the bytes the vp8l decoder
+// reads — the VP8L chunk, or the ALPH chunk — and not for the rest of the
+// file, which the decoder is never handed. So a bitstream up to the line the
+// README gives is accepted and one past it refused from the header, whatever
+// else the upload carries: the line is 224 KiB for a small picture, about
+// 205 KiB at a megapixel and 130 KiB at nine, where the pixels take more of
+// the budget, and a little lower in a larger upload.
 func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
+	const kib = 1 << 10
 	for _, kind := range []string{"lossless", "calpha"} {
-		small := headerUpload(webpHeader(kind, 100, 100), 1, 64<<10)
+		small := webpOfBitstream(kind, 100, 100, 64*kib, 0)
 		in, err := inspect(small)
 		if err != nil {
-			t.Fatalf("%s 64 KiB: inspect = %v, want accepted", kind, err)
+			t.Fatalf("%s, 64 KiB of bitstream: inspect = %v, want accepted", kind, err)
 		}
-		if want := vp8lMemory(int64(len(small))); in.cost < want {
-			t.Errorf("%s 64 KiB: cost %d does not carry the Huffman charge %d", kind, in.cost, want)
+		if want := vp8lMemory(64 * kib); in.cost < want {
+			t.Errorf("%s, 64 KiB of bitstream: cost %d does not carry the Huffman charge %d", kind, in.cost, want)
 		}
-		big := headerUpload(webpHeader(kind, 100, 100), 1, 1<<20)
-		if _, err := Inspect(big); !errors.Is(err, ErrImageTooLarge) {
-			t.Errorf("%s 1 MiB: Inspect = %v, want ErrImageTooLarge", kind, err)
+
+		for _, c := range []struct {
+			side, n int
+			want    error
+		}{
+			{64, 224 * kib, nil},
+			{64, 225 * kib, ErrImageTooLarge},
+			{1000, 200 * kib, nil},
+			{1000, 215 * kib, ErrImageTooLarge},
+			{3000, 128 * kib, nil},
+			{3000, 145 * kib, ErrImageTooLarge},
+		} {
+			if _, err := Inspect(webpOfBitstream(kind, c.side, c.side, c.n, 0)); !errors.Is(err, c.want) {
+				t.Errorf("%s, %d×%d, %d KiB of bitstream: Inspect = %v, want %v", kind, c.side, c.side, c.n/kib, err, c.want)
+			}
+		}
+
+		// A small bitstream in a large upload — a lossless picture with a
+		// megabyte of EXIF after it, a cut-out whose lossy picture is large
+		// beside its alpha plane — is charged for its bitstream alone.
+		big := webpOfBitstream(kind, 100, 100, kib, 4<<20)
+		in, err = inspect(big)
+		if err != nil {
+			t.Fatalf("%s, 1 KiB of bitstream in a 4 MiB upload: inspect = %v, want accepted", kind, err)
+		}
+		if in.cost >= vp8lGroupBacking {
+			t.Errorf("%s, 1 KiB of bitstream in a 4 MiB upload: cost %d carries a charge for the whole file", kind, in.cost)
 		}
 	}
-	// An uncompressed alpha plane carries no floor: it is not decoded through vp8l.
+	// An uncompressed alpha plane carries no charge: it is not decoded through vp8l.
 	if in, err := inspect(headerUpload(webpHeader("alpha", 100, 100), 1, 1<<20)); err != nil {
 		t.Errorf("uncompressed alpha 1 MiB: inspect = %v, want accepted", err)
 	} else if in.cost >= vp8lGroupBacking {
@@ -160,12 +217,48 @@ func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
 	}
 }
 
+// A cut-out saved as a lossy WebP is stored however large its lossy picture
+// is: its alpha plane, a few hundred bytes to a few kilobytes, is all of it
+// the vp8l decoder reads. Charged for the whole file, a cut-out of a quarter
+// of a megabyte was refused as too large while the same picture with no
+// transparency was stored. So is a small lossless picture behind a large
+// colour profile or EXIF, which stripping drops before it is decoded.
+func TestLargeWebPsWithSmallVP8LBitstreamsAreStored(t *testing.T) {
+	cutout := paddedBitstream(t, readTestdata(t, "cutout-alpha.webp"), 270<<10)
+	lossless := webpFile(vp8xChunk(vp8xFlagEXIF, 32, 32),
+		webpChunks(t, readTestdata(t, "hidden-lossless.webp"))[0],
+		riffChunk{id: "EXIF", payload: make([]byte, 300<<10)})
+	for name, data := range map[string][]byte{
+		"a cut-out":                            cutout,
+		"a lossless icon with 300 KiB of EXIF": lossless,
+	} {
+		name = fmt.Sprintf("%s (%d KiB)", name, len(data)>>10)
+		in, err := inspect(data)
+		if err != nil {
+			t.Errorf("%s: inspect = %v, want it accepted", name, err)
+			continue
+		}
+		if in.cost >= vp8lGroupBacking {
+			t.Errorf("%s: cost %d carries a Huffman charge for the whole file", name, in.cost)
+		}
+		got, err := Process(context.Background(), data)
+		if err != nil {
+			t.Errorf("%s: Process = %v, want it stored", name, err)
+			continue
+		}
+		if got.Format != FormatPNG {
+			t.Errorf("%s: stored as %s, want png", name, got.Format.Name)
+		}
+	}
+}
+
 // TestVP8LHuffmanMemoryIsHeldWithinTheEstimate decodes crafted lossless WebPs
 // whose Huffman groups dominate the heap — one that maximises the group
-// backing (65536 one-symbol groups), one that maximises the tree nodes (full
-// 256-symbol trees) — and confirms each is accepted and holds no more than
-// cost.go estimated. Both are under the third-of-a-megabyte the charge
-// allows, so they are not refused; a larger one would be.
+// backing (65536 one-symbol groups, 160 KiB of file that holds about 170 MiB),
+// one that maximises the tree nodes (full 256-symbol trees, 215 KiB holding
+// about 43 MiB) — and confirms each is accepted and holds no more than
+// cost.go estimated. Both are under the 224 KiB the charge allows a small
+// picture, so they are not refused; a larger one would be.
 func TestVP8LHuffmanMemoryIsHeldWithinTheEstimate(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

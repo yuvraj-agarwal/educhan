@@ -749,16 +749,23 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Huffman groups — a 167.5 MiB backing array at most (one `hGroup` per meta-image index,
   `vp8lGroupBacking`), plus a node slice per tree — from counts deep inside the
   compressed bitstream that no header or resolution shows. The only bound the file gives
-  is its own size, so `vp8lMemory` charges a lossless WebP and a VP8L-compressed alpha
-  plane that backing (capped by the bitstream size) plus a per-byte bound on the node
-  slices (`vp8lNodesPerByte`, with margin over the worst encoding). A crafted 4.6 MiB
-  lossless WebP that makes the decoder hold just over 1 GiB measures well inside this,
-  and anything over about a third of a megabyte is refused from its header as
-  `ErrImageTooLarge`, before any cooldown (`TestVP8LHuffmanMemoryIsCharged`,
-  `TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). So the 320 MiB bound above holds for
-  these files too; the cost of that bound is that large lossless and transparent
-  (VP8L-compressed-alpha) WebPs are refused, small ones still stored. An uncompressed
-  alpha plane is not decoded through VP8L and carries no such charge.
+  is the size of the bitstream the decoder reads — a lossless picture's VP8L chunk, or a
+  VP8L-compressed ALPH chunk with the 5-byte header the decoder puts in front of it, each
+  read through a reader that ends with the chunk (`webpPicture`) — so `vp8lMemory`
+  charges that backing (capped by the bitstream size) plus a per-byte bound on the node
+  slices (`vp8lNodesPerByte`, with margin over the worst encoding) on those bytes, not on
+  the rest of the file. A crafted file at each extreme measures inside it: 160 KiB of
+  one-symbol groups that holds about 170 MiB, and 215 KiB of full trees that holds
+  about 43 MiB (`TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). A bitstream over
+  224 KiB is refused from its header as `ErrImageTooLarge`, before any cooldown, and
+  less in a larger picture, about 205 KiB at a megapixel and 130 KiB at nine
+  (`TestVP8LHuffmanMemoryIsCharged` pins the line the README gives). So the 320 MiB
+  bound above holds for these files too; the cost of that bound is that large lossless
+  WebPs, and WebPs whose compressed transparency alone is that large, are refused — not
+  an ordinary cut-out, whose alpha plane is a few kilobytes however large its picture,
+  nor a small picture behind a large colour profile
+  (`TestLargeWebPsWithSmallVP8LBitstreamsAreStored`). An uncompressed alpha plane is not
+  decoded through VP8L and carries no such charge.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
   as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is

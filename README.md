@@ -404,14 +404,20 @@ client can leave the image picker off a server that would refuse what it sends.
   losslessly it is meant to be many times the size it came in at; it is refused from
   its header when that is too large to process.
 
-  A lossless WebP, and a WebP whose transparency is stored compressed, are the one case
-  refused by the *size* of the upload rather than its resolution: Go's WebP decoder
-  sizes its internal tables from the compressed bitstream, not from any header field, so
-  a crafted file of a few hundred kilobytes can make it hold more than a gigabyte. There
-  is no way to tell a benign file from a crafted one without decoding it, so a lossless
-  or compressed-transparency WebP over about a third of a megabyte is refused from its
-  header; a small one (an icon or a sticker) is still stored. Opaque lossy WebPs, and
-  those whose transparency is uncompressed, are not affected.
+  A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
+  compresses it by default), are the one case refused by the *size* of what is
+  compressed rather than by the picture's resolution: Go's WebP decoder sizes its
+  internal tables from the compressed data, not from any header field, so a crafted
+  file of 160 KiB can make it hold about 170 MiB, and a larger one more. There is no
+  way to tell a benign file from a crafted one without decoding it, so a lossless WebP whose
+  picture data comes to more than 224 KiB is refused from its header — less for a
+  larger picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little less in
+  a larger upload — and so is a lossy WebP whose compressed transparency alone comes to
+  that much. A small lossless picture (an icon or a sticker) is still stored, and so is
+  an ordinary cut-out, whose transparency is a few hundred bytes to a few kilobytes
+  however large its picture; what else the file carries, a colour profile or EXIF, does
+  not count. Opaque lossy WebPs, and those whose transparency is uncompressed, are not
+  affected.
 - **No metadata is stored**: the original kept and served is never the uploaded file but
   the picture rewritten without what a camera or an editor puts around it — EXIF with
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
