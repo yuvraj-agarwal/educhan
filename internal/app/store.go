@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -1166,6 +1167,119 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 		return "", errNotFound
 	}
 	return label, err
+}
+
+// verificationLockTimeout bounds each wait RewriteCredentials makes for a lock
+// on a verification table. While VACUUM FULL waits for one, every request
+// that reads a credential queues behind it, so a session that holds a table
+// for long — an export, a psql left in a transaction — fails the sweep within
+// seconds rather than holding up badged posts and confirmations until it ends.
+const verificationLockTimeout = "5s"
+
+// verificationTables are the tables RewriteCredentials vacuums.
+var verificationTables = [...]string{"verification_credentials", "verification_pending"}
+
+// RewriteCredentials takes from the verification tables what PostgreSQL
+// records about every row whatever the schema leaves out, and returns how many
+// credentials it rewrote. The archive sweeper calls it once a night.
+//
+// Every row carries the id of the transaction that wrote it (xmin). Posts are
+// written by transactions too, and carry created_at, so a credential's xmin
+// falls between two posts' and dates its issuance to the minutes between them;
+// with its label, it points at the first badged posts after it. That is what
+// leaving out created_at was for, and freezing does not undo it: a frozen row
+// keeps its xmin. A row's place in the table (ctid) follows the order rows
+// were written in, which is the order of issuance again.
+//
+// So the credentials are deleted and inserted back from the copy the delete
+// returns, in random order, in one statement: afterwards every row carries
+// this transaction's id, and where a row sits says nothing about when it was
+// issued. The lock is the one that holds back writers and lets readers
+// through. The statement after it takes its snapshot once the lock is
+// granted, so a confirmation that committed before then is in the copy; one
+// that arrives after waits for the commit and then writes over the rewritten
+// rows, whether it issues a new credential or replaces one. CredentialLabel
+// reads throughout: the old rows until the commit, the new ones after, never
+// neither.
+//
+// The old versions are still on disk with their xmin, as are the pending rows
+// confirmations deleted, each with an email hash and an expiry to the second.
+// VACUUM FULL writes both tables to new files without them and drops the old
+// files; it cannot run in a transaction. It copies rather than drops a deleted
+// row that a snapshot taken before the rewrite committed could still read.
+// educhan's own transactions last milliseconds, so only a long session
+// elsewhere in the database — an export, a psql left open — would keep old
+// rows on disk past the sweep. And it skips a table the connecting role may
+// not vacuum — one it owns neither itself nor through owning the database —
+// with only a warning, so the files are compared before and after and an
+// unchanged one is an error.
+func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
+	pooled, err := s.pool.Acquire(ctx)
+	if err != nil {
+		return 0, err
+	}
+	// The lock timeout is a session setting, so this connection leaves the
+	// pool and is closed afterwards rather than handed back carrying it.
+	conn := pooled.Hijack()
+	defer conn.Close(context.WithoutCancel(ctx))
+	if _, err := conn.Exec(ctx, `SET lock_timeout = '`+verificationLockTimeout+`'`); err != nil {
+		return 0, fmt.Errorf("set lock timeout: %w", err)
+	}
+
+	var rewritten int
+	err = pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `LOCK TABLE verification_credentials IN EXCLUSIVE MODE`); err != nil {
+			return fmt.Errorf("lock credentials: %w", err)
+		}
+		tag, err := tx.Exec(ctx, `
+			WITH copy AS (
+			    DELETE FROM verification_credentials
+			    RETURNING email_hash, credential_id_hash, label, expires_at
+			)
+			INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+			SELECT email_hash, credential_id_hash, label, expires_at FROM copy
+			ORDER BY random()`)
+		if err != nil {
+			return fmt.Errorf("rewrite credentials: %w", err)
+		}
+		rewritten = int(tag.RowsAffected())
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+
+	before, err := relationFiles(ctx, conn, verificationTables[:])
+	if err != nil {
+		return rewritten, err
+	}
+	if _, err := conn.Exec(ctx, `VACUUM FULL `+strings.Join(verificationTables[:], ", ")); err != nil {
+		return rewritten, fmt.Errorf("vacuum verification tables: %w", err)
+	}
+	after, err := relationFiles(ctx, conn, verificationTables[:])
+	if err != nil {
+		return rewritten, err
+	}
+	for i, table := range verificationTables {
+		if after[i] == before[i] {
+			return rewritten, fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
+				"must own the verification tables, as the role that ran the migrations does, or the database", table)
+		}
+	}
+	return rewritten, nil
+}
+
+// relationFiles returns the number of the file each table is stored in, which
+// VACUUM FULL replaces.
+func relationFiles(ctx context.Context, conn *pgx.Conn, tables []string) ([]int64, error) {
+	files := make([]int64, len(tables))
+	for i, table := range tables {
+		if err := conn.QueryRow(ctx,
+			`SELECT pg_relation_filenode($1::text::regclass)::bigint`, table).Scan(&files[i]); err != nil {
+			return nil, fmt.Errorf("find the file %s is stored in: %w", table, err)
+		}
+	}
+	return files, nil
 }
 
 // attachedImages collects the blob paths a query selects, as the pairs

@@ -25,6 +25,11 @@ import (
 // at it, and a sweeper that is not looking at the server's media store — a Job
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
+//
+// Last, it rewrites the verification tables (Store.RewriteCredentials), so
+// that by the time the morning's backup runs the credential rows carry the
+// sweep's transaction id rather than each its own, which would date its
+// issuance against the posts written around it.
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.
@@ -44,11 +49,20 @@ type SweepReport struct {
 	BlobsRemoved int
 	BlobFailures int
 	BlobsMissing int
+	// The verification credentials the sweep rewrote, which is every one
+	// there was (Store.RewriteCredentials): it shows the rewrite ran, and
+	// over how much. It is the size of the table, which anyone holding the
+	// database has, and the log already counts issuances one by one
+	// ("verification issued"); a daily total says how many credentials are
+	// live and nothing about any one of them. Nothing finer — no label, no
+	// expiry — belongs here.
+	Credentials int
 }
 
 // Sweep deletes every archived thread that has outlived its board's
-// archive_days, in batches of sweepBatchSize, and then removes the files those
-// threads had, along with any an earlier sweep could not.
+// archive_days, in batches of sweepBatchSize, removes the files those threads
+// had, along with any an earlier sweep could not, and then rewrites the
+// verification tables.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -78,6 +92,14 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	}
 
 	firstFailure, err := a.removeQueuedMedia(ctx, &report)
+	if err == nil {
+		// Whatever became of the files: the rewrite has nothing to do with
+		// them, and a storage outage should not keep credentials dated.
+		report.Credentials, err = a.store.RewriteCredentials(ctx)
+		if err != nil {
+			err = fmt.Errorf("sweep verification tables: %w", err)
+		}
+	}
 	a.logSweep(report)
 	switch {
 	case err != nil:
@@ -169,5 +191,6 @@ func (a *App) logSweep(report SweepReport) {
 		"attachments", report.Attachments,
 		"blobs_removed", report.BlobsRemoved,
 		"blob_failures", report.BlobFailures,
-		"blobs_missing", report.BlobsMissing)
+		"blobs_missing", report.BlobsMissing,
+		"credentials_rewritten", report.Credentials)
 }
