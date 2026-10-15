@@ -2303,7 +2303,9 @@ const FAQ_SECTIONS = [
           where they live, or looks for someone of a certain age, and also asks to talk
           privately or meet, is kept back until a moderator has checked it. So is one that asks
           someone's age or where they live and has contact details in it, instead of being
-          sent back to you. It only appears if they approve it.</li>
+          sent back to you. It only appears if they approve it. Words you say someone else
+          said or sent you, like a threat you were sent or being told to hurt yourself, aren't
+          read as yours, so you can ask for advice about them.</li>
         <li><strong>If you're having a hard time.</strong> If your post talks about wanting to
           hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
           it goes up. You can still post it.</li>

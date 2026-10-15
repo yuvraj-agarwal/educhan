@@ -1084,7 +1084,7 @@ func askCheck(v *view, m []int) bool {
 	}
 	// "never send your number to anyone", and the "'add me on snap' guys":
 	// a warning, or the ask quoted as a kind of post.
-	if !notNegated(v, m) || quotedAsk(text, m) || attributedQuote(text, m[0]) || v.quotesTheReply(m[0]) {
+	if !notNegated(v, m) || v.reported(m) {
 		return false
 	}
 	if ws := wordsIn(text[m[0]:m[1]]); len(ws) > 0 && numberWords[ws[0]] {
@@ -1096,25 +1096,10 @@ func askCheck(v *view, m []int) bool {
 	return !topicWords[firstWordAfter(text, m[1])]
 }
 
-// quotedAsk reports an ask written in quotation marks that close straight
-// after it, as the name of a kind of post: "the 'add me on snap' guys".
-func quotedAsk(text string, m []int) bool {
-	if !quoted(text, m[0]) || m[1] >= len(text) || !strings.ContainsRune(`"'”’»`, rune(text[m[1]])) &&
-		!strings.HasPrefix(text[m[1]:], "”") && !strings.HasPrefix(text[m[1]:], "’") {
-		return false
-	}
-	before := wordsBefore(text, m[0], 1)
-	after := nextWords(text[m[1]:min(len(text), m[1]+32)], 1)
-	return len(before) > 0 && quoteLeads[before[0]] || len(after) > 0 && quoteKinds[after[0]]
-}
-
 var (
 	numberWords = canonSetOf(`number nmbr num`)
 	numberRefs  = canonSetOf(`roll order page question q seat ticket account acc registration reg application
 		form enrollment enrolment admit hall invoice bill serial chapter ques sawal`)
-	quoteLeads = canonSetOf(`the a those these every all saying say says said like`)
-	quoteKinds = canonSetOf(`guys people posts post thing stuff spam bots comments comment crowd requests
-		messages types kind kinds replies`)
 )
 
 // numberAsks end an ask for a phone number: "what's your number".
@@ -1516,7 +1501,7 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 	// poster's: ">>123 >dm me on insta lol no", "my mum said 'add me on
 	// whatsapp'".
 	ask := func(a, b int) (int, int, findingKind, bool) {
-		if v.quotesTheReply(a) || attributedQuote(text, a) || quotedAsk(text, []int{a, b}) {
+		if v.reported([]int{a, b}) {
 			return 0, 0, 0, false
 		}
 		return a, b, kindAsk, true
@@ -3354,7 +3339,7 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 		!anyIn(wordsIn(sentence), threatPlaceWords) {
 		return false
 	}
-	return !reportedThreat(text, m)
+	return true
 }
 
 // threatExcused reads the threats that name no one doing them, the Hinglish
@@ -3750,32 +3735,6 @@ func filmShoot(rest string, people bool) bool {
 	return !people || peopleShootPurpose[canon(rest)[m[2]:m[3]]]
 }
 
-// reportedThreat reports a threat quoted inside a report of it: the match
-// starts inside quotation marks that close after it, a verb of saying stands
-// next to the quotation, within four words of it on either side ("he said",
-// "court hears", "the student wrote"), and nothing outside it is in the first
-// person. A report word alone does not make a report ("\"…\" news", "\"…\"
-// reportedly"), and "\"I will shoot up the school tomorrow\" and the police
-// can't stop me" is the poster's own.
-func reportedThreat(text string, m []int) bool {
-	if !quoted(text, m[0]) {
-		return false
-	}
-	open, _ := utf8.DecodeLastRuneInString(strings.TrimRight(text[:m[0]], " "))
-	closing := map[rune]string{'"': `"”`, '\'': `'’`, '“': `”"`, '‘': `’'`, '«': `»`}[open]
-	end := strings.IndexAny(text[m[1]:min(len(text), m[1]+threatWindow)], closing)
-	if end < 0 {
-		return false
-	}
-	start := strings.LastIndex(text[:m[0]], string(open))
-	before := wordsIn(canon(text[max(0, start-100):start]))
-	_, size := utf8.DecodeRuneInString(text[m[1]+end:])
-	after := wordsIn(canon(text[m[1]+end+size : min(len(text), m[1]+end+size+100)]))
-	saying := anyIn(before[max(0, len(before)-4):], sayingWords) || anyIn(after[:min(len(after), 4)], sayingWords)
-	outside := text[max(0, start-100):start] + " " + text[m[1]+end:min(len(text), m[1]+end+100)]
-	return saying && !hasFirstPerson(wordsIn(outside))
-}
-
 // namedTargetCheck takes "shoot Rahul" when the name is written with a
 // capital in the source, or comes after a title ("mr sharma", "sir"), and is
 // not a day, a month, an exam, a subject, a team, a country or a game, and then
@@ -3878,44 +3837,7 @@ var (
 		tennis badminton kabaddi tournament finals final semis semifinal semifinals quiz debate competition race
 		fifa fortnite valorant pubg bgmi minecraft roblox cod league olympiad hackathon contest sports carrom
 		ludo uno mock battle bands`)
-	// sayingWords, next to a quoted threat, say it is reported rather than
-	// made: someone said it, wrote it or posted it.
-	sayingWords = canonSetOf(`said says saying told tells wrote writes written posted posts tweeted texted
-		messaged threatened threatens warned warns claimed claims stated states hears heard reads quoted
-		shouted yelled screamed`)
 )
-
-// quoted reports that the match at i starts just inside a quotation mark.
-func quoted(text string, i int) bool {
-	r, _ := utf8.DecodeLastRuneInString(strings.TrimRight(text[:i], " "))
-	return strings.ContainsRune(`"'“‘«`, r)
-}
-
-// clauseStart is where the clause holding offset i starts, within 64 bytes:
-// just past the last quotation mark or clause break before i, and past the
-// spaces after it. A rule that matches at its verb or its harm reads a
-// report from there: "\"i will shoot up the school tomorrow\" he said" is
-// quoted from "i", not from "shoot". An apostrophe inside a word ("i'll",
-// "students'") opens nothing.
-func clauseStart(text string, i int) int {
-	lo := max(0, i-64)
-	for j := i; j > lo; {
-		r, size := utf8.DecodeLastRuneInString(text[:j])
-		opens := strings.ContainsRune(".!?\n,;:\"“‘«", r)
-		if r == '\'' {
-			p, _ := utf8.DecodeLastRuneInString(text[:j-size])
-			opens = j-size == 0 || !unicode.IsLetter(p) && !unicode.IsDigit(p)
-		}
-		if opens {
-			for j < i && text[j] == ' ' {
-				j++
-			}
-			return j
-		}
-		j -= size
-	}
-	return i
-}
 
 // nextWords splits the start of s into at most n words of letters, digits
 // and hyphens. It reads no further than the nth word, since s is often all
@@ -4462,9 +4384,6 @@ func (f *scannedField) threatFrameCheck(v *view, m []int) bool {
 		return false
 	}
 	if hyperbolicActs[verb] && retracted(v.text, end) && closeOne(readNoun(nextWords(clauseAfter(v.text, at), 6))) {
-		return false
-	}
-	if reportedThreat(v.text, []int{clauseStart(v.text, m[0]), end}) {
 		return false
 	}
 	return f.threatCheck(v, whole)
@@ -5027,7 +4946,7 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 		}
 		// threatCheck reads "dead on" as the idiom; the time read above says
 		// it is not.
-		return !reportedThreat(text, m) && !reportedThreat(text, []int{clauseStart(text, m[0]), m[1]})
+		return true
 	case survive:
 		if len(next) > 0 && !nounEnds[next[0]] || strings.HasPrefix(text[m[1]:], "'") || anyIn(sentence, eventWords) ||
 			schoolHyperbole(sentence) {
@@ -5067,9 +4986,6 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 		if eventAfterPreposition(next) {
 			return false
 		}
-	}
-	if reportedThreat(text, []int{clauseStart(text, m[0]), m[1]}) {
-		return false
 	}
 	return f.threatCheck(v, m)
 }
@@ -5491,11 +5407,11 @@ var (
 // alone in thinking", "a secret that", "between you and me, the food is
 // awful", "campus pics?", "seniors se baat karo" (talk to the seniors) and
 // "library mein milte hain" (they are in the library).
-func cueCheck(v *view, m []int) bool { return privateCue(v, m, true) }
+func cueCheck(v *view, m []int) bool { return !v.reported(m) && privateCue(v, m, true) }
 
 // cueBesideAnAge is cueCheck for a post that asks the reader's age, where a
 // meeting is a cue wherever it is and whoever else is there.
-func cueBesideAnAge(v *view, m []int) bool { return privateCue(v, m, false) }
+func cueBesideAnAge(v *view, m []int) bool { return !v.reported(m) && privateCue(v, m, false) }
 
 // privateCue is cueCheck; openMeetings turns down a meeting in the open.
 func privateCue(v *view, m []int, openMeetings bool) bool {
@@ -5647,6 +5563,9 @@ var (
 // "what's your" before it in its clause, and is not followed by a word that
 // makes it the language ("ASL club", "ASL is a good elective").
 func aslCheck(v *view, m []int) bool {
+	if v.reported(m) {
+		return false
+	}
 	for _, w := range wordsIn(clauseBefore(v.text, m[0])) {
 		if !aslLeads[w] {
 			return false
@@ -5667,6 +5586,9 @@ var (
 // ageCheck turns down "what's your area" when it is a field of study: "what's
 // your area of interest", "your location preference".
 func ageCheck(v *view, m []int) bool {
+	if v.reported(m) {
+		return false
+	}
 	ws := wordsIn(v.text[m[0]:m[1]])
 	if len(ws) == 0 {
 		return true
@@ -5786,11 +5708,13 @@ type matchCheck func(v *view, m []int) bool
 // what most checks read round a match, a clause or a sentence each side, cut
 // to 64 bytes (clauseAfter, sentenceAround). The searches a check runs over
 // those count their own work. Some checks read further, in windows of a
-// fixed width that this does not count: leavingTheBoard 200 bytes each side;
-// deathAround, quotationAround, closingMark, quotesTheReply and the "end it"
-// readings in selfHarmCheck 120; appFrame's readOn 96; imagineNot and
-// ageRuleAfter 80; gameNamed 64 before the sentence; and privateCue the
-// sentence after a visit as well as the one round it. Each is a constant per
+// fixed width that this does not count: quotationAround 240 back on its line,
+// to count the straight quotes before a mark; leavingTheBoard 200 bytes each
+// side; deathAround, quotationAround, closingMark, quotesTheReply and the "end
+// it" readings in selfHarmCheck 120; appFrame's readOn 96; imagineNot and
+// ageRuleAfter 80; reported 64 round a quotation and before the words, as
+// well as quotationAround; gameNamed 64 before the sentence; and privateCue
+// the sentence after a visit as well as the one round it. Each is a constant per
 // check, so the count stays linear in the post, but a counted step stands
 // for more time in a body whose matches take those checks
 // (TestFilterCostIsBounded says how much).
@@ -5927,7 +5851,10 @@ func threatens(fields []*scannedField) bool {
 			return false
 		}
 		for _, f := range fields {
-			if f.anyNear(first, check(f), b, w) {
+			// A threat someone else made, reported, is not the poster's.
+			c := check(f)
+			own := func(v *view, m []int) bool { return !v.reported(m) && (c == nil || c(v, m)) }
+			if f.anyNear(first, own, b, w) {
 				return true
 			}
 		}
@@ -6764,8 +6691,8 @@ func selfHarmCheck(v *view, m []int) bool {
 	switch {
 	case is(first, "rope"):
 		return !nextIn(0, setOf(`in into`))
-	case selfCompound(text, m[1]), gameDeath(next), gameInClauseBefore(text, m), mentioned(text, m, next),
-		glossed(text, m):
+	case selfCompound(text, m[1]), gameDeath(next), gameInClauseBefore(text, m), v.reported(m),
+		mentionedAsAKind(next), glossed(text, m):
 		return false
 	case is(first, "just") && is(ws[1], "end"):
 		// "just end it" is a relationship or an argument as often: only with
@@ -6842,7 +6769,7 @@ func urgeCheck(v *view, m []int) bool {
 	if !(kysing && imagineNot(text, m[0])) && !notNegated(v, m) {
 		return false
 	}
-	if mentioned(text, m, next) || glossed(text, m) || gameDeath(next) || gameInClauseBefore(text, m) ||
+	if v.reported(m) || mentionedAsAKind(next) || glossed(text, m) || gameDeath(next) || gameInClauseBefore(text, m) ||
 		anyIn(sentence, gameDeathWords) || selfCompound(text, m[1]) {
 		return false
 	}
@@ -6977,16 +6904,12 @@ func imagineNot(text string, i int) bool {
 	return n >= 2 && is(ws[n-1], "not") && hasWord(ws, "imagine")
 }
 
-// quotedNotSaid reports words the poster quotes or talks about rather than
-// says, for the rules that read the poster's own voice (crisis language,
-// asks to talk elsewhere): a greentext line quoting the post being answered
-// (quotesTheReply), a quotation given to someone else (attributedQuote), a
-// word explained ("what does kms mean"), or one reported as someone else's
-// ("someone posted kms under my pic", "the kms jokes"). The holds read
-// their own reports (reportedThreat, mentioned): a threat quoted back is
-// still shown to a moderator.
+// quotedNotSaid reports crisis words the poster passes on or talks about
+// rather than says: reported, unless the report makes the poster its subject
+// (reportedOfOthers); a word explained ("what does kms mean"); or the name of
+// a kind of post ("the kms jokes").
 func quotedNotSaid(v *view, m []int, next []string) bool {
-	return v.quotesTheReply(m[0]) || attributedQuote(v.text, m[0]) || glossed(v.text, m) || mentioned(v.text, m, next)
+	return v.reportedOfOthers(m) || glossed(v.text, m) || mentionedAsAKind(next)
 }
 
 // quotesTheReply reports that offset i is on a greentext line quoting the
@@ -7084,47 +7007,392 @@ var (
 	agreement = canonSetOf(`same samee sameee mood relatable relate felt ditto metoo`)
 )
 
-// attributedQuote reports that offset i is inside a quotation the poster
-// gives to someone else: a speaker's label before it ("teacher: 'what's your
-// number?'"), or a verb of saying or asking next to it whose subject is not
-// the poster ("she said \"…\"", "\"…\" my mum asked"). The poster quoting
-// themselves ("me: '…'", "i told him '…'") is still the poster.
-func attributedQuote(text string, i int) bool {
-	open, end := quotationAround(text, i)
-	if open < 0 {
-		return false
+// reported reports words the post passes on rather than says: someone
+// else's, quoted or reported, which every rule that reads the poster's own
+// voice turns down — crisis language, encouragement, threats, grooming cues,
+// method questions and asks to talk elsewhere. They are passed on when they
+// are:
+//
+//   - on a greentext line quoting the post being answered (quotesTheReply);
+//   - in a quotation whose speaker is named and is not the poster
+//     (quoteSpeaker): "she said 'kys'", "'…' my mum asked", "teacher: '…'",
+//     "'…' — some guy in my class"; or that came to the poster: "told me
+//     '…'", "got a message saying '…'", "I was told '…'", "someone wrote '…'
+//     on my desk", "saw '…' on the wall";
+//   - in a quotation named as a kind of post: "the 'add me on snap' guys";
+//   - the same report without quotation marks (reportedClause): "my bf told
+//     me to go kill myself", "a guy in my class keeps saying you should all
+//     kys", "he said he'll shoot up the school".
+//
+// The poster's own words stay theirs however they are wrapped. A quotation
+// no one is named as saying is read as written ("'I'm bringing a gun
+// tomorrow' lol"), and so is one the poster gives themselves: "I said '…'",
+// "me: '…'", "'…' - me", an instruction ("just tell him '…'", "you should
+// say '…'") and a verb with no subject, which leaves out an "I". A source
+// that is not a person — "news: '…'", "'…' - police", "'…' reportedly" —
+// names no speaker, so a threat dressed as a headline is still a threat.
+//
+// So a poster reporting a threat, a grooming attempt or being told to kill
+// themselves is not held for it, and one who quotes their own threat is: the
+// difference is who the post says the words belong to.
+func (v *view) reported(m []int) bool { return v.passedOn(m, false) }
+
+// reportedOfOthers is reported for crisis language, which stays the poster's
+// own when a report without quotation marks makes the poster its subject:
+// "my therapist says I'm suicidal", "mum asked if I want to die". Being told
+// to is still someone else's words: "told me to go kill myself", "said I
+// should just die".
+func (v *view) reportedOfOthers(m []int) bool { return v.passedOn(m, true) }
+
+func (v *view) passedOn(m []int, ownState bool) bool {
+	text := v.text
+	if v.quotesTheReply(m[0]) {
+		return true
 	}
-	lead := strings.TrimRight(text[max(0, open-48):open], " ")
-	if strings.HasSuffix(lead, ":") {
-		ws := wordsIn(lead[:len(lead)-1])
-		return len(ws) > 0 && !firstPersonSubjects[ws[len(ws)-1]] && !is(ws[len(ws)-1], "me") &&
-			!is(ws[len(ws)-1], "my")
-	}
-	before := wordsIn(lead)
-	after := wordsIn(text[end:min(len(text), end+48)])
-	for k := len(before) - 1; k >= max(0, len(before)-4); k-- {
-		if sayingWords[before[k]] || askingWords[before[k]] {
-			return !anyIn(before[:k], firstPersonSubjects) && !anyIn(before[:k], selfWords)
+	from := max(0, m[0]-reportReach)
+	if open, end := quotationAround(text, m[0]); open >= 0 {
+		switch quoteSpeaker(text, open, end) {
+		case otherSpeaks:
+			return true
+		case posterSpeaks:
+			return false
 		}
-	}
-	for k := 0; k < min(len(after), 4); k++ {
-		if sayingWords[after[k]] || askingWords[after[k]] {
-			return !anyIn(after[:k+1], firstPersonSubjects) && !anyIn(after[:k], selfWords)
+		if end >= 0 && namedAsAKind(text, open, end) {
+			return true
 		}
+		// Unattributed, so what is inside it is read as the poster's: a
+		// report inside it is still a report ("'he told me to kys' is all
+		// he said").
+		_, size := utf8.DecodeRuneInString(text[open:])
+		from = max(from, open+size)
 	}
-	return false
+	who, ofPoster := reportedClause(text, from, m[0])
+	if ws := wordsIn(text[m[0]:m[1]]); len(ws) > 0 && posterSubjects[ws[0]] &&
+		!(len(ws) > 1 && urgingModals[ws[1]]) {
+		ofPoster = true // "says I'm suicidal", the "I" matched
+	}
+	return who == otherSpeaks && !(ownState && ofPoster)
 }
 
+// reportReach is how far before a match reportedClause reads for a verb of
+// saying, in bytes.
+const reportReach = 64
+
+// speaker is whose words a quotation or a report gives them as.
+type speaker int
+
+const (
+	noSpeaker    speaker = iota // no one is named
+	posterSpeaks                // the poster: "I said", "me:", "- me"
+	otherSpeaks                 // someone else, or the words came to the poster
+)
+
+// quoteSpeaker says whose words the quotation opened at open (and closed
+// where its closing mark ends, at end, or -1) are: from a label before it
+// ("teacher:", "me:", "his dm:"), an attribution after a dash ("- me", "—
+// my mum"), or a verb of saying, asking, writing or coming across within
+// four words before it or six after it ("he said", "told me", "got a message
+// saying", "'…' I said", "'…' said my mum", "'…' was what his message said").
+func quoteSpeaker(text string, open, end int) speaker {
+	lead := text[max(0, open-64):open]
+	lead = lead[quotationBreak(lead)+1:]
+	if t := strings.TrimRight(lead, " "); strings.HasSuffix(t, ":") {
+		ws := wordsIn(t)
+		if who := labelSpeaker(ws[max(0, len(ws)-4):], true); who != noSpeaker {
+			return who
+		}
+	}
+	var after []string
+	if end >= 0 {
+		tail := text[end:min(len(text), end+48)]
+		if j := strings.IndexAny(tail, ".!?\n"); j >= 0 {
+			tail = tail[:j]
+		}
+		if t := strings.TrimLeft(tail, " "); strings.HasPrefix(t, "-") || strings.HasPrefix(t, "~") {
+			ws := wordsIn(t)
+			if who := labelSpeaker(ws[:min(len(ws), 3)], false); who != noSpeaker {
+				return who
+			}
+		}
+		after = wordsIn(tail)
+	}
+	before := wordsIn(lead)
+	for k := len(before) - 1; k >= max(0, len(before)-4); k-- {
+		w := bare(before[k])
+		// "goes", "went" and "like" say what someone said only straight
+		// before it: "one guy going 'add me on snap'", "she was like '…'".
+		if sayingNoun(before, k) {
+			continue // "his reply", "my post": a noun
+		}
+		if sayingVerbs[w] || heardVerbs[w] || receivedVerbs[w] || quoteVerbs[w] && (k == len(before)-1 ||
+			k == len(before)-2 && is(bare(before[k+1]), "like")) {
+			return speakerOf(before[:k], w, before[k+1:])
+		}
+	}
+	for k := 0; k < min(len(after), 6); k++ {
+		w := bare(after[k])
+		if !sayingVerbs[w] || sayingNoun(after, k) {
+			continue
+		}
+		// "'…' he said", "'…' was what my mum said"; or, put after the
+		// verb, "'…' said my mum", "'…' said I".
+		if who := labelSpeaker(after[:k], true); who != noSpeaker {
+			return who
+		}
+		if who := labelSpeaker(after[k+1:min(len(after), k+3)], false); who != noSpeaker {
+			return who
+		}
+		if participles[w] && k == 0 {
+			return otherSpeaks // "'kys' written on my desk"
+		}
+		return noSpeaker
+	}
+	return noSpeaker
+}
+
+// quotationBreak is where the stretch before a quotation stops being about
+// it: the last sentence end, line break or quotation mark in s, or -1. A
+// label or a verb further back belongs to something else.
+func quotationBreak(s string) int {
+	for j := len(s); j > 0; {
+		r, size := utf8.DecodeLastRuneInString(s[:j])
+		j -= size
+		switch r {
+		case '.', '!', '?', '\n', '"', '“', '”', '«', '»', '„', '「', '」', '『', '』':
+			return j
+		case '\'':
+			prev, _ := utf8.DecodeLastRuneInString(s[:j])
+			next, _ := utf8.DecodeRuneInString(s[j+size:])
+			if !alnum(prev) || !alnum(next) {
+				return j
+			}
+		}
+	}
+	return -1
+}
+
+// labelSpeaker reads who a label or an attribution names, in words: from the
+// last word back when last is set ("my mum:", "his dm:"), else from the
+// first on ("- me", "— some guy"). "Me", "I" and the poster's own reply are
+// the poster; a person, or a message someone else sent, is someone else.
+// Anything else, a source such as "news" or "police" among it, names no one.
+func labelSpeaker(ws []string, last bool) speaker {
+	for n := 0; n < len(ws); n++ {
+		k := n
+		if last {
+			k = len(ws) - 1 - n
+		}
+		w := bare(ws[k])
+		mine := k > 0 && posterOwners[bare(ws[k-1])]
+		switch {
+		case posterLabels[w]:
+			return posterSpeaks
+		case messageNouns[w]:
+			if mine {
+				return posterSpeaks // "my reply:"
+			}
+			return otherSpeaks
+		case otherSpeakers[w]:
+			return otherSpeaks
+		}
+	}
+	return noSpeaker
+}
+
+// speakerOf says who the verb of saying (or of coming across) verb is said
+// of, from the words before it in its sentence, nearest first, and rest, the
+// words after it. Said to the poster ("was told", "got asked") or come
+// across by them ("heard", "saw", "got"), the words are someone else's; an
+// "I" or a "we" makes them the poster's, and anyone else, someone else's. A
+// verb with no subject is the poster's — an instruction or an "I" left out
+// ("just tell him", "said it to his face") — unless it was said to them:
+// "told me".
+func speakerOf(before []string, verb string, rest []string) speaker {
+	n := len(before)
+	if heardVerbs[verb] || receivedVerbs[verb] || n > 0 && passiveLeads[bare(before[n-1])] && participles[verb] {
+		return otherSpeaks
+	}
+	// "you should tell him", "u could just say": the poster telling the
+	// reader what to say.
+	k := n
+	for k > 0 && subjectSkips[bare(before[k-1])] && !instructionModals[bare(before[k-1])] {
+		k--
+	}
+	if k > 0 && instructionModals[bare(before[k-1])] && (k == 1 || secondPerson[bare(before[k-2])]) {
+		return posterSpeaks
+	}
+	named := false
+	for k := n - 1; k >= max(0, n-8); k-- {
+		w := bare(before[k])
+		switch {
+		case posterSubjects[w] || mindWords[w]:
+			return posterSpeaks // "I said"; "my head keeps telling me to"
+		case otherSpeakers[w] || messageNouns[w]:
+			return otherSpeaks
+		case !subjectSkips[w] && w != "":
+			named = true // "Rahul said", "the guy next to me said"
+		}
+	}
+	if named || len(rest) > 0 && receivers[bare(rest[0])] {
+		return otherSpeaks
+	}
+	return posterSpeaks
+}
+
+// reportedClause reports words at i that a verb of saying before them, in
+// the same sentence and within reportReach bytes (none before from), gives
+// to someone else: "my bf told me to go kill myself", "people keep saying
+// you should all kys", "he said he'll shoot up the school", "usne bola mar
+// ja", "he said: kys". Only the words a report puts between the verb and
+// what was said may come between them — who it was said to, "to", "that", a
+// subject, a modal — and a comma ends the report: "didn't ask, kys".
+// ofPoster says the poster is the subject of what was said, with no modal
+// urging it on them: "says I'm suicidal", not "said I should just die".
+func reportedClause(text string, from, i int) (who speaker, ofPoster bool) {
+	before := text[max(from, i-reportReach):i]
+	before = before[strings.LastIndexAny(before, ".!?\n,;")+1:]
+	ws := wordsIn(before)
+	for k := len(ws) - 1; k >= max(0, len(ws)-6); k-- {
+		w := bare(ws[k])
+		switch {
+		case (sayingVerbs[w] || heardVerbs[w]) && !sayingNoun(ws, k):
+			return speakerOf(ws[:k], w, ws[k+1:]), ofPoster
+		case !reportedLinks[w]:
+			return noSpeaker, false
+		case posterSubjects[w] && !(k+1 < len(ws) && urgingModals[bare(ws[k+1])]):
+			ofPoster = true
+		}
+	}
+	return noSpeaker, false
+}
+
+// namedAsAKind reports a quotation used as the name of a kind of post, not
+// said: "the 'add me on snap' guys", "every 'kys' comment", "stuff like
+// 'dm me'".
+func namedAsAKind(text string, open, end int) bool {
+	before := wordsBefore(text, open, 1)
+	after := nextWords(text[end:min(len(text), end+32)], 1)
+	return len(before) > 0 && quoteLeads[bare(before[0])] || len(after) > 0 && quoteKinds[after[0]]
+}
+
+// mentionedAsAKind reports words named as a kind of post by the word after
+// them: "the kys comments", "suicide jokes".
+func mentionedAsAKind(next []string) bool { return len(next) > 0 && mentionNouns[next[0]] }
+
+// nounBefore reports a word that makes the one after it a noun, when that
+// one could be a verb of saying as well: "my post", "his reply", "her
+// brother's message".
+func nounBefore(w string) bool {
+	w = bare(w)
+	return nounLeads[w] || strings.HasSuffix(w, "'s") && !posterSubjects[w] && !otherSpeakers[w]
+}
+
+// sayingNoun reports a verb of saying at ws[k] that is a noun there: a word
+// that can be either ("post", "reply", "message"), after a word that makes
+// it the noun.
+func sayingNoun(ws []string, k int) bool {
+	return k > 0 && nounVerbs[bare(ws[k])] && nounBefore(ws[k-1])
+}
+
+// bare is a word without the quotation marks wordsIn leaves on its ends.
+func bare(w string) string { return strings.Trim(w, "'") }
+
 var (
-	askingWords = canonSetOf(`asked asks asking goes went`)
-	selfWords   = canonSetOf(`me`)
+	// sayingVerbs say who said something, wrote it, asked it or sent it, in
+	// English and in Hinglish ("bola", "kaha", "likha", "pucha").
+	sayingVerbs = canonSetOf(`say says saying said tell tells telling told write writes writing wrote written
+		post posts posting posted comment comments commenting commented reply replies replying replied
+		text texts texting texted message messages messaging messaged dm dms dming dmed dm'd ask asks asking asked
+		type types typing typed tweet tweets tweeted send sends sending sent shout shouts shouting shouted
+		yell yells yelling yelled scream screams screaming screamed whisper whispers whispered
+		threaten threatens threatening threatened warn warns warned claim claims claimed state states stated
+		spam spams spammed spamming captioned scrawled
+		bola boli bole bolta bolti bolte bolke kaha kehta kehti kehte keh likha likhta likhti likhte pucha puchha
+		poocha puchta puchti`)
+	// quoteVerbs say what someone said only straight before a quotation.
+	quoteVerbs = canonSetOf(`go goes going went like`)
+	// heardVerbs are the poster coming across words, someone else's; and
+	// receivedVerbs, straight before a quotation, the poster sent them: "got
+	// '…' in my dms".
+	heardVerbs    = canonSetOf(`heard hear hears saw seen read reads found noticed received`)
+	receivedVerbs = canonSetOf(`got get gets getting receive receives`)
+	// urgingModals, after the poster as a subject, make what was said an
+	// urging: "said I should".
+	urgingModals = canonSetOf(`should shud must need needs gotta better deserve deserved ought`)
+	// participles, after passiveLeads, are words said to the poster: "was
+	// told", "got asked", "keep getting sent".
+	participles  = canonSetOf(`told asked sent called messaged texted dmed written posted threatened warned typed`)
+	passiveLeads = canonSetOf(`was were got get gets getting been being be is are am 'm im`)
+	// nounVerbs are the verbs of saying that are nouns as well, which
+	// nounLeads before them make the noun: "my post", "his reply".
+	nounVerbs = canonSetOf(`post posts comment comments reply replies text texts message messages dm dms tweet
+		tweets type types spam claim claims state states`)
+	nounLeads = canonSetOf(`my our your his her their its the a an this that these those every each some any`)
+	// mindWords are the poster's own mind saying something to them, which
+	// is the poster's crisis: "my head keeps telling me to", "the voices
+	// tell me", "my brain says".
+	mindWords = canonSetOf(`head brain mind thoughts thought voice voices heart gut depression anxiety demons
+		intrusive`)
+	// receivers, straight after a verb with no subject, say it was said to
+	// the poster: "told me to".
+	receivers = canonSetOf(`me us mujhe humko`)
+	// instructionModals before a verb of saying make it the poster's
+	// instruction: "you should say", "just tell him".
+	instructionModals = canonSetOf(`should shud must gotta could can`)
+	// posterSubjects are the poster as a subject; posterLabels the poster
+	// named in a label or an attribution, and posterOwners as an owner.
+	posterSubjects = canonSetOf(`i i'm im i've ive i'd i'll we we're we've we'll we'd maine mene mainne humne hamne`)
+	posterLabels   = canonSetOf(`me i myself mine moi`)
+	posterOwners   = canonSetOf(`my our mera meri mere`)
+	// otherSpeakers are someone other than the poster: people, by pronoun,
+	// role or relation.
+	otherSpeakers = canonSetOf(`he she they he's she's they're hes shes theyre he'd she'd they'd he'll she'll
+		they'll him her them you u ya y'all yall someone somebody anyone anybody everyone everybody nobody noone
+		whoever people ppl person guy guys girl girls boy boys kid kids man men woman women dude dudes lad lads
+		child children teen teens friend friends mate mates bestie classmate classmates teacher teachers sir maam
+		ma'am miss mr mrs ms principal headteacher prof professor lecturer tutor coach mum mom mummy mother dad
+		daddy father papa parents parent brother sister sis sibling siblings cousin cousins uncle aunt aunty auntie
+		bf gf boyfriend girlfriend ex crush partner bully bullies stranger strangers senior seniors junior juniors
+		student students anon anons op poster user users troll trolls account accounts
+		ladka ladki ladke log usne unhone uska uski unka woh wo vo voh dost`)
+	// messageNouns are something someone sent or wrote: "a message saying",
+	// "the note said", "his bio:".
+	messageNouns = canonSetOf(`message messages msg msgs text texts dm dms note notes comment comments caption bio
+		post posts reply replies email emails mail letter letters sms notification notifications tweet tweets
+		story stories snap snaps screenshot screenshots ss sign graffiti answer response`)
+	// subjectSkips are the words between a verb of saying and its subject
+	// that are not the subject: auxiliaries, adverbs, fillers, prepositions
+	// and the poster as an object or owner ("the guy next to me", "my mum").
+	subjectSkips = canonSetOf(`keeps keep kept kinda always just literally also even still actually really would will
+		'd 'll did does do doesn't don't didn't has have had who that which then and or but lol lmao lmfao bro ngl
+		tbh fr so ok okay yeah honestly basically should shud must gotta could can might may once twice never ever randomly suddenly straight right back
+		used to my our your his their its the a an this these those in on at of from with under next by about
+		after before for me us mujhe mere mera meri roz hamesha bhi ne ko phir fir aur ki ke ka hai tha thi the
+		haha hahaha omg oh yo hey well like legit lowkey highkey deadass fucking even why how what`)
+	// reportedLinks are the words a report puts between a verb of saying and
+	// what was said: "told me to go", "said that you should all", "said
+	// he'll", "bolta hai ki tu".
+	reportedLinks = canonSetOf(`to go just that should shud could would must gotta better need needs have has had can
+		will might gonna going was were is are be 'm i i'd i'm im i'll you u ur you'd you'll youd youll he she they
+		he'd she'd they'd he'll she'll they'll he's she's me him her them us everyone everybody all someone people
+		ppl a an the kid kids guy girl person should've shouldve please pls plz literally hai ki ke tu tum aap
+		mujhe usko unko ko jaa ja i've ive if whether`)
+	// quoteLeads, before a quotation, and quoteKinds, after it, make it the
+	// name of a kind of post.
+	quoteLeads = canonSetOf(`the a those these every all like`)
+	quoteKinds = canonSetOf(`guys people posts post thing stuff spam bots comments comment crowd requests
+		messages types kind kinds replies`)
 )
 
 // quotationAround finds the quotation offset i is in, within 120 bytes
-// either side: where its opening mark starts and where its closing mark
-// ends, or -1. An apostrophe opens a quotation only after something that is
-// not a letter or a digit, and closes one only before such a thing, so the
-// ones inside "what's" and "ma'am" are neither.
+// either side on its line: where its opening mark starts and where its
+// closing mark ends, or -1. Every kind of quotation mark opens one: straight
+// and curly double and single quotes, guillemets, low-9 quotes and corner
+// brackets. A straight double quote opens one only when an even number of
+// them come before it on the line, since the same mark closes it. An
+// apostrophe opens a quotation only after something that is not a letter or
+// a digit, and closes one only before such a thing, so the ones inside
+// "what's" and "ma'am" are neither.
 func quotationAround(text string, i int) (int, int) {
 	lo := max(0, i-120)
 	for j := i; j > lo; {
@@ -7133,9 +7401,15 @@ func quotationAround(text string, i int) (int, int) {
 		switch r {
 		case '\n':
 			return -1, -1
-		case '"', '“', '«', '‘':
+		case '"':
+			line := text[max(0, j-240):j]
+			if strings.Count(line[strings.LastIndexByte(line, '\n')+1:], `"`)%2 == 1 {
+				return -1, -1 // it closes one
+			}
 			return j, closingMark(text, i, r)
-		case '”', '»', '’':
+		case '“', '«', '‘', '„', '‚', '「', '『', '‹':
+			return j, closingMark(text, i, r)
+		case '”', '»', '’', '」', '』', '›':
 			return -1, -1
 		case '\'':
 			prev, _ := utf8.DecodeLastRuneInString(text[:j])
@@ -7154,7 +7428,8 @@ func quotationAround(text string, i int) (int, int) {
 // closingMark is where the mark closing a quotation opened with open ends,
 // searching from offset i, or -1.
 func closingMark(text string, i int, open rune) int {
-	closes := map[rune]string{'"': `"`, '“': `”"`, '«': `»`, '‘': `’'`, '\'': `'`}[open]
+	closes := map[rune]string{'"': `"`, '“': `”"`, '«': `»`, '‘': `’'`, '\'': `'`, '„': `“”"`, '‚': `‘’'`,
+		'「': `」`, '『': `』`, '‹': `›`}[open]
 	hi := min(len(text), i+120)
 	for j := i; j < hi; {
 		r, size := utf8.DecodeRuneInString(text[j:hi])
@@ -7229,42 +7504,6 @@ func saidFirst(before string) bool {
 	return true
 }
 
-// mentioned reports encouragement that is talked about rather than said: a
-// verb of saying before it, whose subject is not the poster ("someone told
-// a kid to kys", "why does everyone say kys so casually", "whoever told you
-// to kys"), or what kind of post it is after it ("the kys comments").
-func mentioned(text string, m []int, next []string) bool {
-	if len(next) > 0 && mentionNouns[next[0]] {
-		return true
-	}
-	before := wordsIn(clauseBefore(text, m[0]))
-	for i := len(before) - 1; i >= max(0, len(before)-5); i-- {
-		w := before[i]
-		switch {
-		case addressees[w]:
-			continue
-		case saidWords[w] || sayWords[w]:
-			subject := before[:i]
-			if hasFirstPerson(subject) {
-				return false // "I told him to kys" is the poster's own
-			}
-			if saidWords[w] {
-				return true
-			}
-			// "say kys" has a subject only when one is written: "just
-			// tell him to kys" is an imperative.
-			for _, s := range subject {
-				if !imperativeFillers[s] && !is(s, "why") && !is(s, "does") && !is(s, "do") {
-					return true
-				}
-			}
-			return false
-		}
-		return false
-	}
-	return false
-}
-
 var (
 	quoteLink           = regexp.MustCompile(`>>+\d+`)
 	firstPersonSubjects = canonSetOf(`i i'm im i'll i'd i've ive we we're we'll we've`)
@@ -7275,13 +7514,7 @@ var (
 		friendship marriage situationship cheating cheated cheats dating breakup thread debate argument discussion
 		convo conversation chat game match series show beef fight drama story subscription streak`)
 	pillRoutine = canonSetOf(`on with before after daily regularly every at as properly in for together`)
-	// saidWords and sayWords, before encouragement, report it; addressees
-	// are who it was said to.
-	saidWords = canonSetOf(`said told wrote posted typed commented replied spammed messaged texted dmed called`)
-	sayWords  = canonSetOf(`say says saying tell tells telling write writes posts post comment comments spam spams
-		spamming`)
-	addressees = canonSetOf(`you u me him her them us a an the kid kids someone somebody people everyone others
-		guy girl person ppl to just`)
+	// mentionNouns, after encouragement, make it the name of a kind of post.
 	mentionNouns = canonSetOf(`comments comment jokes joke posts post thing stuff culture spam spammers replies reply
 		messages memes meme trend trolls bots`)
 )
@@ -7326,7 +7559,7 @@ func caresIfYouDie(next []string) bool {
 // lethal dose for half the test animals"), "how deep should I cut" followed
 // by something to cut ("the wood"), a death in a game, and "self-doubt".
 func methodCheck(v *view, m []int) bool {
-	if !notNegated(v, m) {
+	if !notNegated(v, m) || v.reported(m) {
 		return false
 	}
 	text := v.text

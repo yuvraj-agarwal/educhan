@@ -2093,6 +2093,94 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 	}
 }
 
+// verdictName is a verdict as the tables below write it.
+func verdictName(v contentVerdict) string {
+	switch v.Outcome {
+	case contentSupport:
+		return "support"
+	case contentBlock:
+		return "block:" + v.Rule
+	case contentHold:
+		return "hold:" + v.Hold
+	}
+	return "publish"
+}
+
+// TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
+// one reading of quoted and reported speech that every family uses. Words
+// the post gives to someone else, or says came to the poster, are not the
+// poster's: a report of a threat, of encouragement, of a grooming attempt or
+// of an ask is published. Words the poster gives to themselves, or to no one,
+// are the poster's however they are wrapped.
+func TestFilterReadsReportedSpeechAsSomeoneElses(t *testing.T) {
+	const (
+		publish  = "publish"
+		support  = "support"
+		contact  = "block:contact"
+		threat   = "hold:" + holdThreat
+		selfHarm = "hold:" + holdSelfHarm
+		grooming = "hold:" + holdGrooming
+	)
+	for _, c := range []struct{ body, want string }{
+		// Someone else named as saying it, before or after the quotation,
+		// in every kind of quotation mark.
+		{"people under my art post said 'kys' and it still hurts", publish},
+		{"in our year group chat a guy said “you should all kys” after we lost the quiz", publish},
+		{"'kys' he said, and walked off", publish},
+		{"“you won't see monday” was what my brother's message said", publish},
+		{"the note in my locker said „you won't see friday“, I've told the head", publish},
+		{"teacher: 'I'll kill you all tomorrow if the homework isn't done' lol she's dramatic", publish},
+		{"'I'm bringing a gun to school tomorrow' — some guy in my class. reported it", publish},
+		{"class ka ek ladka roz mujhe bolta hai 'tu mar kyun nahi jaata'. teacher ko bataun?", publish},
+		// Said to the poster, or come across by them.
+		{"there's this guy in year 10 who keeps telling me to 'go kys' in the corridor", publish},
+		{"someone wrote 'kys' on my desk. how do i report it?", publish},
+		{"My friend got a message saying \"you won't see monday\" from a kid in our year", publish},
+		{"a guy dmed me “how old are you? keep this between us” and i blocked him", publish},
+		{"got 'kys' in my dms again today", publish},
+		{"I was told to kys by a kid in my class today", publish},
+		// Named as a kind of post.
+		{"why does every thread have one guy going 'add me on snap'?? mods please", publish},
+		{"the 'add me on snap' guys are back", publish},
+		// Reported without quotation marks.
+		{"my bf told me to go kill myself during an argument. is that a red flag?", publish},
+		{"Some kid at the bus stop told me to go kill myself because I'm fat", publish},
+		{"he told me he'd shoot up the school tomorrow, should I tell someone?", publish},
+		{"my friend said she wants to hurt herself", publish},
+		// The poster's own words, however they are wrapped: given to the
+		// poster by a label, a dash or a verb, or to no one.
+		{"'I'm bringing a gun to school tomorrow' - me", threat},
+		{"I told him \"I'll stab you at school tomorrow\"", threat},
+		{"\"i will shoot up the school tomorrow\" news", threat},
+		{"\"i will shoot up the school tomorrow\" - police", threat},
+		{"me: 'kys'", selfHarm},
+		{"I said 'kys' and I meant it", selfHarm},
+		{"'kys' lol", selfHarm},
+		{"just tell him to kys", selfHarm},
+		{"you should tell him to kys", selfHarm},
+		{"I told my mum I want to die", support},
+		{"'i want to die' - me every monday", support},
+		{"like I said, add me on snap", contact},
+		{"\"add me on snap\" - me", contact},
+		{"I asked her \"how old are you? keep it between us\"", grooming},
+		// A report that makes the poster the subject of crisis language,
+		// or names the poster's own mind as the speaker, is still the
+		// poster's crisis.
+		{"my therapist says I'm suicidal and I think she's right", support},
+		{"my head keeps telling me to kill myself", support},
+		// A noun is not a verb of saying ("my post", "his message"), a
+		// report does not reach past a comma, and a colon after a verb of
+		// saying gives what was said.
+		{"don't care + didn't ask, kys", selfHarm},
+		{"a girl in my dm's said \"add me on insta\"", publish},
+		{"he said: kys", publish},
+	} {
+		if got := verdictName(bodyVerdict(c.body)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterPairsAThreatAcrossTheSubjectAndTheBody pins that the subject and
 // the body are read as one text for a threat: the subject is the thread's
 // title, shown right above the body.
