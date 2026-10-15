@@ -30,10 +30,16 @@ CREATE TABLE IF NOT EXISTS passes (
 CREATE INDEX IF NOT EXISTS passes_expires_idx ON passes (expires_at);
 
 -- The payments behind a Pass: the first purchase and every renewal. Refunding
--- or disputing any of them deletes the Pass, and these rows go with it.
+-- or disputing one takes its term off the Pass's expiry and deletes its row;
+-- a Pass left with no time to come goes too, and these rows with it.
 CREATE TABLE IF NOT EXISTS pass_payments (
     payment_hash BYTEA PRIMARY KEY,
-    pass_id      BIGINT NOT NULL REFERENCES passes (id) ON DELETE CASCADE
+    pass_id      BIGINT NOT NULL REFERENCES passes (id) ON DELETE CASCADE,
+    -- The term this payment bought: how many days it moved the expiry on,
+    -- rounded up. A refund takes exactly this off again.
+    days         INTEGER NOT NULL,
+    -- True for the payment that created the Pass, false for a renewal.
+    origin       BOOLEAN NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS pass_payments_pass_idx ON pass_payments (pass_id);

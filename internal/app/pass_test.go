@@ -259,3 +259,51 @@ func TestPassBudgetIsSafeForConcurrentPosts(t *testing.T) {
 		}
 	}
 }
+
+func TestPassExpiryArithmetic(t *testing.T) {
+	midnight := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	afternoon := midnight.Add(15 * time.Hour)
+
+	if got := dayCeil(midnight); !got.Equal(midnight) {
+		t.Errorf("dayCeil(midnight) = %v, want it unchanged", got)
+	}
+	if got := dayCeil(afternoon); !got.Equal(midnight.AddDate(0, 0, 1)) {
+		t.Errorf("dayCeil(afternoon) = %v, want the next midnight", got)
+	}
+	if got := dayCeil(midnight.Add(time.Nanosecond)); !got.Equal(midnight.AddDate(0, 0, 1)) {
+		t.Errorf("dayCeil(just past midnight) = %v, want the next midnight", got)
+	}
+
+	// Renewing a Pass that has not run out adds exactly the term.
+	if got := passExpiry(midnight, 365); !got.Equal(midnight.AddDate(0, 0, 365)) {
+		t.Errorf("a renewal from %v gives %v, want exactly 365 days on", midnight, got)
+	}
+	// Buying one rounds up to the midnight after the term.
+	if got := passExpiry(afternoon, 365); !got.Equal(midnight.AddDate(0, 0, 366)) {
+		t.Errorf("a purchase at %v runs out %v, want the midnight after 365 days", afternoon, got)
+	}
+	// In UTC whatever zone the time arrives in: pgx and time.Now hand back
+	// local times, and a local day is not always 24 hours.
+	evening := time.Date(2026, 2, 28, 23, 30, 0, 0, time.FixedZone("UTC-5", -5*3600))
+	if got := passExpiry(evening, 1); !got.Equal(midnight.AddDate(0, 0, 2)) || got.Location() != time.UTC {
+		t.Errorf("passExpiry(%v, 1) = %v, want %v in UTC", evening, got, midnight.AddDate(0, 0, 2))
+	}
+
+	// A term is the whole days a payment moved the expiry, rounded up, so a
+	// refund taking it off lands at or before where the Pass would have been.
+	for _, c := range []struct {
+		base, expiry time.Time
+		want         int
+	}{
+		{midnight, midnight.AddDate(0, 0, 365), 365},
+		{afternoon, passExpiry(afternoon, 365), 366},
+		{midnight, midnight.AddDate(0, 0, 365).Add(time.Nanosecond), 366},
+	} {
+		if got := termDays(c.base, c.expiry); got != c.want {
+			t.Errorf("termDays(%v, %v) = %d, want %d", c.base, c.expiry, got, c.want)
+		}
+		if back := c.expiry.AddDate(0, 0, -termDays(c.base, c.expiry)); back.After(c.base) {
+			t.Errorf("taking the term off %v lands at %v, after the base %v", c.expiry, back, c.base)
+		}
+	}
+}

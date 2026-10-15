@@ -157,11 +157,40 @@ func (a *App) passPaymentHash(id string) []byte {
 	return hmacSum([]byte(a.cfg.Pass.Secret), "pass-payment:"+id)
 }
 
-// passExpiry is when a Pass bought or renewed at from runs out: Days later,
-// rounded up to a UTC day boundary like a credential's, so the stored expiry
-// dates the purchase to the day and not the minute.
-func (a *App) passExpiry(from time.Time) time.Time {
-	return nextDayBoundary(from.AddDate(0, 0, a.cfg.Pass.Days))
+// passExpiry is when a Pass runs out once days are added to it from base: now
+// for a new Pass, and for a renewal the later of now and its current expiry.
+// It is rounded up to a UTC midnight like a credential's expiry, so the stored
+// expiry dates a purchase to the day and not the minute. An expiry already on
+// a midnight stays there, so renewing a Pass that has not run out adds exactly
+// the days.
+func passExpiry(base time.Time, days int) time.Time {
+	return dayCeil(base.UTC().AddDate(0, 0, days))
+}
+
+// dayCeil rounds t up to the next UTC midnight, and leaves a UTC midnight as
+// it is.
+func dayCeil(t time.Time) time.Time {
+	utc := t.UTC()
+	midnight := time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC)
+	if midnight.Equal(utc) {
+		return midnight
+	}
+	return midnight.AddDate(0, 0, 1)
+}
+
+// termDays is the term a payment bought, as recorded beside it: how far it
+// moved the Pass's expiry past base, in whole days rounded up. The rounding
+// to a midnight is counted in, so taking the term off again for a refund
+// leaves the Pass where it would have been without that payment, or earlier,
+// never later: a refunded purchase stops at once rather than at midnight.
+func termDays(base, expiry time.Time) int {
+	const day = 24 * time.Hour
+	d := expiry.Sub(base)
+	n := d / day
+	if d%day > 0 {
+		n++
+	}
+	return int(n)
 }
 
 /* Handlers ------------------------------------------------------------------ */
@@ -352,7 +381,7 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 	res, err := a.store.claimPass(r.Context(), hashToken(cookie.Value), passCompletion{
 		TokenHash: a.passTokenHash(code),
 		Now:       time.Now(),
-		Expiry:    a.passExpiry,
+		Days:      a.cfg.Pass.Days,
 	})
 	if err != nil {
 		a.fail(w, r, err, "could not collect the Pass")
@@ -610,7 +639,7 @@ func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 	res, err := a.store.reissuePass(r.Context(), a.passPaymentHash(pi), passCompletion{
 		TokenHash: a.passTokenHash(code),
 		Now:       time.Now(),
-		Expiry:    a.passExpiry,
+		Days:      a.cfg.Pass.Days,
 	})
 	if err != nil {
 		a.fail(w, r, err, "could not reissue the Pass")
@@ -684,12 +713,17 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		if p.PaymentIntent == nil || *p.PaymentIntent == "" || (ev.Type == stripeChargeRefunded && !p.Refunded) {
 			break
 		}
-		cancelled, err := a.store.revokePassPayment(r.Context(), a.passPaymentHash(*p.PaymentIntent), time.Now())
+		revoked, err := a.store.revokePassPayment(r.Context(), a.passPaymentHash(*p.PaymentIntent), time.Now())
 		if err != nil {
 			a.fail(w, r, err, "could not record the refund")
 			return
 		}
-		if cancelled {
+		switch revoked {
+		case revokedOrder:
+			a.log.Info("pass order cancelled by a refund or dispute")
+		case revokedTerm:
+			a.log.Info("pass term taken off by a refund or dispute")
+		case revokedPass:
 			a.log.Info("pass cancelled by a refund or dispute")
 		}
 	}
@@ -697,6 +731,33 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 }
 
 /* Storage ------------------------------------------------------------------- */
+
+// passLockID is the advisory lock every transaction that writes a Pass table
+// takes before anything else: creating an order, marking it paid, collecting
+// it, reissuing, revoking a payment and pruning. They are therefore applied
+// one at a time, in the order they took the lock, and each sees everything
+// the ones before it committed. Pass purchases are rare, so the queue costs
+// nothing, and it rules out every interleaving of a payment, a refund and a
+// collection: no refund can miss a Pass being collected beside it, no "paid"
+// can slip past a refund recorded at the same moment, and no two of them can
+// deadlock over rows taken in different orders. Reading a Pass to post with
+// it (passByToken) takes no lock, and no locked transaction makes a network
+// call, so the lock is never held for longer than a few statements.
+//
+// The second key is the schema, so the Pass tables of two schemas in one
+// database (a staging copy beside production, or the tests' schemas) are not
+// queued behind each other.
+const passLockID int32 = 0x50617373 // "Pass"
+
+// passTx runs fn in a transaction holding the Pass lock.
+func (s *Store) passTx(ctx context.Context, fn func(pgx.Tx) error) error {
+	return pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, hashtext(current_schema()))`, passLockID); err != nil {
+			return fmt.Errorf("take the Pass lock: %w", err)
+		}
+		return fn(tx)
+	})
+}
 
 type passOrder struct {
 	ClaimHash   []byte
@@ -706,27 +767,42 @@ type passOrder struct {
 }
 
 func (s *Store) createPassOrder(ctx context.Context, o passOrder) error {
-	_, err := s.pool.Exec(ctx, `
-		INSERT INTO pass_orders (claim_hash, session_hash, renew_pass_id, expires_at)
-		VALUES ($1, $2, $3, $4)`, o.ClaimHash, o.SessionHash, o.RenewPassID, o.ExpiresAt)
-	return err
+	return s.passTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			INSERT INTO pass_orders (claim_hash, session_hash, renew_pass_id, expires_at)
+			VALUES ($1, $2, $3, $4)`, o.ClaimHash, o.SessionHash, o.RenewPassID, o.ExpiresAt)
+		return err
+	})
 }
 
 // markPassOrderPaid records the payment behind an order. It is idempotent,
 // since Stripe may deliver one event more than once, and it refuses a payment
 // already refunded, since Stripe may deliver a refund before a retried "paid".
 func (s *Store) markPassOrderPaid(ctx context.Context, sessionHash, paymentHash []byte) (bool, error) {
-	tag, err := s.pool.Exec(ctx, `
-		UPDATE pass_orders SET payment_hash = $2
-		WHERE session_hash = $1
-		  AND expires_at > now()
-		  AND (payment_hash IS NULL OR payment_hash = $2)
-		  AND NOT EXISTS (SELECT 1 FROM pass_revocations WHERE payment_hash = $2)`,
-		sessionHash, paymentHash)
-	if err != nil {
-		return false, err
-	}
-	return tag.RowsAffected() == 1, nil
+	var found bool
+	err := s.passTx(ctx, func(tx pgx.Tx) error {
+		revoked, err := paymentRevoked(ctx, tx, paymentHash)
+		if err != nil || revoked {
+			return err
+		}
+		tag, err := tx.Exec(ctx, `
+			UPDATE pass_orders SET payment_hash = $2
+			WHERE session_hash = $1
+			  AND expires_at > now()
+			  AND (payment_hash IS NULL OR payment_hash = $2)`,
+			sessionHash, paymentHash)
+		found = tag.RowsAffected() == 1
+		return err
+	})
+	return found, err
+}
+
+// paymentRevoked reports whether a payment was refunded or disputed.
+func paymentRevoked(ctx context.Context, tx pgx.Tx, paymentHash []byte) (bool, error) {
+	var revoked bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pass_revocations WHERE payment_hash = $1)`, paymentHash).Scan(&revoked)
+	return revoked, err
 }
 
 // passByToken returns the Pass a code hash belongs to, expired or not.
@@ -756,23 +832,24 @@ type orderResult struct {
 }
 
 // passCompletion is what turning a paid order into a Pass needs from the
-// caller: the hash of a freshly drawn code, the time, and the expiry rule.
+// caller: the hash of a freshly drawn code, the time, and the term a payment
+// buys.
 type passCompletion struct {
 	TokenHash []byte
 	Now       time.Time
-	Expiry    func(from time.Time) time.Time
+	Days      int
 }
 
 // claimPass collects the order a claim belongs to.
 func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletion) (orderResult, error) {
 	var res orderResult
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.passTx(ctx, func(tx pgx.Tx) error {
 		var payment []byte
 		var renewID *int64
 		var expires time.Time
 		err := tx.QueryRow(ctx, `
 			SELECT payment_hash, renew_pass_id, expires_at FROM pass_orders
-			WHERE claim_hash = $1 FOR UPDATE`, claimHash).Scan(&payment, &renewID, &expires)
+			WHERE claim_hash = $1`, claimHash).Scan(&payment, &renewID, &expires)
 		if errors.Is(err, pgx.ErrNoRows) {
 			res.State = orderMissing
 			return nil
@@ -792,6 +869,13 @@ func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletio
 		if _, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE claim_hash = $1`, claimHash); err != nil {
 			return err
 		}
+		// Revoking deletes the order, so this never holds while the lock does
+		// its job; it is checked anyway, as it is everywhere a payment turns
+		// into a Pass.
+		if revoked, err := paymentRevoked(ctx, tx, payment); err != nil || revoked {
+			res.State = orderMissing
+			return err
+		}
 		res, err = completePassOrder(ctx, tx, payment, renewID, c, false)
 		return err
 	})
@@ -802,7 +886,11 @@ func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletio
 // when it was collected, or the order when it was paid for and never was.
 func (s *Store) reissuePass(ctx context.Context, paymentHash []byte, c passCompletion) (orderResult, error) {
 	var res orderResult
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
+	err := s.passTx(ctx, func(tx pgx.Tx) error {
+		if revoked, err := paymentRevoked(ctx, tx, paymentHash); err != nil || revoked {
+			res.State = orderMissing
+			return err
+		}
 		var renewID *int64
 		err := tx.QueryRow(ctx, `
 			DELETE FROM pass_orders WHERE payment_hash = $1
@@ -836,7 +924,10 @@ func (s *Store) reissuePass(ctx context.Context, paymentHash []byte, c passCompl
 //   - a renewal extends the Pass it renews by a full term from its expiry, or
 //     from now if it has run out, and links the payment to it;
 //   - anything else, including a renewal of a Pass refunded in the meantime,
-//     is a new Pass.
+//     is a new Pass, and the payment is linked to it as its origin.
+//
+// Each payment is linked with the term it bought (termDays), which is what a
+// refund of it takes off again.
 //
 // A renewal keeps its code unless rotate is set, which reissuing does: a buyer
 // asking for a reissue has lost the code, so they get a new one either way.
@@ -857,10 +948,11 @@ func completePassOrder(ctx context.Context, tx pgx.Tx, payment []byte, renewID *
 
 	if renewID != nil {
 		var current time.Time
-		err := tx.QueryRow(ctx, `SELECT expires_at FROM passes WHERE id = $1 FOR UPDATE`, *renewID).Scan(&current)
+		err := tx.QueryRow(ctx, `SELECT expires_at FROM passes WHERE id = $1`, *renewID).Scan(&current)
 		switch {
 		case err == nil:
-			res.ExpiresAt = c.Expiry(maxTime(current, c.Now))
+			base := maxTime(current, c.Now)
+			res.ExpiresAt = passExpiry(base, c.Days)
 			res.State = orderRenewed
 			if _, err := tx.Exec(ctx, `UPDATE passes SET expires_at = $2 WHERE id = $1`, *renewID, res.ExpiresAt); err != nil {
 				return res, err
@@ -871,7 +963,9 @@ func completePassOrder(ctx context.Context, tx pgx.Tx, payment []byte, renewID *
 					return res, err
 				}
 			}
-			_, err = tx.Exec(ctx, `INSERT INTO pass_payments (payment_hash, pass_id) VALUES ($1, $2)`, payment, *renewID)
+			_, err = tx.Exec(ctx, `
+				INSERT INTO pass_payments (payment_hash, pass_id, days, origin) VALUES ($1, $2, $3, false)`,
+				payment, *renewID, termDays(base, res.ExpiresAt))
 			return res, err
 		case !errors.Is(err, pgx.ErrNoRows):
 			return res, err
@@ -879,14 +973,16 @@ func completePassOrder(ctx context.Context, tx pgx.Tx, payment []byte, renewID *
 	}
 
 	res.State = orderIssued
-	res.ExpiresAt = c.Expiry(c.Now)
+	res.ExpiresAt = passExpiry(c.Now, c.Days)
 	var id int64
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO passes (token_hash, expires_at) VALUES ($1, $2) RETURNING id`,
 		c.TokenHash, res.ExpiresAt).Scan(&id); err != nil {
 		return res, err
 	}
-	_, err = tx.Exec(ctx, `INSERT INTO pass_payments (payment_hash, pass_id) VALUES ($1, $2)`, payment, id)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO pass_payments (payment_hash, pass_id, days, origin) VALUES ($1, $2, $3, true)`,
+		payment, id, termDays(c.Now, res.ExpiresAt))
 	return res, err
 }
 
@@ -897,41 +993,81 @@ func maxTime(a, b time.Time) time.Time {
 	return b
 }
 
-// revokePassPayment cancels whatever a refunded or disputed payment bought:
-// the Pass it paid for or renewed, with every other payment on it, or the
-// order still waiting to be collected. The payment is remembered for a month
-// either way, so a late "paid" event for it cannot reopen what was cancelled.
-// It reports whether anything was cancelled.
-func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now time.Time) (bool, error) {
-	var cancelled int64
-	err := pgx.BeginFunc(ctx, s.pool, func(tx pgx.Tx) error {
-		tag, err := tx.Exec(ctx, `
-			DELETE FROM passes WHERE id IN (SELECT pass_id FROM pass_payments WHERE payment_hash = $1)`, paymentHash)
+// What revoking a payment undid.
+type revocation int
+
+const (
+	revokedNothing revocation = iota // nothing of the payment's was left to undo
+	revokedOrder                     // an order not yet collected
+	revokedTerm                      // the payment's term, from a Pass that goes on
+	revokedPass                      // the Pass, whose last term it was
+)
+
+// revokePassPayment undoes what a refunded or disputed payment bought: the
+// order still waiting to be collected, or the term it added to a Pass. A Pass
+// left with nothing of its time to come, because that was its only term or
+// the terms after it were refunded too, is deleted. A refund of one renewal
+// therefore costs the holder that renewal and nothing else, and somebody who
+// renews another person's Pass and disputes the payment takes back only what
+// they gave.
+//
+// The payment is remembered for a month either way, so a late "paid" event
+// for it cannot reopen what was undone.
+func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now time.Time) (revocation, error) {
+	var res revocation
+	err := s.passTx(ctx, func(tx pgx.Tx) error {
+		res = revokedNothing
+		tag, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE payment_hash = $1`, paymentHash)
 		if err != nil {
 			return err
 		}
-		cancelled += tag.RowsAffected()
-		tag, err = tx.Exec(ctx, `DELETE FROM pass_orders WHERE payment_hash = $1`, paymentHash)
-		if err != nil {
-			return err
+		if tag.RowsAffected() > 0 {
+			res = revokedOrder
 		}
-		cancelled += tag.RowsAffected()
+		var passID int64
+		var days int
+		err = tx.QueryRow(ctx, `
+			DELETE FROM pass_payments WHERE payment_hash = $1 RETURNING pass_id, days`,
+			paymentHash).Scan(&passID, &days)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
+			return err
+		default:
+			var expires time.Time
+			if err := tx.QueryRow(ctx, `SELECT expires_at FROM passes WHERE id = $1`, passID).Scan(&expires); err != nil {
+				return err
+			}
+			expires = expires.UTC().AddDate(0, 0, -days)
+			if expires.After(now) {
+				res = revokedTerm
+				_, err = tx.Exec(ctx, `UPDATE passes SET expires_at = $2 WHERE id = $1`, passID, expires)
+			} else {
+				res = revokedPass
+				_, err = tx.Exec(ctx, `DELETE FROM passes WHERE id = $1`, passID)
+			}
+			if err != nil {
+				return err
+			}
+		}
 		_, err = tx.Exec(ctx, `
 			INSERT INTO pass_revocations (payment_hash, expires_at) VALUES ($1, $2)
 			ON CONFLICT (payment_hash) DO UPDATE SET expires_at = EXCLUDED.expires_at`,
 			paymentHash, now.Add(passRevocationTTL))
 		return err
 	})
-	return cancelled > 0, err
+	return res, err
 }
 
 // prunePasses deletes what has outlived its use: orders past their week,
 // remembered refunds past their month, and Passes a month past expiry, which
 // can no longer be renewed and are bought anew instead.
 func (s *Store) prunePasses(ctx context.Context, now time.Time) error {
-	_, err := s.pool.Exec(ctx, `
-		WITH o AS (DELETE FROM pass_orders WHERE expires_at <= $1),
-		     r AS (DELETE FROM pass_revocations WHERE expires_at <= $1)
-		DELETE FROM passes WHERE expires_at <= $2`, now, now.Add(-passExpiredGrace))
-	return err
+	return s.passTx(ctx, func(tx pgx.Tx) error {
+		_, err := tx.Exec(ctx, `
+			WITH o AS (DELETE FROM pass_orders WHERE expires_at <= $1),
+			     r AS (DELETE FROM pass_revocations WHERE expires_at <= $1)
+			DELETE FROM passes WHERE expires_at <= $2`, now, now.Add(-passExpiredGrace))
+		return err
+	})
 }

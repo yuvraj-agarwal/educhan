@@ -347,8 +347,9 @@ the server secret and the Stripe account can see:
 - that a Pass exists and the day it runs out (`expires_at`, rounded up to a
   UTC day boundary; there is no `created_at`);
 - which Stripe payments bought or renewed it, as `HMAC(EDUCHAN_PASS_SECRET,
-  payment id)`. With Stripe's records beside it, that ties a Pass to whoever
-  paid. This is what lets a refund or a chargeback cancel the Pass, and it is
+  payment id)`, with the term each one bought in days and which one created
+  it. With Stripe's records beside it, that ties a Pass to whoever paid. This
+  is what lets a refund or a chargeback take back what it paid for, and it is
   the sharpest edge of the design.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
@@ -361,12 +362,29 @@ controls; `TestPassTablesCannotBeJoinedToPosts` pins the columns. The webhook
 handler reads a handful of fields and never logs the body, which carries the
 payer's email and name.
 
-**Lost codes, refunds and renewals.** A full refund or a dispute cancels the
-Pass it paid for (a partial refund doesn't). A buyer who lost their code
-writes to the support address on Stripe's receipt, and the owner reissues it
-with `POST /api/pass/reissue` and Stripe's payment id; the old code stops
-working. Renewing from a browser that holds the Pass adds a year to it, from
-its expiry or from today if it has run out, and keeps the code.
+**Renewals and refunds.** Renewing from a browser that holds the Pass keeps
+the code and adds a year to it: exactly a year to a Pass that hasn't run out,
+whose expiry is on a midnight already, and a year from now, rounded up to the
+next midnight UTC, to one that has. A full refund or a dispute (a partial
+refund changes nothing) takes off the term that one payment bought: the days
+it moved the expiry on, rounded up to whole days, so the rounding goes with
+it. A Pass with time left after that goes on, and one with none left is
+cancelled. So refunding a purchase cancels the Pass at once, refunding a
+renewal takes that year off and leaves the rest, refunding the purchase
+leaves the renewals paid after it, and somebody who renews another person's
+Pass and disputes the payment takes back only what they gave. A refunded
+renewal of a Pass that had already run out leaves nothing over, not even the
+rest of the day, and the Pass is gone.
+
+Every change to the Pass tables (an order, a payment, a collection, a
+reissue, a refund, pruning) takes one Postgres advisory lock first
+(`passLockID`), so events that arrive together are applied one after another:
+a refund cannot miss a Pass being collected beside it, and a "paid" cannot
+slip past a refund. Posting with a Pass only reads, and takes no lock.
+
+**Lost codes.** A buyer who lost their code writes to the support address on
+Stripe's receipt, and the owner reissues it with `POST /api/pass/reissue` and
+Stripe's payment id; the old code stops working.
 
 ## Posting identity
 

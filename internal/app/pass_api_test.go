@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
@@ -16,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 const (
@@ -350,7 +353,7 @@ func TestPassPurchase(t *testing.T) {
 	if !passCodeShape(issued.Pass) {
 		t.Fatalf("issued code %q is not XXXXX-XXXXX-XXXXX-XXXXX", issued.Pass)
 	}
-	wantExpiry := nextDayBoundary(time.Now().AddDate(0, 0, 365))
+	wantExpiry := passExpiry(time.Now(), 365)
 	if !issued.ExpiresAt.Equal(wantExpiry) {
 		t.Errorf("expires %v, want %v (a year, rounded up to a day)", issued.ExpiresAt, wantExpiry)
 	}
@@ -471,7 +474,7 @@ func TestPassRenewal(t *testing.T) {
 	p := passServer(t, nil)
 	issued := p.buy("pi_first")
 	// Bring the expiry close, so the renewal is seen to add to it.
-	soon := nextDayBoundary(time.Now().AddDate(0, 0, 10))
+	soon := dayCeil(time.Now().AddDate(0, 0, 10))
 	p.exec(`UPDATE passes SET expires_at = $1`, soon)
 
 	var out passResponse
@@ -484,7 +487,9 @@ func TestPassRenewal(t *testing.T) {
 	if status != http.StatusOK || renewed.Status != "renewed" || renewed.Pass != "" {
 		t.Fatalf("renewal claim: status %d, %+v", status, renewed)
 	}
-	if want := nextDayBoundary(soon.AddDate(0, 0, 365)); !renewed.ExpiresAt.Equal(want) {
+	// A Pass that has not run out gains exactly the term: its expiry is on a
+	// midnight already, so there is nothing to round.
+	if want := soon.AddDate(0, 0, 365); !renewed.ExpiresAt.Equal(want) {
 		t.Fatalf("renewed to %v, want %v", renewed.ExpiresAt, want)
 	}
 	if status, active := p.activate(issued.Pass); status != http.StatusOK || !active.ExpiresAt.Equal(renewed.ExpiresAt) {
@@ -498,18 +503,105 @@ func TestPassRenewal(t *testing.T) {
 	}
 	p.paid(p.checkout(issued.Pass), "pi_late_renewal")
 	if status, out := p.claim(); status != http.StatusOK ||
-		!out.ExpiresAt.Equal(nextDayBoundary(time.Now().AddDate(0, 0, 365))) {
+		!out.ExpiresAt.Equal(dayCeil(time.Now().AddDate(0, 0, 365))) {
 		t.Fatalf("renewing an expired Pass: status %d, %+v", status, out)
 	}
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("the code after renewing an expired Pass: status %d", status)
+	}
+}
 
-	// Refunding a renewal cancels the Pass it renewed.
-	p.webhook(stripeChargeRefunded, map[string]any{"payment_intent": "pi_renewal", "refunded": true})
-	if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
-		t.Fatalf("refunding a renewal left the Pass working: status %d", status)
+// passExpiresAt reads a Pass's stored expiry by its code.
+func (p *passHarness) passExpiresAt(code string) (time.Time, bool) {
+	p.t.Helper()
+	canonical, _ := parsePassCode(code)
+	_, expires, err := p.app.store.passByToken(context.Background(), p.app.passTokenHash(canonical))
+	if err != nil {
+		return time.Time{}, false
+	}
+	return expires, true
+}
+
+func (p *passHarness) refund(paymentIntent string) {
+	p.t.Helper()
+	if status := p.webhook(stripeChargeRefunded, map[string]any{
+		"object": "charge", "payment_intent": paymentIntent, "refunded": true,
+	}); status != http.StatusOK {
+		p.t.Fatalf("refund webhook: status %d", status)
+	}
+}
+
+func (p *passHarness) renew(code, paymentIntent string) passResponse {
+	p.t.Helper()
+	p.paid(p.checkout(code), paymentIntent)
+	status, out := p.claim()
+	if status != http.StatusOK || out.Status != "renewed" {
+		p.t.Fatalf("renewal claim: status %d, %+v", status, out)
+	}
+	return out
+}
+
+// TestPassRefundTakesOffOneTerm holds a refund or a dispute to the payment it
+// is for: it takes that payment's term off the Pass, and a Pass is cancelled
+// only when nothing of its time is left.
+func TestPassRefundTakesOffOneTerm(t *testing.T) {
+	p := passServer(t, nil)
+	issued := p.buy("pi_bought")
+	bought, _ := p.passExpiresAt(issued.Pass)
+	p.renew(issued.Pass, "pi_renewed")
+	p.renew(issued.Pass, "pi_renewed_again")
+	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(bought.AddDate(0, 0, 730)) {
+		t.Fatalf("two renewals took the Pass to %v, want %v", got, bought.AddDate(0, 0, 730))
+	}
+
+	// Refunding the middle renewal takes its year off and leaves the rest.
+	p.refund("pi_renewed")
+	if got, ok := p.passExpiresAt(issued.Pass); !ok || !got.Equal(bought.AddDate(0, 0, 365)) {
+		t.Fatalf("after refunding one renewal the Pass runs to %v (kept: %v), want %v", got, ok, bought.AddDate(0, 0, 365))
+	}
+	// Stripe delivers events more than once; a repeat takes nothing more.
+	p.refund("pi_renewed")
+	if got, _ := p.passExpiresAt(issued.Pass); !got.Equal(bought.AddDate(0, 0, 365)) {
+		t.Fatalf("a repeated refund took more off: %v", got)
+	}
+
+	// Refunding the purchase itself leaves the renewal paid after it.
+	p.refund("pi_bought")
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("refunding the purchase wiped the renewal paid after it: status %d", status)
+	}
+	// The last term refunded, nothing is left, and the Pass goes with it.
+	p.refund("pi_renewed_again")
+	if status, out := p.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a Pass with every term refunded still works: status %d, %+v", status, out)
 	}
 	var left int
 	if err := p.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM pass_payments`).Scan(&left); err != nil || left != 0 {
 		t.Fatalf("payments of a cancelled Pass left behind: %d (%v)", left, err)
+	}
+
+	// Somebody who renews another person's Pass and then disputes it takes
+	// back only what they gave.
+	victim := p.buy("pi_victim")
+	before, _ := p.passExpiresAt(victim.Pass)
+	p.renew(victim.Pass, "pi_gift")
+	p.webhook(stripeDisputeCreated, map[string]any{"object": "dispute", "payment_intent": "pi_gift"})
+	if got, ok := p.passExpiresAt(victim.Pass); !ok || !got.Equal(before) {
+		t.Fatalf("a disputed renewal left the Pass at %v (kept: %v), want %v as before it", got, ok, before)
+	}
+	if status, _ := p.activate(victim.Pass); status != http.StatusOK {
+		t.Fatalf("a disputed renewal cost the holder their Pass: status %d", status)
+	}
+
+	// A renewal of a Pass that had run out, refunded, leaves nothing over: the
+	// part of a day the expiry was rounded up by goes with it.
+	lapsed := p.buy("pi_lapsed")
+	p.exec(`UPDATE passes SET expires_at = $1 WHERE token_hash = $2`,
+		dayCeil(time.Now()).AddDate(0, 0, -3), p.app.passTokenHash(strings.ReplaceAll(lapsed.Pass, "-", "")))
+	p.renew(lapsed.Pass, "pi_revival")
+	p.refund("pi_revival")
+	if status, _ := p.activate(lapsed.Pass); status != http.StatusForbidden {
+		t.Fatalf("a refunded renewal of a lapsed Pass left it working: status %d", status)
 	}
 }
 
@@ -783,7 +875,7 @@ func TestPassTablesCannotBeJoinedToPosts(t *testing.T) {
 
 	want := map[string][]string{
 		"passes":           {"expires_at", "id", "token_hash"},
-		"pass_payments":    {"pass_id", "payment_hash"},
+		"pass_payments":    {"days", "origin", "pass_id", "payment_hash"},
 		"pass_orders":      {"claim_hash", "expires_at", "payment_hash", "renew_pass_id", "session_hash"},
 		"pass_revocations": {"expires_at", "payment_hash"},
 	}
@@ -812,6 +904,314 @@ func TestPassTablesCannotBeJoinedToPosts(t *testing.T) {
 	for _, column := range h.columns("posts") {
 		if strings.Contains(column, "pass") || strings.Contains(column, "payment") {
 			t.Errorf("posts.%s links a post to a Pass", column)
+		}
+	}
+}
+
+/* Races --------------------------------------------------------------------- */
+
+// The Pass's writes are applied one at a time under one advisory lock
+// (passLockID). These tests take that lock in a transaction of their own,
+// fire the racing requests while it is held, and wait until each is queued
+// behind it, which fails if any of them does not take the lock first. Released,
+// the requests take the lock in the order they asked for it, so each race is
+// run both ways round and its outcome checked for each.
+
+type racedResponse struct {
+	status int
+	body   passResponse
+	err    error
+}
+
+// fire sends req on a goroutine of its own and delivers the answer on the
+// returned channel. Nothing there may fail the test, which only the test's
+// own goroutine can do, so the request is built beforehand.
+func (p *passHarness) fire(req *http.Request) <-chan racedResponse {
+	done := make(chan racedResponse, 1)
+	go func() {
+		res, err := p.http.Do(req)
+		if err != nil {
+			done <- racedResponse{err: err}
+			return
+		}
+		defer res.Body.Close()
+		var out passResponse
+		_ = json.NewDecoder(res.Body).Decode(&out)
+		done <- racedResponse{status: res.StatusCode, body: out}
+	}()
+	return done
+}
+
+func (p *passHarness) request(path string, body any, header http.Header) *http.Request {
+	p.t.Helper()
+	encoded, err := json.Marshal(body)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, p.base+path, bytes.NewReader(encoded))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range header {
+		req.Header[k] = v
+	}
+	return req
+}
+
+func (p *passHarness) claimRequest() *http.Request {
+	return p.request("/api/pass/claim", map[string]any{}, nil)
+}
+
+func (p *passHarness) webhookRequest(eventType string, object map[string]any) *http.Request {
+	p.t.Helper()
+	body, err := json.Marshal(map[string]any{
+		"id": "evt_test", "object": "event", "type": eventType,
+		"data": map[string]any{"object": object},
+	})
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost, p.base+"/api/pass/stripe-webhook", bytes.NewReader(body))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Stripe-Signature", signStripe(body, testWebhookSecret, time.Now()))
+	return req
+}
+
+func (p *passHarness) paidRequest(session, paymentIntent string) *http.Request {
+	return p.webhookRequest(stripeCheckoutCompleted, map[string]any{
+		"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "paid", "payment_intent": paymentIntent,
+	})
+}
+
+func (p *passHarness) refundRequest(paymentIntent string) *http.Request {
+	return p.webhookRequest(stripeChargeRefunded, map[string]any{
+		"object": "charge", "payment_intent": paymentIntent, "refunded": true,
+	})
+}
+
+// passLock is the Pass lock held by the test.
+type passLock struct {
+	p    *passHarness
+	conn *pgx.Conn
+	tx   pgx.Tx
+	pid  int
+}
+
+func (p *passHarness) holdPassLock() *passLock {
+	p.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, p.app.cfg.DatabaseURL)
+	if err != nil {
+		p.t.Fatalf("connect: %v", err)
+	}
+	tx, err := conn.Begin(ctx)
+	if err != nil {
+		p.t.Fatalf("begin: %v", err)
+	}
+	l := &passLock{p: p, conn: conn, tx: tx}
+	p.t.Cleanup(l.release)
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&l.pid); err != nil {
+		p.t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock($1, hashtext(current_schema()))`, passLockID); err != nil {
+		p.t.Fatalf("take the Pass lock: %v", err)
+	}
+	return l
+}
+
+// queued waits until n requests are waiting on the lock: the one holding it,
+// or another waiting ahead of them.
+func (l *passLock) queued(n int, what string) {
+	l.p.t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var waiting int
+		// Asked on the holder's own connection: the requests waiting have taken
+		// connections from the server's pool, which may have none left.
+		if err := l.tx.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_locks
+			WHERE locktype = 'advisory' AND NOT granted
+			  AND classid = $1::int::oid AND objid = hashtext(current_schema())::oid`,
+			passLockID).Scan(&waiting); err != nil {
+			l.p.t.Fatalf("look for requests waiting on the Pass lock: %v", err)
+		}
+		if waiting >= n {
+			return
+		}
+		if time.Now().After(deadline) {
+			l.p.t.Fatalf("%s never waited on the Pass lock (%d of %d waiting)", what, waiting, n)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func (l *passLock) release() {
+	if l.conn == nil {
+		return
+	}
+	ctx := context.Background()
+	_ = l.tx.Rollback(ctx)
+	_ = l.conn.Close(ctx)
+	l.conn = nil
+}
+
+// race fires two requests in turn behind the Pass lock, so they run in that
+// order, and returns their answers.
+func (p *passHarness) race(first, second *http.Request, names [2]string) (racedResponse, racedResponse) {
+	p.t.Helper()
+	lock := p.holdPassLock()
+	a := p.fire(first)
+	lock.queued(1, names[0])
+	b := p.fire(second)
+	lock.queued(2, names[1])
+	lock.release()
+	ra, rb := <-a, <-b
+	for i, r := range []racedResponse{ra, rb} {
+		if r.err != nil || r.status >= 500 {
+			p.t.Fatalf("%s: status %d, %v (%s)", names[i], r.status, r.err, r.body.Error)
+		}
+	}
+	return ra, rb
+}
+
+func (p *passHarness) count(table string) int {
+	p.t.Helper()
+	var n int
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM `+table).Scan(&n); err != nil {
+		p.t.Fatalf("count %s: %v", table, err)
+	}
+	return n
+}
+
+// A refund racing the claim of what it refunds: whichever goes first, the
+// refunded payment ends up buying nothing.
+func TestPassRefundRacingAClaim(t *testing.T) {
+	for _, claimFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("claim first %v", claimFirst), func(t *testing.T) {
+			p := passServer(t, nil)
+			p.paid(p.checkout(""), "pi_race")
+			claim, refund := p.claimRequest(), p.refundRequest("pi_race")
+			var claimed racedResponse
+			if claimFirst {
+				claimed, _ = p.race(claim, refund, [2]string{"the claim", "the refund"})
+				if claimed.status != http.StatusOK || claimed.body.Status != "issued" {
+					t.Fatalf("claim ahead of the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+				if status, _ := p.activate(claimed.body.Pass); status != http.StatusForbidden {
+					t.Fatalf("the refunded Pass still works: status %d", status)
+				}
+			} else {
+				_, claimed = p.race(refund, claim, [2]string{"the refund", "the claim"})
+				if claimed.status != http.StatusBadRequest {
+					t.Fatalf("claim behind the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+			}
+			for _, table := range []string{"passes", "pass_payments", "pass_orders"} {
+				if n := p.count(table); n != 0 {
+					t.Errorf("%d rows left in %s after a refund", n, table)
+				}
+			}
+		})
+	}
+}
+
+// A refund racing the "paid" event of the same payment: whichever goes
+// first, no Pass comes of it.
+func TestPassPaymentRacingARefund(t *testing.T) {
+	for _, paidFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("paid first %v", paidFirst), func(t *testing.T) {
+			p := passServer(t, nil)
+			session := p.checkout("")
+			paid, refund := p.paidRequest(session, "pi_race"), p.refundRequest("pi_race")
+			if paidFirst {
+				p.race(paid, refund, [2]string{"the paid event", "the refund"})
+			} else {
+				p.race(refund, paid, [2]string{"the refund", "the paid event"})
+			}
+			status, out := p.claim()
+			if status == http.StatusOK || p.count("passes") != 0 {
+				t.Fatalf("a refunded payment was collected: status %d, %+v", status, out)
+			}
+			if p.count("pass_revocations") != 1 {
+				t.Fatal("the refund was not remembered")
+			}
+		})
+	}
+}
+
+// Collecting a renewal racing a refund of the Pass it renews: it once
+// deadlocked, and whichever goes first now, each payment keeps its own term.
+func TestPassRenewalRacingARefund(t *testing.T) {
+	for _, claimFirst := range []bool{true, false} {
+		t.Run(fmt.Sprintf("claim first %v", claimFirst), func(t *testing.T) {
+			p := passServer(t, nil)
+			issued := p.buy("pi_origin")
+			bought, _ := p.passExpiresAt(issued.Pass)
+			p.paid(p.checkout(issued.Pass), "pi_renewal")
+			claim, refund := p.claimRequest(), p.refundRequest("pi_origin")
+			if claimFirst {
+				claimed, _ := p.race(claim, refund, [2]string{"the renewal's claim", "the refund"})
+				if claimed.status != http.StatusOK || claimed.body.Status != "renewed" {
+					t.Fatalf("renewal ahead of the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+				// The renewal's year stands; the purchase's is gone.
+				got, ok := p.passExpiresAt(issued.Pass)
+				if !ok || !got.After(time.Now()) || !got.Before(bought.AddDate(0, 0, 365)) {
+					t.Fatalf("after the refund the Pass runs to %v (kept: %v); want the renewal's year only", got, ok)
+				}
+			} else {
+				_, claimed := p.race(refund, claim, [2]string{"the refund", "the renewal's claim"})
+				// The Pass it renewed is gone, so the renewal is a Pass of its own.
+				if claimed.status != http.StatusOK || claimed.body.Status != "issued" {
+					t.Fatalf("renewal behind the refund: status %d, %+v", claimed.status, claimed.body)
+				}
+				if status, _ := p.activate(issued.Pass); status != http.StatusForbidden {
+					t.Fatalf("the refunded Pass still works: status %d", status)
+				}
+				if status, _ := p.activate(claimed.body.Pass); status != http.StatusOK {
+					t.Fatalf("the renewal's own Pass: status %d", status)
+				}
+			}
+		})
+	}
+}
+
+// Every request that writes a Pass table queues for the Pass lock.
+func TestEveryPassWriteTakesThePassLock(t *testing.T) {
+	p := passServer(t, func(cfg *Config) {
+		cfg.ModKey = "mod-key"
+		// Each request waiting on the lock holds a connection.
+		cfg.DBMaxConns = 16
+	})
+	p.buy("pi_reissue")
+	session := p.checkout("")
+	writes := []struct {
+		name string
+		req  *http.Request
+	}{
+		{"a checkout", p.request("/api/pass/checkout", map[string]any{"adult": true}, nil)},
+		{"a claim", p.claimRequest()},
+		{"a paid event", p.paidRequest(session, "pi_paid")},
+		{"a refund", p.refundRequest("pi_refund")},
+		{"a dispute", p.webhookRequest(stripeDisputeCreated, map[string]any{"payment_intent": "pi_dispute"})},
+		{"a reissue", p.request("/api/pass/reissue", map[string]any{"payment_intent": "pi_reissue"},
+			http.Header{modKeyHeader: {"mod-key"}})},
+	}
+	lock := p.holdPassLock()
+	var answers []<-chan racedResponse
+	for i, w := range writes {
+		answers = append(answers, p.fire(w.req))
+		lock.queued(i+1, w.name)
+	}
+	lock.release()
+	for i, a := range answers {
+		if r := <-a; r.err != nil || r.status >= 500 {
+			t.Errorf("%s: status %d, %v", writes[i].name, r.status, r.err)
 		}
 	}
 }
