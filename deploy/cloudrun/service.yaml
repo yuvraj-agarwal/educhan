@@ -98,16 +98,23 @@ spec:
               value: "5"
             - name: EDUCHAN_UPLOAD_COOLDOWN
               value: "15"
+            # At most 66060288 (63 MiB): the server refuses to start above it.
             - name: EDUCHAN_MAX_UPLOAD_BYTES
               value: "8388608"
-            # Image posts are refused until originals are stripped of metadata
-            # and scanned before storage. Off is the default; it is spelled out
-            # so turning it on is a visible change.
+            # Image posts are refused until uploads are scanned before storage
+            # (they are already stripped of metadata). Off is the default; it
+            # is spelled out so turning it on is a visible change.
             - name: EDUCHAN_UPLOADS_ENABLED
               value: "false"
             # Per-instance pool cap; see the maxScale note above.
             - name: EDUCHAN_DB_MAX_CONNS
               value: "3"
+            # The Go runtime's soft memory limit, about 80% of the memory limit
+            # above. The server budgets its image work to fit 512Mi, and this
+            # makes the collector hand memory back before the instance is
+            # killed. Raise it with the memory (800MiB at 1Gi).
+            - name: GOMEMLIMIT
+              value: 400MiB
           startupProbe:
             httpGet:
               path: /healthz

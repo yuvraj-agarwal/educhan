@@ -11,8 +11,8 @@
 # moderation key.
 #
 # What it leaves switched off, on purpose:
-#   - image uploads (EDUCHAN_UPLOADS_ENABLED=false): images are not yet stripped
-#     of metadata or scanned;
+#   - image uploads (EDUCHAN_UPLOADS_ENABLED=false): images are stripped of
+#     their metadata but not yet scanned;
 #   - institutional verification (no EDUCHAN_VERIFY_SECRET): there is no real
 #     mail sender yet, and the development one would print addresses into
 #     Cloud Logging.
@@ -205,6 +205,9 @@ else
   PUBLIC_ACCESS=(--allow-unauthenticated)
 fi
 
+# GOMEMLIMIT: the server's image work is budgeted to fit 512 MiB, but only if
+# the Go runtime hands memory back before the instance is killed; about 80% of
+# --memory (deploy/README.md section 4).
 step "Deploying the Cloud Run service"
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
@@ -212,7 +215,7 @@ gcloud run deploy "$SERVICE" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3,GOMEMLIMIT=400MiB" \
   --cpu 1 --memory 512Mi --concurrency 80 \
   --min-instances "$MIN_INSTANCES" --max-instances 4 \
   "${PUBLIC_ACCESS[@]}"
