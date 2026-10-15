@@ -1443,3 +1443,44 @@ func insertAttachment(ctx context.Context, tx pgx.Tx, postID int64, in *newAttac
 		Spoiler:     in.Spoiler,
 	}, nil
 }
+
+/* Captcha ------------------------------------------------------------------ */
+
+const (
+	// captchaPruneMargin is how long after its challenge expires a spent
+	// answer is still kept. An instance refuses a challenge once its own clock
+	// passes the expiry; an instance whose clock ran ahead must not delete the
+	// row while another, behind it, would still accept that answer as fresh.
+	captchaPruneMargin = time.Minute
+	// captchaPruneBatch caps the spent answers one spend deletes. Each spend
+	// adds one, so a batch of more than one keeps the table to the answers of
+	// the last half hour or so.
+	captchaPruneBatch = 64
+)
+
+// SpendCaptcha records a captcha challenge as used, reporting false when it
+// already was. The insert and the uniqueness check are one statement, so of two
+// requests racing with the same answer exactly one gets true.
+//
+// Spent rows are pruned here rather than on a timer: a row is only kept until
+// shortly after its challenge would have expired anyway, and each spend first
+// deletes a batch of the ones past that. The cut-off is by the server's clock,
+// the one that decided the challenge was still good. SKIP LOCKED leaves rows
+// another spend is already deleting to it, so posts arriving together never
+// queue behind each other's pruning.
+func (s *Store) SpendCaptcha(ctx context.Context, key []byte, expires, now time.Time) (bool, error) {
+	if _, err := s.pool.Exec(ctx, `
+		DELETE FROM captcha_spent WHERE signature_hash IN (
+			SELECT signature_hash FROM captcha_spent WHERE expires_at < $1
+			LIMIT $2 FOR UPDATE SKIP LOCKED)`,
+		now.Add(-captchaPruneMargin), captchaPruneBatch); err != nil {
+		return false, fmt.Errorf("prune spent captchas: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)
+		ON CONFLICT (signature_hash) DO NOTHING`, key, expires)
+	if err != nil {
+		return false, fmt.Errorf("spend captcha: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}

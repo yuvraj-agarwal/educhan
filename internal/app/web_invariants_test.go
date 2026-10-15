@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The client keeps promises the server cannot check: that the poster key and
@@ -376,5 +377,157 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	offers := strings.Count(view, "${forgetBrowserHTML()}`;")
 	if returns < 4 || offers != returns {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
+	}
+}
+
+// captchaFunctions are the client's captcha, from fetching a challenge to
+// sending an answer.
+var captchaFunctions = []string{
+	"captchaFormNeedsIt", "prepareCaptcha", "captchaAnswer", "dropCaptcha",
+	"solveCaptcha", "runCaptchaWorkers", "sendWithCaptcha",
+}
+
+// A captcha answer is good for one request and kept in memory only: never in
+// storage, a cookie or a draft, where it would outlive the page or be found by
+// the next person at a shared computer. It is set in one place and cleared in
+// one other.
+func TestCaptchaAnswerStaysInMemory(t *testing.T) {
+	script := appScript(t)
+	for _, name := range captchaFunctions {
+		fn := withoutComments(jsFunction(t, script, name))
+		for _, banned := range []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"} {
+			if strings.Contains(fn, banned) {
+				t.Errorf("%s uses %s; the captcha answer stays in memory", name, banned)
+			}
+		}
+	}
+	for _, name := range []string{"captureDraft", "restoreDraft"} {
+		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(fn), "captcha") {
+			t.Errorf("%s handles the captcha; a draft carries what the poster wrote and nothing else", name)
+		}
+	}
+	code := withoutComments(script)
+	if n := strings.Count(code, "captcha.answer = "); n != 2 ||
+		!strings.Contains(jsFunction(t, script, "solveCaptcha"), "captcha.answer = btoa(") ||
+		!strings.Contains(jsFunction(t, script, "dropCaptcha"), `captcha.answer = "";`) {
+		t.Errorf("captcha.answer is assigned %d times; want once in solveCaptcha and once, clearing it, in dropCaptcha", n)
+	}
+}
+
+// A reader who never posts never asks for a captcha: the challenge is fetched
+// in one place, and the only thing that starts a fetch before a request needs
+// it is a reader moving into a box to write in.
+func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	if n := strings.Count(code, `"/api/captcha"`); n != 1 || !strings.Contains(jsFunction(t, script, "solveCaptcha"), `api("/api/captcha")`) {
+		t.Errorf(`"/api/captcha" appears %d times in app.js; want once, in solveCaptcha`, n)
+	}
+	calls := map[string]struct {
+		count int
+		in    []string
+	}{
+		"solveCaptcha(":  {1, []string{"captchaAnswer"}},
+		"captchaAnswer(": {2, []string{"prepareCaptcha", "sendWithCaptcha"}},
+	}
+	for call, want := range calls {
+		// Besides the definition.
+		if n := strings.Count(code, call) - 1; n != want.count {
+			t.Errorf("%s is called %d times in app.js; want %d, in %v", call, n, want.count, want.in)
+		}
+		for _, caller := range want.in {
+			if !strings.Contains(jsFunction(t, script, caller), call) {
+				t.Errorf("%s no longer calls %s", caller, call)
+			}
+		}
+	}
+	focus := jsBlock(t, script, `el.main.addEventListener("focusin", (event) => {`, "});")
+	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 1 || !strings.Contains(focus, "prepareCaptcha()") {
+		t.Errorf("prepareCaptcha() is called %d times in app.js; want once, from the focusin listener", n)
+	}
+	if !strings.Contains(focus, `box.matches("textarea, input[type=text], input[type=email]")`) {
+		t.Error("the focusin listener no longer starts the puzzle only from a box to write in")
+	}
+	for _, name := range []string{"render", "formHTML", "verifyViewHTML", "loadSite"} {
+		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(fn, "Captcha(") {
+			t.Errorf("%s starts the captcha; drawing a page must not", name)
+		}
+	}
+}
+
+// A badged post skips the captcha, so it never fetches a challenge or carries
+// an answer; a code request always needs one when the captcha is on.
+func TestCaptchaIsSkippedOnlyByABadgedPost(t *testing.T) {
+	script := appScript(t)
+	submit := withoutComments(submitHandler(t, script))
+	if !strings.Contains(submit, "() => state.site.captcha && !held,") {
+		t.Error("the submit handler no longer skips the captcha for a badged post, and only for one")
+	}
+	verify := withoutComments(jsFunction(t, script, "submitVerification"))
+	if !strings.Contains(verify, `sendWithCaptcha(
+        () => state.site.captcha,`) {
+		t.Error("a code request no longer always carries an answer when the captcha is on")
+	}
+	needs := withoutComments(jsFunction(t, script, "captchaFormNeedsIt"))
+	if !strings.Contains(needs, "!(badge && badge.checked)") {
+		t.Error("captchaFormNeedsIt no longer leaves a badged post's puzzle unsolved")
+	}
+}
+
+// The client and the server have to agree on the answer's format, its
+// lifetime and the refusals' names, and nothing but a browser would notice if
+// they drifted apart.
+func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	m := regexp.MustCompile(`(?m)^const CAPTCHA_LIFETIME_MS = (\d+) \* 60 \* 1000;$`).FindStringSubmatch(script)
+	if m == nil {
+		t.Fatal("app.js has no CAPTCHA_LIFETIME_MS in minutes; this test reads it")
+	}
+	minutes, _ := strconv.Atoi(m[1])
+	if lifetime := time.Duration(minutes) * time.Minute; lifetime > captchaTTL-time.Minute {
+		t.Errorf("the client uses an answer for %s, but the server takes one for only %s; leave a margin", lifetime, captchaTTL)
+	}
+
+	solve := withoutComments(jsFunction(t, script, "solveCaptcha"))
+	for _, want := range []string{
+		"challenge: { parameters: challenge.parameters, signature: challenge.signature },",
+		"solution: { counter: solution.counter, derivedKey: solution.derivedKey },",
+	} {
+		if !strings.Contains(solve, want) {
+			t.Errorf("solveCaptcha no longer builds the answer as the server decodes it: missing %s", want)
+		}
+	}
+	// captchaKey appends the counter as four big-endian bytes, which is the
+	// worker's uint32 mode.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), `counterMode: "uint32",`) {
+		t.Error(`runCaptchaWorkers no longer asks the worker for counterMode "uint32", the one captchaKey matches`)
+	}
+
+	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
+	if !strings.Contains(send, "err.payload && err.payload.captcha") || !strings.Contains(send, `reason === "`+captchaMissing+`"`) {
+		t.Errorf("sendWithCaptcha no longer reads the refusal's captcha field, or no longer knows %q", captchaMissing)
+	}
+	if !strings.Contains(code, `const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";`) || strings.Count(code, "new Worker(") != 1 ||
+		!strings.Contains(code, "new Worker(CAPTCHA_WORKER_SRC)") {
+		t.Error("app.js starts a worker other than the vendored ALTCHA one")
+	}
+}
+
+// The captcha's worker is a script from /lib/ and its arithmetic is the
+// browser's own Web Crypto, so the policy every response carries needed no
+// exception for it: workers fall back to default-src 'self', and nothing needs
+// eval, WebAssembly or a blob: worker. A widget or a solver that wanted any of
+// those would have to loosen the policy first, and this test with it.
+func TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha(t *testing.T) {
+	if !strings.HasPrefix(contentSecurityPolicy, "default-src 'self';") {
+		t.Errorf("the CSP no longer starts with default-src 'self': %s", contentSecurityPolicy)
+	}
+	for _, banned := range []string{"unsafe-eval", "wasm-unsafe-eval", "blob:", "worker-src", "child-src", "script-src"} {
+		if strings.Contains(contentSecurityPolicy, banned) {
+			t.Errorf("the CSP mentions %s: %s", banned, contentSecurityPolicy)
+		}
 	}
 }

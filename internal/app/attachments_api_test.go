@@ -609,8 +609,8 @@ func TestSiteReportsTheUploadSettings(t *testing.T) {
 				keys = append(keys, key)
 			}
 			sort.Strings(keys)
-			if got := strings.Join(keys, ","); got != "max_upload_bytes,uploads" {
-				t.Errorf("fields = %s, want exactly max_upload_bytes,uploads", got)
+			if got := strings.Join(keys, ","); got != "captcha,max_upload_bytes,uploads" {
+				t.Errorf("fields = %s, want exactly captcha,max_upload_bytes,uploads", got)
 			}
 			var site Site
 			if err := json.Unmarshal(payload, &site); err != nil {

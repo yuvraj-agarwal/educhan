@@ -142,6 +142,11 @@ type verifyRequestBody struct {
 	// 2.14). It is checked and then dropped: no column, no log field and no
 	// credential claim holds it, so the answer is recorded nowhere.
 	Adult bool `json:"adult"`
+	// Captcha is the answer to a captcha challenge. A code request always needs
+	// one when the captcha is on: no badge travels here to skip it, and once a
+	// real mail sender is attached this is the one endpoint that makes the
+	// server send something to an address somebody typed.
+	Captcha string `json:"captcha"`
 }
 
 // handleVerifyRequest checks a submitted address against the allowlist and
@@ -161,6 +166,13 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// starts, nothing is stored and nothing is sent.
 	if !req.Adult {
 		writeError(w, http.StatusBadRequest, adultRequired)
+		return
+	}
+	// Next the captcha, before the address is so much as parsed, so a script
+	// walking a list of addresses solves a puzzle for each. It is spent below,
+	// once both cooldowns have let the request through.
+	ticket, ok := a.checkCaptcha(w, req.Captcha, false)
+	if !ok {
 		return
 	}
 
@@ -184,6 +196,9 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 		{limiter: a.verifyLimiter, key: "ip|" + clientKey},
 		{limiter: a.verifyLimiter, key: "email|" + hex.EncodeToString(emailHash)},
 	}) {
+		return
+	}
+	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
 

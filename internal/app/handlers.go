@@ -25,13 +25,14 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSite reports the server's posting settings: whether images are
-// accepted, and how large one may be. It answers every caller the same way and
-// reads nothing from the request, so it says nothing about who is asking, and
-// asking tells the server nothing either.
+// accepted, how large one may be, and whether posting needs the captcha. It
+// answers every caller the same way and reads nothing from the request, so it
+// says nothing about who is asking, and asking tells the server nothing either.
 func (a *App) handleSite(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, Site{
 		Uploads:        a.cfg.UploadsEnabled,
 		MaxUploadBytes: a.cfg.MaxUploadBytes,
+		Captcha:        a.captchaEnabled(),
 	})
 }
 
@@ -162,10 +163,13 @@ type createThreadRequest struct {
 	// Spoiler asks for the attached image to be hidden until it is clicked. A
 	// JSON post carries no image, so it is accepted and has nothing to apply to.
 	Spoiler bool `json:"spoiler"`
+	// Captcha is the answer to a captcha challenge, when the captcha is on and
+	// the post is not badged.
+	Captcha string `json:"captcha"`
 }
 
 func (r *createThreadRequest) submission() submission {
-	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler}
+	return submission{Subject: r.Subject, Name: r.Name, Body: r.Body, Badge: r.Badge, Spoiler: r.Spoiler, Captcha: r.Captcha}
 }
 
 func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
@@ -197,8 +201,20 @@ func (a *App) handleCreateThread(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// The last refusal before flood control, so a post without a good answer
+	// costs no cooldown. A badged post is exempt: the badge skips the captcha.
+	ticket, ok := a.checkCaptcha(w, sub.Captcha, badge.Label != "")
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.threadLimiter, board, clientKey, sub.Upload != nil)) {
+		return
+	}
+	// Spent once flood control has let the post through, and before its image
+	// is processed: a replayed answer costs the replayer a cooldown and the
+	// server nothing more.
+	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
 
@@ -234,10 +250,12 @@ type createPostRequest struct {
 	Badge bool `json:"badge"`
 	// Spoiler asks for the attached image to be hidden until it is clicked.
 	Spoiler bool `json:"spoiler"`
+	// Captcha is the answer to a captcha challenge, as on a new thread.
+	Captcha string `json:"captcha"`
 }
 
 func (r *createPostRequest) submission() submission {
-	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler}
+	return submission{Name: r.Name, Body: r.Body, Sage: r.Sage, Badge: r.Badge, Spoiler: r.Spoiler, Captcha: r.Captcha}
 }
 
 func (a *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
@@ -290,8 +308,16 @@ func (a *App) createPost(w http.ResponseWriter, r *http.Request, board Board, no
 		a.fail(w, r, err, "could not add post")
 		return
 	}
+	// As for a thread: checked before flood control, spent after it.
+	ticket, ok := a.checkCaptcha(w, sub.Captcha, badge.Label != "")
+	if !ok {
+		return
+	}
 	clientKey := clientIP(r, a.cfg.TrustedProxyHops)
 	if !a.allow(w, a.postCooldowns(a.postLimiter, board, clientKey, sub.Upload != nil)) {
+		return
+	}
+	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}
 
