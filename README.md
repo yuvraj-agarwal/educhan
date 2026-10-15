@@ -427,7 +427,7 @@ server that would refuse what it sends.
   of 160 KiB can make it hold about 170 MiB as it decodes, and a larger one more. There
   is no way to tell a benign file from a crafted one without decoding it, so a lossless
   WebP whose picture data comes to more than 224 KiB is refused from its header — less
-  for a larger picture, about 205 KiB at a megapixel and 130 KiB at nine, and a little
+  for a larger picture, about 203 KiB at a megapixel and 128 KiB at nine, and a little
   less in a larger upload — and so is a lossy WebP whose compressed transparency alone
   comes to that much. A small lossless picture (an icon or a sticker) is still stored,
   and so is an ordinary cut-out, whose transparency is a few hundred bytes to a few

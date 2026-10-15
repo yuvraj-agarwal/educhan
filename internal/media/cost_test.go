@@ -274,24 +274,32 @@ func greyQuadrants(w, h int) *image.Gray {
 // components named R, G and B), and the WebPs at Pillow's defaults. The
 // lossless WebP is a grid of nine colours and the transparent one has eight
 // levels of alpha in vertical bands, the first clear, which libwebp writes as
-// a colour index packed two pixels to the byte: the dearest way to decode
-// either. cost-411.jpg is made with ImageMagick (-sampling-factor 4x1
-// -quality 90), because Pillow does not write 4:1:1. The GIF past its canvas
-// has a 3200×2400 interlaced frame on a canvas of 64×64, so that the copy
-// its rows are put in order in is charged on the frame, not the canvas. An
-// opaque lossy WebP is
-// charged for its planes and two copies of its file (the strip's and the
-// decoder's), so it comes three ways, each term megabytes over the others
-// somewhere: 2400×1800 as Pillow made it, whose planes are megabytes and
-// whose file is not; 144×48 with 8 MiB more at the end of its bitstream
-// (paddedBitstream), whose two copies are megabytes and whose planes are not;
-// and 2400×1800 padded, where both are. The PNG strip is a row of 524288
-// grey pixels four deep, whose thumbnail scaler holds tables of weights of
-// 64 bytes for each of them (thumbScratch); turned on its side, it is stored
-// four pixels wide, so its thumbnail is a pixel wide and the scaler's buffer
-// is 32 bytes for every one of its rows as well, which only reading the
-// orientation charges. Those marked "o6" carry an EXIF orientation of 6, so
-// they are turned on their side too, and "o3" one of 3, turned around.
+// a colour index packed two pixels to the byte. cost-411.jpg is made with
+// ImageMagick (-sampling-factor 4x1 -quality 90), because Pillow does not
+// write 4:1:1. The dearest lossless picture to decode adds what libwebp did
+// not need for those two, a predictor and a cross-colour transform of 4×4
+// tiles before the colour index, whose images are held beside the packed
+// picture and the unpacked one: "WebP lossless, unpacked" (unpackedWebP) is
+// 42 bytes that decode to 25 megapixels and hold 6.5 bytes a pixel, 12 MiB
+// of it the transforms' images. It is four times as wide as it is tall
+// because the thumbnail scaler's scratch grows with the shorter side: as a
+// square, the scratch and the encoder's output beneath it would cost more
+// than decoding it does, and hide a term of its decoding from the cost of the
+// whole. The GIF past its canvas has a 3200×2400 interlaced frame on a canvas
+// of 64×64, so that the copy its rows are put in order in is charged on the
+// frame, not the canvas. An opaque lossy WebP is charged for its planes and
+// two copies of its file (the strip's and the decoder's), so it comes three
+// ways, each term megabytes over the others somewhere: 2400×1800 as Pillow
+// made it, whose planes are megabytes and whose file is not; 144×48 with 8 MiB
+// more at the end of its bitstream (paddedBitstream), whose two copies are
+// megabytes and whose planes are not; and 2400×1800 padded, where both are.
+// The PNG strip is a row of 524288 grey pixels four deep, whose thumbnail
+// scaler holds tables of weights of 64 bytes for each of them (thumbScratch);
+// turned on its side, it is stored four pixels wide, so its thumbnail is a
+// pixel wide and the scaler's buffer is 32 bytes for every one of its rows as
+// well, which only reading the orientation charges. Those marked "o6" carry an
+// EXIF orientation of 6, so they are turned on their side too, and "o3"
+// one of 3, turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -330,6 +338,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"WebP lossy, padded":           paddedBitstream(t, readTestdata(t, "cost-lossy.webp"), 8<<20),
 		"WebP lossy with alpha":        readTestdata(t, "cost-alpha.webp"),
 		"WebP lossless":                readTestdata(t, "cost-lossless.webp"),
+		"WebP lossless, unpacked":      unpackedWebP(10000, 2500),
 		"WebP of many chunks":          manyChunkWebP(t, readTestdata(t, "webp-swatches.webp"), 200000),
 	}
 }

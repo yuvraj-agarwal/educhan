@@ -85,6 +85,36 @@ func (w *vp8lBitWriter) fullTree() {
 	}
 }
 
+// header writes the five-byte VP8L header a VP8L chunk starts with, for a
+// w×h picture.
+func (b *vp8lBitWriter) header(w, h int) {
+	b.put(0x2f, 8)         // VP8L magic
+	b.put(uint32(w-1), 14) // width-1
+	b.put(uint32(h-1), 14) // height-1
+	b.put(0, 1)            // alpha hint
+	b.put(0, 3)            // version
+}
+
+// oneColour writes an image other than the picture itself — a transform's,
+// a palette, a meta-image — every pixel of it zero: no colour cache, and five
+// one-symbol trees, whose codes take no bits, so it is a few bytes whatever
+// its size.
+func (b *vp8lBitWriter) oneColour() {
+	b.put(0, 1)
+	for range 5 {
+		b.simpleTree(0)
+	}
+}
+
+// tileTransform writes a predictor (0) or cross-colour (1) transform of 4×4
+// tiles, the smallest, with an image of one colour: a pixel for every tile.
+func (b *vp8lBitWriter) tileTransform(transform uint32) {
+	b.put(1, 1) // a transform follows
+	b.put(transform, 2)
+	b.put(0, 3) // 4×4 tiles
+	b.oneColour()
+}
+
 func repeated(v uint32, n int) []uint32 {
 	s := make([]uint32, n)
 	for i := range s {
@@ -177,7 +207,7 @@ func webpOfBitstream(kind string, w, h, n, size int) []byte {
 // file, which the decoder is never handed. So a bitstream up to the line the
 // README gives is accepted and one past it refused from the header, whatever
 // else the upload carries: the line is 224 KiB for a small picture, about
-// 205 KiB at a megapixel and 130 KiB at nine, where the pixels take more of
+// 203 KiB at a megapixel and 128 KiB at nine, where the pixels take more of
 // the budget, and a little lower in a larger upload. Decoding a small
 // bitstream is charged a small share of the groups; the groups it may name
 // and never give are charged in full whatever its size (vp8lStopCost,
@@ -203,7 +233,7 @@ func TestVP8LHuffmanMemoryIsCharged(t *testing.T) {
 			{64, 225 * kib, ErrImageTooLarge},
 			{1000, 200 * kib, nil},
 			{1000, 215 * kib, ErrImageTooLarge},
-			{3000, 128 * kib, nil},
+			{3000, 125 * kib, nil},
 			{3000, 145 * kib, ErrImageTooLarge},
 		} {
 			if _, err := Inspect(webpOfBitstream(kind, c.side, c.side, c.n, 0)); !errors.Is(err, c.want) {
@@ -342,25 +372,11 @@ func completedCostOf(t *testing.T, data []byte) int64 {
 func stoppedVP8L(w, h int, header, subImages bool) []byte {
 	b := &vp8lBitWriter{}
 	if header {
-		b.put(0x2f, 8)         // VP8L magic
-		b.put(uint32(w-1), 14) // width-1
-		b.put(uint32(h-1), 14) // height-1
-		b.put(0, 1)            // alpha hint
-		b.put(0, 3)            // version
-	}
-	oneColour := func() { // a sub-image: no colour cache, five one-symbol trees
-		b.put(0, 1)
-		for range 5 {
-			b.simpleTree(0)
-		}
+		b.header(w, h)
 	}
 	if subImages {
-		for _, transform := range []uint32{0, 1} { // predictor, cross-colour
-			b.put(1, 1) // a transform follows
-			b.put(transform, 2)
-			b.put(0, 3) // 4×4 tiles, the smallest
-			oneColour()
-		}
+		b.tileTransform(0) // predictor
+		b.tileTransform(1) // cross-colour
 	}
 	b.put(0, 1)        // no more transforms
 	b.put(0, 1)        // no colour cache
@@ -393,6 +409,36 @@ func stoppedWebP(kind string, w, h int, subImages bool) []byte {
 		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: plane}, riffChunk{id: "VP8 ", payload: frame})
 	}
 	panic("stoppedWebP: unknown kind " + kind)
+}
+
+// unpackedWebP is a w×h lossless WebP that makes golang.org/x/image's vp8l
+// decoder hold the most it can for a picture it decodes to its end
+// (vp8lPixels): a predictor and a cross-colour transform of 4×4 tiles, then a
+// colour index of 16 colours, which packs the picture two pixels to every
+// four bytes and is unpacked into a second picture while the packed one is
+// held, and a meta-image of 4×4 tiles of the packed picture naming one group.
+// Every image in it is of one colour, written with one-symbol trees whose
+// codes take no bits, so it is a few dozen bytes whatever its resolution. It
+// decodes to opaque black: the palette's colours are all transparent black,
+// and the predictor adds full alpha to each.
+func unpackedWebP(w, h int) []byte {
+	b := &vp8lBitWriter{}
+	b.header(w, h)
+	b.tileTransform(0) // predictor
+	b.tileTransform(1) // cross-colour
+	b.put(1, 1)        // a transform follows
+	b.put(3, 2)        // colour indexing
+	b.put(16-1, 8)     // of 16 colours, the most packed two pixels to four bytes
+	b.oneColour()      // the palette
+	b.put(0, 1)        // no more transforms
+	b.put(0, 1)        // no colour cache
+	b.put(1, 1)        // a meta-image
+	b.put(0, 3)        // of 4×4 tiles
+	b.oneColour()      // naming group 0 for every tile
+	for range 5 {      // group 0, whose every pixel is index 0
+		b.simpleTree(0)
+	}
+	return webpFile(riffChunk{id: "VP8L", payload: b.bytes()})
 }
 
 // heapAllocs is everything the heap has allocated since the process began.

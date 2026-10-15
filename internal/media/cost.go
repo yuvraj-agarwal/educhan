@@ -526,19 +526,16 @@ func pngInterlaced(data []byte) bool {
 	return len(data) < 29 || data[28] != 0
 }
 
-// webpPhases models golang.org/x/image/webp and what sanitizeWebP does
-// after it, starting from stripWebP's copy of the file. A lossy picture
-// decodes to YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a
-// pixel, from a copy the decoder makes of its compressed partitions. An
-// opaque one is taken to full range in those planes (expandLimitedRange) and
-// encoded from them as a JPEG; one with an alpha plane is converted to NRGBA,
-// 4 bytes a pixel, for its PNG (lossyWebPToNRGBA), which the header cannot
-// tell apart from one whose alpha turns out opaque throughout, so it is
-// charged either way. A lossless picture decodes to NRGBA, 4
-// bytes a pixel, but one written with a colour index of 16 colours or fewer
-// is decoded packed first, at least two pixels to every four bytes, and
-// unpacked into a second picture: 6 bytes a pixel at most (vp8l's
-// inverseColorIndexing). An alpha plane, decoded first, is a byte a pixel,
+// webpPhases models golang.org/x/image/webp and what sanitizeWebP does after
+// it, starting from stripWebP's copy of the file. A lossy picture decodes to
+// YCbCr at its size in whole 16-pixel macroblocks, 1.5 bytes a pixel, from a
+// copy the decoder makes of its compressed partitions. An opaque one is taken
+// to full range in those planes (expandLimitedRange) and encoded from them as
+// a JPEG; one with an alpha plane is converted to NRGBA, 4 bytes a pixel, for
+// its PNG (lossyWebPToNRGBA), which the header cannot tell apart from one
+// whose alpha turns out opaque throughout, so it is charged either way. A
+// lossless picture decodes to NRGBA, 4 bytes a pixel, and holds more than that
+// on the way (vp8lPixels). An alpha plane, decoded first, is a byte a pixel,
 // but a compressed one is decoded as a lossless picture first and copied out
 // of it, which is no more than the lossless picture's own peak.
 //
@@ -555,15 +552,15 @@ func webpPhases(data []byte, w, h int64) []phase {
 	strip := phase{first: stripped, alloc: stripped, after: stripped}
 	lossy := phase{first: planes + stripped, alloc: planes + stripped, after: planes}
 	lossless, alpha, bitstream := webpPicture(data)
-	v := vp8lMemory(bitstream)
+	decode := vp8lMemory(bitstream) + vp8lPixels(w, h)
 	switch {
 	case lossless:
-		return []phase{strip, {first: v + 6*px, alloc: v + 6*px, after: 4 * px}}
+		return []phase{strip, {first: decode, alloc: decode, after: 4 * px}}
 	case alpha:
 		lossy.after += px
 		return []phase{
 			strip,
-			{first: v + 6*px, alloc: v + 6*px, after: stripped + px},
+			{first: decode, alloc: decode, after: stripped + px},
 			lossy,
 			// The picture is converted from its YCbCr planes and alpha
 			// plane to an NRGBA copy (4 bytes a pixel), which is held while
@@ -573,6 +570,48 @@ func webpPhases(data []byte, w, h int64) []phase {
 	}
 	// The planes are taken to full range where they lie, and encoded from.
 	return []phase{strip, lossy}
+}
+
+// vp8lPixels is the most golang.org/x/image's vp8l decoder holds for a w×h
+// picture it decodes to its end, besides its Huffman groups (vp8lMemory):
+// 6.625 bytes a pixel, and a little more where a side is not a multiple of 8.
+// The picture decodes to NRGBA, 4 bytes a pixel, but one written with a
+// colour index of 16 colours or fewer is decoded packed first, and unpacked
+// into a second picture while the packed one is still held
+// (inverseColorIndexing): at 5 to 16 colours two pixels to every four bytes,
+// 2 bytes a pixel, which is the most; at fewer, four or eight. With more
+// colours there is no packed picture, and the indices are replaced where they
+// lie. Beside both pictures are the images of a predictor and a cross-colour
+// transform read before the colour index (decodeTransform), held until the
+// picture is returned: a quarter of a byte a pixel each (vp8lTileImage), or
+// less after the colour index, where they are of the packed picture's width.
+// And the meta-image that maps tiles to Huffman groups (decodeHuffmanGroups)
+// is of the picture decodePix decodes, the packed one, an eighth of a byte a
+// pixel of the whole at 5 to 16 colours. It and the groups are let go once
+// the packed picture is done, just before the unpacked one is made, but a
+// collection that began before then keeps them live until it ends (peakOf),
+// so they are charged beside both pictures. That is 4 + 2 + 2/4 + 1/8 bytes
+// a pixel. A picture that is not packed holds less: its meta-image is a
+// quarter of a byte a pixel, but there is no second picture. The colour
+// index's palette (1 KiB) and the colour cache (8 KiB at most) are inside
+// processingSlack. A crafted file of 42 bytes that has all of these holds
+// 6.5 bytes a pixel as it decodes 25 megapixels, 155 MiB, and 158 MiB when a
+// collection runs on past the moment its meta-image is let go; 147 MiB had
+// been charged for it (TestProcessingCostCoversWhatIsHeld). The meta-image's
+// eighth of a byte a pixel, 3 MiB there, is less than processingSlack, so
+// that test would not see it left out.
+func vp8lPixels(w, h int64) int64 {
+	packed := (w + 1) / 2
+	return 4*w*h + 4*packed*h + 2*vp8lTileImage(w, h) + vp8lTileImage(packed, h)
+}
+
+// vp8lTileImage is the most the vp8l decoder holds for an image of tiles of a
+// w×h picture — a predictor or a cross-colour transform's, or the meta-image
+// — which has a pixel, 4 bytes, for every tile, and a tile is 4×4 pixels at
+// the least (decodeTransform, decodeHuffmanGroups). One of a single colour
+// costs the bitstream no bits at all, so it is held whatever the file's size.
+func vp8lTileImage(w, h int64) int64 {
+	return 4 * ((w + 3) / 4) * ((h + 3) / 4)
 }
 
 // vp8lGroupBacking is the largest backing array golang.org/x/image's vp8l
@@ -619,7 +658,7 @@ const (
 // A lossless bitstream or a VP8L-compressed alpha plane of more than 224 KiB
 // is refused by this from its header, before any cooldown (processingCost,
 // Inspect), and less in a larger picture, whose pixels take more of the
-// budget beside it: about 205 KiB at a megapixel and 130 KiB at nine, and a
+// budget beside it: about 203 KiB at a megapixel and 128 KiB at nine, and a
 // little less again in a larger upload (TestVP8LHuffmanMemoryIsCharged).
 // x/image's decoder cannot be held to less, and no header field says a given
 // file is benign.
@@ -633,17 +672,17 @@ func vp8lMemory(n int64) int64 {
 // made all of them (vp8lGroupBacking). It then fails, before it makes the
 // pixels, so the picture's size counts only for the images it decoded before
 // the groups and still holds beside them: a predictor and a cross-colour
-// transform's, and the meta-image, each 4 bytes a tile and a tile 4×4 pixels
-// at the least (decodeTransform, decodeHuffmanGroups), which are megabytes in
-// a large picture and cost the bitstream no bits at all when each is one
-// colour; a colour-indexing transform's palette and the colour cache are a few
-// kilobytes, inside processingSlack. With the copy stripWebP made, the nodes
-// of the trees it did read, and processingSlack, that is at least 167.5 MiB
-// for every lossless WebP and every one whose alpha plane is compressed,
-// however small: a file of a few dozen bytes makes the decoder set that much
-// aside (TestVP8LGroupsNamedButNeverGivenAreCharged), and no header field
-// tells such a file from a benign one. So two are never processed at once. It
-// is zero for anything else, which the vp8l decoder does not read.
+// transform's, and the meta-image, each at most vp8lTileImage of the whole
+// picture, which are megabytes in a large picture and cost the bitstream no
+// bits at all when each is one colour; a colour-indexing transform's palette
+// and the colour cache are a few kilobytes, inside processingSlack. With the
+// copy stripWebP made, the nodes of the trees it did read, and
+// processingSlack, that is at least 167.5 MiB for every lossless WebP and
+// every one whose alpha plane is compressed, however small: a file of a few
+// dozen bytes makes the decoder set that much aside
+// (TestVP8LGroupsNamedButNeverGivenAreCharged), and no header field tells such
+// a file from a benign one. So two are never processed at once. It is zero for
+// anything else, which the vp8l decoder does not read.
 func vp8lStopCost(format Format, data []byte, cfg image.Config) int64 {
 	if format != FormatWebP {
 		return 0
@@ -652,8 +691,8 @@ func vp8lStopCost(format Format, data []byte, cfg image.Config) int64 {
 	if n == 0 {
 		return 0
 	}
-	tiles := ((int64(cfg.Width) + 3) / 4) * ((int64(cfg.Height) + 3) / 4)
-	return int64(len(data)) + vp8lGroupBacking + vp8lNodesPerByte*n + 3*4*tiles + processingSlack
+	images := 3 * vp8lTileImage(int64(cfg.Width), int64(cfg.Height))
+	return int64(len(data)) + vp8lGroupBacking + vp8lNodesPerByte*n + images + processingSlack
 }
 
 // vp8lAlphaHeader is the VP8L header golang.org/x/image's decoder puts in

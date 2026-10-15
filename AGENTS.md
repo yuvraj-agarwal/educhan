@@ -822,7 +822,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   215 KiB of full trees that holds about 43 MiB
   (`TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). A bitstream over 224 KiB is refused
   from its header as `ErrImageTooLarge`, before any cooldown, and less in a larger
-  picture, about 205 KiB at a megapixel and 130 KiB at nine
+  picture, about 203 KiB at a megapixel and 128 KiB at nine
   (`TestVP8LHuffmanMemoryIsCharged` pins the line the README gives). So the 320 MiB bound
   above holds for these files too; the cost of that bound is that large lossless WebPs,
   and WebPs whose compressed transparency alone is that large, are refused — not an
