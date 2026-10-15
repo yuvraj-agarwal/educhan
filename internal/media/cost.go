@@ -156,18 +156,20 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 		tw, th = th, tw
 	}
 	scratch := thumbScratch(tw, th)
-	phases = append(phases,
-		// The encoder writes into a buffer the size of the upload, which
-		// doubles up to limit, holding the old and the new while it grows
-		// (storedBuffer). What it wrote is kept for the thumbnail.
-		phase{first: min(upload, limit), alloc: 2 * limit, after: held + limit},
-		// The scaler allocates its scratch whole as it starts. What the
-		// encoder wrote is kept after it, until it has been stored (Save
-		// holds the budget until then), but nothing larger is made for
-		// that: the local store writes the file from it as it is, and the
-		// Cloud Storage writer is given no buffer of its own (GCSStore.Put).
-		phase{first: scratch, alloc: scratch, after: limit},
-	)
+	// The encoder writes into a buffer the size of the upload, which
+	// doubles up to limit, holding the old and the new while it grows
+	// (storedBuffer). What it wrote is kept for the thumbnail.
+	phases = append(phases, phase{first: min(upload, limit), alloc: 2 * limit, after: held + limit})
+	// The scaler allocates its scratch whole as it starts. What the
+	// encoder wrote is kept after it, until it has been stored (Save
+	// holds the budget until then), but nothing larger is made for
+	// that: the local store writes the file from it as it is, and the
+	// Cloud Storage writer is given no buffer of its own (GCSStore.Put).
+	// A GIF's thumbnail is made before its frames are played, among its
+	// decoding phases.
+	if format != FormatGIF {
+		phases = append(phases, phase{first: scratch, alloc: scratch, after: limit})
+	}
 	return peakOf(phases...) + processingSlack
 }
 
@@ -186,9 +188,10 @@ func storedOnItsSide(format Format, data []byte) bool {
 }
 
 // decodingPhases are the phases of processing an upload before it is
-// encoded again: decoding it, converting it and turning it upright, which is
-// everything sanitize does before it writes the first byte of the stored
-// file. They are nil for a format it does not know.
+// encoded again: decoding it, converting it and turning it upright (and for a
+// GIF, thumbnailing it and playing its frames), which is everything sanitize
+// does before it writes the first byte of the stored file. They are nil for a
+// format it does not know.
 func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFrames) []phase {
 	w, h := int64(cfg.Width), int64(cfg.Height)
 	px := w * h
@@ -214,12 +217,15 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		// until all of them are encoded again. An interlaced frame is
 		// decoded once more while its rows are put in order: at most the
 		// canvas, or a frame reaching past it (gifReader) if that is larger.
+		// The first picture is thumbnailed, at the size of the canvas.
 		// The frames are then played (playGIF) on a canvas of two bytes a
 		// pixel, which is let go once they have been.
 		kept := frames.pixels + frames.count*gifFrameOverhead
+		scratch := thumbScratch(cfg.Width, cfg.Height)
 		play := 2*px + frames.count*gifFramePlay
 		return []phase{
 			{alloc: kept + max(px, frames.largest), after: kept},
+			{first: scratch, alloc: scratch, after: kept},
 			{first: play, alloc: play, after: kept + frames.count*gifFramePlay},
 		}
 	case FormatWebP.Name:

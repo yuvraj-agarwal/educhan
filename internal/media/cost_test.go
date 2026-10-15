@@ -516,7 +516,7 @@ func TestThumbScratchCoversTheScaler(t *testing.T) {
 		name := fmt.Sprintf("%dx%d", size.X, size.Y)
 		want := thumbScratch(size.X, size.Y) + processingSlack
 		held := leastPeak(t, name, want, func() error {
-			_, err := makeThumbnail(pic, pic.Rect, FormatJPEG)
+			_, err := makeThumbnail(pic, FormatJPEG)
 			return err
 		})
 		t.Logf("%s: thumbnail held %.1f MiB of %.1f", name, float64(held)/(1<<20), float64(want)/(1<<20))

@@ -196,10 +196,12 @@ func (b *storedBuffer) encoded(format Format, err error) ([]byte, error) {
 
 // sanitized is an upload rewritten for storage.
 type sanitized struct {
-	format Format          // what data is, which for a WebP upload is PNG or JPEG
-	data   []byte          // the bytes to store
-	pic    image.Image     // what to thumbnail: the picture, or a GIF's first frame
-	canvas image.Rectangle // the whole picture, which pic may only partly cover
+	format Format      // what data is, which for a WebP upload is PNG or JPEG
+	data   []byte      // the bytes to store
+	pic    image.Image // the picture, or the first a GIF shows, at its size
+	// thumb is pic's thumbnail when it was made already, as a GIF's is,
+	// before its frames are played.
+	thumb *Thumbnail
 }
 
 // sanitize rewrites an upload for storage. The rewritten file may not be
@@ -255,7 +257,7 @@ func sanitizeJPEG(data []byte, limit int64) (sanitized, error) {
 	if err != nil {
 		return sanitized{}, err
 	}
-	return sanitized{format: FormatJPEG, data: stored, pic: pic, canvas: pic.Bounds()}, nil
+	return sanitized{format: FormatJPEG, data: stored, pic: pic}, nil
 }
 
 // rgbaOfCMYK converts a CMYK picture to RGBA with color.CMYKToRGB, the
@@ -305,7 +307,7 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 	if err != nil {
 		return sanitized{}, err
 	}
-	return sanitized{format: FormatPNG, data: stored, pic: pic, canvas: pic.Bounds()}, nil
+	return sanitized{format: FormatPNG, data: stored, pic: pic}, nil
 }
 
 // sanitizeGIF decodes every frame of a GIF and encodes again what they show.
@@ -319,7 +321,8 @@ func sanitizePNG(data []byte, limit int64) (sanitized, error) {
 // whichever of the two loop extensions it came in (gifFramePixels reads it).
 // The colour tables keep only the colours the pixels show, and which frames
 // share the global table is decided from those (cleanGIF). The thumbnail is
-// of the first frame stored.
+// of the first picture the GIF shows, at the size of its canvas, made before
+// its frames are played.
 //
 // It is stored as browsers show it where that and image/gif part ways. A
 // file that ends after its last block without a trailer plays in a browser,
@@ -345,6 +348,13 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 		g.LoopCount = frames.loop
 	}
 	clipGIF(g, frames.canvas)
+	// The thumbnail is of the first picture the GIF shows, its first frame
+	// on the canvas, made before the frames are played and rewritten.
+	first := firstGIFPicture{frame: g.Image[0], canvas: image.Rect(0, 0, frames.canvas.X, frames.canvas.Y)}
+	thumb, err := makeThumbnail(first, FormatGIF)
+	if err != nil {
+		return sanitized{}, err
+	}
 	if err := playGIF(g); err != nil {
 		return sanitized{}, err
 	}
@@ -354,12 +364,7 @@ func sanitizeGIF(data []byte, limit int64, frames gifFrames) (sanitized, error) 
 	if err != nil {
 		return sanitized{}, err
 	}
-	return sanitized{
-		format: FormatGIF,
-		data:   stored,
-		pic:    g.Image[0],
-		canvas: image.Rect(0, 0, g.Config.Width, g.Config.Height),
-	}, nil
+	return sanitized{format: FormatGIF, data: stored, pic: first, thumb: &thumb}, nil
 }
 
 // browserFrames makes the frames image/gif decoded what Chromium shows where
@@ -402,6 +407,23 @@ func browserFrames(g *gif.GIF, heads []gifFrameHead) {
 			m.Palette[v] = want
 		}
 	}
+}
+
+// firstGIFPicture is the first picture a GIF shows, at the size of its
+// canvas: its first frame, on the canvas (clipGIF), drawn where it is on one
+// that is otherwise transparent.
+type firstGIFPicture struct {
+	frame  *image.Paletted
+	canvas image.Rectangle
+}
+
+func (p firstGIFPicture) ColorModel() color.Model { return color.NRGBAModel }
+func (p firstGIFPicture) Bounds() image.Rectangle { return p.canvas }
+func (p firstGIFPicture) At(x, y int) color.Color {
+	if !image.Pt(x, y).In(p.frame.Rect) {
+		return color.NRGBA{}
+	}
+	return visibleNRGBA(paletteEntryAt(p.frame.Palette, p.frame.Pix[p.frame.PixOffset(x, y)]))
 }
 
 // gifTrailer is the block that ends a GIF.
@@ -514,7 +536,7 @@ func sanitizeWebP(data []byte, limit int64) (sanitized, error) {
 	if err != nil {
 		return sanitized{}, err
 	}
-	return sanitized{format: format, data: stored, pic: pic, canvas: pic.Bounds()}, nil
+	return sanitized{format: format, data: stored, pic: pic}, nil
 }
 
 // clip8 clamps an integer to a uint8.

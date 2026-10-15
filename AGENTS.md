@@ -945,7 +945,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - Thumbnails are capped at 250px on the longest side, preserve aspect ratio, and are never
   upscaled. A stored JPEG (a JPEG upload, or a lossy opaque WebP) gets a JPEG
   thumbnail; a stored PNG or GIF gets a PNG one so transparency survives. They are made
-  from the rewritten, upright picture; a GIF's is its first frame placed on the canvas.
+  from the rewritten, upright picture; a GIF's is the first picture it shows, its first
+  frame drawn on a transparent canvas and scaled whole (`firstGIFPicture`), made before
+  the frames are played, so it never depends on how the stored frames are cut
+  (`TestGIFThumbnailIsTheFirstPictureAtTheSizeOfItsCanvas`).
 - `internal/media.Store` is the only route to blob storage, and `newMediaStore` in
   `app.go` is the only place one is constructed. Both backends are held to
   `testStoreContract` in `conformance_test.go`, and `internal/app/media_backend_test.go`

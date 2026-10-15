@@ -612,7 +612,7 @@ server that would refuse what it sends.
   preserved and never upscaled. A thumbnail follows the stored format, not the uploaded
   one: an image stored as a JPEG (a JPEG upload, or a lossy, opaque WebP) has a JPEG
   thumbnail, and one stored as a PNG or a GIF (any other WebP included) has a PNG
-  thumbnail, so its transparency survives.
+  thumbnail, so its transparency survives. A GIF's is of the first picture it shows.
 - **Storage**: originals and thumbnails are keyed
   `originals/{board}/{YYYY}/{MM}/{random}.{ext}` and `thumbs/{board}/{YYYY}/{MM}/…`, under a
   generated random filename. Two backends implement that key layout — the local filesystem

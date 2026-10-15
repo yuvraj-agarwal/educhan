@@ -900,6 +900,92 @@ func TestGIFThumbnailPlacesTheFirstFrameOnTheCanvas(t *testing.T) {
 	}
 }
 
+// A GIF's thumbnail is the first picture it shows, at the size of its canvas:
+// its first frame drawn where it is on a transparent canvas, scaled down as a
+// whole, as a still picture of the same pixels would be. A frame that covers
+// the canvas but draws only a line two pixels wide, or a square in its middle,
+// is thumbnailed with the line, a half pixel wide, and with the square's edges
+// where they fall, a quarter of the way into a pixel; neither is placed by
+// the part of the frame that draws.
+func TestGIFThumbnailIsTheFirstPictureAtTheSizeOfItsCanvas(t *testing.T) {
+	pal := color.Palette{color.RGBA{}, color.RGBA{20, 20, 20, 255}, color.RGBA{230, 40, 40, 255}, color.RGBA{40, 40, 230, 255}}
+	const side = 1000
+	for _, tc := range []struct {
+		name  string
+		drawn func(x, y int) uint8
+	}{
+		{"a line two pixels wide", func(x, y int) uint8 {
+			if x == 501 || x == 502 {
+				return 1
+			}
+			return 0
+		}},
+		{"a square in the middle", func(x, y int) uint8 {
+			if x >= 349 && x < 650 && y >= 349 && y < 650 {
+				return uint8(1 + (x/7+y/7)%2)
+			}
+			return 0
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			first := image.NewPaletted(image.Rect(0, 0, side, side), pal)
+			want := image.NewNRGBA(first.Rect)
+			for y := 0; y < side; y++ {
+				for x := 0; x < side; x++ {
+					v := tc.drawn(x, y)
+					first.SetColorIndex(x, y, v)
+					want.Set(x, y, pal[v])
+				}
+			}
+			second := image.NewPaletted(image.Rect(0, 0, 10, 10), pal)
+			for i := range second.Pix {
+				second.Pix[i] = 3
+			}
+			g := &gif.GIF{
+				Image:    []*image.Paletted{first, second},
+				Delay:    []int{50, 50},
+				Disposal: []byte{gif.DisposalNone, gif.DisposalNone},
+				Config:   image.Config{ColorModel: pal, Width: side, Height: side},
+			}
+			var buf bytes.Buffer
+			if err := gif.EncodeAll(&buf, g); err != nil {
+				t.Fatalf("encode: %v", err)
+			}
+			got := decodeStored(t, process(t, buf.Bytes()).Thumb.Data)
+			still, err := makeThumbnail(want, FormatGIF)
+			if err != nil {
+				t.Fatalf("thumbnail of the picture: %v", err)
+			}
+			expected := decodeStored(t, still.Data)
+			if got.Bounds() != expected.Bounds() {
+				t.Fatalf("thumbnail is %v, want %v", got.Bounds(), expected.Bounds())
+			}
+			// The scaler takes a different path for a picture of its own
+			// kind than for an NRGBA one, which can round a channel apart.
+			worst, shown := 0, 0
+			b := got.Bounds()
+			for y := b.Min.Y; y < b.Max.Y; y++ {
+				for x := b.Min.X; x < b.Max.X; x++ {
+					gr, gg, gb, ga := got.At(x, y).RGBA()
+					er, eg, eb, ea := expected.At(x, y).RGBA()
+					if ga != 0 {
+						shown++
+					}
+					for _, d := range []int{int(gr>>8) - int(er>>8), int(gg>>8) - int(eg>>8), int(gb>>8) - int(eb>>8), int(ga>>8) - int(ea>>8)} {
+						worst = max(worst, d, -d)
+					}
+				}
+			}
+			if shown == 0 {
+				t.Fatal("the thumbnail is transparent all over")
+			}
+			if worst > 2 {
+				t.Errorf("the thumbnail differs from that of the first picture by up to %d in a channel", worst)
+			}
+		})
+	}
+}
+
 // tinyFrames is a GIF of n one-pixel frames, each marking a colour of its
 // 256-colour global table transparent, which makes image/gif keep a copy of
 // the table for every frame: the most a frame can cost for the fewest bytes

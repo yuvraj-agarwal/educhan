@@ -205,7 +205,7 @@ func inspect(data []byte) (inspection, error) {
 
 // Process validates the raw upload, rewrites it without its metadata, and
 // derives its thumbnail from the rewritten picture. Animated GIFs are
-// thumbnailed from their first frame.
+// thumbnailed from the first picture they show.
 //
 // The decoding and encoding wait until the upload's estimated cost fits in
 // the processing budget (acquireProcessing): if ctx ends first the wait ends
@@ -246,17 +246,20 @@ func processHeld(ctx context.Context, data []byte) (_ Processed, release func(),
 	if err != nil {
 		return Processed{}, nil, err
 	}
-	thumb, err := makeThumbnail(out.pic, out.canvas, out.format)
-	if err != nil {
-		return Processed{}, nil, err
+	if out.thumb == nil {
+		thumb, err := makeThumbnail(out.pic, out.format)
+		if err != nil {
+			return Processed{}, nil, err
+		}
+		out.thumb = &thumb
 	}
 	handed = true
 	return Processed{
 		Format: out.format,
 		Data:   out.data,
-		Width:  out.canvas.Dx(),
-		Height: out.canvas.Dy(),
-		Thumb:  thumb,
+		Width:  out.pic.Bounds().Dx(),
+		Height: out.pic.Bounds().Dy(),
+		Thumb:  *out.thumb,
 	}, give, nil
 }
 
@@ -293,22 +296,17 @@ func thumbFormat(src Format) Format {
 	return FormatPNG
 }
 
-// makeThumbnail scales the canvas down to a thumbnail. src is drawn where it
-// sits on the canvas: for everything but a GIF it is the whole canvas, and a
-// GIF's first frame may cover only part of it, leaving the rest transparent.
-func makeThumbnail(src image.Image, canvas image.Rectangle, format Format) (Thumbnail, error) {
-	cw, ch := canvas.Dx(), canvas.Dy()
-	tw, th := ThumbSize(cw, ch, ThumbMaxDim)
+// makeThumbnail scales a picture down to a thumbnail, the whole of it: for a
+// GIF, the first picture it shows at the size of its canvas, transparent
+// where its first frame draws nothing (firstGIFPicture).
+func makeThumbnail(src image.Image, format Format) (Thumbnail, error) {
+	b := src.Bounds()
+	tw, th := ThumbSize(b.Dx(), b.Dy(), ThumbMaxDim)
 
 	dst := image.NewRGBA(image.Rect(0, 0, tw, th))
-	b := src.Bounds()
-	at := image.Rect(
-		(b.Min.X-canvas.Min.X)*tw/cw, (b.Min.Y-canvas.Min.Y)*th/ch,
-		(b.Max.X-canvas.Min.X)*tw/cw, (b.Max.Y-canvas.Min.Y)*th/ch,
-	)
 	// CatmullRom is slower than the nearest-neighbour kernels but keeps small
 	// thumbnails of dense screenshots readable, which is what they are for.
-	xdraw.CatmullRom.Scale(dst, at, src, b, xdraw.Src, nil)
+	xdraw.CatmullRom.Scale(dst, dst.Rect, src, b, xdraw.Src, nil)
 
 	out := thumbFormat(format)
 	var buf bytes.Buffer
