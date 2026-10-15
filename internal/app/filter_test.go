@@ -2502,6 +2502,46 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 	}
 }
 
+// TestFilterBlocksMeetingLinksAndProfiles pins the calls and profiles in
+// linkRule and contactLink, and meetingIDRule: a meeting link or a meeting's
+// ID is a call anyone reading can join, and a LinkedIn profile is the person,
+// while the words "zoom", "teams" and "meet", and the services' own pages,
+// are not.
+func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
+	const (
+		publish = "publish"
+		contact = "block:" + ruleContact
+	)
+	for _, c := range []struct{ body, want string }{
+		{"study w me rn zoom.us/j/84522196630", contact},
+		{"https://us05web.zoom.us/j/84522196630?pwd=abc123 cam optional", contact},
+		{"my room is zoom.us/my/priya.s, drop in whenever", contact},
+		{"meet.google.com/qvx-trmk-hpd study w me rn, cam optional", contact},
+		{"join https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0 at 8", contact},
+		{"teams.live.com/meet/9381726450 after school", contact},
+		{"meet.jit.si/studygroup42 anyone can join", contact},
+		{"connect with me on linkedin: linkedin.com/in/ade-o-27b, happy to help with internships", contact},
+		{"zoom id 845 2219 6630 pass: physics. group study at 8", contact},
+		{"meeting ID: 845-2219-6630, same time tomorrow", contact},
+		{"zoom class at 9, the link is on the portal", publish},
+		{"join the teams meeting after lunch for the briefing", publish},
+		{"meet me at the library at 5 to finish the poster", publish},
+		{"the zoom meeting lasted 90 minutes and nobody unmuted", publish},
+		{"12 teams of 4 for the hackathon", publish},
+		{"zoom in on the graph by 200 percent", publish},
+		{"zoom.us/download has the app, the link expired anyway", publish},
+		{"zoom.us/j/ link expired before class", publish},
+		{"meet.google.com/new makes a room, that's how the teacher does it", publish},
+		{"our college page is linkedin.com/school/dps, they post placement stats", publish},
+		{"linkedin.com/company/infosys lists the openings", publish},
+		{"the meeting id was 123 on the board", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
 // one reading of quoted and reported speech that every family uses. Words
 // the post gives to someone else, or says came to the poster, are not the
@@ -3028,6 +3068,10 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"halves":        rep("first 5: 12 "),
 		"spaced pieces": rep("1 2 / "),
 		"arrow":         rep("98765 43210 <- "),
+		// Calls: meeting links with nothing after them, and a meeting ID's
+		// opening.
+		"meeting links": rep("zoom.us/j/ meet.google.com/ teams.microsoft.com/l/ "),
+		"meeting id":    rep("zoom meeting id 845 "),
 		// A threat told by implication: hints of every kind, close to a
 		// time and a place, and the words that open the most of them.
 		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),

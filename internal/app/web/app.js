@@ -2174,9 +2174,9 @@ function renderRules() {
         <li><strong>No pushing drugs or other harmful substances.</strong> Don't encourage
           anyone to take anything that could harm them.</li>
         <li><strong>No contact details, and no moving to other apps.</strong> Never post a
-          phone number, an email address, a home or school address, or a Discord, Snapchat,
-          Instagram, Telegram or WhatsApp name or link, yours or anyone else's. Don't ask
-          anyone to talk to you somewhere else.</li>
+          phone number, an email address, a home or school address, a link to a video call,
+          or a Discord, Snapchat, Instagram, Telegram or WhatsApp name or link, yours or
+          anyone else's. Don't ask anyone to talk to you somewhere else.</li>
         <li><strong>Don't name or point out real people you know.</strong> Never name a
           classmate, teacher or anyone else from your own life, or describe them so they could
           be recognised. You can ask for advice about a friend or teacher, as long as nobody
@@ -2200,9 +2200,9 @@ function renderRules() {
       <p>Every post is checked automatically for a few things before it goes up:</p>
       <ul>
         <li>A post with contact details (a phone number, an email address, or a username or
-          link for another app), a request to talk on another app, or an ID number such as an
-          Aadhaar number is sent back to you, showing the part to take out. Take it out and
-          post again.</li>
+          link for another app), a video call's link or meeting ID, a request to talk on
+          another app, or an ID number such as an Aadhaar number is sent back to you, showing
+          the part to take out. Take it out and post again.</li>
         <li>A post that might be a threat, that might hurt someone who is struggling (by
           telling them to hurt or kill themselves, say, or by talking about ways to do it), or
           that asks someone's age or where they live and also asks to talk privately, waits
@@ -2294,9 +2294,9 @@ const FAQ_SECTIONS = [
         before anyone else can see it:</p>
       <ul>
         <li><strong>Contact details and ID numbers.</strong> A post with a phone number, an
-          email address, a username or link for another app, a request to talk on another
-          app, or an ID number such as an Aadhaar number is sent back to you, showing the
-          part to take out. Take it out and post again.</li>
+          email address, a username or link for another app, a video call's link or meeting
+          ID, a request to talk on another app, or an ID number such as an Aadhaar number is
+          sent back to you, showing the part to take out. Take it out and post again.</li>
         <li><strong>Posts that wait for a moderator.</strong> A post that might be a threat,
           that might hurt someone who is struggling (by telling them to hurt or kill
           themselves, say, or by talking about ways to do it), or that asks someone's age or

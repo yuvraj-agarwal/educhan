@@ -1302,6 +1302,13 @@ var (
 var handleRules = []rule{appColonHandle, appAtHandle, appLabelHandle, hindiHandle, handleBeforeApp,
 	discTagHandle, labelledAppHandle, ghostHandle}
 
+// meetingIDRule is a call's meeting ID given without its link, which is as
+// good as the link to anyone reading: "zoom id 845 2219 6630 pass: physics",
+// "meeting ID: 845 2219 6630". "Zoom" alone, and a meeting's number in
+// minutes, are not one.
+var meetingIDRule = plainOnly(`\b(?:` + words(`zoom`, `webex`, `teams`, `meet`) + `~(?:meeting~)?` +
+	words(`id`, `code`, `no`, `number`) + `|meeting~id)(?:~is)?~\d(?:~?\d){8,10}\b`)
+
 // accountNumberRules are accounts written as numbers no other rule reads: a
 // Session messenger ID, 66 hexadecimal digits starting "05", which nothing
 // else is written as; and a game's friend code after its name ("steam
@@ -2502,7 +2509,13 @@ var linkRule = func() rule {
 		short("ig.me"), short("instagr.am"), long("instagram.com"), short("m.me"), short("fb.me"),
 		long("facebook.com"), short("fb.com"), long("messenger.com"), long("signal.me"), long("signal.group"),
 		short("line.me"), long("tiktok.com"), long("twitter.com"), short("x.com"), long("reddit.com"),
-		long("join.skype.com"), long("linktr.ee"))
+		long("join.skype.com"), long("linktr.ee"),
+		// Calls and profiles: a meeting link is a call anyone reading can
+		// join, and a LinkedIn profile is the person. A Zoom link's own
+		// subdomain ("us05web.zoom.us") needs no reading: the host starts
+		// a word after its dot.
+		short("zoom.us"), long("meet.google.com"), long("teams.microsoft.com"),
+		long("teams.live.com"), long("meet.jit.si"), long("linkedin.com"))
 	// Compiled as written: a path may contain "~", which phrase would read
 	// as a separator.
 	src := `\b(?:https?\W{0,3})?(?:www\s?\.\s?)?(` + hosts + `)` + linkSlash +
@@ -2576,9 +2589,36 @@ func contactLink(host, path string) bool {
 		return len(segs) == 1 && !twitterPages[first]
 	case "reddit.com":
 		return (first == "u" || first == "user") && len(segs) == 2
+	case "zoom.us":
+		// A meeting ("/j/"), a webinar ("/w/") or a meeting started ("/s/")
+		// by its number, or a personal room ("/my/") by its name, and not
+		// "zoom.us/download" or a "zoom.us/j/" with no meeting after it.
+		switch {
+		case len(segs) < 2:
+			return false
+		case first == "j" || first == "w" || first == "s":
+			return segs[1][0] >= '0' && segs[1][0] <= '9'
+		}
+		return first == "my"
+	case "meet.google.com":
+		// A meeting's code, xxx-xxxx-xxx, not "meet.google.com/new".
+		return meetCode.MatchString(first)
+	case "teams.microsoft.com":
+		return first == "l" && len(segs) > 1 && teamsJoins[segs[1]]
+	case "teams.live.com":
+		return first == "meet" && len(segs) > 1
+	case "meet.jit.si":
+		return true
+	case "linkedin.com":
+		return (first == "in" || first == "pub") && len(segs) > 1
 	}
 	return false
 }
+
+var (
+	meetCode   = regexp.MustCompile(`^[a-z]{3}-[a-z]{4}-[a-z]{3}$`)
+	teamsJoins = setOf(`meetup-join meet chat`)
+)
 
 // niRule finds UK National Insurance numbers: two prefix letters, three pairs
 // of digits and a suffix A-D, spaced or not.
@@ -9728,6 +9768,8 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		from, to, ok = f.first(r, func(v *view, m []int) bool { return !v.reported(m) })
 		consider(from, to, ok, kindHandle)
 	}
+	from, to, ok = f.first(meetingIDRule, func(v *view, m []int) bool { return !v.reported(m) })
+	consider(from, to, ok, kindAsk)
 	from, to, ok = f.first(myAmbiguousAppRule, func(v *view, m []int) bool {
 		a, b := v.span(m[2], m[3])
 		handle := f.src[a:b]
