@@ -87,6 +87,12 @@ type Config struct {
 	// MailDev allows the development sender while verification is on. It is
 	// for local work only: in production stdout is the log.
 	MailDev bool
+
+	// cooldownSweepEvery replaces cooldownSweepInterval, the period of the
+	// sweep that drops expired flood-control entries, so a test can watch it
+	// run without waiting a minute. No setting reads it; zero means the
+	// interval.
+	cooldownSweepEvery time.Duration
 }
 
 // defaultDBMaxConns keeps one instance's pool small. The smallest Cloud SQL

@@ -186,6 +186,7 @@ func TestCredentialHasNoEffectOffTheBadgePath(t *testing.T) {
 	// exactly as it answers one without it.
 	for _, path := range []string{
 		"/api/verify",
+		"/api/site",
 		"/api/boards",
 		"/api/boards/general",
 		"/api/boards/general/threads",

@@ -1,17 +1,36 @@
 package app
 
 import (
+	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
-// cooldownSweepThreshold is the number of tracked keys after which expired
-// entries are swept, keeping the map bounded without a background goroutine.
+// cooldownSweepThreshold is the number of tracked keys after which recording a
+// new one sweeps expired entries first, keeping the map bounded under a burst
+// between two periodic sweeps.
 const cooldownSweepThreshold = 4096
+
+// cooldownSweepInterval is how often a cooldownSweep drops every entry whose
+// cooldown has passed. The keys are client addresses, so this is the bound on
+// how long the server remembers one while the process has CPU: an address is
+// held in memory no longer than the longest cooldown that applies to it plus
+// one minute, counted from its last action that started a cooldown, however
+// quiet the server is. A host that gives the process CPU only while it answers
+// a request, which is Cloud Run's default, holds the timer back while the
+// instance is idle; there the sweep runs before the instance answers its next
+// request, so an idle instance keeps expired entries until then or until it is
+// shut down. The address is never written anywhere else.
+const cooldownSweepInterval = time.Minute
 
 // cooldownLimiter enforces a minimum interval between two actions from the same
 // key. It is the flood control every imageboard needs: cheap, per-process, and
 // good enough to stop a single client from spamming a board.
+//
+// Its keys carry client addresses, so it keeps an entry only while the entry
+// can still refuse something: a cooldownSweep drops it within
+// cooldownSweepInterval of its cooldown running out.
 //
 // A distributed deployment would move this to shared storage; the interface is
 // kept small so that swap is contained.
@@ -105,5 +124,95 @@ func (l *cooldownLimiter) sweep(now time.Time) {
 		if now.Sub(last) >= l.interval {
 			delete(l.seen, key)
 		}
+	}
+}
+
+// sweepExpired drops every entry whose cooldown has elapsed by the limiter's
+// clock.
+func (l *cooldownLimiter) sweepExpired() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.sweep(l.now())
+}
+
+// cooldownSweep drops the expired entries of a set of limiters once each
+// period. Two things run it. A goroutine of its own does, on a timer, so a
+// quiet server forgets without a request arriving to prompt it. And every
+// request first checks whether a sweep is overdue and runs it if so, because a
+// host that gives the process CPU only while it answers a request — Cloud
+// Run's default — holds the timer back while the instance is idle, and the
+// next request is the first moment the process is sure to run again.
+type cooldownSweep struct {
+	every    time.Duration
+	limiters []*cooldownLimiter
+	// last is when the most recent sweep began, in Unix nanoseconds.
+	last atomic.Int64
+}
+
+func newCooldownSweep(every time.Duration, limiters ...*cooldownLimiter) *cooldownSweep {
+	s := &cooldownSweep{every: every, limiters: limiters}
+	s.last.Store(time.Now().UnixNano())
+	return s
+}
+
+// run sweeps every limiter, noting when it began.
+func (s *cooldownSweep) run(at time.Time) {
+	s.last.Store(at.UnixNano())
+	for _, l := range s.limiters {
+		l.sweepExpired()
+	}
+}
+
+// runIfDue sweeps every limiter if a whole period has passed by now since the
+// last sweep began, which with the timer running happens only when it has been
+// held back. Of several requests that find a sweep due at once, one runs it.
+func (s *cooldownSweep) runIfDue(now time.Time) {
+	if s == nil {
+		return
+	}
+	last := s.last.Load()
+	if now.UnixNano()-last < int64(s.every) || !s.last.CompareAndSwap(last, now.UnixNano()) {
+		return
+	}
+	for _, l := range s.limiters {
+		l.sweepExpired()
+	}
+}
+
+// beforeEachRequest runs an overdue sweep before the request is handled.
+func (s *cooldownSweep) beforeEachRequest(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.runIfDue(time.Now())
+		next.ServeHTTP(w, r)
+	})
+}
+
+// start runs the sweep once each period on a goroutine of its own, until stop
+// is called. stop returns once that goroutine has finished, and calling it
+// again does nothing, so an App closed twice, or a test that stops it early,
+// leaves nothing running.
+func (s *cooldownSweep) start() (stop func()) {
+	ticker := time.NewTicker(s.every)
+	quit := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		defer close(finished)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				s.run(time.Now())
+			case <-quit:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() {
+		once.Do(func() { close(quit) })
+		<-finished
 	}
 }
