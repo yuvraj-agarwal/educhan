@@ -3011,14 +3011,18 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // under the race detector, and a timer's noise cannot fail or pass it.
 //
 // The first bound is per byte of the post, at full length: the most any of
-// these bodies costs is about 120 steps a byte. A step is not a fixed time —
-// across these bodies a millisecond is anything from about 25,000 steps to
-// about 120,000, and the body that costs the most steps is not the slowest —
-// so the bound holds the work linear and caps it, and the time is the
-// README's to state, from timing the bodies ("Content rules": no more than
-// about 17 ms of one 2.1 GHz core). A body that costs much more than the
-// rest has to be looked at, and the rule behind it planned or rewritten,
-// before the bound is raised. The second is that eight
+// these bodies costs is about 136 steps a byte (a method question with words
+// between the count and the pills, which the question's patterns read 60
+// characters on from both), and the next most about 96. A step is not a
+// fixed time — across these bodies a millisecond is anything from about
+// 22,000 steps to about 125,000, and the body that costs the most steps is
+// not the slowest — so the bound holds the work linear and caps it, and the
+// time is the README's to state, from timing the bodies ("Content rules": no
+// more than about 16 ms of one 2.1 GHz core). The steps are the same with Go
+// 1.22, 1.24 and 1.25, since the programs are Go's own compiler's output for
+// the same patterns. A body that costs much more than the rest has to be
+// looked at, and the rule behind it planned or rewritten, before the bound is
+// raised. The second is that eight
 // times the text costs at most ten times as much: linear work costs eight
 // times, a fixed part a little less, and anything quadratic would cost
 // sixty-four.
@@ -3083,6 +3087,9 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"ranges":         rep("96.123-97.456 percentile\n"),
 		"helpline":       rep("Trevor Project 1-866-488-7386. "),
 		"scores":         rep("mock scores 65-70-78-84-91\n"),
+		// A method question with words between the count and the pills,
+		// each read 60 characters on from both.
+		"words before pills": rep("how many a b c pills "),
 		// Digits read out in words, a word before them that may or may not
 		// be one, pairs after a request to call, an ID number's label, a
 		// bracketed letter, an app with the words before a handle, and the

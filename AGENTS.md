@@ -655,22 +655,26 @@ are said to belong to: only asks are read for whose they are.
 **The cost is linear in the post, and small.** No pattern is run whole over a view
 (`filtersearch.go`): each is split once into branches, one walk of a trie per view finds
 every place a branch could start, and a copy of Go's own regexp machine, which never
-backtracks, runs each branch from those places alone. The number scanner and the view
-builders are single passes, the checks read at most a clause or a sentence each side of
+backtracks, runs each branch from those places alone, putting no thread where nothing
+can take the next character (`viability`, worked out per instruction when the branch is
+planned; the machine finds the same matches with fewer steps). The number scanner and
+the view builders are single passes, the checks read at most a clause or a sentence each side of
 a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), or `readReach` words for a hint of a threat
 told by implication or a goad (whose nudges and finishers are read once for the post), and the threat pairing
 finds the places and times first and looks each intent up among them by binary search
 (`nearSpans`, `anyNear`), so an intent with no place or time near it is never put to
 its check, which is where the grammar's reading costs. Measured on one core of an Intel
 Xeon @ 2.10GHz (`GOMAXPROCS=1` under `taskset`, no race detector, the best of several
-runs of each verdict, the slower of the two): about 0.7 ms for a typical 500-character
-post, about 3.5 ms for an ordinary maximum-length one, and at most about 17 ms for the
-slowest of 1,193 bodies built to be slow (the 247 the earlier figures were taken on, the
-grammar rules' true and false positives, and the grammar's openings, each repeated to the maximum length with and without a place or
-a time; before the searches were planned: about 4 ms, 36 ms, and 400–490 ms for a post
-of `㏂`, which folds to `maxFoldRunes`). Refusals are budgeted all the same; see the API
-contract. Planning takes about 3.5 s of one core, once per process, and keeps about 60
-MB of heap; while it runs the heap reaches about 260 MB with four cores and about 320 MB
+runs of each verdict, the slower of the two, timed as the process's CPU time on a shared
+four-core machine): about 0.7 ms for a typical 500-character post, about 2.6 ms for an
+ordinary maximum-length one, and at most about 16 ms for the slowest of 1,251 bodies built
+to be slow (the 247 the earlier figures were taken on, the grammar rules' true and false
+positives, the grammar's openings, each repeated to the maximum length with and without
+a place or a time, and `TestFilterCostIsBounded`'s bodies and method questions with words
+between the count and the pills; before the searches were planned: about 4 ms, 36 ms,
+and 400–490 ms for a post of `㏂`, which folds to `maxFoldRunes`). Refusals are budgeted all the same; see the API
+contract. Planning takes about 3.5 s of one core, once per process, and keeps about 64
+MB of heap; while it runs the heap reaches about 280 MB with four cores and about 320 MB
 with one (`runtime.MemStats.HeapSys`), which the server's 512 MiB has to hold beside
 everything else. `Routes` starts it in the
 background, and a post that comes first waits for it. The plain view is skipped when the
@@ -680,10 +684,11 @@ loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost dow
   places tried, the characters read, the machines' steps, and each check a match is put
   to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
-  post (the slowest, a pill question over and over, is about 150), and eight times the text at most ten times the
+  post (the most, a pill question with words between the count and the pills, is about
+  136, and the next about 96), and eight times the text at most ten times the
   steps. A step is not a fixed time: `checkWork` charges a check 128 bytes, and the
   checks that read wider fixed windows (its comment lists them) are not charged the
-  rest, so across those bodies a millisecond is about 25,000 to 120,000 steps, and the
+  rest, so across those bodies a millisecond is about 22,000 to 125,000 steps, and the
   README's timing is measured, not derived from the bound. A new rule that trips it is
   planned or rewritten, not given a bigger bound; add the body that tripped it to the
   table.
