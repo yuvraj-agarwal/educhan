@@ -1145,3 +1145,588 @@ func TestGIFIsStoredAsItPlays(t *testing.T) {
 		}
 	}
 }
+
+/* GIFs shown alike ---------------------------------------------------------- */
+
+// clone is a copy of g that shares nothing with it.
+func (g rawGIF) clone() rawGIF {
+	c := g
+	c.global, c.loops = slices.Clone(g.global), slices.Clone(g.loops)
+	c.frames = make([]rawFrame, len(g.frames))
+	for k, f := range g.frames {
+		f.controls, f.local, f.pix = slices.Clone(f.controls), slices.Clone(f.local), slices.Clone(f.pix)
+		c.frames[k] = f
+	}
+	return c
+}
+
+// table is the colour table frame k's pixels index: its own, or the global
+// one.
+func (g rawGIF) table(k int) [][3]byte {
+	if g.frames[k].local != nil {
+		return g.frames[k].local
+	}
+	return g.global
+}
+
+// control is the graphic control extension Chromium reads a frame by: its
+// last, or none, which is disposal 0, delay 0 and no transparent index.
+func (f rawFrame) control() rawControl {
+	if n := len(f.controls); n > 0 {
+		return f.controls[n-1]
+	}
+	return rawControl{ti: -1}
+}
+
+// padded is a colour table with the black entries rawTable pads it with
+// written out, so that it is as long as the file says it is.
+func padded(t [][3]byte) [][3]byte {
+	out, _ := rawTable(nil, t)
+	p := make([][3]byte, len(out)/3)
+	for i := range p {
+		copy(p[i][:], out[3*i:])
+	}
+	return p
+}
+
+// randomRawGIF is a GIF of up to seven frames on a small canvas, written
+// field by field and drawn at random from what a file can say: colour tables
+// global and local, of colours from a pool of the size given (so that frames
+// share them, or, from a pool of many, overflow one table between them),
+// frames on and off the canvas, opaque, transparent or both, transparent
+// indices within the table and past it, any disposal value and delay, no
+// control, one or two, and loop counts or none.
+func randomRawGIF(rng *rand.Rand, colours int) rawGIF {
+	pool := make([][3]byte, colours)
+	for i := range pool {
+		pool[i] = [3]byte{byte(rng.Intn(256)), byte(rng.Intn(256)), byte(rng.Intn(256))}
+	}
+	least, most, low, side, whole, own := 1, 6, 1, 9, 4, 4
+	if colours > 256 {
+		least, most, low, side, whole, own = 128, 256, 16, 32, 2, 2
+	}
+	table := func() [][3]byte {
+		t := make([][3]byte, least+rng.Intn(most-least+1))
+		for i := range t {
+			t[i] = pool[rng.Intn(len(pool))]
+		}
+		return t
+	}
+	g := rawGIF{w: low + rng.Intn(side-low+1), h: low + rng.Intn(side-low+1), bg: byte(rng.Intn(4))}
+	canvas := image.Rect(0, 0, g.w, g.h)
+	if rng.Intn(5) != 0 {
+		g.global = table()
+	}
+	if rng.Intn(3) != 0 {
+		g.loops = []rawLoop{{[]string{"NETSCAPE2.0", "ANIMEXTS1.0"}[rng.Intn(2)], []int{0, 1, 3, 65535}[rng.Intn(4)]}}
+	}
+	delays := []int{0, 1, 2, 3, 5, 10, 100, 65534, 65535}
+	for n := 1 + rng.Intn(7); len(g.frames) < n; {
+		var f rawFrame
+		switch {
+		case rng.Intn(whole) == 0:
+			f.at = canvas
+		case len(g.frames) == 0:
+			x, y := rng.Intn(g.w), rng.Intn(g.h)
+			f.at = image.Rect(x, y, x+rng.Intn(g.w-x+1), y+rng.Intn(g.h-y+1))
+		default:
+			x, y := rng.Intn(g.w+3), rng.Intn(g.h+3)
+			f.at = image.Rect(x, y, x+rng.Intn(g.w+2), y+rng.Intn(g.h+2))
+		}
+		if g.global == nil || rng.Intn(own) == 0 {
+			f.local = table()
+		}
+		t := f.local
+		if t == nil {
+			t = g.global
+		}
+		size := len(padded(t))
+		c := rawControl{disposal: byte(rng.Intn(8)), delay: delays[rng.Intn(len(delays))], ti: -1}
+		if rng.Intn(3) != 0 {
+			c.ti = rng.Intn(min(size+1, 256)) // the size itself is past the table
+		}
+		switch rng.Intn(20) {
+		case 0:
+			c = rawControl{ti: -1}
+		case 1:
+			f.controls = []rawControl{{byte(rng.Intn(8)), delays[rng.Intn(len(delays))], rng.Intn(size+1) - 1}, c}
+		default:
+			f.controls = []rawControl{c}
+		}
+		// Opaque pixels, or any pixels, or mostly transparent ones; every
+		// index is in the table as the file pads it, or the transparent one.
+		opaque := func() uint8 {
+			for {
+				if v := rng.Intn(len(t)); v != c.ti {
+					return uint8(v)
+				}
+				if len(t) == 1 {
+					return uint8(min(size-1, 1))
+				}
+			}
+		}
+		mode := rng.Intn(3)
+		f.pix = make([]uint8, f.at.Dx()*f.at.Dy())
+		for i := range f.pix {
+			switch {
+			case mode == 0 || c.ti < 0:
+				f.pix[i] = opaque()
+			case mode == 1 && rng.Intn(3) != 0:
+				f.pix[i] = uint8(rng.Intn(size))
+			default:
+				f.pix[i] = uint8(c.ti)
+			}
+		}
+		f.interlace = rng.Intn(4) == 0
+		g.frames = append(g.frames, f)
+	}
+	return g
+}
+
+// gifRewrite rewrites a GIF as one a browser shows exactly as it shows the
+// original, or reports that it cannot rewrite this one so.
+type gifRewrite struct {
+	name    string
+	rewrite func(rng *rand.Rand, g rawGIF) (rawGIF, bool)
+}
+
+// keepDisposals are the disposal values that leave a frame where it is.
+var keepDisposals = []byte{0, 1, 5, 6, 7}
+
+// splitDelay splits the time a frame of delay d shows for into two delays a
+// browser shows as written, if it is long enough.
+func splitDelay(rng *rand.Rand, d int) (int, int, bool) {
+	total := shownDelay(d)
+	if total < 4 {
+		return 0, 0, false
+	}
+	first := 2 + rng.Intn(total-3)
+	return first, total - first, true
+}
+
+var gifRewrites = []gifRewrite{
+	{"a colour table in another order", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames)+1) - 1 // -1 is the global table
+		if k < 0 && g.global == nil || k >= 0 && g.frames[k].local == nil {
+			return g, false
+		}
+		g = g.clone()
+		table := &g.global
+		if k >= 0 {
+			table = &g.frames[k].local
+		}
+		old := padded(*table)
+		perm := rng.Perm(len(old))
+		*table = make([][3]byte, len(old))
+		for i, c := range old {
+			(*table)[perm[i]] = c
+		}
+		for j := range g.frames {
+			f := &g.frames[j]
+			if j != k && (k >= 0 || f.local != nil) {
+				continue
+			}
+			for i, v := range f.pix {
+				if int(v) < len(old) {
+					f.pix[i] = uint8(perm[v])
+				}
+			}
+			for i, c := range f.controls {
+				if c.ti >= 0 && c.ti < len(old) {
+					f.controls[i].ti = perm[c.ti]
+				}
+			}
+		}
+		return g, true
+	}},
+	{"colours repeated in a table", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames)+1) - 1
+		if k < 0 && g.global == nil || k >= 0 && g.frames[k].local == nil {
+			return g, false
+		}
+		g = g.clone()
+		table := &g.global
+		if k >= 0 {
+			table = &g.frames[k].local
+		}
+		old := padded(*table)
+		users := []int{k}
+		if k < 0 {
+			users = nil
+			for j, f := range g.frames {
+				if f.local == nil {
+					users = append(users, j)
+				}
+			}
+		}
+		// A pixel past the table shows black, and would show a colour of
+		// a longer one.
+		for _, j := range users {
+			ti := g.frames[j].control().ti
+			for _, v := range g.frames[j].pix {
+				if int(v) >= len(old) && int(v) != ti {
+					return g, false
+				}
+			}
+		}
+		if len(old) >= 256 {
+			return g, false
+		}
+		*table = old
+		copies := map[int][]int{}
+		for n := 1 + rng.Intn(256-len(old)); n > 0; n-- {
+			i := rng.Intn(len(old))
+			copies[i] = append(copies[i], len(*table))
+			*table = append(*table, old[i])
+		}
+		for _, j := range users {
+			f := &g.frames[j]
+			ti := f.control().ti
+			for i, v := range f.pix {
+				// A copy written where the transparent index was past the
+				// table is transparent, whatever colour it holds.
+				c := slices.DeleteFunc(slices.Clone(copies[int(v)]), func(u int) bool { return u == ti })
+				if int(v) != ti && len(c) > 0 && rng.Intn(2) == 0 {
+					f.pix[i] = uint8(c[rng.Intn(len(c))])
+				}
+			}
+		}
+		return g, true
+	}},
+	{"the global table copied into the frames", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		if g.global == nil {
+			return g, false
+		}
+		g = g.clone()
+		for j := range g.frames {
+			if g.frames[j].local == nil {
+				g.frames[j].local = padded(g.global)
+			}
+		}
+		if rng.Intn(2) == 0 {
+			g.global = nil
+		}
+		return g, true
+	}},
+	{"a frame's table made the global one", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		if g.global != nil || g.frames[k].local == nil {
+			return g, false
+		}
+		g = g.clone()
+		g.global = padded(g.frames[k].local)
+		for j := range g.frames {
+			if f := &g.frames[j]; slices.Equal(padded(f.local), g.global) && rng.Intn(2) == 0 {
+				f.local = nil
+			}
+		}
+		return g, true
+	}},
+	{"pixels that draw the colour under them made transparent, and back", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		before, _ := composite(chromiumReads(g))
+		g = g.clone()
+		f := &g.frames[k]
+		table, ti := padded(g.table(k)), f.control().ti
+		changed := false
+		for y := f.at.Min.Y; y < f.at.Max.Y; y++ {
+			for x := f.at.Min.X; x < f.at.Max.X; x++ {
+				i := (y-f.at.Min.Y)*f.at.Dx() + x - f.at.Min.X
+				if !image.Pt(x, y).In(before[k].Rect) {
+					f.pix[i], changed = uint8(rng.Intn(len(table))), true // off the canvas, nothing shows
+					continue
+				}
+				under := before[k].NRGBAAt(x, y)
+				if rng.Intn(2) == 0 || under.A == 0 {
+					continue
+				}
+				colour := [3]byte{under.R, under.G, under.B}
+				if v := int(f.pix[i]); v == ti {
+					var same []int
+					for u, c := range table {
+						if u != ti && c == colour {
+							same = append(same, u)
+						}
+					}
+					if len(same) > 0 {
+						f.pix[i], changed = uint8(same[rng.Intn(len(same))]), true
+					}
+				} else if ti >= 0 && v < len(table) && table[v] == colour {
+					f.pix[i], changed = uint8(ti), true
+				}
+			}
+		}
+		return g, changed
+	}},
+	{"a frame's time split with a frame that draws nothing", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		c := g.frames[k].control()
+		disposal := browserDisposal(c.disposal)
+		first, rest, ok := splitDelay(rng, c.delay)
+		if !ok || disposal == restoreFrame {
+			return g, false
+		}
+		g = g.clone()
+		f := &g.frames[k]
+		f.controls = []rawControl{{keepDisposals[rng.Intn(len(keepDisposals))], first, c.ti}}
+		blank := rawFrame{
+			controls: []rawControl{{keepDisposals[rng.Intn(len(keepDisposals))], rest, 0}},
+			local:    [][3]byte{{byte(rng.Intn(256)), 0, 0}},
+		}
+		if disposal == clearFrame {
+			blank.at, blank.controls[0].disposal = f.at, clearFrame
+		} else {
+			x, y := rng.Intn(g.w+4), rng.Intn(g.h+4)
+			blank.at = image.Rect(x, y, x+rng.Intn(3), y+rng.Intn(3))
+		}
+		blank.pix = make([]uint8, blank.at.Dx()*blank.at.Dy())
+		g.frames = slices.Insert(g.frames, k+1, blank)
+		return g, true
+	}},
+	{"a picture's time moved between its frames", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		if len(g.frames) < 2 {
+			return g, false
+		}
+		k := rng.Intn(len(g.frames) - 1)
+		if _, shown := composite(chromiumReads(g)); !bytes.Equal(shown[k].Pix, shown[k+1].Pix) {
+			return g, false
+		}
+		// Each delay written is one a browser shows as written, and the two
+		// may say more time between them than one delay can.
+		total := shownDelay(g.frames[k].control().delay) + shownDelay(g.frames[k+1].control().delay)
+		least, most := max(2, total-maxGIFDelay), min(maxGIFDelay, total-2)
+		if least > most {
+			return g, false
+		}
+		first := least + rng.Intn(most-least+1)
+		g = g.clone()
+		for j, d := range []int{first, total - first} {
+			f := &g.frames[k+j]
+			if len(f.controls) == 0 {
+				f.controls = []rawControl{{ti: -1}}
+			}
+			f.controls[len(f.controls)-1].delay = d
+		}
+		return g, true
+	}},
+	{"a picture cleared or put back and drawn again", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		c := g.frames[k].control()
+		first, rest, ok := splitDelay(rng, c.delay)
+		at := g.frames[k].at.Intersect(image.Rect(0, 0, g.w, g.h))
+		if !ok || browserDisposal(c.disposal) == restoreFrame || at.Empty() {
+			return g, false
+		}
+		_, shown := composite(chromiumReads(g))
+		again := rawFrame{controls: []rawControl{{c.disposal, rest, 0}}, at: at, local: [][3]byte{{}}}
+		index := map[[3]byte]int{}
+		for y := at.Min.Y; y < at.Max.Y; y++ {
+			for x := at.Min.X; x < at.Max.X; x++ {
+				p := shown[k].NRGBAAt(x, y)
+				if p.A == 0 {
+					again.pix = append(again.pix, 0)
+					continue
+				}
+				colour := [3]byte{p.R, p.G, p.B}
+				if _, ok := index[colour]; !ok {
+					index[colour] = len(again.local)
+					again.local = append(again.local, colour)
+				}
+				again.pix = append(again.pix, uint8(index[colour]))
+			}
+		}
+		if len(again.local) > 256 {
+			return g, false
+		}
+		g = g.clone()
+		g.frames[k].controls = []rawControl{{[]byte{2, 3, 4}[rng.Intn(3)], first, c.ti}}
+		g.frames = slices.Insert(g.frames, k+1, again)
+		return g, true
+	}},
+	{"a disposal method the next frame paints over", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		if k == len(g.frames)-1 {
+			return g, false
+		}
+		next := g.frames[k+1]
+		if k+1 < len(g.frames)-1 && browserDisposal(next.control().disposal) == restoreFrame {
+			return g, false // what it puts back is what the disposal left
+		}
+		at := g.frames[k].at.Intersect(image.Rect(0, 0, g.w, g.h))
+		if !at.In(next.at) {
+			return g, false
+		}
+		ti := next.control().ti
+		for y := at.Min.Y; y < at.Max.Y; y++ {
+			for x := at.Min.X; x < at.Max.X; x++ {
+				if int(next.pix[(y-next.at.Min.Y)*next.at.Dx()+x-next.at.Min.X]) == ti {
+					return g, false
+				}
+			}
+		}
+		g = g.clone()
+		f := &g.frames[k]
+		if len(f.controls) == 0 {
+			f.controls = []rawControl{{ti: -1}}
+		}
+		f.controls[len(f.controls)-1].disposal = byte(rng.Intn(8))
+		return g, true
+	}},
+	{"a frame widened with pixels that draw nothing", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		k := rng.Intn(len(g.frames))
+		f := g.frames[k]
+		c := f.control()
+		if c.ti < 0 || c.ti > 255 {
+			return g, false
+		}
+		at := image.Rect(max(0, f.at.Min.X-rng.Intn(3)), max(0, f.at.Min.Y-rng.Intn(3)), f.at.Max.X+rng.Intn(3), f.at.Max.Y+rng.Intn(3))
+		if k == 0 {
+			at = at.Intersect(image.Rect(0, 0, g.w, g.h)).Union(f.at)
+		}
+		if at == f.at {
+			return g, false
+		}
+		if browserDisposal(c.disposal) == clearFrame {
+			// Clearing the wider frame clears more, which shows unless
+			// there is nothing there.
+			_, shown := composite(chromiumReads(g))
+			for y := at.Min.Y; y < at.Max.Y; y++ {
+				for x := at.Min.X; x < at.Max.X; x++ {
+					if p := image.Pt(x, y); !p.In(f.at) && p.In(shown[k].Rect) && shown[k].NRGBAAt(x, y).A != 0 {
+						return g, false
+					}
+				}
+			}
+		}
+		g = g.clone()
+		pix := make([]uint8, at.Dx()*at.Dy())
+		for y := at.Min.Y; y < at.Max.Y; y++ {
+			for x := at.Min.X; x < at.Max.X; x++ {
+				v := uint8(c.ti)
+				if image.Pt(x, y).In(f.at) {
+					v = f.pix[(y-f.at.Min.Y)*f.at.Dx()+x-f.at.Min.X]
+				}
+				pix[(y-at.Min.Y)*at.Dx()+x-at.Min.X] = v
+			}
+		}
+		g.frames[k].at, g.frames[k].pix = at, pix
+		return g, true
+	}},
+	{"fields a browser reads past", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		g = g.clone()
+		f := &g.frames[rng.Intn(len(g.frames))]
+		switch rng.Intn(7) {
+		case 0:
+			f.comment = fmt.Sprintf("comment %d", rng.Intn(1000))
+		case 1:
+			f.plainText = true
+		case 2:
+			if len(f.controls) == 0 {
+				return g, false
+			}
+			f.controls = append([]rawControl{{byte(rng.Intn(8)), rng.Intn(70000) % 0x10000, rng.Intn(257) - 1}}, f.controls...)
+		case 3:
+			f.interlace = !f.interlace
+		case 4:
+			g.bg = byte(rng.Intn(256))
+		case 5:
+			if len(g.loops) == 0 {
+				return g, false
+			}
+			g.loops = append([]rawLoop{{"NETSCAPE2.0", rng.Intn(5)}}, g.loops...)
+			last := &g.loops[len(g.loops)-1]
+			last.id = []string{"NETSCAPE2.0", "ANIMEXTS1.0"}[rng.Intn(2)]
+		case 6:
+			g.noTrailer = !g.noTrailer
+		}
+		return g, true
+	}},
+	{"a loop count for a GIF of one picture", func(rng *rand.Rand, g rawGIF) (rawGIF, bool) {
+		if len(browserPlay(chromiumReads(g))) != 1 {
+			return g, false
+		}
+		g = g.clone()
+		g.loops = nil
+		if rng.Intn(3) != 0 {
+			g.loops = []rawLoop{{"NETSCAPE2.0", rng.Intn(4)}}
+		}
+		return g, true
+	}},
+}
+
+// GIFs a browser shows alike are stored as the same bytes, however their
+// frames make what they show. Random GIFs (randomRawGIF) are rewritten at
+// random, a few times over, in ways that change none of what Chromium shows
+// (gifRewrites): colour tables in another order, with colours repeated, or
+// copied between the global table and the frames; pixels that draw the
+// colour already under them made transparent, and transparent ones made to
+// draw it; a frame's time split with a frame that draws nothing, or with the
+// same picture drawn again after a clear or a put-back; a disposal method
+// the next frame paints over; a frame widened with pixels that draw nothing;
+// fields a browser reads past; and the loop count of a GIF of one picture.
+// The model (chromiumReads, composite) has to agree that each rewrite shows
+// what the original does, which holds the test to rewrites that change
+// nothing; the stored files then have to be the same. Each original is also
+// held to what it shows, and to being stored again as the same bytes. A
+// quarter of them draw from many colours, so that their frames' colours
+// overflow one table between them.
+func TestGIFsShownAlikeAreStoredAlike(t *testing.T) {
+	rng := rand.New(rand.NewSource(20261015))
+	applied := map[string]int{}
+	stored, refused, own := 0, 0, 0
+	for i := 0; i < 800; i++ {
+		colours := 6
+		if i%4 == 3 {
+			colours = 600
+		}
+		g := randomRawGIF(rng, colours)
+		name := fmt.Sprintf("GIF %d", i)
+		want, wantErr := Process(context.Background(), g.bytes())
+		switch {
+		case errors.Is(wantErr, ErrImageTooCostly):
+			refused++
+		case wantErr != nil:
+			t.Fatalf("%s: %v", name, wantErr)
+		default:
+			stored++
+			requireShowsAs(t, name, g, want.Data)
+			if again := process(t, want.Data).Data; !bytes.Equal(again, want.Data) {
+				t.Fatalf("%s: processing the stored GIF again stores it differently", name)
+			}
+			if _, local := gifTables(t, want.Data); slices.Contains(local, true) {
+				own++
+			}
+		}
+		for form := 0; form < 6; form++ {
+			rewritten, done := g, []string(nil)
+			for n := 1 + rng.Intn(4); n > 0; n-- {
+				r := gifRewrites[rng.Intn(len(gifRewrites))]
+				if next, ok := r.rewrite(rng, rewritten); ok {
+					rewritten, done = next, append(done, r.name)
+				}
+			}
+			if len(done) == 0 {
+				continue
+			}
+			if d := showDifference(chromiumReads(g), chromiumReads(rewritten)); d != "" {
+				t.Fatalf("%s rewritten (%s) does not show what it did: %s", name, strings.Join(done, "; "), d)
+			}
+			for _, r := range done {
+				applied[r]++
+			}
+			got, err := Process(context.Background(), rewritten.bytes())
+			if !errors.Is(err, wantErr) || err == nil && !bytes.Equal(got.Data, want.Data) {
+				t.Fatalf("%s rewritten (%s) is stored differently (%v, against %v for the original)", name, strings.Join(done, "; "), err, wantErr)
+			}
+		}
+	}
+	t.Logf("%d GIFs stored (%d with tables of their own), %d refused; rewrites applied: %v", stored, own, refused, applied)
+	for _, r := range gifRewrites {
+		if applied[r.name] < 50 {
+			t.Errorf("%q was applied %d times; the test shows little of it", r.name, applied[r.name])
+		}
+	}
+	if own < 50 || stored < 600 {
+		t.Errorf("%d GIFs stored, %d with tables of their own; the test shows little", stored, own)
+	}
+}
