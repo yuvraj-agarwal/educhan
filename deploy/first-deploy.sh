@@ -137,10 +137,16 @@ step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
 # sweep (below), so a backup holds as little as possible of what the sweep
 # deletes. Point-in-time recovery stays off, the gcloud default for this
 # edition, and is never changed here. deploy/README.md section 2.2 says what
-# each of these keeps. An existing instance gets only the start time, so a
-# re-run never shortens a retention someone has raised.
+# each of these keeps. An existing instance with backups on gets only the start
+# time moved, so a re-run never shortens a retention someone has raised and
+# never turns backups back on where someone turned them off.
 if exists gcloud sql instances describe "$DB_INSTANCE"; then
-  gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null
+  BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
+    --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
+  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *05:00 ]]; then
+    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null ||
+      echo "Could not move the backup window to 05:00 UTC; see deploy/README.md section 2.2." >&2
+  fi
 else
   gcloud sql instances create "$DB_INSTANCE" \
     --database-version=POSTGRES_16 \
