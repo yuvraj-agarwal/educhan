@@ -5264,10 +5264,12 @@ var (
 	ageQuestionRules = []rule{bothViews(`\b` + words(
 		`how~old~(?:`+words(`are`, `r`, `is`)+`~)?`+words(`you`, `u`, `ya`, `yu`),
 		`what'?s?~(?:is~)?`+words(`your`, `ur`, `yr`)+`~age`,
-		words(`what`, `which`)+`~`+words(`year`, `grade`, `class`, `standard`, `std`, `form`)+`~(?:of~`+
-			words(`school`, `college`, `uni`)+`~)?`+words(`are`, `r`)+`~`+words(`you`, `u`),
+		words(`what`, `which`)+`~`+words(`year`, `grade`, `class`, `standard`, `std`, `form`, `school~year`,
+			`year~\d{1,2}~form`, `j?ss`, `sss`, `js`)+`~(?:of~`+words(`school`, `college`, `uni`)+`~)?`+
+			words(`are`, `r`)+`~`+words(`you`, `u`),
 		words(`are`, `r`)+`~`+words(`you`, `u`)+`~(?:in~)?`+words(`high~school`, `middle~school`,
 			`secondary~school`, `year~\d{1,2}`, `grade~\d{1,2}`, `class~\d{1,2}`, `std~\d{1,2}`,
+			words(`jss`, `js`, `sss?`)+`~?[1-3]`,
 			`\d{1,2}(?:st|nd|rd|th)~`+words(`grade`, `class`, `standard`, `std`)),
 		words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`under`, `over`, `below`, `above`)+`~1\d`,
 		words(`are`, `r`)+`~`+words(`you`, `u`)+`~1\d`,
@@ -5287,7 +5289,10 @@ var (
 		`any~`+youthNoun+`~(?:here~)?`+words(`in`, `from`)+`~(?:`+words(`class`, `grade`, `std`, `standard`,
 			`year`)+`~\d{1,2}|\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?)`,
 		`where~(?:exactly~)?`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
-		words(`what`, `which`)+`~`+readerPlaces+`~`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
+		// "which floor is your room on", "which floor of the girls hostel is
+		// your room on".
+		words(`what`, `which`)+`~`+readerPlaces+`~(?:of~(?:`+words(`the`, `your`, `ur`)+`~)?(?:[\pL']+~){0,2}?)?`+
+			words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
 		// Said of the reader, a question or not: "you're in grade 6", "you're
 		// in 9th right", "you're in which grade", "you're 14". ageCheck turns
 		// down "when you're in 12th" and "you're 15 minutes late".
@@ -5305,18 +5310,31 @@ var (
 			words(readerPlaces, `address`, `age`, `class`, `grade`, `area`, `location`),
 		`what~time~(?:`+words(`do`, `d`)+`~)?`+words(`you`, `u`)+`~`+words(`get~out`, `leave`, `finish`, `get~off`,
 			`get~home`, `reach~home`, `go~home`, `come~out`),
+		// "what time does your school finish", "which gate do you use".
+		`what~time~`+words(`does`, `do`, `d`)+`~`+words(`your`, `ur`)+`~`+words(`school`, `tuition`, `coaching`,
+			`lessons?`)+`~`+words(`finish`, `end`, `get~out`, `let~out`, `close`, `get~over`, `over`),
+		words(`what`, `which`)+`~`+words(`gate`, `entrance`, `exit`, `bus`, `route`)+`~`+words(`do`, `d`)+`~`+
+			words(`you`, `u`)+`~`+words(`use`, `take`, `leave~from`, `come~out~of`, `get~off~at`, `wait~at`),
+		// Nigerian Pidgin: "where you dey stay", "which estate for Lagos you
+		// dey stay".
+		`where~`+words(`you`, `u`)+`~dey~`+words(`stay`, `live`, `school`),
+		`which~`+words(`estate`, `area`, `street`, `place`, `side`, `part`, `school`, `compound`, `hostel`, `town`,
+			`city`)+`~(?:for~\pL+~)?`+words(`you`, `u`)+`~dey~`+words(`stay`, `live`, `school`, `attend`),
+		// The reader's age remarked on: "you sound young", "u look so young".
+		words(`you`, `u`)+`~`+words(`sound`, `sounds`, `seem`, `seems`, `look`, `looks`)+`~(?:`+words(`so`, `really`,
+			`very`, `kinda`, `pretty`, `quite`, `real`)+`~)?`+words(`young`, `younger`, `underage`),
 		// "kis city se ho", "kaunse area mein rehti ho".
 		words(`kis`, `kaunse`, `konse`, `kaunsa`, `konsa`, `kaunsi`, `konsi`)+`~`+words(`city`, `area`, `school`,
-			`college`, `class`, `jagah`, `sheher`, `shehar`, `mohalla`, `colony`, `sector`, `hostel`, `coaching`, `tuition`,
+			`college`, `class`, `saal`, `jagah`, `sheher`, `shehar`, `mohalla`, `colony`, `sector`, `hostel`, `coaching`, `tuition`,
 			`gaon`)+`~`+words(`se`, `mein`, `me`, `main`)+`~(?:`+words(`rehte`, `rehti`, `padhte`, `padhti`, `jaate`,
 			`jaati`, `jate`, `jati`)+`~)?`+words(`ho`, `hai`, `h`),
 		// "which college do you go to", "what area are you in": the verb has
 		// to be about being there, so "which college do you suggest" is
 		// advice.
-		words(`what`, `which`)+`~`+words(readerPlaces, `uni`, `city`, `town`, `area`, `place`, `locality`)+`~`+
+		words(`what`, `which`)+`~`+words(readerPlaces, readerAreas)+`~`+
 			words(`do`, `d`)+`~`+words(`you`, `u`)+`~`+words(`go~to`, `attend`, `study~at`, `study~in`, `study`,
 			`live~in`, `live`, `stay~in`, `stay`, `come~from`, `belong~to`),
-		words(`what`, `which`)+`~`+words(readerPlaces, `uni`, `city`, `town`, `area`, `place`, `locality`)+`~`+
+		words(`what`, `which`)+`~`+words(readerPlaces, readerAreas)+`~`+
 			words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`in`, `at`, `from`, `studying`, `living`, `staying`),
 		`what'?s?~(?:is~)?`+words(`your`, `ur`)+`~`+words(`school`, `address`, `location`, `city`, `town`, `area`,
 			`postcode`, `pincode`, `zip`),
@@ -5344,7 +5362,8 @@ var (
 			`\b`+words(`you`, `u`)+`~1\d[^\pL\pN?]*\?`,
 			`(?:^|[.!?\n,;:])[^\pL\pN]*`+words(`age`, `how~old`, words(`which`, `what`)+`~`+
 				words(`school`, `college`, `class`, `grade`, `year`, `area`, `locality`, `city`, `town`, `hostel`,
-					`room`, `block`, `floor`, `building`, `flat`, `house`, `street`, `colony`, `sector`, `part`)+
+					`room`, `block`, `floor`, `building`, `flat`, `house`, `street`, `colony`, `sector`, `part`,
+					`hall`, `centre`, `center`, `gate`, `suburb`, `estate`, `neighbou?rhood`, `village`)+
 				`(?:~`+words(`exactly`, `and~room~(?:number|no)`, `and~room`, `and~block`, `and~floor`)+`)?`)+
 				`[^\pL\pN?]*\?`,
 			// A child's year asked alone: "Year 7?", "6th standard?" ("Year
@@ -5361,6 +5380,8 @@ var (
 			`\b`+words(`you'?re`, `you~are`, `u~r`, `ur`, `u'?re`)+`~(?:in~)?`+words(`1\d`,
 				`\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?`,
 				words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`[^\pL\pN?]*\?`,
+			`\b`+words(`you`, `u`)+`~in~`+words(`year`, `grade`, `class`, `std`, `form`)+`~\d{1,2}(?:~or~\d{1,2})?`+
+				`[^\pL\pN?]*\?`,
 			`(?:^|[.!?\n,;:])[^\pL\pN]*`+words(`1[0-7]`, words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`~or~`+
 				words(`1[0-7]`, words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`[^\pL\pN?]*\?`,
 		)),
@@ -5375,7 +5396,13 @@ var (
 	// "which grade".
 	readerGrade = words(words(`grade`, `class`, `year`, `std`, `standard`, `form`)+`~\d{1,2}(?:st|nd|rd|th)?`,
 		`\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?`,
-		words(`which`, `what`)+`~`+words(`grade`, `class`, `year`, `std`, `standard`))
+		words(`jss`, `js`, `sss?`)+`~?[1-3]`,
+		words(`which`, `what`)+`~`+words(`grade`, `class`, `year`, `std`, `standard`, `j?ss`, `sss`))
+	// readerAreas are where a reader lives or studies besides readerPlaces,
+	// asked with a verb of being there: "which suburb are you in", "which
+	// coaching centre are you at", "which uni do you go to".
+	readerAreas = words(`uni`, `city`, `town`, `area`, `place`, `locality`, `suburb`, `estate`, `neighbou?rhood`,
+		`village`, `hall`, `(?:coaching~|tuition~|exam~)?cent(?:re|er)`)
 	// ageNumber, ageUnit and youthNoun make up an age someone is looked for
 	// at: "14yo girls", "13-15 year old boys".
 	ageNumber = `\d{1,2}(?:~?(?:-|to)~?\d{1,2})?~?`
@@ -5408,7 +5435,12 @@ var (
 			`i~wanna`, `i~want~to`)+`~`+words(`come~by`, `come~over`, `come~round`, `come~around`, `drop~by`,
 			words(`visit`, `meet`, `come~(?:and~)?`+words(`meet`, `see`, `visit`, `get`, `find`))+`~`+words(`you`, `u`),
 			`pick~`+words(`you`, `u`)+`~up`, `wait~for~`+words(`you`, `u`), `be~waiting~for~`+words(`you`, `u`),
-			`keep~`+words(`you`, `u`)+`~company`, `be~waiting`, `wait~there`),
+			`keep~`+words(`you`, `u`)+`~company`, `be~waiting`, `wait~there`, `walk~(?:with~)?`+words(`you`, `u`),
+			`come~up`),
+		// "I fit come pick you after lesson", "do u walk home alone?".
+		`come~pick~`+words(`you`, `u`),
+		words(`you`, `u`)+`~(?:`+words(`usually`, `always`, `ever`, `often`, `still`)+`~)?`+words(`walk`, `go`, `get`,
+			`come`, `travel`, `cycle`)+`~home~`+words(`alone`, `by~yourself`, `by~urself`, `on~your~own`, `on~ur~own`),
 		// "come alone", "come without your friends", "come to my room",
 		// "wait for me after the evening batch", "meet me at the gate".
 		`come~`+words(`alone`, `by~yourself`, `by~urself`, `on~your~own`),
@@ -5448,20 +5480,30 @@ var (
 			words(`check`, `see`, `read`, `look~at`, `go~through`)+`~`+words(`your`, `ur`)+`~`+
 			words(`phone`, `messages`, `chats`, `texts`, `dms`),
 		`private~`+words(`chat`, `talk`, `messages?`, `convo`, `conversation`),
-		`somewhere~private`,
+		`somewhere~(?:more~)?private`,
 		words(`chat`, `continue`, `move~this`, `take~this`, `move~it`, `take~it`)+`~`+words(`somewhere~else`, `elsewhere`),
 		`meet~`+words(`up`, `irl`, `in~person`, `me`, `somewhere`, `in~real~life`),
 		`meetup`, `wanna~meet`, `let'?s~meet`, `lets~meet`, `can~we~meet`, `we~should~meet`,
 		`send~(?:me~)?(?:`+words(`a`, `some`, `your`, `ur`)+`~)?`+words(`pics?`, `pictures?`, `photos?`, `selfies?`,
 			`nudes`, `snaps`, `vids?`, `videos?`),
+		// "I'd love to see a photo of you".
+		words(`see`, `get`, `have`)+`~(?:`+words(`a`, `some`, `more`, `another`)+`~)?`+words(`pics?`, `pictures?`,
+			`photos?`, `selfies?`)+`~of~`+words(`you`, `u`, `yourself`, `urself`),
 		words(`are`, `r`)+`~`+words(`you`, `u`)+`~(?:home~)?alone`,
 		words(`are`, `r`)+`~`+words(`your`, `ur`)+`~`+words(`parents`, `mom`, `mum`, `dad`)+`~`+
 			words(`home`, `around`, `there`, `awake`),
 		words(`don'?t`, `dont`, `do~not`)+`~tell~`+words(`your`, `ur`, `anyone`, `anybody`),
+		// "tell no one", "no need to tell anyone", and Pidgin "no tell your
+		// mummy".
+		`tell~`+words(`no~one`, `noone`, `nobody`),
+		words(`no`, `no~need~to`)+`~tell~`+words(`anyone`, `anybody`, `them`, `person`, words(`your`, `ur`)+`~`+
+			words(`parents`, `mum`, `mom`, `mummy`, `mama`, `dad`, `papa`, `family`, `folks`, `friends`)),
 		words(`our`, `a`)+`~(?:little~)?secret`,
 		`keep~`+words(`this`, `it`)+`~(?:`+words(`a`, `our`)+`~)?secret`,
-		`keep~`+words(`this`, `it`)+`~between~`+words(`us`, `you~and~me`, `u~and~me`, `the~two~of~us`),
-		`between~`+words(`you`, `u`)+`~and~me`,
+		`keep~(?:`+words(`our`, `these`, `the`, `this`)+`~)?`+words(`this`, `it`, `chats?`, `convos?`,
+			`conversations?`, `messages`, `texts`, `dms`, `talks?`)+`~between~`+words(`us`, `you~and~me`, `u~and~me`,
+			`the~two~of~us`),
+		`between~`+words(`you`, `u`)+`~and~me`, `between~us`,
 		`send~(?:me~)?`+words(`your`, `ur`)+`~(?:live~)?`+words(`location`, `loc`, `address`, `pin`, `pincode`),
 		`share~`+words(`your`, `ur`)+`~(?:live~)?`+words(`location`, `loc`, `address`),
 		`hmu`, `come~over`,
@@ -5479,6 +5521,7 @@ var (
 		words(`pe`, `par`, `pr`)+`~`+words(`aao`, `aaja`, `aajao`, `aa~jao`, `milo`),
 		words(`akele`, `akeli`, `akela`)+`~`+words(`ho`, `hai`, `h`, `aana`, `aao`, `aaja`, `milna`, `mil`),
 		`ko~`+words(`mat`, `na`, `nahi`)+`~`+words(`bolna`, `batana`, `bata`, `bol`, `batao`),
+		`kisi~ko~`+words(`bolna`, `batana`, `bata`, `bol`, `batao`)+`~`+words(`mat`, `na`, `nahi`, `nai`),
 		`private~`+words(`rakhna`, `rakho`, `rakh`),
 		words(`ek~baar`, `kabhi`, `akele`)+`~`+words(`milo`, `milte`, `mil~lo`, `milna`),
 		`milne~`+words(`aa`, `aao`, `aaja`, `aajao`, `aa~jao`, `aa~jaao`, `aana`),
@@ -5487,10 +5530,10 @@ var (
 		words(`milte`, `milna`)+`~`+words(`hain`, `hai`, `h`),
 		`private~`+words(`mein`, `me`, `main`)+`~baat`,
 	) + `\b`),
-		// "pic?": a request for one that ends in its "?"; "alone?" where it
-		// opens what is said.
+		// "pic?": a request for one that ends in its "?"; "alone" where it
+		// ends a sentence, which privateCue reads.
 		bothViews(`\b` + words(`pics?`, `pictures?`, `photos?`, `selfies?`) + `[^\pL\pN?]*\?`),
-		bothViews(`(?:^|[.!?\n,;:])[^\pL\pN]*alone[^\pL\pN?]*\?`),
+		bothViews(`\balone[^\pL\pN]*(?:[.!?\n]|$)`),
 		// "let's meet at the metro station, just you", where it ends.
 		bothViews(`\bjust~` + words(`you`, `u`) + `[^\pL\pN]*(?:[.!?\n]|$)`),
 		// "I can train you privately", "I can help with your project
@@ -5565,7 +5608,12 @@ func privateCue(v *view, m []int, openMeetings bool) bool {
 		return !nextIn(0, secretGoesOn)
 	case is(first, "between"):
 		// "between you and me" ends what it says; as the idiom it opens a
-		// sentence that goes on.
+		// sentence that goes on. "between us" is a secret only said "just"
+		// or "stays" so: "just between us", "this stays between us", not
+		// "the gap between us".
+		if is(last, "us") && !(len(prev) > 0 && betweenUsLeads[prev[len(prev)-1]]) {
+			return false
+		}
 		for _, w := range wordsIn(sentenceAfter(text, m[1])) {
 			if !secretTail[w] {
 				return false
@@ -5578,11 +5626,53 @@ func privateCue(v *view, m []int, openMeetings bool) bool {
 		}
 	case is(first, "milte") || is(first, "milna"):
 		return !(len(prev) > 0 && hindiIn[prev[len(prev)-1]])
+	case is(first, "tell") && len(ws) > 1 && (is(ws[1], "no") || is(ws[1], "noone") || is(ws[1], "nobody")),
+		is(first, "no") && hasWord(ws, "tell"):
+		// "tell no one" or "no need to tell your parents" told to the
+		// reader and ending what is said, or said about the two of them:
+		// not "I tell nobody my marks", "no need to tell anyone your rank".
+		return !anyIn(prev, tellers) && secretEnds(wordsIn(sentenceAfter(text, m[1])))
+	case is(last, "up") && hasWord(ws, "come"):
+		// "I'll come up tonight", not "I'll come up with something".
+		return !nextIn(0, setOf(`with`))
+	case hasWord(ws, "walk") && !hasWord(ws, "home"):
+		// "I could walk with you", not "I'll walk you through it".
+		return !nextIn(0, setOf(`through thru`))
+	case len(ws) == 1 && is(first, "alone"):
+		// "alone?" opening what is said asks it; "alone" after a comma at
+		// the end of an order to come is "come alone" said last: "come to
+		// the chai stall after class, alone".
+		at := m[0] + strings.IndexFunc(text[m[0]:m[1]], unicode.IsLetter)
+		if len(wordsIn(clauseBefore(text, at))) > 0 {
+			return false
+		}
+		if strings.Contains(text[at:m[1]], "?") {
+			return true
+		}
+		sentence := wordsIn(sentenceAround(text, at, at))
+		for _, w := range sentence {
+			if !orderFillers[w] {
+				return comeWords[w] && !hasWord(sentence, "think")
+			}
+		}
+		return false
 	case pictureWords[first]:
 		for _, w := range prev {
 			if !picLeads[w] {
 				return false
 			}
+		}
+	}
+	return true
+}
+
+// secretEnds reports the words after a secret kept as nothing more than a
+// tag ("ok", "x") or what the secret is about when that is the poster and
+// the reader ("about this", "about us").
+func secretEnds(ws []string) bool {
+	for i, w := range ws {
+		if !secretTail[w] && !kissTags[w] && !(i == 0 && is(w, "about") && len(ws) > 1) && !(i > 0 && secretAbout[w]) {
+			return false
 		}
 	}
 	return true
@@ -5616,7 +5706,7 @@ var (
 	schoolYearNouns = canonSetOf(`grade class year std standard form sem semester`)
 	// meetingCues are the words of a meet-up or a visit cue, and visitCues
 	// the ones of a visit.
-	meetingCues = canonSetOf(`meet meeting meetup wait waiting hang hangout come visit drop`)
+	meetingCues = canonSetOf(`meet meeting meetup wait waiting hang hangout come visit drop walk`)
 	visitCues   = canonSetOf(`come visit drop`)
 	// publicPlaces are where a meeting is in front of everyone: a library,
 	// a canteen, a fest, a class.
@@ -5647,13 +5737,26 @@ var (
 		expectations standard standards goal goals quota demand demands need needs cutoff cutoffs eligibility`)
 	secretGoesOn = canonSetOf(`that to of for behind garden ingredient recipe sauce weapon santa service agent
 		door room passage level code menu technique trick tip tips hack formula why how about`)
-	secretTail    = canonSetOf(`ok okay k kk right yeah yes ya alright pls please plz only just now na haan`)
+	secretTail = canonSetOf(`ok okay k kk right yeah yes ya alright pls please plz only just now na haan`)
+	// betweenUsLeads make "between us" a secret: "just between us", "this
+	// stays between us".
+	betweenUsLeads = canonSetOf(`just only strictly stays stay remains remain`)
+	kissTags       = setOf(`x xx xxx xo`)
+	secretAbout    = canonSetOf(`us this it that me our chat chats messages dms texts talking meeting`)
+	// tellers are the poster or someone else saying who they tell, not
+	// telling the reader.
+	tellers = canonSetOf(`i i'll ill i'd i'm im we we'll they he she`)
+	// orderFillers may open an order before its verb; comeWords are the
+	// verbs of an order to come.
+	orderFillers  = canonSetOf(`just pls please plz so then and ok okay now but also bas`)
+	comeWords     = canonSetOf(`come cum meet aa aaja aao aajao`)
 	seWords       = setOf(`se say sey`)
 	firstPersonSe = setOf(`mere mujh hum humare hamare mera meri apne`)
 	hindiIn       = setOf(`mein me main mai`)
 	pictureWords  = canonSetOf(`pic pics picture pictures photo photos selfie selfies`)
 	picLeads      = canonSetOf(`any ur your yo a send share got have u you ya can i see get more some pls plz please
-		hey hi so ok and face body full mirror cute new recent latest ek apni apna teri tumhari`)
+		hey hi so ok and face body full mirror cute new recent latest ek apni apna teri tumhari koi achhi achi acchi
+		nayi naya`)
 )
 
 // aslCheck takes "asl" where it opens what is said, with only a greeting or

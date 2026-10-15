@@ -2382,6 +2382,61 @@ func TestFilterReadsCrisisLanguageInOtherWords(t *testing.T) {
 	}
 }
 
+// TestFilterReadsGroomingCuesInOtherWords holds both halves of a grooming cue
+// to both sides: the reader placed by a hall, a centre, a gate, a suburb, a
+// Nigerian school year, a Pidgin or Hinglish question or a remark on their
+// age, beside a secret kept, a parent not told, a photo of the reader, a
+// walk home or "alone" said last; and the same words where nothing is being
+// hidden, the reader is shown the way, or the poster is the one alone.
+func TestFilterReadsGroomingCuesInOtherWords(t *testing.T) {
+	const (
+		publish  = "publish"
+		grooming = "hold:" + holdGrooming
+	)
+	for _, c := range []struct{ body, want string }{
+		{"first year? which hall? i'm a senior, come to my room at 11 tonight, don't bring your friends", grooming},
+		{"first year? which hall? Hall 5 has the best mess, come to the fresher's at the auditorium", publish},
+		{"Class 10 boards? which centre? i'll be waiting outside after the paper, just come alone", grooming},
+		{"Class 10 boards? which centre? mine is at DPS, the invigilators are strict", publish},
+		{"which coaching centre are you at in Kota? come to the chai stall after class, alone", grooming},
+		{"which centre are you at? come early, alone is fine but bring your admit card", publish},
+		{"which hostel are you in? I live alone.", publish},
+		{"Which suburb are you in? We could catch up at the park after school. Keep it on the down low ok", grooming},
+		{"which suburb are you in? we could meet at the library for group study", publish},
+		{"which floor of the girls hostel is your room on? i'll come up tonight", grooming},
+		{"which hostel are you in? I'll come up with a timetable for the group", publish},
+		{"Which year 10 form are you in? we should hang out somewhere quiet, no one needs to know", grooming},
+		{"which year 10 form are you in? mr smith's form has the best trips", publish},
+		{"you're in JSS3? nice. send me a picture of you in your uniform", grooming},
+		{"Which SS are you in? Let's link up after school, come alone", grooming},
+		{"Which SS are you in? SS3 students should register for WAEC now", publish},
+		{"u in class 8 or 9? send me a selfie so i know ur not a bot", grooming},
+		{"u in class 8 or 9? send me the syllabus pdf", publish},
+		{"What school year are you in? I'd love to see a photo of you, nothing weird", grooming},
+		{"what grade are you in? I'd love to see a photo of your science project", publish},
+		{"what time does your school finish and which gate do you use? i'll be there. tell no one x", grooming},
+		{"which school are you in? tell no one your password, the portal got hacked last year", publish},
+		{"what year r u in and do u walk home alone? i could walk with u. no need to tell anyone", grooming},
+		{"which college are you in? no need to tell anyone your rank, it doesn't matter", publish},
+		{"which school are you in? I'll walk you through the syllabus", publish},
+		{"how old are u and where's ur school? i want to send you something nice. just between us", grooming},
+		{"which hostel are you in? the gap between us and the toppers is huge", publish},
+		{"13 or 14? either way you seem really mature for your age. keep our chats between us", grooming},
+		{"u sound young lol, 15? lets take this convo somewhere more private", grooming},
+		{"you sound young, don't stress about JEE yet", publish},
+		{"which estate for Lagos you dey stay? I fit come pick you after lesson. no tell your mummy", grooming},
+		{"which estate for Lagos you dey stay? traffic for Lekki no be here", publish},
+		{"bhai tu kaunse hostel mein hai? raat ko aa ja mere room pe, akela, kisi ko bolna mat", grooming},
+		{"tumhari age kya hai? koi pic bhejo na, sirf mere liye", grooming},
+		{"kaunse saal mein ho college ke? apni photo bhejo, main bhi bhejunga. secret rakhna", grooming},
+		{"kaunse saal mein ho? second year ka syllabus tough hai", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
 // TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
 // one reading of quoted and reported speech that every family uses. Words
 // the post gives to someone else, or says came to the poster, are not the
@@ -2891,6 +2946,11 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"on the roof":      rep("i'm on the roof "),
 		"sab khatam":       rep("sab khatam kar dunga "),
 		"disclaimed pills": rep("how many pills asking for a friend "),
+		// Grooming cues read with the sentence round them: "alone" said
+		// last, a secret kept "between us", and "tell no one".
+		"alone said last": rep("come here, alone. "),
+		"between us":      rep("just between us "),
+		"tell no one":     rep("tell no one about "),
 		// A threat told by implication: hints of every kind, close to a
 		// time and a place, and the words that open the most of them.
 		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),
