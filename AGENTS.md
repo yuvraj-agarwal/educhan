@@ -675,22 +675,23 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 - Besides the decoders, educhan reads structures an uploader controls in a few places of
   its own: the EXIF reader, the JPEG segment walks (`jpegOrientation`, and `readJPEGFrame`
   with its frame header and quantisation tables), the PNG chunk walks, the GIF block walk,
-  the WebP RIFF rewrite, and the cost model's walk over a WebP's chunks (`webpPicture`).
-  Each reads in place and bounds-checks every offset and length before use. None collects
-  what it walks into a list: the WebP rewrite reads its chunks one at a time
-  (`nextChunk`/`walkChunks`) and keeps only the ones that make the picture, so a file of a
-  million empty chunks costs it the picture it keeps and a short id string per chunk as it
-  goes, not a struct for each chunk in the file (`manyChunkWebP`,
-  `TestWebPChunkWalkDoesNotHoldAStructPerChunk`); the rewritten file is the only sizable
-  thing any of them allocates. Each gives a safe answer for what it cannot read —
-  orientation 1, the dearest cost, `storedJPEGQuality` — except the GIF walk and the RIFF
-  rewrite, which refuse the file. The EXIF reader follows no offset but IFD0's (no IFD
-  chain, so no loop). Whether the file is an image is the decoder's call alone
-  (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`,
-  `FuzzGIFFramePixels`; `FuzzInspect` runs every walk `Inspect` makes over files of every
-  format, and checks that what it admits is estimated at no less than a byte a pixel and
-  no more than the budget; `FuzzStripWebP` runs the RIFF rewrite over lossless and lossy
-  WebPs and checks it is idempotent). No EXIF library is needed and none should be added.
+  the WebP RIFF rewrite, `Inspect`'s animation check (`webpAnimated`), and the cost
+  model's walk over a WebP's chunks (`webpPicture`). Each reads in place and bounds-checks
+  every offset and length before use. None collects what it walks into a list: the WebP
+  rewrite reads its chunks one at a time (`nextChunk`/`walkChunks`) and keeps only the
+  ones that make the picture, so a file of a million empty chunks costs it the picture it
+  keeps and a short id string per chunk as it goes, not a struct for each chunk in the
+  file (`manyChunkWebP`, `TestWebPChunkWalkDoesNotHoldAStructPerChunk`); the rewritten
+  file is the only sizable thing any of them allocates. Each gives a safe answer for what
+  it cannot read — orientation 1, the dearest cost, `storedJPEGQuality`, not animated
+  (which leaves the file to the RIFF rewrite) — except the GIF walk and the RIFF rewrite,
+  which refuse the file. The EXIF reader follows no offset but IFD0's (no IFD chain, so no
+  loop). Whether the file is an image is the decoder's call alone (`TestHostileEXIF`,
+  `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`, `FuzzGIFFramePixels`;
+  `FuzzInspect` runs every walk `Inspect` makes over files of every format, and checks
+  that what it admits is estimated at no less than a byte a pixel and no more than the
+  budget; `FuzzStripWebP` runs the RIFF rewrite over lossless and lossy WebPs and checks
+  it is idempotent). No EXIF library is needed and none should be added.
 - **No filename is kept.** A camera's or a phone's filename can name a date and a
   person, so `parseSubmission` reads only the file's bytes, and an attachment's name
   is `attachmentName(stored path)`: `image` plus the stored format's extension

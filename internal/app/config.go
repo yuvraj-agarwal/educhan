@@ -123,10 +123,9 @@ const maxUploadLimit = min(media.MaxUploadBytes, media.UploadBudget-multipartOve
 // checkUploadLimit refuses an attachment size limit over maxUploadLimit.
 func checkUploadLimit(cfg Config) error {
 	if cfg.MaxUploadBytes > maxUploadLimit {
-		return fmt.Errorf("EDUCHAN_MAX_UPLOAD_BYTES: %d is over the most an attachment may be, %d (%d MiB): "+
-			"a file much larger is too costly to process whatever picture it holds, and the request "+
-			"carrying one this large fits the %d MiB set aside for upload bodies",
-			cfg.MaxUploadBytes, maxUploadLimit, maxUploadLimit>>20, media.UploadBudget>>20)
+		return fmt.Errorf("EDUCHAN_MAX_UPLOAD_BYTES: %d is over the most an attachment may be, %d (%d MiB), "+
+			"the largest size in whole MiB at which a file of one pixel can still be processed",
+			cfg.MaxUploadBytes, maxUploadLimit, maxUploadLimit>>20)
 	}
 	return nil
 }
