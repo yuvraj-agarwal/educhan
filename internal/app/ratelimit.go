@@ -13,11 +13,12 @@ import (
 const cooldownSweepThreshold = 4096
 
 // cooldownSweepInterval is how often a cooldownSweep drops every entry whose
-// cooldown has passed. The keys are client addresses, so this is the bound on
-// how long the server remembers one while the process has CPU: an address is
-// held in memory no longer than the longest cooldown that applies to it plus
-// one minute, counted from its last action that started a cooldown, however
-// quiet the server is. A host that gives the process CPU only while it answers
+// cooldown has passed. The keys are client addresses, as are the captcha
+// meter's, whose one-minute window counts as a cooldown here, so this is the
+// bound on how long the server remembers one while the process has CPU: an
+// address is held in memory no longer than the longest cooldown that applies
+// to it plus one minute, counted from its last action that started a cooldown,
+// however quiet the server is. A host that gives the process CPU only while it answers
 // a request, which is Cloud Run's default, holds the timer back while the
 // instance is idle; there the sweep runs before the instance answers its next
 // request, so an idle instance keeps expired entries until then or until it is
@@ -147,12 +148,18 @@ func (l *cooldownLimiter) sweepExpired() {
 // next request is the first moment the process is sure to run again.
 type cooldownSweep struct {
 	every    time.Duration
-	limiters []*cooldownLimiter
+	limiters []expiring
 	// last is when the most recent sweep began, in Unix nanoseconds.
 	last atomic.Int64
 }
 
-func newCooldownSweep(every time.Duration, limiters ...*cooldownLimiter) *cooldownSweep {
+// expiring is anything a cooldownSweep keeps short-lived: the cooldown
+// limiters, and the captcha's challenge meter.
+type expiring interface {
+	sweepExpired()
+}
+
+func newCooldownSweep(every time.Duration, limiters ...expiring) *cooldownSweep {
 	s := &cooldownSweep{every: every, limiters: limiters}
 	s.last.Store(time.Now().UnixNano())
 	return s

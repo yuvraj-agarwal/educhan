@@ -12,7 +12,8 @@ not.
 ## Stack & layout
 
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
-  `golang.org/x/image` (WebP decoding and thumbnail scaling).
+  `golang.org/x/image` (WebP decoding and thumbnail scaling), `golang.org/x/crypto`
+  (PBKDF2, for the captcha).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
   `-sweep` mode that deletes expired archived threads and exits.
 - `internal/app`
@@ -24,6 +25,9 @@ not.
   - `sweep.go` — the archive sweeper behind `educhan -sweep`.
   - `verify.go` — institutional verification: handlers, credential format, cookies;
     `verify_domains.go` + `verify_domains.txt` — the academic domain allowlist.
+  - `captcha.go` — the captcha (build plan 2.6): ALTCHA-format challenges, checking
+    answers, and the per-address challenge meter; spent answers are `SpendCaptcha` in
+    `store.go`.
   - `store.go` — all SQL; `models.go` — the JSON-facing types.
   - `identity.go` — anonymous names, tripcodes, the poster key, poster IDs; `text.go` —
     post text rules, including where `[code]`, `[math]`, `[eqn]` and `[spoiler]` tags
@@ -32,7 +36,8 @@ not.
   - `ratelimit.go` — per-client flood control, and the sweep that forgets expired entries.
   - `migrate.go` + `migrations/*.sql` — versioned migrations.
   - `web/` — the embedded single-page UI (`index.html`, `app.css`, `app.js`), plus
-    third-party browser builds under `web/lib/` (highlight.js, KaTeX).
+    third-party browser builds under `web/lib/` (highlight.js, KaTeX, ALTCHA's PBKDF2
+    worker).
 - `internal/media` — image validation, thumbnailing, and the blob-storage interface with
   its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
   (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
@@ -383,6 +388,24 @@ needs a browser check before the test changes.
   `max_upload_bytes` is the server-wide limit: a picked file over it is taken off the
   form at once, and the picker's hint and the `413` notice name it through
   `uploadLimitText` — never a board, since no board has a limit of its own.
+- **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
+  reads `captcha` from `GET /api/site` into `state.site.captcha`. The puzzle starts only
+  when a reader focuses a box to write in (the `focusin` listener, never on render or
+  on the badge box), runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
+  copies with interleaved counters, and the answer is kept in the `captcha` object in
+  memory only: never in storage or a draft, and dropped once a request uses it or the
+  server refuses it. `sendWithCaptcha` sends a post or a code request, solving first
+  when needed; a refusal carrying `"captcha"` drops the answer and sends once more with a
+  fresh one, and `"required"` also turns `state.site.captcha` on for a page drawn
+  without knowing. A badged post never solves one (`() => state.site.captcha &&
+  !held`), and a code request always does. `CAPTCHA_LIFETIME_MS` must stay under the
+  server's `captchaTTL` less a minute. `TestCaptchaAnswerStaysInMemory`,
+  `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`, `TestCaptchaIsSkippedOnlyByABadgedPost`
+  and `TestClientAndServerAgreeOnTheCaptcha` pin these; the worker needs no CSP change
+  (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the answer
+  is checked (`checkCaptcha`) as the last refusal before flood control and spent
+  (`spendCaptcha`) right after it, before any upload is processed, in both posting
+  handlers and `handleVerifyRequest`.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -463,11 +486,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   grooming usually starts, and having nowhere private to move to is educhan's biggest
   safety asset (§3.4 item 1). The rules and the posting form say so in as many words.
 - **The credential gates three things and nothing else**: the badge on a post, skipping
-  the captcha, and posting on `/u/` boards, the last two not built yet. Anything more
+  the captcha, and posting on `/u/` boards, the last not built yet. Anything more
   behind it starts to make the badge an account, and accounts are what Australia's
   under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
   `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
-  hold the code to the badge alone today.
+  hold the code to the badge path: the captcha is skipped only by a post that asks for
+  the badge and gets it, never by holding a credential
+  (`TestBadgedPostsSkipTheCaptcha`).
 - **Bump order only.** The index and the catalog list stickies, then threads by their
   last bump, and nothing else moves a thread: no "popular", "trending" or "hot", and no
   ranking by views, likes, replies or images, because ranking by popularity is what
@@ -709,8 +734,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   State is per process and in memory — a shared backend means replacing
   `cooldownLimiter`, which nothing else depends on.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
-  builds a `cooldownSweep` over all four limiters and starts its timer, which drops
-  every expired entry each `cooldownSweepInterval` (one minute), and `Close` stops it.
+  builds a `cooldownSweep` over all four limiters and the captcha's challenge meter
+  (`captchaMeter`, anything with `sweepExpired` is `expiring`) and starts its timer,
+  which drops every expired entry each `cooldownSweepInterval` (one minute), and
+  `Close` stops it. The meter counts in one-minute windows and forgets an address's
+  count when its window ends, so it is a one-minute cooldown for this bound
+  (`TestCaptchaMeterForgetsAddresses`).
   **While the process has CPU, an address is held in memory no longer than the
   longest cooldown that applies to it plus one minute**, counted from its last action
   that started one, busy server or quiet. A host that gives CPU only during requests,

@@ -933,6 +933,10 @@ func TestEveryTableHasItsColumnsPinned(t *testing.T) {
 		"post_quotes":       {"from_post_id", "to_post_id"},    // a reply and what it quoted, both public in its text
 		"media_deletions":   {"id", "key"},                     // storage keys the sweeper has still to remove
 		"schema_migrations": {"applied_at", "name", "version"}, // which migrations ran
+		// Captcha answers already used: a hash of a signature the server made
+		// at random, and when its challenge runs out. Nothing about who solved
+		// it, and nothing that points at the post it let through.
+		"captcha_spent": {"expires_at", "signature_hash"},
 		// Board settings, nothing about posters.
 		"boards": {"archive_days", "bump_limit", "created_at", "description", "id",
 			"image_limit", "name", "next_post_no", "rules", "slug", "sort_order", "thread_limit"},

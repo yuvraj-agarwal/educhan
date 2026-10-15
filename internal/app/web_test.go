@@ -43,6 +43,9 @@ const vendorDir = "lib/"
 // change without its hash changing here too. Updating a library means reading
 // the new build, then updating its README.md and its lines below.
 var vendoredWebAssets = map[string]string{
+	"lib/altcha/LICENSE":                              "bee1fb9d9c97d42c12c22332c5250f2fb1ef5c2321f6f82beb23e3b77be50a29",
+	"lib/altcha/README.md":                            "9cbd65903c9eff0ea7061b6f350fad7bd96c688331d7dd12582f1130e2f7d22f",
+	"lib/altcha/pbkdf2.js":                            "f2dcf92ba8cd81a7a6170c2c6181248359ddf5a6e35340c7472a313208273336",
 	"lib/highlightjs/LICENSE":                         "6c081431591d9df696c82dc598fe1423765b8a299b200ed00b281afd0f64c490",
 	"lib/highlightjs/README.md":                       "0dbbeb0b8768389763c8aafd06edcf9ae2ee7a972b333258aa0053e4c3a5b2b6",
 	"lib/highlightjs/highlight.min.js":                "8ab71eb09c51f501e5e25157d9cff100e46cc29bcbfc744d0b746d451fca7f53",
@@ -181,8 +184,9 @@ func TestNoEmbeddedDirectoryIsNamedVendor(t *testing.T) {
 	}
 }
 
-// app.js loads the highlighter and KaTeX by path at run time, so a moved or
-// renamed file would fail only in a browser; this catches it at build time.
+// app.js loads the highlighter, KaTeX and the captcha worker by path at run
+// time, so a moved or renamed file would fail only in a browser; this catches
+// it at build time.
 func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
 	script, err := fs.ReadFile(webFS(), "app.js")
 	if err != nil {
@@ -197,6 +201,7 @@ func TestAppLoadsVendoredScriptsThatExist(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
+		"lib/altcha/pbkdf2.js",
 		"lib/highlightjs/highlight.min.js",
 		"lib/katex/katex.min.js",
 		"lib/katex/katex.min.css",

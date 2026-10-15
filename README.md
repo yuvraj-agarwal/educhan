@@ -22,8 +22,9 @@ educhan is a fast, high-signal imageboard designed for students, researchers, an
 The prototype in this repository implements the imageboard end to end: boards,
 anonymous posting with tripcodes and per-thread poster IDs, one image per post,
 a paginated board index, a catalog view, threads with quote links, optional
-institutional verification, and key-authenticated moderation. Janitor accounts,
-bans, and reports are not built yet.
+institutional verification, a self-hosted proof-of-work captcha, and
+key-authenticated moderation. Janitor accounts, bans, and reports are not built
+yet.
 
 ## Verified Anonymity
 
@@ -294,6 +295,7 @@ no handler and no SQL changes.
 | One credential per address | Re-verifying issues a new credential and revokes the previous one, so a mailbox is one identity however many browsers it uses |
 | Plus-addressing stripped | `ana+one@` and `ana+two@` are the same mailbox. Dots are *not* stripped: that is a Gmail convention, and applying it everywhere would fold two real people at one institution together |
 | Code request cooldown | `EDUCHAN_VERIFY_COOLDOWN`, applied per client address **and** per address hash, so neither a client can walk a list of addresses nor a mailbox be flooded from a pool of hosts |
+| Captcha | With `EDUCHAN_CAPTCHA_SECRET` set, every code request carries an answer to the [captcha](#captcha), checked before the address is parsed: a script walking a list of addresses solves a puzzle for each |
 | Five wrong codes | The pending verification is destroyed and a fresh code is the only way on, which is what makes a six-digit code safe |
 | Credential expiry | `EDUCHAN_VERIFY_CREDENTIAL_TTL`, 180 days by default. The credential is kept in `localStorage`, so this is the lifetime in practice rather than an upper bound the browser cuts short |
 
@@ -632,6 +634,8 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
+| `EDUCHAN_CAPTCHA_SECRET` | empty | Keys the [captcha](#captcha): the signature on every challenge. **Unset switches the captcha off**, so posts and code requests need no answer. At least 32 characters (`openssl rand -hex 32`), the same on every instance; rotating it only invalidates the challenges out at the time |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` | Average number of PBKDF2 attempts a challenge asks of the browser, before an address asking fast is given harder ones; 1 to 2097152 |
 
 ### Storage backends
 
@@ -711,13 +715,14 @@ do not decode, which only decoding it can find, and decoding is the cost the
 upload cooldown is there for; and the loser of two replies racing for a
 thread's last image slot (see the HTTP API).
 
-The cooldowns are keyed on client addresses, and they are the only place the
-server holds one. A sweep runs once a minute and drops every entry whose
-cooldown has run out, so **an address is held in memory no longer than the
-longest cooldown that applies to it plus one minute**, counted from its last
-post (or code request, for verification's cooldown), whether or not anyone
-else posts in the meantime, **as long as the process has CPU between
-requests**. A host that gives it CPU only while it answers a request, which is
+The cooldowns are keyed on client addresses, and so is the
+[captcha](#captcha)'s count of challenges, which works like a one-minute
+cooldown; they are the only places the server holds one. A sweep runs once a
+minute and drops every entry whose cooldown has run out, so **an address is
+held in memory no longer than the longest cooldown that applies to it plus one
+minute**, counted from its last post (or code request, for verification's
+cooldown, or challenge, for the captcha's count), whether or not anyone else
+posts in the meantime, **as long as the process has CPU between requests**. A host that gives it CPU only while it answers a request, which is
 Cloud Run's default (request-based billing), holds the sweep's timer back while
 an instance is idle. The first request to arrive after a sweep fell due runs
 it before it is handled, but until one arrives, or the instance is shut down,
@@ -736,6 +741,54 @@ State is held in the process, so each instance of a horizontally scaled
 deployment enforces the cooldowns it sees. Moving to shared storage means
 replacing `cooldownLimiter` in `internal/app/ratelimit.go`, which nothing else
 depends on.
+
+### Captcha
+
+With `EDUCHAN_CAPTCHA_SECRET` set, a post without a badge, and every request for
+a verification code, has to carry the answer to a proof-of-work puzzle (build
+plan 2.6). educhan issues and checks the puzzles itself, in
+[ALTCHA](https://altcha.org)'s protocol: no third party sees the request, no
+script from anywhere else runs on the page, and no cookie is set.
+
+1. When a reader first moves into a box to write in, the page asks
+   `GET /api/captcha` for a challenge: a random salt and nonce, a PBKDF2-SHA-256
+   cost, the first half of a key, an expiry half an hour away, and the server's
+   HMAC over all of it. The server made the key by choosing a counter and
+   deriving PBKDF2 over the nonce with that counter appended.
+2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
+   copies and tries counters from zero until a key starts with that half. That is
+   about 1500 attempts at the default work, a second or two of arithmetic, done
+   while the post is being written.
+3. The post carries the answer, the challenge and the key it found, as
+   `"captcha"`. The server checks the signature, the expiry and an HMAC of the
+   key, which costs it the same two HMACs whether the answer is right or not,
+   and records the challenge as spent so it works once.
+
+A **badged post skips the captcha**: the credential has already cost its holder
+more than a puzzle would. Holding one is not enough; only a post that asks for
+the badge, and gets it, goes without an answer. A code request never skips it.
+
+The answer is checked before flood control and spent after it, so a post
+refused by the captcha starts no cooldown, and a post refused by a cooldown
+keeps its answer for when it is let through. A refusal answers `403` with
+`"captcha": "required" | "invalid" | "expired" | "used"` beside the message;
+the page solves a fresh puzzle and sends the post once more, so the reader
+presses the button once.
+
+An address that asks for challenges faster than people post gets harder ones:
+up to 60 a minute at the base work, then double for every further 60, up to
+eight times, and past 600 in a minute `GET /api/captcha` answers `429`. The
+count is kept per client address in one-minute windows and swept with the
+cooldowns (see [Flood control](#flood-control)). Spent challenges are kept in
+`captcha_spent` as a hash of their signature and their expiry, so the instances
+behind a load balancer agree on what was used, and each spend deletes the rows
+more than a minute past their expiry. Nothing in it points at the post an
+answer let through.
+
+Proof of work slows a script down; it does not tell a person from one. It
+makes each post cost the poster's processor a moment and a bulk poster's a
+moment every time, alongside flood control, and keeps every request on
+educhan's own server.
 
 ### Running behind a proxy
 
@@ -769,20 +822,21 @@ that overwrites the header with just the peer address are each a single hop.
 | Method | Path | Description |
 | --- | --- | --- |
 | `GET` | `/healthz` | Liveness plus a database ping |
-| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes"}`: whether posts may carry an image, and the largest one taken. The same answer for every caller; it reads nothing from the request |
+| `GET` | `/api/site` | Posting settings — `{"uploads","max_upload_bytes","captcha"}`: whether posts may carry an image, the largest one taken, and whether posts need a captcha answer. The same answer for every caller; it reads nothing from the request |
+| `GET` | `/api/captcha` | A captcha challenge — `{"parameters","signature"}`, ALTCHA's format; `404` when the captcha is off, `429` past 600 a minute from one address. See [Captcha](#captcha) |
 | `GET` | `/api/boards` | All boards |
 | `GET` | `/api/boards/{slug}` | One board and its limits |
 | `GET` | `/api/boards/{slug}/threads?page=N` | Index page: opening post and last replies per thread |
-| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler"}` |
+| `POST` | `/api/boards/{slug}/threads` | Create a thread — `{"subject","name","body","badge","spoiler","captcha"}` |
 | `GET` | `/api/boards/{slug}/catalog` | Every live thread as excerpt tiles |
 | `GET` | `/api/boards/{slug}/archive` | Archived threads, most recently archived first: `{"board","threads":[{"no","subject","excerpt","replies","created_at","archived_at"}]}`, at most 3000 |
 | `GET` | `/api/boards/{slug}/threads/{no}` | One thread with all posts, live or archived |
 | `GET` | `/api/boards/{slug}/posts/{no}` | Which thread a post is in — `{"board","no","thread_no"}`, live or archived; `404` when the board has no such post |
-| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler"}` |
+| `POST` | `/api/boards/{slug}/threads/{no}/posts` | Reply — `{"name","body","sage","badge","spoiler","captcha"}` |
 | `GET` | `/api/threads/{id}` | Thread by primary key |
 | `POST` | `/api/threads/{id}/posts` | Reply by thread primary key |
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
-| `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
+| `POST` | `/api/verify/request` | Email a code — `{"email","adult","captcha"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
@@ -823,12 +877,19 @@ the image limit posts at once when sent again without the image. (Two replies
 racing for a thread's last image slot can both get that far; the loser is
 refused inside the transaction, after its cooldowns have started.)
 
+`"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON
+of `{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
+It is needed when the captcha is on, except on a post that asks for a badge
+and gets it; see [Captcha](#captcha) for its refusals.
+
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields
 plus an `image` file. Errors are `{"error": "..."}`, and `429` responses add
 `retry_after` plus a `Retry-After` header.
 
 ```bash
+# With EDUCHAN_CAPTCHA_SECRET unset, as it is locally, posts need no captcha
+# answer.
 curl -s localhost:8080/api/boards
 curl -s -X POST localhost:8080/api/boards/career/threads \
   -H 'Content-Type: application/json' \
