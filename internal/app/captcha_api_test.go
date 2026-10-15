@@ -17,6 +17,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 )
 
 /* Harness ------------------------------------------------------------------- */
@@ -334,6 +336,58 @@ func TestBadgedPostsSkipTheCaptcha(t *testing.T) {
 	}
 }
 
+// A credential changes nothing about the captcha off the badge path: the site
+// settings read the same with one or without, and a challenge is issued the
+// same way, counted against the same address, so presenting a credential
+// neither skips the count nor starts a fresh one.
+func TestCredentialHasNoEffectOnTheCaptcha(t *testing.T) {
+	fake := &fakeCaptcha{}
+	h := verifyServer(t, func(cfg *Config) { cfg.captcha = fake })
+	now := time.Unix(1_800_000_000, 0).Add(15 * time.Second)
+	meterAt(h.app.captchaMeter, &now)
+
+	var started verifyResponse
+	if status := h.post("/api/verify/request", map[string]any{
+		"email": "ana@iitb.ac.in", "adult": true, "captcha": "any answer the fake takes",
+	}, &started); status != http.StatusAccepted {
+		t.Fatalf("request code: status %d (%s)", status, started.Error)
+	}
+	status, confirmed := h.confirmCode(h.mail.last(t).Code)
+	if status != http.StatusOK {
+		t.Fatalf("confirm code: status %d (%s)", status, confirmed.Error)
+	}
+
+	var bare, presented json.RawMessage
+	h.get("/api/site", &bare)
+	if status := h.getWithCredential(confirmed.Credential, "/api/site", &presented); status != http.StatusOK || !bytes.Equal(bare, presented) {
+		t.Errorf("GET /api/site with a credential: status %d, %s; without: %s", status, presented, bare)
+	}
+
+	for i := range 2 * captchaFreeChallenges {
+		var challenge captchaChallenge
+		var status int
+		if i%2 == 0 {
+			status = h.do(http.MethodGet, "/api/captcha", nil, &challenge)
+		} else {
+			status = h.getWithCredential(confirmed.Credential, "/api/captcha", &challenge)
+		}
+		if status != http.StatusOK {
+			t.Fatalf("challenge %d: status %d", i+1, status)
+		}
+	}
+	// Every other request carried the credential, so the requests alternate,
+	// and the count runs on through all of them.
+	scales := fake.issued()
+	if len(scales) != 2*captchaFreeChallenges {
+		t.Fatalf("%d challenges issued, want %d", len(scales), 2*captchaFreeChallenges)
+	}
+	for i, scale := range scales {
+		if want := captchaScale(i + 1); scale != want {
+			t.Fatalf("challenge %d issued at scale %d, want %d: a credential changed the count", i+1, scale, want)
+		}
+	}
+}
+
 func TestCodeRequestsNeedTheCaptcha(t *testing.T) {
 	h := verifyServer(t, withCaptcha(nil))
 
@@ -459,13 +513,14 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 	now := time.Unix(1_800_000_000, 0).Add(15 * time.Second)
 	meterAt(h.app.captchaMeter, &now)
 
+	var out map[string]any
 	from := func(ip string) (int, http.Header) {
 		req, err := http.NewRequest(http.MethodGet, h.base+"/api/captcha", nil)
 		if err != nil {
 			t.Fatalf("build request: %v", err)
 		}
 		req.Header.Set("X-Forwarded-For", ip)
-		var out map[string]any
+		out = nil
 		status := h.send(req, &out)
 		return status, h.lastHeader
 	}
@@ -475,8 +530,9 @@ func TestCaptchaChallengesPerAddress(t *testing.T) {
 		}
 	}
 	status, header := from("203.0.113.9")
-	if status != http.StatusTooManyRequests || header.Get("Retry-After") != "45" {
-		t.Errorf("challenge past the limit: status %d, Retry-After %q, want 429 after the 45s left", status, header.Get("Retry-After"))
+	if status != http.StatusTooManyRequests || header.Get("Retry-After") != "45" || out["retry_after"] != 45.0 {
+		t.Errorf("challenge past the limit: status %d, Retry-After %q, retry_after %v, want 429 after the 45s left",
+			status, header.Get("Retry-After"), out["retry_after"])
 	}
 	if status, _ := from("198.51.100.4"); status != http.StatusOK {
 		t.Errorf("another address: status %d, want 200", status)
@@ -519,12 +575,15 @@ func TestCaptchaChallengesAreNotCached(t *testing.T) {
 	}
 }
 
-// Spent answers are kept until a minute after their challenge would have
-// expired, and pruned by the next spend after that.
+// A spent answer is stored with its expiry rounded up to the next UTC
+// midnight, so the table dates what it let through only to the day. Rows past
+// that are deleted a batch at a time by later spends and all at once by the
+// daily sweep, which on a quiet server is the one that clears them.
 func TestSpentCaptchasArePruned(t *testing.T) {
 	h := testServer(t, nil)
 	ctx := context.Background()
-	now := time.Now()
+	// Half a minute into a UTC day, so yesterday's rows are inside the margin.
+	now := time.Date(2026, 10, 15, 0, 0, 30, 0, time.UTC)
 	key := func(s string) []byte { k := sha256.Sum256([]byte(s)); return k[:] }
 
 	spend := func(name string, expires time.Time, want bool) {
@@ -537,14 +596,48 @@ func TestSpentCaptchasArePruned(t *testing.T) {
 			t.Errorf("spend %s: fresh %t, want %t", name, fresh, want)
 		}
 	}
-	spend("long gone", now.Add(-2*time.Minute), true)
-	spend("just gone", now.Add(-30*time.Second), true)
-	spend("live", now.Add(10*time.Minute), true)
-	if n := h.countRows("captcha_spent"); n != 2 {
-		t.Errorf("%d spent answers kept, want 2: the one past its margin pruned", n)
+	// More rows from the day before yesterday than one spend prunes.
+	for i := range captchaPruneBatch + 5 {
+		h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+			key(fmt.Sprint("old ", i)), now.Add(-24*time.Hour).Truncate(24*time.Hour))
 	}
+	spend("yesterday", now.Add(-12*time.Hour), true)
+	if n := h.countRows("captcha_spent"); n != 5+1 {
+		t.Errorf("%d spent answers kept after one spend, want 6: %d of the old ones pruned, and the new one", n, captchaPruneBatch)
+	}
+	sweep := func(asOf time.Time, deleted, left int) {
+		t.Helper()
+		report, err := h.app.sweep(ctx, asOf, sweepBatchSize)
+		if err != nil {
+			t.Fatalf("sweep: %v", err)
+		}
+		if report.SpentCaptchas != deleted || h.countRows("captcha_spent") != left {
+			t.Errorf("sweep at %s deleted %d spent answers and left %d, want %d deleted and %d left",
+				asOf, report.SpentCaptchas, h.countRows("captcha_spent"), deleted, left)
+		}
+	}
+	// The rest of the old ones go; yesterday's is kept for the margin.
+	sweep(now, 5, 1)
+
+	spend("live", now.Add(10*time.Minute), true)
+	rows, err := h.app.pool.Query(ctx, `SELECT expires_at FROM captcha_spent`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[time.Time])
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, at := range stored {
+		if at.UTC() != at.UTC().Truncate(24*time.Hour) {
+			t.Errorf("a spent answer is stored expiring at %s, not at a UTC midnight", at.UTC())
+		}
+	}
+
+	// Yesterday's answer stays spent until its day is over and a minute more.
+	spend("yesterday", now.Add(-12*time.Hour), false)
+	sweep(now.Add(2*time.Minute), 1, 1)
 	spend("live", now.Add(10*time.Minute), false)
-	spend("just gone", now.Add(-30*time.Second), false)
 }
 
 // The captcha leaves nothing behind that could tie a post to who wrote it: no

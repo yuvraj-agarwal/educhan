@@ -136,7 +136,7 @@ field, and everything else stays the same. Uploads are off unless
 `GET /api/site` says which, with the size limit:
 
 ```bash
-curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608}
+curl -s localhost:8080/api/site   # -> {"uploads":true,"max_upload_bytes":8388608,"captcha":false}
 
 # Thread with an image, then read back the attachment metadata
 TNO=$(curl -s -X POST localhost:8080/api/boards/meta/threads \
@@ -258,7 +258,9 @@ CI runs no browser, so the client's privacy and safety invariants are pinned by 
 that read `app.js` (`web_invariants_test.go`): the poster key and the credential only in
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
-KaTeX's options, and the highlighting cap. They are
+KaTeX's options, the highlighting cap, and the captcha's (its answer in memory only, its
+puzzle started only by a reader moving into a box to write in, and skipped only by a
+badged post). They are
 a floor, not a proof; a change that trips one has changed one of those properties and
 needs a browser check before the test changes.
 
@@ -373,7 +375,7 @@ needs a browser check before the test changes.
   same-thread quote link) only calls `focusHash()`, so revealed spoilers stay revealed. A
   disabled file input is left out of `FormData`, and `submit` posts as JSON when it is.
 - **A server that takes no images.** `loadSite` reads `GET /api/site`
-  (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
+  (`{"uploads","max_upload_bytes","captcha"}`) into `state.site`. With `uploads` false, `formHTML`
   draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
   dropped on the form goes nowhere and `UPLOADS_OFF_REASON` says why, `threadCounts` and
   `badgesHTML` say nothing about the cap (a count of images posted before the switch
@@ -393,21 +395,24 @@ needs a browser check before the test changes.
   when a reader focuses a box to write in (the `focusin` listener, never on render or
   on the badge box), runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
   copies with interleaved counters, and the answer is kept in the `captcha` object in
-  memory only: never in storage or a draft, and dropped once a request uses it or the
-  server refuses it. `sendWithCaptcha` sends a post or a code request, solving first
-  when needed; a refusal carrying `"captcha"` drops the answer and sends once more with a
-  fresh one, and `"required"` also turns `state.site.captcha` on for a page drawn
-  without knowing. Any other refusal keeps the answer, unless it carries
-  `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`), which drops
-  it and starts the next puzzle at once. A badged post never solves one (`() => state.site.captcha &&
-  !held`), and a code request always does. `CAPTCHA_LIFETIME_MS` must stay under the
+  memory only, never in storage or a draft. `sendWithCaptcha` sends a post or a code
+  request, solving first when needed. The answer is dropped when the request succeeds;
+  a refusal carrying `"captcha"` drops it and sends once more with a fresh one, and
+  `"required"` also turns `state.site.captcha` on for a page drawn without knowing. Any
+  other refusal keeps the answer, unless it carries `Educhan-Captcha: spent`
+  (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`), which drops it and starts the next
+  puzzle at once. A badged post never solves one (`() => state.site.captcha && !held`),
+  and a code request always does. `CAPTCHA_LIFETIME_MS` must be no more than the
   server's `captchaTTL` less a minute. `TestCaptchaAnswerStaysInMemory`,
   `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`, `TestCaptchaIsSkippedOnlyByABadgedPost`
   and `TestClientAndServerAgreeOnTheCaptcha` pin these; the worker needs no CSP change
   (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the answer
-  is checked (`checkCaptcha`) as the last refusal before flood control and spent
-  (`spendCaptcha`) right after it, before any upload is processed, in both posting
-  handlers and `handleVerifyRequest`.
+  is checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not
+  already spent) before flood control, and spent (`spendCaptcha`) right after it,
+  before any upload is processed. In the posting handlers the check is the last
+  refusal before flood control; in `handleVerifyRequest` it comes straight after the
+  18+ attestation, before the address is parsed. Only a replay racing its original is
+  refused as used after flood control.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
@@ -569,8 +574,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   deleted. Nothing enforces the cap against the counter. The order in `createPost` is:
   parse the body, resolve the badge, then `ReplyRefusal` — a lock-free read that
   makes `CreateReply`'s checks in its order (missing, archived, locked, and for an
-  image the cap, counted from the posts like the real check) — then flood control,
-  then the upload is stored, then `CreateReply`. So the common refusal costs no
+  image the cap, counted from the posts like the real check) — then the captcha check
+  (`checkCaptcha`), then flood control, then the captcha spend (`spendCaptcha`), then
+  the upload is stored, then `CreateReply`. So the common refusal costs no
   cooldown and stores nothing, and the client's "send the text on its own" goes
   through at once (`TestRefusedRepliesCostNoCooldown`). The pre-check decides
   nothing: replies racing for the last slot both pass it, and the check inside
@@ -717,7 +723,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `EDUCHAN_MAX_UPLOAD_BYTES`, `EDUCHAN_MOD_KEY`, `EDUCHAN_VERIFY_SECRET`,
   `EDUCHAN_VERIFY_CODE_TTL`, `EDUCHAN_VERIFY_CREDENTIAL_TTL`, `EDUCHAN_VERIFY_COOLDOWN`,
   `EDUCHAN_VERIFY_DOMAINS`, `EDUCHAN_UPLOADS_ENABLED`, `EDUCHAN_MAIL_DEV`,
-  `EDUCHAN_DB_MAX_CONNS`. See `.env.example` and the README table.
+  `EDUCHAN_DB_MAX_CONNS`, `EDUCHAN_CAPTCHA_SECRET`, `EDUCHAN_CAPTCHA_WORK`. See
+  `.env.example` and the README table.
   `listenAddr` in `config.go` also reads `PORT` — the bare port number Cloud Run injects —
   when `EDUCHAN_ADDR` is unset, so a container listens where the platform expects. An
   explicit `EDUCHAN_ADDR` still wins, which is why the deploy config leaves it unset.
@@ -729,12 +736,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   so every refusal that can be known up front comes before `allow`: a malformed poster
   key, the body, a badge the poster cannot have, uploads switched off, a file its header
   shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted format,
-  or more than `media.MaxPixels`), and a reply the thread would refuse
-  (`ReplyRefusal`). Decoding the pixels is not up front, because it is the cost the
+  or more than `media.MaxPixels`), a reply the thread would refuse
+  (`ReplyRefusal`), and a captcha answer that is missing, wrong, expired or already
+  spent (`checkCaptcha`). Decoding the pixels is not up front, because it is the cost the
   upload cooldown limits, so an image that fails to decode is refused by `storeUpload`
   after `allow` (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
-  State is per process and in memory — a shared backend means replacing
-  `cooldownLimiter`, which nothing else depends on.
+  State is per process and in memory, the captcha's challenge count
+  (`captchaMeter`) included — a shared backend means replacing `cooldownLimiter`,
+  which nothing else depends on, and the meter.
   The keys carry client addresses, so the limiters are also a privacy surface: `New`
   builds a `cooldownSweep` over all four limiters and the captcha's challenge meter
   (`captchaMeter`, anything with `sweepExpired` is `expiring`) and starts its timer,
@@ -764,8 +773,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the
   configured depth or a non-IP entry falls back to the peer address. Setting it higher than
-  the real chain hands clients control of their own rate-limit bucket, and of their poster
-  ID when they send no poster key.
+  the real chain hands clients control of their own rate-limit bucket, their captcha
+  challenge count, and their poster ID when they send no poster key.
 - Moderation is one shared key rather than accounts: `authorizeMod` in `moderation.go` is
   the single gate, so replacing it with real janitor roles later touches only that file.
   Deleting a post or thread removes the attachment blobs after the transaction commits; a
@@ -830,7 +839,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     a post — `TestCredentialIsReadOnlyOnTheBadgePath` parses this package and pins the
     call graph (header read in `credential`, called only by `postBadge`, called only by
     the two posting handlers), and `TestCredentialHasNoEffectOffTheBadgePath` presents a
-    valid credential to every other endpoint and diffs the responses. In particular
+    valid credential to every other endpoint and diffs the responses
+    (`TestCredentialHasNoEffectOnTheCaptcha` for `GET /api/captcha`, whose answers are
+    random). In particular
     `GET /api/verify` reports whether the feature is configured and nothing about the
     caller: answering "am I verified?" would mean the credential travelling off the
     badge path. The client reads its own label and expiry out of the credential locally.
@@ -922,8 +933,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/sweep_test.go`, `internal/app/poster_id_test.go`,
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
-  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
-  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
+  `internal/app/logging_test.go`, `internal/app/media_backend_test.go`,
+  `internal/app/captcha_api_test.go`, and `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
   the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
   `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every

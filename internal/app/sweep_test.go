@@ -284,7 +284,7 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	delete(record, "level")
 	delete(record, "msg")
 	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0,
-		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0}
+		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "spent_captchas": 0.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
 	}

@@ -44,6 +44,9 @@ type SweepReport struct {
 	BlobsRemoved int
 	BlobFailures int
 	BlobsMissing int
+	// SpentCaptchas is how many spent captcha answers past their day the
+	// sweep deleted: the ones no post came along to prune.
+	SpentCaptchas int
 }
 
 // Sweep deletes every archived thread that has outlived its board's
@@ -76,6 +79,13 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 			break
 		}
 	}
+
+	spent, err := a.store.PruneSpentCaptchas(ctx, asOf)
+	if err != nil {
+		a.logSweep(report)
+		return report, fmt.Errorf("sweep spent captchas: %w", err)
+	}
+	report.SpentCaptchas = spent
 
 	firstFailure, err := a.removeQueuedMedia(ctx, &report)
 	a.logSweep(report)
@@ -169,5 +179,6 @@ func (a *App) logSweep(report SweepReport) {
 		"attachments", report.Attachments,
 		"blobs_removed", report.BlobsRemoved,
 		"blob_failures", report.BlobFailures,
-		"blobs_missing", report.BlobsMissing)
+		"blobs_missing", report.BlobsMissing,
+		"spent_captchas", report.SpentCaptchas)
 }

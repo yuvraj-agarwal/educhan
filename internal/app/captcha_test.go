@@ -463,7 +463,7 @@ func TestCaptchaConfig(t *testing.T) {
 			t.Errorf("verifier = %#v, want ALTCHA's at work 3000", newCaptcha(cfg))
 		}
 	})
-	for _, raw := range []string{"0", "-5", "lots", "1.5", "2097153"} {
+	for _, raw := range []string{"0", "-5", "lots", "1.5", "10001"} {
 		t.Run("work "+raw, func(t *testing.T) {
 			t.Setenv("EDUCHAN_CAPTCHA_WORK", raw)
 			if _, err := ConfigFromEnv(); err == nil {
@@ -472,7 +472,7 @@ func TestCaptchaConfig(t *testing.T) {
 		})
 	}
 	t.Run("largest work", func(t *testing.T) {
-		t.Setenv("EDUCHAN_CAPTCHA_WORK", "2097152")
+		t.Setenv("EDUCHAN_CAPTCHA_WORK", "10000")
 		if _, err := ConfigFromEnv(); err != nil {
 			t.Errorf("EDUCHAN_CAPTCHA_WORK at its largest: %v", err)
 		}

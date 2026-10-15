@@ -188,7 +188,7 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
       : `${UPLOADS_OFF_REASON} Write something to post text instead.`;
   }
   // The captcha refused a fresh answer as well, which a working server does
-  // not: the request was not acted on, and pressing the button again solves
+  // not: nothing was posted or sent, and pressing the button again solves
   // another.
   if (err.status === 403 && err.payload && err.payload.captcha) {
     return action === "code"
@@ -1358,7 +1358,12 @@ function formHTML({ kind, slug, thread = null, open = false }) {
 
   // Said where the button is, since pressing it may wait on the puzzle. No
   // link to the FAQ's entry here: leaving the page would lose the post.
-  const check = state.site.captcha ? " Your browser does a quick anti-spam check first." : "";
+  let check = "";
+  if (state.site.captcha) {
+    check = held
+      ? " Unless the post carries your badge, your browser does a quick anti-spam check first."
+      : " Your browser does a quick anti-spam check first.";
+  }
 
   // Under the message, on every form: no contact details, because they are
   // how a conversation leaves the site for a private one, which educhan
@@ -2285,13 +2290,15 @@ const FAQ_SECTIONS = [
     answer: `
       <p>On sites that have it switched on, your browser solves a small maths puzzle before
         each post goes, and before it asks for a badge code. You don't have to do anything:
-        the puzzle starts when you start typing and usually takes a second or two. That costs
+        the puzzle starts when you click or tap into a box to write in, and usually takes a
+        second or two. That costs
         a person almost nothing, but it makes a program that posts thousands of times a minute
         slow and expensive to run.</p>
       <p>The puzzle comes from educhan itself, not from Google or any other company, and no
-        cookie is set for it. The answer goes with the one post it was solved for. So that it
-        can't be used twice, the server keeps a scrambled fingerprint of the puzzle for half
-        an hour, with nothing that points to you or to your post. Posts with the
+        cookie is set for it. Each answer is used once, for one post or one code request. So
+        that it can't be used twice, the server keeps a scrambled fingerprint of the puzzle for
+        a day or so, dated only to the day, with nothing that points to you or to your post.
+        Posts with the
         <a href="#faq-badge">verified badge</a> skip the check.</p>`,
   },
   {
@@ -3389,9 +3396,10 @@ function posterKey() {
 // the prefix the challenge gives, and the request carries the answer. Nothing
 // goes to anyone but educhan, and nothing is asked of the reader.
 //
-// The puzzle starts the first time a reader focuses a form that needs it,
-// never when a page is drawn, so a reader who never posts never asks for one;
-// by the time the post is written it is usually solved. The answer is kept in
+// The puzzle starts the first time a reader moves into a box to write in, in a
+// form that needs it, never when a page is drawn, so a reader who never starts
+// to write never asks for one; by the time the post is written it is usually
+// solved. The answer is kept in
 // memory only, never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on any response to a request whose
@@ -3406,7 +3414,9 @@ const CAPTCHA_MAX_WORKERS = 4;
 // older than this is replaced before a post goes out with it.
 const CAPTCHA_LIFETIME_MS = 25 * 60 * 1000;
 // A copy of the worker gives up after this long, so a puzzle that cannot be
-// solved, which a working server never sends, stops using the processor.
+// solved, which a working server never sends, stops using the processor. The
+// hardest puzzle a server gives a reader posting at a person's pace takes a
+// slow phone under a minute (maxCaptchaWork in captcha.go).
 const CAPTCHA_TIMEOUT_MS = 2 * 60 * 1000;
 // What a post or a code request says when the browser could not solve the
 // puzzle: no Web Worker, no Web Crypto, or a worker that gave up.
@@ -3484,7 +3494,7 @@ async function solveCaptcha() {
 // the first answer. Exactly one counter answers a challenge, so whichever copy
 // it falls to finds it, and the rest are stopped short.
 function runCaptchaWorkers(challenge) {
-  const failed = () => Object.assign(new Error(CAPTCHA_FAILED), { captchaFailed: true });
+  const failed = () => new Error(CAPTCHA_FAILED);
   const count = Math.min(CAPTCHA_MAX_WORKERS, Math.max(1, navigator.hardwareConcurrency || 1));
   const workers = [];
   return new Promise((resolve, reject) => {
@@ -3538,8 +3548,8 @@ function runCaptchaWorkers(challenge) {
 // sendWithCaptcha sends a request that may need the captcha: needsIt() says
 // whether it does, and send(answer) makes the request, with "" for no answer.
 // A refusal of the answer itself, for being missing, out of date, used or
-// wrong, comes before the server does anything else with the request, so the
-// answer is dropped and the request sent once more with a fresh one; the
+// wrong, comes before flood control and before anything is stored or sent, so
+// the answer is dropped and the request sent once more with a fresh one; the
 // reader pressed the button once and the request goes once. Any other refusal
 // says whether the server spent the answer before refusing, as it does for an
 // image it then cannot read. One that did drops the answer and starts the next

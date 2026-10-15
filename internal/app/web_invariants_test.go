@@ -414,11 +414,11 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	}
 }
 
-// A reader who never posts never asks for a captcha: the challenge is fetched
-// in one place, and the only things that start a fetch before a request needs
-// it are a reader moving into a box to write in, and a post or code request
-// refused after the server spent its answer, which the reader is about to send
-// again.
+// A reader who never starts to write never asks for a captcha: the challenge
+// is fetched in one place, and the only things that start a fetch before a
+// request needs it are a reader moving into a box to write in, and a post or
+// code request refused after the server spent its answer, which the reader is
+// about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -515,6 +515,13 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
 	if !strings.Contains(send, "err.payload && err.payload.captcha") || !strings.Contains(send, `reason === "`+captchaMissing+`"`) {
 		t.Errorf("sendWithCaptcha no longer reads the refusal's captcha field, or no longer knows %q", captchaMissing)
+	}
+	// A refusal of the answer drops it and sends once more, once: a loop here
+	// would hammer /api/captcha. The answer is dropped after a success, on a
+	// captcha refusal, and on a refusal that says it was spent, and nowhere else.
+	if !strings.Contains(send, "for (let retried = false; ; retried = true) {") ||
+		!strings.Contains(send, "if (retried || !needsIt()) {") || strings.Count(send, "dropCaptcha(answer);") != 3 {
+		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
 	// Any other refusal keeps the answer unless the server says it spent it,
 	// and then the next puzzle starts at once.

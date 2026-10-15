@@ -28,7 +28,7 @@ import (
 // carries the answer. Solving costs the browser a moment of arithmetic and
 // costs a script that posts in bulk the same moment every time. Nobody but
 // educhan sees the request, nothing is stored about who solved it, and no
-// cookie is set: the answer travels once, in the post that spends it.
+// cookie is set: the answer travels only in the requests that may spend it.
 //
 // The challenge is ALTCHA's "deterministic" kind. The server picks the counter
 // itself, derives its key, and publishes the first half of that key as the
@@ -60,25 +60,31 @@ const (
 	// checked against.
 	captchaPrefixLength = captchaKeyLength / 2
 	// captchaTTL is how long a challenge can be answered. It covers writing a
-	// long post after the puzzle started on the first keystroke; the client
-	// solves a fresh one if its answer is about to run out.
+	// long post after the puzzle started when the reader moved into the box;
+	// the client solves a fresh one if its answer is about to run out.
 	captchaTTL = 30 * time.Minute
 	// defaultCaptchaWork is the average number of attempts a challenge asks
 	// for. At captchaCost that is a second or two on a phone and well under one
 	// on a laptop, spread over the browser's cores.
 	defaultCaptchaWork = 1500
-	// maxCaptchaWork keeps EDUCHAN_CAPTCHA_WORK, scaled up for a busy address,
-	// inside a uint32 counter.
-	maxCaptchaWork = 1 << 24
+	// maxCaptchaWork caps the work a challenge asks for, scaled up for a busy
+	// address included, and EDUCHAN_CAPTCHA_WORK is held to an eighth of it
+	// (captchaMaxScale). A counter is drawn from up to one and a half times
+	// the work, so the base puzzle, the one people are given, asks at most
+	// 15,000 attempts: about twenty seconds on one laptop core and under a
+	// minute on a slow phone, inside the two minutes app.js gives a puzzle
+	// before saying it could not finish. Only an address asking for
+	// challenges far faster than anyone posts is given more than that.
+	maxCaptchaWork = 80000
 	// maxCaptchaPayload bounds an answer before it is decoded. A real one is
 	// about six hundred bytes.
 	maxCaptchaPayload = 4096
 )
 
 // Adaptive difficulty: an address that asks for challenges faster than people
-// post gets harder ones. The count is kept per client address in fixed
-// one-minute windows, so the meter holds an address no longer than the
-// verification cooldown does.
+// post gets harder ones. The count is kept per client address, in this
+// instance's memory, in fixed one-minute windows, so the meter holds an
+// address no longer than a one-minute cooldown would.
 const (
 	// captchaWindow is the period challenges are counted over.
 	captchaWindow = time.Minute
@@ -441,9 +447,9 @@ func (m *captchaMeter) sweepExpired() {
 
 func (a *App) captchaEnabled() bool { return a.captcha != nil }
 
-// handleCaptcha issues a challenge. The client asks for one when a posting
-// form or the code request form is first used, never when a page is drawn, so
-// a reader who never posts never asks.
+// handleCaptcha issues a challenge. The client asks for one when a reader moves
+// into a box to write in, in a posting form or the code request form, never
+// when a page is drawn, so a reader who never starts to write never asks.
 func (a *App) handleCaptcha(w http.ResponseWriter, r *http.Request) {
 	if !a.captchaEnabled() {
 		writeError(w, http.StatusNotFound, "the captcha is not switched on here")

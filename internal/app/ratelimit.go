@@ -18,8 +18,8 @@ const cooldownSweepThreshold = 4096
 // bound on how long the server remembers one while the process has CPU: an
 // address is held in memory no longer than the longest cooldown that applies
 // to it plus one minute, counted from its last action that started a cooldown,
-// however quiet the server is. A host that gives the process CPU only while it answers
-// a request, which is Cloud Run's default, holds the timer back while the
+// however quiet the server is. A host that gives the process CPU only while it
+// answers a request, which is Cloud Run's default, holds the timer back while the
 // instance is idle; there the sweep runs before the instance answers its next
 // request, so an idle instance keeps expired entries until then or until it is
 // shut down. The address is never written anywhere else.
