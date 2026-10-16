@@ -787,15 +787,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   that what it admits is estimated at no less than a byte a pixel and no more than the
   budget; `FuzzStripWebP` runs the RIFF rewrite over lossless and lossy WebPs and checks
   it is idempotent). No EXIF library is needed and none should be added.
-- **No filename is kept.** A camera's or a phone's filename can name a date and a
-  person, so `parseSubmission` reads only the file's bytes, and an attachment's name
-  is `attachmentName(stored path)`: `image` plus the stored format's extension
-  (`image.jpg`), whatever the client sent, and so whatever extension it claimed. It is
-  stored in `attachments.original_name`, a column that kept its name;
-  `0008_attachment_names.sql` rewrote the rows from before the same way, from
-  `original_path`, and has to stay in step with `attachmentName`
-  (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`). The client
-  shows it as the caption under the thumbnail.
+- **No filename is kept.** A camera's or a phone's filename can name a date and a person,
+  so `parseSubmission` reads only the file's bytes, and an attachment's name is
+  `attachmentName(stored path)`: `image` plus the stored format's extension (`image.jpg`),
+  whatever the client sent, and so whatever extension it claimed. It is stored in
+  `attachments.original_name`, a column that kept its name; `0008_attachment_names.sql`
+  rewrote the rows from before the same way, from `original_path`, and `renameAttachments`
+  repeats it on every start for any row an older release still serving during a rollout
+  wrote since; both have to stay in step with `attachmentName`
+  (`TestUploadedFilenameIsNotKept`, `TestAttachmentNamesAreRewritten`,
+  `TestAttachmentNamesStoredSinceTheMigrationAreRenamedOnStart`). The client shows it as
+  the caption under the thumbnail.
 - Dropping the ICC profile (and a PNG's `iCCP` and `cHRM`) is deliberate: most photos
   are sRGB, which is what a browser assumes untagged, and look the same; a wide-gamut
   one (Display P3, Adobe RGB) shifts slightly. A profile can name a device or an editor,
@@ -1074,16 +1076,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
 
 - Migrations live in `internal/app/migrations/` and are applied on startup inside a
   Postgres advisory lock, recorded in `schema_migrations`. Add a new numbered file rather
-  than editing an applied one; `0001_init.sql` is deliberately written with
-  `IF NOT EXISTS` so it is a no-op on databases created before migrations existed.
-  There are no down migrations, so a rollback runs old code on a newer schema: `migrate`
-  logs an error naming the versions it does not know, and `App.schemaAhead` makes the
-  sweeper refuse to run. A rollback across `0005` is unsafe whatever the code says —
-  phase-0 code shows archived threads as live and its prune deletes them, leaving
-  their files behind (`deploy/README.md`). Under the same lock, after the migrations,
-  `renameReservedBoards` moves any board whose slug has since been reserved to
-  `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
-  word needs no migration of its own.
+  than editing an applied one; `0001_init.sql` is deliberately written with `IF NOT
+  EXISTS` so it is a no-op on databases created before migrations existed. There are no
+  down migrations, so a rollback runs old code on a newer schema: `migrate` logs an error
+  naming the versions it does not know, and `App.schemaAhead` makes the sweeper refuse to
+  run. A rollback across `0005` is unsafe whatever the code says — phase-0 code shows
+  archived threads as live and its prune deletes them, leaving their files behind
+  (`deploy/README.md`). Under the same lock, after the migrations, `renameReservedBoards`
+  moves any board whose slug has since been reserved to `<slug>-board`
+  (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new word needs no
+  migration of its own, and `renameAttachments` repeats `0008`'s rename, so a filename an
+  older release stored during a rollout is gone at the next start.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.

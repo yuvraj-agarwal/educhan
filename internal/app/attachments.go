@@ -432,7 +432,8 @@ func attachmentInput(sub *submission, img *media.StoredImage) *newAttachment {
 // attachmentName is the name every image is shown under: "image" and the
 // extension of the format it was stored in, whatever the poster's file was
 // called. 0008_attachment_names.sql gave the rows from before the same name,
-// from the same path, and has to agree with this.
+// from the same path, and renameAttachments gives it on every start to any an
+// older release has stored since; both have to agree with this.
 func attachmentName(storedPath string) string {
 	return "image" + path.Ext(storedPath)
 }

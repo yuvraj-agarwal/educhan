@@ -624,9 +624,12 @@ server that would refuse what it sends.
   while a release rolls out stores uploads as they came after that moment, so on a
   rolling deploy move the cutoff to when the last of them stopped.
 - **No filename is kept**: a camera's or a phone's filename can name a date and a person
-  (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension
-  of the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was
-  called. Migration `0008` renamed the attachments stored before this the same way.
+  (`IMG_20261013_Priya.jpg`), so every attachment's `name` is `image` and the extension of
+  the format it was stored in (`image.jpg`, `image.png`, …), whatever the file was called.
+  Migration `0008` renamed the attachments stored before this the same way, and every
+  start of the server renames any that an older instance, still serving while a release
+  rolls out, has stored since under the poster's filename; so on a rolling deploy those
+  keep it, and show it, until the first start after the last older instance has stopped.
 - **Memory**: how much memory an image takes to decode and re-encode depends on how it is
   encoded as well as on its size, so each upload's share is estimated from its header.
   The uploads being processed at once share a fixed budget (256 MiB per process), each
