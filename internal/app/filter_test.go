@@ -2186,6 +2186,20 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"why does x <- 9876543210 print as 9.876543e+09 in R?", publish},
 		{"num <- 9123456780", contact},
 		{"call me <- 9123456780", contact},
+		{"[code]total_marks <- 9876543210\nprint(total_marks)[/code]", publish},
+		{"df$id <- 9876543210", publish},
+		{"seed <- 9876543210", publish},
+		// rAssigns: in chat an arrow points at the number, from a word for
+		// the poster or the place, a phrase, or with a phone word after it.
+		{"add me <- 9123456780", contact},
+		{"reach me here <- 9123456780", contact},
+		{"here <- 9123456780 hmu", contact},
+		{"my digits <- 9123456780", contact},
+		{"digits <- 9123456780", contact},
+		{"mine <- 9123456780 text only", contact},
+		{"study group <- 9123456780 whatsapp", contact},
+		{"x <- 9123456780 # my number lol", contact},
+		{"me <- 9123456780 whatsapp", contact},
 	} {
 		v := bodyVerdict(c.body)
 		got := publish

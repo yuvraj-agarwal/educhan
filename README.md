@@ -462,10 +462,10 @@ cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
 What it does with posts like the ones it is written for is pinned by a corpus:
-2,878 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
+2,881 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
 three for each kind of post: `academic.jsonl`, `academic_2.jsonl` and
 `academic_3.jsonl` (700 posts), the same three for `life` (719, student life),
-for `contact` (743, contact details) and for `risk` (716, risky posts), each
+for `contact` (746, contact details) and for `risk` (716, risky posts), each
 labelled with what the filter should do. Every address, username and profile in
 them says "madeup" or is at a reserved domain, so none is a real person's
 (`TestFilterCorpusDetailsAreMadeUp`); a number meant to be blocked is ordinary
@@ -476,7 +476,7 @@ assigned, so it is no one's.
 wrong, except those marked as known misses, each with a note saying why the
 miss is accepted, and logs how many ordinary posts were stopped and how much of
 each kind was caught (`go test -run TestFilterCorpus -v ./internal/app`).
-**The rules were fitted to all 2,878 posts.** They were first written against
+**The rules were fitted to all 2,881 posts.** They were first written against
 the files without `_2` or `_3`; the `_2` files were written apart from them and
 then used to rewrite the threat, self-harm and grooming rules (which first held
 55 of their 135 risky posts) and then the contact and support rules (which

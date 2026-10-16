@@ -11427,7 +11427,7 @@ func standsAlone(v *view, run digitRun) bool {
 	// whatever else is near it: "call me = 9876543210", "wa/9876543210", "text
 	// me 9876543210 if you can do the integers question".
 	cued := contactCue.matchIn(v, windowBefore(t, run.from, 32))
-	if !cued && operandBefore(v, before) {
+	if !cued && operandBefore(v, before, after) {
 		return false
 	}
 	// A sign glued to an operand is arithmetic: "2+9876543210", "x-9876543210".
@@ -11519,17 +11519,21 @@ func operandAfter(after string) bool {
 
 // operandBefore reports an operator before a number with an operand before it:
 // "x = 9876543210", "x >= 9876543210", "1/9876543210", and R's assignment
-// arrow, "x <- 9876543210" or "x <<- 9876543210", which assigns as "=" does.
-// A greentext ">" or a quote link's ">>" at the start of a line has nothing
-// before it, an arrow ("->", "=>") points rather than compares, and a phone
-// cue before an "=" or an arrow ("number = 9876543210", "num <- 9876543210")
-// is a label.
-func operandBefore(v *view, before string) bool {
+// arrow, "x <- 9876543210" or "x <<- 9876543210", which assigns as "=" does
+// when a variable stands before it (rAssigns). A greentext ">" or a quote
+// link's ">>" at the start of a line has nothing before it, an arrow ("->",
+// "=>") points rather than compares, and a phone cue before an "=" or an
+// arrow ("number = 9876543210", "num <- 9876543210") is a label. after is
+// the text after the number.
+func operandBefore(v *view, before, after string) bool {
 	// An opening bracket after "=" still leaves the number the right-hand side
 	// of something: "x = (9876543210 + 1)", "arr = [9876543210, …]".
 	s := strings.TrimRight(before, " ([{")
 	if strings.HasSuffix(s, "<-") {
 		s = strings.TrimSuffix(s[:len(s)-2], "<")
+		if !rAssigns(v, s, after) {
+			return false
+		}
 	} else {
 		r, size := utf8.DecodeLastRuneInString(s)
 		if !strings.ContainsRune(mathsBefore, r) {
@@ -11550,6 +11554,49 @@ func operandBefore(v *view, before string) bool {
 	}
 	return !phoneCue.matchIn(v, lastWord(s))
 }
+
+// rAssigns reports R's "<-" as an assignment to a variable, s being the text
+// before the arrow and after the text after the number: "x <- 9876543210",
+// "[code]total <- 9876543210[/code]", "why does x <- 9876543210 print as
+// 9.876543e+09?". In chat an arrow points as often, "add me <- …", so the
+// name must be one only code has (one letter, or with "_", ".", or a digit
+// in it, or R's "$" or "@": "df$id") or start a line or a statement (after
+// ";", "{", "(", ":" or ","), and must not be a word that points at the
+// poster or the number ("me", "mine", "here", "digits"), and a phone word
+// in the rest of its line ("# my number", "whatsapp", "text only", "hmu")
+// makes it the poster's number after all.
+func rAssigns(v *view, s, after string) bool {
+	s = strings.TrimRight(s, " \t")
+	i := len(s)
+	for i > 0 {
+		c := s[i-1]
+		if !(isASCIILetterByte(c) || isASCIIDigit(c) || strings.IndexByte("_.$@", c) >= 0) {
+			break
+		}
+		i--
+	}
+	name := s[i:]
+	if name == "" || !isASCIILetterByte(name[0]) && name[0] != '.' || arrowPointers[strings.ToLower(name)] {
+		return false
+	}
+	lead := strings.TrimRight(s[:i], " \t")
+	opens := lead == "" || strings.IndexByte("\n;{(:,", lead[len(lead)-1]) >= 0
+	coded := len(name) == 1 || strings.ContainsAny(name, "_.$@0123456789")
+	if !opens && !coded {
+		return false
+	}
+	line, _, _ := strings.Cut(windowAfter(after, 0, 48), "\n")
+	return !phoneCue.matchIn(v, line)
+}
+
+// isASCIILetterByte reports an ASCII letter.
+func isASCIILetterByte(c byte) bool { return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' }
+
+// arrowPointers, before "<-", point at what follows, or say whose it is,
+// rather than name a variable: "add me <- 9123456780", "here <- 9123456780
+// hmu", "digits <- 9123456780".
+var arrowPointers = setOf(`me mine my us our ours you u ur your yours here there this that these those it him her
+	his hers them their digits deets details info`)
 
 // labelled reports a label as the word just before a number, with the fillers
 // that go between them skipped: "order 7834567890", "seat number 7012345678",
