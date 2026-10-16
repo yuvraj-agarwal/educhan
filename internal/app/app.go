@@ -55,10 +55,15 @@ type App struct {
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
 
-	// postDeadline is postDeadline and uploadReadTimeout is uploadReadTimeout,
-	// which tests shorten.
+	// postDeadline is postDeadline, uploadReadTimeout is uploadReadTimeout and
+	// uploadPaceGrace is uploadPaceGrace, which tests shorten.
 	postDeadline      time.Duration
 	uploadReadTimeout time.Duration
+	uploadPaceGrace   time.Duration
+
+	// uploadShares is what each client's posts hold of the upload budget
+	// (clientUploadShare).
+	uploadShares uploadShares
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
@@ -124,6 +129,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		schemaAhead:       schemaAhead,
 		postDeadline:      postDeadline,
 		uploadReadTimeout: uploadReadTimeout,
+		uploadPaceGrace:   uploadPaceGrace,
 	}
 	every := cfg.cooldownSweepEvery
 	if every <= 0 {

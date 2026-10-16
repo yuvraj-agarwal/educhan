@@ -196,11 +196,15 @@ func TestConfigFromEnvRejectsInvalidValues(t *testing.T) {
 	// whatever picture it holds (TestLargestAttachmentLimitIsReachable), is
 	// refused, and the largest is accepted. The request carrying a file that
 	// large fits the memory set aside for upload bodies, which is reserved for
-	// a body whole before it is read.
+	// a body whole before it is read, and one client's share of it.
 	t.Run("upload size over the most an attachment may be", func(t *testing.T) {
 		if maxUploadLimit+multipartOverhead > media.UploadBudget {
 			t.Errorf("the body of the largest attachment, %d bytes, is over the upload budget, %d",
 				maxUploadLimit+multipartOverhead, media.UploadBudget)
+		}
+		if maxUploadLimit+multipartOverhead > clientUploadShare {
+			t.Errorf("the body of the largest attachment, %d bytes, is over one client's share of the upload budget, %d",
+				maxUploadLimit+multipartOverhead, clientUploadShare)
 		}
 		t.Setenv("EDUCHAN_MAX_UPLOAD_BYTES", strconv.FormatInt(maxUploadLimit+1, 10))
 		if _, err := ConfigFromEnv(); err == nil {

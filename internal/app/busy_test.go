@@ -531,3 +531,198 @@ func stalledUpload(t *testing.T, base string) (int, string) {
 	out, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(out)
 }
+
+// idleBody is a raw connection that has sent an image post's headers,
+// declaring a body it does not send, and been told by the server to go on
+// (Expect: 100-continue), which the server says only once its handler starts
+// reading the body: past the wait for room, holding it or refused it.
+type idleBody struct {
+	conn net.Conn
+	read *bufio.Reader
+}
+
+// idleUpload opens an idleBody for an image thread on /general/ from client
+// (sent as X-Forwarded-For; none when empty), declaring size bytes of body.
+// The test's cleanup closes it.
+func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
+	t.Helper()
+	addr := strings.TrimPrefix(base, "http://")
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { conn.Close() })
+	req := "POST /api/boards/general/threads HTTP/1.1\r\n" +
+		"Host: " + addr + "\r\n" +
+		"Content-Type: multipart/form-data; boundary=BOUND\r\n" +
+		"Content-Length: " + strconv.FormatInt(size, 10) + "\r\n" +
+		"Expect: 100-continue\r\n" +
+		"Connection: close\r\n"
+	if client != "" {
+		req += "X-Forwarded-For: " + client + "\r\n"
+	}
+	if _, err := io.WriteString(conn, req+"\r\n"); err != nil {
+		t.Fatalf("write request: %v", err)
+	}
+	read := bufio.NewReader(conn)
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	line, err := read.ReadString('\n')
+	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 100 ") {
+		t.Fatalf("waiting to send the body: %q, %v; want 100 Continue", line, err)
+	}
+	if blank, err := read.ReadString('\n'); err != nil || blank != "\r\n" {
+		t.Fatalf("after 100 Continue: %q, %v", blank, err)
+	}
+	return &idleBody{conn: conn, read: read}
+}
+
+// answer reads the server's final answer to the idle body, within wait.
+func (b *idleBody) answer(t *testing.T, wait time.Duration) (int, string) {
+	t.Helper()
+	_ = b.conn.SetReadDeadline(time.Now().Add(wait))
+	resp, err := http.ReadResponse(b.read, nil)
+	if err != nil {
+		t.Fatalf("read the answer to an idle body: %v", err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(out)
+}
+
+// uploadFrom posts a small image thread on /general/ from client, sent as
+// X-Forwarded-For.
+func uploadFrom(t *testing.T, h *harness, client string, out any) int {
+	t.Helper()
+	body, contentType := multipartImage(t, "from "+client, pngBytes(t, 32, 32))
+	req, err := http.NewRequest(http.MethodPost, h.base+"/api/boards/general/threads", bytes.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Content-Type", contentType)
+	req.Header.Set("X-Forwarded-For", client)
+	return h.client.send(req, out)
+}
+
+// drainShares waits, at the test's end, once its connections are closed, for
+// the clients' posts to give back what they held of the upload budget, which
+// every test in the package shares.
+func drainShares(t *testing.T, h *harness, clients ...string) {
+	t.Cleanup(func() {
+		deadline := time.Now().Add(10 * time.Second)
+		for _, c := range clients {
+			for h.app.uploadShares.of(c) != 0 {
+				if time.Now().After(deadline) {
+					t.Errorf("%s still holds %d bytes of the upload budget", c, h.app.uploadShares.of(c))
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+		}
+	})
+}
+
+// A body holds its room in the upload budget from before it is read until its
+// post is answered, and a post whose body never arrives never reaches flood
+// control. So eight connections declaring 8 MiB bodies and sending nothing
+// held the whole budget for the read timeout, turned every other image post
+// away 503, and cost their client nothing. Now one client's posts hold at most
+// clientUploadShare, half the budget, its next post refused 429 at once; and a
+// body that falls behind an even pace through its read window by more than
+// uploadPaceGrace is cut off and answered 408, giving its room back, whether
+// it sends nothing or a trickle.
+func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
+	const declared = 8 << 20 // the default attachment limit, declared and never sent
+	conns := int(media.UploadBudget / declared)
+
+	t.Run("one client holds no more than its share", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		h.app.uploadPaceGrace = time.Minute // so only the share is at work
+		h.app.uploadReadTimeout = time.Minute
+		h.app.postDeadline = 16 * time.Second // a wait for room gives up after a second
+		const holder, other = "203.0.113.1", "198.51.100.2"
+		drainShares(t, h, holder, other)
+		for i := 0; i < conns; i++ {
+			idleUpload(t, h.base, holder, declared)
+		}
+		if got := h.app.uploadShares.of(holder); got != clientUploadShare {
+			t.Errorf("the idle client holds %d bytes of the upload budget, want its share, %d", got, clientUploadShare)
+		}
+
+		var created createdPost
+		if status := uploadFrom(t, h, other, &created); status != http.StatusCreated {
+			t.Fatalf("another client's image post: status %d (%s), want 201", status, created.Error)
+		}
+		var refused busyPost
+		status := uploadFrom(t, h, holder, &refused)
+		want := int(busyRetryAfter / time.Second)
+		if status != http.StatusTooManyRequests || refused.RetryAfter != want ||
+			h.client.lastHeader.Get("Retry-After") != strconv.Itoa(want) {
+			t.Errorf("the idle client's next image post: status %d, %+v, Retry-After %q; want 429 with %ds to wait",
+				status, refused, h.client.lastHeader.Get("Retry-After"), want)
+		}
+		if n := h.countRows("posts"); n != 1 {
+			t.Errorf("%d posts stored, want the other client's", n)
+		}
+	})
+
+	t.Run("a body that does not arrive gives its room back", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 300 * time.Millisecond
+		h.app.uploadReadTimeout = time.Minute
+		h.app.postDeadline = 17 * time.Second // a wait for room gives up after two seconds
+		// Two clients, each within its share, between them the whole budget.
+		holders := []string{"203.0.113.1", "203.0.113.2"}
+		drainShares(t, h, append(holders, "198.51.100.2")...)
+		var idle []*idleBody
+		for i := 0; i < conns; i++ {
+			idle = append(idle, idleUpload(t, h.base, holders[i%2], declared))
+		}
+
+		var created createdPost
+		if status := uploadFrom(t, h, "198.51.100.2", &created); status != http.StatusCreated {
+			t.Fatalf("another client's image post: status %d (%s), want 201", status, created.Error)
+		}
+		for i, b := range idle {
+			if status, text := b.answer(t, 5*time.Second); status != http.StatusRequestTimeout {
+				t.Errorf("idle body %d: status %d (%s), want 408", i, status, text)
+			}
+		}
+	})
+
+	t.Run("a body that trickles is cut off", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 300 * time.Millisecond
+		h.app.uploadReadTimeout = time.Minute
+		drainShares(t, h, "127.0.0.1")
+		b := idleUpload(t, h.base, "", declared)
+		// Twenty bytes a second, where the window asks for 8 MiB a minute.
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			tick := time.NewTicker(50 * time.Millisecond)
+			defer tick.Stop()
+			for {
+				select {
+				case <-stop:
+					return
+				case <-tick.C:
+					if _, err := b.conn.Write([]byte("x")); err != nil {
+						return
+					}
+				}
+			}
+		}()
+		start := time.Now()
+		status, text := b.answer(t, 10*time.Second)
+		if status != http.StatusRequestTimeout {
+			t.Fatalf("trickling body: status %d (%s), want 408", status, text)
+		}
+		if took := time.Since(start); took > 5*time.Second {
+			t.Errorf("trickling body answered after %v, want soon after the %v grace, not at the %v window's end",
+				took, h.app.uploadPaceGrace, h.app.uploadReadTimeout)
+		}
+	})
+}

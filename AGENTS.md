@@ -886,60 +886,74 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
   fields may come to `maxRequestBytes` between them, as a JSON post may, the first value
   of each name is the one read, and parts past `maxFormParts` refuse the form
-  (`TestMultipartPostsAreReadAsTheFormSendsThem`). Between them the two budgets hold 320
-  MiB at most, whatever `containerConcurrency` lets in; the rest of the process is about
-  40 MiB idle, and eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB`
-  peaked at 330 MiB resident (786 MiB before the upload budget), so a 512 MiB instance
-  needs that limit, which this code does not set. **Every wait is bounded, and a slow
-  client is told apart from a busy server.** A post waits for room in the upload budget
-  under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
-  does not get room gives up `processingAllowance` (15 s, which leaves margin: no upload
-  `Inspect` admits decodes for long, because the slowest kinds are bounded from the header
-  — a 25-megapixel transparent PNG takes about 4 s of CPU on one core, the slowest GIF
-  about 4 (25 frames of a 2000×2000 canvas each with a table of its own and a pixel to
-  clear), and a JPEG is held to `maxJPEGScanRevisits` passes' work over its blocks
-  (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six first-pass visits
-  and an AC refinement scan's at two, for what the decoder does on each), so the worst
-  admitted one is about 3 s to decode and 4 s to process rather than the thousands of
-  seconds a repeated cheap scan would take) before that deadline, with `media.ErrBusy`,
-  and room that is there is taken however near the deadline. Its body then has
-  `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so time spent
-  waiting for room is not taken out of the body's: a read deadline set on the connection
-  through an `http.ResponseController` once `ReserveUpload` has returned, whatever it
-  returned (the logging middleware's `statusRecorder` carries an `Unwrap` so the
-  controller reaches the connection underneath); a body slower than that is the client's
-  doing, answered `408` (`upload too slow`, `isReadTimeout`), not the `503` a server with
-  no room gives, and a body that waited for room is not answered `408` for the server's
-  load. Once the body is read, the image has a fresh `postDeadline` (25 s,
-  `processContext`) to be processed and both renditions stored — measured from after the
-  body, not from the start of the handler, so a slow body no longer spends the time the
-  image has and is no longer mistaken for a busy server
-  (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
-  response's write deadline to cover that processing and the answer, the body read having
-  possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which `cmd/server`
-  uses) from the end of the headers. `Save` writes nothing once that processing deadline
-  has passed, on either backend (`LocalStore.Put` honours an ended context as Cloud
-  Storage does, pinned in `testStoreContract`), and removes a written original on a
-  context that has not ended (`context.WithoutCancel`). Decoding, re-encoding and playing
-  a GIF each watch that context as they run — a reader that fails once it is done, a check
-  straight after each decode, a stored-buffer write that refuses once it is done (and
-  `jpegenc`, refused, stops at the end of the row of units it is coding), a check before
-  each GIF frame, and one before the thumbnail — so a cancelled or timed-out upload stops
-  partway rather than running to the end. A decode that has already read its whole input
-  is the exception: image/jpeg reads a small progressive file whole, and x/image a lossy
-  WebP's partitions, before their costly work, which then runs to its end — a few seconds
-  of CPU at most within the caps, holding its share of the budget until then — and nothing
-  more is done after it. `cancel_test.go` pins each check on its own by ending the context
-  the moment that check asks (`askedContext`), so none of it rests on timing. The database
-  commit runs on the request's own context, never a deadline: a deadline passing
-  mid-commit could otherwise leave a post made and its image removed. A budget wait or a
-  processing deadline that runs out is `tooBusy`, sent to `answerBusy`: `503` with a
-  `Retry-After` of `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as
-  a warning, not an error; the body of a post turned away for a full budget before it was
-  read is still read to its end and dropped, so the browser gets the answer rather than a
-  connection closed under its upload. Before the bound, a queued upload was stored and its
-  post made after its answer could no longer be sent, and the poster, told the network had
-  failed, posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
+  (`TestMultipartPostsAreReadAsTheFormSendsThem`). A body holds its room in the upload
+  budget from before it is read, and a post whose body never arrives never reaches flood
+  control, so before the share one client's eight connections declaring 8 MiB bodies and
+  sending nothing held the whole budget for the read timeout, turned every other image
+  post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
+  share first (`clientUploadShare`, half the budget, counted per `clientIP` in
+  `uploadShares`, and room for the largest body `maxUploadLimit` allows, which
+  `TestConfigFromEnvRejectsInvalidValues` holds), and a post past it is read to its end
+  unkept and answered `429` (`errUploadShare`, `busyRetryAfter` to wait, nothing charged)
+  without waiting; and `pacedBody` holds the body to an even pace through its read window,
+  moving the read deadline before every read to `uploadPaceGrace` (5 s) past when what has
+  arrived would have at the pace that brings it all in by the window's end, so a body that
+  sends nothing or a trickle is answered `408` and gives its room back after the grace,
+  not at the window's end (`TestIdleUploadsCannotHoldTheUploadBudget`). Between them the
+  two budgets hold 320 MiB at most, whatever `containerConcurrency` lets in; the rest of
+  the process is about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
+  `GOMEMLIMIT=400MiB` peaked at 330 MiB resident (786 MiB before the upload budget), so a
+  512 MiB instance needs that limit, which this code does not set. **Every wait is
+  bounded, and a slow client is told apart from a busy server.** A post waits for room in
+  the upload budget under `reserveContext` (`postDeadline`, 25 s, from when its handler
+  starts); a wait that does not get room gives up `processingAllowance` (15 s, which
+  leaves margin: no upload `Inspect` admits decodes for long, because the slowest kinds
+  are bounded from the header — a 25-megapixel transparent PNG takes about 4 s of CPU on
+  one core, the slowest GIF about 4 (25 frames of a 2000×2000 canvas each with a table of
+  its own and a pixel to clear), and a JPEG is held to `maxJPEGScanRevisits` passes' work
+  over its blocks (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six
+  first-pass visits and an AC refinement scan's at two, for what the decoder does on
+  each), so the worst admitted one is about 3 s to decode and 4 s to process rather than
+  the thousands of seconds a repeated cheap scan would take) before that deadline, with
+  `media.ErrBusy`, and room that is there is taken however near the deadline. Its body
+  then has `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so time
+  spent waiting for room is not taken out of the body's: a read deadline set on the
+  connection through an `http.ResponseController` once `ReserveUpload` has returned,
+  whatever it returned (the logging middleware's `statusRecorder` carries an `Unwrap` so
+  the controller reaches the connection underneath); a body slower than that is the
+  client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one that
+  falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and a
+  body that waited for room is not answered `408` for the server's load. Once the body is
+  read, the image has a fresh `postDeadline` (25 s, `processContext`) to be processed and
+  both renditions stored — measured from after the body, not from the start of the
+  handler, so a slow body no longer spends the time the image has and is no longer
+  mistaken for a busy server (`TestSlowUploadBodyIsNotMistakenForABusyServer`);
+  `processContext` also resets the response's write deadline to cover that processing and
+  the answer, the body read having possibly used more than one `WriteTimeout` (30 s,
+  `app.WriteTimeout`, which `cmd/server` uses) from the end of the headers. `Save` writes
+  nothing once that processing deadline has passed, on either backend (`LocalStore.Put`
+  honours an ended context as Cloud Storage does, pinned in `testStoreContract`), and
+  removes a written original on a context that has not ended (`context.WithoutCancel`).
+  Decoding, re-encoding and playing a GIF each watch that context as they run — a reader
+  that fails once it is done, a check straight after each decode, a stored-buffer write
+  that refuses once it is done (and `jpegenc`, refused, stops at the end of the row of
+  units it is coding), a check before each GIF frame, and one before the thumbnail — so a
+  cancelled or timed-out upload stops partway rather than running to the end. A decode
+  that has already read its whole input is the exception: image/jpeg reads a small
+  progressive file whole, and x/image a lossy WebP's partitions, before their costly work,
+  which then runs to its end — a few seconds of CPU at most within the caps, holding its
+  share of the budget until then — and nothing more is done after it. `cancel_test.go`
+  pins each check on its own by ending the context the moment that check asks
+  (`askedContext`), so none of it rests on timing. The database commit runs on the
+  request's own context, never a deadline: a deadline passing mid-commit could otherwise
+  leave a post made and its image removed. A budget wait or a processing deadline that
+  runs out is `tooBusy`, sent to `answerBusy`: `503` with a `Retry-After` of
+  `busyRetryAfter` (10 s) and `retry_after`, logged by the request log as a warning, not
+  an error; the body of a post turned away for a full budget before it was read is still
+  read to its end and dropped, so the browser gets the answer rather than a connection
+  closed under its upload. Before the bound, a queued upload was stored and its post made
+  after its answer could no longer be sent, and the poster, told the network had failed,
+  posted it twice (`TestBusyServerTurnsAnUploadAwayBeforeKeepingIt`,
   `TestPostPastItsDeadlineIsNotMadeAndNotCharged`,
   `TestWaitingForRoomEndsInTimeForTheWork`). A cancelled wait reaches the handler as
   `context.Canceled`, which `fail` answers like any request whose client left.

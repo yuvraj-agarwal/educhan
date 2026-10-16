@@ -631,24 +631,30 @@ server that would refuse what it sends.
   rolls out, has stored since under the poster's filename; so on a rolling deploy those
   keep it, and show it, until the first start after the last older instance has stopped.
 - **Memory**: how much memory an image takes to decode and re-encode depends on how it is
-  encoded as well as on its size, so each upload's share is estimated from its header.
-  The uploads being processed at once share a fixed budget (256 MiB per process), each
-  holding its share until its files are stored; one whose estimate alone is over it is
-  refused (see **Formats**), and the rest wait for room in the order they arrived. The
-  uploads' own bytes have a budget of their own (64 MiB), taken before a request body is
-  read, so how many requests an instance is let take at once does not decide how many
-  images it holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at
-  once to a server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an
-  instance of 512 MiB has room with that limit set. A post waits for room in either
-  budget for about ten seconds at most. Once there is room to read it, its body has 30
-  seconds to arrive, and once it has arrived its image has 25 seconds to be processed
-  and stored. A post that cannot be taken in time — no room within the wait, or its
-  image not stored within those 25 seconds — answers `503` (see
-  [Flood control](#flood-control)) with nothing stored, rather than being made after
-  its answer could no longer be sent. A body that takes longer than its 30 seconds is
-  the connection's doing, not the server's, and answers `408` with
-  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time
-  a post spent waiting for room is not counted against its body.
+  encoded as well as on its size, so each upload's share is estimated from its header. The
+  uploads being processed at once share a fixed budget (256 MiB per process), each holding
+  its share until its files are stored; one whose estimate alone is over it is refused
+  (see **Formats**), and the rest wait for room in the order they arrived. The uploads'
+  own bytes have a budget of their own (64 MiB), taken before a request body is read, so
+  how many requests an instance is let take at once does not decide how many images it
+  holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at once to a
+  server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an instance of 512
+  MiB has room with that limit set. The posts of one client (one address, as flood control
+  counts them) hold at most half the upload budget at once, so a client cannot take all of
+  it with a few connections that declare large bodies and send nothing; its next image
+  post past that answers `429`, with a `Retry-After` of 10 seconds and no cooldown
+  started. A post waits for room in either budget for about ten seconds at most. Once
+  there is room to read it, its body has 30 seconds to arrive, at an even pace with 5
+  seconds to spare — a body that falls further behind the pace that would bring it all in
+  by then, sending nothing or a trickle, is cut off then and its room given back — and
+  once it has arrived its image has 25 seconds to be processed and stored. A post that
+  cannot be taken in time — no room within the wait, or its image not stored within those
+  25 seconds — answers `503` (see [Flood control](#flood-control)) with nothing stored,
+  rather than being made after its answer could no longer be sent. A body that takes
+  longer than its 30 seconds, or falls behind its pace, is the connection's doing, not the
+  server's, and answers `408` with `{"error":"upload too slow"}`, with nothing stored and
+  no cooldown started; the time a post spent waiting for room is not counted against its
+  body.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -995,19 +1001,23 @@ it within about ten seconds, or its image not stored within 25 seconds of its bo
 arriving (see **Memory** under [Image attachments](#image-attachments)) — answers `503`
 the same way, with a `Retry-After` and `retry_after` of 10 seconds. Nothing is stored for
 it, and a cooldown it started is given back, so it can be sent again as soon as the wait
-is over. A post whose body takes longer than 30 seconds to arrive, counted from when there
-was room to read it, answers `408` with `{"error":"upload too slow"}` and no
-`Retry-After`, since waiting does not make a connection faster; it is refused before flood
-control, so it starts no cooldown. A request rejected for any other reason — an empty
-body, an oversized image, a file that is not an accepted image or whose header shows it
-unusable (see **Formats**), a reply to a missing, locked or archived thread or an image
-past a thread's cap — does not start a cooldown, so a typo never costs a wait. Three
-refusals come only after the cooldowns have started: an image whose header reads but whose
-pixels do not decode, or whose rewritten file would be too large to store, which only
-decoding and encoding it can find; a GIF refused while it is played (`image too large to
-process`, see **Formats** under [Image attachments](#image-attachments)), which only
-playing it can find, and those two are the cost the upload cooldown is there for; and the
-loser of two replies racing for a thread's last image slot (see the HTTP API).
+is over. A post with an image from a client whose other image posts already hold half the
+room for upload bodies answers `429` the same way, at once, with a `Retry-After` and
+`retry_after` of 10 seconds and no cooldown started. A post whose body takes longer than
+30 seconds to arrive, counted from when there was room to read it, or falls more than 5
+seconds behind the even pace that would bring it in by then, answers `408` with
+`{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
+connection faster; it is refused before flood control, so it starts no cooldown. A request
+rejected for any other reason — an empty body, an oversized image, a file that is not an
+accepted image or whose header shows it unusable (see **Formats**), a reply to a missing,
+locked or archived thread or an image past a thread's cap — does not start a cooldown, so
+a typo never costs a wait. Three refusals come only after the cooldowns have started: an
+image whose header reads but whose pixels do not decode, or whose rewritten file would be
+too large to store, which only decoding and encoding it can find; a GIF refused while it
+is played (`image too large to process`, see **Formats** under
+[Image attachments](#image-attachments)), which only playing it can find, and those two
+are the cost the upload cooldown is there for; and the loser of two replies racing for a
+thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
