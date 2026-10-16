@@ -610,12 +610,15 @@ func (e *errorsKept) Errorf(format string, args ...any) {
 // once the estimate drops below the measured whole, however little.
 // checkProcessingCost has to find the whole over the shrunk estimate, run the
 // decoding run it would otherwise skip, and report the decode over the
-// estimate. This pins the skip to the committed condition (whole <= decoding):
-// a condition widened by even the margin between the real estimate and the
-// whole — say whole <= decoding + 2 MiB, or whole <= 2·decoding — would skip
-// the run here and hide the dropped term. It does not pin the exact byte
-// boundary; it pins that a realistic forgotten term is caught, which dropping
-// the whole largest phase (a 7× gap) would not establish.
+// estimate. That holds the skip near the committed condition (whole <=
+// decoding), within the margin the drop leaves: the shrunk estimate is about
+// 6.4 MiB under the whole (24.3 against 30.7 MiB), so a condition widened by
+// more than that — whole <= decoding + 7 MiB, say, or whole <= 2·decoding —
+// would skip the run here and hide the dropped term, and this test fails; one
+// widened by less, + 2 MiB or + 6 MiB, still runs it, and this test does not
+// tell it from the committed one. It does not pin the exact byte boundary; it
+// pins that a realistic forgotten term is caught, which dropping the whole
+// largest phase (a 7× gap) would not establish.
 func TestDroppedDecodingTermIsStillCaught(t *testing.T) {
 	const name = "WebP lossless"
 	data := readTestdata(t, "cost-lossless.webp")
@@ -2045,17 +2048,17 @@ func TestJPEGScanCountWeighsEachScanByItsWork(t *testing.T) {
 }
 
 // image/jpeg reads past extraneous bytes between a JPEG's segments, as libjpeg
-// does — anything before an 0xFF, an 0xFF00 pair, fill bytes, a restart
-// marker where no scan expects one — and decodes every scan after them. The
-// walks that count the scans read past them the same way (jpegNextSegment),
-// so no such byte hides a scan from the cap: the over-cap file with them
-// before its frame header, before its Huffman tables, before its first scan
-// or before every scan is decoded whole by image/jpeg and still refused from
-// its header, with the same count as the plain file. (Straight after the
-// start of the image they would not get that far: Inspect takes a file for a
-// JPEG only when an 0xFF follows it.) One zero byte before the
-// first scan once let the walk stop there, count nothing, and admit a file
-// that then decoded for the whole of its deadline.
+// does — anything before an 0xFF, an 0xFF00 pair, fill bytes, a restart marker
+// where no scan expects one — and decodes every scan after them. The walks
+// that count the scans read past them the same way (jpegNextSegment), so no
+// such byte hides a scan from the cap: the over-cap file with them before its
+// frame header, before its Huffman tables, before its first scan or before
+// every scan is decoded whole by image/jpeg and still refused from its header,
+// with the same count as the plain file. (Straight after the start of the
+// image they would not get that far: Inspect takes a file for a JPEG only when
+// an 0xFF follows it.) One zero byte before the first scan once let the walk
+// stop there, count nothing, and admit a file that then decoded for the whole
+// of its deadline.
 func TestJPEGScanCountReadsPastExtraneousBytes(t *testing.T) {
 	const w, h = 1000, 1000
 	plain := scanBombJPEG(w, h, maxJPEGScanRevisits)

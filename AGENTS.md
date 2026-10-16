@@ -635,12 +635,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`gifCharge`, below), so a GIF whose stored frames are tall and narrower than
   `gifRowPixels` may be refused that was stored before (24 one-pixel frames put back at
   the two ends of a 1×65,535 canvas, 969 B, were stored before the row charge and are
-  refused now). Where no way will do, the GIF is
-  refused (`ErrImageTooCostly`), as is one whose stored frames, with what `choose` looked
-  at for ways it did not take (`tried`, so that looking is bounded as writing is), are
-  charged more than `maxGIFFramePixels` (`TestGIFOfManyColoursHasATableAFrame`,
-  `TestGIFOfManyColoursPutsAFrameBack`, `TestGIFWaysNotTakenAreCharged`; after flood
-  control, `TestImagesRefusedByTheirHeaderStartNoCooldown`). A frame, a stored frame and a
+  refused now). Where no way will do, the GIF is refused (`ErrImageTooCostly`), as is one
+  whose stored frames, with what `choose` looked at for ways it did not take (`tried`, so
+  that looking is bounded as writing is), are charged more than `maxGIFFramePixels`
+  (`TestGIFOfManyColoursHasATableAFrame`, `TestGIFOfManyColoursPutsAFrameBack`,
+  `TestGIFWaysNotTakenAreCharged`; after flood control,
+  `TestImagesRefusedByTheirHeaderStartNoCooldown`). A frame, a stored frame and a
   rectangle looked at are each charged their pixels with every row counted as at least
   `gifRowPixels` (64; `gifCharge`), by the walk, by `frame` and by `tried` alike, because
   each row costs setting up whatever its width: charged by its pixels alone, a GIF of
@@ -652,34 +652,34 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   restore-chain and widened-clear work shows only as the frames are played, so a GIF the
   header admits can still be refused here (put back on a 2000² canvas, `Inspect` admits 49
   frames where the player takes 14; a 1000² restore chain, from an upload over the 8 MiB
-  default, 199 where the player takes 34),
-  after it has been decoded and its first picture thumbnailed, and after flood control, so
-  the cooldown is charged and nothing is written (`Save` stores only after `processHeld`
-  succeeds, so `discardUpload` has nothing to remove). The work is already spent, so the
-  cap is held where it is found, not moved earlier. The choice is greedy, one frame at a
-  time, so some GIFs a file could store one frame to a picture are refused: frames put
-  back two in a row, the second to the picture before the first, after the stored file
-  left the first in place; or a clear whose widened rectangle takes in too many colours.
-  Only frames that clear or put back what earlier ones drew can bring that about, since a
-  frame alone draws from one table: none of 126 GIFs made with ffmpeg, ImageMagick and
-  Pillow is refused, nor any of the 1,500 many-coloured GIFs of the Chromium comparison; 1
-  of 5,000 random GIFs of up to 256 colours a frame and every disposal method is, and 75
-  of 2,000 random animations of sprites put back, cleared or left over a background of 256
-  colours (`randomSpritesGIF`). The player keeps what the frames before the one being
-  played left (`under`) as a four-byte colour key a pixel, with two bit sets over the
-  canvas, and for an animation whose tables give more than 255 colours (`gifFrames.many`,
-  read by the walk) four bytes a pixel more for `saved` (`gifPlayScratch`, charged in
-  `completedCost`, `TestGIFPlayScratchCoversThePlayer`); it lets each decoded frame go
-  once it has played it, and keeps the walk's head of each until then (`gifFramePlay`).
-  The thumbnail is of the first picture, made before playing (`firstGIFPicture`).
-  `TestGIFIsStoredAsItPlays` holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`),
-  a model of Chromium's compositing written apart from `playGIF`, and to storing the same
-  bytes when processed again; `TestGIFsShownAlikeAreStoredAlike` rewrites 1,100 random
-  GIFs, 300 of them animations of sprites over many colours (`randomSpritesGIF`), at least
-  50 of which are stored with frames put back, six times each, in thirteen ways that
-  change nothing Chromium shows (`gifRewrites`, each checked against the model first) and
-  requires every form stored as the original's bytes; `hidden_test.go` pins the channels
-  found, each as uploads differing only in that channel, stored as the same bytes
+  default, 199 where the player takes 34), after it has been decoded and its first picture
+  thumbnailed, and after flood control, so the cooldown is charged and nothing is written
+  (`Save` stores only after `processHeld` succeeds, so `discardUpload` has nothing to
+  remove). The work is already spent, so the cap is held where it is found, not moved
+  earlier. The choice is greedy, one frame at a time, so some GIFs a file could store one
+  frame to a picture are refused: frames put back two in a row, the second to the picture
+  before the first, after the stored file left the first in place; or a clear whose
+  widened rectangle takes in too many colours. Only frames that clear or put back what
+  earlier ones drew can bring that about, since a frame alone draws from one table: none
+  of 126 GIFs made with ffmpeg, ImageMagick and Pillow is refused, nor any of the 1,500
+  many-coloured GIFs of the Chromium comparison; 1 of 5,000 random GIFs of up to 256
+  colours a frame and every disposal method is, and 75 of 2,000 random animations of
+  sprites put back, cleared or left over a background of 256 colours (`randomSpritesGIF`).
+  The player keeps what the frames before the one being played left (`under`) as a
+  four-byte colour key a pixel, with two bit sets over the canvas, and for an animation
+  whose tables give more than 255 colours (`gifFrames.many`, read by the walk) four bytes
+  a pixel more for `saved` (`gifPlayScratch`, charged in `completedCost`,
+  `TestGIFPlayScratchCoversThePlayer`); it lets each decoded frame go once it has played
+  it, and keeps the walk's head of each until then (`gifFramePlay`). The thumbnail is of
+  the first picture, made before playing (`firstGIFPicture`). `TestGIFIsStoredAsItPlays`
+  holds 2000 random GIFs to `browserPlay` (`gifplay_test.go`), a model of Chromium's
+  compositing written apart from `playGIF`, and to storing the same bytes when processed
+  again; `TestGIFsShownAlikeAreStoredAlike` rewrites 1,100 random GIFs, 300 of them
+  animations of sprites over many colours (`randomSpritesGIF`), at least 50 of which are
+  stored with frames put back, six times each, in thirteen ways that change nothing
+  Chromium shows (`gifRewrites`, each checked against the model first) and requires every
+  form stored as the original's bytes; `hidden_test.go` pins the channels found, each as
+  uploads differing only in that channel, stored as the same bytes
   (`TestGIFFramesOfOnePictureCarryNothing`, `TestGIFPixelsThatChangeNothingCarryNothing`,
   `TestGIFDisposalPaintedOverCarriesNothing`,
   `TestGIFTimeSplitBetweenFramesCarriesNothing`);
