@@ -1161,14 +1161,17 @@ role must own the tables, or the database: `VACUUM FULL` skips any other table
 with only a warning, so the sweep checks that both tables moved to new files and
 fails at once if not (`TestSweepFailsWhenVacuumLeavesATableInItsFile`). Run it
 as the role that ran the migrations, which is the server's. The rewrite waits at
-most five seconds for its lock, and confirmations queue behind it while it does;
-the vacuum never waits for a lock. It passes over a table another session holds,
-and runs again until each table's new file holds none of the old rows, which
-lasts as long as the oldest transaction that began before the rewrite. It keeps
-at that for a minute and then fails, so a session holding a table or an old
-snapshot for longer — an export, say — costs a failed run, which the Job's retry
-or the next night's run repeats, rather than a stalled site or a run that
-reports success with the old rows still on disk.
+most five seconds for its lock, which only a transaction that has written to the
+credentials table, or locked rows in it, holds up. While it waits, confirmations
+queue behind it, each holding one of its server instance's few database
+connections, and once they hold them all every request on that instance waits
+too; five seconds bounds that. The vacuum never waits for a lock. It passes over
+a table another session holds, and runs again until each table's new file holds
+none of the old rows, which lasts as long as the oldest transaction that began
+before the rewrite. It keeps at that for a minute and then fails, so a session
+holding a table or an old snapshot for longer — an export, say — costs a failed
+run, which the Job's retry or the next night's run repeats, rather than a
+stalled site or a run that reports success with the old rows still on disk.
 
 It logs one line of counts (threads, posts, attachments, files removed, failed,
 and missing, and credentials rewritten) and nothing about which boards or
