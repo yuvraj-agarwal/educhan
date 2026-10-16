@@ -759,66 +759,66 @@ joke about dying with no cause or laugh beside it shown the support message). Th
 matched and a hold waits for a person.
 
 **The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
-2,882 made-up posts in three parts, one JSON object a line: `id` (unique across the files), `body`,
-`subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a method question
-that shows support and is then held meets `hold`), `why`, and, only together,
-`known_miss: true` and a `note` saying why the miss is accepted rather than fixed.
-`TestFilterCorpus` runs each post as the handlers would (`normalizeSubject`,
+2,885 made-up posts in three parts, one JSON object a line: `id` (unique across the
+files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
+method question that shows support and is then held meets `hold`), `why`, and, only
+together, `known_miss: true` and a `note` saying why the miss is accepted rather than
+fixed. `TestFilterCorpus` runs each post as the handlers would (`normalizeSubject`,
 `displayedName`, `normalizeBody`, both `support_seen` verdicts) and fails on an outcome
-that is not its label, on a known miss that now comes out right (take the mark off),
-and on an unknown field or a repeated id; with `-v` it logs per file how many ordinary
-posts were stopped and how much of each kind was caught. To add a post, append a line
-to the file for its kind with the next id. The text is invented, never copied: no real
-person's number, address, handle or invite, and no name with a real school (the public
-helplines are the exception, as in `helplineNumbers`). Every address, username and
-profile in it says "madeup" — in the local part, the handle or the path
-(`madeup.rohan2008@gmail.com`, `@madeup_organicchem`, `instagram.com/madeup.sketchy`, a
-Name field's `madeupmint#k92`), in letters that still read "madeup" when the post spells
-it out or splits it with markup — or is at a domain RFC 2606 reserves, and a student
-number at an institution's domain moves to a made-up one (`s2214587@madeup-uni.ac.uk`),
-so none can be a real person's. `TestFilterCorpusDetailsAreMadeUp` holds the corpus, and
-the addresses in this package's tests, to that; a group's invite code and a Session ID
-are random and name no one, and stay as they are, while a Steam friend code is the
-account's 32-bit number, so the corpus's is above 4,294,967,295 ("9412877305") and can
-be no one's. A number cannot be
+that is not its label, on a known miss that now comes out right (take the mark off), and
+on an unknown field or a repeated id; with `-v` it logs per file how many ordinary posts
+were stopped and how much of each kind was caught. To add a post, append a line to the
+file for its kind with the next id. The text is invented, never copied: no real person's
+number, address, handle or invite, and no name with a real school (the public helplines
+are the exception, as in `helplineNumbers`). Every address, username and profile in it
+says "madeup" — in the local part, the handle or the path (`madeup.rohan2008@gmail.com`,
+`@madeup_organicchem`, `instagram.com/madeup.sketchy`, a Name field's `madeupmint#k92`),
+in letters that still read "madeup" when the post spells it out or splits it with markup
+— or is at a domain RFC 2606 reserves, and a student number at an institution's domain
+moves to a made-up one (`s2214587@madeup-uni.ac.uk`), so none can be a real person's.
+`TestFilterCorpusDetailsAreMadeUp` holds the corpus, and the addresses in this package's
+tests, to that; a group's invite code and a Session ID are random and name no one, and
+stay as they are, while a Steam friend code is the account's 32-bit number, so the
+corpus's is above 4,294,967,295 ("9412877305") and can be no one's. A number cannot be
 marked so. In the first two parts the UK, US and Australian phone numbers come from the
 ranges set aside for drama, which the filter passes, so a post meant to be blocked uses
 an Indian or other number instead; in `_3` a number meant to be blocked is ordinary
 digits in a valid shape, and the three its writers took from a drama range or a voided
 SSN were regenerated so, as their `why` says. A North American number meant to be
-blocked is put in an area code the numbering plan never assigns (N9X, as 495 or 294;
-37X and 96X are held back too), which the filter blocks like any other and which can be
-no one's, in the unit tests as in the corpus ("(495) 867-5309");
+blocked is put in an area code the numbering plan never assigns (N9X, as 495 or 294; 37X
+and 96X are held back too), which the filter blocks like any other and which can be no
+one's, in the unit tests as in the corpus ("(495) 867-5309");
 `TestFilterCorpusDetailsAreMadeUp` holds both to that, or to the fiction range or a
 toll-free line. A number meant to be blocked is never given with a name, a school or a
-handle; a tripcode secret holding a mobile uses a drama number, an exam
-roll, application, hall ticket, registration or student number the filter should publish
-has zeroes for its serial ("Roll No 2304000", "21BCE0000"), and an Aadhaar number fails its check digit wherever its label alone gets it blocked
-(`TestFilterCorpusDetailsAreMadeUp` holds the corpus to both, so no issued number can be
-among them; "my e-aadhaar says …", which no label reads, needs a valid one). An
-invented number or ID in a valid shape may still happen to be someone's, as
-with the unit tests' examples. Label a post by what the filter should do, not by what
-it does. A rule change that turns a labelled post wrong is a regression to fix, or a
-label to correct with the reason in `why`; a `known_miss` is for a miss whose fix
-would cost more than it buys, and its `note` says what. **The rules have been fitted
-to all 2,882 posts**, all three parts: the `_2` part was written apart from the rules, then
-used to rewrite the hold rules to read grammar and, after that, the contact and support
-rules to read verb classes, apps with their objects, the poster's own voice in any
-tense, number layouts and quotation; the `_3` part was written apart from them too,
-measured unseen (the README gives the figures), and then used to put right the ordinary
-posts it stopped and to widen each family cause by cause; so the rates `-v` logs describe
-how closely the rules fit these posts and are no measurement of anything else. The README says so, and
-a claim about how well the filter works needs posts it was not fitted to. Relabelled
-posts carry the reason in `why`: drama-range and 555-01xx numbers labelled `block`
-were relabelled `publish`, as was a WhatsApp channel link (one-way, so no private
-conversation), as the README's rules have them. In `_3`, a bare "inbox me" was relabelled
-`publish` (it names no way to reach anyone, as a bare "dm me" does not), and each doubt
-about a label that was settled the other way says so with "kept": a Zoom meeting ID with
-its passcode and a Meet link stay `block`, a plan or a time in the poster's own voice
-stays `support` (only a method question goes on to a hold), and "kms" over a mishap got
-over stays `publish`. Twelve known misses are left, each with its note: an address in
-base64, a number given as a sum in `[math]`, a request in Bengali, eight risky posts
-whose harm is implied or written as code, and a crisis post that never names the act.
+handle; a tripcode secret holding a mobile uses a drama number, an exam roll,
+application, hall ticket, registration or student number the filter should publish has
+zeroes for its serial ("Roll No 2304000", "21BCE0000"), and an Aadhaar number fails its
+check digit wherever its label alone gets it blocked (`TestFilterCorpusDetailsAreMadeUp`
+holds the corpus to both, so no issued number can be among them; "my e-aadhaar says …",
+which no label reads, needs a valid one). An invented number or ID in a valid shape may
+still happen to be someone's, as with the unit tests' examples. Label a post by what the
+filter should do, not by what it does. A rule change that turns a labelled post wrong is
+a regression to fix, or a label to correct with the reason in `why`; a `known_miss` is
+for a miss whose fix would cost more than it buys, and its `note` says what. **The rules
+have been fitted to all 2,885 posts**, all three parts: the `_2` part was written apart
+from the rules, then used to rewrite the hold rules to read grammar and, after that, the
+contact and support rules to read verb classes, apps with their objects, the poster's
+own voice in any tense, number layouts and quotation; the `_3` part was written apart
+from them too, measured unseen (the README gives the figures), and then used to put
+right the ordinary posts it stopped and to widen each family cause by cause; so the
+rates `-v` logs describe how closely the rules fit these posts and are no measurement of
+anything else. The README says so, and a claim about how well the filter works needs
+posts it was not fitted to. Relabelled posts carry the reason in `why`: drama-range and
+555-01xx numbers labelled `block` were relabelled `publish`, as was a WhatsApp channel
+link (one-way, so no private conversation), as the README's rules have them. In `_3`, a
+bare "inbox me" was relabelled `publish` (it names no way to reach anyone, as a bare "dm
+me" does not), and each doubt about a label that was settled the other way says so with
+"kept": a Zoom meeting ID with its passcode and a Meet link stay `block`, a plan or a
+time in the poster's own voice stays `support` (only a method question goes on to a
+hold), and "kms" over a mishap got over stays `publish`. Twelve known misses are left,
+each with its note: an address in base64, a number given as a sum in `[math]`, a request
+in Bengali, eight risky posts whose harm is implied or written as code, and a crisis
+post that never names the act.
 
 **API contract** (`refuseContent` and `heldResponse` in `handlers.go`). Both posting
 endpoints take `support_seen` (JSON boolean; multipart through `isTruthy`). The check runs
