@@ -523,10 +523,11 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // in one place, and the only things that start a fetch before a request needs
 // it are focus moving into a box to write in, in a form that needs an answer
 // (however it gets there: a click or tap, Tab, a quote, "Use a different
-// address"), unticking the badge on a form whose tick stopped a puzzle or
-// that has something written or attached, and a post or code request refused
-// after the server spent its answer, which the reader, still on its form, is
-// about to send again.
+// address"), an image picked or dropped on it (not one a re-render puts back),
+// unticking the badge on a form whose tick stopped a puzzle or that has
+// something written or attached, and a post or code request refused after the
+// server spent its answer, which the reader, still on its form, is about to
+// send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -579,13 +580,18 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 			"of a form still on screen", n)
 	}
 	// An image counts once it is attached, picked or dropped; one a re-render
-	// puts back (restoreDraft, through setFile) is part of drawing a page.
+	// puts back (restoreDraft, through setFile) is part of drawing a page, and
+	// one dropped on a held form, which setFile does not take, is not attached.
 	change := squash(withoutComments(jsBlock(t, script, `el.main.addEventListener("change", (event) => {`, "});")))
 	drop := squash(withoutComments(jsBlock(t, script, `document.addEventListener("drop", (event) => {`, "});")))
 	if strings.Count(code, "captchaImageAttached(") != 3 ||
 		!strings.Contains(change, "clearNotice(); updateFileField(field); captchaImageAttached(event.target.form); }") ||
-		!strings.Contains(drop, `setFile(field, event.dataTransfer.files[0]); captchaImageAttached(field.closest("form"));`) {
+		!strings.Contains(drop, `if (setFile(field, event.dataTransfer.files[0])) { captchaImageAttached(field.closest("form")); }`) {
 		t.Error("an image picked or dropped no longer starts the puzzle, once it is attached, or something else calls captchaImageAttached")
+	}
+	if set := squash(withoutComments(jsFunction(t, script, "setFile"))); strings.Count(set, "return true;") != 1 ||
+		!strings.HasSuffix(set, "input.files = transfer.files; } catch { return false; } updateFileField(field); return true; }") {
+		t.Error("setFile no longer says whether it took the file, which is what a drop starts the puzzle on")
 	}
 	// Unticking starts the puzzle again only where the tick stopped one, which
 	// stopCaptcha says, or where the form holds some of the post already.
@@ -798,17 +804,34 @@ func TestCaptchaWorkersAreAlwaysStopped(t *testing.T) {
 // context, which no browser gives Web Crypto, that the check needs https, and
 // one without Worker or Web Crypto that its browser could not finish it. And
 // a response that is not a challenge, a proxy's page say, is taken for a
-// server that could not make one before any worker is started on it.
+// server that could not make one before any worker is started on it. A 429
+// from /api/captcha, the server handing out no more puzzles to the reader's
+// network for now, says so, with its wait, ahead of anything that would word
+// it as a post's or a code request's cooldown: that would tell a reader behind
+// a busy campus address to wait out a cooldown they never started.
 func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 	script := appScript(t)
 	inOrder(t, "solveCaptcha", squash(withoutComments(jsFunction(t, script, "solveCaptcha"))),
 		"if (!window.isSecureContext) { throw new Error(CAPTCHA_INSECURE); }",
 		`if (typeof Worker !== "function" || !(window.crypto && crypto.subtle)) { throw new Error(CAPTCHA_FAILED); }`,
 		`challenge = await api("/api/captcha", { signal });`,
+		"} catch (err) { if (err.status === 429) { throw new Error(captchaBusy(err)); } "+
+			"throw err.status >= 500 ? new Error(CAPTCHA_UNAVAILABLE) : err; }",
 		`if ( !challenge || !challenge.parameters || typeof challenge.parameters !== "object" || `+
 			`typeof challenge.signature !== "string" ) { throw new Error(CAPTCHA_UNAVAILABLE); }`,
 		"await runCaptchaWorkers(challenge, signal);",
 	)
+	busy := squash(withoutComments(jsFunction(t, script, "captchaBusy")))
+	if !strings.Contains(busy, "const seconds = err.payload && err.payload.retry_after;") ||
+		!strings.Contains(busy, "return `Too many anti-spam checks have been started from your network, "+
+			"so nothing was sent. ${wait} and try again.`;") {
+		t.Errorf("captchaBusy no longer says too many checks were started from the network, that nothing was sent, and the wait: %s", busy)
+	}
+	for _, banned := range []string{"Flood control", "post again", "request a code", "Codes can't"} {
+		if strings.Contains(busy, banned) {
+			t.Errorf("captchaBusy words a busy captcha as a cooldown: %q", banned)
+		}
+	}
 	// No browser passes the check on such a page, so the reader is not sent
 	// to try another.
 	insecure := jsString(t, script, "CAPTCHA_INSECURE")
@@ -819,16 +842,29 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 }
 
 // A post or a code request may wait seconds on its puzzle, and the reader can
-// leave meanwhile: go to another page, or press Update, which draws the form
-// again with the post still in it. A request whose form has gone by the time
+// leave meanwhile, for another page. A request whose form has gone by the time
 // its answer is ready is not sent, and its answer is put back for the next
-// press.
-// Sent or not, a request whose form has gone neither navigates, resets nor
-// redraws anything, and says nothing on the page the reader went to.
+// press. A posting form stays on screen across a redraw of its own page, by
+// route key, since the redraw carries it across while it is held
+// (TestAHeldFormSurvivesARedrawOfItsPage). No redraw carries a /verify form,
+// so one leaves the screen at the next render, of /verify too: a code request
+// sent from the form a redraw was replacing would leave the page on the
+// address step while the code went out.
+// Sent or not, a request whose form has left the screen is not navigated from
+// and says nothing on the page the reader went to, while a post that did go
+// still empties and releases its form, wherever it is.
 func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	script := appScript(t)
-	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on, "return form.isConnected && routeKey(state.route) === routeKey(route);") {
-		t.Error("formOnScreen no longer asks that the form is in the document and its page still the one asked for")
+	if on := squash(withoutComments(jsFunction(t, script, "formOnScreen"))); !strings.Contains(on,
+		"return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);") {
+		t.Error("formOnScreen no longer asks that the form is in the document and its page still the one asked for, " +
+			"the same render of it for a form no redraw carries")
+	}
+	// The forms a redraw carries are the posting forms, which alone have a
+	// kind; the /verify forms have none.
+	if verify := jsFunction(t, script, "verifyViewHTML"); strings.Contains(verify, "data-kind") || strings.Count(verify, "<form ") != 2 ||
+		strings.Count(verify, "data-verify=") != 2 {
+		t.Error("verifyViewHTML's two forms no longer go without a kind, which is what tells formOnScreen no redraw carries them")
 	}
 
 	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
@@ -853,16 +889,18 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
 	for name, fn := range map[string]string{"the submit handler": submit, "submitVerification": verify} {
 		// The page is the one on screen at the press, and sendWithCaptcha
-		// checks against it; a code request's form also leaves the screen when
-		// the browser is forgotten (TestForgettingTheBrowserCancelsWhatIsOnItsWay).
+		// checks against it; neither request is sent once the browser is
+		// forgotten either (TestForgettingTheBrowserCancelsWhatIsOnItsWay).
 		onScreen := "const route = state.route; const onScreen = () => formOnScreen(form, route);"
+		sends := "() => onScreen() && !forgotten(), );"
 		if name == "submitVerification" {
 			onScreen = "const route = state.route; const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; " +
 				"const onScreen = () => formOnScreen(form, route) && !forgotten();"
+			sends = "onScreen, );"
 		}
 		inOrder(t, name, fn,
 			onScreen,
-			"onScreen, );",
+			sends,
 			"} catch (err) { const shown = onScreen(); release(shown); button.textContent = label;",
 			"if (!shown) { return; }",
 		)
@@ -878,7 +916,8 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	// to as it is, and a code request does not draw /verify over it.
 	// The form a post went from is emptied wherever it is, so a redraw that
 	// carried it while it was held does not show the post again.
-	inOrder(t, "the submit handler", submit, "onScreen, );", "form.reset();", "release(false); if (!onScreen()) { return; } await navigate(")
+	inOrder(t, "the submit handler", submit, "() => onScreen() && !forgotten(), );", "form.reset();",
+		"release(false); if (!onScreen()) { return; } await navigate(")
 	inOrder(t, "submitVerification", verify,
 		"onScreen, );", "if (!onScreen()) { return; }", "el.main.innerHTML = verifyViewHTML();",
 		`await api("/api/verify/confirm"`, "storeCredential(issued.credential);", "if (!onScreen()) {", "await renderVerify();",
@@ -941,10 +980,15 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // nothing: not the badge the server issued, not the code step, which would
 // greet the next person with the last one's institution, not the name, and
 // not a note that a badge was lost, which would tell them there had been one.
-// A code request not sent yet is not sent, and a redraw on its way puts back
-// no Name its draft read before the press. Each request and each draft notes
-// browserForgets, and only forgetOnThisPage moves it, for a press in this tab
-// or one heard from another (TestForgettingTheBrowserReachesEveryTab).
+// A code request or a post not sent yet, still waiting on its puzzle, is not
+// sent: the post would go under the Name and the poster key the forget took
+// away, while its form showed neither. Its form is released with its text,
+// and says nothing went. A redraw on its way puts back no Name its draft read
+// before the press, and a form left on screen loses the option to post with
+// the badge and says what a form without it says about the anti-spam check,
+// rather than offering a badge that has gone. Each request and each draft
+// notes browserForgets, and only forgetOnThisPage moves it, for a press in
+// this tab or one heard from another (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -955,16 +999,38 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		t.Error("browserForgets is no longer moved by forgetOnThisPage alone")
 	}
 	// What the page holds goes with it: the badge it read, the note about a
-	// lost one, the code step, its own poster key, and from every posting form
-	// on screen the name it was drawn with and the option to post with the
-	// badge, which names the institution.
+	// lost one, the code step, its own poster key, what it noted it stored,
+	// and from every posting form on screen the name it was drawn with and the
+	// option to post with the badge, which names the institution.
 	page := squash(withoutComments(jsFunction(t, script, "forgetOnThisPage")))
 	if !strings.Contains(page, `{ browserForgets += 1; state.verification.badge = null; badgeLost = ""; `+
-		`verifyStep = { step: "email", label: "" }; pagePosterKey = ""; `+
+		`verifyStep = { step: "email", label: "" }; pagePosterKey = ""; storedHere.clear(); `+
 		`for (const form of el.main.querySelectorAll("form[data-kind]")) { const name = field(form, "name"); `+
-		`if (name) { name.defaultValue = ""; name.value = ""; } `+
-		`field(form, "badge")?.closest("label")?.remove(); form.querySelector("#f-badge-hint")?.remove(); } }`) {
+		`if (name) { name.defaultValue = ""; name.value = ""; } dropBadgeOption(form); } }`) {
 		t.Error("forgetOnThisPage no longer drops everything the page holds that the forget covers")
+	}
+	// The option goes with its hint, and the form's note on the anti-spam
+	// check, drawn in its own element, says what a form drawn without the
+	// option says. The submit handler drops the option the same way when the
+	// server refuses the badge as expired or revoked.
+	drop := squash(withoutComments(jsFunction(t, script, "dropBadgeOption")))
+	inOrder(t, "dropBadgeOption", drop,
+		`const box = field(form, "badge"); const option = box && box.closest("label");`,
+		"option.remove();", `form.querySelector("#f-badge-hint")?.remove();`,
+		`const check = form.querySelector("[data-check-hint]"); if (check) { check.textContent = CHECK_HINT; } }`,
+	)
+	form := squash(withoutComments(jsFunction(t, script, "formHTML")))
+	if !strings.Contains(form, "check = ` <span data-check-hint>${held ? CHECK_HINT_WITH_BADGE : CHECK_HINT}</span>`;") ||
+		strings.Contains(form, "anti-spam") {
+		t.Error("formHTML no longer draws the note on the anti-spam check in the element dropBadgeOption rewords, from the two constants")
+	}
+	hint, badgeHint := jsString(t, script, "CHECK_HINT"), jsString(t, script, "CHECK_HINT_WITH_BADGE")
+	if strings.Contains(hint, "badge") || !strings.Contains(badgeHint, "badge") || !strings.HasSuffix(badgeHint, hint[1:]) {
+		t.Errorf("CHECK_HINT should say nothing of a badge, and CHECK_HINT_WITH_BADGE add only that: %q, %q", hint, badgeHint)
+	}
+	if n := strings.Count(code, "dropBadgeOption(form);"); n != 2 || !strings.Contains(submitHandler(t, script), "dropBadgeOption(form);") ||
+		strings.Count(code, "#f-badge-hint") != 1 {
+		t.Errorf("the badge option is taken out of a form %d times besides in dropBadgeOption; want twice, a forget's and the submit handler's", n)
 	}
 	// A redraw's draft is read before the page is fetched, so a forget can
 	// come between the two: the draft notes browserForgets as it is read, and
@@ -989,16 +1055,29 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	if strings.Count(verify, "verifyStep =") != 2 || strings.Count(verify, "storeCredential(") != 1 || strings.Count(verify, "readBadge(") != 1 {
 		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
 	}
+	// A post is held to the same: not sent once forgotten (sendWithCaptcha
+	// asks before it sends), and what it brings back kept only if nothing has
+	// moved browserForgets since the press. A post the forget stopped before
+	// it went says so on its form, which no refusal of it can have.
 	submit := squash(withoutComments(submitHandler(t, script)))
 	inOrder(t, "the submit handler", submit,
-		"const forgets = browserForgets;",
+		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; let went = false;",
 		"const release = holdForm(form);",
-		"if (!held && forgets === browserForgets) { storageSet(NAME_STORAGE_KEY, name); }",
+		"went = true; return api(path,",
+		"() => onScreen() && !forgotten(), );",
+		"if (!held && forgets === browserForgets) { storageSet(NAME_STORAGE_KEY, name); storedHere.set(NAME_STORAGE_KEY, name); }",
 		`nameField.value = held || forgets !== browserForgets ? storageGet(NAME_STORAGE_KEY) || "" : name;`,
 		`if (reason === "expired" || reason === "revoked") { if (forgets === browserForgets) { forgetCredential(); badgeLost =`,
+		"if (!shown) { return; } if (!went && forgotten()) { showNotice(FORGOTTEN_BEFORE_SENDING); return; }",
 	)
-	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
-		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
+	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 ||
+		strings.Count(submit, "went") != 3 {
+		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets, " +
+			"or says a post went nowhere without knowing it")
+	}
+	stopped := jsString(t, script, "FORGOTTEN_BEFORE_SENDING")
+	if !strings.Contains(stopped, "forgotten") || !strings.Contains(stopped, "nothing was sent") {
+		t.Errorf("FORGOTTEN_BEFORE_SENDING should say the browser was forgotten and nothing was sent: %q", stopped)
 	}
 }
 
@@ -1006,9 +1085,14 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 // open in the browser, where it has BroadcastChannel: each cancels what it has
 // on its way and drops what it holds itself, as the tab it was pressed in
 // does, and draws /verify again if it shows it. Storage is shared, and was
-// cleared by the tab it was pressed in, so the others leave it alone. The one
-// message is a constant that says nothing about anyone, only forgetBrowser
-// sends it, and a tab acts on nothing else that arrives.
+// cleared by the tab it was pressed in before it told the others, but a tab
+// that handled a confirmation or a post in between may have written the
+// badge, the poster key or the name back before it heard. So each tab notes
+// what it stores of those three, and on hearing removes each that storage
+// still holds as it stored it, and touches nothing else: not a badge
+// confirmed or a key made in another tab since the forget, however late it
+// hears. The one message is a constant that says nothing about anyone, only
+// forgetBrowser sends it, and a tab acts on nothing else that arrives.
 func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1036,17 +1120,41 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 		strings.Count(code, "forgetChannel") != 3 {
 		t.Error("something besides forgetBrowser posts on the forget channel, or uses it")
 	}
-	// A tab that hears it forgets what it holds, and touches no storage.
+	// A tab that hears it removes what it stored itself, only where storage
+	// still holds it as stored, and then forgets what it holds.
 	elsewhere := squash(withoutComments(jsFunction(t, script, "forgottenElsewhere")))
-	if !strings.HasPrefix(elsewhere, `function forgottenElsewhere() { forgetOnThisPage(); `+
-		`if (state.route.view === "verify" && ageStatus() === "ok") { renderVerify().then(() => { showNotice(BROWSER_FORGOTTEN); }); } }`) {
-		t.Error("a tab that hears the forget no longer forgets what it holds, or draws /verify again")
+	if elsewhere != `function forgottenElsewhere() { for (const [key, value] of storedHere) { `+
+		`if (storageGet(key) === value) { storageRemove(key); } } forgetOnThisPage(); `+
+		`if (state.route.view === "verify" && ageStatus() === "ok") { renderVerify().then(() => { showNotice(BROWSER_FORGOTTEN); }); } }` {
+		t.Errorf("a tab that hears the forget no longer removes only what it stored and storage still holds, "+
+			"forgets what it holds, or draws /verify again: %s", elsewhere)
 	}
-	for _, name := range []string{"forgottenElsewhere", "forgetOnThisPage"} {
-		if fn := withoutComments(jsFunction(t, script, name)); strings.Contains(strings.ToLower(fn), "storage") ||
-			strings.Contains(fn, "Credential(") {
-			t.Errorf("%s touches storage, which the tab the forget was pressed in has cleared", name)
+	if fn := withoutComments(jsFunction(t, script, "forgetOnThisPage")); strings.Contains(strings.ToLower(fn), "storage") ||
+		strings.Contains(fn, "Credential(") {
+		t.Error("forgetOnThisPage touches storage, which only forgetBrowser clears and only forgottenElsewhere compares")
+	}
+	remove := squash(withoutComments(jsFunction(t, script, "storageRemove")))
+	if remove != "function storageRemove(key) { try { localStorage.removeItem(key); } catch { } }" {
+		t.Errorf("storageRemove does more than remove the one key: %s", remove)
+	}
+	// What a tab notes it stored is exactly the credential, the poster key
+	// and the name, each as it is written, in the one place each is written,
+	// and nothing reads the note but forgottenElsewhere.
+	for fn, want := range map[string]string{
+		"storeCredential": "localStorage.setItem(CREDENTIAL_STORAGE_KEY, token); storedHere.set(CREDENTIAL_STORAGE_KEY, token);",
+		"posterKey":       "localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey); storedHere.set(POSTER_KEY_STORAGE_KEY, pagePosterKey);",
+	} {
+		if !strings.Contains(squash(withoutComments(jsFunction(t, script, fn))), want) {
+			t.Errorf("%s no longer notes what it stores as it stores it: missing %s", fn, want)
 		}
+	}
+	submit := squash(withoutComments(submitHandler(t, script)))
+	if !strings.Contains(submit, "storageSet(NAME_STORAGE_KEY, name); storedHere.set(NAME_STORAGE_KEY, name);") {
+		t.Error("the submit handler no longer notes the name it stores as it stores it")
+	}
+	if !strings.Contains(code, "\nconst storedHere = new Map();\n") || strings.Count(code, "storedHere.set(") != 3 ||
+		strings.Count(code, "storedHere") != 6 || strings.Count(code, "of storedHere)") != 1 || strings.Count(code, "storedHere.clear();") != 1 {
+		t.Error("storedHere is written, read or cleared somewhere besides where the three are stored, forgottenElsewhere and forgetOnThisPage")
 	}
 	if strings.Count(code, "forgottenElsewhere(") != 2 || strings.Count(code, "forgetOnThisPage(") != 3 {
 		t.Error("forgetOnThisPage or forgottenElsewhere is called from somewhere besides a forget")

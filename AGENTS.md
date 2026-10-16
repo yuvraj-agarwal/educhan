@@ -245,6 +245,18 @@ Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOL
 EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
 ```
 
+The captcha is off unless `EDUCHAN_CAPTCHA_SECRET` is set, to at least 32 characters, and
+`GET /api/site` says which. The curl examples above assume it is off: with it on, every
+post without a badge and every code request is refused (`403`, `"captcha": "required"`)
+unless it carries a solved puzzle as `"captcha"` (a form field beside an image), so test
+it in a browser at `http://localhost:8080`, where the page solves one. A badged post
+needs none. The puzzle needs Web Crypto, which a browser gives `localhost` but not a LAN
+address over plain HTTP, where the page says the check needs https instead:
+
+```bash
+EDUCHAN_CAPTCHA_SECRET=$(openssl rand -hex 32) make run
+```
+
 For UI changes, the app is served at `http://localhost:8080` (dark-themed single page:
 board index at `/meta/`, catalog at `/meta/catalog`, thread at
 `/meta/thread/{no}`). Prefer a browser walkthrough for anything that affects
@@ -414,29 +426,33 @@ check before the test changes.
   included. The answer is kept in the `captcha` object in memory only, never in storage
   or a draft, and read only by `captchaAnswer`, `takeCaptcha`, `keepCaptcha` and
   `solveCaptcha`. `sendWithCaptcha` sends a post or a code request, solving first when
-  needed, and only from a form still on screen (`formOnScreen`: in the document, on the
-  page, by `routeKey`, it was pressed on). Each request takes its answer out of the page
+  needed, and only from a form still on screen (`formOnScreen`: in the document, and on
+  the page it was pressed on, by `routeKey` for a posting form, which a redraw of its page
+  carries, and by the render that drew it for a `/verify` form, which none does) in a
+  browser not forgotten since the press. Each request takes its answer out of the page
   as it is handed over (`takeCaptcha`), so a second press while one is on its way solves
   a fresh puzzle, and puts it back (`keepCaptcha`: only into an empty place, only while
   good) only when it left it unspent, or brought no response, which may have spent it:
   the next request is then refused as used and solves a fresh one. One whose form has
-  gone is dropped unsent with its answer put back, and the caller shows, navigates,
-  resets and redraws nothing for it, sent or not. From the press to the answer the form
-  is held (`holdForm`: controls switched off once the form has been read and checked,
+  left the screen is dropped unsent with its answer put back, and, sent or not, is not
+  navigated from and says nothing on the page the reader went to; a post that did go
+  still empties and releases its form, wherever it is. From the press to the answer the
+  form is held (`holdForm`: controls switched off once the form has been read and checked,
   straight into the `try` whose catch releases them, and switched back on after a
   refusal, with the focus on the button, without scrolling to it, if the form had it and
   it is still lost, on the page or nowhere, or after a success once the form is emptied;
   `app.css` shows the held controls switched off). A redraw of the form's own page while
-  it is held (Update) keeps the page, dimmed, in place of the skeleton, and puts the held
-  form itself into the new page in place of the one drawn there (`heldForms`,
-  `captureDraft`, `restoreDraft`), so the post goes ahead and is answered on the form on
-  screen; a form answered by then is read for its values like any draft, emptied after a
-  success. A request that succeeds keeps the answer it took; a refusal carrying
-  `"captcha"` drops it and, while the form is on screen, sends once more with a fresh
-  one, and `"required"` also turns `state.site.captcha` on for a page drawn without
-  knowing. Any other refusal, or no response at all, puts the answer back, unless it
-  carries `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a
-  `429` from the second flood-control check included), which drops it and starts the next
+  it is held (Update, or another page of the same board's index, which has the same
+  `routeKey`) keeps the page, dimmed, in place of the skeleton, and puts the held form
+  itself into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
+  `restoreDraft`), so the post goes ahead and is answered on the form on screen; a form
+  answered by then is read for its values like any draft, emptied after a success. A
+  request that succeeds keeps the answer it took; a refusal carrying `"captcha"`
+  drops it and, while the form is on screen, sends once more with a fresh one, and
+  `"required"` also turns `state.site.captcha` on for a page drawn without knowing.
+  Any other refusal, or no response at all, puts the answer back, unless it carries
+  `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429`
+  from the second flood-control check included), which drops it and starts the next
   puzzle at once if the form is on screen. A badged post never waits for or sends an
   answer (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
@@ -445,8 +461,8 @@ check before the test changes.
   also holds `CAPTCHA_TIMEOUT_MS` to the hardest base puzzle at 4 ms an attempt),
   `TestCaptchaWorkersAreAlwaysStopped`, `TestCaptchaIsNotWorkedOnForNothing`,
   `TestARequestGoesOnlyFromAFormOnScreen`, `TestAPendingFormIsHeld`,
-  `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
-  `TestEachCaptchaAnswerGoesOnOneRequest` and
+  `TestAHeldFormSurvivesARedrawOfItsPage`, `TestCaptchaRefusalSaysWhatTheFormStillHolds`,
+  `TestTheCaptchaFAQSaysWhatThePageDoes`, `TestEachCaptchaAnswerGoesOnOneRequest` and
   `TestForgettingTheBrowserCancelsWhatIsOnItsWay` pin these; the worker needs no CSP
   change (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the
   answer is checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is
@@ -536,20 +552,28 @@ check before the test changes.
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes the
   credential, the poster key and the remembered name, and leaves the age answer. It also
-  cancels what is on its way: a code request, a confirmation or a post answered after it
-  stores nothing, neither a badge nor a name, and leaves no note that a badge was lost
-  (`browserForgets`, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That covers what
-  every educhan tab open in the browser has on its way, not only the tab it was pressed
-  in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a `BroadcastChannel`,
-  and every other tab answers with `forgottenElsewhere`, which runs the same
-  `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft included,
-  the badge and the poster key the page holds, the code step, the note, and the Name and
-  the badge option of every posting form on screen) and draws `/verify` again if it is
-  showing. The message is one constant that says nothing about anyone, the other tabs
-  leave storage alone, and in a browser without `BroadcastChannel` a forget covers the
-  tab it was pressed in and no other (`TestForgettingTheBrowserReachesEveryTab`). It is
-  what the FAQ's shared-computer advice points to: the key left behind would give the
-  next person at the computer the same IDs in the same threads.
+  cancels what is on its way: a code request or a post still waiting on its puzzle is
+  not sent (its form is released with its text, and a post's page, while on screen, says
+  why: `FORGOTTEN_BEFORE_SENDING`), and a code request, a confirmation or a post
+  answered after it stores nothing, neither a badge nor a name, and leaves no note that
+  a badge was lost (`browserForgets`, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`).
+  That covers what every educhan tab open in the browser has on its way, not only the
+  tab it was pressed in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a
+  `BroadcastChannel`, and every other tab answers with `forgottenElsewhere`, which runs
+  the same `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft
+  included, the badge and the poster key the page holds, the code step, the note, and
+  the Name and the badge option of every posting form on screen, whose note on the
+  anti-spam check then says what a form without the option says: `dropBadgeOption`) and
+  draws `/verify` again if it is showing. The message is one constant that says nothing
+  about anyone. The pressing tab clears storage before it posts the message, so another
+  tab can store the credential, the poster key or the name again, for a post or a
+  confirmation it handles before it hears; each tab notes what it stores of those three
+  (`storedHere`), and on hearing removes each only while storage still holds it as that
+  tab stored it, never what another tab has stored since, however late it hears. In a
+  browser without `BroadcastChannel` a forget covers the tab it was pressed in and no
+  other (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
+  shared-computer advice points to: the key left behind would give the next person at
+  the computer the same IDs in the same threads.
 
 ### Child safety
 
@@ -927,7 +951,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     graph (header read in `credential`, called only by `postBadge`, called only by the
     two posting handlers), and `TestCredentialHasNoEffectOffTheBadgePath` presents a
     valid credential to every other endpoint and diffs the responses
-    (`TestCredentialHasNoEffectOnTheCaptcha` for `GET /api/captcha`, whose answers are
+    (`TestCredentialHasNoEffectOnTheCaptcha` for `GET /api/captcha`, whose challenges are
     random). In particular `GET /api/verify` reports whether the feature is configured
     and nothing about the caller: answering "am I verified?" would mean the credential
     travelling off the badge path. The client reads its own label and expiry out of the

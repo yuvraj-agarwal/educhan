@@ -161,11 +161,16 @@ page, **Forget this browser** removes the badge together with the poster key and
 the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode. A verification
 or a post still on its way when it is pressed brings none of them back,
-whichever educhan tab in the browser sent it, and every open educhan tab also
-drops the badge and the poster key it holds; any posting form it shows, or is
-drawing at that moment, loses its Name and the option to post with the badge.
-The other tabs hear of it through `BroadcastChannel`, which every current
-browser has; in one without it, a press covers only its own tab.
+whichever educhan tab in the browser sent it: one still waiting on its
+anti-spam check is not sent, and one answered afterwards keeps nothing. Every
+open educhan tab also drops the badge and the poster key it holds; any posting
+form it shows, or is drawing at that moment, loses its Name and the option to
+post with the badge. The other tabs hear of it through `BroadcastChannel`,
+which every current browser has; in one without it, a press covers only its
+own tab. A tab that stored one of the three again before it heard, for a post
+or a confirmation it handled meanwhile, removes it when it hears, but only
+while storage still holds what that tab stored: a badge confirmed or a key made
+in another tab since the press stays.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -845,7 +850,9 @@ that had already gone is not reported on the page they went to. Update, pressed
 meanwhile, redraws the thread around the same form, still held, and the post
 goes ahead and is answered there: the form is cleared and the thread shows the
 post when it went, and the form is switched back on with the reason when it was
-refused.
+refused. Every page of a board's index carries the same new-thread form, so
+going to another page of the index keeps a new thread going as Update does: the
+page is drawn around the held form, and the thread is posted from there.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then double for every further 60, up to eight
@@ -1221,7 +1228,8 @@ Two things remain per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
-make sweep   # go run ./cmd/server -sweep: delete expired archived threads and spent captcha answers once
+make sweep   # go run ./cmd/server -sweep: delete expired archived threads and
+             # spent captcha answers, once
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test

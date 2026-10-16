@@ -228,6 +228,14 @@ function storageSet(key, value) {
   }
 }
 
+function storageRemove(key) {
+  try {
+    localStorage.removeItem(key);
+  } catch {
+    // Nothing was stored, so nothing needs removing.
+  }
+}
+
 /* Rendering helpers -------------------------------------------------------- */
 
 const ESCAPES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
@@ -1287,6 +1295,12 @@ function postHTML(post, context) {
 // Only one posting form is on screen at a time, so these ids are unique.
 const FIELD_IDS = { subject: "f-subject", name: "f-name", body: "f-body", image: "f-image" };
 
+// What a posting form says beside its button while the captcha is on: a form
+// that offers the badge says a badged post skips the check, and one without
+// the option, drawn so or with it since taken out (dropBadgeOption), does not.
+const CHECK_HINT = "Your browser does a quick anti-spam check first.";
+const CHECK_HINT_WITH_BADGE = "Unless the post carries your badge, your browser does a quick anti-spam check first.";
+
 // fileFieldHTML draws the image picker. `blocked` is the reason it cannot be
 // used, when there is one; the field then renders exactly as blockFileField
 // leaves a live one, so a refusal mid-draft and a fresh render look the same.
@@ -1363,9 +1377,7 @@ function formHTML({ kind, slug, thread = null, open = false }) {
   // link to the FAQ's entry here: leaving the page would lose the post.
   let check = "";
   if (state.site.captcha) {
-    check = held
-      ? " Unless the post carries your badge, your browser does a quick anti-spam check first."
-      : " Your browser does a quick anti-spam check first.";
+    check = ` <span data-check-hint>${held ? CHECK_HINT_WITH_BADGE : CHECK_HINT}</span>`;
   }
 
   // Under the message, on every form: no contact details, because they are
@@ -1405,15 +1417,35 @@ function formHTML({ kind, slug, thread = null, open = false }) {
     </details>`;
 }
 
+// dropBadgeOption takes the option to post with the badge out of a posting
+// form, with the hint under it, and words the form's note on the anti-spam
+// check as on a form drawn without the option: a note that still offered the
+// badge would describe an option that has gone, and tell whoever reads it
+// next that this browser held one.
+function dropBadgeOption(form) {
+  const box = field(form, "badge");
+  const option = box && box.closest("label");
+  if (!option) {
+    if (box) box.checked = false;
+    return;
+  }
+  option.remove();
+  form.querySelector("#f-badge-hint")?.remove();
+  const check = form.querySelector("[data-check-hint]");
+  if (check) {
+    check.textContent = CHECK_HINT;
+  }
+}
+
 /* File field behaviour ------------------------------------------------------ */
 
 function isAcceptedImage(file) {
   return ACCEPTED_IMAGES.split(",").includes(file.type) || ACCEPTED_EXTENSIONS.test(file.name);
 }
 
-// setFile puts a dropped file into the form's file input. Assigning a FileList
-// needs a DataTransfer, which is also how the draft is carried across a
-// re-render.
+// setFile puts a dropped file into the form's file input, and says whether it
+// took it. Assigning a FileList needs a DataTransfer, which is also how the
+// draft is carried across a re-render.
 function setFile(field, file) {
   const input = field.querySelector(".file-input");
   if (!input || !file) {
@@ -1815,8 +1847,9 @@ let badgeLost = "";
 
 // How many times "Forget this browser" has been pressed, on this page or, where
 // the browser has BroadcastChannel, on any other educhan page open in it. A
-// request notes it at the press, and an answer that arrives after another
-// press keeps nothing: forgetting has to cover what was already on its way.
+// request notes it at the press: one still waiting on its puzzle after another
+// press is not sent, and an answer that arrives after one keeps nothing.
+// Forgetting has to cover what was already on its way.
 let browserForgets = 0;
 
 // Every open educhan tab hears "Forget this browser" pressed in any other on
@@ -1827,6 +1860,19 @@ const FORGET_CHANNEL = "educhan:forget-browser";
 const FORGET_MESSAGE = "forget";
 // What the page says once the browser has been forgotten.
 const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
+// What a posting form says when the browser was forgotten while its post
+// waited on its puzzle, which stops it going.
+const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post went, so nothing was sent.";
+
+// What this tab has itself written to storage of what a forget removes, by
+// storage key: the credential, the poster key and the remembered name, each as
+// it was last written here. The tab a forget is pressed in removes all three
+// and then tells the others, so a tab that handled a confirmation or a post in
+// between may have written one back before it heard; when it hears, it removes
+// each that storage still holds as this tab wrote it (forgottenElsewhere), and
+// nothing it did not write, such as a badge confirmed or a key made in another
+// tab since the forget, however late it hears.
+const storedHere = new Map();
 
 // localStorage throws rather than degrading in some privacy modes, so every
 // access is guarded. Losing the credential costs a full re-verification: the
@@ -1842,6 +1888,7 @@ function storedCredential() {
 function storeCredential(token) {
   try {
     localStorage.setItem(CREDENTIAL_STORAGE_KEY, token);
+    storedHere.set(CREDENTIAL_STORAGE_KEY, token);
   } catch {
     showNotice("This browser will not let the page store your badge, so it cannot be used here.");
   }
@@ -1863,7 +1910,8 @@ function forgetCredential() {
 // with its tripcode secret. The age answer stays: it says nothing about any
 // post. Like forgetting the badge, it is entirely local.
 // It also cancels what is on its way (forgetOnThisPage), here and, through
-// FORGET_CHANNEL, in every other open tab that hears it: a code request, a
+// FORGET_CHANNEL, in every other open tab that hears it: a code request or a
+// post still waiting on its puzzle is not sent, and a code request, a
 // confirmation or a post sent before it keeps nothing when its answer comes
 // back after it, neither the badge the server issued nor the code step nor the
 // name, nor a note that a badge was lost.
@@ -1877,7 +1925,8 @@ function forgetBrowser() {
       // Nothing was stored, so nothing needs removing.
     }
   }
-  // Storage is shared, so the other tabs leave it alone.
+  // Storage is shared, and has been cleared here, so the other tabs remove
+  // only what they wrote back themselves before they heard (storedHere).
   if (forgetChannel) {
     forgetChannel.postMessage(FORGET_MESSAGE);
   }
@@ -1887,33 +1936,41 @@ function forgetBrowser() {
 // itself rather than in storage, run in the tab where it was pressed and in
 // every tab that hears it. It cancels what is on its way from the page
 // (browserForgets), a redraw's draft included (restoreDraft); drops the badge
-// read from storage, the poster key the page keeps for itself, and the code
-// step and the note about a lost badge, which would greet the next person with
-// the last one's institution; and, in every posting form on screen, empties
-// the Name, drawn with the forgotten name, which would post under its
-// tripcode, and takes out the option to post with the badge, which names the
-// institution as well.
+// read from storage, the poster key the page keeps for itself, what it noted
+// it stored, and the code step and the note about a lost badge, which would
+// greet the next person with the last one's institution; and, in every posting
+// form on screen, empties the Name, drawn with the forgotten name, which would
+// post under its tripcode, and takes out the option to post with the badge,
+// which names the institution as well (dropBadgeOption).
 function forgetOnThisPage() {
   browserForgets += 1;
   state.verification.badge = null;
   badgeLost = "";
   verifyStep = { step: "email", label: "" };
   pagePosterKey = "";
+  storedHere.clear();
   for (const form of el.main.querySelectorAll("form[data-kind]")) {
     const name = field(form, "name");
     if (name) {
       name.defaultValue = "";
       name.value = "";
     }
-    field(form, "badge")?.closest("label")?.remove();
-    form.querySelector("#f-badge-hint")?.remove();
+    dropBadgeOption(form);
   }
 }
 
 // forgottenElsewhere is a tab's answer to Forget this browser pressed in
-// another: what the page holds goes, as it did there, and /verify, when it is
-// on screen here, is drawn again without the badge or the code step.
+// another: what this tab wrote back to storage since that tab cleared it goes
+// (storedHere), and what the page holds goes, as it did there, and /verify,
+// when it is on screen here, is drawn again without the badge or the code
+// step. A value storage holds that this tab did not write stays, whenever
+// this tab hears: it was stored since the forget, by someone else.
 function forgottenElsewhere() {
+  for (const [key, value] of storedHere) {
+    if (storageGet(key) === value) {
+      storageRemove(key);
+    }
+  }
   forgetOnThisPage();
   if (state.route.view === "verify" && ageStatus() === "ok") {
     renderVerify().then(() => {
@@ -3489,8 +3546,11 @@ document.addEventListener("drop", (event) => {
   }
   field.classList.remove("dragging");
   clearNotice();
-  setFile(field, event.dataTransfer.files[0]);
-  captchaImageAttached(field.closest("form"));
+  // Only a file the form took starts the puzzle: a held form's own image is
+  // its pending post's, whose answer has been taken already.
+  if (setFile(field, event.dataTransfer.files[0])) {
+    captchaImageAttached(field.closest("form"));
+  }
 });
 
 /* Poster key --------------------------------------------------------------- */
@@ -3521,6 +3581,7 @@ function posterKey() {
   }
   try {
     localStorage.setItem(POSTER_KEY_STORAGE_KEY, pagePosterKey);
+    storedHere.set(POSTER_KEY_STORAGE_KEY, pagePosterKey);
   } catch {
     // Kept for this page only.
   }
@@ -3540,12 +3601,13 @@ function posterKey() {
 // a form that needs it, never when a page is drawn: focus moving into a box to
 // write in, however it gets there (a click or tap, Tab, or the page putting it
 // there to quote a post, for "Verify another address" or "Use a different
-// address", or after a press with nothing written); unticking the badge on a
-// form whose tick stopped a puzzle, or that already has something written or
-// attached; a refusal that spent the answer, while the form is on screen; and
-// a press with no good answer held and none being solved. By the time a post
-// is written its puzzle is usually solved. The answer is kept in memory only,
-// never in storage or a draft, and is good for one request.
+// address", or after a press with nothing written); an image picked or dropped
+// on it (not one a re-render puts back); unticking the badge on a form whose
+// tick stopped a puzzle, or that already has something written or attached; a
+// refusal that spent the answer, while the form is on screen; and a press with
+// no good answer held and none being solved. By the time a post is written its
+// puzzle is usually solved. The answer is kept in memory only, never in
+// storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on any response to a request whose
 // answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
@@ -3864,13 +3926,16 @@ function runCaptchaWorkers(challenge, signal) {
 // solves a fresh one here.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
-// (formOnScreen). A request whose form has gone by the time its answer is
-// ready, because the reader went to another page, is not sent at all: nothing
-// has gone yet, the answer is put back for the next press, and sendWithCaptcha
-// throws, for a caller that shows nothing for a form that is gone. Neither the
-// second send nor the next puzzle is started for one. Pressing Update while a
-// post waits does not take its form away: the redrawn page shows the same
-// form, still held.
+// (formOnScreen), and the browser not forgotten since the press. A request
+// whose form has gone by the time its answer is ready, because the reader went
+// to another page, or that Forget this browser cancelled meanwhile, is not
+// sent at all: nothing has gone yet, the answer is put back for the next
+// press, and sendWithCaptcha throws, for a caller that says nothing on a page
+// the reader went to. Neither the second send nor the next puzzle is started
+// for one.
+// Pressing Update while a post waits does not take its form away: the redrawn
+// page shows the same form, still held, as does another page of the same
+// board's index, drawn with the same new-thread form.
 async function sendWithCaptcha(needsIt, send, solving, onScreen) {
   for (let retried = false; ; retried = true) {
     let taken = null;
@@ -3928,12 +3993,17 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
 // formOnScreen says whether a form is still the one the reader is looking at:
 // in the document, on the page that drew it. Going to another page changes
 // state.route at once, while the old form stays in the document until the new
-// page is drawn over it. A redraw of the same page, Update say, keeps a form
-// whose post is on its way in the document throughout, and puts it in the new
-// page in place of the one drawn there (render, restoreDraft), so the post
-// goes ahead and is answered on that form.
+// page is drawn over it. A redraw of the same page, Update say, keeps a
+// posting form whose post is on its way in the document throughout, and puts
+// it in the new page in place of the one drawn there (render, restoreDraft),
+// so the post goes ahead and is answered on that form: a posting form stays on
+// screen across any render of a page with the same routeKey, another page of
+// the same board's index included. No redraw carries a /verify form, so one
+// is on screen only until the next render, of /verify too: a code requested
+// from the form a redraw is about to replace would be answered on a page that
+// shows the address step, with nothing to say a code was sent.
 function formOnScreen(form, route) {
-  return form.isConnected && routeKey(state.route) === routeKey(route);
+  return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);
 }
 
 // The forms holdForm holds.
@@ -4040,7 +4110,14 @@ el.main.addEventListener("submit", async (event) => {
   const sending = file ? "Uploading…" : "Posting…";
   const route = state.route;
   const onScreen = () => formOnScreen(form, route);
+  // "Forget this browser", pressed in another tab while the post waits on its
+  // puzzle, stops it as it stops a code request: sent, it would go under the
+  // Name and the poster key the forget took away, while its form shows
+  // neither. A post that went before the forget is answered on its form, and
+  // keeps nothing (below).
   const forgets = browserForgets;
+  const forgotten = () => forgets !== browserForgets;
+  let went = false;
   // Read above, and held from here until the post has gone or been refused, so
   // what the form shows meanwhile is what is sent.
   const release = holdForm(form);
@@ -4062,12 +4139,13 @@ el.main.addEventListener("submit", async (event) => {
         } else if (answer) {
           payload.captcha = answer;
         }
+        went = true;
         return api(path, { method: "POST", body: file ? data : JSON.stringify(payload), headers });
       },
       (solving) => {
         button.textContent = solving ? "Checking…" : sending;
       },
-      onScreen,
+      () => onScreen() && !forgotten(),
     );
     // The remembered name is the one for unbadged posts; a badged post's name
     // is never offered on the next form, where the badge starts unticked. A
@@ -4075,6 +4153,7 @@ el.main.addEventListener("submit", async (event) => {
     // leaves the name forgotten, in storage and in the form below.
     if (!held && forgets === browserForgets) {
       storageSet(NAME_STORAGE_KEY, name);
+      storedHere.set(NAME_STORAGE_KEY, name);
     }
     // Cleared, wherever the form is, so the draft carried across a re-render
     // is the empty form rather than the post that just went through: the
@@ -4107,7 +4186,8 @@ el.main.addEventListener("submit", async (event) => {
     button.textContent = label;
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
-    // option goes with it — taking the checkbox out of this form rather than
+    // option goes with it, and the form's note on the anti-spam check says so
+    // (dropBadgeOption) — taking the checkbox out of this form rather than
     // re-rendering leaves the half-written post exactly where it is — so the
     // retry that follows is an ordinary post instead of the same refusal.
     // Why it went is kept for /verify to say, unless the browser was forgotten
@@ -4122,14 +4202,7 @@ el.main.addEventListener("submit", async (event) => {
             ? "Your badge has expired."
             : "That badge was replaced by a newer verification.";
       }
-      const box = field(form, "badge");
-      const option = box && box.closest("label");
-      if (option) {
-        option.remove();
-        form.querySelector("#f-badge-hint")?.remove();
-      } else if (box) {
-        box.checked = false;
-      }
+      dropBadgeOption(form);
     }
     // The site takes no images, which this page was drawn without knowing:
     // /api/site did not answer, or the server has been switched over since.
@@ -4144,6 +4217,12 @@ el.main.addEventListener("submit", async (event) => {
     // changed for it. What the refusal said about the badge and the server is
     // kept, above.
     if (!shown) {
+      return;
+    }
+    // A post the forget stopped before it went was refused by nobody: it says
+    // so, and keeps its text for whoever presses again.
+    if (!went && forgotten()) {
+      showNotice(FORGOTTEN_BEFORE_SENDING);
       return;
     }
     // The cap was reached after this form was drawn: take the image off and
