@@ -4143,17 +4143,20 @@ var (
 	// "attack them", which a sport's own verbs do not say.
 	sportKill = regexp.MustCompile(canon(`\b` + words(`kill`, `killing`, `murder`, `murdering`, `slaughter`,
 		`slaughtering`, `massacre`, `massacring`, `destroy`, `destroying`) + `\b`))
-	// sportGrounds after a sport make it where something happens, not the
-	// game: "everyone on the kickball field".
-	sportGrounds = canonSetOf(`field fields ground grounds court courts pitch pitches`)
+	// sportGrounds after a sport make it where or when something happens,
+	// not the game: "everyone on the kickball field", "him at frisbee
+	// practice", "in the rugby changing room".
+	sportGrounds = canonSetOf(`field fields ground grounds court courts pitch pitches practice practices
+		training trainings session sessions club clubs changing locker lockers room rooms`)
 )
 
 // sportAfterAPreposition reports a sport of sportWords named after "at",
 // "in" or "on" in the words after a kill, with nothing between but "the":
 // "murder them at dodgeball", "kill them in the netball final". A sport's
-// ground ("on the kickball field") is a place, and a weapon anywhere in the
-// sentence makes no game of it: "kill him at frisbee practice tomorrow, i
-// have a knife".
+// ground, practice or changing room (sportGrounds: "on the kickball field",
+// "at rugby practice") is where the poster will be, not the game, and a
+// weapon anywhere in the sentence makes no game of it: "kill them at
+// netball tomorrow, i have a knife".
 func sportAfterAPreposition(next, sentence []string) bool {
 	if anyIn(sentence, weaponHeads) {
 		return false
@@ -5081,11 +5084,15 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		// what a person does by walking in, a stage, a court or a party
 		// what a performer or a team does, and a home or a hostel what a
 		// party does (litUpPlaces), so those are left out; so is a sentence
-		// that makes it a show, lamps, a festival, a game, a camp or a
-		// decoration (litUp, lightUpWords, the verb itself aside: "the band
-		// will light the hall up at the farewell"), and a place lit up with
-		// something that burns nothing ("with fairy lights", "with my
-		// outfit"; "with petrol", or "with them inside", still counts).
+		// that makes it a show, lamps, a festival, a game, a camp, an
+		// occasion or a decoration (litUp, lightUpWords, the verb itself
+		// aside: "the band will light the hall up at the farewell"), a lab
+		// lit up by an experiment (labHeads, experimentWords), a place lit
+		// up with something that burns nothing ("with fairy lights", "with
+		// my outfit") or by what the poster wears ("in my new jacket",
+		// wornClothes). "With petrol", "with them inside", or a fuel
+		// anywhere in the sentence (fuelWords) still counts, whatever else
+		// the sentence says.
 		np, end := noun(0), 0
 		if np.place() && word(np.n, "up") {
 			end = np.n + 1
@@ -5097,18 +5104,28 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		if np.mine || litUpPlaces[np.head] || is(np.head, "room") && np.n >= 2 && determiners[ws[np.n-2]] {
 			break
 		}
+		sentence := wordsIn(sentenceAround(v.text, at, at+len(after)))
+		if anyIn(sentence, fuelWords) {
+			return act(end)
+		}
 		for k := end; k < len(ws); k++ {
 			if is(ws[k], "with") {
-				if w := noun(k + 1); w.kind != nounFuel && w.kind != nounWeapon && !w.people(true) {
-					return 0, false, false
+				if w := noun(k + 1); w.kind == nounFuel || w.kind == nounWeapon || w.people(true) {
+					return act(end)
 				}
-				break
+				return 0, false, false
+			}
+			if wornClothes(ws[k:]) {
+				return 0, false, false
 			}
 		}
-		for _, w := range wordsIn(sentenceAround(v.text, at, at+len(after))) {
+		for _, w := range sentence {
 			if (litUp[w] || campWords[w] || lightUpWords[w]) && !is(w, "light") {
 				return 0, false, false
 			}
+		}
+		if labHeads[np.head] && anyIn(sentence, experimentWords) {
+			return 0, false, false
 		}
 		return act(end)
 	case "open":
@@ -5202,19 +5219,45 @@ func shootingRange(ws []string) bool {
 // litUpPlaces are the places lit up by a performer, a team or a party
 // rather than by fire: "we'll light up the stage", "light the dorm up
 // tonight". lightUpWords make lighting a place up a decoration, a treat, an
-// occasion, an experiment or a person's presence and what they wear: "light
-// up the hall for annual day", "light up the canteen, it's my birthday
-// treat", "light up the gym at the pep rally", "light up the school in my
-// new jacket", "light up the chem lab, the experiment is going to be lit".
+// occasion or a person's presence: "light up the hall for annual day",
+// "light up the canteen, it's my birthday treat", "light up the gym at the
+// pep rally". experimentWords do so only for a lab ("light up the chem lab,
+// the experiment is going to be lit", not "light up the school, it'll be a
+// fun experiment"), and clothes only as what the poster wears (wornClothes).
 var (
 	litUpPlaces = canonSetOf(`floor floors court field ground grounds stand stands stadium farewell prom concert
 		convocation graduation meeting rally seminar mall shop store dorm dorms hostel hostels house houses home
 		flat flats apartment apartments rooms`)
 	lightUpWords = canonSetOf(`decorate decorating decorated decoration decorations decor birthday bday treat
-		surprise celebrate celebrating celebration rizz outfit outfits fit fits drip jacket jackets dress dresses
-		saree sarees sari lehenga kurta kurti suit blazer hoodie sneakers shoes heels smile vibe vibes energy
-		presence aura fairy rangoli annual rally rallies pep orientation experiment experiments`)
+		surprise celebrate celebrating celebration rizz outfit outfits smile vibe vibes energy presence aura fairy
+		rangoli annual rally rallies pep orientation`)
+	labHeads        = canonSetOf(`lab labs laboratory laboratories`)
+	experimentWords = canonSetOf(`experiment experiments practical practicals demo demonstration reaction`)
+	clothesWords    = canonSetOf(`outfit outfits fit fits drip jacket jackets dress dresses saree sarees sari
+		lehenga kurta kurti suit blazer hoodie sneakers shoes heels`)
+	wornOwners = canonSetOf(`my our his her their`)
 )
+
+// wornClothes reports clothes worn at the start of ws: "in my new jacket",
+// "in her lehenga", "wearing the new hoodie", with at most two words between
+// the owner, or "wearing", and the clothes. "Wear fireproof shoes" or "do
+// what you see fit" names nothing the poster wears.
+func wornClothes(ws []string) bool {
+	k := 1
+	switch {
+	case len(ws) > 2 && is(ws[0], "in") && wornOwners[ws[1]]:
+		k = 2
+	case len(ws) > 1 && is(ws[0], "wearing"):
+	default:
+		return false
+	}
+	for _, w := range ws[k:min(len(ws), k+3)] {
+		if clothesWords[w] {
+			return true
+		}
+	}
+	return false
+}
 
 // campWords make starting a fire a campfire or a stove, or a fire in the
 // comments: "start a fire at the campsite tonight".
@@ -7041,8 +7084,10 @@ func lightingUp(r *wordReading, lo, hi int) (strong, ok bool) {
 // "for the treasure hunt", an escape room), a time it ends ("until they
 // finish the mock", "with my 3 hour presentation") or a purpose of study
 // or attendance ("so they actually study", "so nobody bunks"), though "so
-// they can't escape" is none; something locked away ("my bike in the
-// shed") and "us" ("the teacher locked us all in the hall") are not read.
+// they can't escape" is none, and none of those is an excuse in a sentence
+// that sets something alight ("for the event and setting it on fire",
+// alightIn); something locked away ("my bike in the shed") and "us" ("the
+// teacher locked us all in the hall") are not read.
 func lockedIn(r *wordReading, lo, hi int) (strong, ok bool) {
 	end := r.sentenceEnd[lo]
 	np := readNoun(r.ws[hi:end])
@@ -7053,7 +7098,8 @@ func lockedIn(r *wordReading, lo, hi int) (strong, ok bool) {
 	if p := readNoun(r.ws[k+1 : end]); !p.place() && !(k+1 < end && menacePlaces[r.ws[k+1]]) {
 		return false, false
 	}
-	if ws := r.sentenceWords(lo); anyIn(ws, lockedInExcuses) || escapeRoom(ws) || lockedToStudy(ws) {
+	if ws := r.sentenceWords(lo); !alightIn(ws) &&
+		(anyIn(ws, lockedInExcuses) || escapeRoom(ws) || lockedToStudy(ws)) {
 		return false, false
 	}
 	s := r.subjectBefore(lo)
@@ -7069,6 +7115,24 @@ func escapeRoom(ws []string) bool {
 	}
 	return false
 }
+
+// alightIn reports something set alight in ws: a fuel (fuelWords), a fire
+// set ("on fire", "set fire", "setting fire"), "ablaze", "alight" or a
+// burning: "lock them all in the gym for the event and set it on fire".
+func alightIn(ws []string) bool {
+	for i, w := range ws {
+		if fuelWords[w] || alightWords[w] ||
+			is(w, "fire") && i > 0 && (is(ws[i-1], "on") || setVerbs[ws[i-1]]) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	alightWords = canonSetOf(`ablaze alight burn burns burning burnt burned`)
+	setVerbs    = canonSetOf(`set sets setting`)
+)
 
 // lockedToStudy reports a "so" with studying or attending in the four
 // words after it: "so they actually study", "so nobody bunks".

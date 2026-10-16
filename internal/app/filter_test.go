@@ -2163,6 +2163,8 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"i'm going to beat him up at rugby practice tomorrow", threat},
 		{"gonna attack them in futsal tomorrow, they won't know what hit them", threat},
 		{"i'm going to murder everyone on the kickball field tomorrow", threat},
+		{"i'm going to kill everyone at rugby practice tomorrow", threat},
+		{"i'm going to murder him in the rugby changing room tomorrow", threat},
 		// lighting a place up: set alight, or a show, lamps, a party or a
 		// person walking in.
 		{"i'm going to light the staff room up tomorrow", threat},
@@ -2181,6 +2183,14 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"i'm going to light up the school tomorrow in my new jacket", publish},
 		{"gonna light up the chem lab tomorrow lol the experiment is going to be lit", publish},
 		{"i'm going to light up the school tomorrow and nobody gets out", threat},
+		// Clothes excuse it only as what the poster wears, an experiment
+		// only in a lab, and nothing excuses a fuel.
+		{"i'm going to light up the school tomorrow wearing my new kurta", publish},
+		{"i'm going to light up the school tomorrow, wear fireproof shoes", threat},
+		{"i'm going to light up the school tomorrow, do what you see fit", threat},
+		{"i'm going to light up the school tomorrow, it'll be a fun experiment", threat},
+		{"gonna light up the chem lab tomorrow with petrol, call it an experiment", threat},
+		{"i'm going to light up the school tomorrow with petrol for my birthday", threat},
 		// operandBefore: R's assignment arrow assigns, as "=" does, unless a
 		// request or a phone cue before it says the number is one to call.
 		{"[code]x <- 9876543210[/code]", publish},
@@ -2288,6 +2298,8 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"going to lock the teachers in the staffroom on friday. not a joke", threat},
 		{"i'm going to lock everyone in the gym tomorrow so they can't escape", threat},
 		{"i'm locking them all in the hall tomorrow so nobody gets out", threat},
+		{"i'm locking them all in the gym tomorrow for the event and setting it on fire", threat},
+		{"i'm going to lock everyone in the gym for the fest and burn it down", threat},
 		// The same hints with nothing to make them one.
 		{"the physics teacher fainted in assembly and is leaving in an ambulance, hope she's ok", publish},
 		{"my grandpa will be in hospital till friday after his surgery", publish},
