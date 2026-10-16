@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -131,7 +132,8 @@ func TestSweepDeletesOnlyExpiredArchivedThreadsAndTheirMedia(t *testing.T) {
 // of is an orphan rather than a broken post. Its key stays queued, the sweep
 // reports failure — which is what gives the job a non-zero exit — and the next
 // sweep tries again, so a storage outage costs a retry rather than files kept
-// public for good with nothing left to say they exist.
+// public for good with nothing left to say they exist. The failure holds up
+// nothing else: the spent captcha answers past their day go all the same.
 func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("stuck")
@@ -140,6 +142,9 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	thread := h.imageThread("stuck", "an image the store will not let go of")
 	h.archiveThread("stuck", thread.ThreadNo, time.Minute)
 	blobs := threadBlobs(t, h, "stuck", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent two days ago"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	store := h.app.media
 	h.app.media = refusingDeletes{store}
 
@@ -147,8 +152,11 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	if err == nil {
 		t.Fatal("a sweep that could not remove an attachment reported success")
 	}
-	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2}); report != want {
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobFailures: 2, SpentCaptchas: 1}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose files failed, want none", n)
 	}
 	if status := h.threadStatus("stuck", thread.ThreadNo); status != http.StatusNotFound {
 		t.Errorf("the thread's rows should be gone even so, GET answers %d", status)
@@ -177,13 +185,42 @@ func TestSweepRetriesFilesItCouldNotRemove(t *testing.T) {
 	}
 }
 
+// The spent captcha answers go last and on their own: a sweep whose captcha
+// cleanup fails still removes the files of the threads it deleted, and says
+// what failed.
+func TestSweepRemovesFilesWhenTheCaptchaCleanupFails(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("gone")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'gone'`)
+
+	thread := h.imageThread("gone", "an image to remove")
+	h.archiveThread("gone", thread.ThreadNo, time.Minute)
+	blobs := threadBlobs(t, h, "gone", thread.ThreadNo)
+	h.exec(`ALTER TABLE captcha_spent RENAME TO captcha_spent_elsewhere`)
+
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sweep spent captchas") {
+		t.Fatalf("a sweep whose captcha cleanup failed: error %v, want one saying so", err)
+	}
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsRemoved: 2}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, false)
+	}
+	if queued := h.countRows("media_deletions"); queued != 0 {
+		t.Errorf("%d files still queued, want none", queued)
+	}
+}
+
 // The sweeper is a separate process, and its media settings have to match the
 // server's. One that does not — a Job left on the local backend, a different
 // bucket, prefix or upload directory — finds every file missing. Deleting a
 // missing file is not an error for a moderator removing a post, but here it
 // means the sweeper is looking at the wrong store, so the sweep fails and
 // keeps the keys, where it used to report success and leave every image
-// public at its URL.
+// public at its URL. The spent captcha answers past their day go all the
+// same, as they do when a removal fails.
 func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("elsewhere")
@@ -193,6 +230,9 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	h.archiveThread("elsewhere", thread.ThreadNo, time.Minute)
 	attachment := fetchThread(t, h, "elsewhere", thread.ThreadNo).Posts[0].Attachment
 	blobs := threadBlobs(t, h, "elsewhere", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweeper went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
 	store := h.app.media
 	wrong, err := media.NewLocalStore(t.TempDir())
@@ -208,8 +248,11 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "EDUCHAN_MEDIA_BACKEND") {
 		t.Errorf("error %q does not point at the media settings", err)
 	}
-	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2}); report != want {
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2, SpentCaptchas: 1}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep that found no files, want none", n)
 	}
 	for _, path := range blobs {
 		requireFile(t, path, true)
@@ -225,6 +268,28 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 		if status := h.do(http.MethodGet, url, nil, &out); status != http.StatusNotFound {
 			t.Errorf("GET %s after the sweep answers %d, want 404", url, status)
 		}
+	}
+}
+
+// The spent captcha answers past their day go whatever happened to the files,
+// a media queue the sweep could not read at all included: the sweep fails and
+// says where, and prunes them all the same.
+func TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails(t *testing.T) {
+	h := testServer(t, nil)
+	spentKey := sha256.Sum256([]byte("an answer spent before the queue went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+	h.exec(`ALTER TABLE media_deletions RENAME TO media_deletions_elsewhere`)
+
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sweep media") {
+		t.Fatalf("a sweep that could not read its media queue: error %v, want one saying so", err)
+	}
+	if want := (SweepReport{SpentCaptchas: 1}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose media queue failed, want none", n)
 	}
 }
 
@@ -272,6 +337,11 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 
 	thread := h.imageThread("quietly", "gone without a trace in the log")
 	h.archiveThread("quietly", thread.ThreadNo, time.Minute)
+	// And a spent captcha answer two days past its day, which the sweep
+	// prunes and counts in the same record.
+	spentKey := sha256.Sum256([]byte("an answer long spent"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 	lines, err := sweepLog(t)
 	if err != nil {
 		t.Fatalf("sweep: %v", err)
@@ -284,7 +354,7 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	delete(record, "level")
 	delete(record, "msg")
 	want := map[string]any{"threads": 1.0, "posts": 1.0, "attachments": 1.0,
-		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0}
+		"blobs_removed": 2.0, "blob_failures": 0.0, "blobs_missing": 0.0, "spent_captchas": 1.0}
 	if fmt.Sprint(record) != fmt.Sprint(want) {
 		t.Errorf("sweep record = %v, want exactly %v", record, want)
 	}

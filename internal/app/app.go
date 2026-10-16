@@ -31,9 +31,14 @@ type App struct {
 	postLimiter   *cooldownLimiter
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
-	// cooldownSweep drops the limiters' expired entries, which are client
-	// addresses: on a timer, and before a request when the timer has fallen
-	// behind. stopCooldownSweep stops the timer; Close calls it.
+	// captcha issues and checks the captcha's puzzles; nil when the captcha is
+	// off. captchaMeter counts each address's challenges, to make them harder
+	// for an address asking fast.
+	captcha      captchaVerifier
+	captchaMeter *captchaMeter
+	// cooldownSweep drops the limiters' and the meter's expired entries, which
+	// are client addresses: on a timer, and before a request when the timer has
+	// fallen behind. stopCooldownSweep stops the timer; Close calls it.
 	cooldownSweep     *cooldownSweep
 	stopCooldownSweep func()
 
@@ -46,6 +51,9 @@ type App struct {
 // and prepares the media store.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	if err := checkCaptchaSecret(cfg); err != nil {
 		return nil, err
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
@@ -98,6 +106,8 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
+		captcha:       newCaptcha(cfg),
+		captchaMeter:  newCaptchaMeter(),
 		schemaAhead:   schemaAhead,
 	}
 	every := cfg.cooldownSweepEvery
@@ -105,7 +115,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter, a.captchaMeter)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }
@@ -129,6 +139,39 @@ func (a *App) WarnServingSettings() {
 	case a.cfg.Sender == nil:
 		a.log.Warn("EDUCHAN_MAIL_DEV is set; verification codes are printed to stdout with their address")
 	}
+	if !a.captchaEnabled() {
+		a.log.Warn("EDUCHAN_CAPTCHA_SECRET is unset; posts and verification code requests need no captcha")
+	}
+}
+
+// minCaptchaSecretLen is the shortest EDUCHAN_CAPTCHA_SECRET accepted.
+// `openssl rand -hex 32` makes one of 64 characters.
+const minCaptchaSecretLen = 32
+
+// checkCaptchaSecret refuses a short captcha secret rather than starting with
+// it: every challenge's signature rests on the secret, and one that can be
+// guessed lets a script sign challenges of its own and skip the work.
+func checkCaptchaSecret(cfg Config) error {
+	if cfg.CaptchaSecret != "" && len(cfg.CaptchaSecret) < minCaptchaSecretLen {
+		return fmt.Errorf("EDUCHAN_CAPTCHA_SECRET must be at least %d characters", minCaptchaSecretLen)
+	}
+	return nil
+}
+
+// newCaptcha picks the captcha's verifier: a test's own, ALTCHA's keyed by
+// EDUCHAN_CAPTCHA_SECRET, or none, which switches the captcha off.
+func newCaptcha(cfg Config) captchaVerifier {
+	switch {
+	case cfg.captcha != nil:
+		return cfg.captcha
+	case cfg.CaptchaSecret == "":
+		return nil
+	}
+	work := cfg.CaptchaWork
+	if work <= 0 {
+		work = defaultCaptchaWork
+	}
+	return newAltchaVerifier(cfg.CaptchaSecret, work)
 }
 
 // checkMailer refuses to start verification with nowhere safe to send codes.
@@ -187,6 +230,7 @@ func (a *App) Routes() http.Handler {
 
 	mux.HandleFunc("GET /healthz", a.handleHealth)
 	mux.HandleFunc("GET /api/site", a.handleSite)
+	mux.HandleFunc("GET /api/captcha", a.handleCaptcha)
 
 	mux.HandleFunc("GET /api/boards", a.handleListBoards)
 	mux.HandleFunc("GET /api/boards/{slug}", a.handleGetBoard)

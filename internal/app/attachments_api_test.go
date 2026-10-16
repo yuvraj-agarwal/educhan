@@ -84,6 +84,17 @@ func (c *client) upload(path string, fields map[string]string, filename string, 
 // and the credential a browser sends alongside a multipart post.
 func (c *client) uploadWithHeaders(header http.Header, path string, fields map[string]string, filename string, file []byte, out any) int {
 	c.t.Helper()
+	req := c.uploadRequest(path, fields, filename, file)
+	for k, values := range header {
+		req.Header[k] = values
+	}
+	return c.send(req, out)
+}
+
+// uploadRequest builds upload's request without sending it, for a test that
+// sends several at once.
+func (c *client) uploadRequest(path string, fields map[string]string, filename string, file []byte) *http.Request {
+	c.t.Helper()
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -109,11 +120,8 @@ func (c *client) uploadWithHeaders(header http.Header, path string, fields map[s
 	if err != nil {
 		c.t.Fatalf("build request: %v", err)
 	}
-	for k, values := range header {
-		req.Header[k] = values
-	}
 	req.Header.Set("Content-Type", form.FormDataContentType())
-	return c.send(req, out)
+	return req
 }
 
 // fetch performs a GET and returns the raw response, which media tests need for
@@ -609,8 +617,8 @@ func TestSiteReportsTheUploadSettings(t *testing.T) {
 				keys = append(keys, key)
 			}
 			sort.Strings(keys)
-			if got := strings.Join(keys, ","); got != "max_upload_bytes,uploads" {
-				t.Errorf("fields = %s, want exactly max_upload_bytes,uploads", got)
+			if got := strings.Join(keys, ","); got != "captcha,max_upload_bytes,uploads" {
+				t.Errorf("fields = %s, want exactly captcha,max_upload_bytes,uploads", got)
 			}
 			var site Site
 			if err := json.Unmarshal(payload, &site); err != nil {
