@@ -744,30 +744,34 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   always terminates. Each batch queues the storage keys of its files in `media_deletions`
   (`0007`) in the same transaction as it deletes the rows; afterwards `removeQueuedMedia`
   takes the queue one key per transaction (`NextMediaDeletion`, `SKIP LOCKED`), removes
-  the file and forgets the key. A file the store refuses to delete keeps its key and is
-  retried by the next sweep (`TestSweepRetriesFilesItCouldNotRemove`). A file the store
-  does not hold keeps its key too and fails the sweep, because every queued key is a file
-  the server stored: a sweeper whose media settings differ from the server's would
+  the file and forgets the key. A batch that fails is rolled back, and the sweep removes
+  no files after it: every key queued so far, by the batches before it or by an earlier
+  sweep, waits for the next sweep. A file the store refuses to delete keeps its key and
+  is retried by the next sweep (`TestSweepRetriesFilesItCouldNotRemove`). A file the
+  store does not hold keeps its key too and fails the sweep, because every queued key is
+  a file the server stored: a sweeper whose media settings differ from the server's would
   otherwise delete nothing and report success (`TestSweepAgainstAnotherMediaStoreFails`).
   That is why the sweep checks with `Get` before `Delete` rather than going through
   `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's deletion
   should. A cancelled sweep stops between files, never between a file and its key. Last,
-  whatever happened to the files, `PruneSpentCaptchas` deletes the spent captcha answers
-  past their day (`captcha_spent`, `0013`), the ones no later spend pruned: after a
-  removal the store refused (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not
-  hold (`TestSweepAgainstAnotherMediaStoreFails`) or a queue it could not read
-  (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) too, and a failure there never
-  keeps deleted threads' images up (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`).
-  It logs one record of counts and nothing that names a board or thread, failures
-  included, and the error it returns has the key taken out (`TestSweepLogsOnlyCounts`);
-  it returns an error — a non-zero exit — on a database failure, a file it could not
-  remove or did not find, or a database a newer release migrated
-  (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New` like the
-  server, and runs without the salt, the moderation key, the verification secret and the
-  captcha secret on purpose, so `New` warns about none of them: those warnings are
-  `WarnServingSettings`, which only `serve` in `cmd/server` calls
-  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
-  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  whatever happened to the threads and the files, `PruneSpentCaptchas` deletes the spent
+  captcha answers past their day (`captcha_spent`, `0013`), the ones no later spend
+  pruned: after a batch that failed, as a broken queue fails the batch of an image thread
+  that is due (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails`), a removal the
+  store refused (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not hold
+  (`TestSweepAgainstAnotherMediaStoreFails`) or a queue it could not read once the
+  threads were done (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) too, and a
+  failure there never keeps deleted threads' images up
+  (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). It logs one record of counts and
+  nothing that names a board or thread, failures included, and the error it returns has
+  the key taken out (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit —
+  on a database failure, a file it could not remove or did not find, or a database a
+  newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its
+  App with `New` like the server, and runs without the salt, the moderation key, the
+  verification secret and the captcha secret on purpose, so `New` warns about none of
+  them: those warnings are `WarnServingSettings`, which only `serve` in `cmd/server`
+  calls (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A
+  new warning about a server-only setting goes there, not in `New`. **Legal holds (build
   plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
   its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in

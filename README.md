@@ -1172,12 +1172,14 @@ deletes every archived thread whose board's `archive_days` have passed — posts
 attachment rows, and then the images and thumbnails in the media store — and
 exits. It works in batches of 100 threads, one transaction each. Each batch
 records the storage keys of its threads' files in the `media_deletions` table in
-the same transaction as it deletes the rows; once the batches are done the
-sweep removes each queued file and forgets its key. A file the store refuses to
-delete keeps its key, so the next sweep tries it again rather than leaving an
-image public with nothing left to say it exists. Last, whatever happened to
-the files, it deletes the spent [captcha](#captcha) answers past their day, the
-ones no later post or code request came along to prune.
+the same transaction as it deletes the rows; once the batches are done the sweep
+removes each queued file and forgets its key. A batch that fails is rolled back,
+and no file is removed after it: every queued key waits for the next sweep. A
+file the store refuses to delete keeps its key, so the next sweep tries it again
+rather than leaving an image public with nothing left to say it exists. Last,
+whatever happened to the threads and the files, it deletes the spent
+[captcha](#captcha) answers past their day, the ones no later post or code
+request came along to prune.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost

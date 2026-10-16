@@ -272,8 +272,9 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 }
 
 // The spent captcha answers past their day go whatever happened to the files,
-// a media queue the sweep could not read at all included: the sweep fails and
-// says where, and prunes them all the same.
+// a media queue the sweep could not read at all included, which with no thread
+// due it first meets when it comes to the files: the sweep fails and says
+// where, and prunes them all the same.
 func TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails(t *testing.T) {
 	h := testServer(t, nil)
 	spentKey := sha256.Sum256([]byte("an answer spent before the queue went astray"))
@@ -290,6 +291,51 @@ func TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails(t *testing.T) {
 	}
 	if n := h.countRows("captcha_spent"); n != 0 {
 		t.Errorf("%d spent captcha answers kept past their day by a sweep whose media queue failed, want none", n)
+	}
+}
+
+// And whatever happened to the threads. With an image thread due, the same
+// broken queue fails the batch that would delete it, which queues its files in
+// the same transaction: the batch is rolled back, the thread and its files are
+// left to the next sweep, and the sweep returns an error saying where, having
+// pruned the spent answers all the same and counted them in its one record of
+// counts.
+func TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.addBoard("due")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'due'`)
+	thread := h.imageThread("due", "an image thread past its archive_days")
+	h.archiveThread("due", thread.ThreadNo, time.Minute)
+	blobs := threadBlobs(t, h, "due", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent before the threads went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+	h.exec(`ALTER TABLE media_deletions RENAME TO media_deletions_elsewhere`)
+
+	before := len(logs.String())
+	report, err := h.app.Sweep(context.Background())
+	lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":1`) {
+		t.Errorf("the sweep logged %q, want one sweep record counting the spent answer", lines)
+	}
+	if err == nil || !strings.Contains(err.Error(), "sweep archived threads") {
+		t.Fatalf("a sweep that could not delete its threads: error %v, want one saying so", err)
+	}
+	if strings.Contains(err.Error(), "sweep media") {
+		t.Errorf("a sweep whose threads failed went on to the files: %v", err)
+	}
+	if want := (SweepReport{SpentCaptchas: 1}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose threads failed, want none", n)
+	}
+	if status := h.threadStatus("due", thread.ThreadNo); status != http.StatusOK {
+		t.Errorf("the failed batch's thread should be left for the next sweep, GET answers %d", status)
+	}
+	for _, path := range blobs {
+		requireFile(t, path, true)
 	}
 }
 

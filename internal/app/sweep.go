@@ -54,7 +54,8 @@ type SweepReport struct {
 // Sweep deletes every archived thread that has outlived its board's
 // archive_days, in batches of sweepBatchSize, then removes the files those
 // threads had, along with any an earlier sweep could not, and last deletes the
-// spent captcha answers past their day.
+// spent captcha answers past their day. A batch that fails leaves the files to
+// the next sweep, and the spent answers go whatever failed before them.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -67,11 +68,12 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		return report, fmt.Errorf("sweep: the database has migrations this release does not know (%v); "+
 			"run the sweeper from the same release as the server", a.schemaAhead)
 	}
+	var archiveErr error
 	for {
 		swept, err := a.store.SweepArchived(ctx, asOf, batch)
 		if err != nil {
-			a.logSweep(report)
-			return report, fmt.Errorf("sweep archived threads: %w", err)
+			archiveErr = fmt.Errorf("sweep archived threads: %w", err)
+			break
 		}
 		report.Threads += swept.Threads
 		report.Posts += swept.Posts
@@ -83,24 +85,29 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		}
 	}
 
-	firstFailure, err := a.removeQueuedMedia(ctx, &report)
+	// A batch that fails stops the files there too: every key queued so far,
+	// by the batches before it or by an earlier sweep, stays in media_deletions
+	// for the next sweep to remove.
 	var mediaErr error
-	switch {
-	case err != nil:
-		mediaErr = err
-	case report.BlobsMissing > 0:
-		mediaErr = fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
-			"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
-			"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
-			report.BlobsMissing)
-	case report.BlobFailures > 0:
-		mediaErr = fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
-			"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
+	if archiveErr == nil {
+		firstFailure, err := a.removeQueuedMedia(ctx, &report)
+		switch {
+		case err != nil:
+			mediaErr = err
+		case report.BlobsMissing > 0:
+			mediaErr = fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
+				"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
+				"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
+				report.BlobsMissing)
+		case report.BlobFailures > 0:
+			mediaErr = fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
+				"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
+		}
 	}
 
-	// Spent captcha answers go last, whatever happened to the files: the two
-	// have nothing to do with each other, so neither one's failure holds up the
-	// other, and deleted threads' images never wait on a captcha cleanup.
+	// Spent captcha answers go last, whatever happened to the threads and the
+	// files: they have nothing to do with either, so no failure there holds
+	// them up, and a failure here never keeps deleted threads' images up.
 	spent, err := a.store.PruneSpentCaptchas(ctx, asOf)
 	var pruneErr error
 	if err != nil {
@@ -108,7 +115,7 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	}
 	report.SpentCaptchas = spent
 	a.logSweep(report)
-	return report, errors.Join(mediaErr, pruneErr)
+	return report, errors.Join(archiveErr, mediaErr, pruneErr)
 }
 
 // removeQueuedMedia works through media_deletions once, removing each file and
