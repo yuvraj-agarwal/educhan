@@ -319,6 +319,11 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 		!strings.Contains(submit, "headers[PASS_HEADER] = pass.code;") {
 		t.Error("the submit handler no longer keeps the Pass off badged posts")
 	}
+	// Nor is a Pass that has run out sent: it is kept to be renewed, and on a
+	// post it would be a code travelling for nothing.
+	if !strings.Contains(submit, "if (pass && !pass.expired) {\n    headers[PASS_HEADER] = pass.code;") {
+		t.Error("the submit handler sends a Pass that has run out")
+	}
 	api := withoutComments(jsFunction(t, script, "api"))
 	for _, banned := range []string{"storedPass", "PASS_STORAGE_KEY", "PASS_HEADER"} {
 		if strings.Contains(api, banned) {
