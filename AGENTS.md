@@ -447,14 +447,14 @@ check before the test changes.
   itself into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
   `restoreDraft`), so the post goes ahead and is answered on the form on screen; a form
   answered by then is read for its values like any draft, emptied after a success. A
-  request that succeeds keeps the answer it took; a refusal carrying `"captcha"`
-  drops it and, while the form is on screen, sends once more with a fresh one, and
-  `"required"` also turns `state.site.captcha` on for a page drawn without knowing.
-  Any other refusal, or no response at all, puts the answer back, unless it carries
-  `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429`
-  from the second flood-control check included), which drops it and starts the next
-  puzzle at once if the form is on screen. A badged post never waits for or sends an
-  answer (`() => state.site.captcha && !held`), and a code request always does.
+  request that succeeds keeps the answer it took; a refusal carrying `"captcha"` drops
+  it and, while the form is on screen, sends once more with a fresh one, and
+  `"required"` also turns `state.site.captcha` on for a page drawn without knowing. Any
+  other refusal, or no response at all, puts the answer back, unless it carries
+  `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from
+  the second flood-control check included), which drops it and starts the next puzzle at
+  once if the form is on screen. A badged post never waits for or sends an answer
+  (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
   `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
@@ -552,28 +552,31 @@ check before the test changes.
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes the
   credential, the poster key and the remembered name, and leaves the age answer. It also
-  cancels what is on its way: a code request or a post still waiting on its puzzle is
-  not sent (its form is released with its text, and a post's page, while on screen, says
-  why: `FORGOTTEN_BEFORE_SENDING`), and a code request, a confirmation or a post
-  answered after it stores nothing, neither a badge nor a name, and leaves no note that
-  a badge was lost (`browserForgets`, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`).
-  That covers what every educhan tab open in the browser has on its way, not only the
-  tab it was pressed in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a
-  `BroadcastChannel`, and every other tab answers with `forgottenElsewhere`, which runs
-  the same `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft
-  included, the badge and the poster key the page holds, the code step, the note, and
-  the Name and the badge option of every posting form on screen, whose note on the
-  anti-spam check then says what a form without the option says: `dropBadgeOption`) and
-  draws `/verify` again if it is showing. The message is one constant that says nothing
-  about anyone. The pressing tab clears storage before it posts the message, so another
-  tab can store the credential, the poster key or the name again, for a post or a
-  confirmation it handles before it hears; each tab notes what it stores of those three
-  (`storedHere`), and on hearing removes each only while storage still holds it as that
-  tab stored it, never what another tab has stored since, however late it hears. In a
-  browser without `BroadcastChannel` a forget covers the tab it was pressed in and no
-  other (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
-  shared-computer advice points to: the key left behind would give the next person at
-  the computer the same IDs in the same threads.
+  cancels what is on its way: a code request or a post still waiting on its puzzle, for
+  its first send or for the second after a refused answer, is not sent (a post's form is
+  released with its text and, while on screen, says why: `FORGOTTEN_BEFORE_SENDING`, on
+  the error `sendWithCaptcha` marks `notSent`; `/verify` is drawn again at an empty
+  address step), and a code request, a confirmation or a post answered after it stores
+  nothing, neither a badge nor a name, and leaves no note that a badge was lost
+  (`browserForgets`, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That covers what
+  every educhan tab open in the browser has on its way, not only the tab it was pressed
+  in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a `BroadcastChannel`,
+  and every other tab answers with `forgottenElsewhere`, which runs the same
+  `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft included,
+  the badge and the poster key the page holds, the code step, the note, and the Name and
+  the badge option of every posting form on screen, whose note on the anti-spam check
+  then says what a form without the option says: `dropBadgeOption`) and draws `/verify`
+  again if it is showing. The message is one constant that says nothing about anyone.
+  The pressing tab clears storage before it posts the message, so another tab can store
+  the credential, the poster key or the name again, for a post or a confirmation it
+  handles before it hears; each tab notes what it stores of those three (`storedHere`),
+  and on hearing removes each only while storage still holds it as that tab stored it:
+  never a badge confirmed or a key made in another tab since, however late it hears (a
+  name is compared by its text, so the same name stored since goes too). In a browser
+  without `BroadcastChannel` a forget covers the tab it was pressed in and no other
+  (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
+  advice points to: the key left behind would give the next person at the computer the
+  same IDs in the same threads.
 
 ### Child safety
 
@@ -589,9 +592,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   grooming usually starts, and having nowhere private to move to is educhan's biggest
   safety asset (§3.4 item 1). The rules and the posting form say so in as many words.
 - **The credential gates three things and nothing else**: the badge on a post, skipping
-  the captcha, and posting on `/u/` boards, the last not built yet. Anything more
-  behind it starts to make the badge an account, and accounts are what Australia's
-  under-16 law and the US state laws on minors' accounts attach to (§4.5, §4.6).
+  the captcha, and posting on `/u/` boards, the last not built yet. Anything more behind
+  it starts to make the badge an account, and accounts are what Australia's under-16 law
+  and the US state laws on minors' accounts attach to (§4.5, §4.6).
   `TestCredentialIsReadOnlyOnTheBadgePath` and `TestCredentialHasNoEffectOffTheBadgePath`
   hold the code to the badge path: the captcha is skipped only by a post that asks for
   the badge and gets it, never by holding a credential (`TestBadgedPostsSkipTheCaptcha`).
@@ -749,21 +752,24 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   That is why the sweep checks with `Get` before `Delete` rather than going through
   `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's deletion
   should. A cancelled sweep stops between files, never between a file and its key. Last,
-  whatever happened to the files (`TestSweepRetriesFilesItCouldNotRemove`),
-  `PruneSpentCaptchas` deletes the spent captcha answers past their day (`captcha_spent`,
-  `0013`), the ones no later spend pruned, so a failure there never keeps deleted
-  threads' images up (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). It logs one
-  record of counts and nothing that names a board or thread, failures included, and the
-  error it returns has the key taken out (`TestSweepLogsOnlyCounts`); it returns an error
-  — a non-zero exit — on a database failure, a file it could not remove or did not find,
-  or a database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`).
-  It builds its App with `New` like the server, and runs without the salt, the moderation
-  key, the verification secret and the captcha secret on purpose, so `New` warns about
-  none of them: those warnings are `WarnServingSettings`, which only `serve` in
-  `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
-  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
-  goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
-  are, `SweepArchived` must skip held threads, and its comment says so.
+  whatever happened to the files, `PruneSpentCaptchas` deletes the spent captcha answers
+  past their day (`captcha_spent`, `0013`), the ones no later spend pruned: after a
+  removal the store refused (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not
+  hold (`TestSweepAgainstAnotherMediaStoreFails`) or a queue it could not read
+  (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) too, and a failure there never
+  keeps deleted threads' images up (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`).
+  It logs one record of counts and nothing that names a board or thread, failures
+  included, and the error it returns has the key taken out (`TestSweepLogsOnlyCounts`);
+  it returns an error — a non-zero exit — on a database failure, a file it could not
+  remove or did not find, or a database a newer release migrated
+  (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New` like the
+  server, and runs without the salt, the moderation key, the verification secret and the
+  captcha secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
@@ -1058,8 +1064,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   post that asks for a badge, and the poster key on any other. A post carrying both is
   never sent by the client, and the tests that cover it set the headers explicitly.
   Tests post to boards they create with `addBoard` (`api_test.go`), never to seeded
-  ones, so they do not depend on which boards the migrations seed;
-  `TestBoardsAreSeeded` is the one test that names the seeded set.
+  ones, so they do not depend on which boards the migrations seed; `TestBoardsAreSeeded`
+  is the one test that names the seeded set.
   A migration's effect on existing data is tested by stopping a schema at an earlier
   version with `databaseAt` (`migrate_test.go`), writing rows into it with plain SQL, and
   starting a server on it with `serverOn`, which applies the rest. Sweep tests call

@@ -271,6 +271,28 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	}
 }
 
+// The spent captcha answers past their day go whatever happened to the files,
+// a media queue the sweep could not read at all included: the sweep fails and
+// says where, and prunes them all the same.
+func TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails(t *testing.T) {
+	h := testServer(t, nil)
+	spentKey := sha256.Sum256([]byte("an answer spent before the queue went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+	h.exec(`ALTER TABLE media_deletions RENAME TO media_deletions_elsewhere`)
+
+	report, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "sweep media") {
+		t.Fatalf("a sweep that could not read its media queue: error %v, want one saying so", err)
+	}
+	if want := (SweepReport{SpentCaptchas: 1}); report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep whose media queue failed, want none", n)
+	}
+}
+
 // A cancelled sweep stops and says so, rather than reporting a pass it did
 // not make.
 func TestSweepStopsWhenCancelled(t *testing.T) {

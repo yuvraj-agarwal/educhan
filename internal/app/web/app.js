@@ -1861,17 +1861,20 @@ const FORGET_MESSAGE = "forget";
 // What the page says once the browser has been forgotten.
 const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
 // What a posting form says when the browser was forgotten while its post
-// waited on its puzzle, which stops it going.
-const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post went, so nothing was sent.";
+// waited on its puzzle, which stops it going: before its first send, or before
+// the second after the server refused the first one's answer, when a request
+// had gone but nothing was posted.
+const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post went through, so nothing was posted.";
 
 // What this tab has itself written to storage of what a forget removes, by
 // storage key: the credential, the poster key and the remembered name, each as
 // it was last written here. The tab a forget is pressed in removes all three
 // and then tells the others, so a tab that handled a confirmation or a post in
 // between may have written one back before it heard; when it hears, it removes
-// each that storage still holds as this tab wrote it (forgottenElsewhere), and
-// nothing it did not write, such as a badge confirmed or a key made in another
-// tab since the forget, however late it hears.
+// each that storage still holds as this tab wrote it (forgottenElsewhere). A
+// badge confirmed or a key made in another tab since the forget is never one,
+// however late it hears, since both are random; a name is compared by its
+// text, so the same name stored since by another tab goes too.
 const storedHere = new Map();
 
 // localStorage throws rather than degrading in some privacy modes, so every
@@ -1926,7 +1929,9 @@ function forgetBrowser() {
     }
   }
   // Storage is shared, and has been cleared here, so the other tabs remove
-  // only what they wrote back themselves before they heard (storedHere).
+  // only what storage still holds as they last wrote it themselves
+  // (storedHere): what they wrote back before they heard, or a name stored
+  // since in the same words.
   if (forgetChannel) {
     forgetChannel.postMessage(FORGET_MESSAGE);
   }
@@ -1963,8 +1968,10 @@ function forgetOnThisPage() {
 // another: what this tab wrote back to storage since that tab cleared it goes
 // (storedHere), and what the page holds goes, as it did there, and /verify,
 // when it is on screen here, is drawn again without the badge or the code
-// step. A value storage holds that this tab did not write stays, whenever
-// this tab hears: it was stored since the forget, by someone else.
+// step. A badge or a key storage holds that this tab did not write stays,
+// whenever this tab hears: it was stored since the forget, by someone else. A
+// name stored since in the words this tab last wrote goes too, which forgets
+// more than it needs to, never less.
 function forgottenElsewhere() {
   for (const [key, value] of storedHere) {
     if (storageGet(key) === value) {
@@ -3929,10 +3936,11 @@ function runCaptchaWorkers(challenge, signal) {
 // (formOnScreen), and the browser not forgotten since the press. A request
 // whose form has gone by the time its answer is ready, because the reader went
 // to another page, or that Forget this browser cancelled meanwhile, is not
-// sent at all: nothing has gone yet, the answer is put back for the next
-// press, and sendWithCaptcha throws, for a caller that says nothing on a page
-// the reader went to. Neither the second send nor the next puzzle is started
-// for one.
+// sent, the first time or once more after a refused answer: the answer is put
+// back for the next press, and sendWithCaptcha throws an error marked notSent,
+// for a caller that says nothing on a page the reader went to and, on a form
+// still on screen, which only the forget stops, says why. Neither the second
+// send nor the next puzzle is started for one.
 // Pressing Update while a post waits does not take its form away: the redrawn
 // page shows the same form, still held, as does another page of the same
 // board's index, drawn with the same new-thread form.
@@ -3964,7 +3972,9 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
     const answer = taken ? taken.answer : "";
     if (!onScreen()) {
       keepCaptcha(taken);
-      throw new Error("not sent: the form is no longer on screen");
+      const err = new Error("not sent");
+      err.notSent = true;
+      throw err;
     }
     try {
       return await send(answer);
@@ -4117,7 +4127,6 @@ el.main.addEventListener("submit", async (event) => {
   // keeps nothing (below).
   const forgets = browserForgets;
   const forgotten = () => forgets !== browserForgets;
-  let went = false;
   // Read above, and held from here until the post has gone or been refused, so
   // what the form shows meanwhile is what is sent.
   const release = holdForm(form);
@@ -4139,7 +4148,6 @@ el.main.addEventListener("submit", async (event) => {
         } else if (answer) {
           payload.captcha = answer;
         }
-        went = true;
         return api(path, { method: "POST", body: file ? data : JSON.stringify(payload), headers });
       },
       (solving) => {
@@ -4219,9 +4227,11 @@ el.main.addEventListener("submit", async (event) => {
     if (!shown) {
       return;
     }
-    // A post the forget stopped before it went was refused by nobody: it says
-    // so, and keeps its text for whoever presses again.
-    if (!went && forgotten()) {
+    // A post sendWithCaptcha did not send from a form still on screen was
+    // stopped by the forget, before its first send or before the second after
+    // a refused answer: nobody refused it, so it says why, and keeps its text
+    // for whoever presses again.
+    if (err.notSent) {
       showNotice(FORGOTTEN_BEFORE_SENDING);
       return;
     }

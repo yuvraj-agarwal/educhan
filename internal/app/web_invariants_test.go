@@ -871,8 +871,9 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	inOrder(t, "sendWithCaptcha", send,
 		"async function sendWithCaptcha(needsIt, send, solving, onScreen) {",
 		"taken = takeCaptcha(await captchaAnswer());",
-		// A request not sent has not spent its answer, which goes back.
-		"if (!onScreen()) { keepCaptcha(taken); throw new Error(",
+		// A request not sent has not spent its answer, which goes back, and
+		// the error says it was not sent.
+		`if (!onScreen()) { keepCaptcha(taken); const err = new Error("not sent"); err.notSent = true; throw err; }`,
 		"return await send(answer);",
 	)
 	for _, want := range []string{
@@ -960,7 +961,7 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 		"do { taken = takeCaptcha(await captchaAnswer()); } while (!taken);",
 		`const answer = taken ? taken.answer : "";`,
 		// Not sent: put back.
-		"if (!onScreen()) { keepCaptcha(taken); throw new Error(",
+		"if (!onScreen()) { keepCaptcha(taken); const err = new Error(",
 		// Sent and taken: kept by nothing.
 		"try { return await send(answer); } catch (err) {",
 		// Refused without the spent header or a captcha reason, or never
@@ -982,13 +983,17 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // not a note that a badge was lost, which would tell them there had been one.
 // A code request or a post not sent yet, still waiting on its puzzle, is not
 // sent: the post would go under the Name and the poster key the forget took
-// away, while its form showed neither. Its form is released with its text,
-// and says nothing went. A redraw on its way puts back no Name its draft read
-// before the press, and a form left on screen loses the option to post with
-// the badge and says what a form without it says about the anti-spam check,
-// rather than offering a badge that has gone. Each request and each draft
-// notes browserForgets, and only forgetOnThisPage moves it, for a press in
-// this tab or one heard from another (TestForgettingTheBrowserReachesEveryTab).
+// away, while its form showed neither. That holds for the second send after a
+// refused answer too. A post's form is released with its text and says why:
+// sendWithCaptcha marks the error for a request it did not send, which on a
+// form still on screen only the forget causes, and the submit handler answers
+// that mark before it words any other error. A redraw on its way puts back no
+// Name its draft read before the press, and a form left on screen loses the
+// option to post with the badge and says what a form without it says about
+// the anti-spam check, rather than offering a badge that has gone. Each
+// request and each draft notes browserForgets, and only forgetOnThisPage
+// moves it, for a press in this tab or one heard from another
+// (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1056,28 +1061,35 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
 	}
 	// A post is held to the same: not sent once forgotten (sendWithCaptcha
-	// asks before it sends), and what it brings back kept only if nothing has
-	// moved browserForgets since the press. A post the forget stopped before
-	// it went says so on its form, which no refusal of it can have.
+	// asks before each send, the second after a refused answer included), and
+	// what it brings back kept only if nothing has moved browserForgets since
+	// the press. A post the forget stopped says so on its form, and the error
+	// sendWithCaptcha throws for it, whose message is for nobody, never
+	// reaches errorMessage.
 	submit := squash(withoutComments(submitHandler(t, script)))
 	inOrder(t, "the submit handler", submit,
-		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; let went = false;",
+		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets;",
 		"const release = holdForm(form);",
-		"went = true; return api(path,",
 		"() => onScreen() && !forgotten(), );",
 		"if (!held && forgets === browserForgets) { storageSet(NAME_STORAGE_KEY, name); storedHere.set(NAME_STORAGE_KEY, name); }",
 		`nameField.value = held || forgets !== browserForgets ? storageGet(NAME_STORAGE_KEY) || "" : name;`,
 		`if (reason === "expired" || reason === "revoked") { if (forgets === browserForgets) { forgetCredential(); badgeLost =`,
-		"if (!shown) { return; } if (!went && forgotten()) { showNotice(FORGOTTEN_BEFORE_SENDING); return; }",
+		"if (!shown) { return; } if (err.notSent) { showNotice(FORGOTTEN_BEFORE_SENDING); return; }",
+		"showNotice(errorMessage(err,",
 	)
-	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 ||
-		strings.Count(submit, "went") != 3 {
-		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets, " +
-			"or says a post went nowhere without knowing it")
+	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
+		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
+	}
+	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
+	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
+	if strings.Count(code, "notSent") != 2 || strings.Count(send, "err.notSent = true;") != 1 || strings.Count(refused, "err.notSent") != 1 ||
+		strings.Count(send, "new Error(") != 1 || strings.Count(refused, "showNotice(") != 2 {
+		t.Error("an error sendWithCaptcha throws for a request it did not send is no longer marked, " +
+			"or no longer answered by the submit handler alone and before it words any other error")
 	}
 	stopped := jsString(t, script, "FORGOTTEN_BEFORE_SENDING")
-	if !strings.Contains(stopped, "forgotten") || !strings.Contains(stopped, "nothing was sent") {
-		t.Errorf("FORGOTTEN_BEFORE_SENDING should say the browser was forgotten and nothing was sent: %q", stopped)
+	if !strings.Contains(stopped, "forgotten") || !strings.Contains(stopped, "nothing was posted") {
+		t.Errorf("FORGOTTEN_BEFORE_SENDING should say the browser was forgotten and nothing was posted: %q", stopped)
 	}
 }
 
