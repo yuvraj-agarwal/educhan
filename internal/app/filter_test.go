@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"unicode"
@@ -2575,7 +2577,7 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"who wants to be my snap streak buddy", contact},
 		{"my snap streak buddy ghosted me after 300 days", publish},
 		{"riot id: madeupbaingan#IND1 val pe aaja shaam ko", contact},
-		{"steam friend code 412877305, add me we need a 4th", contact},
+		{"steam friend code 9412877305, add me we need a 4th", contact},
 		{"session id 0515cee4fa0394e660be657b7e4033b7f26b6da202de62ebd149d552f228b8a721 if u want to talk", contact},
 		{"Tele me or whatsapp 9137 2684, got the O level chem TYS worked solutions", contact},
 		{"my hp is 9 6 2 8 - 4 0 1 7 lah, just msg", contact},
@@ -3423,6 +3425,9 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 		"c2-29":  "a Session ID, random hex",
 		"c2-122": "a Steam friend code, digits",
 	}
+	// A Steam friend code is an account's 32-bit number, so one past what 32
+	// bits hold is no one's.
+	steamCode := regexp.MustCompile(`(?i)\bsteam\b[^\d]{0,24}\b(\d{6,12})\b`)
 	madeUp := func(s string) bool {
 		letters := strings.Map(func(r rune) rune {
 			if unicode.IsLetter(r) {
@@ -3536,6 +3541,11 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 				t.Fatalf("%s: %v", path, err)
 			}
 			post := it.Name + "\n" + it.Subject + "\n" + it.Body
+			for _, m := range steamCode.FindAllStringSubmatch(post, -1) {
+				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
+					t.Errorf("%s: the Steam account number %s fits in 32 bits, so it may be someone's", it.ID, m[1])
+				}
+			}
 			for _, field := range []string{it.Name, it.Subject, it.Body} {
 				noOnesNumbers(it.ID, field, it.Expect != "publish")
 				labelledAadhaars(it.ID, field)
@@ -3589,6 +3599,11 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 				}
 			}
 			noOnesNumbers(fmt.Sprintf("%s:%d", path, i+1), line, false)
+			for _, m := range steamCode.FindAllStringSubmatch(line, -1) {
+				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
+					t.Errorf("%s:%d: the Steam account number %s fits in 32 bits, so it may be someone's", path, i+1, m[1])
+				}
+			}
 		}
 	}
 	if numbers < 40 {

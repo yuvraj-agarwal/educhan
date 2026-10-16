@@ -758,8 +758,10 @@ Name field's `madeupmint#k92`), in letters that still read "madeup" when the pos
 it out or splits it with markup — or is at a domain RFC 2606 reserves, and a student
 number at an institution's domain moves to a made-up one (`s2214587@madeup-uni.ac.uk`),
 so none can be a real person's. `TestFilterCorpusDetailsAreMadeUp` holds the corpus, and
-the addresses in this package's tests, to that; a group's invite code, a Session ID and
-a friend code are random and name no one, and stay as they are. A number cannot be
+the addresses in this package's tests, to that; a group's invite code and a Session ID
+are random and name no one, and stay as they are, while a Steam friend code is the
+account's 32-bit number, so the corpus's is above 4,294,967,295 ("9412877305") and can
+be no one's. A number cannot be
 marked so. In the first two parts the UK, US and Australian phone numbers come from the
 ranges set aside for drama, which the filter passes, so a post meant to be blocked uses
 an Indian or other number instead; in `_3` a number meant to be blocked is ordinary

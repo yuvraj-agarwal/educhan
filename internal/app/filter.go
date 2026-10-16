@@ -1314,7 +1314,7 @@ var meetingIDRule = plainOnly(`\b(?:` + words(`zoom`, `webex`, `teams`, `meet`) 
 // accountNumberRules are accounts written as numbers no other rule reads: a
 // Session messenger ID, 66 hexadecimal digits starting "05", which nothing
 // else is written as; and a game's friend code after its name ("steam
-// friend code 412877305", "friend code SW-1234-5678-9012").
+// friend code 9412877305", "friend code SW-1234-5678-9012").
 var accountNumberRules = []rule{
 	plainOnly(`\b05[0-9a-f]{64}\b`),
 	plainOnly(`\bfriend~?codes?(?:~is)?~(?:sw~?)?\d(?:~?\d){7,11}\b`),
