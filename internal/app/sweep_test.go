@@ -219,7 +219,8 @@ func TestSweepRemovesFilesWhenTheCaptchaCleanupFails(t *testing.T) {
 // missing file is not an error for a moderator removing a post, but here it
 // means the sweeper is looking at the wrong store, so the sweep fails and
 // keeps the keys, where it used to report success and leave every image
-// public at its URL.
+// public at its URL. The spent captcha answers past their day go all the
+// same, as they do when a removal fails.
 func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	h := testServer(t, nil)
 	h.addBoard("elsewhere")
@@ -229,6 +230,9 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	h.archiveThread("elsewhere", thread.ThreadNo, time.Minute)
 	attachment := fetchThread(t, h, "elsewhere", thread.ThreadNo).Posts[0].Attachment
 	blobs := threadBlobs(t, h, "elsewhere", thread.ThreadNo)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweeper went astray"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
 	store := h.app.media
 	wrong, err := media.NewLocalStore(t.TempDir())
@@ -244,8 +248,11 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	if !strings.Contains(err.Error(), "EDUCHAN_MEDIA_BACKEND") {
 		t.Errorf("error %q does not point at the media settings", err)
 	}
-	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2}); report != want {
+	if want := (SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsMissing: 2, SpentCaptchas: 1}); report != want {
 		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a sweep that found no files, want none", n)
 	}
 	for _, path := range blobs {
 		requireFile(t, path, true)
