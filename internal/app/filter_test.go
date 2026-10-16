@@ -3417,7 +3417,9 @@ func logCorpusRates(t *testing.T, category string, items, misses, stopped, publi
 // area code the numbering plan never assigns (N9X, 37X and 96X) and still be
 // blocked, so it is, and this test holds the North American numbers to that.
 // An Aadhaar number its label alone gets blocked fails its check digit, which
-// no issued number does, and this test holds the corpus to that too.
+// no issued number does, a roll, application or student number the filter
+// publishes has zeroes for its serial, and a Steam friend code is past what 32
+// bits hold, and this test holds the corpus to those too.
 func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	// Blocked as a username, but a code that names no one.
 	codes := map[string]string{
@@ -3477,6 +3479,11 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	// check digit, which no issued number does.
 	aadhaarNumber := regexp.MustCompile(`(?:^|[^\d])([2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?:[^\d]|$)`)
 	aadhaars := 0
+	// An exam roll, application, registration or student number the filter
+	// should publish has zeroes for its serial, so it is no one's.
+	studentNumber := regexp.MustCompile(`(?i)\b(?:roll|application|registration|reg|enrol?ment|enrollment|student|` +
+		`hall ticket|admit card)(?:[\s.:#-]+(?:no|number|num|id|card))*[\s.:#-]+(\d[\dA-Z]{4,19})\b`)
+	serials := 0
 	labelledAadhaars := func(where, text string) {
 		lower := strings.ToLower(text)
 		for _, m := range aadhaarNumber.FindAllStringSubmatchIndex(lower, -1) {
@@ -3572,6 +3579,13 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 				}
 			}
 			if it.Expect == "publish" {
+				for _, m := range studentNumber.FindAllStringSubmatch(post, -1) {
+					serials++
+					if !strings.HasSuffix(strings.TrimRight(m[1], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
+						"000") {
+						t.Errorf("%s: the published number %q has a serial that is not zeroes", it.ID, m[1])
+					}
+				}
 				continue // a decorator in code, "@staticmethod", is no one's
 			}
 			for _, m := range handle.FindAllStringSubmatch(post, -1) {
@@ -3611,6 +3625,10 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	}
 	if aadhaars < 10 {
 		t.Fatalf("only %d labelled Aadhaar numbers found, want the corpus's ten and more", aadhaars)
+	}
+	if serials < 15 {
+		t.Fatalf("only %d published roll, application and student numbers found, want the corpus's fifteen and more",
+			serials)
 	}
 }
 

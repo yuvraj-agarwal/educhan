@@ -193,7 +193,7 @@
 {"id": "contact-193", "body": "[code]int arr[] = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};\nbubbleSort(arr, 10);[/code]\nwhy does this segfault", "subject": "", "name": "", "expect": "publish", "why": "array of digits in code"}
 {"id": "contact-194", "body": "ISBN 978-93-5260-118-4 is the right edition of the RD Sharma? the cover looks different", "subject": "", "name": "", "expect": "publish", "why": "ISBN"}
 {"id": "contact-195", "body": "scored 1480 on the SAT (720 RW / 760 M), retake or nah?", "subject": "", "name": "", "expect": "publish", "why": "test scores"}
-{"id": "contact-196", "body": "roll no 2301045 and admit card says centre code 4412, is that the same as last year's centre", "subject": "", "name": "", "expect": "publish", "why": "roll number, not contact"}
+{"id": "contact-196", "body": "roll no 2301000 and admit card says centre code 4412, is that the same as last year's centre", "subject": "", "name": "", "expect": "publish", "why": "roll number, not contact; its serial is zeroes, so it is no one's"}
 {"id": "contact-197", "body": ">>48213 >>48219 >>48220\nall three of you are wrong, the answer is 12", "subject": "", "name": "", "expect": "publish", "why": "quote links"}
 {"id": "contact-198", "body": "train 12951 leaves mumbai central at 17:00, reaches delhi 08:32, perfect for the college fest", "subject": "", "name": "", "expect": "publish", "why": "train number and times"}
 {"id": "contact-199", "body": "fees went from ₹1,45,000 to ₹1,82,500 this year and they call it a 'nominal revision'", "subject": "", "name": "", "expect": "publish", "why": "money amounts"}
