@@ -2613,13 +2613,14 @@ func contactLink(host, path string) bool {
 		return true
 	case "webex.com":
 		// A personal room ("/meet/" or "/join/" and its name), a meeting or an
-		// event by its site's "j.php" or "e.php" (whose "?MTID=…" the path
-		// stops before), or the join service's page for a meeting; not
-		// "webex.com/downloads" or a help page.
+		// event by its site's "j.php" or "e.php" anywhere after the site's
+		// name ("/acme/j.php", Events' and Training's "/acme/k2/j.php"; the
+		// path stops before "?MTID=…"), or the join service's page for a
+		// meeting; not "webex.com/downloads" or a help page.
 		switch {
 		case first == "meet" || first == "join":
 			return len(segs) > 1
-		case len(segs) > 1 && (segs[1] == "j.php" || segs[1] == "e.php"):
+		case len(segs) > 1 && (slices.Contains(segs[1:], "j.php") || slices.Contains(segs[1:], "e.php")):
 			return true
 		}
 		return (first == "wbxmjs" || first == "webappng") && slices.Contains(segs, "meeting")

@@ -2621,6 +2621,8 @@ func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
 		{"meet.jit.si/studygroup42 anyone can join", contact},
 		{"join my webex https://meetingsamer.webex.com/meet/madeup.room7", contact},
 		{"join here https://acme.webex.com/acme/j.php?MTID=m1234567890abcdef", contact},
+		{"https://madeup.webex.com/madeup/k2/j.php?MTID=m1234567890abcdef join here", contact},
+		{"training at madeup.webex.com/madeup/k2/e.php?MTID=t0a1b2c3d4e5f", contact},
 		{"acme dot webex dot com slash join slash madeup.room7", contact},
 		{"https://acme.webex.com/wbxmjs/joinservice/sites/acme/meeting/download/1a2b3c4d", contact},
 		{"connect with me on linkedin: linkedin.com/in/madeup-ade-27b, happy to help with internships", contact},

@@ -229,3 +229,4 @@
 {"id": "contact-229", "body": "chem olympiad study group <- 9123456780 whatsapp, add urself", "subject": "", "name": "", "expect": "block", "why": "a mobile pointed at with a chat arrow and an app named after it; R's \"<-\" assigns only to a variable"}
 {"id": "contact-230", "body": "here <- 9123456780 hmu if u need the R notes", "subject": "", "name": "", "expect": "block", "why": "a chat arrow from \"here\" to a mobile, with \"hmu\""}
 {"id": "contact-231", "body": "R doubt: big <- 9876543210L gives NA with a warning, why? isn't L just integer", "subject": "", "name": "", "expect": "publish", "why": "R code: a number assigned to a variable with \"<-\""}
+{"id": "contact-232", "body": "workshop is on webex training, join at madeup.webex.com/madeup/k2/j.php?MTID=m0f1e2d3c4b5a6978 at 6", "subject": "", "name": "", "expect": "block", "why": "a Webex Training join link, whose j.php comes after the site's name and \"k2\""}
