@@ -7,20 +7,26 @@ import (
 	"image"
 	"image/gif"
 	"image/png"
+	"math"
+	"math/rand"
 	"runtime"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/yuvraj-agarwal/educhan/internal/media/jpegenc"
 )
 
-// Processing stops once its context is done at four places: the decode reads
-// through a ctxReader, the encode writes into a storedBuffer, playGIF checks
-// before each frame, and processHeld checks before the thumbnail. These tests
-// pin each of them on its own, by ending the context at the moment that one
-// asks (askedContext) and holding the work to stopping right there. None
-// depends on timing: where the context ends is fixed by the code's own calls,
-// not by how fast the machine is.
+// Processing stops once its context is done at five places: the decode reads
+// through a ctxReader, each format checks once its decode is done, the encode
+// writes into a storedBuffer — and the JPEG encoder stops working, not only
+// writing, once a write is refused — playGIF checks before each frame, and
+// processHeld checks before the thumbnail. These tests pin each of them on
+// its own, by ending the context at the moment that one asks (askedContext)
+// and holding the work to stopping right there. None depends on timing: where
+// the context ends is fixed by the code's own calls, not by how fast the
+// machine is.
 
 // askedContext is a context that ends — Err returns context.Canceled and
 // Done is closed — the moment it is asked, through Err, for the after-th time
@@ -106,7 +112,9 @@ func (c *askedContext) first() string {
 	return c.asks[0].fn
 }
 
-// The functions that ask a processing context whether it is done.
+// The functions that ask a processing context whether it is done. Each
+// format's own function (sanitizeJPEG, sanitizePNG, sanitizeWebP) asks too,
+// once its decode is done.
 const (
 	askRead   = "ctxReader.Read"
 	askWrite  = "(*storedBuffer).Write"
@@ -245,9 +253,48 @@ func TestDecodingStopsWhenTheContextEndsPartway(t *testing.T) {
 	}
 }
 
+// TestNothingMoreIsDoneOnceTheContextEndsWithTheDecode holds that a context
+// that ends once a decode has read all it reads stops the work there, before
+// anything is encoded: each format's check after its decode, on its own.
+// image/jpeg reads a small progressive file whole before its passes over the
+// blocks, and x/image a lossy WebP's partitions before decoding them, so for
+// those the decode's reads cannot see a context that ends during its costly
+// part; this is the first place that can.
+func TestNothingMoreIsDoneOnceTheContextEndsWithTheDecode(t *testing.T) {
+	for _, c := range []struct {
+		name, asks string
+		data       []byte
+	}{
+		{"JPEG", "sanitizeJPEG", photoJPEG(t)},
+		{"PNG", "sanitizePNG", photoPNG(t)},
+		{"lossy WebP", "sanitizeWebP", readTestdata(t, "lossy.webp")},
+		{"lossless WebP", "sanitizeWebP", readTestdata(t, "sample.webp")},
+	} {
+		whole, _ := sanitizeLive(t, c.name, c.data).asked(askRead)
+		ctx := newAskedContext(c.asks, 1)
+		sanitizeUnder(t, c.name, ctx, c.data)
+		if n, late := ctx.asked(askRead); n != whole || late != 0 {
+			t.Errorf("%s: the decode read %d times (%d after the context ended), want all %d of a whole decode, before it", c.name, n, late, whole)
+		}
+		if n, _ := ctx.asked(c.asks); n != 1 {
+			t.Errorf("%s: %s asked %d times, want once, after the decode", c.name, c.asks, n)
+		}
+		if n, _ := ctx.asked(askWrite); n != 0 {
+			t.Errorf("%s: the encode wrote %d times after the context ended with the decode", c.name, n)
+		}
+	}
+}
+
 // TestEncodingStopsWhenTheContextEndsPartway holds that an encode stops at
 // the first write after its context ends, part way through the stored file,
-// the decode having finished: storedBuffer's check, on its own.
+// the decode having finished: storedBuffer's check, on its own. For a JPEG it
+// also holds that the encode's work stops, not only its writes: jpegenc
+// passes its output on 4 KiB at a time through a buffer that stops passing
+// anything on once a write fails, so a count of writes cannot see whether it
+// went on transforming and coding the rest of the picture, which on a
+// 25-megapixel one is about a second of CPU. A picture whose pixels stop
+// after its first rows, though it claims thousands more, can: an encoder that
+// read on past the write it was refused would panic.
 func TestEncodingStopsWhenTheContextEndsPartway(t *testing.T) {
 	const at = 2
 	for name, data := range map[string][]byte{"PNG": photoPNG(t), "JPEG": photoJPEG(t)} {
@@ -260,6 +307,34 @@ func TestEncodingStopsWhenTheContextEndsPartway(t *testing.T) {
 		if n, late := ctx.asked(askWrite); n != at || late != 0 {
 			t.Errorf("%s: wrote %d times (%d after the context ended), want %d of the %d a whole encode makes, and none after", name, n, late, at, whole)
 		}
+	}
+
+	const w, rows, h = 512, 64, 4096
+	noise := rand.New(rand.NewSource(5))
+	have := image.NewYCbCr(image.Rect(0, 0, w, rows), image.YCbCrSubsampleRatio420)
+	for _, plane := range [][]byte{have.Y, have.Cb, have.Cr} {
+		noise.Read(plane)
+	}
+	var coded bytes.Buffer
+	if err := jpegenc.Encode(&coded, have.SubImage(image.Rect(0, 0, w, rows-16)), nil); err != nil || coded.Len() < (at+1)<<12 {
+		t.Fatalf("the rows there are code to %d bytes (%v); write %d would not fail among them", coded.Len(), err, at)
+	}
+	short := *have
+	short.Rect = image.Rect(0, 0, w, h)
+	ctx := newAskedContext(askWrite, at)
+	func() {
+		defer func() {
+			if v := recover(); v != nil {
+				t.Errorf("the JPEG encode read on past the write it was refused: %v", v)
+			}
+		}()
+		err := jpegenc.Encode(newStoredBuffer(ctx, 0, math.MaxInt64), &short, nil)
+		if !errors.Is(err, context.Canceled) {
+			t.Errorf("jpegenc.Encode = %v, want context.Canceled", err)
+		}
+	}()
+	if n, late := ctx.asked(askWrite); n != at || late != 0 {
+		t.Errorf("the JPEG encode wrote %d times (%d after the context ended), want %d", n, late, at)
 	}
 }
 

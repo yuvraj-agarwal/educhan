@@ -52,8 +52,10 @@ const UploadBudget int64 = 64 << 20
 //
 // A slower core, or other uploads beside it, makes that longer, so the
 // deadline still has the last word: Save stores nothing once it has passed,
-// and the work stops when the context ends. A context without a deadline waits
-// for as long as it lasts.
+// and the work stops when the context ends, at the next point that asks
+// (Process) — which for a decode that read its whole input before its costly
+// passes, as image/jpeg does a small progressive file, is the end of the
+// decode. A context without a deadline waits for as long as it lasts.
 const processingAllowance = 15 * time.Second
 
 // budget shares out memory among the uploads using it at once, each taking

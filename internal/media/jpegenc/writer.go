@@ -26,6 +26,9 @@
 //     sampling, where writeSOS called scale, which does 2×2 only; it still
 //     calls scale for 2×2.
 //   - QuantTables is the table scaling Encode did inline, exported.
+//   - writeSOS stops at the end of a row of units once a write has failed,
+//     where image/jpeg's went on transforming and coding every block of the
+//     picture into a writer that had already refused it.
 //
 // fdct.go is image/jpeg's, changed in its package clause only.
 package jpegenc
@@ -650,6 +653,11 @@ func (e *encoder) writeSOS(m image.Image) {
 	// TODO(wathiede): switch on m.ColorModel() instead of type.
 	case *image.Gray:
 		for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 {
+			// educhan: a failed write is final (Encode returns e.err), so
+			// nothing after it is worth working out.
+			if e.err != nil {
+				return
+			}
 			for x := bounds.Min.X; x < bounds.Max.X; x += 8 {
 				p := image.Pt(x, y)
 				grayToY(m, p, &b)
@@ -662,6 +670,10 @@ func (e *encoder) writeSOS(m image.Image) {
 		// educhan: a unit is h×v luma blocks, where image/jpeg's was 2×2.
 		h, v := sampling(m)
 		for y := bounds.Min.Y; y < bounds.Max.Y; y += 8 * v {
+			// educhan: as for grey, stop once a write has failed.
+			if e.err != nil {
+				return
+			}
 			for x := bounds.Min.X; x < bounds.Max.X; x += 8 * h {
 				for i := 0; i < h*v; i++ {
 					xOff := (i % h) * 8

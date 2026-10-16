@@ -219,9 +219,14 @@ func inspect(data []byte) (inspection, error) {
 // the processing budget (acquireProcessing): if ctx ends first the wait ends
 // with its error, and if ctx has a deadline it ends with ErrBusy once too
 // little of it is left to do the work (processingAllowance). Once the work
-// has begun it stops where it has got to when ctx ends — reading the
-// upload, writing the stored file, before a GIF's next frame, or before the
-// thumbnail (sanitize, processHeld) — and Process returns ctx's error.
+// has begun it stops at the next point that asks after ctx ends — the
+// decode's next read of the upload, the end of the decode, the encode's
+// next write of the stored file, before a GIF's next frame, or before the
+// thumbnail (sanitize, processHeld) — and Process returns ctx's error. A
+// decode that has read all its input already, as image/jpeg has a small
+// progressive file's and x/image a lossy WebP's partitions, asks no more
+// until it is done, so it runs to its end first: a few seconds of CPU at
+// most, holding its share of the budget until then.
 func Process(ctx context.Context, data []byte) (Processed, error) {
 	out, release, err := processHeld(ctx, data)
 	if err != nil {

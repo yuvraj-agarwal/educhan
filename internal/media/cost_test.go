@@ -508,9 +508,12 @@ func leastPeak(t testing.TB, name string, want int64, work func() error) int64 {
 // hide any term of theirs left out.
 //
 // The whole is measured first. The limit-0 run makes exactly the same
-// allocations as the whole up to the byte the encoder is refused and then
-// stops, so its peak can never exceed the whole's; when the whole is already
-// within the decoding estimate, the limit-0 run must be too, so it is not run.
+// allocations as the whole up to the byte the encoder is refused, and after
+// it does no more than part of what the whole goes on to do — jpegenc stops
+// at the end of the row of units it is coding, image/png and image/gif once
+// their own buffers next pass a write on, and the stored file never grows —
+// so its peak can never exceed the whole's; when the whole is already within
+// the decoding estimate, the limit-0 run must be too, so it is not run.
 // That halves the slowest fixtures, whose peak is all in the decode (an
 // unpacked lossless WebP). It hides nothing: a decoding term left out shrinks
 // `decoding`, and where that lets the real decode peak exceed it, the whole,

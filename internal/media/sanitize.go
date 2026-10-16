@@ -191,9 +191,12 @@ func gifCharge(w, h int64) int64 {
 // limit while it grows: what processingCost counts for it.
 //
 // It also fails a write once its context is done (ctx), so an encode of a
-// costly picture stops promptly when the request that asked for it is
-// cancelled or has run out of time, rather than running to the end and only
-// then finding nothing wants it. While the context is live the check is the
+// costly picture stops when the request that asked for it is cancelled or has
+// run out of time, rather than running to the end and only then finding
+// nothing wants it. The encoders stop at the first write refused them, or
+// soon after: jpegenc at the end of the row of units it is coding
+// (TestEncodeStopsAtAFailedWrite), image/png and image/gif once their own
+// buffers next pass a write on. While the context is live the check is the
 // one comparison and the bytes written are exactly what they would be
 // without it.
 type storedBuffer struct {
@@ -251,15 +254,23 @@ type sanitized struct {
 // longer than in.limit (storedLimit).
 //
 // ctx is the request's: the decode reads through a ctxReader and the encode
-// writes into a storedBuffer that both fail once it is done, and playGIF
-// checks it between frames, so a costly picture stops being processed the
-// moment the post that asked for it is cancelled or out of time rather than
-// running to the end first — which is what lets processHeld give the budget
-// back promptly. A decode or encode a cancellation cut off surfaces as the
-// format's own error; sanitize reports the context's error instead when it is
-// what stopped the work, so Process and Save map it to the right answer (a
-// deadline to 503, a cancellation to the client having gone) rather than to
-// ErrCorruptImage. While ctx is live nothing it does changes the stored bytes.
+// writes into a storedBuffer that both fail once it is done, each format
+// checks it again once its decode is done, and playGIF checks it between
+// frames, so a costly picture stops being processed soon after the post that
+// asked for it is cancelled or out of time rather than running to the end
+// first — which is what lets processHeld give the budget back. A decode is
+// seen to stop only at its next read, though, and some read all their input
+// before their costly work: image/jpeg reads a small progressive file whole
+// before its passes over the blocks, and x/image's lossy WebP decoder its
+// partitions before it decodes them. Such a decode runs to its end once it
+// has started, a few seconds of CPU at most — what the pixel cap, the memory
+// estimate and the scan revisit cap bound — while holding its share of the
+// budget, and then nothing more is done. A decode or encode a cancellation
+// cut off surfaces as the format's own error; sanitize reports the context's
+// error instead when it is what stopped the work, so Process and Save map it
+// to the right answer (a deadline to 503, a cancellation to the client having
+// gone) rather than to ErrCorruptImage. While ctx is live nothing it does
+// changes the stored bytes.
 func sanitize(ctx context.Context, in inspection, data []byte) (sanitized, error) {
 	out, err := sanitizeFormat(ctx, in, data)
 	if err != nil {
@@ -327,6 +338,9 @@ func sanitizeJPEG(ctx context.Context, data []byte, limit int64) (sanitized, err
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
+	if err := ctx.Err(); err != nil {
+		return sanitized{}, err
+	}
 	if cmyk, ok := src.(*image.CMYK); ok {
 		src = rgbaOfCMYK(cmyk)
 	}
@@ -377,6 +391,9 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 	src, err := png.Decode(ctxReader{ctx, bytes.NewReader(data)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
+	}
+	if err := ctx.Err(); err != nil {
+		return sanitized{}, err
 	}
 	if gamma, ok := pngGamma(data); ok {
 		applyPNGGamma(src, gamma)
@@ -551,6 +568,9 @@ func sanitizeWebP(ctx context.Context, data []byte, limit int64) (sanitized, err
 	pic, err := webp.Decode(ctxReader{ctx, bytes.NewReader(stripped)})
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
+	}
+	if err := ctx.Err(); err != nil {
+		return sanitized{}, err
 	}
 	if b := pic.Bounds(); b.Dx() != info.Width || b.Dy() != info.Height {
 		return sanitized{}, ErrCorruptImage
