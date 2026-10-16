@@ -28,22 +28,24 @@ var ErrBusy = errors.New("media: no room to take the image in time")
 const UploadBudget int64 = 64 << 20
 
 // processingAllowance is how long before its deadline an upload stops waiting
-// for room, in either budget, so that what is left is time to decode,
-// re-encode and thumbnail it and to store both renditions. What bounds that
-// work is not the upload's size — a few dozen bytes of a progressive JPEG can
-// make image/jpeg revisit every block of a 25-megapixel picture — but its
-// shape, which Inspect reads from the header: the pixel cap (MaxPixels), the
-// memory estimate (processingCost), and, for a progressive JPEG, the scan
-// revisit cap (maxJPEGScanRevisits), so that no admitted upload decodes for
-// more than a few seconds of CPU on one core. The slowest kinds measured, each
-// on one core:
+// for room, in either budget, so that what is left is time to decode, re-encode
+// and thumbnail it and to store both renditions. What bounds that work is not
+// the upload's size — a few dozen bytes of a progressive JPEG's scan can make
+// image/jpeg revisit every block of a 25-megapixel picture — but its shape,
+// which Inspect reads from the header: the pixel cap (MaxPixels), the memory
+// estimate (processingCost), and, for a JPEG, the scan cap
+// (maxJPEGScanRevisits), so that no admitted upload decodes for more than a few
+// seconds of CPU on one core. The slowest kinds measured, each on one core:
 //   - a 25-megapixel PNG with transparency of about 7 MiB: ~4 s.
-//   - a progressive JPEG at the scan cap: the largest the memory estimate
-//     admits is a 25-megapixel 4:2:2 picture, about 50 million block visits
-//     (maxJPEGScanRevisits over ~0.8 million blocks), ~3-4 s; a 25-megapixel
-//     grey one at the cap measured ~2 s. A file past the cap is refused from
-//     its header, before any cooldown — before the cap one could repeat a
-//     cheap scan thousands of times and decode for thousands of seconds.
+//   - a JPEG at the scan cap: the most blocks the memory estimate admits are
+//     ~0.8 million, a 25-megapixel 4:2:2 picture or ~17 megapixels at 4:4:4,
+//     and at the cap its scans decode in ~3 s and Process takes ~4 s, whether
+//     they are 64 progressive first passes (~50 million block visits), ~32
+//     refinement passes or 10 baseline scans (jpegScanBlockVisits weighs each
+//     by its work); a 25-megapixel grey or 4:2:0 one decodes in ~1.5-2 s. A
+//     file past the cap is refused from its header, before any cooldown —
+//     before the cap one could repeat a cheap scan thousands of times and
+//     decode for thousands of seconds.
 //   - a GIF of many colours: 25 frames of a 2000×2000 canvas each drawn from a
 //     table of its own and each leaving a pixel to clear, 4.5 MB, which the
 //     frame cap (maxGIFFramePixels) lets come to 100 million pixels, ~4 s.

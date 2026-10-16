@@ -895,18 +895,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `Inspect` admits decodes for long, because the slowest kinds are bounded from the header
   — a 25-megapixel transparent PNG takes about 4 s of CPU on one core, the slowest GIF
   about 4 (25 frames of a 2000×2000 canvas each with a table of its own and a pixel to
-  clear), and a progressive JPEG is held to `maxJPEGScanRevisits` passes over its blocks
-  (`jpegScanBlockVisits`), so the worst admitted one is about 3-4 s rather than the
-  thousands of seconds a repeated cheap scan would take) before that deadline, with
-  `media.ErrBusy`, and room that is there is taken however near the deadline. Its body
-  then has `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so time
-  spent waiting for room is not taken out of the body's: a read deadline set on the
-  connection through an `http.ResponseController` once `ReserveUpload` has returned,
-  whatever it returned (the logging middleware's `statusRecorder` carries an `Unwrap` so
-  the controller reaches the connection underneath); a body slower than that is the
-  client's doing, answered `408` (`upload too slow`, `isReadTimeout`), not the `503` a
-  server with no room gives, and a body that waited for room is not answered `408` for the
-  server's load. Once the body is read, the image has a fresh `postDeadline` (25 s,
+  clear), and a JPEG is held to `maxJPEGScanRevisits` passes' work over its blocks
+  (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six first-pass visits
+  and an AC refinement scan's at two, for what the decoder does on each), so the worst
+  admitted one is about 3 s to decode and 4 s to process rather than the thousands of
+  seconds a repeated cheap scan would take) before that deadline, with `media.ErrBusy`,
+  and room that is there is taken however near the deadline. Its body then has
+  `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so time spent
+  waiting for room is not taken out of the body's: a read deadline set on the connection
+  through an `http.ResponseController` once `ReserveUpload` has returned, whatever it
+  returned (the logging middleware's `statusRecorder` carries an `Unwrap` so the
+  controller reaches the connection underneath); a body slower than that is the client's
+  doing, answered `408` (`upload too slow`, `isReadTimeout`), not the `503` a server with
+  no room gives, and a body that waited for room is not answered `408` for the server's
+  load. Once the body is read, the image has a fresh `postDeadline` (25 s,
   `processContext`) to be processed and both renditions stored — measured from after the
   body, not from the start of the handler, so a slow body no longer spends the time the
   image has and is no longer mistaken for a busy server

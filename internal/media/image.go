@@ -195,11 +195,12 @@ func inspect(data []byte) (inspection, error) {
 	if cost > processingBudget {
 		return inspection{}, ErrImageTooCostly
 	}
-	// A progressive JPEG can repeat short, cheap scans so that the decoder
-	// revisits every block of the picture thousands of times — unbounded CPU
-	// that holds no more memory and so costs neither the pixel cap nor the
-	// memory estimate anything (jpegScansTooCostly). It is refused here, from
-	// its header, before flood control starts a cooldown for it.
+	// A JPEG can repeat short, cheap scans — a progressive one's a few dozen
+	// bytes each, a baseline one's a couple of bits a block — so that the
+	// decoder revisits every block of the picture many times over: CPU that
+	// holds no more memory and so costs neither the pixel cap nor the memory
+	// estimate anything (jpegScansTooCostly). It is refused here, from its
+	// header, before flood control starts a cooldown for it.
 	if format == FormatJPEG && jpegScansTooCostly(data) {
 		return inspection{}, ErrImageTooCostly
 	}

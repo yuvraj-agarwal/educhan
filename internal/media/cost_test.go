@@ -1849,6 +1849,19 @@ func (b *scanBombBits) flush() []byte {
 // a single grey progressive picture's whatever the scan count — which
 // maxJPEGScanRevisits bounds.
 func scanBombJPEG(w, h, acScans int) []byte {
+	return progressiveScanBomb(w, h, acScans, 0x00)
+}
+
+// refinementScanBombJPEG is scanBombJPEG with AC refinement scans (Ah=1,
+// Al=0), each of which image/jpeg walks every coefficient of every block for
+// even inside the EOB run (refineNonZeroes).
+func refinementScanBombJPEG(w, h, acScans int) []byte {
+	return progressiveScanBomb(w, h, acScans, 0x10)
+}
+
+// progressiveScanBomb builds scanBombJPEG's file with ahal as each AC scan's
+// successive-approximation byte.
+func progressiveScanBomb(w, h, acScans int, ahal byte) []byte {
 	seg := func(b []byte, marker byte, body []byte) []byte {
 		b = append(b, 0xFF, marker)
 		b = binary.BigEndian.AppendUint16(b, uint16(len(body)+2))
@@ -1888,8 +1901,46 @@ func scanBombJPEG(w, h, acScans int) []byte {
 	}
 	acData := ac.flush()
 	for s := 0; s < acScans; s++ {
-		b = seg(b, 0xDA, []byte{1, 1, 0x00, 1, 63, 0}) // AC scan, Ss=1 Se=63
+		b = seg(b, 0xDA, []byte{1, 1, 0x00, 1, 63, ahal}) // AC scan, Ss=1 Se=63
 		b = append(b, acData...)
+	}
+	return append(b, 0xFF, 0xD9)
+}
+
+// baselineScanBombJPEG builds a w×h greyscale baseline JPEG of scans scans,
+// each coding every block as a zero DC difference and an immediate end of
+// block, two bits a block: a flat grey picture that image/jpeg decodes whole
+// once per scan, dequantising, inverse-transforming and writing out every
+// block each time (reconstructBlock).
+func baselineScanBombJPEG(w, h, scans int) []byte {
+	seg := func(b []byte, marker byte, body []byte) []byte {
+		b = append(b, 0xFF, marker)
+		b = binary.BigEndian.AppendUint16(b, uint16(len(body)+2))
+		return append(b, body...)
+	}
+	b := []byte{0xFF, 0xD8}
+	dqt := []byte{0}
+	for i := 0; i < 64; i++ {
+		dqt = append(dqt, 1)
+	}
+	b = seg(b, 0xDB, dqt)
+	sof := []byte{8}
+	sof = binary.BigEndian.AppendUint16(sof, uint16(h))
+	sof = binary.BigEndian.AppendUint16(sof, uint16(w))
+	sof = append(sof, 1, 1, 0x11, 0) // one component, 1×1 sampling
+	b = seg(b, 0xC0, sof)
+	counts := make([]byte, 16)
+	counts[0] = 1
+	b = seg(b, 0xC4, append(append([]byte{0x00}, counts...), 0x00)) // DC: '0' → category 0
+	b = seg(b, 0xC4, append(append([]byte{0x10}, counts...), 0x00)) // AC: '0' → end of block
+	var bits scanBombBits
+	for i := 0; i < 2*((w+7)/8)*((h+7)/8); i++ {
+		bits.put(0, 1)
+	}
+	data := bits.flush()
+	for s := 0; s < scans; s++ {
+		b = seg(b, 0xDA, []byte{1, 1, 0x00, 0, 63, 0})
+		b = append(b, data...)
 	}
 	return append(b, 0xFF, 0xD9)
 }
@@ -1903,9 +1954,10 @@ func scanBombJPEG(w, h, acScans int) []byte {
 // the progressive files encoders actually write (a handful of passes) are
 // admitted.
 func TestJPEGScanBombIsRefusedFromHeader(t *testing.T) {
-	// The progressive fixtures, encoders' own output, are well under the cap
-	// and admitted.
-	for _, name := range []string{"cost-prog420.jpg", "cost-prog444.jpg", "cost-progcmyk.jpg", "cost-proggray.jpg"} {
+	// The fixtures, encoders' own output, baseline and progressive, are well
+	// under the cap and admitted.
+	for _, name := range []string{"cost-prog420.jpg", "cost-prog444.jpg", "cost-progcmyk.jpg", "cost-proggray.jpg",
+		"cost-411.jpg", "cost-cmyk.jpg", "cost-rgb.jpg", "photo-q30.jpg"} {
 		data := readTestdata(t, name)
 		f, framed := readJPEGFrame(data)
 		if !framed {
@@ -1937,6 +1989,58 @@ func TestJPEGScanBombIsRefusedFromHeader(t *testing.T) {
 	f, _ := readJPEGFrame(overCap)
 	if got, want := jpegScanBlockVisits(overCap, f), int64(maxJPEGScanRevisits+1)*blocks; got != want {
 		t.Errorf("jpegScanBlockVisits = %d, want %d", got, want)
+	}
+}
+
+// image/jpeg does more on some block visits than on others: a baseline scan
+// dequantises, inverse-transforms and writes out every block it visits, about
+// six times the work of a progressive first pass, and an AC refinement scan
+// walks every coefficient of its band in every block, even inside an EOB
+// run, about twice it. jpegScanBlockVisits weighs each scan by that work, so
+// neither kind buys more decoding under the cap than first passes do: a grey
+// file of repeated baseline scans is admitted up to 10 of them (60 passes'
+// work) and refused at 11 (66), and one of refinement scans after its DC scan
+// up to 31 (63) and refused at 32 (65). Counted as plain visits, both were
+// admitted up to 64 scans — a 25-megapixel 4:2:2 picture's 64 baseline scans
+// decoded for about 14 s of CPU, and its refinement scans for about 5.5 s,
+// where 64 first passes take about 3. Every file here decodes whole in
+// image/jpeg, so the count is of work it really does.
+func TestJPEGScanCountWeighsEachScanByItsWork(t *testing.T) {
+	const w, h = 1000, 1000
+	blocks := int64(((w + 7) / 8) * ((h + 7) / 8))
+	for _, c := range []struct {
+		name string
+		make func(scans int) []byte
+		// fixed and perScan are the file's passes of work: its DC scan,
+		// and each of the scans it repeats.
+		fixed, perScan int64
+		admitted       int
+	}{
+		{"baseline", func(n int) []byte { return baselineScanBombJPEG(w, h, n) },
+			0, jpegBaselineVisitWork, 10},
+		{"refinement", func(n int) []byte { return refinementScanBombJPEG(w, h, n) },
+			1, jpegRefineVisitWork, 31},
+	} {
+		for _, n := range []int{c.admitted, c.admitted + 1} {
+			data := c.make(n)
+			if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
+				t.Fatalf("%s, %d scans: image/jpeg does not decode it: %v", c.name, n, err)
+			}
+			f, framed := readJPEGFrame(data)
+			if !framed {
+				t.Fatalf("%s, %d scans: readJPEGFrame did not read a frame", c.name, n)
+			}
+			if got, want := jpegScanBlockVisits(data, f), (c.fixed+c.perScan*int64(n))*blocks; got != want {
+				t.Errorf("%s, %d scans: jpegScanBlockVisits = %d, want %d", c.name, n, got, want)
+			}
+			_, err := Inspect(data)
+			switch {
+			case n == c.admitted && err != nil:
+				t.Errorf("Inspect(%s, %d scans) = %v, want it admitted", c.name, n, err)
+			case n > c.admitted && !errors.Is(err, ErrImageTooCostly):
+				t.Errorf("Inspect(%s, %d scans) = %v, want ErrImageTooCostly", c.name, n, err)
+			}
+		}
 	}
 }
 

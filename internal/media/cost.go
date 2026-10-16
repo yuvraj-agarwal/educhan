@@ -542,39 +542,61 @@ func jpegNextSegment(data []byte, i int) (marker byte, body []byte, next int, ok
 	return 0, nil, len(data), false
 }
 
-// maxJPEGScanRevisits caps how many times, averaged over the picture, a JPEG's
-// scans may make image/jpeg visit each of its 8×8 blocks (jpegScanBlockVisits).
-// A baseline file visits every block once; the progressive files encoders
-// write revisit them a handful of times — Pillow's are 4.7 to 6, libjpeg's
-// ten-scan default is similar — so a few dozen is far above any real
-// progression. A progressive file may repeat a band's scan any number of
-// times, each a few dozen bytes and holding no more memory, so that its
-// decoding visits orders of magnitude more blocks than the picture has: a loop
-// the pixel cap (MaxPixels) and the memory estimate (processingCost) do not
-// see, because it is bounded by neither the resolution nor what is held but by
-// the scan count. A file whose scans would visit more than this many times its
-// blocks is refused as too costly to process (ErrImageTooCostly), from its
-// header, before any cooldown (inspect). The ceiling bounds the decoder's work:
-// the largest picture it admits is a progressive one the memory estimate still
-// fits — a 25-megapixel grey or 4:2:0 file, about 0.4 to 0.6 million blocks —
-// and at this multiple its scans take about 2 s of CPU on one core, well
-// inside processingAllowance.
+// maxJPEGScanRevisits caps the work a JPEG's scans may ask of image/jpeg,
+// averaged over the picture's 8×8 blocks and counted in passes of a progressive
+// first scan over them (jpegScanBlockVisits). A progressive file may repeat a
+// band's scan any number of times, each a few dozen bytes and holding no more
+// memory, so that its decoding visits orders of magnitude more blocks than the
+// picture has; a baseline file may repeat its scans too, at a couple of bits a
+// block each. Either is a loop the pixel cap (MaxPixels) and the memory
+// estimate (processingCost) do not see, because it is bounded by neither the
+// resolution nor what is held but by the scan count. A file whose scans would
+// come to more than this many passes is refused as too costly to process
+// (ErrImageTooCostly), from its header, before any cooldown (inspect). What
+// encoders write is far below it: a baseline file's one scan counts
+// jpegBaselineVisitWork (6) passes, and the progressive files here, libjpeg's
+// ten-scan default as Pillow writes it, 6 to 8 with their refinement scans
+// weighed in. The ceiling bounds the decoder's work: the largest picture it
+// admits is one the memory estimate still fits with the most blocks, about 0.8
+// million — a 25-megapixel 4:2:2 picture, or about 17 megapixels at 4:4:4 — and
+// at the cap its scans take about 3 s of CPU on one core, and the whole of
+// Process about 4 s, whichever kind of scan fills it: 64 first passes, about 32
+// refinement passes, or 10 baseline scans. A grey or 4:2:0 picture of 25
+// megapixels has fewer blocks, about 0.4 and 0.6 million, and its scans take
+// about 1.5 s and 2 s. All of it is well inside processingAllowance.
 const maxJPEGScanRevisits = 64
 
+// jpegBaselineVisitWork and jpegRefineVisitWork weigh a block visit by what
+// image/jpeg does on it, in visits of a progressive first scan (which loads the
+// block's coefficients, decodes a symbol or counts down an end-of-band run, and
+// stores them back), as measured on one core. A baseline scan also dequantises
+// the block, inverse-transforms it and writes it into the picture
+// (reconstructBlock), about six times that work; a progressive AC refinement
+// scan walks every coefficient of the band in every block (refineNonZeroes),
+// inside an end-of-band run too, about twice it. Unweighed, the cap admitted a
+// 25-megapixel 4:2:2 file of 64 baseline scans (12 MB) that decoded for about
+// 14 s, and one of refinement scans (100 KB) for about 5.5 s, where 64 first
+// passes take about 3.
+const (
+	jpegBaselineVisitWork = 6
+	jpegRefineVisitWork   = 2
+)
+
 // jpegScanBlockVisits adds up the 8×8 blocks image/jpeg visits decoding every
-// scan of a JPEG whose frame header is f (readJPEGFrame). The decoder walks the
-// MCU grid once per scan (processSOS), and for each MCU visits every 8×8 block
-// of the scan's components, loading and storing a 256-byte coefficient block
-// for a progressive file; so a scan's cost is the grid, mxx×myy from the first
-// component's sampling, times the sum of h×v over the components the scan
-// lists. A baseline file's one scan visits each block once; a progressive file
-// revisits a component's blocks on each of its scans. It walks the segments
-// as the decoder reads them (jpegNextSegment), its extraneous bytes and each
-// scan's entropy-coded data stepped over to the next marker exactly as the
-// decoder steps over them, so it counts every scan the decoder processes and
-// stops where the decoder would: a byte the decoder skips cannot hide a scan
-// from it. The count, not the file's size, is what maxJPEGScanRevisits
-// bounds.
+// scan of a JPEG whose frame header is f (readJPEGFrame), each weighed by the
+// work the decoder does on it (jpegBaselineVisitWork, jpegRefineVisitWork). The
+// decoder walks the MCU grid once per scan (processSOS), and for each MCU
+// visits every 8×8 block of the scan's components; so a scan's visits are the
+// grid, mxx×myy from the first component's sampling, times the sum of h×v over
+// the components the scan lists. A baseline file's one scan visits each block
+// once; a progressive file revisits a component's blocks on each of its scans.
+// It walks the segments as the decoder reads them (jpegNextSegment), its
+// extraneous bytes and each scan's entropy-coded data stepped over to the next
+// marker exactly as the decoder steps over them, so it counts every scan the
+// decoder processes and stops where the decoder would: a byte the decoder skips
+// cannot hide a scan from it, and a scan header of the wrong length, which the
+// decoder refuses, ends the count. The count, not the file's size, is what
+// maxJPEGScanRevisits bounds.
 func jpegScanBlockVisits(data []byte, f jpegFrame) int64 {
 	if f.ncomp == 0 || f.comp[0].h < 1 || f.comp[0].v < 1 {
 		return 0
@@ -601,7 +623,7 @@ func jpegScanBlockVisits(data []byte, f jpegFrame) int64 {
 		if len(body) >= 1 {
 			ns = int(body[0])
 		}
-		if ns < 1 || len(body) < 1+2*ns {
+		if ns < 1 || len(body) != 4+2*ns {
 			return visits
 		}
 		var hv int64
@@ -613,6 +635,15 @@ func jpegScanBlockVisits(data []byte, f jpegFrame) int64 {
 					break
 				}
 			}
+		}
+		// The spectral start and the successive-approximation high bit,
+		// which the decoder reads only in a progressive file.
+		ss, ah := body[1+2*ns], body[3+2*ns]>>4
+		switch {
+		case !f.progressive:
+			hv *= jpegBaselineVisitWork
+		case ss > 0 && ah > 0:
+			hv *= jpegRefineVisitWork
 		}
 		visits += mcus * hv
 	}
