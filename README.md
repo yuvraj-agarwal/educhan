@@ -511,11 +511,18 @@ its thread's `held_at`. Nothing else the filter matched is kept. A moderator's
 approval is logged with the board, thread and post number, as every
 moderation action is.
 It runs in-process, sends nothing anywhere, and takes time linear in the
-length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.7 ms for
-a typical 500-character post, about 2.6 ms for an ordinary post of the maximum
-length, and no more than about 16 ms for the slowest of the 1,251 posts built
-to be slow (measured one post at a time with `GOMAXPROCS=1` under `taskset`,
-as the process's CPU time, the best of several runs). Each server prepares the
+length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.5 ms for
+an ordinary 500-character post, about 4.5 ms for an ordinary post of the
+maximum length, and no more than about 16 ms for the slowest of the 17,800
+posts built to be slow. The ordinary posts are the corpus's published ones
+(below) run together and cut into 411 pieces of 500 characters and 25 of
+8,000, and the figures are the median piece's (3.6 to 5.2 ms across the long
+pieces); one sentence repeated to the maximum length takes about 2.6 to 3 ms,
+since the same words over and over give the rules less to read. Each was
+measured one post at a time with `GOMAXPROCS=1` under `taskset`, as the
+process's CPU time, the best of several runs, on a shared four-core machine;
+`go test -run - -bench CheckContent ./internal/app` times both kinds of
+maximum-length post. Each server prepares the
 rules once, as it starts: about 3.5 seconds of one core, with the heap reaching
 about 320 MB while it does and about 64 MB kept afterwards, and a post that
 arrives before that is done waits for it. A

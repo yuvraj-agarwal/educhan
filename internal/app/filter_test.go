@@ -3656,9 +3656,57 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	}
 }
 
+// BenchmarkCheckContent checks ordinary posts of the maximum length: one
+// sentence over and over, and the corpus's published posts run together and
+// cut into pieces of that length (ordinaryPieces), a different piece each
+// time. Varied text gives the rules more to read than one sentence does, so
+// "corpus" is the figure for an ordinary post; the README's timings are the
+// process's CPU time on one core, the best of several runs of each piece.
 func BenchmarkCheckContent(b *testing.B) {
-	body := strings.Repeat("Is the answer 42? I will check my notes tomorrow at school. ", maxBodyLen/62)
-	for i := 0; i < b.N; i++ {
-		checkContent(contentInput{Subject: "doubt", Name: "anon", Body: body}, false)
+	prepareSearches() // planned once, as the server does as it starts, not timed
+	b.Run("sentence", func(b *testing.B) {
+		body := strings.Repeat("Is the answer 42? I will check my notes tomorrow at school. ", maxBodyLen/62)
+		for i := 0; i < b.N; i++ {
+			checkContent(contentInput{Subject: "doubt", Name: "anon", Body: body}, false)
+		}
+	})
+	b.Run("corpus", func(b *testing.B) {
+		pieces := ordinaryPieces(b, maxBodyLen)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			checkContent(contentInput{Subject: "doubt", Name: "anon", Body: pieces[i%len(pieces)]}, false)
+		}
+	})
+}
+
+// ordinaryPieces runs together the bodies of the corpus's published posts,
+// file by file and a blank line apart, and cuts them into pieces of n
+// characters, dropping the remainder.
+func ordinaryPieces(tb testing.TB, n int) []string {
+	paths, err := filepath.Glob(filepath.Join("testdata", "filter_corpus", "*.jsonl"))
+	if err != nil || len(paths) == 0 {
+		tb.Fatalf("no corpus files: %v", err)
 	}
+	var bodies []string
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			var it corpusItem
+			if err := json.Unmarshal([]byte(line), &it); err != nil {
+				tb.Fatalf("%s: %v", path, err)
+			}
+			if it.Expect == "publish" {
+				bodies = append(bodies, it.Body)
+			}
+		}
+	}
+	text := []rune(strings.Join(bodies, "\n\n"))
+	var pieces []string
+	for i := 0; i+n <= len(text); i += n {
+		pieces = append(pieces, string(text[i:i+n]))
+	}
+	return pieces
 }

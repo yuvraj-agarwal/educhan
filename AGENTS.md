@@ -658,27 +658,41 @@ every place a branch could start, and a copy of Go's own regexp machine, which n
 backtracks, runs each branch from those places alone, putting no thread where nothing
 can take the next character (`viability`, worked out per instruction when the branch is
 planned; the machine finds the same matches with fewer steps). The number scanner and
-the view builders are single passes, the checks read at most a clause or a sentence each side of
-a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), or `readReach` words for a hint of a threat
-told by implication or a goad (whose nudges and finishers are read once for the post), and the threat pairing
-finds the places and times first and looks each intent up among them by binary search
-(`nearSpans`, `anyNear`), so an intent with no place or time near it is never put to
-its check, which is where the grammar's reading costs. Measured on one core of an Intel
-Xeon @ 2.10GHz (`GOMAXPROCS=1` under `taskset`, no race detector, the best of several
-runs of each verdict, the slower of the two, timed as the process's CPU time on a shared
-four-core machine): about 0.7 ms for a typical 500-character post, about 2.6 ms for an
-ordinary maximum-length one, and at most about 16 ms for the slowest of 1,251 bodies built
-to be slow (the 247 the earlier figures were taken on, the grammar rules' true and false
-positives, the grammar's openings, each repeated to the maximum length with and without
-a place or a time, and `TestFilterCostIsBounded`'s bodies and method questions with words
-between the count and the pills; before the searches were planned: about 4 ms, 36 ms,
-and 400–490 ms for a post of `㏂`, which folds to `maxFoldRunes`). Refusals are budgeted all the same; see the API
+the view builders are single passes, the checks read at most a clause or a sentence each
+side of a match, cut to 64 bytes (`clauseAfter`, `sentenceAround`), or `readReach` words
+for a hint of a threat told by implication or a goad (whose nudges and finishers are
+read once for the post), and the threat pairing finds the places and times first and
+looks each intent up among them by binary search (`nearSpans`, `anyNear`), so an intent
+with no place or time near it is never put to its check, which is where the grammar's
+reading costs. Measured on one core of an Intel Xeon @ 2.10GHz (`GOMAXPROCS=1` under
+`taskset`, no race detector, the best of several runs of each verdict, the slower of the
+two, timed as the process's CPU time on a shared four-core machine, with a subject and a
+name): ordinary posts are the corpus's published posts run together a blank line apart
+and cut into 411 pieces of 500 characters and 25 of the maximum length
+(`ordinaryPieces`), and take about 0.5 ms and about 4.5 ms at the median piece (each
+piece's best of three runs of 20 or 30: 0.3–0.9 ms, and 3.6–5.2 ms for the long ones;
+the median moved between 4.4 and 5.0 ms from run to run). One sentence repeated to the
+maximum length, which `BenchmarkCheckContent/sentence` posts and the earlier figures
+called ordinary, takes about 2.6–3 ms, since the same words over and over give the rules
+less to read than varied ones; the typical 500-character post the earlier figures used
+takes about 0.7 ms. The slowest of 17,800 bodies built to be slow takes about 13 ms, and
+no run took more than about 16 ms (the 247 the earliest figures were taken on, the
+grammar rules' true and false positives, the grammar's openings, each repeated to the
+maximum length with and without a place or a time, `TestFilterCostIsBounded`'s bodies
+and method questions with words between the count and the pills, 1,251 in all, and
+16,549 method questions with their heads, marks, fillers and runs of spaces varied and
+their words shuffled; each timed at the best of two runs, then the slowest 120 at the
+best of 15, and the slowest 40 three times more). Before the searches were planned the
+typical post, the repeated sentence and a post of `㏂`, which folds to `maxFoldRunes`,
+took about 4 ms, 36 ms and 400–490 ms.
+`go test -run - -bench CheckContent ./internal/app` times both kinds of maximum-length
+post as wall time, GC included. Refusals are budgeted all the same; see the API
 contract. Planning takes about 3.5 s of one core, once per process, and keeps about 64
 MB of heap; while it runs the heap reaches about 280 MB with four cores and about 320 MB
 with one (`runtime.MemStats.HeapSys`), which the server's 512 MiB has to hold beside
-everything else. `Routes` starts it in the
-background, and a post that comes first waits for it. The plain view is skipped when the
-loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost down:
+everything else. `Routes` starts it in the background, and a post that comes first waits
+for it. The plain view is skipped when the loose one is only it with `l` read as `i`
+(`looseOnly`). What holds the cost down:
 
 - `TestFilterCostIsBounded` counts work rather than time (`checkContentCost`: the
   places tried, the characters read, the machines' steps, and each check a match is put
