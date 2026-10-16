@@ -2086,12 +2086,18 @@ function verifyViewHTML() {
     ${forgetBrowserHTML()}`;
 }
 
+// renderVerify draws the Verify page once it has asked the server whether
+// verification is on here, and says whether it did. The reader can leave while
+// it asks — after pressing Verify, say, since an issued badge is drawn through
+// here — and then nothing is drawn over the page they went to.
 async function renderVerify() {
   await loadVerification();
+  if (!onVerifyPage()) return false;
   el.main.innerHTML = verifyViewHTML();
   // Explained once, on the page that can do something about it.
   badgeLost = "";
   announce("Institutional verification");
+  return true;
 }
 
 /* Rules and FAQ ------------------------------------------------------------ */
@@ -3201,8 +3207,8 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     forgetBrowser();
     verifyStep = { step: "email", label: "" };
-    renderVerify().then(() => {
-      showNotice("This browser no longer holds your post key, your name or a badge.");
+    renderVerify().then((drawn) => {
+      if (drawn) showNotice("This browser no longer holds your post key, your name or a badge.");
     });
     return;
   }

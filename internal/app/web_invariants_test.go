@@ -598,6 +598,22 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 				"still on screen:\n%s", i+1, stretch[draw[0]:draw[1]], stretch)
 		}
 	}
+
+	// An issued badge is drawn through renderVerify, which asks the server
+	// whether verification is on before it draws: one more request the reader
+	// can leave during, so it asks onVerifyPage again once that is in, and
+	// the notice after forgetting the browser waits on what it says.
+	render := withoutComments(jsFunction(t, script, "renderVerify"))
+	asked := strings.Index(render, "await loadVerification();")
+	guarded := strings.Index(render, "if (!onVerifyPage()) return false;")
+	drawn := strings.Index(render, "el.main.innerHTML = verifyViewHTML();")
+	if asked < 0 || drawn < 0 || guarded < asked || guarded > drawn {
+		t.Errorf("renderVerify draws the Verify page without checking, once its request is in, that the page is "+
+			"still on screen:\n%s", render)
+	}
+	if !strings.Contains(withoutComments(script), "renderVerify().then((drawn) => {\n      if (drawn) showNotice(") {
+		t.Error("forgetting the browser shows its notice whether or not the Verify page was drawn")
+	}
 }
 
 // When the server drops the code being typed, the code box gives way to the
