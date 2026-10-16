@@ -203,6 +203,7 @@ type rawControl struct {
 
 // rawFrame is a frame and the extensions before it.
 type rawFrame struct {
+	raw       []byte       // bytes written as they are before everything else
 	controls  []rawControl // graphic control extensions before it, in order
 	plainText bool         // a plain-text extension after them
 	comment   string       // a comment extension after them, if not empty
@@ -247,6 +248,7 @@ func (g rawGIF) bytes() []byte {
 		out = append(out, 3, 1, byte(l.count), byte(l.count>>8), 0)
 	}
 	for _, f := range g.frames {
+		out = append(out, f.raw...)
 		for _, c := range f.controls {
 			flags, ti := c.disposal<<2, byte(0)
 			if c.ti >= 0 {
@@ -523,6 +525,57 @@ func TestGIFIsReadAsChromiumReadsIt(t *testing.T) {
 			}
 			requireShowsAs(t, tc.name, upload, process(t, upload.bytes()).Data)
 		})
+	}
+}
+
+// An extension that Chromium ends somewhere other than image/gif does steers
+// the two readings apart for the rest of the file (gifExtensionsReadApart):
+// Chromium meets a byte that starts no block and shows only the frames
+// before it, where image/gif decodes on. Each case is a 4×1 GIF looping
+// forever that shows red for half a second and then green and blue (0.6 s
+// and 0.7 s), with the extension between the red frame and the green. A
+// reviewer had Chromium (WebCodecs, and an <img>) play the files with the
+// first four, and a randomly mutated GIF whose plain-text block size had
+// become 0x61: it showed the frames before the extension alone — here the
+// red frame, a still — where image/gif decodes all three, so stored as
+// decoded the post would have animated through pictures the upload never
+// showed. With nothing between the frames Chromium played all three. Each is
+// refused before anything is decoded, and the plain file is stored as it
+// plays.
+func TestGIFExtensionsChromiumEndsElsewhereAreRefused(t *testing.T) {
+	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
+	upload := func(between []byte) rawGIF {
+		frame := func(px uint8, delay int) rawFrame {
+			return rawFrame{controls: []rawControl{{1, delay, -1}}, at: image.Rect(0, 0, 4, 1), pix: []uint8{px, px, px, px}}
+		}
+		red, green, blue := frame(1, 50), frame(2, 60), frame(3, 70)
+		green.raw = between
+		return rawGIF{w: 4, h: 1, global: table, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{red, green, blue}}
+	}
+
+	plain := upload(nil)
+	if got := browserPlay(chromiumReads(plain)); len(got) != 3 {
+		t.Fatalf("chromiumReads shows %d pictures of the plain file, Chromium showed 3", len(got))
+	}
+	requireShowsAs(t, "nothing between", plain, process(t, plain.bytes()).Data)
+
+	for name, ext := range map[string][]byte{
+		"an application extension of no bytes": {0x21, 0xFF, 0x00, 0x00},
+		"NETSCAPE2.0 with no sub-block":        append(append([]byte{0x21, 0xFF, 0x0B}, "NETSCAPE2.0"...), 0x00),
+		"ANIMEXTS1.0 with no sub-block":        append(append([]byte{0x21, 0xFF, 0x0B}, "ANIMEXTS1.0"...), 0x00),
+		"plain text with a zero block size":    append(append([]byte{0x21, 0x01, 0x00}, make([]byte, 12)...), 0x00),
+		"plain text with a block size of 0x61": append(append([]byte{0x21, 0x01, 0x61}, make([]byte, 12)...), 0x00),
+	} {
+		data := upload(ext).bytes()
+		if g, err := gif.DecodeAll(bytes.NewReader(data)); err != nil || len(g.Image) != 3 {
+			t.Fatalf("%s: image/gif does not read all three frames (%v): the case would prove nothing", name, err)
+		}
+		if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Inspect = %v, want ErrCorruptImage", name, err)
+		}
+		if _, err := Process(context.Background(), data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Process = %v, want ErrCorruptImage", name, err)
+		}
 	}
 }
 

@@ -1106,22 +1106,34 @@ func TestGIFFrameRowsAreChargedAsAtLeastGIFRowPixels(t *testing.T) {
 	}
 }
 
-// gifExtensions are extensions image/gif reads past, each spelled the way the
-// decoder reads it rather than the way the specification lays it out where
-// the two differ. A walk that read every extension as a run of sub-blocks
-// lost its place at the first two and counted none of the frames after them.
+// gifExtensions are extensions image/gif and Chromium both read past, ending
+// each in the same place.
 var gifExtensions = map[string][]byte{
-	// An application extension whose identifier is zero bytes long: the
-	// decoder reads the zero as that length, then reads sub-blocks after it.
+	"plain text as specified":     append(append([]byte{0x21, 0x01, 0x0C}, make([]byte, 12)...), 0x03, 'a', 'b', 'c', 0x00),
+	"application as specified":    append(append([]byte{0x21, 0xFF, 0x0B}, "XMP DataXMP"...), 0x01, 'x', 0x00),
+	"comment":                     {0x21, 0xFE, 0x02, 'h', 'i', 0x00},
+	"a loop count as ANIMEXTS1.0": loopExtension("ANIMEXTS1.0", 7),
+	"graphic control":             {0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00},
+}
+
+// gifExtensionsReadApart are extensions image/gif reads past that Chromium
+// ends somewhere else, so that the two read the rest of the file differently
+// and Chromium stops showing frames there (walkGIF). image/gif reads a
+// plain-text extension as a fixed thirteen bytes whatever its block size byte
+// says, where Chromium reads that byte as a sub-block's length; it reads
+// sub-blocks after an application extension whose block size byte is 0,
+// where Chromium ends it at once; and it ends a loop extension at a
+// terminator straight after its identifier, which Chromium takes for the
+// loop sub-block before reading on. A walk that read the first two as a run
+// of sub-blocks once lost its place in image/gif's reading and counted none
+// of the frames after them; it now refuses all of these.
+var gifExtensionsReadApart = map[string][]byte{
 	"application with an empty identifier": {0x21, 0xFF, 0x00, 0x02, 'x', 'x', 0x00},
-	// A plain-text extension is read as a fixed thirteen bytes, whatever its
-	// block size byte says, then sub-blocks.
-	"plain text with a zero block size": append(append([]byte{0x21, 0x01, 0x00}, make([]byte, 12)...), 0x00),
-	"plain text as specified":           append(append([]byte{0x21, 0x01, 0x0C}, make([]byte, 12)...), 0x03, 'a', 'b', 'c', 0x00),
-	"application as specified":          append(append([]byte{0x21, 0xFF, 0x0B}, "XMP DataXMP"...), 0x01, 'x', 0x00),
-	"comment":                           {0x21, 0xFE, 0x02, 'h', 'i', 0x00},
-	"a loop count as ANIMEXTS1.0":       loopExtension("ANIMEXTS1.0", 7),
-	"graphic control":                   {0x21, 0xF9, 0x04, 0x00, 0x0A, 0x00, 0x00, 0x00},
+	"application of no bytes":              {0x21, 0xFF, 0x00, 0x00},
+	"plain text with a zero block size":    append(append([]byte{0x21, 0x01, 0x00}, make([]byte, 12)...), 0x00),
+	"plain text with a block size of 0x61": append(append([]byte{0x21, 0x01, 0x61}, make([]byte, 12)...), 0x00),
+	"NETSCAPE2.0 with no sub-block":        append(append([]byte{0x21, 0xFF, 0x0B}, "NETSCAPE2.0"...), 0x00),
+	"ANIMEXTS1.0 with no sub-block":        append(append([]byte{0x21, 0xFF, 0x0B}, "ANIMEXTS1.0"...), 0x00),
 }
 
 // framesDecoded is what gifFramePixels should make of a GIF image/gif
@@ -1340,6 +1352,22 @@ func TestGIFFramePixelsReadsWhatTheDecoderReads(t *testing.T) {
 			t.Errorf("%s: Inspect(five canvases of frames after it) = %v, want ErrImageTooCostly", name, err)
 		}
 	}
+	// image/gif decodes every frame after each of these, and Chromium none:
+	// the walk refuses the file there, before anything is decoded.
+	for name, ext := range gifExtensionsReadApart {
+		data := spliceAfterHeader(small.Bytes(), ext)
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err != nil {
+			t.Fatalf("%s: the fixture does not decode: %v", name, err)
+		}
+		if got, err := gifFramePixels(data, math.MaxInt64); !errors.Is(err, ErrCorruptImage) || !got.apart || got.count != 0 {
+			t.Errorf("%s: gifFramePixels = %+v, %v; want ErrCorruptImage at the extension, with apart set", name, got, err)
+		}
+		for _, data := range [][]byte{data, spliceAfterHeader(huge, ext)} {
+			if _, err := Inspect(data); !errors.Is(err, ErrCorruptImage) {
+				t.Errorf("%s: Inspect = %v, want ErrCorruptImage", name, err)
+			}
+		}
+	}
 
 	whole := small.Bytes()
 	noTrailer := whole[:len(whole)-1]
@@ -1411,6 +1439,9 @@ func FuzzGIFFramePixels(f *testing.F) {
 	for _, ext := range gifExtensions {
 		f.Add(spliceAfterHeader(buf.Bytes(), ext))
 	}
+	for _, ext := range gifExtensionsReadApart {
+		f.Add(spliceAfterHeader(buf.Bytes(), ext))
+	}
 	f.Add([]byte("GIF89a\x01\x00\x01\x00\xff\x00\x00"))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		n, err := gifFramePixels(data, math.MaxInt64)
@@ -1422,7 +1453,12 @@ func FuzzGIFFramePixels(f *testing.F) {
 			return
 		}
 		// A file the walk takes is decoded as sanitizeGIF decodes it; one it
-		// refuses, as it is, which the decoder must refuse too.
+		// refuses, as it is, which the decoder must refuse too — but for a
+		// file refused at an extension Chromium ends elsewhere (apart),
+		// which image/gif reads past.
+		if err != nil && n.apart {
+			return
+		}
 		r := io.Reader(bytes.NewReader(data))
 		if err == nil {
 			r = gifReader(data, n)

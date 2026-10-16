@@ -410,17 +410,22 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 // image/gif part ways: a frame with no graphic control extension of its own
 // has disposal 0, where image/gif gives it the disposal of the last frame
 // that had one; its transparent index is the last extension's before it, or
-// none, where image/gif keeps one an earlier extension named; and every
-// index past the end of its colour table is opaque black but the transparent
-// one, where image/gif makes all of them up to a transparent index past the
-// table transparent. So are files image/gif refuses and browsers show. A
-// file that ends after its last block without a trailer plays in a browser,
-// and is decoded with one put after it; a frame after the first that reaches
+// none, where image/gif keeps one an earlier extension named; and an index
+// past the end of its colour table is opaque black but the transparent one,
+// where image/gif makes all of them up to a transparent index past the table
+// transparent. image/gif takes such an index only up to a transparent index
+// that is itself past the table: a frame whose pixels index past their table
+// otherwise is refused here (ErrCorruptImage), as the decoder refuses it,
+// though Chromium shows those pixels black. Two kinds of file image/gif
+// refuses and browsers show are read as browsers read them as well. A file
+// that ends after its last block without a trailer plays in a browser, and
+// is decoded with one put after it; a frame after the first that reaches
 // past the canvas is drawn by a browser only where it overlaps the canvas,
 // which is all playGIF plays of it, and image/gif, which refuses the whole
 // file, is told the logical screen takes in every frame (gifReader). A first
-// frame past the canvas is refused by gifFramePixels: browsers disagree on
-// what to show for it.
+// frame past the canvas is refused by gifFramePixels, because browsers
+// disagree on what to show for it, and so is a file with an extension
+// Chromium ends somewhere other than image/gif does.
 func sanitizeGIF(ctx context.Context, data []byte, limit int64, frames gifFrames) (sanitized, error) {
 	g, err := gif.DecodeAll(ctxReader{ctx, gifReader(data, frames)})
 	if err != nil {
@@ -922,6 +927,11 @@ type gifFrames struct {
 	// beside a transparent entry, and only then may playGIF put a stored
 	// frame back (gifPlayScratch).
 	many bool
+	// apart is whether the walk refused the file at an extension that
+	// Chromium ends somewhere other than where image/gif does (walkGIF), so
+	// FuzzGIFFramePixels can tell that refusal from a disagreement with the
+	// decoder.
+	apart bool
 }
 
 // gifFramePixels adds up the area of every frame a GIF declares, and its
@@ -947,6 +957,22 @@ type gifFrames struct {
 // block, an extension or a field the decoder would stop on. It does not judge
 // the compressed pixels; where they make the decoder stop with an error, the
 // frames it had allocated by then have already been counted.
+//
+// Reading the file as image/gif does is not enough on its own, because the
+// stored file is held to what Chromium shows, and Chromium ends three forms
+// of extension somewhere else: it reads a plain-text extension's block size
+// byte as the length of a sub-block, which is the same thirteen bytes only
+// when that byte is 12; it ends an application extension whose block size
+// byte is 0 straight after it, where image/gif reads sub-blocks after it; and
+// it takes the terminator straight after a NETSCAPE2.0 or ANIMEXTS1.0
+// identifier for the loop sub-block and reads sub-blocks on after it, where
+// image/gif ends the extension there. Past such a place the two read the
+// file differently; Chromium meets a byte that starts no block and shows
+// only the frames before it, while image/gif decodes on, so frames the
+// upload never showed in a browser would be stored and shown. The walk
+// refuses all three (ErrCorruptImage, with apart set) rather than store
+// either reading: none is what the specification writes, and a file that
+// shows a still in a browser must not be stored as an animation.
 //
 // Where browsers show a file image/gif refuses, the walk reads it as they
 // do, and sanitizeGIF has the decoder read it that way too (gifReader): a
@@ -989,7 +1015,7 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 		headerLen     = 13 // signature, version, logical screen descriptor
 		descriptorLen = 10 // separator, position, size, flags
 		graphicLen    = 6  // block size (4), flags, delay, transparent index, terminator
-		plainTextLen  = 13 // read whole by image/gif, whatever its block size says
+		plainTextLen  = 13 // read whole by image/gif, whatever its block size says (but see above)
 		maxSide       = 0xFFFF
 	)
 	if len(data) < headerLen {
@@ -1058,15 +1084,34 @@ func walkGIF(data []byte, limit int64, frame func(gifFrameHead)) (gifFrames, err
 				head.transparent, head.ti = flags&0x01 != 0, data[at+4]
 				i = at + graphicLen
 			case 0x01: // plain text
+				if at < len(data) && data[at] != 12 {
+					// Chromium reads the size byte as a sub-block's length,
+					// which spans the thirteen bytes only when it is 12.
+					f.apart = true
+					return f, ErrCorruptImage
+				}
 				i, whole = skipBlocks(at + plainTextLen)
 			case 0xFF: // application: its own length byte, then sub-blocks
 				if at >= len(data) {
 					return f, ErrCorruptImage
 				}
 				size := int(data[at])
-				if j := at + 1 + size; size == 11 && j+4 <= len(data) && data[j] == 3 && data[j+1] == 1 {
+				if size == 0 {
+					// Chromium ends the extension here.
+					f.apart = true
+					return f, ErrCorruptImage
+				}
+				if j := at + 1 + size; size == 11 && j < len(data) {
 					if id := string(data[at+1 : j]); id == "NETSCAPE2.0" || id == "ANIMEXTS1.0" {
-						f.looped, f.loop = true, int(data[j+2])|int(data[j+3])<<8
+						if data[j] == 0 {
+							// Chromium takes the terminator for the loop
+							// sub-block and reads on past it.
+							f.apart = true
+							return f, ErrCorruptImage
+						}
+						if j+4 <= len(data) && data[j] == 3 && data[j+1] == 1 {
+							f.looped, f.loop = true, int(data[j+2])|int(data[j+3])<<8
+						}
 					}
 				}
 				i, whole = skipBlocks(at + 1 + size)

@@ -505,51 +505,57 @@ server that would refuse what it sends.
     reads it where Go's decoder reads it otherwise: a frame with no graphic control
     extension is left in place, a frame's transparent colour is the one the last extension
     before it names, and an index past the end of a frame's colour table shows opaque
-    black, but for the transparent one. How the frames make those pictures shows nothing,
-    so it could carry anything: frames that draw nothing, or draw the same picture again
-    after clearing it, could spell a message in their positions, delays and disposal
-    methods, and the pixels a frame repaints in the colour already under them, rather than
-    leaving them transparent, could hold a file of tens of kilobytes. So the stored file
-    is written from the pictures by one rule, and two GIFs that show the same pictures for
-    the same times, played as many times over, are stored as the same bytes. Each picture
-    is one frame, which draws exactly the pixels that differ from what the frame before it
-    left, cut to the rectangle around them and around any the next picture has transparent
-    where this one does not; it is cleared once its time is over when there are such
-    pixels, and left in place otherwise. A delay is written as browsers show it — 0 and 1
-    show for a tenth of a second and are written as 10 — and time past the 655 seconds one
-    delay can say is held by frames after it that draw nothing. The last picture of a GIF
-    that plays once is given no delay, because it stays on screen, and a GIF of one
-    picture is stored as a still, with no loop count. The colours are the ones the
-    pictures show, in order of their values: one global table when there are 255 or fewer,
-    and otherwise a table for each frame of the colours it draws. A frame that draws 256
-    has no room for a transparent entry, so the pixels it leaves as they were are written
-    in the colour they already show. With a table a frame, a frame left in place or
-    cleared can leave the next one more colours to draw than its table holds — the ones it
-    covered, back again, and the next picture's own — so there a frame is left in place,
-    or else cleared, only where both can still be written, and is otherwise put back,
-    which leaves what was there before it was drawn, as ImageMagick's frame optimisation
-    does (a frame put back is not cut to take in pixels to clear, and is drawn again,
-    rather than followed by frames that draw nothing, for time past one delay). A GIF
-    where none of the three will do cannot be stored one frame to a picture and is refused
-    (`image too large to process`): for instance one whose frames are put back two in a
-    row, the second to the picture from before the first, which the stored file, having
-    left the first in place, cannot go back to. Only frames that clear or put back what
-    earlier ones drew can bring that about, since a frame on its own draws from one table.
-    None of 126 GIFs made with ffmpeg, ImageMagick and Pillow is refused, nor any of 1,500
-    of many colours made to test it; of 5,000 random GIFs of up to 256 colours a frame and
-    every disposal method, one is, and of 2,000 random animations of sprites of up to 256
-    colours each put back, cleared or left over a background of 256, 75 are. A GIF whose
-    stored frames would add up to more pixels than four 25-megapixel canvases (a frame
-    narrower than 64 pixels counting as 64 wide) is refused too, which takes frames that
-    jump across the canvas from one picture to the next; with a table a frame, a rectangle
-    looked at for a way of disposing of a frame that is not taken counts as a frame, so
-    that the work of looking is bounded as the work of writing is. Neither refusal can be
-    read from the header, only found by playing the GIF, so a file the header check admits
-    is turned away only after it has been decoded and its thumbnail made, and after flood
-    control. It costs the post its cooldown, and nothing is stored: the renditions are
-    written only once processing has succeeded. Comments and application data such as XMP
-    are dropped, and the background colour, which browsers never draw, is written as the
-    first entry.
+    black, but for the transparent one — Go's decoder takes such an index only up to a
+    transparent index that is itself past the table, and a GIF whose pixels index past
+    their table otherwise is refused as Go's decoder refuses it, once it is decoded and so
+    after flood control (`image could not be decoded`). A GIF with an extension the two
+    end in different places is refused from its header (a plain-text one whose block size
+    is not 12, an application one of no bytes, or a loop extension with nothing in it),
+    because past it Chromium shows no more frames and Go's decoder reads on. How the
+    frames make those pictures shows nothing, so it could carry anything: frames that draw
+    nothing, or draw the same picture again after clearing it, could spell a message in
+    their positions, delays and disposal methods, and the pixels a frame repaints in the
+    colour already under them, rather than leaving them transparent, could hold a file of
+    tens of kilobytes. So the stored file is written from the pictures by one rule, and
+    two GIFs that show the same pictures for the same times, played as many times over,
+    are stored as the same bytes. Each picture is one frame, which draws exactly the
+    pixels that differ from what the frame before it left, cut to the rectangle around
+    them and around any the next picture has transparent where this one does not; it is
+    cleared once its time is over when there are such pixels, and left in place otherwise.
+    A delay is written as browsers show it — 0 and 1 show for a tenth of a second and are
+    written as 10 — and time past the 655 seconds one delay can say is held by frames
+    after it that draw nothing. The last picture of a GIF that plays once is given no
+    delay, because it stays on screen, and a GIF of one picture is stored as a still, with
+    no loop count. The colours are the ones the pictures show, in order of their values:
+    one global table when there are 255 or fewer, and otherwise a table for each frame of
+    the colours it draws. A frame that draws 256 has no room for a transparent entry, so
+    the pixels it leaves as they were are written in the colour they already show. With a
+    table a frame, a frame left in place or cleared can leave the next one more colours to
+    draw than its table holds — the ones it covered, back again, and the next picture's
+    own — so there a frame is left in place, or else cleared, only where both can still be
+    written, and is otherwise put back, which leaves what was there before it was drawn,
+    as ImageMagick's frame optimisation does (a frame put back is not cut to take in
+    pixels to clear, and is drawn again, rather than followed by frames that draw nothing,
+    for time past one delay). A GIF where none of the three will do cannot be stored one
+    frame to a picture and is refused (`image too large to process`): for instance one
+    whose frames are put back two in a row, the second to the picture from before the
+    first, which the stored file, having left the first in place, cannot go back to. Only
+    frames that clear or put back what earlier ones drew can bring that about, since a
+    frame on its own draws from one table. None of 126 GIFs made with ffmpeg, ImageMagick
+    and Pillow is refused, nor any of 1,500 of many colours made to test it; of 5,000
+    random GIFs of up to 256 colours a frame and every disposal method, one is, and of
+    2,000 random animations of sprites of up to 256 colours each put back, cleared or left
+    over a background of 256, 75 are. A GIF whose stored frames would add up to more
+    pixels than four 25-megapixel canvases (a frame narrower than 64 pixels counting as 64
+    wide) is refused too, which takes frames that jump across the canvas from one picture
+    to the next; with a table a frame, a rectangle looked at for a way of disposing of a
+    frame that is not taken counts as a frame, so that the work of looking is bounded as
+    the work of writing is. Neither refusal can be read from the header, only found by
+    playing the GIF, so a file the header check admits is turned away only after it has
+    been decoded and its thumbnail made, and after flood control. It costs the post its
+    cooldown, and nothing is stored: the renditions are written only once processing has
+    succeeded. Comments and application data such as XMP are dropped, and the background
+    colour, which browsers never draw, is written as the first entry.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
