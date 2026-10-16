@@ -2951,14 +2951,14 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		words(`i`, `you`, `u`, `one`, `someone`, `a~person`, `people`)+`~`+methods,
 	`how~to~`+words(methods, `cut~without~`+words(`anyone`, `people`, `parents`)+`~`+
 		words(`knowing`, `noticing`, `seeing`), `hide~(?:my~)?`+words(`cuts`, `scars`, `self~harm`)),
-	`how~`+words(`many`, `much`)+`~[^.?!\n]{0,100}?~`+words(`to~die`, `to~kill~`+words(`my`, `your`)+`~self`,
+	`how~`+words(`many`, `much`)+`~`+window(100)+`~`+words(`to~die`, `to~kill~`+words(`my`, `your`)+`~self`,
 		`to~kill~`+words(`me`, `you`, `someone`, `a~person`),
 		`to~overdose`, `to~od`, `overdose`, `be~fatal`, `be~lethal`, `be~deadly`, `is~fatal`, `is~lethal`,
 		`is~deadly`, `would~kill~`+words(`me`, `you`, `someone`, `a~person`), `to~end~it`, `to~end~my~life`),
 	// "how many sleeping pills are lethal", "how many of my mum's sleeping
 	// pills would it take": only with a medicine named, since "how many
 	// snakes are deadly" is a biology question.
-	`how~many~[^.?!\n]{0,60}?`+medicines+`[^.?!\n]{0,60}?~`+words(`are~`+
+	`how~many~`+window(60)+medicines+`[^.?!\n]{0,60}?~`+words(`are~`+
 		words(`lethal`, `fatal`, `deadly`, `enough~to~`+words(`die`, `kill~`+words(`me`, `you`, `someone`), `od`,
 			`overdose`)), words(`would`, `will`, `does`, `do`)+`~it~take`),
 	// "will 20 pills kill me"
@@ -2971,7 +2971,7 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 	// "can i die from 20 paracetamol", "will i die if i take all my pills"
 	words(`can`, `will`, `would`, `could`)+`~i~die~`+words(`from`, `of`, `if~i~`+words(`take`, `took`, `eat`,
 		`swallow`, `have`))+`~(?:`+words(`\d+`, `a~few`, `all~(?:my|the)`, `too~many`, `some`)+`~)?`+medicines,
-	`what~`+words(`dose`, `amount`, `quantity`, `dosage`)+`~[^.?!\n]{0,40}?~`+
+	`what~`+words(`dose`, `amount`, `quantity`, `dosage`)+`~`+window(40)+`~`+
 		words(`lethal`, `fatal`, `deadly`, `kill~`+words(`me`, `you`, `myself`, `yourself`), `to~die`,
 			`overdose`, `od`),
 	words(`lethal`, `fatal`, `deadly`)+`~`+words(`dose`, `doses`, `dosage`, `amount`, `quantity`),
@@ -3002,6 +3002,17 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 var medicines = words(`pills?`, `tablets?`, `capsules?`, `paracetamol`, `tylenol`, `acetaminophen`, `ibuprofen`,
 	`aspirin`, `advil`, `panadol`, `crocin`, `dolo`, `meds`, `medicines?`, `medications?`, `antidepressants?`,
 	`sleeping~pills`, `insulin`, `xanax`, `benadryl`, `melatonin`)
+
+// window is up to n characters of one sentence, read lazily, written to
+// follow a "~": "how many~" + window(60) + "pills". Written as
+// "~[^.?!\n]{0,60}?" the two would overlap, since a space or a mark is both a
+// separator and part of the sentence, and every character of a run of them
+// would start the window afresh, keeping a copy of it alive for each space
+// of the run, up to n, at every character it reads: "how many", a hundred
+// spaces and "pills", over and over, cost about 250 steps a byte. Starting
+// the window at a letter or a digit leaves the separator every space and
+// mark before it, matches the same text, and keeps one copy.
+func window(n int) string { return `(?:[\pL\pN][^.?!\n]{0,` + strconv.Itoa(n-1) + `}?)??` }
 
 // methods are the ways of hurting or killing oneself a how-question asks for,
 // purging among them: "how to end it all", "how to make myself throw up".

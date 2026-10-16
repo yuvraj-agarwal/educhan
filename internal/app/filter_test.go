@@ -2008,6 +2008,10 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 		"how many pills would it take to kill me",
 		"how many of my mums sleeping pills from the bathroom cupboard would i have to swallow to die",
 		"how many of the sleeping pills in the bathroom cupboard upstairs are lethal",
+		// A window still reads past a run of spaces or marks before it.
+		"how many    \t   of my mums sleeping pills would it take",
+		"how much  ,  insulin to die",
+		"what dose   --   of insulin is lethal",
 		"paracetamol, how many to die?",
 		"is 20 paracetamol enough to die",
 		"is 20 paracetamol enough to kill me",
@@ -3067,9 +3071,11 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // under the race detector, and a timer's noise cannot fail or pass it.
 //
 // The first bound is per byte of the post, at full length: the most any of
-// these bodies costs is about 136 steps a byte (a method question with words
-// between the count and the pills, which the question's patterns read 60
-// characters on from both), and the next most about 96. A step is not a
+// these bodies costs is about 142 steps a byte (a method question with words
+// after the pills, which the question's patterns read 60 characters on from
+// both the count and the pills), which is also the most of the 17,800 bodies
+// built to be slow that the README's timings were taken on, about 12% under
+// the bound, and the next most here about 136. A step is not a
 // fixed time — across these bodies a millisecond is anything from about
 // 22,000 steps to about 125,000, and the body that costs the most steps is
 // not the slowest — so the bound holds the work linear and caps it, and the
@@ -3143,9 +3149,15 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"ranges":         rep("96.123-97.456 percentile\n"),
 		"helpline":       rep("Trevor Project 1-866-488-7386. "),
 		"scores":         rep("mock scores 65-70-78-84-91\n"),
-		// A method question with words between the count and the pills,
-		// each read 60 characters on from both.
-		"words before pills": rep("how many a b c pills "),
+		// A method question with words between the count and the pills, or
+		// after them, each read 60 characters on from both; and with a run
+		// of spaces before a window, which is read once, not once a space.
+		"words before pills":   rep("how many a b c pills "),
+		"words after pills":    rep("how many pills i u a "),
+		"two spaces":           rep("how many  pills a b c "),
+		"spaces before pills":  rep("how many" + strings.Repeat(" ", 30) + "pills i u a "),
+		"spaces before to die": rep("how many" + strings.Repeat(" ", 60) + "to die "),
+		"spaces before lethal": rep("what dose" + strings.Repeat(" ", 30) + "a b c lethal "),
 		// Digits read out in words, a word before them that may or may not
 		// be one, pairs after a request to call, an ID number's label, a
 		// bracketed letter, an app with the words before a handle, and the

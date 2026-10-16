@@ -684,9 +684,14 @@ loose one is only it with `l` read as `i` (`looseOnly`). What holds the cost dow
   places tried, the characters read, the machines' steps, and each check a match is put
   to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
-  post (the most, a pill question with words between the count and the pills, is about
-  136, and the next about 96), and eight times the text at most ten times the
-  steps. A step is not a fixed time: `checkWork` charges a check 128 bytes, and the
+  post (the most, of its bodies and of the 17,800 the timings below were taken on, is a
+  pill question with words after the pills, about 142, so the bound is about 12% above
+  it, and the next about 136; the steps are the same with Go 1.22, 1.24 and 1.25), and
+  eight times the text at most ten times the steps. A pattern whose `~` runs straight
+  into a stretch of any characters, `~[^.?!\n]{0,60}?`, keeps a copy of the stretch for
+  every space of a run before it, which cost the pill questions up to about 300 steps a
+  byte; `window` starts the stretch at a letter or a digit, matches the same text, and
+  keeps one. A step is not a fixed time: `checkWork` charges a check 128 bytes, and the
   checks that read wider fixed windows (its comment lists them) are not charged the
   rest, so across those bodies a millisecond is about 22,000 to 125,000 steps, and the
   README's timing is measured, not derived from the bound. A new rule that trips it is
