@@ -745,7 +745,7 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	// would hammer /api/captcha. Which outcomes put the answer back is
 	// TestEachCaptchaAnswerGoesOnOneRequest's.
 	if !strings.Contains(send, "for (let retried = false; ; retried = true) {") ||
-		!strings.Contains(send, "if (retried || !needsIt() || !onScreen()) {") {
+		!strings.Contains(send, "if (retried || !needsIt()) {") {
 		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
 	// Any other refusal keeps the answer unless the server says it spent it,
@@ -873,12 +873,14 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		"taken = takeCaptcha(await captchaAnswer());",
 		// A request not sent has not spent its answer, which goes back, and
 		// the error says it was not sent.
-		`if (!onScreen()) { keepCaptcha(taken); const err = new Error("not sent"); err.notSent = true; throw err; }`,
+		"if (!onScreen()) { keepCaptcha(taken); throw notSent(); }",
 		"return await send(answer);",
 	)
 	for _, want := range []string{
-		// No second send, and no next puzzle, for a form that has gone.
-		"if (retried || !needsIt() || !onScreen()) { throw err; }",
+		// No second send, and no next puzzle, for a form that has gone. A
+		// refusal of the answer that arrives once it has is answered as a
+		// request not sent, since the second send it calls for is not.
+		"if (retried || !needsIt()) { throw err; } if (!onScreen()) { throw notSent(); }",
 		"else if (answer && needsIt() && onScreen()) { prepareCaptcha(); }",
 	} {
 		if !strings.Contains(send, want) {
@@ -961,7 +963,7 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 		"do { taken = takeCaptcha(await captchaAnswer()); } while (!taken);",
 		`const answer = taken ? taken.answer : "";`,
 		// Not sent: put back.
-		"if (!onScreen()) { keepCaptcha(taken); const err = new Error(",
+		"if (!onScreen()) { keepCaptcha(taken); throw notSent(); }",
 		// Sent and taken: kept by nothing.
 		"try { return await send(answer); } catch (err) {",
 		// Refused without the spent header or a captcha reason, or never
@@ -984,10 +986,12 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // A code request or a post not sent yet, still waiting on its puzzle, is not
 // sent: the post would go under the Name and the poster key the forget took
 // away, while its form showed neither. That holds for the second send after a
-// refused answer too. A post's form is released with its text and says why:
-// sendWithCaptcha marks the error for a request it did not send, which on a
-// form still on screen only the forget causes, and the submit handler answers
-// that mark before it words any other error. A redraw on its way puts back no
+// refused answer too, whether the forget is heard while the second puzzle is
+// solving or while the first send is on its way, before its refusal arrives.
+// A post's form is released with its text and says why, whichever it was:
+// sendWithCaptcha throws the error notSent makes for a request it did not
+// send, which on a form still on screen only the forget causes, and the
+// submit handler answers that mark before it words any other error. A redraw on its way puts back no
 // Name its draft read before the press, and a form left on screen loses the
 // option to post with the badge and says what a form without it says about
 // the anti-spam check, rather than offering a badge that has gone. Each
@@ -1061,7 +1065,8 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
 	}
 	// A post is held to the same: not sent once forgotten (sendWithCaptcha
-	// asks before each send, the second after a refused answer included), and
+	// asks before each send, and again when a refusal of the answer calls for
+	// the second), and
 	// what it brings back kept only if nothing has moved browserForgets since
 	// the press. A post the forget stopped says so on its form, and the error
 	// sendWithCaptcha throws for it, whose message is for nobody, never
@@ -1082,11 +1087,21 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	}
 	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
-	if strings.Count(code, "notSent") != 2 || strings.Count(send, "err.notSent = true;") != 1 || strings.Count(refused, "err.notSent") != 1 ||
-		strings.Count(send, "new Error(") != 1 || strings.Count(refused, "showNotice(") != 2 {
-		t.Error("an error sendWithCaptcha throws for a request it did not send is no longer marked, " +
-			"or no longer answered by the submit handler alone and before it words any other error")
+	mark := squash(withoutComments(jsFunction(t, script, "notSent")))
+	if mark != `function notSent() { const err = new Error("not sent"); err.notSent = true; return err; }` ||
+		strings.Count(code, "notSent") != 5 || strings.Count(send, "throw notSent();") != 2 || strings.Count(code, "notSent()") != 3 ||
+		strings.Count(refused, "err.notSent") != 1 || strings.Count(send, "new Error(") != 0 || strings.Count(refused, "showNotice(") != 2 {
+		t.Error("an error sendWithCaptcha throws for a request it did not send, before a send or in place of the " +
+			"second, is no longer marked, or no longer answered by the submit handler alone and before it words any other error")
 	}
+	// Including the second: a refusal of the answer that finds the browser
+	// forgotten, the forget heard while the first send was on its way, is
+	// answered as a request not sent, not with the refusal, which errorMessage
+	// would word as the anti-spam check failing.
+	inOrder(t, "sendWithCaptcha", send,
+		"try { return await send(answer); } catch (err) {",
+		"if (retried || !needsIt()) { throw err; } if (!onScreen()) { throw notSent(); } } } }",
+	)
 	stopped := jsString(t, script, "FORGOTTEN_BEFORE_SENDING")
 	if !strings.Contains(stopped, "forgotten") || !strings.Contains(stopped, "nothing was posted") {
 		t.Errorf("FORGOTTEN_BEFORE_SENDING should say the browser was forgotten and nothing was posted: %q", stopped)

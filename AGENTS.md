@@ -553,30 +553,31 @@ check before the test changes.
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes the
   credential, the poster key and the remembered name, and leaves the age answer. It also
   cancels what is on its way: a code request or a post still waiting on its puzzle, for
-  its first send or for the second after a refused answer, is not sent (a post's form is
-  released with its text and, while on screen, says why: `FORGOTTEN_BEFORE_SENDING`, on
-  the error `sendWithCaptcha` marks `notSent`; `/verify` is drawn again at an empty
-  address step), and a code request, a confirmation or a post answered after it stores
-  nothing, neither a badge nor a name, and leaves no note that a badge was lost
-  (`browserForgets`, `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That covers what
-  every educhan tab open in the browser has on its way, not only the tab it was pressed
-  in: `forgetBrowser` posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a `BroadcastChannel`,
-  and every other tab answers with `forgottenElsewhere`, which runs the same
-  `forgetOnThisPage` as the pressing tab (what is on its way, a redraw's draft included,
-  the badge and the poster key the page holds, the code step, the note, and the Name and
-  the badge option of every posting form on screen, whose note on the anti-spam check
-  then says what a form without the option says: `dropBadgeOption`) and draws `/verify`
-  again if it is showing. The message is one constant that says nothing about anyone.
-  The pressing tab clears storage before it posts the message, so another tab can store
-  the credential, the poster key or the name again, for a post or a confirmation it
-  handles before it hears; each tab notes what it stores of those three (`storedHere`),
-  and on hearing removes each only while storage still holds it as that tab stored it:
-  never a badge confirmed or a key made in another tab since, however late it hears (a
-  name is compared by its text, so the same name stored since goes too). In a browser
-  without `BroadcastChannel` a forget covers the tab it was pressed in and no other
-  (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
-  advice points to: the key left behind would give the next person at the computer the
-  same IDs in the same threads.
+  its first send or for the second after a refused answer, is not sent, and one whose
+  first send has gone is not sent again when its answer is refused after the forget (a
+  post's form is released with its text and, while on screen, says why:
+  `FORGOTTEN_BEFORE_SENDING`, on the error `notSent` makes, which `sendWithCaptcha`
+  throws in place of the send; `/verify` is drawn again at an empty address step), and a
+  code request, a confirmation or a post answered after it stores nothing, neither a
+  badge nor a name, and leaves no note that a badge was lost (`browserForgets`,
+  `TestForgettingTheBrowserCancelsWhatIsOnItsWay`). That covers what every educhan tab
+  open in the browser has on its way, not only the tab it was pressed in: `forgetBrowser`
+  posts `FORGET_MESSAGE` on `FORGET_CHANNEL`, a `BroadcastChannel`, and every other tab
+  answers with `forgottenElsewhere`, which runs the same `forgetOnThisPage` as the
+  pressing tab (what is on its way, a redraw's draft included, the badge and the poster
+  key the page holds, the code step, the note, and the Name and the badge option of every
+  posting form on screen, whose note on the anti-spam check then says what a form without
+  the option says: `dropBadgeOption`) and draws `/verify` again if it is showing. The
+  message is one constant that says nothing about anyone. The pressing tab clears storage
+  before it posts the message, so another tab can store the credential, the poster key or
+  the name again, for a post or a confirmation it handles before it hears; each tab notes
+  what it stores of those three (`storedHere`), and on hearing removes each only while
+  storage still holds it as that tab stored it: never a badge confirmed or a key made in
+  another tab since, however late it hears (a name is compared by its text, so the same
+  name stored since goes too). In a browser without `BroadcastChannel` a forget covers
+  the tab it was pressed in and no other (`TestForgettingTheBrowserReachesEveryTab`). It
+  is what the FAQ's shared-computer advice points to: the key left behind would give the
+  next person at the computer the same IDs in the same threads.
 
 ### Child safety
 

@@ -187,9 +187,12 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
       ? `${UPLOADS_OFF_REASON} The image has been taken off your post. Post again to send the text on its own.`
       : `${UPLOADS_OFF_REASON} Write something to post text instead.`;
   }
-  // The captcha refused a fresh answer as well, which a working server does
-  // not: nothing was posted or sent, and pressing the button again solves
-  // another.
+  // The captcha refused the fresh answer sent after it refused the first,
+  // which a working server does not: nothing was posted or sent, and pressing
+  // the button again solves another. A first refusal is answered by that
+  // second send or, when the form has gone or the browser was forgotten since
+  // the press, by an error marked notSent instead, which the callers answer
+  // without coming here.
   if (err.status === 403 && err.payload && err.payload.captcha) {
     if (action === "code") {
       return "The anti-spam check didn't go through, so no code was sent. Request a code again.";
@@ -1860,10 +1863,11 @@ const FORGET_CHANNEL = "educhan:forget-browser";
 const FORGET_MESSAGE = "forget";
 // What the page says once the browser has been forgotten.
 const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
-// What a posting form says when the browser was forgotten while its post
-// waited on its puzzle, which stops it going: before its first send, or before
-// the second after the server refused the first one's answer, when a request
-// had gone but nothing was posted.
+// What a posting form says when the browser was forgotten before its post went
+// through, which stops it going: while it waited on its puzzle for its first
+// send or, once the first had gone, before the second that the server's
+// refusal of its answer calls for, when a request had gone but nothing was
+// posted.
 const FORGOTTEN_BEFORE_SENDING = "This browser was forgotten before the post went through, so nothing was posted.";
 
 // What this tab has itself written to storage of what a forget removes, by
@@ -3554,7 +3558,8 @@ document.addEventListener("drop", (event) => {
   field.classList.remove("dragging");
   clearNotice();
   // Only a file the form took starts the puzzle: a held form's own image is
-  // its pending post's, whose answer has been taken already.
+  // its pending post's, which already has its answer or is waiting on the
+  // puzzle being solved for it.
   if (setFile(field, event.dataTransfer.files[0])) {
     captchaImageAttached(field.closest("form"));
   }
@@ -3934,13 +3939,15 @@ function runCaptchaWorkers(challenge, signal) {
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen), and the browser not forgotten since the press. A request
-// whose form has gone by the time its answer is ready, because the reader went
-// to another page, or that Forget this browser cancelled meanwhile, is not
-// sent, the first time or once more after a refused answer: the answer is put
-// back for the next press, and sendWithCaptcha throws an error marked notSent,
-// for a caller that says nothing on a page the reader went to and, on a form
-// still on screen, which only the forget stops, says why. Neither the second
-// send nor the next puzzle is started for one.
+// whose form has gone, because the reader went to another page, or that
+// Forget this browser cancelled meanwhile, is not sent, the first time or once
+// more after a refused answer. That is asked when its answer is ready, which
+// then goes back for the next press, and again when a refusal of the answer
+// arrives, perhaps after a forget heard while the first send was on its way.
+// Either way sendWithCaptcha throws the error notSent makes, for a caller
+// that says nothing on a page the reader went to and, on a form still on
+// screen, which only the forget stops, says why. Neither the second send nor
+// the next puzzle is started for one.
 // Pressing Update while a post waits does not take its form away: the redrawn
 // page shows the same form, still held, as does another page of the same
 // board's index, drawn with the same new-thread form.
@@ -3972,9 +3979,7 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
     const answer = taken ? taken.answer : "";
     if (!onScreen()) {
       keepCaptcha(taken);
-      const err = new Error("not sent");
-      err.notSent = true;
-      throw err;
+      throw notSent();
     }
     try {
       return await send(answer);
@@ -3993,11 +3998,23 @@ async function sendWithCaptcha(needsIt, send, solving, onScreen) {
       if (reason === "required") {
         state.site.captcha = true;
       }
-      if (retried || !needsIt() || !onScreen()) {
+      if (retried || !needsIt()) {
         throw err;
+      }
+      if (!onScreen()) {
+        throw notSent();
       }
     }
   }
+}
+
+// notSent is the error sendWithCaptcha throws for a request it did not send,
+// marked so that the caller can tell it from a refusal: its message is for
+// nobody.
+function notSent() {
+  const err = new Error("not sent");
+  err.notSent = true;
+  return err;
 }
 
 // formOnScreen says whether a form is still the one the reader is looking at:
@@ -4124,7 +4141,7 @@ el.main.addEventListener("submit", async (event) => {
   // puzzle, stops it as it stops a code request: sent, it would go under the
   // Name and the poster key the forget took away, while its form shows
   // neither. A post that went before the forget is answered on its form, and
-  // keeps nothing (below).
+  // keeps nothing (below); one refused for its answer is not sent again.
   const forgets = browserForgets;
   const forgotten = () => forgets !== browserForgets;
   // Read above, and held from here until the post has gone or been refused, so
@@ -4228,9 +4245,10 @@ el.main.addEventListener("submit", async (event) => {
       return;
     }
     // A post sendWithCaptcha did not send from a form still on screen was
-    // stopped by the forget, before its first send or before the second after
-    // a refused answer: nobody refused it, so it says why, and keeps its text
-    // for whoever presses again.
+    // stopped by the forget: before its first send, or before the second that
+    // a refused answer calls for, the forget heard while the first was on its
+    // way or while the second puzzle was solving. It says so rather than
+    // wording a refusal, and keeps its text for whoever presses again.
     if (err.notSent) {
       showNotice(FORGOTTEN_BEFORE_SENDING);
       return;
