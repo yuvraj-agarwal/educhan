@@ -987,16 +987,16 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 // sent: the post would go under the Name and the poster key the forget took
 // away, while its form showed neither. That holds for the second send after a
 // refused answer too, whether the forget is heard while the second puzzle is
-// solving or while the first send is on its way, before its refusal arrives.
-// A post's form is released with its text and says why, whichever it was:
+// solving or while the first send is on its way, before its refusal arrives. A
+// post's form is released with its text and says why, whichever it was:
 // sendWithCaptcha throws the error notSent makes for a request it did not
-// send, which on a form still on screen only the forget causes, and the
-// submit handler answers that mark before it words any other error. A redraw on its way puts back no
-// Name its draft read before the press, and a form left on screen loses the
-// option to post with the badge and says what a form without it says about
-// the anti-spam check, rather than offering a badge that has gone. Each
-// request and each draft notes browserForgets, and only forgetOnThisPage
-// moves it, for a press in this tab or one heard from another
+// send, which on a form still on screen only the forget causes, and the submit
+// handler answers that mark before it words any other error. A redraw on its
+// way puts back no Name its draft read before the press, and a form left on
+// screen loses the option to post with the badge and says what a form without
+// it says about the anti-spam check, rather than offering a badge that has
+// gone. Each request and each draft notes browserForgets, and only
+// forgetOnThisPage moves it, for a press in this tab or one heard from another
 // (TestForgettingTheBrowserReachesEveryTab).
 func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	script := appScript(t)
@@ -1064,13 +1064,12 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	if strings.Count(verify, "verifyStep =") != 2 || strings.Count(verify, "storeCredential(") != 1 || strings.Count(verify, "readBadge(") != 1 {
 		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
 	}
-	// A post is held to the same: not sent once forgotten (sendWithCaptcha
-	// asks before each send, and again when a refusal of the answer calls for
-	// the second), and
-	// what it brings back kept only if nothing has moved browserForgets since
-	// the press. A post the forget stopped says so on its form, and the error
-	// sendWithCaptcha throws for it, whose message is for nobody, never
-	// reaches errorMessage.
+	// A post is held to the same: not sent once forgotten (sendWithCaptcha asks
+	// before each send, and again when a refusal of the answer calls for the
+	// second), and what it brings back kept only if nothing has moved
+	// browserForgets since the press. A post the forget stopped says so on its
+	// form, and the error sendWithCaptcha throws for it, whose message is for
+	// nobody, never reaches errorMessage.
 	submit := squash(withoutComments(submitHandler(t, script)))
 	inOrder(t, "the submit handler", submit,
 		"const forgets = browserForgets; const forgotten = () => forgets !== browserForgets;",
@@ -1306,11 +1305,21 @@ func TestAPendingFormIsHeld(t *testing.T) {
 // stays in the document meanwhile, a redraw of its own page keeps the page,
 // dimmed, rather than drawing a skeleton over it. A held form that has been
 // answered by the time the page is drawn is read like any draft, so one whose
-// post went is drawn empty.
+// post went is drawn empty. Its page is told by routeKey, which leaves out the
+// index page, so another page of the same board's index carries a held
+// new-thread form as Update does. And its picker ends up as the new page drew
+// one: a redraw that drew it switched off, the thread having reached its image
+// limit meanwhile, has the held form's switched off with the same reason when
+// the hold ends, whatever the answer, rather than offering an image to a
+// thread that takes no more.
 func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	script := appScript(t)
 	if !strings.Contains(withoutComments(script), "\nconst heldForms = new WeakSet();\n") {
 		t.Fatal("app.js no longer keeps the held forms in heldForms")
+	}
+	if key := squash(withoutComments(jsFunction(t, script, "routeKey"))); key !=
+		"function routeKey(route) { return `${route.view}:${route.slug || \"\"}:${route.no || \"\"}`; }" {
+		t.Errorf("routeKey is no longer the view, the board and the thread, without the index page: %s", key)
 	}
 	capture := squash(withoutComments(jsFunction(t, script, "captureDraft")))
 	inOrder(t, "captureDraft", capture,
@@ -1324,10 +1333,25 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"if (draft.held) { const held = draft.held; if ( heldForms.has(held) && form && "+
 			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
-			"form.replaceWith(held);",
+			`const drawn = form.querySelector("[data-file-field]"); const reason = !drawn ? UPLOADS_OFF_REASON : `+
+			`drawn.classList.contains("blocked") ? drawn.querySelector(".file-blocked").textContent : ""; `+
+			`if (reason && held.querySelector("[data-file-field]")) { blockedWhileHeld.set(held, reason); } `+
+			"else { blockedWhileHeld.delete(held); } form.replaceWith(held);",
 		"return; } draft = { key: draft.key, ...formDraft(held) }; }",
 		"if (!form) { keepUnsentDraft(draft); return; }",
 	)
+	// The reason is applied when the hold ends, after the controls the hold
+	// switched off are switched back on, and by release, which both the
+	// success and the refusal call (TestAPendingFormIsHeld).
+	inOrder(t, "holdForm", squash(withoutComments(jsFunction(t, script, "holdForm"))),
+		"return (refocus) => { heldForms.delete(form); for (const control of controls) { control.disabled = false; }",
+		`const blocked = blockedWhileHeld.get(form); if (blocked) { blockedWhileHeld.delete(form); `+
+			`blockFileField(form.querySelector("[data-file-field]"), blocked); }`,
+	)
+	if n := strings.Count(withoutComments(script), "blockedWhileHeld"); !strings.Contains(withoutComments(script),
+		"\nconst blockedWhileHeld = new WeakMap();\n") || n != 5 {
+		t.Errorf("blockedWhileHeld appears %d times in app.js; want its declaration, restoreDraft's set and delete, and release's get and delete", n)
+	}
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",

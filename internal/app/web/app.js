@@ -3108,6 +3108,21 @@ function restoreDraft(draft) {
       form.dataset.kind === held.dataset.kind &&
       form.dataset.thread === held.dataset.thread
     ) {
+      // Its picker goes as the new page drew one: switched off, the thread
+      // having reached its image limit since the press say, or left out, the
+      // site taking no images. Until the hold ends it shows what is being
+      // sent, so it is switched off then (holdForm).
+      const drawn = form.querySelector("[data-file-field]");
+      const reason = !drawn
+        ? UPLOADS_OFF_REASON
+        : drawn.classList.contains("blocked")
+          ? drawn.querySelector(".file-blocked").textContent
+          : "";
+      if (reason && held.querySelector("[data-file-field]")) {
+        blockedWhileHeld.set(held, reason);
+      } else {
+        blockedWhileHeld.delete(held);
+      }
       form.replaceWith(held);
       const details = held.closest("details");
       if (details) details.open = true;
@@ -4036,20 +4051,29 @@ function formOnScreen(form, route) {
 // The forms holdForm holds.
 const heldForms = new WeakSet();
 
+// Why the picker of a held form is no use now, by form: a redraw of its page
+// while it was held drew the picker there switched off, with this reason, or
+// drew none, on a site that takes no images (restoreDraft). The held picker
+// shows the image of the post on its way until the hold ends, and is switched
+// off then (holdForm).
+const blockedWhileHeld = new WeakMap();
+
 // holdForm switches off a form's controls while its request is pending, from
 // the press until the answer, with whatever the reader wrote left where it is.
 // What is sent was read from the form at the press, so a change made in the
 // meantime would be left out of it, and wiped by the reset after a success.
 // It returns release, which switches back on the controls it switched off, and
-// no others: a picker switched off for its own reason stays off. With refocus,
-// a form that had the focus at the press, which disabling the focused control
-// took away, gets it back on its button, ready to press again; put back in a
-// box to write in, it would start another puzzle. That is only while the focus
-// is still lost, on the page itself or nowhere: a reader who moved it during
-// the wait, to read a post say, keeps it where they put it. And it does not
-// scroll the page: a reader who scrolled away during the wait stays where they
-// are. The notice saying what happened is at the top of the page, in view only
-// of a reader who is there.
+// no others: a picker switched off for its own reason stays off, and one a
+// redraw meanwhile drew switched off is switched off now, whatever the answer
+// (blockedWhileHeld), so the form is what a fresh drawing of the page would
+// show. With refocus, a form that had the focus at the press, which disabling
+// the focused control took away, gets it back on its button, ready to press
+// again; put back in a box to write in, it would start another puzzle. That is
+// only while the focus is still lost, on the page itself or nowhere: a reader
+// who moved it during the wait, to read a post say, keeps it where they put it.
+// And it does not scroll the page: a reader who scrolled away during the wait
+// stays where they are. The notice saying what happened is at the top of the
+// page, in view only of a reader who is there.
 // Until release, the form is in heldForms, and a redraw of its page carries it
 // across as it is (captureDraft, restoreDraft).
 function holdForm(form) {
@@ -4063,6 +4087,11 @@ function holdForm(form) {
     heldForms.delete(form);
     for (const control of controls) {
       control.disabled = false;
+    }
+    const blocked = blockedWhileHeld.get(form);
+    if (blocked) {
+      blockedWhileHeld.delete(form);
+      blockFileField(form.querySelector("[data-file-field]"), blocked);
     }
     const lost = !document.activeElement || document.activeElement === document.body;
     if (refocus && focused && lost) {
