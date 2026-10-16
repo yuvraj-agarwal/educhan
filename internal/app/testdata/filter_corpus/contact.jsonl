@@ -129,7 +129,7 @@
 {"id": "contact-129", "body": "discord id share karo sab, server bana raha hu JEE ke liye", "subject": "", "name": "", "expect": "block", "why": "Hinglish ask for Discord ids"}
 {"id": "contact-130", "body": "insta pe dm karo details ke liye", "subject": "", "name": "", "expect": "block", "why": "Hinglish ask to DM on Instagram"}
 {"id": "contact-131", "body": "my aadhaar 5377 0009 3861 is showing as not linked to PAN on the scholarship portal, anyone know why??", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number"}
-{"id": "contact-132", "body": "NSP form rejected again. aadhaar no 896370382046 is correct I triple checked", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number unspaced"}
+{"id": "contact-132", "body": "NSP form rejected again. aadhaar no 896370382045 is correct I triple checked", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number unspaced; its check digit fails, so it is blocked by its label alone and is no one's"}
 {"id": "contact-133", "body": "aadhaar: 3534-9620-0085, name mismatch issue with 10th marksheet, how to fix", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number hyphenated"}
 {"id": "contact-134", "body": "aadhar card number 9620 9770 1139, how do i change the DOB on it before JEE form deadline", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number"}
 {"id": "contact-135", "body": "FAFSA keeps saying my SSN doesn't match. its 532-71-0496, did I typo it somewhere??", "subject": "", "name": "", "expect": "block", "why": "US SSN"}

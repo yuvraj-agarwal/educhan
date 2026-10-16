@@ -772,7 +772,9 @@ no one's, in the unit tests as in the corpus ("(495) 867-5309");
 toll-free line. A number meant to be blocked is never given with a name, a school or a
 handle; a tripcode secret holding a mobile uses a drama number, an exam
 roll, application or student number the filter should publish has zeroes for its serial,
-and an Aadhaar number fails its check digit wherever its label alone gets it blocked. An
+and an Aadhaar number fails its check digit wherever its label alone gets it blocked
+(`TestFilterCorpusDetailsAreMadeUp` holds the corpus to that, so an issued number cannot
+be among them; "my e-aadhaar says …", which no label reads, needs a valid one). An
 invented number or ID in a valid shape may still happen to be someone's, as
 with the unit tests' examples. Label a post by what the filter should do, not by what
 it does. A rule change that turns a labelled post wrong is a regression to fix, or a

@@ -3414,6 +3414,8 @@ func logCorpusRates(t *testing.T, category string, items, misses, stopped, publi
 // with no name, school or handle; but a North American one can be put in an
 // area code the numbering plan never assigns (N9X, 37X and 96X) and still be
 // blocked, so it is, and this test holds the North American numbers to that.
+// An Aadhaar number its label alone gets blocked fails its check digit, which
+// no issued number does, and this test holds the corpus to that too.
 func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	// Blocked as a username, but a code that names no one.
 	codes := map[string]string{
@@ -3465,6 +3467,31 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	lookalike := strings.NewReplacer("O", "0", "o", "0", "I", "1", "l", "1")
 	tollFree := setOf(`800 833 844 855 866 877 888`)
 	numbers := 0
+	// An Aadhaar number with its label straight before it ("my aadhaar",
+	// "UID", "aadhaar no") is blocked by the label alone, so it fails its
+	// check digit, which no issued number does.
+	aadhaarNumber := regexp.MustCompile(`(?:^|[^\d])([2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?:[^\d]|$)`)
+	aadhaars := 0
+	labelledAadhaars := func(where, text string) {
+		lower := strings.ToLower(text)
+		for _, m := range aadhaarNumber.FindAllStringSubmatchIndex(lower, -1) {
+			labelled := false
+			for _, w := range wordsBefore(lower, m[2], 5) {
+				if idFillers[w] {
+					continue
+				}
+				labelled = aadhaarLabels[w]
+				break
+			}
+			if !labelled {
+				continue
+			}
+			aadhaars++
+			if digits := strings.NewReplacer(" ", "", "-", "").Replace(lower[m[2]:m[3]]); verhoeffValid(digits) {
+				t.Errorf("%s: the labelled Aadhaar number %q passes its check digit", where, text[m[2]:m[3]])
+			}
+		}
+	}
 	noOnesNumbers := func(where, text string, spaced bool) {
 		for _, m := range nanpNumber.FindAllStringSubmatchIndex(text, -1) {
 			group := func(k int) string {
@@ -3511,6 +3538,7 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			post := it.Name + "\n" + it.Subject + "\n" + it.Body
 			for _, field := range []string{it.Name, it.Subject, it.Body} {
 				noOnesNumbers(it.ID, field, it.Expect != "publish")
+				labelledAadhaars(it.ID, field)
 			}
 			in := contentInput{Subject: normalizeSubject(it.Subject), Name: displayedName(it.Name),
 				Body: normalizeBody(it.Body)}
@@ -3565,6 +3593,9 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	}
 	if numbers < 40 {
 		t.Fatalf("only %d North American numbers found, want the corpus's and the tests' forty and more", numbers)
+	}
+	if aadhaars < 10 {
+		t.Fatalf("only %d labelled Aadhaar numbers found, want the corpus's ten and more", aadhaars)
 	}
 }
 

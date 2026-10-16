@@ -102,7 +102,7 @@
 {"id": "c2-102", "body": "whatsapp pe aa jaldi", "subject": "", "name": "", "expect": "block", "why": "move to whatsapp, hinglish"}
 {"id": "c2-103", "body": "bhai discord pe sab sirf memes daalte hai, padhai koi nahi karta 😭", "subject": "", "name": "", "expect": "publish", "why": "mentions app, hinglish"}
 {"id": "c2-104", "body": "kik me: madeup_lex12", "subject": "", "name": "", "expect": "block", "why": "kik handle"}
-{"id": "c2-105", "body": "lmao the cyber cafe guy photocopied my aadhaar 4821 7739 2050 twice, should i be worried", "subject": "", "name": "", "expect": "block", "why": "aadhaar, labelled"}
+{"id": "c2-105", "body": "lmao the cyber cafe guy photocopied my aadhaar 4821 7739 2051 twice, should i be worried", "subject": "", "name": "", "expect": "block", "why": "aadhaar, labelled; its check digit fails, so it is blocked by its label alone and is no one's"}
 {"id": "c2-106", "body": "email me at madeuplily{at}icloud{dot}com and i'll forward the coursework feedback", "subject": "", "name": "", "expect": "block", "why": "email with braces"}
 {"id": "c2-107", "body": "my SSN is 529-41-7783 and FAFSA still says it doesn't match?? anyone had this", "subject": "", "name": "", "expect": "block", "why": "US SSN"}
 {"id": "c2-108", "body": "mera whatsapp 99-10-28-47-63 hai, group me add kar dunga", "subject": "", "name": "", "expect": "block", "why": "mobile in pairs, hinglish"}
@@ -181,7 +181,7 @@
 {"id": "c2-181", "body": "drop ur number", "subject": "", "name": "", "expect": "block", "why": "asks for number"}
 {"id": "c2-182", "body": "drew this for the art thread, tear it apart", "subject": "", "name": "insta: @madeup.sana.sketches", "expect": "block", "why": "handle in name field"}
 {"id": "c2-183", "body": "my mum found my snapchat and made me delete it. honestly kinda relieved", "subject": "", "name": "", "expect": "publish", "why": "mentions app"}
-{"id": "c2-184", "body": "UID 7392 0418 5568 pe OTP nahi aa raha, mobile linked hai fir bhi", "subject": "", "name": "", "expect": "block", "why": "aadhaar as UID, hinglish"}
+{"id": "c2-184", "body": "UID 7392 0418 5569 pe OTP nahi aa raha, mobile linked hai fir bhi", "subject": "", "name": "", "expect": "block", "why": "aadhaar as UID, hinglish; its check digit fails, so it is blocked by its label alone and is no one's"}
 {"id": "c2-185", "body": "yaar percentile 97.34 aaya, NIT milega kya home state quota me?", "subject": "", "name": "", "expect": "publish", "why": "percentile, hinglish"}
 {"id": "c2-186", "body": "+60 12-748 3361 whatsapp, SPM add maths group", "subject": "", "name": "", "expect": "block", "why": "Malaysia +60"}
 {"id": "c2-187", "body": "order number 171-2290183-4471029 ka refund abhi tak nahi aaya, amazon wale sun hi nahi rahe", "subject": "", "name": "", "expect": "publish", "why": "order number, hinglish"}
