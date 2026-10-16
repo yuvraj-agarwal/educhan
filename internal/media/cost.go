@@ -436,9 +436,9 @@ func (f jpegFrame) rgb() bool {
 	return f.ids == [3]byte{'R', 'G', 'B'}
 }
 
-// readJPEGFrame walks a JPEG's segments up to its first scan, as
-// jpegOrientation does: in place, every length checked before it is used,
-// nothing allocated. It reports whether it found a frame header before
+// readJPEGFrame walks a JPEG's segments up to its first scan as image/jpeg's
+// decoder does (jpegNextSegment): in place, every length checked before it is
+// used, nothing allocated. It reports whether it found a frame header before
 // anything stopped it. It counts the blocks image/jpeg will allocate: whole
 // MCUs of the first component's sampling, each holding h×v blocks of every
 // component, and a single component's samples counted 1×1 whatever it
@@ -451,31 +451,15 @@ func readJPEGFrame(data []byte) (jpegFrame, bool) {
 		return f, false
 	}
 	framed := false
-	i := 2
-	for i+4 <= len(data) {
-		if data[i] != 0xFF {
+	for i := 2; ; {
+		marker, segment, next, ok := jpegNextSegment(data, i)
+		if !ok {
 			return f, framed
 		}
-		marker := data[i+1]
-		switch {
-		case marker == 0xFF:
-			i++
-			continue
-		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
-			i += 2
-			continue
-		case marker == 0xDA:
+		switch marker {
+		case 0xDA:
 			f.tables = framed
 			return f, framed
-		case marker == 0xD9:
-			return f, framed
-		}
-		length := int(data[i+2])<<8 | int(data[i+3])
-		if length < 2 || length > len(data)-i-2 {
-			return f, framed
-		}
-		segment := data[i+4 : i+2+length]
-		switch marker {
 		case 0xE0:
 			if len(segment) >= 5 && string(segment[:5]) == "JFIF\x00" {
 				f.jfif = true
@@ -498,9 +482,64 @@ func readJPEGFrame(data []byte) (jpegFrame, bool) {
 			}
 			framed = true
 		}
-		i += 2 + length
+		i = next
 	}
-	return f, framed
+}
+
+// jpegNextSegment finds the segment image/jpeg's decoder reads next when it
+// looks for one at offset i, and returns its marker, its body and the offset
+// after it, the way the decoder's own segment loop goes. Whatever comes before
+// an 0xFF is extraneous data, which the decoder skips a byte at a time rather
+// than refusing, as libjpeg does; an 0xFF00 pair is skipped whole; a run of
+// 0xFF fill bytes stands for the marker after it; and a restart marker
+// (0xFFD0..0xFFD7), which has no length, is passed over. A scan's
+// entropy-coded data is nothing but such bytes up to the next marker (stuffed
+// 0xFF00 pairs and restart markers), and the decoder's bit reader never reads
+// past a marker that is not one of those, so whatever of a scan's data the
+// decoder takes, it next finds the segment this finds, read from right after
+// the scan's header. ok is false where the decoder stops: at the end of the
+// image (0xFFD9), at the end of the data, at a segment whose length does not
+// fit, and at a marker it does not read past but refuses — anything but a
+// frame header it decodes (0xFFC0..0xFFC2), a table (0xFFC4, 0xFFDB), a scan
+// (0xFFDA), a restart interval (0xFFDD), an application segment
+// (0xFFE0..0xFFEF) or a comment (0xFFFE).
+func jpegNextSegment(data []byte, i int) (marker byte, body []byte, next int, ok bool) {
+	for i+1 < len(data) {
+		switch {
+		case data[i] != 0xFF:
+			i++
+			continue
+		case data[i+1] == 0x00:
+			i += 2
+			continue
+		}
+		j := i + 1
+		for j < len(data) && data[j] == 0xFF {
+			j++
+		}
+		if j >= len(data) {
+			return 0, nil, len(data), false
+		}
+		marker, i = data[j], j+1
+		switch {
+		case marker >= 0xD0 && marker <= 0xD7:
+			continue
+		case marker == 0xC0, marker == 0xC1, marker == 0xC2, marker == 0xC4,
+			marker == 0xDA, marker == 0xDB, marker == 0xDD, marker == 0xFE,
+			marker >= 0xE0 && marker <= 0xEF:
+		default:
+			return marker, nil, i, false
+		}
+		if i+2 > len(data) {
+			return marker, nil, len(data), false
+		}
+		length := int(data[i])<<8 | int(data[i+1])
+		if length < 2 || length > len(data)-i {
+			return marker, nil, len(data), false
+		}
+		return marker, data[i+2 : i+length], i + length, true
+	}
+	return 0, nil, len(data), false
 }
 
 // maxJPEGScanRevisits caps how many times, averaged over the picture, a JPEG's
@@ -529,12 +568,12 @@ const maxJPEGScanRevisits = 64
 // for a progressive file; so a scan's cost is the grid, mxx×myy from the first
 // component's sampling, times the sum of h×v over the components the scan
 // lists. A baseline file's one scan visits each block once; a progressive file
-// revisits a component's blocks on each of its scans. It walks the markers as
-// readJPEGFrame does and steps over each scan's entropy-coded data to the next
-// marker exactly as the decoder's bit reader ends a scan — a stuffed 0xFF00 and
-// the restart markers 0xFFD0..0xFFD7 are within the scan, any other marker ends
-// it — so it counts every scan the decoder processes and stops where the
-// decoder would. The count, not the file's size, is what maxJPEGScanRevisits
+// revisits a component's blocks on each of its scans. It walks the segments
+// as the decoder reads them (jpegNextSegment), its extraneous bytes and each
+// scan's entropy-coded data stepped over to the next marker exactly as the
+// decoder steps over them, so it counts every scan the decoder processes and
+// stops where the decoder would: a byte the decoder skips cannot hide a scan
+// from it. The count, not the file's size, is what maxJPEGScanRevisits
 // bounds.
 func jpegScanBlockVisits(data []byte, f jpegFrame) int64 {
 	if f.ncomp == 0 || f.comp[0].h < 1 || f.comp[0].v < 1 {
@@ -546,83 +585,37 @@ func jpegScanBlockVisits(data []byte, f jpegFrame) int64 {
 	mcus := mxx * myy
 
 	var visits int64
-	i := 2
-	for i+4 <= len(data) {
-		if data[i] != 0xFF {
+	for i := 2; ; {
+		marker, body, next, ok := jpegNextSegment(data, i)
+		if !ok {
 			return visits
 		}
-		marker := data[i+1]
-		switch {
-		case marker == 0xFF:
-			i++
+		i = next
+		if marker != 0xDA {
 			continue
-		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
-			i += 2
-			continue
-		case marker == 0xD9:
+		}
+		// The SOS header lists the scan's components by selector; sum h×v
+		// over the frame components they name. Its entropy-coded data is
+		// stepped over by the next call, from right after the header.
+		ns := 0
+		if len(body) >= 1 {
+			ns = int(body[0])
+		}
+		if ns < 1 || len(body) < 1+2*ns {
 			return visits
 		}
-		length := int(data[i+2])<<8 | int(data[i+3])
-		if length < 2 || length > len(data)-i-2 {
-			return visits
-		}
-		if marker == 0xDA {
-			// The SOS header lists the scan's components by selector; sum h×v
-			// over the frame components they name.
-			body := data[i+4 : i+2+length]
-			ns := 0
-			if len(body) >= 1 {
-				ns = int(body[0])
-			}
-			if ns < 1 || len(body) < 1+2*ns {
-				return visits
-			}
-			var hv int64
-			for k := 0; k < ns; k++ {
-				cs := body[1+2*k]
-				for c := 0; c < f.ncomp; c++ {
-					if f.comp[c].id == cs {
-						hv += f.comp[c].h * f.comp[c].v
-						break
-					}
+		var hv int64
+		for k := 0; k < ns; k++ {
+			cs := body[1+2*k]
+			for c := 0; c < f.ncomp; c++ {
+				if f.comp[c].id == cs {
+					hv += f.comp[c].h * f.comp[c].v
+					break
 				}
 			}
-			visits += mcus * hv
-			i = jpegSkipEntropy(data, i+2+length)
-			continue
 		}
-		i += 2 + length
+		visits += mcus * hv
 	}
-	return visits
-}
-
-// jpegSkipEntropy returns the offset of the next marker after the
-// entropy-coded data that begins at i, found as image/jpeg's bit reader finds
-// it: the first 0xFF that is neither a stuffed byte (0xFF00) nor a restart
-// marker (0xFFD0..0xFFD7), with runs of 0xFF fill bytes collapsed onto the
-// marker that follows them. It returns len(data) when no further marker is
-// found.
-func jpegSkipEntropy(data []byte, i int) int {
-	for i < len(data) {
-		if data[i] != 0xFF {
-			i++
-			continue
-		}
-		j := i + 1
-		for j < len(data) && data[j] == 0xFF {
-			j++
-		}
-		if j >= len(data) {
-			return len(data)
-		}
-		m := data[j]
-		if m == 0x00 || (m >= 0xD0 && m <= 0xD7) {
-			i = j + 1
-			continue
-		}
-		return j - 1
-	}
-	return i
 }
 
 // jpegScansTooCostly reports whether a JPEG's scans would make image/jpeg

@@ -13,6 +13,7 @@ import (
 	"image/color/palette"
 	"image/draw"
 	"image/gif"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"math"
@@ -1933,5 +1934,87 @@ func TestJPEGScanBombIsRefusedFromHeader(t *testing.T) {
 	f, _ := readJPEGFrame(overCap)
 	if got, want := jpegScanBlockVisits(overCap, f), int64(maxJPEGScanRevisits+1)*blocks; got != want {
 		t.Errorf("jpegScanBlockVisits = %d, want %d", got, want)
+	}
+}
+
+// image/jpeg reads past extraneous bytes between a JPEG's segments, as libjpeg
+// does — anything before an 0xFF, an 0xFF00 pair, fill bytes, a restart
+// marker where no scan expects one — and decodes every scan after them. The
+// walks that count the scans read past them the same way (jpegNextSegment),
+// so no such byte hides a scan from the cap: the over-cap file with them
+// before its frame header, before its Huffman tables, before its first scan
+// or before every scan is decoded whole by image/jpeg and still refused from
+// its header, with the same count as the plain file. (Straight after the
+// start of the image they would not get that far: Inspect takes a file for a
+// JPEG only when an 0xFF follows it.) One zero byte before the
+// first scan once let the walk stop there, count nothing, and admit a file
+// that then decoded for the whole of its deadline.
+func TestJPEGScanCountReadsPastExtraneousBytes(t *testing.T) {
+	const w, h = 1000, 1000
+	plain := scanBombJPEG(w, h, maxJPEGScanRevisits)
+	f, _ := readJPEGFrame(plain)
+	want := jpegScanBlockVisits(plain, f)
+	if want <= maxJPEGScanRevisits*f.blocks {
+		t.Fatalf("the plain file makes %d visits, within the cap of %d: the test would prove nothing", want, maxJPEGScanRevisits*f.blocks)
+	}
+	// starts are where segments with marker begin in the plain file. None
+	// of its bytes but markers is 0xFF: the tables are ones, the sizes are
+	// under 0xFF00 and the scans' data is single EOB runs.
+	starts := func(marker byte) []int {
+		var at []int
+		for i := 0; i+1 < len(plain); i++ {
+			if plain[i] == 0xFF && plain[i+1] == marker {
+				at = append(at, i)
+			}
+		}
+		if len(at) == 0 {
+			t.Fatalf("no 0xFF%02X in the plain file", marker)
+		}
+		return at
+	}
+	scans := starts(0xDA)
+	places := []struct {
+		name string
+		at   []int
+	}{
+		{"before the frame header", starts(0xC2)},
+		{"before the Huffman tables", starts(0xC4)[:1]},
+		{"before the first scan", scans[:1]},
+		{"before every scan", scans},
+	}
+	junks := map[string][]byte{
+		"a zero byte":              {0x00},
+		"three bytes":              {0x12, 0x34, 0x56},
+		"a stuffed 0xFF00":         {0xFF, 0x00},
+		"a restart marker":         {0xFF, 0xD3},
+		"bytes, 0xFF00 and a 0x7F": {0x00, 0xFF, 0x00, 0x7F},
+	}
+	for _, place := range places {
+		for jname, junk := range junks {
+			name := jname + " " + place.name
+			var data []byte
+			last := 0
+			for _, at := range place.at {
+				data = append(append(data, plain[last:at]...), junk...)
+				last = at
+			}
+			data = append(data, plain[last:]...)
+			// The decoder reads through to the end of the image, every scan
+			// on the way: it returns a picture only once it reaches 0xFFD9,
+			// which comes after the last of them.
+			if _, err := jpeg.Decode(bytes.NewReader(data)); err != nil {
+				t.Fatalf("%s: image/jpeg refuses the file (%v): the bytes are not ones it reads past", name, err)
+			}
+			g, framed := readJPEGFrame(data)
+			if !framed || g.blocks != f.blocks {
+				t.Errorf("%s: readJPEGFrame = %d blocks, framed %v; want the plain file's %d", name, g.blocks, framed, f.blocks)
+			}
+			if got := jpegScanBlockVisits(data, g); got != want {
+				t.Errorf("%s: jpegScanBlockVisits = %d, want the plain file's %d", name, got, want)
+			}
+			if _, err := Inspect(data); !errors.Is(err, ErrImageTooCostly) {
+				t.Errorf("%s: Inspect = %v, want ErrImageTooCostly", name, err)
+			}
+		}
 	}
 }
