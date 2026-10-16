@@ -2175,6 +2175,10 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		{"i'm lighting up the canteen tomorrow, it's my birthday treat", publish},
 		{"i'm going to light the hostel up tonight, bring snacks", publish},
 		{"i'm going to light up the hall tomorrow, decorating committee for annual day", publish},
+		{"we're going to light up the gym at the pep rally tomorrow", publish},
+		{"i'm going to light up the school tomorrow in my new jacket", publish},
+		{"gonna light up the chem lab tomorrow lol the experiment is going to be lit", publish},
+		{"i'm going to light up the school tomorrow and nobody gets out", threat},
 		// operandBefore: R's assignment arrow assigns, as "=" does, unless a
 		// request or a phone cue before it says the number is one to call.
 		{"[code]x <- 9876543210[/code]", publish},
@@ -2266,6 +2270,8 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"tomorrow during assembly I'm locking them all in the hall", threat},
 		{"i'm going to lock everyone in the hall during assembly", threat},
 		{"going to lock the teachers in the staffroom on friday. not a joke", threat},
+		{"i'm going to lock everyone in the gym tomorrow so they can't escape", threat},
+		{"i'm locking them all in the hall tomorrow so nobody gets out", threat},
 		// The same hints with nothing to make them one.
 		{"the physics teacher fainted in assembly and is leaving in an ambulance, hope she's ok", publish},
 		{"my grandpa will be in hospital till friday after his surgery", publish},
@@ -2316,6 +2322,11 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"she is locking the hall tomorrow after assembly", publish},
 		{"the principal is going to lock everyone in the school during the lockdown drill tomorrow", publish},
 		{"lock them all in the classroom for the escape room game on friday", publish},
+		{"we're locking everyone in the classroom tomorrow for the group project", publish},
+		{"we're trapping everyone in the hostel tomorrow for the treasure hunt", publish},
+		{"we lock everyone in the auditorium for the orientation tomorrow, attendance is compulsory", publish},
+		{"i'm locking them all in the library tomorrow so they actually study lol", publish},
+		{"i'm going to lock everyone in the classroom tomorrow so nobody bunks lol", publish},
 		{"i'm going to trap them all in the library tomorrow with my 3 hour presentation lol", publish},
 		{"going to lock the teachers in the staffroom on friday for a surprise party", publish},
 		{"the bus left with them still inside it, they missed the trip on friday", publish},

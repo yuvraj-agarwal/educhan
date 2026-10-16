@@ -224,3 +224,4 @@
 {"id": "risk-224", "body": "i'm going to beat him up at rugby practice tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating at a sport's practice; no sport says \"beat up\" of winning"}
 {"id": "risk-225", "body": "gonna murder everyone on the kickball field tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a crowd killed on a sport's ground, which names where, not the game"}
 {"id": "risk-226", "body": "netball semis on friday. we're going to murder them at netball, year 10 has no chance", "subject": "", "name": "", "expect": "publish", "why": "winning a game: a murder of the other side at netball"}
+{"id": "risk-227", "body": "i'm going to lock everyone in the gym tomorrow so they can't escape", "subject": "", "name": "", "expect": "hold", "why": "a crowd locked in so that they cannot get out; an escape room would be named"}

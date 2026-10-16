@@ -5200,16 +5200,19 @@ func shootingRange(ws []string) bool {
 
 // litUpPlaces are the places lit up by a performer, a team or a party
 // rather than by fire: "we'll light up the stage", "light the dorm up
-// tonight". lightUpWords make lighting a place up a decoration, a treat or
-// a person's presence: "light up the hall for annual day", "light up the
-// canteen, it's my birthday treat".
+// tonight". lightUpWords make lighting a place up a decoration, a treat, an
+// occasion, an experiment or a person's presence and what they wear: "light
+// up the hall for annual day", "light up the canteen, it's my birthday
+// treat", "light up the gym at the pep rally", "light up the school in my
+// new jacket", "light up the chem lab, the experiment is going to be lit".
 var (
 	litUpPlaces = canonSetOf(`floor floors court field ground grounds stand stands stadium farewell prom concert
 		convocation graduation meeting rally seminar mall shop store dorm dorms hostel hostels house houses home
 		flat flats apartment apartments rooms`)
 	lightUpWords = canonSetOf(`decorate decorating decorated decoration decorations decor birthday bday treat
-		surprise celebrate celebrating celebration rizz outfit smile vibe vibes energy presence aura fairy rangoli
-		annual`)
+		surprise celebrate celebrating celebration rizz outfit outfits fit fits drip jacket jackets dress dresses
+		saree sarees sari lehenga kurta kurti suit blazer hoodie sneakers shoes heels smile vibe vibes energy
+		presence aura fairy rangoli annual rally rallies pep orientation experiment experiments`)
 )
 
 // campWords make starting a fire a campfire or a stove, or a fire in the
@@ -7033,10 +7036,12 @@ func lightingUp(r *wordReading, lo, hi int) (strong, ok bool) {
 // the hall", "lock everyone inside the gym during assembly". It is strong
 // for a crowd ("everyone", "them all", "all the teachers") locked in by the
 // poster or by nobody named, and no hint at all for a lockdown or a drill,
-// an exam, a talk, a party, or a time it ends ("until they finish the
-// mock", "with my 3 hour presentation"); something
-// locked away ("my bike in the shed") and "us" ("the teacher locked us all
-// in the hall") are not read.
+// an exam, a talk, a party, an event or a game ("for the group project",
+// "for the treasure hunt", an escape room), a time it ends ("until they
+// finish the mock", "with my 3 hour presentation") or a purpose of study
+// or attendance ("so they actually study", "so nobody bunks"), though "so
+// they can't escape" is none; something locked away ("my bike in the
+// shed") and "us" ("the teacher locked us all in the hall") are not read.
 func lockedIn(r *wordReading, lo, hi int) (strong, ok bool) {
 	end := r.sentenceEnd[lo]
 	np := readNoun(r.ws[hi:end])
@@ -7047,17 +7052,43 @@ func lockedIn(r *wordReading, lo, hi int) (strong, ok bool) {
 	if p := readNoun(r.ws[k+1 : end]); !p.place() && !(k+1 < end && menacePlaces[r.ws[k+1]]) {
 		return false, false
 	}
-	if anyIn(r.sentenceWords(lo), lockedInExcuses) {
+	if ws := r.sentenceWords(lo); anyIn(ws, lockedInExcuses) || escapeRoom(ws) || lockedToStudy(ws) {
 		return false, false
 	}
 	s := r.subjectBefore(lo)
 	return np.quantified && (s == "" || posterSubject[s]), true
 }
 
+// escapeRoom reports an escape room in ws, which locks people in for fun.
+func escapeRoom(ws []string) bool {
+	for i, w := range ws[:max(0, len(ws)-1)] {
+		if is(w, "escape") && (is(ws[i+1], "room") || is(ws[i+1], "rooms")) {
+			return true
+		}
+	}
+	return false
+}
+
+// lockedToStudy reports a "so" with studying or attending in the four
+// words after it: "so they actually study", "so nobody bunks".
+func lockedToStudy(ws []string) bool {
+	for i, w := range ws {
+		if is(w, "so") && anyIn(ws[i+1:min(len(ws), i+5)], studyPurposes) {
+			return true
+		}
+	}
+	return false
+}
+
 var (
 	lockedInWords   = canonSetOf(`in inside into`)
 	lockedInExcuses = canonSetOf(`until till til untill unless drill drills lockdown lockdowns evacuation rehearsal
-		exam exams escape sleepover presentation presentations lecture speech party surprise`)
+		exam exams sleepover presentation presentations lecture speech party surprise project projects hunt
+		orientation rally fest event events workshop`)
+	// studyPurposes, after a "so", make locking people in a teacher's or a
+	// monitor's doing.
+	studyPurposes = canonSetOf(`study studies revise revises learn learns focus focuses concentrate practise practice
+		rehearse prepare attend attends bunk bunks skip skips`)
 )
 
 // litUp are the words that make lighting a place up a performance or a
