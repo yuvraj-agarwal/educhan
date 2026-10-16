@@ -262,10 +262,12 @@ Paused, checkout answers `403 the Pass is not on sale right now` and `GET /api/p
 says `"paused": true`; every other Pass endpoint and the webhook go on as usual. A real
 checkout uses Stripe's test mode: test keys, a test Price, and
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook,
-with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued with
-`curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H 'Content-Type:
-application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a one-time link
-(`/pass#reissue=…`) for the buyer, never a code.
+with `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued, behind
+`EDUCHAN_MOD_KEY`, with `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …'
+-H 'Content-Type: application/json' -d '{"payment_intent":"pi_…"}'`, which answers with
+a one-time reissue code (`REISSUE-` and seven groups of four) for the owner to send the
+buyer, never a Pass code and never a link; `POST /api/pass/claim` takes it in its body,
+with a nonce of its own (`{"reissue","nonce"}`).
 
 CI runs no browser, so the client's privacy and safety invariants are pinned by Go tests
 that read `app.js` (`web_invariants_test.go`): the poster key, the credential and the Pass

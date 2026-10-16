@@ -10,8 +10,9 @@
 --     here. Using a Pass writes nothing, so there is no "last used" to line up
 --     against a post either.
 --   * No email, name, card or address. The processor keeps those; educhan keeps
---     HMAC(EDUCHAN_PASS_SECRET, payment id), which exists only so a refund or a
---     chargeback can take back the time that payment bought.
+--     HMAC(EDUCHAN_PASS_SECRET, payment id), which exists so a refund or a
+--     chargeback can take back the time that payment bought, and so the owner
+--     can reissue a lost code from the payment on the buyer's receipt.
 --   * No created_at. Every timestamp (expires_at in each table, and the day a
 --     payment's term ends) is rounded up to a UTC day boundary, so it dates a
 --     purchase to the day and not the minute.
@@ -46,12 +47,16 @@ CREATE TABLE IF NOT EXISTS pass_payments (
     days         INTEGER NOT NULL,
     -- The day that term ends: the Pass's expiry just after the payment was
     -- applied, moved back with it when an earlier term is refunded. A refund
-    -- takes off only the part of the term still to come, and the earliest
-    -- term left is the one that becomes the origin.
+    -- takes off only the part of the term still to come, and which terms are
+    -- still running or to come decides whether another payment can become
+    -- the origin.
     ends_at      TIMESTAMPTZ NOT NULL,
-    -- True for the payment that created the Pass, false for a renewal. When
-    -- the origin is refunded and the Pass goes on, the earliest payment left
-    -- becomes its origin, so the Pass can always be reissued.
+    -- True for the payment a lost code can be reissued from, the one that
+    -- created the Pass, and false for a renewal. When the origin is refunded
+    -- or disputed and the Pass goes on, a payment left becomes its origin
+    -- only if its term is the only one still running or to come, so that it
+    -- paid for all the time the Pass has left. With two or more, no one
+    -- payment did, and the Pass has no origin and can no longer be reissued.
     origin       BOOLEAN NOT NULL
 );
 
@@ -94,16 +99,19 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
     expires_at   TIMESTAMPTZ NOT NULL
 );
 
--- One-time links that hand a lost Pass back to its buyer: the owner makes one
--- for a payment (POST /api/pass/reissue) and sends it to the address the buyer
--- wrote in from, and whoever opens it is given a new code. The owner never sees
--- a code. A row lives until its link is used, refunded or past its deadline,
--- rounded up to a UTC midnight like an order's.
+-- One-time reissue codes that hand a lost Pass back to its buyer: the owner
+-- makes one for a payment (POST /api/pass/reissue) and sends it to the address
+-- the buyer wrote in from, and whoever types it on the Pass page is given a new
+-- code. The owner never sees a Pass code. A row lives until its reissue code is
+-- used, refunded or past its deadline, rounded up to a UTC midnight like an
+-- order's.
 CREATE TABLE IF NOT EXISTS pass_reissues (
-    -- SHA-256 of the link's random token, which is only ever in the link.
+    -- SHA-256 of the reissue code's random characters, which only the
+    -- owner's answer and the message to the buyer carry.
     token_hash   BYTEA PRIMARY KEY,
     -- The payment it reissues: the one that made a Pass, or a paid order not
-    -- collected yet. A newer link for the same payment replaces this one.
+    -- collected yet. A newer reissue code for the same payment replaces this
+    -- one.
     payment_hash BYTEA NOT NULL UNIQUE,
     expires_at   TIMESTAMPTZ NOT NULL
 );
