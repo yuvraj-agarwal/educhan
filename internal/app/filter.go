@@ -3616,6 +3616,7 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	// A game named nearby excuses a kill only where the sentence names no
 	// place: "i will kill everyone at school tomorrow then play valo" holds.
 	if gameVerb.MatchString(cm) && (gameAfterAPreposition(next) ||
+		sportKill.MatchString(cm) && sportAfterAPreposition(next, wordsIn(sentence)) ||
 		gameNamed(text, m) && !anyIn(wordsIn(sentence), threatPlaceWords)) {
 		return false
 	}
@@ -4037,7 +4038,7 @@ func (f *scannedField) namedTargetCheck(v *view, m []int) bool {
 	name := f.src[a:b]
 	r, _ := utf8.DecodeRuneInString(name)
 	lower := strings.ToLower(name)
-	if !titled && !unicode.IsUpper(r) || notANameTarget[lower] || gameWords[lower] {
+	if !titled && !unicode.IsUpper(r) || notANameTarget[lower] || gameWords[lower] || sportWords[lower] {
 		return false
 	}
 	if !titled && utf8.RuneCountInString(name) <= 4 && strings.ToUpper(name) == name {
@@ -4129,8 +4130,50 @@ var (
 	gameWords = canonSetOf(`match matches game games chess football soccer cricket basketball volleyball hockey
 		tennis badminton kabaddi tournament finals final semis semifinal semifinals quiz debate competition race
 		fifa fortnite valorant pubg bgmi minecraft roblox cod league olympiad hackathon contest sports carrom
-		ludo uno mock battle bands dodgeball netball rugby handball rounders futsal kickball frisbee pickleball`)
+		ludo uno mock battle bands`)
+	// sportWords are school sports that excuse nothing but a kill or a
+	// murder said of the other side, named straight after "at", "in" or
+	// "on": "we're going to murder them at dodgeball". They are kept out of
+	// gameWords, which also excuses a blade carried ("a knife to rugby
+	// practice"), a teacher who won't see monday ("the rugby coach") and a
+	// shooting at a place, all of which a sport named nearby leaves a threat.
+	sportWords = canonSetOf(`dodgeball netball rugby handball rounders futsal kickball frisbee pickleball`)
+	// sportKill is the verbs sportWords excuse: not "beat him up" or
+	// "attack them", which a sport's own verbs do not say.
+	sportKill = regexp.MustCompile(canon(`\b` + words(`kill`, `killing`, `murder`, `murdering`, `slaughter`,
+		`slaughtering`, `massacre`, `massacring`, `destroy`, `destroying`) + `\b`))
+	// sportGrounds after a sport make it where something happens, not the
+	// game: "everyone on the kickball field".
+	sportGrounds = canonSetOf(`field fields ground grounds court courts pitch pitches`)
 )
+
+// sportAfterAPreposition reports a sport of sportWords named after "at",
+// "in" or "on" in the words after a kill, with nothing between but "the":
+// "murder them at dodgeball", "kill them in the netball final". A sport's
+// ground ("on the kickball field") is a place, and a weapon anywhere in the
+// sentence makes no game of it: "kill him at frisbee practice tomorrow, i
+// have a knife".
+func sportAfterAPreposition(next, sentence []string) bool {
+	if anyIn(sentence, weaponHeads) {
+		return false
+	}
+	for i, w := range next {
+		if is(w, "school") || is(w, "class") {
+			return false
+		}
+		if w != "at" && w != "in" && w != "on" {
+			continue
+		}
+		k := i + 1
+		if k < len(next) && is(next[k], "the") {
+			k++
+		}
+		if k < len(next) && sportWords[next[k]] {
+			return k+1 >= len(next) || !sportGrounds[next[k+1]]
+		}
+	}
+	return false
+}
 
 // nextWords splits the start of s into at most n words of letters, digits
 // and hyphens. It reads no further than the nth word, since s is often all
@@ -4687,7 +4730,8 @@ func (f *scannedField) threatFrameCheck(v *view, m []int) bool {
 	if storyNamed(sentence) || anyIn(sentence, dreamWords) {
 		return false
 	}
-	if gameActs[verb] && (gameAfterAPreposition(nextWords(clauseAfter(v.text, end), 6)) ||
+	if after := nextWords(clauseAfter(v.text, end), 6); gameActs[verb] && (gameAfterAPreposition(after) ||
+		sportKill.MatchString(verb) && sportAfterAPreposition(after, sentence) ||
 		gameNamed(v.text, whole) && !anyIn(sentence, threatPlaceWords)) {
 		return false
 	}
@@ -7022,7 +7066,8 @@ var (
 // farewell").
 var litUp = func() map[string]bool {
 	m := canonSetOf(`team teams squad band choir dancers farewell freshers fresher prom sangeet wedding reunion`)
-	for _, set := range []map[string]bool{stageWords, lampWords, festivalWords, hypeWords, eventWords, gameWords} {
+	for _, set := range []map[string]bool{stageWords, lampWords, festivalWords, hypeWords, eventWords, gameWords,
+		sportWords} {
 		for w := range set {
 			m[w] = true
 		}

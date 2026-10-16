@@ -2144,8 +2144,23 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		// sport whose bat is a weapon is not one of them.
 		{"we're going to murder them at dodgeball on friday", publish},
 		{"we'll kill them at netball in the gym tomorrow", publish},
+		{"we'll destroy them in the rugby final tomorrow", publish},
 		{"I'm going to murder everyone at school tomorrow, then dodgeball", threat},
 		{"I'm bringing a baseball bat to school tomorrow and he's getting it", threat},
+		// sportWords excuse that kill and nothing else: not a blade carried,
+		// a coach who won't see a day, a beating, an attack, a sport's
+		// ground or a kill with a weapon named.
+		{"i'm bringing a knife to rugby practice tomorrow and he's getting it", threat},
+		{"i'm bringing a knife to netball tomorrow and she's getting it", threat},
+		{"got a knife in my bag for handball tomorrow, coach is getting it", threat},
+		{"the rugby coach won't see monday", threat},
+		{"the netball coach won't see friday", threat},
+		{"our handball coach won't see monday", threat},
+		{"coach won't see monday, rugby is finished for him", threat},
+		{"i will kill him at frisbee practice tomorrow, i have a knife", threat},
+		{"i'm going to beat him up at rugby practice tomorrow", threat},
+		{"gonna attack them in futsal tomorrow, they won't know what hit them", threat},
+		{"i'm going to murder everyone on the kickball field tomorrow", threat},
 		// lighting a place up: set alight, or a show, lamps, a party or a
 		// person walking in.
 		{"i'm going to light the staff room up tomorrow", threat},
