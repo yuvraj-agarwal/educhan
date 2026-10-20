@@ -378,3 +378,54 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 		t.Errorf("verifyViewHTML draws %d states and ends %d of them with forgetBrowserHTML(); want every one", returns, offers)
 	}
 }
+
+// A post's form is cleared, its file with it, only once the answer is the post
+// it made. An answer with a success status and no post in it — the empty 200
+// net/http sends for a handler that wrote nothing — was taken for one: the form
+// was reset and only then did reading the post's place from it fail, so the
+// draft was gone and the post had not been made. The check comes between the
+// request and the reset, and it asks for the fields a made post is answered
+// with, which are checked against what the server answers.
+func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
+	script := appScript(t)
+	submit := withoutComments(submitHandler(t, script))
+	request := strings.Index(submit, "const created = await api(path,")
+	check := strings.Index(submit, "if (!isCreatedPost(created)) {")
+	reset := strings.Index(submit, "form.reset();")
+	if request < 0 || check < 0 || reset < 0 || strings.Count(submit, "form.reset();") != 1 {
+		t.Fatalf("the submit handler no longer sends the post, checks its answer with isCreatedPost and resets the form once")
+	}
+	if !(request < check && check < reset) || !strings.Contains(submit[check:reset], "throw err;") {
+		t.Error("the submit handler does not refuse an answer that is not a made post before it resets the form")
+	}
+	if strings.Contains(submit[request:check], "form") {
+		t.Error("the submit handler touches the form between the request and the check of its answer")
+	}
+
+	isCreated := withoutComments(jsFunction(t, script, "isCreatedPost"))
+	fields := map[string]string{
+		"board":     `typeof answer.board === "string"`,
+		"no":        "Number.isInteger(answer.no)",
+		"thread_no": "Number.isInteger(answer.thread_no)",
+	}
+	for field, test := range fields {
+		if !strings.Contains(isCreated, test) {
+			t.Errorf("isCreatedPost no longer asks for %s (%s)", field, test)
+		}
+	}
+
+	h := testServer(t, nil)
+	h.addBoard("words")
+	var answer map[string]any
+	if status := h.post("/api/boards/words/threads", map[string]any{"body": "made"}, &answer); status != http.StatusCreated {
+		t.Fatalf("create a thread: status %d (%v)", status, answer)
+	}
+	if board, ok := answer["board"].(string); !ok || board == "" {
+		t.Errorf("a made post is answered with board %v, want its board's slug", answer["board"])
+	}
+	for _, field := range []string{"no", "thread_no"} {
+		if n, ok := answer[field].(float64); !ok || n != float64(int64(n)) || n <= 0 {
+			t.Errorf("a made post is answered with %s %v, want a whole number", field, answer[field])
+		}
+	}
+}

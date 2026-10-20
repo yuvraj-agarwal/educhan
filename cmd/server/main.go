@@ -92,10 +92,10 @@ func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),
-		ReadHeaderTimeout: 10 * time.Second,
-		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      30 * time.Second,
-		IdleTimeout:       2 * time.Minute,
+		ReadHeaderTimeout: app.ReadHeaderTimeout,
+		ReadTimeout:       app.ReadTimeout,
+		WriteTimeout:      app.WriteTimeout,
+		IdleTimeout:       app.IdleTimeout,
 	}
 
 	serverErr := make(chan error, 1)

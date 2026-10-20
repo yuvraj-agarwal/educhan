@@ -243,3 +243,116 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 		t.Errorf("GET /api/boards on a newer schema: status %d, want the server still serving", status)
 	}
 }
+
+// Attachments used to keep the filename the poster's browser sent. 0008
+// renames every existing one the way new uploads are named, "image" and the
+// stored file's extension, so no filename a poster sent survives the
+// migration.
+func TestAttachmentNamesAreRewritten(t *testing.T) {
+	pool, url := databaseAt(t, 7)
+	ctx := context.Background()
+	seedThread(t, pool, "meta", "photos from the fest")
+	for no, row := range []struct{ name, path string }{
+		{"IMG_20261013_Priya.jpg", "meta/2026/10/aaaa.jpg"},
+		{"Screenshot from 2026-10-12 Priya.PNG", "meta/2026/10/bbbb.png"},
+		{"", "meta/2026/10/cccc.webp"},
+		{"Priya's cat.webp", "meta/2026/10/dddd.gif"},
+	} {
+		if _, err := pool.Exec(ctx, `
+			WITH p AS (
+			    INSERT INTO posts (thread_id, board_id, no, body, is_op)
+			    SELECT t.id, t.board_id, $1, 'a reply', FALSE
+			    FROM threads t JOIN boards b ON b.id = t.board_id
+			    WHERE b.slug = 'meta' AND t.no = 1
+			    RETURNING id
+			)
+			INSERT INTO attachments (post_id, original_name, original_path, thumb_path, content_type,
+			    thumb_content_type, byte_size, width, height, thumb_width, thumb_height)
+			SELECT id, $2, $3, $3, 'image/jpeg', 'image/jpeg', 1, 1, 1, 1, 1 FROM p`,
+			no+2, row.name, row.path); err != nil {
+			t.Fatalf("seed attachment %q: %v", row.name, err)
+		}
+	}
+	if _, err := pool.Exec(ctx, `UPDATE boards SET next_post_no = 6 WHERE slug = 'meta'`); err != nil {
+		t.Fatalf("advance numbering: %v", err)
+	}
+
+	h := serverOn(t, url)
+	var names []string
+	for _, p := range fetchThread(t, h, "meta", 1).Posts[1:] {
+		if p.Attachment == nil {
+			t.Fatalf("post No. %d lost its attachment", p.No)
+		}
+		names = append(names, p.Attachment.Name)
+	}
+	if got, want := strings.Join(names, ","), "image.jpg,image.png,image.webp,image.gif"; got != want {
+		t.Errorf("attachment names = %s, want %s", got, want)
+	}
+	for _, table := range h.tables() {
+		if n := h.rowsContaining(table, []byte("Priya")); n != 0 {
+			t.Errorf("%d rows of %s still contain a poster's filename", n, table)
+		}
+	}
+}
+
+// 0008 renamed the attachments there were when it ran, but a release from
+// before it, still serving beside this one while a deploy rolls out, goes on
+// storing the poster's filename with every image it takes. The rename is
+// repeated under the migration lock on every start (renameAttachments), so the
+// next start of this release renames those too, logging how many and never a
+// name, and a start that finds nothing to rename logs nothing.
+func TestAttachmentNamesStoredSinceTheMigrationAreRenamedOnStart(t *testing.T) {
+	pool, url := databaseAt(t, 1000)
+	ctx := context.Background()
+	seedThread(t, pool, "meta", "photos from the fest")
+	// What an older release writes for an image it stores, after 0008 has run.
+	if _, err := pool.Exec(ctx, `
+		WITH p AS (
+		    INSERT INTO posts (thread_id, board_id, no, body, is_op)
+		    SELECT t.id, t.board_id, 2, 'a reply', FALSE
+		    FROM threads t JOIN boards b ON b.id = t.board_id
+		    WHERE b.slug = 'meta' AND t.no = 1
+		    RETURNING id
+		)
+		INSERT INTO attachments (post_id, original_name, original_path, thumb_path, content_type,
+		    thumb_content_type, byte_size, width, height, thumb_width, thumb_height)
+		SELECT id, 'IMG_20261016_Priya.jpg', 'meta/2026/10/eeee.jpg', 'meta/2026/10/eeee.jpg',
+		    'image/jpeg', 'image/jpeg', 1, 1, 1, 1, 1 FROM p`); err != nil {
+		t.Fatalf("seed attachment: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `UPDATE boards SET next_post_no = 3 WHERE slug = 'meta'`); err != nil {
+		t.Fatalf("advance numbering: %v", err)
+	}
+	var stored string
+	if err := pool.QueryRow(ctx, `SELECT original_name FROM attachments`).Scan(&stored); err != nil ||
+		stored != "IMG_20261016_Priya.jpg" {
+		t.Fatalf("the seeded attachment is named %q (%v): the test would prove nothing", stored, err)
+	}
+
+	var logs syncBuffer
+	h := testServerLogging(t, func(cfg *Config) { cfg.DatabaseURL = url }, &logs)
+	posts := fetchThread(t, h, "meta", 1).Posts
+	if len(posts) != 2 || posts[1].Attachment == nil {
+		t.Fatalf("the thread has %d posts, the reply's attachment %v", len(posts), posts[len(posts)-1].Attachment)
+	}
+	if got := posts[1].Attachment.Name; got != "image.jpg" {
+		t.Errorf("attachment name = %q after a restart, want image.jpg", got)
+	}
+	for _, table := range h.tables() {
+		if n := h.rowsContaining(table, []byte("Priya")); n != 0 {
+			t.Errorf("%d rows of %s still contain a poster's filename", n, table)
+		}
+	}
+	if !strings.Contains(logs.String(), `"attachments":1`) {
+		t.Errorf("the start did not log the one attachment it renamed:\n%s", logs.String())
+	}
+	if strings.Contains(logs.String(), "Priya") {
+		t.Errorf("the start logged a poster's filename:\n%s", logs.String())
+	}
+
+	var again syncBuffer
+	testServerLogging(t, func(cfg *Config) { cfg.DatabaseURL = url }, &again)
+	if strings.Contains(again.String(), "renamed attachments") {
+		t.Errorf("a start with nothing to rename logged a rename:\n%s", again.String())
+	}
+}

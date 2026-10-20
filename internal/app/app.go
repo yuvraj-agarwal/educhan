@@ -8,10 +8,24 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/mailer"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
+)
+
+// The timeouts cmd/server gives its http.Server. They govern a GET and a text
+// post; an image post sets its own read and write deadlines through an
+// http.ResponseController once it knows it is reading a body (parseSubmission,
+// processContext), because its body may legitimately take uploadReadTimeout to
+// arrive and its image then postDeadline to process, more than one WriteTimeout
+// from the end of its headers covers.
+const (
+	ReadHeaderTimeout = 10 * time.Second
+	ReadTimeout       = 30 * time.Second
+	WriteTimeout      = 30 * time.Second
+	IdleTimeout       = 2 * time.Minute
 )
 
 // App wires together configuration, the store, the media store, and the HTTP
@@ -40,12 +54,26 @@ type App struct {
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
 	schemaAhead []int
+
+	// postDeadline is postDeadline, uploadReadTimeout is uploadReadTimeout and
+	// uploadPaceGrace is uploadPaceGrace, which tests shorten.
+	postDeadline      time.Duration
+	uploadReadTimeout time.Duration
+	uploadPaceGrace   time.Duration
+
+	// uploadShares is what each client's posts hold of the upload budget
+	// (clientUploadShare).
+	uploadShares uploadShares
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
 // and prepares the media store.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	// ConfigFromEnv refuses it too; this is for a Config built in code.
+	if err := checkUploadLimit(cfg); err != nil {
 		return nil, err
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
@@ -87,18 +115,21 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		sender = mailer.NewDev(os.Stdout)
 	}
 	a := &App{
-		cfg:           cfg,
-		log:           log,
-		pool:          pool,
-		store:         NewStore(pool),
-		media:         blobs,
-		domains:       domains,
-		sender:        sender,
-		threadLimiter: newCooldownLimiter(cfg.ThreadCooldown),
-		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
-		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
-		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
-		schemaAhead:   schemaAhead,
+		cfg:               cfg,
+		log:               log,
+		pool:              pool,
+		store:             NewStore(pool),
+		media:             blobs,
+		domains:           domains,
+		sender:            sender,
+		threadLimiter:     newCooldownLimiter(cfg.ThreadCooldown),
+		postLimiter:       newCooldownLimiter(cfg.PostCooldown),
+		uploadLimiter:     newCooldownLimiter(cfg.UploadCooldown),
+		verifyLimiter:     newCooldownLimiter(cfg.VerifyCooldown),
+		schemaAhead:       schemaAhead,
+		postDeadline:      postDeadline,
+		uploadReadTimeout: uploadReadTimeout,
+		uploadPaceGrace:   uploadPaceGrace,
 	}
 	every := cfg.cooldownSweepEvery
 	if every <= 0 {

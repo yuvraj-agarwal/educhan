@@ -22,15 +22,32 @@ type StoredImage struct {
 	Height           int
 	ThumbWidth       int
 	ThumbHeight      int
-	Checksum         string // hex-encoded SHA-256 of the original bytes
+	// Checksum is the hex-encoded SHA-256 of the stored original, the rewritten
+	// file rather than the upload, so it is the same however many times the
+	// same picture comes in with different metadata on it. Size is that file's
+	// length.
+	Checksum string
 }
 
-// Save validates data, derives a thumbnail, and writes both renditions. On a
+// Save validates data, rewrites it without its metadata, derives a thumbnail,
+// and writes both renditions. The upload's own bytes are never written. On a
 // partial failure it removes whatever it already wrote so the store is not left
 // holding orphans.
+//
+// It waits for room to process the upload as Process does, and holds it until
+// both renditions are stored, because until then it holds them (processingCost
+// counts them). ctx bounds the writes as well as the wait: once it has ended
+// nothing more is written, a write it cuts off fails the save, and what was
+// already written is removed all the same.
 func Save(ctx context.Context, s Store, board string, data []byte, now time.Time) (StoredImage, error) {
-	processed, err := Process(data)
+	processed, release, err := processHeld(ctx, data)
 	if err != nil {
+		return StoredImage{}, err
+	}
+	defer release()
+	// Processing takes what it takes; a deadline it ran past stops the save
+	// here, on every backend, rather than in whichever write notices.
+	if err := ctx.Err(); err != nil {
 		return StoredImage{}, err
 	}
 
@@ -40,21 +57,23 @@ func Save(ctx context.Context, s Store, board string, data []byte, now time.Time
 	}
 	thumbPath := swapExt(origPath, processed.Thumb.Format.Ext)
 
-	if err := s.Put(ctx, OriginalKey(origPath), processed.Format.ContentType, bytes.NewReader(data)); err != nil {
+	if err := s.Put(ctx, OriginalKey(origPath), processed.Format.ContentType, bytes.NewReader(processed.Data)); err != nil {
 		return StoredImage{}, err
 	}
 	if err := s.Put(ctx, ThumbKey(thumbPath), processed.Thumb.Format.ContentType, bytes.NewReader(processed.Thumb.Data)); err != nil {
-		_ = s.Delete(ctx, OriginalKey(origPath))
+		// The context may be what failed the write; the original is removed
+		// whether or not it is still running, or nothing would remove it.
+		_ = s.Delete(context.WithoutCancel(ctx), OriginalKey(origPath))
 		return StoredImage{}, err
 	}
 
-	sum := sha256.Sum256(data)
+	sum := sha256.Sum256(processed.Data)
 	return StoredImage{
 		Path:             origPath,
 		ThumbPath:        thumbPath,
 		ContentType:      processed.Format.ContentType,
 		ThumbContentType: processed.Thumb.Format.ContentType,
-		Size:             int64(len(data)),
+		Size:             int64(len(processed.Data)),
 		Width:            processed.Width,
 		Height:           processed.Height,
 		ThumbWidth:       processed.Thumb.Width,
