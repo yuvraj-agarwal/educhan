@@ -965,8 +965,9 @@ The first deploy is longer, because it is what establishes the configuration tha
 later deploys inherit — the runtime service account, the Cloud SQL instance, the
 secrets, and the settings the service runs with. `bash deploy/first-deploy.sh
 PROJECT_ID`, run in Cloud Shell, does all of it, the archive sweeper Job
-included. By hand, the full `gcloud run deploy`, with every secret and setting
-it passes, is in [`deploy/README.md` section 2.6](deploy/README.md#26-deploy).
+included. By hand, the `gcloud run deploy` it runs, with the same secrets and
+settings, is in [`deploy/README.md` section 2.6](deploy/README.md#26-deploy);
+only the warm instance the script keeps for a demo is left out.
 
 One-time setup — enabling the Cloud Build and Artifact Registry APIs, creating
 the repository, and the roles the build service account needs to push — is in

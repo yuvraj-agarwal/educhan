@@ -411,10 +411,17 @@ gcloud run deploy educhan \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,GOMEMLIMIT=400MiB" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3,GOMEMLIMIT=400MiB" \
   --cpu 1 --memory 512Mi --concurrency 80 --max-instances 4 \
   --allow-unauthenticated
 ```
+
+In a project under an organisation, whose policy may refuse `allUsers` as an
+invoker (every organisation made since May 2024 does), make the service public
+the way the script does: `--no-invoker-iam-check` in place of
+`--allow-unauthenticated`, or, with `service.yaml`, the annotation
+`run.googleapis.com/invoker-iam-disabled: "true"` under the Service's
+`metadata.annotations` in place of the `add-iam-policy-binding`.
 
 Once the service exists, every later release is just the new image:
 
