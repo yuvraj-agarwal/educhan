@@ -484,9 +484,10 @@ needs a browser check before the test changes.
   again says it: one that came in while `render()` was still asking before it drew the
   step had no form to be said in, and was lost. Forget this browser's confirmation is said
   under its button (`confirmBrowserForgotten`). `submitVerification` says its refusals in
-  the form, never in the notice (`TestVerifyRefusalsAreSaidInTheForm`); the one notice
-  its answers raise is `offerHeldBadge`'s, on a page with a posting form whose ticked
-  badge box it unticked. An answer belongs to the step it was sent from:
+  the form, never in the notice (`TestVerifyRefusalsAreSaidInTheForm`, which follows its
+  calls down). Two calls on an issued badge can raise one: `storeCredential`'s, when the
+  browser will not store it, and `offerHeldBadge`'s, on a page with a posting form whose
+  ticked badge box it unticked. An answer belongs to the step it was sent from:
   `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
   answer, storing, setting and drawing nothing, once the page has moved to another step.
   Forget this browser is the button that can do that while a request is out, and it has to

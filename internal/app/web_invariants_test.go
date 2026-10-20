@@ -96,6 +96,57 @@ func holdLines(t *testing.T, what string, got []string, after, until string, wan
 	}
 }
 
+// noticeCallees lists, sorted, the top-level functions of app.js that src
+// calls and that say something in the notice: they call showNotice, or call a
+// function that does, however far down. A method call (x.name()) is not a call
+// of a top-level function and is left out.
+func noticeCallees(t *testing.T, script, src string) []string {
+	t.Helper()
+	call := regexp.MustCompile(`(?:^|[^.\w$])([A-Za-z_$][\w$]*)\(`)
+	calls := func(code string) map[string]bool {
+		named := map[string]bool{}
+		for _, m := range call.FindAllStringSubmatch(withoutComments(code), -1) {
+			named[m[1]] = true
+		}
+		return named
+	}
+	callees := map[string]map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^(?:async )?function ([A-Za-z_$][\w$]*)\(`).FindAllStringSubmatch(script, -1) {
+		callees[m[1]] = calls(jsFunction(t, script, m[1]))
+		delete(callees[m[1]], m[1])
+	}
+	if _, ok := callees["showNotice"]; !ok || len(callees) < 100 {
+		t.Fatalf("read %d top-level functions from app.js, showNotice among them: %t; this test reads them", len(callees), ok)
+	}
+	says := map[string]bool{"showNotice": true}
+	for grew := true; grew; {
+		grew = false
+		for name, named := range callees {
+			if says[name] {
+				continue
+			}
+			for callee := range named {
+				if says[callee] {
+					says[name], grew = true, true
+					break
+				}
+			}
+		}
+	}
+	var got []string
+	for callee := range calls(src) {
+		// A function's own declaration is not a call of it.
+		if strings.Contains(src, "function "+callee+"(") {
+			continue
+		}
+		if says[callee] && callees[callee] != nil {
+			got = append(got, callee)
+		}
+	}
+	slices.Sort(got)
+	return got
+}
+
 // submitHandler is the listener that sends posts.
 func submitHandler(t *testing.T, script string) string {
 	t.Helper()
@@ -1340,13 +1391,25 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		t.Error("the address field is not described by the form's refusal")
 	}
 
-	// submitVerification says nothing in the notice itself. The one notice its
-	// answers raise is offerHeldBadge's, for a reader who went on to a page with
-	// a posting form whose ticked badge box the new badge unticked; it is held
-	// whole by TestPostingFormSendsOnlyTheBadgeItNames, and on the Verify page,
-	// which has no posting form, it says nothing.
+	// submitVerification says nothing in the notice itself, and two of the
+	// functions it calls can, both about a badge just issued: storeCredential,
+	// when the browser will not store it, which nothing else on the page could
+	// say; and offerHeldBadge, for a reader gone on to a page with a posting
+	// form whose ticked badge box the new badge unticked (held whole by
+	// TestPostingFormSendsOnlyTheBadgeItNames). A refusal reaches neither: the
+	// catch says it in the form. Looking for a literal showNotice( alone
+	// passed while the guide said submitVerification raised no notice at all,
+	// so the calls are followed to every top-level function they reach.
 	if strings.Contains(submit, "showNotice(") {
 		t.Errorf("submitVerification says something in the notice, a screen above the form on a phone:\n%s", submit)
+	}
+	if got, want := noticeCallees(t, script, submit), []string{"offerHeldBadge", "storeCredential"}; !slices.Equal(got, want) {
+		t.Errorf("submitVerification calls %v, which say something in the notice; want %v, about a badge just issued", got, want)
+	}
+	if caught := strings.Index(submit, "} catch (err) {"); caught < 0 {
+		t.Error("submitVerification has no catch for its refusals; this test reads it")
+	} else if got := noticeCallees(t, script, submit[caught:]); len(got) > 0 {
+		t.Errorf("a refusal of a Verify request reaches %v, which say something in the notice, not in the form", got)
 	}
 	if !strings.Contains(submit, "refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });") {
 		t.Error("the page's own 18+ refusal is not said under the box")
