@@ -1174,9 +1174,10 @@ exactly, because the container filesystem does not outlive the container; and
 Cloud Run's request logs, which carry every visitor's IP, must be excluded from
 Cloud Logging before the service takes traffic (deploy guide section 2.8), or
 the promise that IPs are not logged does not hold.
-`EDUCHAN_CAPTCHA_SECRET` switches the posting captcha on; `first-deploy.sh`
-creates it in Secret Manager and mounts it on the service, so it needs setting
-by hand only on a deployment made without the script (deploy guide section 2.4).
+`EDUCHAN_CAPTCHA_SECRET` switches the posting captcha on. `first-deploy.sh`
+creates it in Secret Manager and mounts it on the service; `make cloud-deploy`
+carries over only what the service already has, so a service made before the
+captcha, or without the script, needs it added once (deploy guide section 2.4).
 
 ### The archive sweeper
 

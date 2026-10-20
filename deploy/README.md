@@ -357,6 +357,21 @@ replace on their own. A version added with no new revision is worse: instances
 started after it hold the new key and those already running the old one, and
 each refuses the other's challenges for as long as both are up.
 
+**A service made before the captcha** gets its secret from the next run of
+`first-deploy.sh`. `make cloud-deploy` carries over only what the service
+already has, so on that path the captcha stays off: the server warns at start
+that `EDUCHAN_CAPTCHA_SECRET` is unset, and `GET /api/site` answers
+`"captcha":false`. To add it by hand, once:
+
+```bash
+openssl rand -hex 32 \
+  | gcloud secrets create educhan-captcha-secret --replication-policy=automatic --data-file=-
+gcloud secrets add-iam-policy-binding educhan-captcha-secret \
+  --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest
+```
+
 How much work a challenge asks for is `EDUCHAN_CAPTCHA_WORK` (section 4), which
 needs no deploy change at its default. The captcha needs nothing else from the
 platform: its worker is served from the site itself under the existing CSP, so
