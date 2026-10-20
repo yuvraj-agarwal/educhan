@@ -407,51 +407,54 @@ check before the test changes.
   its own.
 - **The captcha** (`/* Captcha */` in `app.js`, server side in `captcha.go`). `loadSite`
   reads `captcha` from `GET /api/site` into `state.site.captcha`. The puzzle starts only
-  on something done in a form that needs it, never on render: focus moving into a box to
-  write in, however it gets there (the `focusin` listener; a quote and the `/verify`
-  buttons put the focus there too; the badge box is not one), unticking the badge on a
-  form whose tick stopped a puzzle or that already has something written or attached
-  (`captchaBadgeToggled`, `captchaFormHasWriting`), an image picked or dropped on it
-  (`captchaImageAttached`; not one a re-render puts back), a refusal that spent the
-  answer while its form is on screen, and a press with no good answer held. Ticking the
-  badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether it
-  stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS` copies
-  with interleaved counters (side by side where the browser allows; Chromium runs their
-  Web Crypto on one thread), and only in a secure context (`CAPTCHA_INSECURE` otherwise)
-  with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED` otherwise), failing before any
-  fetch, and only on a response shaped like a challenge (`CAPTCHA_UNAVAILABLE`
-  otherwise); a `429` from `/api/captcha` says too many checks were started from the
-  reader's network, with its wait (`captchaBusy`), never a post's or a code request's
-  cooldown. Every copy is terminated when the puzzle ends, a throw while starting them
-  included. The answer is kept in the `captcha` object in memory only, never in storage
-  or a draft, and read only by `captchaAnswer`, `takeCaptcha`, `keepCaptcha` and
-  `solveCaptcha`. `sendWithCaptcha` sends a post or a code request, solving first when
-  needed, and only from a form still on screen (`formOnScreen`: in the document, and on
-  the page it was pressed on, by `routeKey` for a posting form, which a redraw of its page
-  carries, and by the render that drew it for a `/verify` form, which none does) in a
-  browser not forgotten since the press. Each request takes its answer out of the page
-  as it is handed over (`takeCaptcha`), so a second press while one is on its way solves
-  a fresh puzzle, and puts it back (`keepCaptcha`: only into an empty place, only while
-  good) only when it left it unspent, or brought no response, which may have spent it:
-  the next request is then refused as used and solves a fresh one. One whose form has
-  left the screen is dropped unsent with its answer put back, and, sent or not, is not
-  navigated from and says nothing on the page the reader went to; a post that did go
-  still empties and releases its form, wherever it is. From the press to the answer the
-  form is held (`holdForm`: controls switched off once the form has been read and checked,
-  straight into the `try` whose catch releases them, and switched back on after a
-  refusal, with the focus on the button, without scrolling to it, if the form had it and
-  it is still lost, on the page or nowhere, or after a success once the form is emptied;
-  `app.css` shows the held controls switched off). A redraw of the form's own page
-  while it is held (Update, or another page of the same board's index, which has
-  the same `routeKey`: the view, the board and the thread, never the index page)
-  keeps the page, dimmed, in place of the skeleton (`keepPage` in `render`), with
-  the thread its controls read and the open image left as they are until a new page
-  is drawn, so a refusal answered meanwhile updates the page on screen, and puts the
-  held form itself into the new page in place of the one drawn there (`heldForms`,
-  `captureDraft`, `restoreDraft`); a form answered by then is read for its values like
-  any draft, emptied after a success. A draft, held or not, is keyed by the page on
-  screen (`drawnFor` in `captureDraft`), never by a render begun since that has not
-  drawn yet, so the second of a double click neither carries the form into the page
+  on something done in or to a form that needs it, never on render: focus moving into a
+  box to write in, however it gets there (the `focusin` listener; a quote and the
+  `/verify` buttons put the focus there too; the badge box is not one), unticking the
+  badge on a form whose tick stopped a puzzle or that already has something written or
+  attached (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked
+  badge out of a form with something written or attached (`withdrawBadgeOption`, for
+  another tab's change, and a refusal of the badge as expired or revoked on a form still
+  on screen; never Forget this browser, which sends nothing), an image picked or dropped
+  on it (`captchaImageAttached`; not one a re-render puts back), a refusal that spent
+  the answer while its form is on screen, and a press with no good answer held. Ticking
+  the badge stops it unless a request is waiting for it (`stopCaptcha`, which says
+  whether it stopped one). It runs ALTCHA's vendored worker in up to
+  `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
+  allows; Chromium runs their Web Crypto on one thread), and only in a secure context
+  (`CAPTCHA_INSECURE` otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED`
+  otherwise), failing before any fetch, and only on a response shaped like a challenge
+  (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
+  were started from the reader's network, with its wait (`captchaBusy`), never a post's
+  or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
+  while starting them included. The answer is kept in the `captcha` object in memory
+  only, never in storage or a draft, and read only by `captchaAnswer`, `takeCaptcha`,
+  `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or a code request,
+  solving first when needed, and only from a form still on screen (`formOnScreen`: in
+  the document, and on the page it was pressed on, by `routeKey` for a posting form,
+  which a redraw of its page carries, and by the render that drew it for a `/verify`
+  form, which none does) in a browser not forgotten since the press. Each request takes
+  its answer out of the page as it is handed over (`takeCaptcha`), so a second press
+  while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
+  into an empty place, only while good) only when it left it unspent, or brought no
+  response, which may have spent it: the next request is then refused as used and solves
+  a fresh one. One whose form has left the screen is dropped unsent with its answer put
+  back, and, sent or not, is not navigated from and says nothing on the page the reader
+  went to; a post that did go still empties and releases its form, wherever it is. From
+  the press to the answer the form is held (`holdForm`: controls switched off once the
+  form has been read and checked, straight into the `try` whose catch releases them, and
+  switched back on after a refusal, with the focus on the button, without scrolling to
+  it, if the form had it and it is still lost, on the page or nowhere, or after a
+  success once the form is emptied; `app.css` shows the held controls switched off). A
+  redraw of the form's own page while it is held (Update, or another page of the same
+  board's index, which has the same `routeKey`: the view, the board and the thread,
+  never the index page) keeps the page, dimmed, in place of the skeleton (`keepPage` in
+  `render`), with the thread its controls read and the open image left as they are until
+  a new page is drawn, so a refusal answered meanwhile updates the page on screen, and
+  puts the held form itself into the new page in place of the one drawn there
+  (`heldForms`, `captureDraft`, `restoreDraft`); a form answered by then is read for its
+  values like any draft, emptied after a success. A draft, held or not, is keyed by the
+  page on screen (`drawnFor` in `captureDraft`), never by a render begun since that has
+  not drawn yet, so the second of a double click neither carries the form into the page
   it goes to nor keeps the page on screen under that page's address. A redraw that
   fails to load leaves the kept page on screen, held form and all, with `renderedPath`,
   `state.route` and `state.thread` put back as that page was drawn for them (`drawnFor`,
@@ -580,28 +583,37 @@ check before the test changes.
   that tab offered, takes the option out of every posting form on screen
   (`dropBadgeOption`, which moves focus on the box to the form's button) and draws
   `/verify` again only if it shows the badge panel. The address step is left as it is,
-  and so is a code step unless the badge read in is one newly verified there: the browser
-  has one verification in progress, held by its cookie, so that badge spent or replaced
-  the code the step asks for, and the step goes, drawn again as the panel with a word on
-  why if it is on screen (`codeSpentElsewhere`). A code request still on its way draws
-  its code step when answered, its code being the one the server holds
-  (`followCredentialStorage`, by the `storage` event,
-  `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
-  with its badged post on its way, refuses its next press once, saying the badge has gone
-  and that pressing again posts without it, under the same ID as the reader's unbadged
-  posts in a reply's thread while the poster key is the one it had
+  and so is a code step unless the badge read in is one newly verified there: the
+  browser has one verification in progress, held by its cookie, so that badge spent or
+  replaced the code a step asks for when no confirmation of it is on its way, and the
+  step goes, drawn again as the panel with a notice if it is on screen
+  (`codeSpentElsewhere`; `CODE_SPENT_ELSEWHERE` says an address was verified in another
+  tab and the code here no longer works, never that the one is why). A confirmation
+  already on its way, its form held, may have reached the server first and verified this
+  tab's address, so it is left to its answer, the step only marked (`spentElsewhere`): a
+  success draws the panel for the badge it earned, and a refusal of any kind puts the
+  step away then, with the notice where its form is still on screen. A code request
+  still on its way draws its code step when answered, the cookie its answer sets holding
+  the browser's verification from then on (`followCredentialStorage`, by the `storage`
+  event, `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked,
+  idle or with its badged post on its way, refuses its next press once, saying the badge
+  has gone and that pressing again posts without it, under the same ID as the reader's
+  unbadged posts in a reply's thread while the poster key is the one it had
   (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
-  out tied to those posts, which the badge's own ID is there to keep apart. A redraw's
-  draft carries a ticked badge as the badge it was ticked for, and ticks the new form's
-  box only if the form offers that one: a form offering none, or another verified
-  meanwhile, is noted instead, so no badge goes out that the reader did not tick, and the
-  reader ticking or unticking the box takes the note off. Forget this browser takes the
-  option out without a word and drops the note: a word would tell whoever presses next
-  that the browser held a badge, and with the poster key gone the post shares an ID with
-  none made before. A badged post refused as expired or revoked forgets the credential it
-  sent only while storage still holds it, so a badge verified in another tab meanwhile
-  stays.
+  out tied to those posts, which the badge's own ID is there to keep apart. With
+  something written or attached, that form also starts the puzzle the post then needs,
+  as the reader's own untick would, so the press after the refused one usually finds it
+  solved. A redraw's draft carries a ticked badge as the badge it was ticked for, and
+  ticks the new form's box only if the form offers that one: a form offering none, or
+  another verified meanwhile, is noted instead, so no badge goes out that the reader did
+  not tick, and the reader ticking or unticking the box takes the note off. Forget this
+  browser takes the option out without a word and drops the note: a word would tell
+  whoever presses next that the browser held a badge, and with the poster key gone the
+  post shares an ID with none made before. A badged post refused as expired or revoked
+  forgets the credential it sent only while storage still holds it, so a badge verified
+  in another tab meanwhile stays, and its form, still on screen with something written
+  or attached, starts the puzzle the post it goes on to needs.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -638,16 +650,20 @@ check before the test changes.
   the option says: `dropBadgeOption`, without a word at its next press, which would say
   the browser held a badge) and draws `/verify` again if it is showing. The message is
   one constant that says nothing about anyone. The pressing tab clears storage before it
-  posts the message, so another tab can store the credential, the poster key or the name
-  again, for a post or a confirmation it handles before it hears; each tab notes what it
-  stores of those three (`storedHere`), and on hearing removes each only while storage
-  still holds it as that tab stored it: never a badge confirmed or a key made in another
-  tab since, however late it hears (a name is compared by its text, so the same name
-  stored since goes too). In a browser without `BroadcastChannel` a forget covers the tab
-  it was pressed in, and the other tabs drop only the badge, as they do for Forget this
-  credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
-  shared-computer advice points to: the key left behind would give the next person at the
-  computer the same IDs in the same threads.
+  posts the message, emptying the credential before it removes it: a tab that hears
+  storage first, which no browser rules out, takes the badge option out of its forms as
+  for any badge gone but starts no puzzle for them (`followCredentialStorage`), since a
+  forget sends nothing. Because storage is cleared first, another tab can store the
+  credential, the poster key or the name again, for a post or a confirmation it handles
+  before it hears; each tab notes what it stores of those three (`storedHere`), and on
+  hearing removes each only while storage still holds it as that tab stored it: never a
+  badge confirmed or a key made in another tab since, however late it hears (a name is
+  compared by its text, so the same name stored since goes too). In a browser without
+  `BroadcastChannel` a forget covers the tab it was pressed in, and the other tabs drop
+  only the badge, as they do for Forget this credential
+  (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's shared-computer
+  advice points to: the key left behind would give the next person at the computer the
+  same IDs in the same threads.
 
 ### Child safety
 

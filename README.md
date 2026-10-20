@@ -786,13 +786,16 @@ script from anywhere else runs on the page, and no cookie is set.
 1. When focus moves into a box to write in, in a form that needs an answer,
    however it gets there (a click or tap, Tab, quoting a post), the page asks
    `GET /api/captcha` for a challenge, unless it already holds a good answer or
-   is solving one. Attaching an image, unticking the badge, a refusal that spent
-   the answer and a press with no answer ready can start one too (the full list
-   heads `/* Captcha */` in `app.js`); drawing a page never does. A challenge is
-   a random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
-   expiry half an hour away, and the server's HMAC over all of it. The server
-   made the key by choosing a counter at random, from one to just under twice
-   the work, and deriving PBKDF2 over the nonce with that counter appended.
+   is solving one. Attaching an image, unticking the badge or the page taking a
+   ticked one off a form with something in it (the badge gone in another tab, or
+   refused as expired or revoked; Forget this browser starts nothing), a refusal
+   that spent the answer and a press with no answer ready can start one too (the
+   full list heads `/* Captcha */` in `app.js`); drawing a page never does. A
+   challenge is a random salt and nonce, a PBKDF2-SHA-256 cost, the first half
+   of a key, an expiry half an hour away, and the server's HMAC over all of it.
+   The server made the key by choosing a counter at random, from one to just
+   under twice the work, and deriving PBKDF2 over the nonce with that counter
+   appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
    copies and tries counters until a key starts with that half. That is about
    1500 attempts on average at the default work and never more than 3000, done

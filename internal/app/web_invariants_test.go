@@ -525,9 +525,11 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // (however it gets there: a click or tap, Tab, a quote, "Use a different
 // address"), an image picked or dropped on it (not one a re-render puts back),
 // unticking the badge on a form whose tick stopped a puzzle or that has
-// something written or attached, and a post or code request refused after the
-// server spent its answer, which the reader, still on its form, is about to
-// send again.
+// something written or attached, the page taking a ticked badge out of a form
+// with something written or attached (another tab's change, or a refusal of it
+// as expired or revoked on a form still on screen, never Forget this browser),
+// and a post or code request refused after the server spent its answer, which
+// the reader, still on its form, is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -569,15 +571,40 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	send := squash(withoutComments(jsFunction(t, script, "sendWithCaptcha")))
 	toggled := squash(withoutComments(jsFunction(t, script, "captchaBadgeToggled")))
 	attached := squash(withoutComments(jsFunction(t, script, "captchaImageAttached")))
-	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 4 ||
+	withdrawn := squash(withoutComments(jsFunction(t, script, "withdrawBadgeOption")))
+	submitted := squash(withoutComments(submitHandler(t, script)))
+	if n := strings.Count(code, "prepareCaptcha()") - 1; n != 6 ||
 		!strings.Contains(focus, `if (box.matches("textarea, input[type=text], input[type=email]") && captchaFormNeedsIt(box.form)) { prepareCaptcha(); }`) ||
 		!strings.Contains(send, `=== "spent")) { keepCaptcha(taken); } else if (answer && needsIt() && onScreen()) { prepareCaptcha(); }`) ||
 		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) ||
-		!strings.Contains(attached, `if (captchaFormNeedsIt(form) && image && image.files && image.files.length) { prepareCaptcha(); }`) {
-		t.Errorf("prepareCaptcha() is called %d times in app.js; want four: from the focusin listener in a box to write "+
+		!strings.Contains(attached, `if (captchaFormNeedsIt(form) && image && image.files && image.files.length) { prepareCaptcha(); }`) ||
+		!strings.Contains(withdrawn, `dropBadgeOption(form); if (ticked && !forgotten && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) ||
+		!strings.Contains(submitted, `dropBadgeOption(form); if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) {
+		t.Errorf("prepareCaptcha() is called %d times in app.js; want six: from the focusin listener in a box to write "+
 			"in a form that needs an answer, on unticking the badge where the tick stopped a puzzle or something is "+
-			"written, on an image attached to a form that needs an answer, and after a refusal that spent the answer "+
-			"of a form still on screen", n)
+			"written, on an image attached to a form that needs an answer, after a refusal that spent the answer "+
+			"of a form still on screen, and once a ticked badge is taken out of a form with something written, "+
+			"by another tab's change other than a forget or by a refusal of it as expired or revoked of a form "+
+			"still on screen", n)
+	}
+	// Forget this browser takes the badge out of every form too, but starts
+	// no request: a forget sends nothing. Not in the tab it was pressed in
+	// or in a tab that hears its message (forgetOnThisPage), and not in a tab
+	// that hears the badge go from storage first, which no browser rules
+	// out: the credential is emptied before it is removed, and an emptied
+	// credential takes the badge out of a form without starting the puzzle.
+	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage")); strings.Contains(forget, "prepareCaptcha") ||
+		strings.Contains(forget, "withdrawBadgeOption") {
+		t.Error("forgetOnThisPage starts a puzzle for the forms it takes the badge out of")
+	}
+	follow := squash(withoutComments(jsFunction(t, script, "followCredentialStorage")))
+	inOrder(t, "forgetBrowser", squash(withoutComments(jsFunction(t, script, "forgetBrowser"))),
+		"forgetOnThisPage();", `storageSet(CREDENTIAL_STORAGE_KEY, "");`, "forgetCredential();")
+	if !strings.Contains(follow, `const forgotten = event.key === CREDENTIAL_STORAGE_KEY && event.newValue === ""; `+
+		`for (const form of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(form, offered, forgotten); }`) ||
+		strings.Count(code, `storageSet(CREDENTIAL_STORAGE_KEY, "")`) != 1 || strings.Count(code, `event.newValue === ""`) != 1 {
+		t.Error("a tab that hears the badge go as an emptied credential, the browser forgotten in another tab, " +
+			"may start a puzzle for it, or the credential is emptied somewhere besides forgetBrowser")
 	}
 	// An image counts once it is attached, picked or dropped; one a re-render
 	// puts back (restoreDraft, through setFile) is part of drawing a page, and
@@ -1083,8 +1110,8 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	if n := strings.Count(code, "dropBadgeOption(form);"); n != 3 || !strings.Contains(submitHandler(t, script), "dropBadgeOption(form);") ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "withdrawBadgeOption")), "dropBadgeOption(form);") ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "forgetOnThisPage")), "dropBadgeOption(form);") ||
-		strings.Count(code, "withdrawBadgeOption(form, offered);") != 1 ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "withdrawBadgeOption(form, offered);") ||
+		strings.Count(code, "withdrawBadgeOption(form, offered, forgotten);") != 1 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "withdrawBadgeOption(form, offered, forgotten);") ||
 		strings.Count(code, "#f-badge-hint") != 1 {
 		t.Errorf("the badge option is taken out of a form %d times besides in dropBadgeOption; want three, the submit "+
 			"handler's, a forget's and withdrawBadgeOption's, which followCredentialStorage calls", n)
@@ -1169,7 +1196,10 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 // still holds as it stored it, and touches nothing else: not a badge
 // confirmed or a key made in another tab since the forget, however late it
 // hears. The one message is a constant that says nothing about anyone, only
-// forgetBrowser sends it, and a tab acts on nothing else that arrives.
+// forgetBrowser sends it, and a tab acts on nothing else that arrives. It
+// empties the credential before it removes it, so a tab that hears storage
+// before the message, which no browser rules out, knows the badge went with a
+// forget (TestCaptchaIsAskedForOnlyWhenSomeoneWrites).
 func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1190,7 +1220,7 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	// worker its puzzle.
 	forget := squash(withoutComments(jsFunction(t, script, "forgetBrowser")))
 	inOrder(t, "forgetBrowser", forget,
-		"forgetOnThisPage();", "forgetCredential();", "localStorage.removeItem(key);",
+		"forgetOnThisPage();", `storageSet(CREDENTIAL_STORAGE_KEY, "");`, "forgetCredential();", "localStorage.removeItem(key);",
 		"if (forgetChannel) { forgetChannel.postMessage(FORGET_MESSAGE); } }")
 	if strings.Count(code, ".postMessage(") != 2 || strings.Count(code, "forgetChannel.postMessage(") != 1 ||
 		strings.Count(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), "worker.postMessage({") != 1 ||
@@ -1251,10 +1281,16 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 // panel, and only then: its address step, which a reader may be filling in, is
 // left as it is, and so is a code step unless the badge read in is one newly
 // verified there. The browser has one verification in progress, so that badge
-// spent or replaced the code this tab's code step asks for: the step goes, and
-// is drawn again, saying why, if it is on screen (codeSpentElsewhere). A code
-// request still on its way is not a code step yet, and keeps its own. It acts
-// on the credential's key, and on storage cleared, and on nothing else.
+// spent or replaced the code a code step with no confirmation on its way asks
+// for: the step goes, and is drawn again, saying so, if it is on screen
+// (codeSpentElsewhere). A confirmation on its way, its form held, may have
+// reached the server first and verified this tab's address: it is left to its
+// answer, the step only marked, and a refusal of it, whatever it says, puts the
+// step away then, on screen or not (submitVerification), while a success draws
+// the badge it earned. The notice says another tab verified an address and the
+// code here no longer works, and not that the one is why. A code request still
+// on its way is not a code step yet, and keeps its own. It acts on the
+// credential's key, and on storage cleared, and on nothing else.
 func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1268,7 +1304,8 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 		"const offered = state.verification.badge; state.verification.badge = state.verification.enabled ? readBadge() : null; "+
 		"const held = state.verification.badge; if (held && !(offered && held.token === offered.token)) { codeSpentElsewhere(); } "+
 		"if (!offered || (held && held.token === offered.token)) { return; } "+
-		`for (const form of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(form, offered); } `+
+		`const forgotten = event.key === CREDENTIAL_STORAGE_KEY && event.newValue === ""; `+
+		`for (const form of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(form, offered, forgotten); } `+
 		`if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('[data-action="forget-verification"]')) { `+
 		`renderVerify(state.route); } }` {
 		t.Errorf("a tab no longer reads the badge again when another changes it, or no longer drops the option to post "+
@@ -1280,16 +1317,34 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 		t.Error("followCredentialStorage is no longer the one thing a tab does when another changes storage, or is called from elsewhere")
 	}
 	spent := squash(withoutComments(jsFunction(t, script, "codeSpentElsewhere")))
-	if spent != `function codeSpentElsewhere() { if (verifyStep.step !== "code") { return; } verifyStep = { step: "email", label: "" }; `+
-		`if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) { `+
+	if spent != `function codeSpentElsewhere() { if (verifyStep.step !== "code") { return; } `+
+		`const confirm = el.main.querySelector('form[data-verify="confirm"]'); `+
+		`if (confirm && heldForms.has(confirm)) { verifyStep.spentElsewhere = true; return; } `+
+		`verifyStep = { step: "email", label: "" }; `+
+		`if (state.route.view === "verify" && ageStatus() === "ok" && confirm) { `+
 		`renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(CODE_SPENT_ELSEWHERE); } }); } }` ||
-		strings.Count(code, "codeSpentElsewhere(") != 2 || strings.Count(code, `data-verify="confirm"`) != 2 {
-		t.Errorf("a code step drawn before another tab verified a badge is no longer put away, or drawn again saying why "+
-			"only while on screen, or is put away from somewhere besides followCredentialStorage: %s", spent)
+		strings.Count(code, "codeSpentElsewhere(") != 3 || strings.Count(code, `data-verify="confirm"`) != 2 {
+		t.Errorf("a code step drawn before another tab verified a badge is no longer put away, or drawn again saying so "+
+			"only while on screen, or a confirmation of it on its way is no longer left to its answer, or the step is "+
+			"put away from somewhere besides followCredentialStorage and that confirmation's refusal: %s", spent)
+	}
+	// The confirmation left to its answer settles the step: a success is drawn
+	// as any success is (TestARequestGoesOnlyFromAFormOnScreen), and a refusal of
+	// any kind, the form released, puts the step away as it would have been,
+	// before the refusal is worded and whether or not the form is on screen.
+	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
+	inOrder(t, "submitVerification", verify,
+		"} catch (err) { const shown = onScreen(); release(shown); button.textContent = label; "+
+			"if (verifyStep.spentElsewhere) { codeSpentElsewhere(); return; } if (!shown) { return; }",
+	)
+	if strings.Count(code, "spentElsewhere") != 2 || strings.Count(code, "verifyStep.spentElsewhere") != 2 {
+		t.Error("a code step is marked as left to its confirmation somewhere besides codeSpentElsewhere, or the mark " +
+			"is read somewhere besides that confirmation's refusal")
 	}
 	if got := jsString(t, script, "CODE_SPENT_ELSEWHERE"); !strings.Contains(got, "verified in another tab") ||
-		!strings.Contains(got, "no longer works") {
-		t.Errorf("CODE_SPENT_ELSEWHERE = %s, want it to say a verification in another tab is why the code no longer works", got)
+		!strings.Contains(got, "no longer works") || strings.Contains(got, "so the code") || strings.Contains(got, "because") {
+		t.Errorf("CODE_SPENT_ELSEWHERE = %s, want it to say an address was verified in another tab and the code no "+
+			"longer works, and not that the one is why: a confirmation from the tab may have spent the code itself", got)
 	}
 	// What followCredentialStorage looks for is the badge panel's own button,
 	// and only the panel draws it; a pending code step is drawn whatever badge
@@ -1329,15 +1384,17 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 		t.Error("badgeWithdrawn is no longer a WeakMap noted only by withdrawBadgeOption and restoreDraft, and " +
 			"forgotten only by the press it refuses, a post that goes, the badge box changed and a forget")
 	}
+	// The puzzle it then starts is TestCaptchaIsAskedForOnlyWhenSomeoneWrites'.
 	withdraw := squash(withoutComments(jsFunction(t, script, "withdrawBadgeOption")))
-	if withdraw != `function withdrawBadgeOption(form, offered) { const box = field(form, "badge"); if (box && box.checked) { `+
-		`badgeWithdrawn.set(form, { token: offered.token, key: storageGet(POSTER_KEY_STORAGE_KEY) || "" }); } dropBadgeOption(form); }` {
+	if withdraw != `function withdrawBadgeOption(form, offered, forgotten) { const box = field(form, "badge"); const ticked = Boolean(box && box.checked); `+
+		`if (ticked) { badgeWithdrawn.set(form, { token: offered.token, key: storageGet(POSTER_KEY_STORAGE_KEY) || "" }); } `+
+		`dropBadgeOption(form); if (ticked && !forgotten && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }` {
 		t.Errorf("withdrawBadgeOption no longer notes a ticked box, with the badge it was drawn for and the poster key "+
-			"storage holds, before it takes the option out: %s", withdraw)
+			"storage holds, before it takes the option out, or starts the puzzle the form then needs: %s", withdraw)
 	}
 	// Another tab's change notes it; a forget takes the note off and notes
 	// nothing.
-	if !strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "withdrawBadgeOption(form, offered);") {
+	if !strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "withdrawBadgeOption(form, offered, forgotten);") {
 		t.Error("followCredentialStorage no longer notes a form whose ticked badge it takes away")
 	}
 	if forget := withoutComments(jsFunction(t, script, "forgetOnThisPage")); strings.Contains(forget, "withdrawBadgeOption") ||
@@ -1402,9 +1459,10 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { forgetCredential(); badgeLost =") ||
-		!strings.Contains(refused, `: "That badge was replaced by a newer verification."; } dropBadgeOption(form); }`) {
+		!strings.Contains(refused, `: "That badge was replaced by a newer verification."; } dropBadgeOption(form); `+
+			`if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) {
 		t.Error("a badged post refused as expired or revoked forgets a credential other than the one it sent, " +
-			"or no longer takes the option out of its form")
+			"or no longer takes the option out of its form, or no longer starts the puzzle the post it goes on to needs")
 	}
 }
 
@@ -1678,8 +1736,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	forgot := "renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(BROWSER_FORGOTTEN); } });"
 	spent := "renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(CODE_SPENT_ELSEWHERE); } });"
 	if squashed := squash(code); strings.Count(code, "renderVerify(") != 8 || strings.Count(code, "await renderVerify(route);") != 2 ||
-		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok" && `+
-			`el.main.querySelector('form[data-verify="confirm"]')) { `+spent+" }") != 1 ||
+		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok" && confirm) { `+spent+" }") != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { renderVerify(state.route); }`) != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { `+forgot+" }") != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok") { `+forgot+" }") != 1 ||

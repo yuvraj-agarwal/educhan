@@ -1499,13 +1499,22 @@ const badgeWithdrawn = new WeakMap();
 
 // withdrawBadgeOption is dropBadgeOption for a badge that has gone from under
 // the form, offered, the one the page held and the box was drawn for, noting
-// the form in badgeWithdrawn if its box was ticked.
-function withdrawBadgeOption(form, offered) {
+// the form in badgeWithdrawn if its box was ticked. A ticked box taken out of
+// a form with some of the post in it also starts the puzzle the form now
+// needs, as the reader's own untick would (captchaBadgeToggled), so the press
+// after the one the note refuses usually finds it solved; but not when the
+// badge went with the browser forgotten in another tab (forgotten), which
+// starts nothing here.
+function withdrawBadgeOption(form, offered, forgotten) {
   const box = field(form, "badge");
-  if (box && box.checked) {
+  const ticked = Boolean(box && box.checked);
+  if (ticked) {
     badgeWithdrawn.set(form, { token: offered.token, key: storageGet(POSTER_KEY_STORAGE_KEY) || "" });
   }
   dropBadgeOption(form);
+  if (ticked && !forgotten && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+    prepareCaptcha();
+  }
 }
 
 // What a posting form says when its badge has gone from the browser and it
@@ -2041,6 +2050,11 @@ function forgetCredential() {
 // name, nor a note that a badge was lost.
 function forgetBrowser() {
   forgetOnThisPage();
+  // Emptied before it is removed, so that every other tab hears the badge go
+  // as the browser forgotten, in the order storage keeps, whether this
+  // forget's message on FORGET_CHANNEL reaches it before the storage event or
+  // after, which no browser promises either way (followCredentialStorage).
+  storageSet(CREDENTIAL_STORAGE_KEY, "");
   forgetCredential();
   for (const key of [POSTER_KEY_STORAGE_KEY, NAME_STORAGE_KEY]) {
     try {
@@ -2150,7 +2164,11 @@ function openForgetChannel() {
 // shows the badge panel, is drawn again. /verify showing the address step is
 // left as it is, whatever badge it was drawn over, so a reader filling it in,
 // or waiting on a code request, loses nothing. So is a code step, unless the
-// badge read in is one newly verified there (codeSpentElsewhere).
+// badge read in is one newly verified there (codeSpentElsewhere). An emptied
+// credential is the browser forgotten in another tab (forgetBrowser): the
+// options go as for any badge gone, before or after its message on
+// FORGET_CHANNEL is heard here, but start no puzzle, since a forget starts
+// nothing.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -2164,8 +2182,9 @@ function followCredentialStorage(event) {
   if (!offered || (held && held.token === offered.token)) {
     return;
   }
+  const forgotten = event.key === CREDENTIAL_STORAGE_KEY && event.newValue === "";
   for (const form of el.main.querySelectorAll("form[data-kind]")) {
-    withdrawBadgeOption(form, offered);
+    withdrawBadgeOption(form, offered, forgotten);
   }
   if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('[data-action="forget-verification"]')) {
     renderVerify(state.route);
@@ -2174,24 +2193,38 @@ function followCredentialStorage(event) {
 
 window.addEventListener("storage", followCredentialStorage);
 
-// What /verify says when the code step it showed is put away, the code having
-// been spent or replaced in another tab.
-const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, so the code asked for here no longer works.";
+// What /verify says when the code step it showed is put away after another tab
+// verified an address. It says the two things that are so whenever it is
+// shown, and not that the one caused the other: a confirmation from here that
+// reached the server first and lost its answer spent the code itself.
+const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, and the code asked for here no longer works.";
 
 // codeSpentElsewhere is a tab's answer to a badge newly verified in another:
 // the browser has one verification in progress at a time, held by its cookie,
-// so the code step this tab drew is for a code that verified the badge there
-// or was replaced by the one that did, and the server takes it no more. The
-// step goes, so /verify next shows the badge panel, and is drawn again now,
-// with a word on why, when the code step is on screen. A code request from
-// this tab still on its way is left to draw its code step: its code is the one
-// the server holds, asked for after that verification.
+// so a code step this tab drew and has not confirmed is for a code that
+// verified the badge there or was replaced by the one that did, and the server
+// takes it no more. The step goes, so /verify next shows the badge panel, and
+// is drawn again now, with a word on why, when the code step is on screen. A
+// confirmation from this tab already on its way, its form held, is left to its
+// answer: it may have reached the server before the other tab's verification
+// and verified this tab's address, so the step is only marked (spentElsewhere)
+// and submitVerification settles it. A success stores the badge it earned and,
+// while its form is on screen, draws the panel for it; a refusal of any kind
+// comes back here, the form no longer held, and the step goes as above. A code
+// request from this tab still on its way is not a code step yet, and draws its
+// own when answered: the cookie that answer sets holds the browser's
+// verification from then on, and its code is the one asked for.
 function codeSpentElsewhere() {
   if (verifyStep.step !== "code") {
     return;
   }
+  const confirm = el.main.querySelector('form[data-verify="confirm"]');
+  if (confirm && heldForms.has(confirm)) {
+    verifyStep.spentElsewhere = true;
+    return;
+  }
   verifyStep = { step: "email", label: "" };
-  if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) {
+  if (state.route.view === "verify" && ageStatus() === "ok" && confirm) {
     renderVerify(state.route).then((drawn) => {
       if (drawn) {
         showNotice(CODE_SPENT_ELSEWHERE);
@@ -2329,7 +2362,8 @@ function verifyViewHTML() {
   // pending: a code asked for over a badge, after Verify another address or
   // with its request on its way while another tab verified one, is typed in
   // all the same, since the badge it earns replaces the one held. A code step
-  // drawn before another tab verified a badge is put away (codeSpentElsewhere).
+  // drawn before another tab verified a badge is put away, once any
+  // confirmation of it on its way is answered (codeSpentElsewhere).
   if (v.badge && !verifyStep.replacing && verifyStep.step !== "code") {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
@@ -3978,16 +4012,19 @@ function posterKey() {
 // goes to anyone but educhan, and nothing is asked of the reader.
 //
 // The puzzle is solved in the background, and starts only on something done in
-// a form that needs it, never when a page is drawn: focus moving into a box to
-// write in, however it gets there (a click or tap, Tab, or the page putting it
-// there to quote a post, for "Verify another address" or "Use a different
-// address", or after a press with nothing written); an image picked or dropped
-// on it (not one a re-render puts back); unticking the badge on a form whose
-// tick stopped a puzzle, or that already has something written or attached; a
+// or to a form that needs it, never when a page is drawn: focus moving into a
+// box to write in, however it gets there (a click or tap, Tab, or the page
+// putting it there to quote a post, for "Verify another address" or "Use a
+// different address", or after a press with nothing written); an image picked
+// or dropped on it (not one a re-render puts back); unticking the badge on a
+// form whose tick stopped a puzzle, or that already has something written or
+// attached, and the page taking a ticked badge out of a form with something
+// written or attached, the badge having gone from the browser in another tab,
+// by anything but Forget this browser, or been refused as expired or revoked; a
 // refusal that spent the answer, while the form is on screen; and a press with
 // no good answer held and none being solved. By the time a post is written its
-// puzzle is usually solved. The answer is kept in memory only, never in
-// storage or a draft, and is good for one request.
+// puzzle is usually solved. The answer is kept in memory only, never in storage
+// or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on any response to a request whose
 // answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
@@ -4642,7 +4679,11 @@ el.main.addEventListener("submit", async (event) => {
     // one goes: storage may hold another by now, verified in another tab while
     // the post was on its way, or none, forgotten there, and this tab follows
     // that from storage as for any change there (followCredentialStorage). The
-    // form offered the one refused, so its option goes either way.
+    // form offered the one refused, so its option goes either way. Its box was
+    // ticked, so the post it goes on to is one the box no longer skips the
+    // puzzle for: that starts now, as for the reader's own untick
+    // (captchaBadgeToggled), on a form still on screen with some of the post
+    // in it.
     const reason = err.payload && err.payload.credential;
     if (held && (reason === "expired" || reason === "revoked")) {
       if (forgets === browserForgets && storedCredential() === held.token) {
@@ -4653,6 +4694,9 @@ el.main.addEventListener("submit", async (event) => {
             : "That badge was replaced by a newer verification.";
       }
       dropBadgeOption(form);
+      if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+        prepareCaptcha();
+      }
     }
     // The site takes no images, which this page was drawn without knowing:
     // /api/site did not answer, or the server has been switched over since.
@@ -4818,6 +4862,13 @@ async function submitVerification(form) {
     const shown = onScreen();
     release(shown);
     button.textContent = label;
+    // A confirmation another tab's verification found on its way: refused,
+    // whatever the refusal said, its step goes now as it would have then
+    // (codeSpentElsewhere), on screen or not.
+    if (verifyStep.spentElsewhere) {
+      codeSpentElsewhere();
+      return;
+    }
     // Nothing is said on a page the reader went to instead.
     if (!shown) {
       return;
