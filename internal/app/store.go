@@ -1241,6 +1241,13 @@ var verificationTables = [...]string{"verification_credentials", "verification_p
 // each table and index would date the last confirmation before the sweep, so
 // restampScans makes them the sweep's.
 //
+// None of this reaches the posts. Requesting a code and confirming one are
+// writes, and each takes a transaction id from the counter posts take theirs
+// from, so the ids they took are missing from the posts' xmins, between the
+// two posts written around each, for as long as those posts exist; the
+// README's "Transaction ids, and the nightly rewrite" says what that still
+// dates, and TestIssuanceLeavesGapsAmongThePostsTransactionIDs holds it.
+//
 // It works on a connection of its own rather than one from the pool, for what
 // the pool's connections should not carry: the lock timeout, and a handler for
 // the warnings with which VACUUM reports a table it skipped. The connection

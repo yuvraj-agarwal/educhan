@@ -46,9 +46,11 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   [Verified: IIT Bombay]
 
   The columns hold only HMAC(secret, address), the label, and an expiry
-  rounded up to the day — in a table with no path to any post. Until the
-  nightly sweep rewrites the row, its transaction id dates the issuance
-  more closely (see "Transaction ids, and the nightly rewrite").
+  rounded up to the day — in a table with no path to any post. PostgreSQL's
+  transaction ids date the issuance more closely: the row's own until the
+  nightly sweep rewrites it, and the gaps the request and the confirmation
+  leave among the posts' for as long as those posts exist (see
+  "Transaction ids, and the nightly rewrite").
 ```
 
 1. Submit an institutional address on `/verify`, ticking the box that confirms
@@ -178,26 +180,36 @@ can and cannot work out.
 
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
-- When a credential was issued. In the verification tables of the live
-  database, once the nightly sweep has run, only to the *day*: the stored expiry
-  is rounded up to a UTC day boundary, nothing else in the tables is timestamped,
-  PostgreSQL keeps no sample of their values, and the sweep rewrites the
-  credentials so that the transaction id PostgreSQL keeps on every row is the
-  sweep's rather than the issuance's. Before that, and in a backup, a
-  credential's transaction id can place its issuance between two posts, and the
-  write-ahead log the server keeps for crash recovery dates it exactly until
-  PostgreSQL deletes or reuses the log's segment; [Transaction ids, and the
-  nightly rewrite](#transaction-ids-and-the-nightly-rewrite) says exactly when.
-  In the application's log, for as long as it is kept, to the second, because
-  the request line for `POST /api/verify/confirm` and a bare
-  `verification issued` line each carry a time. Neither line says which
-  institution or address the credential was for
+- When a credential was issued: to the interval between two posts, for as long
+  as those posts exist, whatever the nightly sweep does. The verification
+  tables themselves, once the sweep has run, say only the *day*: the stored
+  expiry is rounded up to a UTC day boundary, nothing else in the tables is
+  timestamped, PostgreSQL keeps no sample of their values, and the sweep
+  rewrites the credentials so that the transaction id PostgreSQL keeps on every
+  row is the sweep's rather than the issuance's. But requesting a code and
+  confirming one are writes, and each takes a transaction id from the counter
+  posts take theirs from. Posts keep theirs beside their `created_at`, and
+  nothing rewrites them, so the ids a request and a confirmation took stay
+  missing from the posts' sequence, between the two posts written around each.
+  One plain query on `posts`, which needs no superuser and no secret, finds
+  those gaps, in the live database and in every backup
+  (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). Before the sweep, and
+  in a backup, the credential's own transaction id places the issuance the same
+  way, and the write-ahead log the server keeps for crash recovery dates it
+  exactly until PostgreSQL deletes or reuses the last log segment holding its
+  row, which can be the one the sweep's own rewrite wrote to; [Transaction ids,
+  and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite) says
+  exactly when. In the application's log, for as long as it is kept, to the
+  second, because the request line for `POST /api/verify/confirm` and a bare
+  `verification issued` line each carry a time. Neither the gaps nor those
+  lines say which institution or address the credential was for
   (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
   after an issuance does name the institution, and its time is kept to the
   second too. So an issuance followed by a badged post ties that post to its
-  stored record on any day its institution issued only one credential, however
-  many other institutions issued that day. How long the request log is kept is
-  what limits this.
+  stored record — the one row with that label and that expiry day — on any day
+  its institution issued only one credential, however many other institutions
+  issued that day. The posts' gaps keep that possible for as long as the posts
+  are kept; the request log adds the second for as long as it is kept.
 - Which posts carry which badge, because a badge is displayed on the post.
 - Which badged posts in one thread came from the same credential, because they
   share a poster ID there, as any poster's posts in a thread do. In different
@@ -223,10 +235,11 @@ can and cannot work out.
 - Link a post to a verification record by timing, beyond the issuance times
   above. Verification tables carry no `created_at`, and using a credential
   updates nothing, so there is no "last used" to line up against a post; the
-  transaction id on a rewritten credential row dates the sweep that rewrote it.
-  The log's issuance times name no institution, but a badged post soon after one
-  does, and that ties the post to a single record on a day its institution
-  issued only one credential.
+  transaction id on a rewritten credential row dates the sweep that rewrote it,
+  not the issuance. But the issuance times above are enough on some days:
+  neither the gaps among the posts' transaction ids nor the log's lines name an
+  institution, but a badged post soon after an issuance does, and that ties the
+  post to a single record on a day its institution issued only one credential.
 - Group a poster's requests by their badge. The credential is sent only on the
   posts that carry one, so an operator watching the request layer sees it on
   exactly the posts that already display it, and on nothing else.
@@ -263,6 +276,14 @@ is what autovacuum runs, marks the space free for reuse but does not erase
 what was in it. That covers every pending row a confirmation deleted, with its
 email hash and an expiry to the second, and every credential a second
 verification replaced.
+
+The same ids date a verification from the posts' side, and that no rewrite of
+the verification tables can undo. A code request and a confirmation are writes,
+so each takes the next id, and the posts written either side keep theirs: the
+ids the verification used are missing from the posts' sequence for as long as
+those posts exist. What the sweep below takes away is the credential row's own
+id, the direct link from a row to a time; what the posts' gaps still say is the
+second point under "What that protects, exactly".
 
 PostgreSQL keeps statistics about each table too, and two kinds would say more
 than the rows. `ANALYZE`, which autovacuum runs by itself after enough writes,
@@ -315,15 +336,38 @@ with the old rows on disk.
 and checks that afterwards they all carry one transaction id, that none lies
 between two posts written before the sweep, and that both tables are in new
 files; `TestSweepStoresCredentialsOutOfIssuanceOrder` checks the stored order.
+Those are the credential rows' own ids;
+`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` checks that the gaps among
+the posts' are still there after the sweep.
 
 What that protects, exactly:
 
 - **The verification tables of the live database, after the nightly sweep at
-  03:17 UTC.** A credential is dated only by its expiry, rounded to the day: no
-  row version in either table's file, no sample in `pg_statistic`, and no
-  last-scan time says more. Times autovacuum recorded before migration `0008`
-  stay in the statistics views until the statistics are reset, which takes a
-  superuser.
+  03:17 UTC.** Nothing in either table dates a credential more closely than its
+  expiry, rounded to the day: no row version in either table's file, no sample
+  in `pg_statistic`, and no last-scan time says more. Times autovacuum recorded
+  before migration `0008` stay in the statistics views until the statistics are
+  reset, which takes a superuser. That is the tables, not the database: see the
+  next point.
+- **Not the posts' own transaction ids**, which no sweep touches. Every code
+  request that reaches the database, and every attempt at a code in flight, is a
+  write and takes the next id, so each leaves a gap in the posts' `xmin` between
+  the two posts written around it. A plain query on `posts`, which the
+  application's own role can run, finds those gaps in the live database and in
+  every backup, for as long as those posts exist, and places each issuance
+  between two posts as closely as its credential's own `xmin` did before the
+  rewrite (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`). With the label
+  of the first badged post after it and the expiry day, that still points at
+  the credential's row on a day its institution issued only one credential; on
+  a day with a single issuance, the expiry day alone does. Other writes leave
+  gaps too — a moderator's, a refused reply's, the sweep's, autovacuum's on
+  other tables, another database's on the same instance — so a gap alone proves
+  nothing; but a request's gap, a confirmation's within the code's lifetime
+  (fifteen minutes by default), then a badged post, is the shape of an
+  issuance, and on a quiet instance the gaps are exact. What the rewrite takes
+  away is the direct link from a credential row to a time, not the time.
+  Transaction ids belong to the whole PostgreSQL instance, so only verification
+  tables on an instance of their own would close this.
 - **A credential issued since the last sweep** carries its own transaction id
   and can be placed between two timed posts until the next sweep rewrites it.
   Until then, too, the pending row its confirmation deleted can still be in the
@@ -336,19 +380,34 @@ What that protects, exactly:
   09:00 UTC, is in that backup as it was before the next sweep — with its own
   transaction id, and its deleted pending row perhaps still in the file — for
   as long as the backup is kept. So is every credential on a night the sweep
-  failed.
+  failed. Every backup holds the posts, and with them the gaps above, whatever
+  the sweep did; and one that copies the write-ahead log with the instance's
+  files can hold that night's sweep's own copies of the credential rows as they
+  were before it (next point), which date every credential issued since the
+  night before.
 - **The write-ahead log the server keeps for its own crash recovery.** Every
   write reaches it first: each issuance's insert into `verification_credentials`,
   with the row in it, and the commit record of its transaction, with the time
-  to the microsecond. A segment of it stays until later checkpoints let
-  PostgreSQL delete it or reuse it for new log — within hours on a busy
-  instance, days on a quiet one — and until then a superuser (with
-  `pg_walinspect`) or root on the machine (with `pg_waldump`) can date every
-  issuance in it exactly, sweep or no sweep. A backup that copies the
-  instance's files copies the log with them.
+  to the microsecond. Later writes copy rows into it again. With full-page
+  writes on, as PostgreSQL has them by default, the first change to a page after
+  each checkpoint logs an image of the whole page as it stood, and the sweep's
+  own delete changes every page of the credentials table. So the log written
+  since the last checkpoint before the sweep holds a copy of every credential
+  row as it was before the rewrite — in the sweep's own records, or in an
+  earlier change's since that checkpoint — each with its own transaction id,
+  which the posts' times date again: every credential issued since the previous
+  sweep, and on the first sweep that rewrites the table, every credential in
+  it. A segment of the log stays until later checkpoints let PostgreSQL delete
+  it or reuse it for new log — within hours on a busy instance, days on a quiet
+  one — so the log dates a credential until the newest segment holding its row
+  goes, which is the sweep's or close to it, not the segment its issuance was
+  written to. Until then a superuser (with `pg_walinspect`) or root on the
+  machine (with `pg_waldump`) can read it, sweep or no sweep. A backup that
+  copies the instance's files copies the log with them.
 - **Point-in-time recovery is off.** Turning it on would archive a week of
   that log, and with it the commit time of every transaction, which dates every
-  write exactly; rewriting rows does nothing to a log of how they were written.
+  write exactly; rewriting rows does nothing to a log of how they were written,
+  and the rewrite itself logs the rows it replaced.
 - **`track_commit_timestamp` must stay off**, as the deploy guide's section 2.2
   says. With it on, PostgreSQL records when each transaction committed, and a
   row's `xmin` gives the time it was written to well under a second.

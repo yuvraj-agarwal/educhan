@@ -421,7 +421,9 @@ func (h *verifyHarness) badgedPost(path, credential, label string) {
 // between them — what keeping created_at out of the table was for. The sweep
 // rewrites the table so every credential carries the sweep's transaction id,
 // and VACUUM FULL takes the old versions, and the pending rows confirmations
-// deleted, off disk with the files they were in.
+// deleted, off disk with the files they were in. That is the credential rows
+// alone: what the posts' own transaction ids still say about an issuance is
+// TestIssuanceLeavesGapsAmongThePostsTransactionIDs.
 func TestSweepTakesIssuanceTimeOutOfCredentials(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.addBoard("dated")
@@ -490,6 +492,87 @@ func TestSweepTakesIssuanceTimeOutOfCredentials(t *testing.T) {
 		t.Fatalf("confirm the code requested before the sweep: status %d (%s)", status, out.Error)
 	} else {
 		h.badgedPost(path, out.Credential, "IIT Bombay")
+	}
+}
+
+// postsGap counts the transaction ids handed out after one post on a board was
+// written and before another, and used by neither: what a plain query on
+// posts, which the application's own role can run, finds missing between
+// them. age() counts back from one transaction id for the whole statement, so
+// the difference holds across wraparound.
+func (h *harness) postsGap(board string, earlier, later int64) int64 {
+	h.t.Helper()
+	var gap int64
+	if err := h.app.pool.QueryRow(context.Background(), `
+		SELECT age(a.xmin)::bigint - age(b.xmin)::bigint - 1
+		FROM boards
+		JOIN posts a ON a.board_id = boards.id AND a.no = $2
+		JOIN posts b ON b.board_id = boards.id AND b.no = $3
+		WHERE boards.slug = $1`, board, earlier, later).Scan(&gap); err != nil {
+		h.t.Fatalf("transaction ids between posts %d and %d: %v", earlier, later, err)
+	}
+	return gap
+}
+
+// The rewrite takes the issuance's transaction id off the credential row, but
+// not out of the database. Requesting a code and confirming one are writes,
+// and each takes a transaction id from the counter posts take theirs from;
+// posts keep theirs beside their created_at, and nothing rewrites them. So
+// after the sweep the ids the request and the confirmation used are still
+// missing from the posts' sequence, between the two posts written around
+// each, and place the issuance there as closely as the credential's own xmin
+// did before the rewrite.
+//
+// This is a limit, not a property, and the README states it ("Transaction
+// ids, and the nightly rewrite"). The test holds the README to it: the day it
+// fails — the verification tables moved to a PostgreSQL instance of their
+// own, say — the README can promise more. Other writers on the instance,
+// other tests among them, only ever widen a gap, so it asks for at least one
+// missing id in each and logs what it found; on a quiet instance each gap is
+// exactly one id, and the gap between two posts with nothing between them is
+// none.
+func TestIssuanceLeavesGapsAmongThePostsTransactionIDs(t *testing.T) {
+	h := verifyServer(t, nil)
+	h.addBoard("gaps")
+	ctx := context.Background()
+	thread := h.createThread("gaps", "", "", "before anyone verified")
+	before := h.reply("gaps", thread.ThreadNo, "", "before the request", false)
+	if status, out := h.requestCode("gapped@iitb.ac.in"); status != http.StatusAccepted {
+		t.Fatalf("request a code: status %d (%s)", status, out.Error)
+	}
+	between := h.reply("gaps", thread.ThreadNo, "", "between the request and the confirmation", false)
+	if status, out := h.confirmCode(h.mail.last(t).Code); status != http.StatusOK {
+		t.Fatalf("confirm the code: status %d (%s)", status, out.Error)
+	}
+	after := h.reply("gaps", thread.ThreadNo, "", "after the confirmation", false)
+
+	var lastPost int64
+	if err := h.app.pool.QueryRow(ctx, `SELECT max(id) FROM posts`).Scan(&lastPost); err != nil {
+		t.Fatalf("last post: %v", err)
+	}
+	if n := h.credentialsAmongPosts(lastPost); n != 1 {
+		t.Fatalf("before the sweep %d credentials sit between two posts, want the one just issued", n)
+	}
+	if _, err := h.app.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	// The sweep did its part: the credential's own row no longer dates it.
+	if n := h.credentialsAmongPosts(lastPost); n != 0 {
+		t.Fatalf("after the sweep %d credentials still sit between two posts written before it", n)
+	}
+
+	quiet := h.postsGap("gaps", thread.No, before.No)
+	request := h.postsGap("gaps", before.No, between.No)
+	confirm := h.postsGap("gaps", between.No, after.No)
+	t.Logf("transaction ids missing between posts after the sweep: %d with nothing between them, "+
+		"%d around the request, %d around the confirmation", quiet, request, confirm)
+	if request < 1 {
+		t.Errorf("after the sweep no transaction id is missing between the posts written around the code "+
+			"request (%d); the README says the request leaves a gap there", request)
+	}
+	if confirm < 1 {
+		t.Errorf("after the sweep no transaction id is missing between the posts written around the "+
+			"confirmation (%d); the README says the confirmation leaves a gap there", confirm)
 	}
 }
 
