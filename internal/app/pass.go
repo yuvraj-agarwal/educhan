@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -433,7 +434,8 @@ const passNotOnSale = "the Pass is not on sale right now"
 // runs out. The one thing it reads off the request is the claim cookie, which
 // the page cannot see (it is HttpOnly), so the page knows there is a purchase
 // to collect. The claim is looked up for that and nothing else: a cookie with
-// nothing under it any more is no purchase to collect.
+// nothing under it any more is no purchase to collect. Every claim cookie the
+// request carries is looked under (passClaimTokens).
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
@@ -444,8 +446,8 @@ func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if a.cfg.Pass.StripeAutomaticTax {
 		out["automatic_tax"] = true
 	}
-	if claim, ok := passClaimToken(r); ok {
-		waiting, err := a.store.passClaimWaiting(r.Context(), hashToken(claim), time.Now())
+	if claims := passClaimTokens(r); len(claims) > 0 {
+		waiting, err := a.store.passClaimWaiting(r.Context(), claimHashes(claims), time.Now())
 		if err != nil {
 			a.fail(w, r, err, "could not look up the purchase in progress")
 			return
@@ -617,14 +619,41 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL})
 }
 
-// passClaimToken reads the claim cookie, when it holds a token this server
-// could have made.
-func passClaimToken(r *http.Request) (string, bool) {
-	cookie, err := r.Cookie(passClaimCookie)
-	if err != nil || !isPassToken(cookie.Value) {
-		return "", false
+// passClaimCookieLimit is how many claim cookies a request is read for. A
+// browser sends this server's own and any that a page on a sibling subdomain
+// set for the whole site at a path reaching the Pass endpoints, a handful at
+// most; more is no browser's, and reading no more keeps one request from
+// queueing a lookup for each of thousands behind the Pass lock.
+const passClaimCookieLimit = 16
+
+// passClaimTokens reads every claim cookie the request carries that holds a
+// token this server could have made, each once, in the order the browser sent
+// them. There can be more than one: a page on a sibling subdomain can set a
+// cookie of the same name for the whole site, at a longer path that the
+// browser sends ahead of this server's own, and reading only the first would
+// let it hide the buyer's claim from collecting and from forgetting. So none
+// stands in for another: the status and the claim look under each, and
+// forgetting drops each.
+func passClaimTokens(r *http.Request) []string {
+	var tokens []string
+	for _, c := range r.Cookies() {
+		if len(tokens) == passClaimCookieLimit {
+			break
+		}
+		if c.Name == passClaimCookie && isPassToken(c.Value) && !slices.Contains(tokens, c.Value) {
+			tokens = append(tokens, c.Value)
+		}
 	}
-	return cookie.Value, true
+	return tokens
+}
+
+// claimHashes is what the database holds of each claim token.
+func claimHashes(tokens []string) [][]byte {
+	hashes := make([][]byte, len(tokens))
+	for i, t := range tokens {
+		hashes[i] = hashToken(t)
+	}
+	return hashes
 }
 
 // handlePassClaim hands what a browser paid for to that browser: the order
@@ -642,6 +671,10 @@ func passClaimToken(r *http.Request) (string, bool) {
 // checkout sets it, for long enough (passClaimCookieUntil), and only
 // forgetting clears it, since an answer for a cookie the browser has since
 // replaced, in another tab, would otherwise clear the new one.
+//
+// A browser holding more than one claim cookie (passClaimTokens) has each
+// collected in turn, one order an answer (claimPass), and is told to go on
+// while anything waits under any of them.
 func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 	if !a.requirePass(w) || !passRequest(w, r) {
 		return
@@ -662,13 +695,18 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		a.redeemPassReissue(w, r, req.Reissue, req.Nonce)
 		return
 	}
-	claim, ok := passClaimToken(r)
-	if !ok {
+	claims := passClaimTokens(r)
+	if len(claims) == 0 {
 		writeError(w, http.StatusBadRequest, "no purchase in progress in this browser")
 		return
 	}
-	code := a.passClaimCode(claim, req.Nonce)
-	res, err := a.store.claimPass(r.Context(), hashToken(claim), passCompletion{TokenHash: a.passTokenHash(code), Now: time.Now()})
+	codes := make([]string, len(claims))
+	claimants := make([]passClaimant, len(claims))
+	for i, claim := range claims {
+		codes[i] = a.passClaimCode(claim, req.Nonce)
+		claimants[i] = passClaimant{ClaimHash: hashToken(claim), TokenHash: a.passTokenHash(codes[i])}
+	}
+	res, err := a.store.claimPass(r.Context(), claimants, time.Now())
 	if err != nil {
 		a.fail(w, r, err, "could not collect the Pass")
 		return
@@ -680,16 +718,16 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":     "issued",
-			"pass":       formatPassCode(code),
+			"pass":       formatPassCode(codes[res.Which]),
 			"expires_at": res.IssuedExpiresAt,
-			"claim":      false,
+			"claim":      res.More,
 		})
 	case res.Renewed:
 		a.log.Info("pass renewed")
 		writeJSON(w, http.StatusOK, map[string]any{
 			"status":     "renewed",
 			"expires_at": res.RenewedExpiresAt,
-			"claim":      false,
+			"claim":      res.More,
 		})
 	case res.Waiting:
 		writeJSON(w, http.StatusAccepted, map[string]any{"status": "pending", "claim": true})
@@ -717,10 +755,13 @@ type passClaimBody struct {
 // cleared, so whoever uses the browser next collects nothing of it, even with
 // a copy of the cookie taken before. Paid, or paid later, the order is the
 // buyer's still: the owner reissues it from the payment on the buyer's
-// receipt, as for any paid order nobody collected.
+// receipt, as for any paid order nobody collected. Every claim cookie the
+// request carries is dropped (passClaimTokens), and the one this server set
+// is cleared; one set from a sibling subdomain is out of its reach, but has
+// nothing under it any more.
 func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
-	if claim, ok := passClaimToken(r); ok {
-		if err := a.store.dropPassClaim(r.Context(), hashToken(claim)); err != nil {
+	if claims := passClaimTokens(r); len(claims) > 0 {
+		if err := a.store.dropPassClaims(r.Context(), claimHashes(claims)); err != nil {
 			a.fail(w, r, err, "could not forget the purchase in progress")
 			return
 		}
@@ -758,8 +799,8 @@ func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, n
 	// this does not fail the answer, which would tell the reader the code did
 	// not work after it had: the page also asks GET /api/pass on every visit.
 	claim := false
-	if cookie, ok := passClaimToken(r); ok {
-		waiting, err := a.store.passClaimWaiting(r.Context(), hashToken(cookie), c.Now)
+	if claims := passClaimTokens(r); len(claims) > 0 {
+		waiting, err := a.store.passClaimWaiting(r.Context(), claimHashes(claims), c.Now)
 		if err != nil && r.Context().Err() == nil {
 			a.log.Error("could not look up the purchase in progress", "error", err)
 		}
@@ -1382,31 +1423,36 @@ func (s *Store) dropUnpaidPassOrder(ctx context.Context, sessionHash []byte) err
 	})
 }
 
-// passClaimWaiting reports whether a claim has anything to collect: a paid
-// order, or an unpaid one still inside its deadline. It reads without the
-// lock, as passByToken does.
-func (s *Store) passClaimWaiting(ctx context.Context, claimHash []byte, now time.Time) (bool, error) {
+// passClaimWaiting reports whether any of a browser's claims has anything to
+// collect: a paid order, or an unpaid one still inside its deadline. It reads
+// without the lock, as passByToken does.
+func (s *Store) passClaimWaiting(ctx context.Context, claimHashes [][]byte, now time.Time) (bool, error) {
 	var waiting bool
 	err := s.pool.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM pass_orders
-		               WHERE claim_hash = $1 AND (payment_hash IS NOT NULL OR expires_at > $2))`,
-		claimHash, now).Scan(&waiting)
+		               WHERE claim_hash = ANY($1) AND (payment_hash IS NOT NULL OR expires_at > $2))`,
+		claimHashes, now).Scan(&waiting)
 	return waiting, err
 }
 
-// dropPassClaim moves the order under a claim under a random hash, which no
-// token hashes to, so the claim collects nothing. The order is otherwise left
-// as it was: paid, or paid later, it waits to be reissued from its payment
-// like any order nobody collected, and unpaid it goes at its deadline.
-func (s *Store) dropPassClaim(ctx context.Context, claimHash []byte) error {
-	nobody := make([]byte, sha256.Size)
-	if _, err := rand.Read(nobody); err != nil {
-		return fmt.Errorf("drop the claim: %w", err)
-	}
+// dropPassClaims moves the order under each of a browser's claims under a
+// random hash of its own, which no token hashes to, so the claims collect
+// nothing. The orders are otherwise left as they were: paid, or paid later,
+// each waits to be reissued from its payment like any order nobody
+// collected, and unpaid it goes at its deadline.
+func (s *Store) dropPassClaims(ctx context.Context, claimHashes [][]byte) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
-		_, err := tx.Exec(ctx, `
-			UPDATE pass_orders SET claim_hash = $2 WHERE claim_hash = $1`, claimHash, nobody)
-		return err
+		for _, claimHash := range claimHashes {
+			nobody := make([]byte, sha256.Size)
+			if _, err := rand.Read(nobody); err != nil {
+				return fmt.Errorf("drop the claim: %w", err)
+			}
+			if _, err := tx.Exec(ctx, `
+				UPDATE pass_orders SET claim_hash = $2 WHERE claim_hash = $1`, claimHash, nobody); err != nil {
+				return err
+			}
+		}
+		return nil
 	})
 }
 
@@ -1454,13 +1500,20 @@ type claimResult struct {
 	// longer hold.
 	Renewed          bool
 	RenewedExpiresAt time.Time
-	// Waiting is set while the claim's order is unpaid and inside its
-	// deadline.
+	// Waiting is set while a claim's order is unpaid and inside its
+	// deadline, and nothing else was collected.
 	Waiting bool
 	// Renewing is set when a reissue code is for a right that moved to a
 	// renewal (moveOrigin) and its Pass is being renewed: the reissue code is
 	// left as it was, to work again if the renewal comes to nothing.
 	Renewing bool
+	// Which is the claim, of those claimPass was given, that the answer is
+	// about, and More whether anything is left to collect under any of them.
+	Which int
+	More  bool
+	// pass is the Pass a claim asked again found under its code (claimOne),
+	// which claimPass orders several by.
+	pass int64
 }
 
 // passWithToken returns the Pass under a code hash and its expiry, or 0.
@@ -1474,58 +1527,104 @@ func passWithToken(ctx context.Context, tx pgx.Tx, tokenHash []byte) (int64, tim
 	return id, expires, err
 }
 
-// claimPass collects the order under a claim. Every checkout makes a claim of
-// its own, so there is at most one, and nothing from another checkout is
-// ever folded into what it buys. Once it is paid, a renewal renews the Pass
-// it was for, or makes a new one if that Pass is gone, and anything else
-// makes a new Pass, under the code whose hash c carries, for the order's own
-// term. The order is deleted as it is collected, so a claim asked again finds
-// none, and is answered with the Pass under that code if there is one: made
-// by a claim with the same cookie and nonce, whose answer was lost. A Pass
-// refunded away since, or given a new code by a reissue, is under no such
-// code any more, and nothing comes back for it.
-//
-// An unpaid order past its deadline is deleted, as prunePasses would. A paid
-// order is collected whatever its deadline: it was paid for.
-func (s *Store) claimPass(ctx context.Context, claimHash []byte, c passCompletion) (claimResult, error) {
+// passClaimant is one claim a request carries: the hash of its token, and the
+// hash of the code that token and the request's nonce give (passClaimCode).
+type passClaimant struct {
+	ClaimHash []byte
+	TokenHash []byte
+}
+
+// claimPass collects the order under a browser's claims, one order an answer.
+// Every checkout makes a claim of its own, so there is at most one order
+// under each, and nothing from another checkout is ever folded into what it
+// buys. The claims are looked under in the order given, and the first with a
+// paid order is collected; failing that, a claim asked again is answered with
+// the Pass an earlier ask made, whose answer was lost, the one made last of
+// several; failing that, the answer is to wait while any order is unpaid.
+// More says whether anything is left under any of them, so the page asks
+// again for the next.
+func (s *Store) claimPass(ctx context.Context, claims []passClaimant, now time.Time) (claimResult, error) {
 	var res claimResult
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
 		res = claimResult{}
-		var payment []byte
-		var renewID *int64
-		var days int
-		var deadline time.Time
-		err := tx.QueryRow(ctx, `
-			SELECT payment_hash, renew_pass_id, days, expires_at FROM pass_orders
-			WHERE claim_hash = $1`, claimHash).Scan(&payment, &renewID, &days, &deadline)
-		if errors.Is(err, pgx.ErrNoRows) {
-			id, expires, err := passWithToken(ctx, tx, c.TokenHash)
-			res.Issued, res.IssuedExpiresAt = id != 0, expires
-			return err
+		var again claimResult
+		waiting := false
+		for i, c := range claims {
+			got, err := claimOne(ctx, tx, c.ClaimHash, passCompletion{TokenHash: c.TokenHash, Now: now})
+			if err != nil {
+				return err
+			}
+			got.Which = i
+			if got.Made || got.Renewed {
+				res = got
+				break
+			}
+			// Of several claims with a Pass under this nonce, the one made
+			// last is answered, as the one whose answer can have been lost
+			// last.
+			if got.Issued && got.pass > again.pass {
+				again = got
+			}
+			waiting = waiting || got.Waiting
 		}
-		if err != nil {
-			return err
+		if !res.Made && !res.Renewed {
+			res = again
+			res.Waiting = !again.Issued && waiting
 		}
-		if payment == nil && c.Now.Before(deadline) {
-			res.Waiting = true
-			return nil
+		hashes := make([][]byte, len(claims))
+		for i, c := range claims {
+			hashes[i] = c.ClaimHash
 		}
-		if _, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE claim_hash = $1`, claimHash); err != nil {
-			return err
-		}
-		if payment == nil {
-			return nil
-		}
-		// Revoking deletes the order, so this never holds while the lock does
-		// its job; it is checked anyway, as it is everywhere a payment turns
-		// into a Pass.
-		if revoked, err := paymentRevoked(ctx, tx, payment); err != nil || revoked {
-			return err
-		}
-		res, err = collectPassOrder(ctx, tx, payment, renewID, days, c)
-		return err
+		return tx.QueryRow(ctx, `
+			SELECT EXISTS (SELECT 1 FROM pass_orders
+			               WHERE claim_hash = ANY($1) AND (payment_hash IS NOT NULL OR expires_at > $2))`,
+			hashes, now).Scan(&res.More)
 	})
 	return res, err
+}
+
+// claimOne collects the order under one claim. Once it is paid, a renewal
+// renews the Pass it was for, or makes a new one if that Pass is gone, and
+// anything else makes a new Pass, under the code whose hash c carries, for
+// the order's own term. The order is deleted as it is collected, so a claim
+// asked again finds none, and is answered with the Pass under that code if
+// there is one: made by a claim with the same cookie and nonce, whose answer
+// was lost. A Pass refunded away since, or given a new code by a reissue, is
+// under no such code any more, and nothing comes back for it.
+//
+// An unpaid order past its deadline is deleted, as prunePasses would. A paid
+// order is collected whatever its deadline: it was paid for.
+func claimOne(ctx context.Context, tx pgx.Tx, claimHash []byte, c passCompletion) (claimResult, error) {
+	var payment []byte
+	var renewID *int64
+	var days int
+	var deadline time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT payment_hash, renew_pass_id, days, expires_at FROM pass_orders
+		WHERE claim_hash = $1`, claimHash).Scan(&payment, &renewID, &days, &deadline)
+	if errors.Is(err, pgx.ErrNoRows) {
+		id, expires, err := passWithToken(ctx, tx, c.TokenHash)
+		return claimResult{Issued: id != 0, IssuedExpiresAt: expires, pass: id}, err
+	}
+	if err != nil {
+		return claimResult{}, err
+	}
+	if payment == nil && c.Now.Before(deadline) {
+		return claimResult{Waiting: true}, nil
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE claim_hash = $1`, claimHash); err != nil {
+		return claimResult{}, err
+	}
+	if payment == nil {
+		return claimResult{}, nil
+	}
+	// Revoking deletes the order, so this never holds while the lock does its
+	// job; it is checked anyway, as it is everywhere a payment turns into a
+	// Pass.
+	if revoked, err := paymentRevoked(ctx, tx, payment); err != nil || revoked {
+		return claimResult{}, err
+	}
+	return collectPassOrder(ctx, tx, payment, renewID, days, c)
 }
 
 // collectPassOrder turns a paid order its caller has deleted into what it

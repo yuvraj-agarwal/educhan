@@ -2651,6 +2651,148 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 	}
 }
 
+// roundTripper is an http.RoundTripper made of a function.
+type roundTripper func(*http.Request) (*http.Response, error)
+
+func (f roundTripper) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+
+// sendingClaimCookies is a browser that sends these claim tokens, in this
+// order, on every request, as one holding a claim cookie planted from a
+// sibling subdomain beside the server's own does: one Cookie header with all
+// of them, which says nothing of whose each is.
+func (p *passHarness) sendingClaimCookies(tokens ...string) *passHarness {
+	p.t.Helper()
+	pairs := make([]string, len(tokens))
+	for i, token := range tokens {
+		pairs[i] = passClaimCookie + "=" + token
+	}
+	cookies := strings.Join(pairs, "; ")
+	transport := roundTripper(func(req *http.Request) (*http.Response, error) {
+		req = req.Clone(req.Context())
+		req.Header.Set("Cookie", cookies)
+		return http.DefaultTransport.RoundTrip(req)
+	})
+	h := &harness{client: &client{t: p.t, base: p.base, http: &http.Client{Transport: transport}}, app: p.app}
+	return &passHarness{harness: h, stripe: p.stripe}
+}
+
+// TestPassReadsEveryClaimCookie holds the Pass endpoints to every claim cookie
+// a browser sends. A page on a sibling subdomain can set one of the same name
+// for the whole site, at a path the browser sends ahead of the server's own,
+// with a checkout of its own under it or nothing: whichever comes first, it
+// neither hides the buyer's purchase from the status and the claim, nor keeps
+// the buyer's claim from being forgotten. Two paid orders are collected one an
+// answer, and a claim asked again after a lost answer gives the Pass made last.
+func TestPassReadsEveryClaimCookie(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	empty, err := randomToken()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name  string
+		order func(planted, own string) []string
+	}{
+		{"planted first", func(planted, own string) []string { return []string{planted, empty, own} }},
+		{"the buyer's first", func(planted, own string) []string { return []string{own, empty, planted} }},
+	} {
+		// What its planter can put under a token: a checkout left unpaid.
+		planter := p.otherBrowser()
+		planter.checkout("")
+		planted, _ := planter.claimCookie()
+
+		buyer := p.otherBrowser()
+		buyer.paid(buyer.checkout(""), "pi_beside_"+strings.ReplaceAll(c.name, " ", "_"))
+		own, _ := buyer.claimCookie()
+		both := buyer.sendingClaimCookies(c.order(planted, own)...)
+		if !both.reportsClaim() {
+			t.Fatalf("%s: GET /api/pass says there is nothing to collect", c.name)
+		}
+		nonce := both.collectNonce()
+		status, issued := both.claimWith(nonce)
+		if status != http.StatusOK || issued.Status != "issued" || !issued.Claim {
+			t.Fatalf("%s: the buyer's claim: status %d, %+v; want the Pass, and the planted checkout still waiting", c.name, status, issued)
+		}
+		if status, again := both.claimWith(nonce); status != http.StatusOK || again.Status != "issued" || again.Pass != issued.Pass {
+			t.Fatalf("%s: the buyer's claim asked again: status %d, %+v; want %s again", c.name, status, again, issued.Pass)
+		}
+		if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+			t.Fatalf("%s: the buyer's code: status %d", c.name, status)
+		}
+
+		// Forgotten with the planted cookie beside it, the buyer's paid
+		// order is dropped, and so is whatever was planted: neither a copy of
+		// the buyer's cookie nor the planter's own collects anything after.
+		left := p.otherBrowser()
+		left.paid(left.checkout(""), "pi_left_"+strings.ReplaceAll(c.name, " ", "_"))
+		kept, _ := left.claimCookie()
+		if status, out := left.sendingClaimCookies(c.order(planted, kept)...).forget(); status != http.StatusOK || out.Claim {
+			t.Fatalf("%s: forget: status %d, %+v", c.name, status, out)
+		}
+		if left.reportsClaim() || planter.reportsClaim() {
+			t.Fatalf("%s: a claim is still waiting after the browser was forgotten: the buyer's %v, the planted %v",
+				c.name, left.reportsClaim(), planter.reportsClaim())
+		}
+		if status, out := left.claim(); status != http.StatusBadRequest || out.Pass != "" {
+			t.Fatalf("%s: a copy of the buyer's cookie after forgetting: status %d, %+v", c.name, status, out)
+		}
+	}
+
+	// Two claims with paid orders are collected one an answer, under the same
+	// nonce. Asked again after the second answer was lost, the claim is
+	// answered with the Pass made last, not the one handed over before it.
+	first := p.otherBrowser()
+	first.paid(first.checkout(""), "pi_first_of_two")
+	firstToken, _ := first.claimCookie()
+	second := p.otherBrowser()
+	second.paid(second.checkout(""), "pi_second_of_two")
+	secondToken, _ := second.claimCookie()
+	two := first.sendingClaimCookies(firstToken, secondToken)
+	nonce := two.collectNonce()
+	status, one := two.claimWith(nonce)
+	if status != http.StatusOK || one.Status != "issued" || !one.Claim {
+		t.Fatalf("the first of two paid claims: status %d, %+v; want a Pass and another to come", status, one)
+	}
+	status, other := two.claimWith(nonce)
+	if status != http.StatusOK || other.Status != "issued" || other.Claim || other.Pass == one.Pass {
+		t.Fatalf("the second of two paid claims: status %d, %+v; want another Pass and nothing more", status, other)
+	}
+	if status, again := two.claimWith(nonce); status != http.StatusOK || again.Pass != other.Pass {
+		t.Fatalf("asked again after the second answer: status %d, %+v; want %s, the Pass made last", status, again, other.Pass)
+	}
+
+	// A token with nothing under it is no claim, however many there are; and
+	// past passClaimCookieLimit, cookies are not read at all, so one request
+	// queues no more lookups than that.
+	buyer := p.otherBrowser()
+	buyer.paid(buyer.checkout(""), "pi_past_the_limit")
+	own, _ := buyer.claimCookie()
+	if buyer.sendingClaimCookies(empty).reportsClaim() {
+		t.Fatal("a token with nothing under it is reported as a claim")
+	}
+	// A reissue code typed in the browser tells it the purchase is there.
+	p.otherBrowser().buy("pi_lost_beside")
+	_, _, code := p.reissueCode("mod-key", "pi_lost_beside")
+	if status, out := buyer.sendingClaimCookies(empty, own).redeem(code); status != http.StatusOK || out.Status != "issued" || !out.Claim {
+		t.Fatalf("a reissue code typed beside a planted cookie: status %d, %+v; want the purchase still to collect", status, out)
+	}
+	padding := make([]string, 0, passClaimCookieLimit+1)
+	for range passClaimCookieLimit - 1 {
+		token, err := randomToken()
+		if err != nil {
+			t.Fatal(err)
+		}
+		padding = append(padding, token)
+	}
+	if !buyer.sendingClaimCookies(append(padding, own)...).reportsClaim() {
+		t.Fatalf("the buyer's claim behind %d others is not read", len(padding))
+	}
+	padding = append(padding, empty)
+	if buyer.sendingClaimCookies(append(padding, own)...).reportsClaim() {
+		t.Fatalf("a claim behind %d others was read, past passClaimCookieLimit", len(padding))
+	}
+}
+
 // TestPassRefundTakesOffOnlyWhatIsLeft holds a refund to the part of its
 // payment's term still to come: a purchase refunded after its term has run
 // takes nothing off the renewal paid after it, where it once took the
