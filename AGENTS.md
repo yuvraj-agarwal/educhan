@@ -781,7 +781,7 @@ joke about dying with no cause or laugh beside it shown the support message). Th
 matched and a hold waits for a person.
 
 **The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
-2,885 made-up posts in three parts, one JSON object a line: `id` (unique across the
+3,156 made-up posts in three parts, one JSON object a line: `id` (unique across the
 files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
 method question that shows support and is then held meets `hold`), `why`, and, only
 together, `known_miss: true` and a `note` saying why the miss is accepted rather than
@@ -826,13 +826,14 @@ still happen to be someone's, as with the unit tests' examples. Label a post by 
 filter should do, not by what it does. A rule change that turns a labelled post wrong is a
 regression to fix, or a label to correct with the reason in `why`; a `known_miss` is for a
 miss whose fix would cost more than it buys, and its `note` says what. **The rules have
-been fitted to all 2,885 posts**, all three parts: the `_2` part was written apart from
+been fitted to all 3,156 posts**, all three parts: the `_2` part was written apart from
 the rules, then used to rewrite the hold rules to read grammar and, after that, the
 contact and support rules to read verb classes, apps with their objects, the poster's own
 voice in any tense, number layouts and quotation; the `_3` part was written apart from
 them too, measured unseen (the README gives the figures), and then used to put right the
-ordinary posts it stopped and to widen each family cause by cause; so the rates
-`-v` logs describe how closely the rules fit these posts
+ordinary posts it stopped and to widen each family cause by cause; the last 271 pin what a
+review of the rules found they missed or stopped wrongly, each written beside the change
+that put it right; so the rates `-v` logs describe how closely the rules fit these posts
 and are no measurement of anything else. The README says so, and a claim about how well
 the filter works needs posts it was not fitted to. Relabelled posts carry the reason in
 `why`: drama-range and 555-01xx numbers labelled `block` were relabelled `publish`, as was
