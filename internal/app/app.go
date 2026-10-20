@@ -48,7 +48,13 @@ type App struct {
 }
 
 // New connects to Postgres, verifies connectivity, applies pending migrations,
-// and prepares the media store.
+// and prepares the media store. ctx bounds all of it. A step that waits on
+// something ends when ctx does, but for the two answers migrate waits for
+// whatever the stop (a migration's COMMIT, and the migrations' lock given
+// back), so New looks at ctx after migrate, and after the local media store
+// and the domain file, which wait on nothing. A stop, or a bound, that ends
+// ctx while New runs ends New, with what it opened closed and ctx's error as
+// its own.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
 		return nil, err
@@ -72,11 +78,18 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		return nil, fmt.Errorf("ping postgres: %w", err)
 	}
 	schemaAhead, err := migrate(ctx, pool, log)
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 	blobs, err := newMediaStore(ctx, cfg)
+	if err == nil && ctx.Err() != nil {
+		closeMediaStore(blobs, log)
+		err = ctx.Err()
+	}
 	if err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("prepare media store: %w", err)
@@ -85,8 +98,12 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	// does not load is a configuration mistake worth hearing about at startup
 	// rather than the first time somebody tries to verify.
 	domains, err := loadDomainAllowlist(cfg.VerifyDomainsFile)
+	if err == nil {
+		err = ctx.Err()
+	}
 	if err != nil {
 		pool.Close()
+		closeMediaStore(blobs, log)
 		return nil, fmt.Errorf("load verification domains: %w", err)
 	}
 
@@ -195,12 +212,12 @@ func checkMailer(cfg Config) error {
 func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
 	switch cfg.MediaBackend {
 	case MediaBackendGCS:
-		// ctx bounds the check that the bucket answers, as it does the rest of
-		// startup, so a sweep's stop or cmd/server's startup bound ends New
-		// there too. The client, which outlives startup, is built on a context
-		// that is not cancelled with it (NewGCSStore): one whose credentials
-		// could not refresh past the bound would fail its first upload half a
-		// minute in.
+		// ctx bounds the check that the bucket answers, as it bounds the rest
+		// of startup (New), so a sweep's stop or cmd/server's startup bound
+		// ends New there too. The client, which outlives startup, is built on
+		// a context that is not cancelled with it (NewGCSStore): one whose
+		// credentials could not refresh past the bound would fail its first
+		// upload half a minute in.
 		return media.NewGCSStore(ctx, cfg.GCSBucket, cfg.GCSPrefix)
 	case MediaBackendLocal, "":
 		// Empty means local as well, so a Config built in code — the tests do —
@@ -220,9 +237,14 @@ func (a *App) Close() {
 	if a.pool != nil {
 		a.pool.Close()
 	}
-	if closer, ok := a.media.(io.Closer); ok {
+	closeMediaStore(a.media, a.log)
+}
+
+// closeMediaStore closes a media store that holds a connection of its own.
+func closeMediaStore(blobs media.Store, log *slog.Logger) {
+	if closer, ok := blobs.(io.Closer); ok {
 		if err := closer.Close(); err != nil {
-			a.log.Warn("closing media store", "error", err)
+			log.Warn("closing media store", "error", err)
 		}
 	}
 }

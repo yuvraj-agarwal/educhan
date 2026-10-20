@@ -82,15 +82,21 @@ func run(args []string, logs io.Writer) error {
 	slog.SetDefault(log)
 
 	// A sweep listens for SIGTERM from before it connects, so a stop while it
-	// is still starting up (connecting, waiting for or running migrations, or
-	// checking the media store's bucket, all of which end with startupCtx)
-	// ends New with the stop as its error, which is written, and the process
-	// exits 1 with nothing deleted, the spent answers included. Without this,
-	// the signal would kill it there at once, without a word. The error is
-	// written at once, unless the database stops answering while the sweep is
-	// connected to it: New gives up the connection before it returns, which
-	// pgx allows fifteen seconds, longer than Cloud Run waits. The server
-	// listens for signals only once it serves (serve).
+	// is still starting up (connecting, waiting for, running or finishing
+	// migrations, or checking the media store's bucket) ends New with the stop
+	// as its error, which is written, and the process exits 1 with nothing
+	// deleted, the spent answers included. Without this, the signal would kill
+	// it there at once, without a word. New ends with startupCtx wherever it
+	// is: a step that waits on something ends with it, and New looks at it
+	// after the rest, among them a migration's COMMIT and the migrations' lock
+	// given back, which migrate waits on whatever the stop, for two seconds at
+	// most. So the error is written at once, or once that answer comes, unless
+	// the database stops answering while the sweep is connected to it: New
+	// gives up the connection before it returns, which pgx allows fifteen
+	// seconds, seventeen after a commit or an unlock left unanswered, longer
+	// than Cloud Run waits. The server listens for signals only once it serves
+	// (serve), and its startup ends at startupTimeout wherever it is, the same
+	// way.
 	base := context.Background()
 	if *sweep {
 		var stop context.CancelFunc

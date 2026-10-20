@@ -809,7 +809,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   their files behind (`deploy/README.md`). Under the same lock, after the migrations,
   `renameReservedBoards` moves any board whose slug has since been reserved to
   `<slug>-board` (`TestBoardsUnderNewlyReservedSlugsAreRenamed`), so reserving a new
-  word needs no migration of its own.
+  word needs no migration of its own. The lock is the session's, so a connection that
+  cannot give it back is closed (`TestAnUnlockThatFailsClosesItsConnection`) rather than
+  handed back to the pool, where it would keep every other instance waiting in `migrate`.
   A new column on `posts` also means adding it to `TestPostsTableColumnsArePinned`
   (`verify_api_test.go`) in the same change: everything on that table is stored about
   every poster, so each column is there because somebody decided it should be.
@@ -879,23 +881,32 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   store or the database stops answering, since the file in hand waits on both
   (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind a proxy
   that stops forwarding). In sweep mode `run` takes the signal context before `New`, so
-  a stop while the sweep is still starting up (connecting, waiting for or running
-  migrations, or checking a Cloud Storage bucket, which `NewGCSStore` does on the
-  context it is given while its client is built on one that outlives it) ends `New` with
-  the stop as its error, which is written, and the process exits 1 with nothing deleted,
-  the spent answers included (`TestSweepStoppedWhileStartingUpWritesItsError`,
-  connecting to a proxy that answers nothing, waiting on the migrations' lock, and
-  checking a bucket that never answers): at once, unless the database stops answering
-  while the sweep is connected to it, when `New` first gives up the connection, which
-  pgx allows fifteen seconds. Every error `run` ends on, a flag or a setting it cannot
-  read included, is written once, as `msg=fatal`, and is the only line written: the flag
-  set writes nothing of its own, and the usage only for `-h`
-  (`TestRunRefusesWhatItDoesNotUnderstand`, `TestRunWritesTheUsageWhenAsked`,
-  `TestSweepModeFailsWithoutADatabase`, `TestServingFailsWhenTheAddressIsTaken`). It
-  builds its App with `New` like the server, and runs without the salt, the moderation
-  key, the verification secret and the captcha secret on purpose, so `New` warns about
-  none of them: those warnings are `WarnServingSettings`, which only `serve` in
-  `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
+  a stop while the sweep is still starting up ends `New` with the stop as its error,
+  which is written, and the process exits 1 with nothing deleted, the spent answers
+  included: while it connects, waits for or runs migrations, or checks a Cloud Storage
+  bucket, which `NewGCSStore` does on the context it is given while its client is built
+  on one that outlives it (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting
+  to a proxy that answers nothing, waiting on the migrations' lock, and checking a
+  bucket that never answers), and while `migrate` waits for the two answers it waits for
+  whatever the stop, for `migrateAnswerTimeout` (two seconds) at most: a migration's
+  COMMIT once sent, so a stop as it commits leaves the migration applied and recorded
+  and the next not begun, rather than reported as failed, and the migrations' lock given
+  back. `New` looks at its context after `migrate`, and after the local media store and
+  the domain file, which wait on nothing (`TestSweepStoppedAsMigrateFinishesEndsThere`:
+  an unlock the database never answers, one it answers slowly with a spent answer past
+  its day left in place, and a commit it answers slowly). The error is written at once,
+  or once that answer comes, unless the database stops answering while the sweep is
+  connected to it, when `New` first gives up the connection, which pgx allows fifteen
+  seconds, seventeen after a commit or an unlock left unanswered. Every error `run` ends
+  on is written once, as `msg=fatal` (`TestSweepModeFailsWithoutADatabase`,
+  `TestServingFailsWhenTheAddressIsTaken` and the stopped sweeps above), and a flag or a
+  setting it cannot read is then the only line written: the flag set writes nothing of
+  its own, and the usage only for `-h` (`TestRunRefusesWhatItDoesNotUnderstand` and
+  `TestRunWritesTheUsageWhenAsked`, which run the whole process and read all it writes).
+  It builds its App with `New` like the server, and runs without the salt, the
+  moderation key, the verification secret and the captcha secret on purpose, so `New`
+  warns about none of them: those warnings are `WarnServingSettings`, which only `serve`
+  in `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
   `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
   goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
   are, `SweepArchived` must skip held threads, and its comment says so.

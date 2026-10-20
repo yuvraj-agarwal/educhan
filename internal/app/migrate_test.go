@@ -1,14 +1,23 @@
 package app
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
+	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -242,4 +251,151 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 	if status := h.do(http.MethodGet, "/api/boards", nil, &out); status != http.StatusOK {
 		t.Errorf("GET /api/boards on a newer schema: status %d, want the server still serving", status)
 	}
+}
+
+// The migrations' lock is the session's, so a connection whose unlock failed
+// still holds it, and handed back to the pool it would keep every other
+// instance waiting in migrate for as long as this one runs. migrate closes it
+// instead, and the lock goes with its session. Here the unlock is refused as
+// an operator's pg_cancel_backend would refuse it, by a proxy that answers it
+// in the database's place, which leaves the connection otherwise sound.
+func TestAnUnlockThatFailsClosesItsConnection(t *testing.T) {
+	ctx := context.Background()
+	databaseURL := testDatabaseURL(t)
+	admin, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(admin.Close)
+
+	proxy := startRefusingProxy(t, databaseURL, "pg_advisory_unlock")
+	appName := fmt.Sprintf("educhan_unlock_refused_%d", time.Now().UnixNano())
+	u, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the database URL: %v", err)
+	}
+	u.Host = proxy
+	query := u.Query()
+	query.Del("host")
+	query.Set("application_name", appName)
+	u.RawQuery = query.Encode()
+	pool, err := pgxpool.New(ctx, u.String())
+	if err != nil {
+		t.Fatalf("connect through the proxy: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	var logs syncBuffer
+	if _, err := migrate(ctx, pool, slog.New(slog.NewTextHandler(&logs, nil))); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	// The unlock was refused, so the lock was still the session's.
+	if out := logs.String(); !strings.Contains(out, "could not release migration lock") || !strings.Contains(out, refusedUnlock) {
+		t.Fatalf("the unlock was not refused; the log:\n%s", out)
+	}
+
+	held := true
+	for deadline := time.Now().Add(5 * time.Second); held && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		if err := admin.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+			WHERE l.locktype = 'advisory' AND a.application_name = $1)`, appName).Scan(&held); err != nil {
+			t.Fatalf("look for the migrations' lock: %v", err)
+		}
+	}
+	if held {
+		t.Errorf("the pool still held the migrations' lock five seconds after migrate returned, on the connection whose unlock was refused (%d open)",
+			pool.Stat().TotalConns())
+	}
+}
+
+// The docs say that migrate waits two seconds at most for a migration's
+// COMMIT, or for the migrations' lock to be given back, whatever the stop.
+func TestMigrateWaitsTwoSecondsForWhatItOwes(t *testing.T) {
+	if migrateAnswerTimeout != 2*time.Second {
+		t.Errorf("migrate waits %v for a commit or the lock's release, want the two seconds the docs quote", migrateAnswerTimeout)
+	}
+}
+
+// refusedUnlock is what startRefusingProxy answers in the database's place.
+const refusedUnlock = "canceling statement due to user request"
+
+// startRefusingProxy forwards connections to the database at databaseURL,
+// but for the first message a client sends that holds statement: that one
+// goes no further, and the client is answered with refusedUnlock and then
+// ready for the next query, as a statement cancelled by the database would
+// be. It returns the proxy's address.
+func startRefusingProxy(t *testing.T, databaseURL, statement string) string {
+	t.Helper()
+	cfg, err := pgconn.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse the database URL: %v", err)
+	}
+	network, upstream := "tcp", net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
+	if strings.HasPrefix(cfg.Host, "/") {
+		network, upstream = "unix", filepath.Join(cfg.Host, fmt.Sprintf(".s.PGSQL.%d", cfg.Port))
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+
+	// An ErrorResponse, then a ReadyForQuery outside any transaction.
+	fields := []byte("SERROR\x00VERROR\x00C57014\x00M" + refusedUnlock + "\x00\x00")
+	refusal := binary.BigEndian.AppendUint32([]byte{'E'}, uint32(4+len(fields)))
+	refusal = append(refusal, fields...)
+	refusal = append(refusal, 'Z', 0, 0, 0, 5, 'I')
+
+	var mu sync.Mutex
+	var refused bool
+	var conns []net.Conn
+	t.Cleanup(func() {
+		ln.Close()
+		mu.Lock()
+		defer mu.Unlock()
+		for _, c := range conns {
+			c.Close()
+		}
+	})
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			server, err := net.Dial(network, upstream)
+			if err != nil {
+				client.Close()
+				continue
+			}
+			mu.Lock()
+			conns = append(conns, client, server)
+			mu.Unlock()
+			go func() {
+				defer server.Close()
+				_, _ = io.Copy(client, server)
+			}()
+			go func() {
+				defer client.Close()
+				buf := make([]byte, 32<<10)
+				for {
+					n, err := client.Read(buf)
+					if n > 0 {
+						mu.Lock()
+						refuse := !refused && bytes.Contains(buf[:n], []byte(statement))
+						refused = refused || refuse
+						mu.Unlock()
+						if refuse {
+							_, _ = client.Write(refusal)
+						} else if _, err := server.Write(buf[:n]); err != nil {
+							return
+						}
+					}
+					if err != nil {
+						server.Close()
+						return
+					}
+				}
+			}()
+		}
+	}()
+	return ln.Addr().String()
 }
