@@ -559,11 +559,16 @@ func jpegNextSegment(data []byte, i int) (marker byte, body []byte, next int, ok
 // weighed in. The ceiling bounds the decoder's work: the largest picture it
 // admits is one the memory estimate still fits with the most blocks, about 0.8
 // million — a 25-megapixel 4:2:2 picture, or about 17 megapixels at 4:4:4 — and
-// at the cap its scans take about 3 s of CPU on one core, and the whole of
-// Process about 4 s, whichever kind of scan fills it: 64 first passes, about 32
-// refinement passes, or 10 baseline scans. A grey or 4:2:0 picture of 25
-// megapixels has fewer blocks, about 0.4 and 0.6 million, and its scans take
-// about 1.5 s and 2 s. All of it is well inside processingAllowance.
+// at the cap its scans take about 3 to 4 s of CPU on one core, and the whole
+// of Process about 4 to 6 s, whichever kind of scan fills it: 64 first passes,
+// about 32 refinement passes, or 10 baseline scans. Those are the dearest of
+// each kind — first passes in which every block codes an end-of-band symbol of
+// its own rather than sharing a run, and baseline scans with detail in every
+// block, where scans of empty blocks take a little less — measured in CPU time
+// on one core of a shared machine, whose load makes most of the spread. A grey
+// or 4:2:0 picture of 25 megapixels has fewer blocks, about 0.4 and 0.6
+// million, and its scans take at most about 2 s and 3 s. All of it is well
+// inside processingAllowance.
 const maxJPEGScanRevisits = 64
 
 // jpegBaselineVisitWork and jpegRefineVisitWork weigh a block visit by what
@@ -576,7 +581,7 @@ const maxJPEGScanRevisits = 64
 // inside an end-of-band run too, about twice it. Unweighed, the cap admitted a
 // 25-megapixel 4:2:2 file of 64 baseline scans (12 MB) that decoded for about
 // 14 s, and one of refinement scans (100 KB) for about 5.5 s, where 64 first
-// passes take about 3.
+// passes take about 3 to 4.
 const (
 	jpegBaselineVisitWork = 6
 	jpegRefineVisitWork   = 2

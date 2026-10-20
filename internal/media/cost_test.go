@@ -2006,7 +2006,7 @@ func TestJPEGScanBombIsRefusedFromHeader(t *testing.T) {
 // up to 31 (63) and refused at 32 (65). Counted as plain visits, both were
 // admitted up to 64 scans — a 25-megapixel 4:2:2 picture's 64 baseline scans
 // decoded for about 14 s of CPU, and its refinement scans for about 5.5 s,
-// where 64 first passes take about 3. Every file here decodes whole in
+// where 64 first passes take about 3 to 4. Every file here decodes whole in
 // image/jpeg, so the count is of work it really does.
 func TestJPEGScanCountWeighsEachScanByItsWork(t *testing.T) {
 	const w, h = 1000, 1000

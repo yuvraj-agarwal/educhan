@@ -425,8 +425,8 @@ server that would refuse what it sends.
   progressive files encoders write six to eight — but a crafted file can repeat a scan of
   a few dozen bytes thousands of times, holding no more memory than one picture, so caught
   by neither the pixel cap nor the memory estimate, to decode for far longer than its size
-  or resolution suggests; the cap holds the worst admitted file to about 3 s of CPU to
-  decode and 4 s to process.
+  or resolution suggests; the cap holds the worst admitted file to about 3 to 4 s of CPU
+  to decode and 4 to 6 s to process.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes about 4 million pixels,

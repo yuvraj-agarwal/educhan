@@ -39,13 +39,13 @@ const UploadBudget int64 = 64 << 20
 //   - a 25-megapixel PNG with transparency of about 7 MiB: ~4 s.
 //   - a JPEG at the scan cap: the most blocks the memory estimate admits are
 //     ~0.8 million, a 25-megapixel 4:2:2 picture or ~17 megapixels at 4:4:4,
-//     and at the cap its scans decode in ~3 s and Process takes ~4 s, whether
-//     they are 64 progressive first passes (~50 million block visits), ~32
-//     refinement passes or 10 baseline scans (jpegScanBlockVisits weighs each
-//     by its work); a 25-megapixel grey or 4:2:0 one decodes in ~1.5-2 s. A
-//     file past the cap is refused from its header, before any cooldown —
-//     before the cap one could repeat a cheap scan thousands of times and
-//     decode for thousands of seconds.
+//     and at the cap its scans decode in ~3-4 s and Process takes ~4-6 s,
+//     whether they are 64 progressive first passes (~50 million block
+//     visits), ~32 refinement passes or 10 baseline scans (jpegScanBlockVisits
+//     weighs each by its work); a 25-megapixel grey or 4:2:0 one decodes in
+//     ~2-3 s. A file past the cap is refused from its header, before any
+//     cooldown — before the cap one could repeat a cheap scan thousands of
+//     times and decode for thousands of seconds.
 //   - a GIF of many colours: 25 frames of a 2000×2000 canvas each drawn from a
 //     table of its own and each leaving a pixel to clear, 4.5 MB, which the
 //     frame cap (maxGIFFramePixels) lets come to 100 million pixels, ~4 s.
