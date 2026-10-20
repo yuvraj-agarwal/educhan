@@ -537,8 +537,9 @@ func stalledUpload(t *testing.T, base string) (int, string) {
 // (Expect: 100-continue), which the server says only once its handler starts
 // reading the body: past the wait for room, holding it or refused it.
 type idleBody struct {
-	conn net.Conn
-	read *bufio.Reader
+	conn    net.Conn
+	read    *bufio.Reader
+	chunked bool // declared no length (idleUpload)
 }
 
 // idleUpload opens an idleBody for an image thread on /general/ from client
@@ -579,7 +580,7 @@ func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
 	if blank, err := read.ReadString('\n'); err != nil || blank != "\r\n" {
 		t.Fatalf("after 100 Continue: %q, %v", blank, err)
 	}
-	return &idleBody{conn: conn, read: read}
+	return &idleBody{conn: conn, read: read, chunked: size < 0}
 }
 
 // answer reads the server's final answer to the idle body, within wait.
@@ -733,8 +734,9 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 	})
 }
 
-// trickle sends body as chunks of at most size bytes with pause after each,
-// leaving the body open, and reports whether all of it went. It stops early
+// trickle sends body in pieces of at most size bytes with pause after each,
+// as chunks if the body was declared no length, leaving the body open, and
+// reports whether all of it went. It stops early
 // once the server has answered or the connection refuses a chunk, so that the
 // test can read an early answer, which sending on past it could lose to the
 // connection's reset.
@@ -745,8 +747,11 @@ func (b *idleBody) trickle(body []byte, size int, pause time.Duration) bool {
 			return false // answered
 		}
 		n := min(size, len(body))
-		frame := fmt.Sprintf("%x\r\n%s\r\n", n, body[:n])
-		if _, err := io.WriteString(b.conn, frame); err != nil {
+		piece := string(body[:n])
+		if b.chunked {
+			piece = fmt.Sprintf("%x\r\n%s\r\n", n, piece)
+		}
+		if _, err := io.WriteString(b.conn, piece); err != nil {
 			return false
 		}
 		body = body[n:]
@@ -755,7 +760,7 @@ func (b *idleBody) trickle(body []byte, size int, pause time.Duration) bool {
 	return true
 }
 
-// end sends the last chunk, ending the body.
+// end sends the last chunk, ending a body declared no length.
 func (b *idleBody) end() {
 	_, _ = io.WriteString(b.conn, "0\r\n\r\n")
 }
@@ -882,6 +887,74 @@ func TestUnsizedUploadsAreCutOffOnlyWhenTheyStop(t *testing.T) {
 		if took := time.Since(start); took > 5*time.Second {
 			t.Errorf("a chunked body that stopped was answered after %v, want soon after the %v grace, not at the %v window's end",
 				took, h.app.uploadPaceGrace, h.app.uploadReadTimeout)
+		}
+	})
+}
+
+// A part's header line cut short reached the form's reader as a malformed
+// header, because bufio's ReadLine, which reads header lines, hands back what
+// it has of a line and drops the error that cut it: so a body that stopped
+// inside a header's name was answered 400 (invalid form data), not 408 for
+// stopping, and one the body limit cut there 400, not what the limit answers.
+// When the body's own read failed, that failure is the answer.
+func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
+	// Where the image part's first header line is cut: inside its name, so
+	// that what arrived of the line has no colon.
+	cutIn := func(body []byte) int {
+		i := bytes.Index(body, []byte("Content-Disposition: form-data; name=\"image\""))
+		if i < 0 {
+			t.Fatal("the image part's header is not in the body")
+		}
+		return i + len("Content-Disp")
+	}
+	for _, sized := range []bool{true, false} {
+		name := "a chunked body that stops there is answered 408"
+		if sized {
+			name = "a body with a length that stops there is answered 408"
+		}
+		t.Run(name, func(t *testing.T) {
+			h := testServer(t, nil)
+			h.addBoard("general")
+			// Most of a short body with a length has arrived by the cut, far
+			// ahead of its pace: a short window has it cut off soon all the
+			// same.
+			h.app.uploadPaceGrace = 300 * time.Millisecond
+			h.app.uploadReadTimeout = 2 * time.Second
+			drainShares(t, h, "127.0.0.1")
+			body := unsizedForm(t, 0, "cut in a header", pngBytes(t, 32, 32))
+			size := int64(-1)
+			if sized {
+				size = int64(len(body))
+			}
+
+			b := idleUpload(t, h.base, "", size)
+			if !b.trickle(body[:cutIn(body)], len(body), 0) {
+				t.Fatal("the start of the body was not taken")
+			}
+			if status, text := b.answer(t, 20*time.Second); status != http.StatusRequestTimeout {
+				t.Fatalf("a body that stopped inside a part's header: status %d (%s), want 408", status, text)
+			}
+		})
+	}
+
+	t.Run("one the limit cuts there with uploads off is answered as past the limit", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = false })
+		h.addBoard("general")
+		// A text field long enough that the switched-off limit, a JSON
+		// post's worth, falls inside the image part's header after it.
+		probe := unsizedForm(t, 0, "", []byte("x"))
+		text := strings.Repeat("a", maxRequestBytes-cutIn(probe))
+		body := unsizedForm(t, 0, text, []byte("x"))
+		if got := cutIn(body); got != maxRequestBytes {
+			t.Fatalf("the limit cuts the body at %d, inside the header at %d; the test proves nothing", maxRequestBytes, got)
+		}
+
+		b := idleUpload(t, h.base, "", int64(len(body)))
+		b.trickle(body, len(body), 0)
+		status, text := b.answer(t, 20*time.Second)
+		if status != http.StatusForbidden || !strings.Contains(text, uploadsSwitchedOff) {
+			t.Fatalf("a body the switched-off limit cut inside a part's header: status %d (%s), want 403 %q",
+				status, text, uploadsSwitchedOff)
 		}
 	})
 }

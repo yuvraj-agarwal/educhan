@@ -320,7 +320,16 @@ func (a *App) reserveUpload(ctx context.Context, r *http.Request, size int64) (f
 // (maxRequestBytes) between them; the first of each name is the one read, as
 // FormValue would.
 func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, string) {
+	body := &countingReader{r: r.Body}
 	refuse := func(err error) (*submission, int, string) {
+		// A failed read of the body is the answer, whatever the form's
+		// reader made of it: a part's header line that the read deadline
+		// or the body limit cut short inside its name reaches it as a
+		// malformed header, because bufio's ReadLine hands back what it has
+		// of a line and drops the error that cut it.
+		if body.err != nil {
+			err = body.err
+		}
 		switch {
 		case isReadTimeout(err):
 			// The body did not arrive inside uploadReadTimeout: the client's
@@ -338,7 +347,6 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 	if err != nil || params["boundary"] == "" {
 		return refuse(err)
 	}
-	body := &countingReader{r: r.Body}
 	mr := multipart.NewReader(body, params["boundary"])
 
 	fields := map[string]string{}
@@ -467,15 +475,20 @@ func readAtMost(r io.Reader, hint, limit int64) ([]byte, error) {
 	}
 }
 
-// countingReader counts the bytes read through it.
+// countingReader counts the bytes read through it, and keeps the first error
+// other than io.EOF that a read through it returned.
 type countingReader struct {
-	r io.Reader
-	n int64
+	r   io.Reader
+	n   int64
+	err error
 }
 
 func (c *countingReader) Read(p []byte) (int, error) {
 	n, err := c.r.Read(p)
 	c.n += int64(n)
+	if err != nil && err != io.EOF && c.err == nil {
+		c.err = err
+	}
 	return n, err
 }
 
