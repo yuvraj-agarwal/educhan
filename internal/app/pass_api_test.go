@@ -185,6 +185,7 @@ type passResponse struct {
 	AutomaticTax bool       `json:"automatic_tax"`
 	Paused       bool       `json:"paused"`
 	URL          string     `json:"url"`
+	Order        string     `json:"order"`
 	Status       string     `json:"status"`
 	Pass         string     `json:"pass"`
 	ExpiresAt    time.Time  `json:"expires_at"`
@@ -208,6 +209,15 @@ func refusalState(t *testing.T, out passResponse) string {
 // returns the Stripe session id the fake handed out.
 func (p *passHarness) checkout(renew string) string {
 	p.t.Helper()
+	session, _ := p.checkoutNamed(renew)
+	return session
+}
+
+// checkoutNamed starts a purchase as checkout does, and returns the name the
+// answer gave its order as well, which the page sends back to forget that
+// order alone (forgetOrder).
+func (p *passHarness) checkoutNamed(renew string) (string, string) {
+	p.t.Helper()
 	var out passResponse
 	body := map[string]any{"adult": true}
 	if renew != "" {
@@ -219,7 +229,10 @@ func (p *passHarness) checkout(renew string) string {
 	if !strings.HasPrefix(out.URL, "https://checkout.stripe.com/c/pay/") {
 		p.t.Fatalf("checkout url %q", out.URL)
 	}
-	return out.URL[strings.LastIndexByte(out.URL, '/')+1:]
+	if out.Order == "" {
+		p.t.Fatalf("checkout: %+v, with no name for its order", out)
+	}
+	return out.URL[strings.LastIndexByte(out.URL, '/')+1:], out.Order
 }
 
 // webhook delivers a signed event, as Stripe does.
@@ -2404,7 +2417,7 @@ func TestEveryPassWriteTakesThePassLock(t *testing.T) {
 	})
 	p.buy("pi_reissue")
 	_, _, token := p.reissueCode("mod-key", "pi_reissue")
-	session := p.checkout("")
+	session, order := p.checkoutNamed("")
 	unpaid := map[string]any{"id": session, "object": "checkout.session", "mode": "payment", "payment_status": "unpaid"}
 	request := func(req *http.Request) func() <-chan racedResponse {
 		return func() <-chan racedResponse { return p.fire(req) }
@@ -2424,6 +2437,7 @@ func TestEveryPassWriteTakesThePassLock(t *testing.T) {
 			http.Header{modKeyHeader: {"mod-key"}}))},
 		{"a reissue code redeemed", request(p.request("/api/pass/claim", map[string]any{"reissue": token, "nonce": p.collectNonce()}, nil))},
 		{"a claim forgotten", request(p.request("/api/pass/claim", map[string]any{"forget": true}, nil))},
+		{"a claim forgotten by its order", request(p.request("/api/pass/claim", map[string]any{"forget": true, "order": order}, nil))},
 		{"the sweep", func() <-chan racedResponse {
 			done := make(chan racedResponse, 1)
 			go func() {
@@ -2815,6 +2829,133 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 	// Forgetting with nothing to forget is no error.
 	if status, _ := p.forget(); status != http.StatusOK {
 		t.Fatalf("forget with no claim: status %d", status)
+	}
+}
+
+// forgetOrder drops the one claim whose order a checkout's answer named, as
+// the page does for a checkout that answered after a forget, and returns the
+// claim cookie the answer set, if it set one.
+func (p *passHarness) forgetOrder(name string) (int, *http.Cookie) {
+	p.t.Helper()
+	res, err := p.http.Do(p.request("/api/pass/claim", map[string]any{"forget": true, "order": name}, nil))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out passResponse
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		p.t.Fatal(err)
+	}
+	if res.StatusCode == http.StatusOK && out.Status != "forgotten" {
+		p.t.Fatalf("forget by order: %+v", out)
+	}
+	for _, c := range res.Cookies() {
+		if c.Name == passClaimCookie {
+			return res.StatusCode, c
+		}
+	}
+	return res.StatusCode, nil
+}
+
+// TestPassForgetByOrderDropsThatClaimAlone holds the forget the page sends for
+// a checkout that answered after Remove the Pass, Forget this browser or Stop
+// collecting it here, naming the order the answer gave it, to that checkout's
+// claim and no other. The claim collects nothing, even with a copy of its
+// cookie and once its checkout is paid after all, and the buyer gets that
+// through a reissue. A checkout started after the forget is somebody's
+// purchase, and its cookie can be in the browser by the time the forget of the
+// earlier one arrives, so that forget reads no cookie and clears none.
+func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+
+	// The checkout answered after the browser's own forget did, so its
+	// cookie is the browser's when the forget naming it goes.
+	session, name := p.checkoutNamed("")
+	token, _ := p.claimCookie()
+	if name == token {
+		t.Fatal("a checkout's answer named its order by the claim itself, which collects it")
+	}
+	if p.sendingClaimCookies(name).reportsClaim() {
+		t.Fatal("the order's name, sent as a claim cookie, has something to collect")
+	}
+	if status, set := p.forgetOrder(name); status != http.StatusOK || set != nil {
+		t.Fatalf("forget by order: status %d, setting %v; want 200 and no cookie set or cleared", status, set)
+	}
+	if left, ok := p.claimCookie(); !ok || left != token {
+		t.Fatal("forgetting by order took the cookie out of the browser")
+	}
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass still tells the next person at the browser there is a purchase to collect")
+	}
+	// Paid after all, which nothing on the page led to, it is the buyer's
+	// still, by a reissue code from the receipt, and no copy of the claim
+	// collects it.
+	p.paid(session, "pi_forgotten_by_order")
+	if p.reportsClaim() {
+		t.Fatal("the forgotten checkout, paid, is a purchase to collect")
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the browser collected the forgotten checkout: status %d, %+v", status, out)
+	}
+	replay := p.otherBrowser()
+	replay.setClaimCookie(token)
+	if status, out := replay.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("a copy of the forgotten claim: status %d, %+v", status, out)
+	}
+	_, _, code := p.reissueCode("mod-key", "pi_forgotten_by_order")
+	if status, out := p.otherBrowser().redeem(code); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("reissue of the checkout forgotten by order: status %d, %+v", status, out)
+	}
+
+	// A checkout started after the forget answered before the forgotten one's
+	// forget arrived: its cookie is the browser's, and it is still collected.
+	q := p.otherBrowser()
+	forgotten, forgottenName := q.checkoutNamed("")
+	forgottenToken, _ := q.claimCookie()
+	after := q.checkout("")
+	kept, _ := q.claimCookie()
+	if status, set := q.forgetOrder(forgottenName); status != http.StatusOK || set != nil {
+		t.Fatalf("forget by order beside a later checkout: status %d, setting %v", status, set)
+	}
+	if left, ok := q.claimCookie(); !ok || left != kept {
+		t.Fatal("forgetting the earlier checkout by order took the later one's cookie out of the browser")
+	}
+	if !q.reportsClaim() {
+		t.Fatal("forgetting the earlier checkout by order dropped the later one's claim")
+	}
+	q.paid(forgotten, "pi_forgotten_beside")
+	q.paid(after, "pi_started_after_the_forget")
+	if status, out := q.claim(); status != http.StatusOK || out.Status != "issued" || out.Claim {
+		t.Fatalf("the checkout started after the forget: status %d, %+v; want its Pass and nothing more", status, out)
+	}
+	replay = p.otherBrowser()
+	replay.setClaimCookie(forgottenToken)
+	if replay.reportsClaim() {
+		t.Fatal("a copy of the claim forgotten by order has something to collect")
+	}
+
+	// A name that is not one is refused, and so is a name beside anything but
+	// a forget, from a browser with a checkout waiting, which is left as it
+	// was; a name with nothing under it is nothing to forget, and no error.
+	waiting := p.otherBrowser()
+	_, waitingName := waiting.checkoutNamed("")
+	waitingToken, _ := waiting.claimCookie()
+	for what, body := range map[string]map[string]any{
+		"a name cut short":         {"forget": true, "order": waitingName[:20]},
+		"a name not in base64url":  {"forget": true, "order": strings.Repeat("!", len(waitingName))},
+		"a claim token for a name": {"forget": true, "order": waitingToken},
+		"a name with no forget":    {"order": waitingName, "nonce": waiting.collectNonce()},
+	} {
+		var out passResponse
+		if status := waiting.post("/api/pass/claim", body, &out); status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, %+v; want 400", what, status, out)
+		}
+	}
+	if !waiting.reportsClaim() {
+		t.Fatal("a refused forget by order dropped the browser's claim")
+	}
+	if status, _ := p.otherBrowser().forgetOrder(passOrderName("nothing-under-this")); status != http.StatusOK {
+		t.Fatalf("forget by a name with nothing under it: status %d", status)
 	}
 }
 

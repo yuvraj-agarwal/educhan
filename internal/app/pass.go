@@ -514,8 +514,9 @@ type passCheckoutBody struct {
 
 // handlePassCheckout starts a purchase: it opens a Stripe checkout, records an
 // order the webhook can mark paid, and gives the browser the claim it will
-// collect the Pass with. The answer is the Stripe page to go to. While sales
-// are paused it refuses, for a new Pass and a renewal alike.
+// collect the Pass with. The answer is the Stripe page to go to, and the
+// order's name (passOrderName). While sales are paused it refuses, for a new
+// Pass and a renewal alike.
 func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	if !a.requirePass(w) || !passRequest(w, r) {
 		return
@@ -622,7 +623,18 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// happens. Only a webhook gives the hold, and it cannot reach the cookie
 	// (passClaimCookieUntil).
 	a.setCookie(w, r, passClaimCookie, claim, passCookiePath, time.Until(passClaimCookieUntil(now)))
-	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL})
+	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL, "order": passOrderName(claim)})
+}
+
+// passOrderName is how a checkout's answer names its order to the page: by
+// what the database holds of the claim the order is under. It is for a page
+// that will not send the browser to Stripe, because the browser was forgotten
+// while the checkout was on its way, to drop that claim and no other
+// ({"forget": true, "order"}, forgetPassOrder). It collects nothing, since
+// collecting takes the claim itself, which the page never sees (the cookie is
+// HttpOnly).
+func passOrderName(claim string) string {
+	return base64.RawURLEncoding.EncodeToString(hashToken(claim))
 }
 
 // passClaimCookieLimit is how many claim cookies a request is read for. A
@@ -690,7 +702,15 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Forget {
+		if req.Order != "" {
+			a.forgetPassOrder(w, r, req.Order)
+			return
+		}
 		a.forgetPassClaim(w, r)
+		return
+	}
+	if req.Order != "" {
+		writeError(w, http.StatusBadRequest, `order: goes only with "forget": true`)
 		return
 	}
 	if !isPassToken(req.Nonce) {
@@ -754,6 +774,10 @@ type passClaimBody struct {
 	Reissue string `json:"reissue"`
 	// Forget drops the browser's claim instead (forgetPassClaim).
 	Forget bool `json:"forget"`
+	// Order, beside Forget, names the one claim to drop in place of the
+	// browser's: the one whose order a checkout's answer named
+	// (passOrderName, forgetPassOrder).
+	Order string `json:"order"`
 }
 
 // forgetPassClaim drops the browser's claim, for a shared computer: the order
@@ -774,6 +798,30 @@ func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	clearCookie(w, passClaimCookie, passCookiePath)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "forgotten", "claim": false})
+}
+
+// forgetPassOrder drops one checkout's claim, the one whose order its answer
+// named (passOrderName), as forgetPassClaim drops each of the browser's: for a
+// checkout that answered after Remove the Pass, Forget this browser or Stop
+// collecting it here, which the page does not follow to Stripe, so that its
+// claim does not outlive the forget. It reads no cookie and clears none. A
+// checkout started after the forget is somebody's purchase, and its cookie can
+// arrive while this request is on its way, so clearing the cookie here could
+// clear that one; the cookie the forgotten checkout set may stay in the
+// browser, with nothing under it, until another checkout replaces it or it
+// runs out. The answer says nothing of what else waits, since no cookie was
+// read.
+func (a *App) forgetPassOrder(w http.ResponseWriter, r *http.Request, name string) {
+	claimHash, err := base64.RawURLEncoding.DecodeString(name)
+	if err != nil || len(claimHash) != sha256.Size {
+		writeError(w, http.StatusBadRequest, "order: want the name a checkout's answer gave its order")
+		return
+	}
+	if err := a.store.dropPassClaims(r.Context(), [][]byte{claimHash}); err != nil {
+		a.fail(w, r, err, "could not forget the purchase in progress")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "forgotten"})
 }
 
 // redeemPassReissue answers a claim that carries a reissue code, in the
