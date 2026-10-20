@@ -770,10 +770,10 @@ func TestPassOrderDeadlineIsAMidnight(t *testing.T) {
 }
 
 // TestPassPaidAfterItsDeadlineIsKept holds a paid order to its payment: paid
-// after its deadline, or paid in time and collected late, it is still a Pass.
-// Only an order nobody paid for lapses, and once it has, neither GET /api/pass
-// nor a claim's answer counts it as waiting, though nothing has deleted it
-// yet.
+// after its deadline, or paid in time and collected late, it is still a Pass,
+// and still more to come beside another claim's. Only an order nobody paid for
+// lapses, and once it has, neither GET /api/pass nor a claim's answer counts
+// it as waiting, though nothing has deleted it yet.
 func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	p := passServer(t, nil)
 	session := p.checkout("")
@@ -834,6 +834,28 @@ func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	}
 	if lapsed.reportsClaim() {
 		t.Fatal("GET /api/pass tells the page to collect the lapsed order")
+	}
+
+	// A paid order past its deadline under another claim cookie is more to
+	// come, though: the answer that collects the first paid order says so, and
+	// the next claim, with the same nonce, collects it.
+	first := p.otherBrowser()
+	first.paid(first.checkout(""), "pi_first_beside_a_late_one")
+	firstToken, _ := first.claimCookie()
+	late := p.otherBrowser()
+	session = late.checkout("")
+	late.paid(session, "pi_collected_late_beside")
+	lateToken, _ := late.claimCookie()
+	p.exec(`UPDATE pass_orders SET expires_at = $1 WHERE session_hash = $2`, time.Now().Add(-time.Hour), p.app.passSessionHash(session))
+	both := first.sendingClaimCookies(firstToken, lateToken)
+	nonce := both.collectNonce()
+	status, one := both.claimWith(nonce)
+	if status != http.StatusOK || one.Status != "issued" || !one.Claim {
+		t.Fatalf("a paid claim beside one paid and past its deadline: status %d, %+v; want the Pass and more to come", status, one)
+	}
+	status, other := both.claimWith(nonce)
+	if status != http.StatusOK || other.Status != "issued" || other.Claim || other.Pass == one.Pass {
+		t.Fatalf("the paid claim past its deadline, asked for next: status %d, %+v; want another Pass and nothing more", status, other)
 	}
 }
 
