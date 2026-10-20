@@ -618,11 +618,12 @@ needs a browser check before the test changes.
   threads, and a claim left behind would hand them the buyer's Pass. The browser's other
   tabs follow the Pass and what goes with it (`followPassStorage`, `followPassForget`:
   the claim, the code box, a code they copied, which stops being theirs to empty, and
-  `passLost`), but not the rest: a tab already open keeps the poster key it posted with
-  (`pagePosterKey`, which `posterKey` writes back to an empty store), the badge
-  (`state.verification`) and the name in a form it drew until it is reloaded, though a
-  page loaded afterwards has none of them. The Verify page and the FAQ say so, and to
-  close those tabs first (`TestForgetThisBrowserSaysWhatOtherTabsKeep`).
+  `passLost`), but not the rest: a tab already open can keep the poster key it made
+  (`pagePosterKey`), the badge (`state.verification`) and the name in a form it drew, and
+  a post from it puts the key and the name back in storage for every page loaded
+  afterwards (`posterKey` writes the key it made back to an empty store, as `submit` does
+  the name). The Verify page and the FAQ say so, and to close those tabs first
+  (`TestForgetThisBrowserSaysWhatOtherTabsKeep`).
 
 ### Child safety
 

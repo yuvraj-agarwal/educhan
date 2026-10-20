@@ -1876,18 +1876,18 @@ function forgetBrowserHTML() {
         shows them which posts there are yours, and could post under your tripcode.</p>
       <p class="muted">Forgetting this browser removes the key, the name, any badge and any
         Pass. Your next post starts a new key, and with it new IDs. Posts you have made stay
-        as they are. Other educhan tabs open in this browser let go of the Pass too, but keep
-        the key, the name and any badge they already have until they're reloaded, so close
-        them first. To use the Pass again afterwards, show its code on the
-        <a href="/pass">Pass</a> page and write it down first. It also stops this browser
-        collecting a Pass bought here that hasn't arrived yet; if you've paid for one, write
-        to the support address on the receipt Stripe emailed you, and you'll be sent a reissue
-        code to collect it with. If you used Copy the code on the Pass page since you last
-        opened educhan in this tab, and have copied nothing in this tab since, it empties the
-        clipboard too, whatever is on it by then, unless another tab removed or replaced the
-        Pass meanwhile. It does so even after a copy in this tab that educhan can't see took
-        anything, such as one from an email box in some browsers. A Pass code copied any other
-        way, by hand included, stays there until something else is copied.</p>
+        as they are. Other educhan tabs open in this browser let go of the Pass too, but can
+        keep the key, the name and any badge they have, and a post from one of them puts the
+        key and the name back, so close them first. To use the Pass again afterwards, show its
+        code on the <a href="/pass">Pass</a> page and write it down first. It also stops this
+        browser collecting a Pass bought here that hasn't arrived yet; if you've paid for one,
+        write to the support address on the receipt Stripe emailed you, and you'll be sent a
+        reissue code to collect it with. If you used Copy the code on the Pass page since you
+        last opened educhan in this tab, and have copied nothing in this tab since, it empties
+        the clipboard too, whatever is on it by then, unless another tab removed or replaced
+        the Pass meanwhile. It does so even after a copy in this tab that educhan can't see
+        took anything, such as one from an email box in some browsers. A Pass code copied any
+        other way, by hand included, stays there until something else is copied.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
     </div>`;
 }
@@ -4005,7 +4005,7 @@ const FAQ_SECTIONS = [
           with. On a shared computer, close educhan's other tabs and use <strong>Forget this
           browser</strong> on the <a href="/verify#forget-browser">Verify</a> page before you
           leave, or the next person gets your IDs in the threads you posted in, and your
-          tripcode. A tab left open keeps them until it's reloaded.</li>
+          tripcode. A tab left open can keep them, and a post from it puts them back.</li>
       </ul>`,
   },
   {
@@ -4038,8 +4038,8 @@ const FAQ_SECTIONS = [
       <p>On a shared computer, close educhan's other tabs and use <strong>Forget this
         browser</strong> on the <a href="/verify#forget-browser">Verify</a> page before you
         leave. The badge stays in that browser for whoever uses it next, and so do the key
-        your IDs are made from and your name, and a tab left open keeps them until it's
-        reloaded.</p>`,
+        your IDs are made from and your name. A tab left open can keep all three, and a post
+        from it puts the key and the name back.</p>`,
   },
   {
     id: "faq-pass",

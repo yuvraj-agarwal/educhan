@@ -1415,12 +1415,13 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 // Forget this browser takes the poster key, the name, the badge and the Pass
 // out of storage, but only the Pass, and what goes with it, is followed in
 // the browser's other tabs (followPassStorage, followPassForget): a tab
-// already open keeps the key it posted with (pagePosterKey), the badge
-// (state.verification) and the name in a form it drew, until it is reloaded.
-// The Verify page and the FAQ's shared-computer advice say so, and to close
-// those tabs first. A tab that followed the rest as well would make that
-// advice say less than the page does, so this fails then too, for the
-// wording to change with it.
+// already open keeps a key it made (pagePosterKey), the badge
+// (state.verification) and the name in a form it drew until it is reloaded,
+// and a post from it writes the key and the name back to storage, for every
+// page loaded after it. The Verify page and the FAQ's shared-computer advice
+// say so, and to close those tabs first. A tab that followed the rest as well
+// would make that advice say less than the page does, so this fails then too,
+// for the wording to change with it.
 func TestForgetThisBrowserSaysWhatOtherTabsKeep(t *testing.T) {
 	script := appScript(t)
 	listeners := regexp.MustCompile(`addEventListener\("storage", (\w+)\)`).FindAllStringSubmatch(withoutComments(script), -1)
@@ -1432,13 +1433,15 @@ func TestForgetThisBrowserSaysWhatOtherTabsKeep(t *testing.T) {
 		"the FAQ on anonymity": words(faqAnswer(t, script, "faq-anonymity")),
 		"the FAQ on badges":    words(faqAnswer(t, script, "faq-badge")),
 	} {
-		want := "close educhan's other tabs"
+		wants := []string{"close educhan's other tabs", "A tab left open can keep", "a post from it puts"}
 		if name == "Forget this browser" {
-			want = "Other educhan tabs open in this browser let go of the Pass too, but keep the key, the name and any badge " +
-				"they already have until they're reloaded, so close them first."
+			wants = []string{"Other educhan tabs open in this browser let go of the Pass too, but can keep the key, the name " +
+				"and any badge they have, and a post from one of them puts the key and the name back, so close them first."}
 		}
-		if !strings.Contains(text, want) {
-			t.Errorf("%s no longer says what a tab left open keeps after Forget this browser (%q)", name, want)
+		for _, want := range wants {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s no longer says what a tab left open keeps after Forget this browser (%q)", name, want)
+			}
 		}
 	}
 }
