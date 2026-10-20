@@ -586,9 +586,9 @@ func TestUploadsSwitchedOffRefusesALargeFileUnread(t *testing.T) {
 }
 
 // GET /api/site tells a client what the posting form can offer before anyone
-// fills one in: whether images are taken at all, and the size limit behind the
-// 413. It is configuration, so it carries those two fields and nothing about
-// the caller.
+// fills one in: whether images are taken at all, the size limit behind the 413,
+// and whether posting needs the captcha. It is configuration, so it carries
+// those three fields and nothing about the caller.
 func TestSiteReportsTheUploadSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name    string

@@ -649,11 +649,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   disagree about a file's header.
 - Uploads are off unless `EDUCHAN_UPLOADS_ENABLED` is set (`Config.UploadsEnabled`).
   `GET /api/site` (`handleSite`) reports the switch and the size limit behind the 413
-  as `{"uploads","max_upload_bytes"}`, so the client can draw the form to match. It is
-  configuration: it reads nothing from the request, sets no cookie, and answers every
-  caller the same (`TestSiteReportsTheUploadSettings`, and it is on
-  `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything about
-  the caller belongs nowhere near it.
+  as `"uploads"` and `"max_upload_bytes"` (beside `"captcha"`), so the client can draw
+  the form to match. It is configuration: it reads nothing from the request, sets no
+  cookie, and answers every caller the same (`TestSiteReportsTheUploadSettings`, and it
+  is on `TestCredentialHasNoEffectOffTheBadgePath`'s list). Keep it that way; anything
+  about the caller belongs nowhere near it.
 - With uploads off, `parseSubmission` holds a multipart body to `maxRequestBytes` (the
   JSON cap, well above the longest legal post) instead of `MaxUploadBytes` plus
   overhead, and answers an overflow with the switched-off `403`

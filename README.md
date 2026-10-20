@@ -162,15 +162,15 @@ the remembered name (see below), which are what would otherwise let the next
 person at a shared computer post under the same IDs and tripcode. A verification
 or a post still on its way when it is pressed brings none of them back,
 whichever educhan tab in the browser sent it: one still waiting on its anti-spam
-check is not sent, and one answered afterwards keeps nothing. Every open educhan
-tab also drops the badge and the poster key it holds; any posting form it shows,
-or is drawing at that moment, loses its Name and the option to post with the
-badge. The other tabs hear of it through `BroadcastChannel`, which every current
-browser has; in one without it, a press covers only its own tab. A tab that
-stored one of the three again before it heard, for a post or a confirmation it
-handled meanwhile, removes it when it hears, but only while storage still holds
-what that tab stored: a badge confirmed or a key made in another tab since the
-press stays.
+check is not sent, a post whose answer the server refused is not sent again,
+and one answered afterwards keeps nothing. Every open educhan tab also drops the
+badge and the poster key it holds; any posting form it shows, or is drawing at
+that moment, loses its Name and the option to post with the badge. The other
+tabs hear of it through `BroadcastChannel`, which every current browser has; in
+one without it, a press covers only its own tab. A tab that stored one of the
+three again before it heard, for a post or a confirmation it handled meanwhile,
+removes it when it hears, but only while storage still holds what that tab
+stored: a badge confirmed or a key made in another tab since the press stays.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the
@@ -827,20 +827,23 @@ out of the page, so a post sent while another is on its way solves a puzzle of
 its own. A request refused for the answer itself is answered `403` with
 `"captcha": "required" | "invalid" | "expired" | "used"` beside the message; the
 page solves a fresh puzzle and sends the post once more, so the reader presses
-the button once (unless they have left the form meanwhile: a request goes only
-from a form still on screen). A `used` answer was spent by an earlier request,
-which, like others from the same address, may have started cooldowns, so the
-resend can meet one of them; the page then says how long to wait and keeps the
-fresh answer for the next press. Every response to a request whose answer was
-spent carries `Educhan-Captcha: spent`, a refusal written after the spend
-included: a cooldown another request started meanwhile (one from the same
-address or, for a code request, one for the same email address from anywhere),
-an image whose pixels fail to decode, or a thread that filled up meanwhile. The
-page keeps its answer through any refusal without that header, so the next press
-goes straight out, and starts the next puzzle as soon as one with it arrives,
-while its form is on screen. A request that brought no response at all puts its
-answer back too, which may have been spent, so the next press can be told it was
-used and solve a fresh one.
+the button once (unless they have left the form meanwhile, or this browser was
+forgotten since the press: a request goes only from a form still on screen, in a
+browser not forgotten since, and a post the forget stopped says "This browser
+was forgotten before the post went through, so nothing was posted."). A `used`
+answer was spent by an earlier request, which, like others from the same
+address, may have started cooldowns, so the resend can meet one of them; the
+page then says how long to wait and keeps the fresh answer for the next press.
+Every response to a request whose answer was spent carries
+`Educhan-Captcha: spent`, a refusal written after the spend included: a cooldown
+another request started meanwhile (one from the same address or, for a code
+request, one for the same email address from anywhere), an image whose pixels
+fail to decode, or a thread that filled up meanwhile. The page keeps its answer
+through any other refusal without that header (the captcha's own refusals carry
+none, and drop it), so the next press goes straight out, and starts the next
+puzzle as soon as one with it arrives, while its form is on screen. A request
+that brought no response at all puts its answer back too, which may have been
+spent, so the next press can be told it was used and solve a fresh one.
 
 While a post or a code request waits for its puzzle and its answer, its form is
 held: its boxes and buttons are switched off, and look it, so what is sent is

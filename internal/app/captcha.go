@@ -561,8 +561,9 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 // request started meanwhile (one from the same client address, or, for a code
 // request, one for the same email address from anywhere), an image that
 // cannot be read, or a thread that filled up while the post was on its way.
-// The client keeps its answer through a refusal without it and solves the
-// next one as soon as a refusal with it arrives.
+// The client keeps its answer through any other refusal without it (the
+// captcha's own refusals carry none, and drop it) and solves the next one as
+// soon as a refusal with it arrives.
 const captchaSpentHeader = "Educhan-Captcha"
 
 // spendCaptcha marks a checked answer used, refusing a second use of it. It
