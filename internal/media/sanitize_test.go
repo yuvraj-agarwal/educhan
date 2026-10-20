@@ -693,12 +693,12 @@ func TestPNGIsStoredInTheFormItDecodesTo(t *testing.T) {
 	}
 }
 
-// A PNG's EXIF orientation, in an eXIf chunk before its pixels, is applied
-// as a JPEG's is, because browsers show the picture turned by it: every kind
-// of PNG is stored turned, pixel for pixel, in the form image/png decodes it
-// to, and its dimensions are the turned ones. An eXIf chunk after the pixels, which
-// browsers do not read, or one holding anything but a TIFF structure, turns
-// nothing. None of them is stored.
+// A PNG's EXIF orientation, in an eXIf chunk before its pixels, is applied as
+// a JPEG's is, because browsers show the picture turned by it: every kind of
+// PNG is stored turned, pixel for pixel, in the form image/png decodes it to,
+// and its dimensions are the turned ones. An eXIf chunk after the pixels,
+// which browsers do not read, or one holding anything but a TIFF structure,
+// turns nothing. None of them is stored.
 func TestPNGOrientationIsApplied(t *testing.T) {
 	const w, h = 12, 7
 	rng := rand.New(rand.NewSource(4))
@@ -1646,12 +1646,12 @@ func sampleBitstream(t *testing.T) riffChunk {
 	return chunks[0]
 }
 
-// readTestdata reads a fixture from testdata. Of the WebPs, sample.webp is lossless
-// (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four flat
-// quadrants (red, green / blue, white) made with Pillow at quality 90, the
-// second with its left 16 columns transparent: a simple-format VP8 file, and
-// VP8X, ALPH and VP8. hidden-lossless.webp and hidden-lossy-alpha.webp are
-// 32×32, made with Pillow with exact=True so the colour under transparent
+// readTestdata reads a fixture from testdata. Of the WebPs, sample.webp is
+// lossless (VP8L, 320×200). lossy.webp and lossy-alpha.webp are 64×48, four
+// flat quadrants (red, green / blue, white) made with Pillow at quality 90,
+// the second with its left 16 columns transparent: a simple-format VP8 file,
+// and VP8X, ALPH and VP8. hidden-lossless.webp and hidden-lossy-alpha.webp
+// are 32×32, made with Pillow with exact=True so the colour under transparent
 // pixels is kept (the second lossy, at quality 90): the left half fully
 // transparent over random colours (seed 7), the right half opaque
 // (200, 30, 30). cutout-alpha.webp is a cut-out photo as a lossy WebP with

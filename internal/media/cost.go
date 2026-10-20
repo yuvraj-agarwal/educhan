@@ -208,9 +208,9 @@ func completedPhases(format Format, data []byte, cfg image.Config, frames gifFra
 	// the first: they are part of what the phase allocates as it begins,
 	// and so are counted on top of what the phase before it held at its
 	// peak (peakOf) — for a PNG that is turned, both pictures. Its
-	// compressor, about half a megabyte, is made as the first row is
-	// written, and is left to processingSlack. What it wrote is kept for
-	// the thumbnail.
+	// compressor, just over a megabyte at BestSpeed, is made as the first
+	// row is written, and is left to processingSlack. What it wrote is
+	// kept for the thumbnail.
 	rows := pngEncoderRows(format, data, tw)
 	phases = append(phases, phase{first: min(upload, limit) + rows, alloc: 2*limit + rows, after: held + limit})
 	// The scaler allocates its scratch whole as it starts. What the

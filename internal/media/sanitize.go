@@ -384,10 +384,9 @@ func rgbaOfCMYK(m *image.CMYK) *image.RGBA {
 // (TestPNGIsStoredInTheFormItDecodesTo). A pixel's colour is first cut to what
 // its alpha shows and a palette rebuilt to one entry per colour its pixels show
 // (reduceHiddenColour), so a palette may be stored at a lower bit depth. A
-// picture with an EXIF orientation in an eXIf chunk
-// is turned upright first, as for a JPEG, because browsers show it turned.
-// An animated PNG keeps its still image, which is what a viewer without APNG
-// support has always shown.
+// picture with an EXIF orientation in an eXIf chunk is turned upright first, as
+// for a JPEG, because browsers show it turned. An animated PNG keeps its still
+// image, which is what a viewer without APNG support has always shown.
 func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, error) {
 	src, err := png.Decode(ctxReader{ctx, bytes.NewReader(data)})
 	if err != nil {

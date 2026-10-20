@@ -34,10 +34,12 @@ const (
 )
 
 // jpegOrientation reads the Orientation tag from the first Exif APP1 segment
-// of a JPEG, and returns 1, upright, for a file with no such tag, a value
-// outside 1–8, or anything it cannot read. A wrong guess here can only leave a
-// picture turned the way it was stored; whether the file is an image at all is
-// for the decoder to say, so this never fails.
+// of a JPEG, and returns 1, upright, when no Orientation entry there holds a
+// value from 1 to 8 (an entry outside that range is passed over for a later
+// one, as Chromium passes it over: tiffOrientation) or when it cannot read the
+// data. A wrong guess here can only leave a picture turned the way it was
+// stored; whether the file is an image at all is for the decoder to say, so
+// this never fails.
 //
 // It walks the segments before the first scan as image/jpeg's decoder reads
 // them (jpegNextSegment), which is also how libjpeg, and so Chromium, reads
