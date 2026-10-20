@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -1900,6 +1901,30 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	if !ok {
 		t.Fatalf("the second reissue code %q does not parse", unspent)
 	}
+	// A checkout is forgotten by its order's name, as the page forgets one
+	// that answered after Remove the Pass, Forget this browser or Stop: the
+	// name goes in a body, once with a signature that is not the server's,
+	// which is refused, and once as it was given. While the order waits, its
+	// claim's hash is in pass_orders, which is what the name is made from;
+	// once forgotten, it is nowhere.
+	orderer := p.otherBrowser()
+	orderSession, orderName := orderer.checkoutNamed("")
+	orderToken, _ := orderer.claimCookie()
+	orderBytes, err := base64.RawURLEncoding.DecodeString(orderName)
+	if err != nil || len(orderBytes) != sha256.Size+passOrderTagSize {
+		t.Fatalf("the order's name %q is not a claim hash and a signature: %v", orderName, err)
+	}
+	orderHash := orderBytes[:sha256.Size]
+	if n := p.rowsContaining("pass_orders", orderHash); n != 1 {
+		t.Fatalf("the waiting order's claim hash is in %d pass_orders rows, want 1; the scan cannot be trusted", n)
+	}
+	forgedName := base64.RawURLEncoding.EncodeToString(append(slices.Clone(orderHash), make([]byte, passOrderTagSize)...))
+	if status, _ := orderer.forgetOrder(forgedName); status != http.StatusBadRequest {
+		t.Fatalf("forget by a name the server did not sign: status %d", status)
+	}
+	if status, _ := orderer.forgetOrder(orderName); status != http.StatusOK {
+		t.Fatalf("forget by the order's name: status %d", status)
+	}
 
 	stored := p.app.passTokenHash(newCode)
 	// Positive controls: the scan finds the post body in posts, and the stored
@@ -1951,6 +1976,12 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the buyer's email":           []byte("buyer@example.com"),
 		"the buyer's name":            []byte("Bea Buyer"),
 		"the checkout session id":     []byte("cs_test_1"),
+		"the order's name":            []byte(orderName),
+		"the name's bytes":            orderBytes,
+		"the forgotten claim's hash":  orderHash,
+		"the forgotten claim":         []byte(orderToken),
+		"the forged name":             []byte(forgedName),
+		"the forgotten session id":    []byte(orderSession),
 	} {
 		for _, table := range p.tables() {
 			if table == "passes" && name == "the stored hash" {
@@ -1963,8 +1994,9 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	}
 
 	out := logs.String()
-	if !strings.Contains(out, `"path":"/api/pass/stripe-webhook"`) || !strings.Contains(out, `"path":"/api/boards/scan/threads"`) {
-		t.Fatalf("expected the webhook and the posts in the log, got:\n%s", out)
+	if !strings.Contains(out, `"path":"/api/pass/stripe-webhook"`) || !strings.Contains(out, `"path":"/api/boards/scan/threads"`) ||
+		!strings.Contains(out, `"path":"/api/pass/claim"`) {
+		t.Fatalf("expected the webhook, the posts and the claims in the log, got:\n%s", out)
 	}
 	for name, needle := range map[string]string{
 		"the code":                    issued.Pass,
@@ -1985,6 +2017,13 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the buyer's email":           "buyer@example.com",
 		"the buyer's name":            "Bea Buyer",
 		"the session id":              "cs_test_1",
+		"the order's name":            orderName,
+		"the name's hex":              hex.EncodeToString(orderBytes),
+		"the name in standard base64": base64.StdEncoding.EncodeToString(orderBytes),
+		"the forgotten claim's hash":  hex.EncodeToString(orderHash),
+		"the forgotten claim":         orderToken,
+		"the forged name":             forgedName,
+		"the forgotten session id":    orderSession,
 	} {
 		if strings.Contains(out, needle) {
 			t.Errorf("the log contains %s:\n%s", name, out)
@@ -2864,7 +2903,8 @@ func (p *passHarness) forgetOrder(name string) (int, *http.Cookie) {
 // cookie and once its checkout is paid after all, and the buyer gets that
 // through a reissue. A checkout started after the forget is somebody's
 // purchase, and its cookie can be in the browser by the time the forget of the
-// earlier one arrives, so that forget reads no cookie and clears none.
+// earlier one arrives, so that forget reads no cookie and clears none. Only
+// the server makes a name: one made from what pass_orders holds drops nothing.
 func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 
@@ -2938,7 +2978,7 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	// a forget, from a browser with a checkout waiting, which is left as it
 	// was; a name with nothing under it is nothing to forget, and no error.
 	waiting := p.otherBrowser()
-	_, waitingName := waiting.checkoutNamed("")
+	waitingSession, waitingName := waiting.checkoutNamed("")
 	waitingToken, _ := waiting.claimCookie()
 	for what, body := range map[string]map[string]any{
 		"a name cut short":         {"forget": true, "order": waitingName[:20]},
@@ -2954,7 +2994,45 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	if !waiting.reportsClaim() {
 		t.Fatal("a refused forget by order dropped the browser's claim")
 	}
-	if status, _ := p.otherBrowser().forgetOrder(passOrderName("nothing-under-this")); status != http.StatusOK {
+	// Nor does a name made from what the database holds of a claim, which
+	// anyone who can read pass_orders has, drop anything, bare or with a
+	// signature that is not the server's for it: only the server makes a
+	// name, so a copy of the table takes no waiting order from its buyer.
+	rows, err := p.app.pool.Query(context.Background(), `SELECT claim_hash FROM pass_orders`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, _ := base64.RawURLEncoding.DecodeString(waitingName)
+	waitingHash := hashToken(waitingToken)
+	if len(signed) != sha256.Size+passOrderTagSize || !bytes.Equal(signed[:sha256.Size], waitingHash) ||
+		!slices.ContainsFunc(stored, func(h []byte) bool { return bytes.Equal(h, waitingHash) }) {
+		t.Fatalf("the waiting checkout's name %q is not its stored claim hash and a signature", waitingName)
+	}
+	stranger := p.otherBrowser()
+	for _, hash := range stored {
+		for what, forged := range map[string][]byte{
+			"a stored claim hash":                       hash,
+			"a stored claim hash, signed with zeros":    append(slices.Clone(hash), make([]byte, passOrderTagSize)...),
+			"a stored claim hash, with another's tag":   append(slices.Clone(hash), p.app.passOrderTag(hashToken("another claim"))...),
+			"a stored claim hash, tagged with its hash": append(slices.Clone(hash), hash[:passOrderTagSize]...),
+		} {
+			if status, _ := stranger.forgetOrder(base64.RawURLEncoding.EncodeToString(forged)); status != http.StatusBadRequest {
+				t.Errorf("%s as an order's name: status %d; want 400", what, status)
+			}
+		}
+	}
+	if !waiting.reportsClaim() {
+		t.Fatal("a name made from pass_orders dropped a waiting order")
+	}
+	waiting.paid(waitingSession, "pi_named_from_the_table")
+	if status, out := waiting.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the buyer whose order was named from the table: status %d, %+v; want their Pass", status, out)
+	}
+	if status, _ := p.otherBrowser().forgetOrder(p.app.passOrderName("nothing-under-this")); status != http.StatusOK {
 		t.Fatalf("forget by a name with nothing under it: status %d", status)
 	}
 }

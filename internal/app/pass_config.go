@@ -17,7 +17,8 @@ import (
 // checkout.
 type PassConfig struct {
 	// Secret keys the hashes the Pass tables hold of each Pass code and of the
-	// processor's session and payment ids. A claim token and a reissue code
+	// processor's session and payment ids, and signs the name a checkout's
+	// answer gives its order (passOrderName). A claim token and a reissue code
 	// are random, and stored as plain SHA-256 (hashToken). Rotating it cancels
 	// every Pass, since no stored code hash matches any more, and orphans the
 	// payment records a refund or a reissue would look for.

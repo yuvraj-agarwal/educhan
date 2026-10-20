@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -623,18 +624,31 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// happens. Only a webhook gives the hold, and it cannot reach the cookie
 	// (passClaimCookieUntil).
 	a.setCookie(w, r, passClaimCookie, claim, passCookiePath, time.Until(passClaimCookieUntil(now)))
-	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL, "order": passOrderName(claim)})
+	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL, "order": a.passOrderName(claim)})
 }
 
+// passOrderTagSize is how many bytes of an HMAC an order's name carries.
+const passOrderTagSize = 16
+
 // passOrderName is how a checkout's answer names its order to the page: by
-// what the database holds of the claim the order is under. It is for a page
-// that will not send the browser to Stripe, because the browser was forgotten
-// while the checkout was on its way, to drop that claim and no other
-// ({"forget": true, "order"}, forgetPassOrder). It collects nothing, since
-// collecting takes the claim itself, which the page never sees (the cookie is
-// HttpOnly).
-func passOrderName(claim string) string {
-	return base64.RawURLEncoding.EncodeToString(hashToken(claim))
+// what the database holds of the claim the order is under, signed with the
+// secret (passOrderTag). It is for a page that will not send the browser to
+// Stripe, because the browser was forgotten while the checkout was on its
+// way, to drop that claim and no other ({"forget": true, "order"},
+// forgetPassOrder). It collects nothing, since collecting takes the claim
+// itself, which the page never sees (the cookie is HttpOnly). It is signed
+// because the hash alone is what anyone who can read pass_orders holds, from
+// a backup say, and a name made from it would drop every waiting order there,
+// paid ones included, for their buyers to ask the owner for reissue codes.
+func (a *App) passOrderName(claim string) string {
+	hash := hashToken(claim)
+	return base64.RawURLEncoding.EncodeToString(append(hash, a.passOrderTag(hash)...))
+}
+
+// passOrderTag is the signature an order's name carries beside its claim's
+// hash, which only the server, holding the secret, can make.
+func (a *App) passOrderTag(claimHash []byte) []byte {
+	return hmacSum([]byte(a.cfg.Pass.Secret), "pass-order:"+hex.EncodeToString(claimHash))[:passOrderTagSize]
 }
 
 // passClaimCookieLimit is how many claim cookies a request is read for. A
@@ -804,19 +818,23 @@ func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
 // named (passOrderName), as forgetPassClaim drops each of the browser's: for a
 // checkout that answered after Remove the Pass, Forget this browser or Stop
 // collecting it here, which the page does not follow to Stripe, so that its
-// claim does not outlive the forget. It reads no cookie and clears none. A
-// checkout started after the forget is somebody's purchase, and its cookie can
-// arrive while this request is on its way, so clearing the cookie here could
-// clear that one; the cookie the forgotten checkout set may stay in the
-// browser, with nothing under it, until another checkout replaces it or it
-// runs out. The answer says nothing of what else waits, since no cookie was
-// read.
+// claim does not outlive the forget. A name without the server's signature,
+// one made from a copy of pass_orders say, is refused. It reads no cookie and
+// clears none. A checkout started after the forget is somebody's purchase, and
+// its cookie can arrive while this request is on its way, so clearing the
+// cookie here could clear that one; the cookie the forgotten checkout set may
+// stay in the browser, with nothing under it, until another checkout replaces
+// it, Remove the Pass, Forget this browser or Stop collecting it here clears it
+// (forgetPassClaim), or it runs out. The answer says nothing of what else
+// waits, since no cookie was read.
 func (a *App) forgetPassOrder(w http.ResponseWriter, r *http.Request, name string) {
-	claimHash, err := base64.RawURLEncoding.DecodeString(name)
-	if err != nil || len(claimHash) != sha256.Size {
+	raw, err := base64.RawURLEncoding.DecodeString(name)
+	if err != nil || len(raw) != sha256.Size+passOrderTagSize ||
+		!hmac.Equal(raw[sha256.Size:], a.passOrderTag(raw[:sha256.Size])) {
 		writeError(w, http.StatusBadRequest, "order: want the name a checkout's answer gave its order")
 		return
 	}
+	claimHash := raw[:sha256.Size]
 	if err := a.store.dropPassClaims(r.Context(), [][]byte{claimHash}); err != nil {
 		a.fail(w, r, err, "could not forget the purchase in progress")
 		return

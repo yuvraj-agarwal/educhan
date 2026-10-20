@@ -438,26 +438,29 @@ Pass made last; and forgetting drops what is under every one. The server can
 clear only the cookie it set; one set from elsewhere stays in the browser with
 nothing under it.
 
-A checkout's answer also names its order (`"order"`), by what the database holds
-of its claim, a hash that collects nothing: collecting takes the claim itself,
-which the page cannot see. The page uses it for a checkout whose answer arrives
-after Remove the Pass, Forget this browser or Stop collecting it here was
-pressed since its request went, in its own tab or another: that forget went too
-soon to see the claim the answer set. The page does not follow such a checkout
-to Stripe, and sends `{"forget": true, "order": …}`, which drops that claim
-alone, as a forget drops each of the browser's, and reads no cookie and clears
-none: another checkout, started later, may have set its own cookie by the time
-the request is answered, and clearing would clear that one. So the cookie of
-a claim dropped this way can stay in the browser, with nothing under it, until
-another checkout replaces it or it runs out. It replaces one itself, as every
-checkout answered later does, whichever started first: a checkout started after
-the forget whose answer came before this one's, because Stripe was slower to
-open the earlier checkout, loses its cookie to it, and a payment on it is still
-the buyer's, by a reissue code from the payment on the receipt. The name is
-kept in memory for that one request and nowhere else, and the drop sets no mark
-and stops nothing in any tab, since it reaches no other claim. A checkout whose
-answer reaches its tab in the moment before that tab hears of a forget pressed
-in another is handled as one answered before it.
+A checkout's answer also names its order (`"order"`): what the database holds of
+its claim, a hash that collects nothing, signed with `EDUCHAN_PASS_SECRET`.
+Collecting takes the claim itself, which the page cannot see, and only the
+server can make a name, so a copy of the database is no way to drop anybody's
+order. The page uses it for a checkout whose answer arrives after Remove the
+Pass, Forget this browser or Stop collecting it here was pressed since its
+request went, in its own tab or another: that forget went too soon to see the
+claim the answer set. The page does not follow such a checkout to Stripe, and
+sends `{"forget": true, "order": …}`, which drops that claim alone, as a forget
+drops each of the browser's, and reads no cookie and clears none: another
+checkout, started later, may have set its own cookie by the time the request is
+answered, and clearing would clear that one. So the cookie of a claim dropped
+this way can stay in the browser, with nothing under it, until another checkout
+replaces it, Remove the Pass, Forget this browser or Stop collecting it here
+clears it, or it runs out. It replaces one itself, as every checkout answered
+later does, whichever started first: a checkout started after the forget whose
+answer came before this one's, because Stripe was slower to open the earlier
+checkout, loses its cookie to it, and a payment on it is still the buyer's, by a
+reissue code from the payment on the receipt. The name is kept in memory for
+that one request and nowhere else, and the drop sets no mark and stops nothing
+in any tab, since it reaches no other claim. A checkout whose answer reaches its
+tab in the moment before that tab hears of a forget pressed in another is
+handled as one answered before it.
 
 An order nobody paid for goes at its deadline, or as soon as Stripe reports
 its checkout expired or its payment failed, or reports it paid with a payment
@@ -1130,7 +1133,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
-| `EDUCHAN_PASS_SECRET` | empty | Keys the hashes the educhan Pass stores of its codes and of Stripe's payment and session ids (a claim cookie and a reissue code are random, and stored as plain SHA-256). **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 bytes (`openssl rand -hex 32` makes 64). Rotating it cancels every Pass and orphans every payment record |
+| `EDUCHAN_PASS_SECRET` | empty | Keys the hashes the educhan Pass stores of its codes and of Stripe's payment and session ids (a claim cookie and a reissue code are random, and stored as plain SHA-256), and signs the name a checkout's answer gives its order. **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 bytes (`openssl rand -hex 32` makes 64). Rotating it cancels every Pass and orphans every payment record |
 | `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key checkouts are created with. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook`. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for. Required with `EDUCHAN_PASS_SECRET` |
@@ -1295,8 +1298,8 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","automatic_tax","price":{"amount","currency"},"paused","claim"}`, or `{"enabled":false}` without it. `"automatic_tax":true` is there only when Stripe Tax adds tax to the price; `price` is left out when Stripe can't be asked and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
-| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name that is not one, and for an `"order"` without `"forget"` |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, signed with `EDUCHAN_PASS_SECRET`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
+| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
 | `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on; `404` for a payment that bought nothing or was refunded or disputed; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded or disputed, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that cannot be reissued, because its purchase was refunded or disputed and no one payment left pays for all its time, or because a renewal of the Pass is under way when the right has moved. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code |
