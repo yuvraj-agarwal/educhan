@@ -576,6 +576,10 @@ button.link:hover { text-decoration: underline; }
 
 .sage input { accent-color: var(--accent); width: 16px; height: 16px; }
 
+/* The badge box and its hint sit in a slot that can be drawn again in place;
+   the slot itself takes no room, so they lay out as the form's other actions. */
+.badge-option { display: contents; }
+
 /* Verification page ------------------------------------------------------- */
 
 .verify-note {

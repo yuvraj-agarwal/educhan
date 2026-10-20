@@ -1324,18 +1324,11 @@ function formHTML({ kind, slug, thread = null, open = false }) {
     : `<label class="sage"><input type="checkbox" name="sage" /> sage (reply without bumping)</label>`;
   // Off by default and per post: a verified poster is anonymous unless they
   // say otherwise on this particular post, and the credential is sent only
-  // when they do.
+  // when they do. The box sits in a slot that says which badge it offers, or
+  // that it offers none, so that the post goes out under the badge the box
+  // named or not at all (offerHeldBadge).
   const held = state.verification.badge;
-  // A badged post takes its ID from the credential rather than the poster key,
-  // which is worth saying where the choice is made — and so is the one thing
-  // that would tie it to the unbadged posts all the same: a name or tripcode
-  // used on both. Ticking the box empties the Name field (badgeToggled).
-  const badge = held
-    ? `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
-       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread. A name or
-         tripcode you also use without the badge would tie those posts to it, so the badge starts
-         with the name empty.</span>`
-    : "";
+  const badge = `<span class="badge-option" data-badge-option="${held ? held.number : ""}">${badgeOptionHTML(held)}</span>`;
 
   // A site that takes no images gets no image field at all, rather than a
   // picker that every post using it would be refused for.
@@ -1381,6 +1374,69 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
       </form>
     </details>`;
+}
+
+// badgeOptionHTML is the posting form's badge box, for the badge held, or
+// nothing when there is none. A badged post takes its ID from the credential
+// rather than the poster key, which is worth saying where the choice is made —
+// and so is the one thing that would tie it to the unbadged posts all the
+// same: a name or tripcode used on both. Ticking the box empties the Name
+// field (badgeToggled).
+function badgeOptionHTML(held) {
+  if (!held) return "";
+  return `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
+       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread. A name or
+         tripcode you also use without the badge would tie those posts to it, so the badge starts
+         with the name empty.</span>`;
+}
+
+// badgeOffered is the number (from readBadge) of the badge a posting form's
+// box offers, or "" when the form offers none.
+function badgeOffered(form) {
+  const slot = form.querySelector("[data-badge-option]");
+  return slot ? slot.dataset.badgeOption : "";
+}
+
+// offerHeldBadge brings the badge box of every posting form on screen into
+// line with the badge this browser holds now. A form offers the badge held
+// when it was drawn, and the badge can change under it: Verify pressed for
+// another address, and the reader gone on to a board before the answer came.
+// That form went on saying "post with" the badge before, while a post sent
+// from it carried the new credential, so a box ticked for one institution put
+// the post out under another. Now a box naming a badge no longer held is drawn
+// again, unticked, for the badge held now, or taken out when there is none,
+// and the half-written post is left where it is. A box the reader had ticked
+// is said to have been unticked (sayBadgeUnticked), and a box that had the
+// focus hands it to the box drawn in its place, or to the form's button when
+// there is none, rather than dropping it to the page. The Name field is left
+// as it is too: a remembered name or tripcode put back on a post written to
+// go out badged would tie it to the reader's unbadged posts.
+function offerHeldBadge() {
+  const held = state.verification.badge;
+  const number = held ? held.number : "";
+  let unticked = false;
+  for (const slot of el.main.querySelectorAll("[data-badge-option]")) {
+    if (slot.dataset.badgeOption === number) continue;
+    const box = slot.querySelector('input[name="badge"]');
+    if (box && box.checked) unticked = true;
+    const focused = slot.contains(document.activeElement);
+    slot.dataset.badgeOption = number;
+    slot.innerHTML = badgeOptionHTML(held);
+    const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');
+    if (focused && next) next.focus({ preventScroll: true });
+  }
+  if (unticked) sayBadgeUnticked();
+}
+
+// sayBadgeUnticked says why a badge box the reader ticked is ticked no longer:
+// the badge it named is not the one this browser holds now.
+function sayBadgeUnticked() {
+  const held = state.verification.badge;
+  showNotice(
+    held
+      ? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. Tick it again to post with this badge.`
+      : "Your badge is no longer available in this browser — verify again to post with it.",
+  );
 }
 
 /* File field behaviour ------------------------------------------------------ */
@@ -1944,6 +2000,19 @@ function confirmBrowserForgotten() {
   done.focus({ preventScroll: true });
 }
 
+// Each credential this page reads is numbered the first time it is read, and
+// keeps that number for the visit, however often it is read again. A posting
+// form's badge box carries the number of the badge it offers
+// (data-badge-option), which is how a form tells the badge it named from one
+// issued since (offerHeldBadge) without the credential going into the page.
+// The numbers are this page's own count and say nothing about any badge.
+const badgeNumbers = new Map();
+
+function badgeNumber(token) {
+  if (!badgeNumbers.has(token)) badgeNumbers.set(token, String(badgeNumbers.size + 1));
+  return badgeNumbers.get(token);
+}
+
 // readBadge decodes the claims out of the credential this browser holds. The
 // signature is not checked here and could not be — the key is the server's.
 // This only decides what to display and whether to offer the checkbox; the
@@ -1976,7 +2045,7 @@ function readBadge() {
       badgeLost = "Your badge has expired.";
       return null;
     }
-    return { token, label: claims.label, expires };
+    return { token, label: claims.label, expires, number: badgeNumber(token) };
   } catch {
     forgetCredential();
     return null;
@@ -3161,7 +3230,7 @@ function captureDraft() {
     name: value("name"),
     body: value("body"),
     sage: sage ? sage.checked : false,
-    badge: badge ? badge.checked : false,
+    badge: badge && badge.checked ? badgeOffered(form) : "",
     file: image && image.files ? image.files[0] : null,
     spoiler: spoiler ? spoiler.checked : false,
   };
@@ -3186,8 +3255,14 @@ function restoreDraft(draft) {
   }
   const sage = field(form, "sage");
   if (sage) sage.checked = draft.sage;
+  // The badge box is ticked again only for the badge it was ticked for. A
+  // badge issued while the page was being drawn is offered unticked in the
+  // new form, and the notice says so (sayBadgeUnticked), as it does when the
+  // form on screen changes badge (offerHeldBadge).
   const badge = field(form, "badge");
-  if (badge) badge.checked = draft.badge;
+  const ticked = draft.badge || "";
+  if (badge) badge.checked = ticked !== "" && ticked === badgeOffered(form);
+  if (ticked !== "" && ticked !== badgeOffered(form)) sayBadgeUnticked();
 
   // A form with no image field, on a site that takes no images, gets no file
   // back; a switched-off field refuses it in setFile and says why.
@@ -3690,8 +3765,14 @@ el.main.addEventListener("submit", async (event) => {
   // the request layer too, not merely in what it displays.
   const wantsBadge = data.get("badge") === "on";
   const held = wantsBadge ? state.verification.badge : null;
-  if (wantsBadge && !held) {
-    showNotice("Your badge is no longer available in this browser — verify again to post with it.");
+  // And only under the badge the box named. One issued or lost since the form
+  // was drawn sends nothing: the box is drawn again, unticked, for the badge
+  // held now, and the notice says why (offerHeldBadge), for the reader to
+  // choose again.
+  if (wantsBadge && !(held && badgeOffered(form) === held.number)) {
+    offerHeldBadge();
+    const box = field(form, "badge");
+    if (box) box.focus();
     return;
   }
   // A badged post carries the credential and not the poster key. The server
@@ -3743,9 +3824,10 @@ el.main.addEventListener("submit", async (event) => {
   } catch (err) {
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
-    // option goes with it — taking the checkbox out of this form rather than
-    // re-rendering leaves the half-written post exactly where it is — so the
-    // retry that follows is an ordinary post instead of the same refusal.
+    // option goes with it — taken out of this form (offerHeldBadge) rather
+    // than re-rendering, which leaves the half-written post exactly where it
+    // is — so the retry that follows is an ordinary post instead of the same
+    // refusal. The notice below says why.
     const reason = err.payload && err.payload.credential;
     if (reason === "expired" || reason === "revoked") {
       forgetCredential();
@@ -3753,14 +3835,7 @@ el.main.addEventListener("submit", async (event) => {
         reason === "expired"
           ? "Your badge has expired."
           : "That badge was replaced by a newer verification.";
-      const box = field(form, "badge");
-      const option = box && box.closest("label");
-      if (option) {
-        option.remove();
-        form.querySelector("#f-badge-hint")?.remove();
-      } else if (box) {
-        box.checked = false;
-      }
+      offerHeldBadge();
     }
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
@@ -3884,8 +3959,12 @@ async function submitVerification(form) {
     if (verifyStep !== sentFrom) return;
     storeCredential(issued.credential);
     // Read locally at once, so whatever is drawn next — this page, or the next
-    // posting form for a reader who has gone on — shows the badge now held.
+    // posting form for a reader who has gone on — shows the badge now held,
+    // and so does a posting form already on screen for that reader, drawn
+    // offering the badge before (offerHeldBadge). On the Verify page there is
+    // no posting form, and nothing for it to do.
     state.verification.badge = readBadge();
+    offerHeldBadge();
     verifyStep = { step: "email", label: "" };
     if (!onVerifyPage()) return;
     if (await renderVerify()) showHeldBadge();

@@ -606,6 +606,13 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// step. renderVerify is held whole by TestVerifyStepIsDrawnForAReaderArriving,
 	// the refusals by TestVerifyRefusalsAreSaidInTheForm, and every place that
 	// sets verifyStep by TestVerifyAnswersBelongToTheStepTheyWereSentFrom.
+	//
+	// offerHeldBadge was added to the badge's answer: it redraws the badge box
+	// of a posting form on screen for the badge just stored, for a reader who
+	// went on to a board before the answer, and it cannot hide a step. It
+	// reads no step, draws nothing of the Verify page, and on the Verify page,
+	// which has no posting form, finds nothing to do; it is held whole by
+	// TestPostingFormSendsOnlyTheBadgeItNames.
 	submit := jsLines(jsFunction(t, script, "submitVerification"))
 	requested := `body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),`
 	confirmed := `body: JSON.stringify({ code: String(data.get("code") || "") }),`
@@ -623,6 +630,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"if (verifyStep !== sentFrom) return;",
 		"storeCredential(issued.credential);",
 		"state.verification.badge = readBadge();",
+		"offerHeldBadge();",
 		stepToAddress,
 		"if (!onVerifyPage()) return;",
 		"if (await renderVerify()) showHeldBadge();",
@@ -1545,5 +1553,126 @@ func TestVerifyStepsAreShownClearOfTheHeader(t *testing.T) {
 	if !slices.Equal(scrolls, []string{`why.scrollIntoView({ block: "center" })`}) {
 		t.Errorf("the Verify page scrolls with %q; want only the ended code's centred note, and revealClearOfHeader "+
 			"otherwise", scrolls)
+	}
+}
+
+// A posting form offers the badge this browser held when it was drawn, and
+// the badge can change under it: Verify pressed for another address, and the
+// reader gone on to a board before the answer came. The form went on saying
+// "post with" the badge before while the post it sent carried the new
+// credential, so a box ticked for one institution put the post out under
+// another. So the box sits in a slot that names the badge it offers, by a
+// number this page gives each credential it reads (badgeNumber); the badge's
+// answer brings the slot of any form on screen into line with the badge just
+// stored (offerHeldBadge, held in submitVerification by
+// TestVerifyCodeBoxShowsWhileACodeIsPending); a post goes only under the badge
+// its box named; and a draft carried across a re-render ticks the box again
+// only for the badge it was ticked for.
+func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	// The box is drawn in one place, and every form draws it in its slot.
+	box := `<input type="checkbox" name="badge"`
+	if n := strings.Count(code, box); n != 1 || !strings.Contains(jsFunction(t, script, "badgeOptionHTML"), box) {
+		t.Errorf("app.js draws the badge box in %d places; want one, badgeOptionHTML", n)
+	}
+	if n := len(regexp.MustCompile(`[^\w]badgeOptionHTML\(`).FindAllString(code, -1)) - 1; n != 2 {
+		t.Errorf("app.js draws badgeOptionHTML %d times; want two, in formHTML's slot and in offerHeldBadge", n)
+	}
+	form := withoutComments(jsFunction(t, script, "formHTML"))
+	if !strings.Contains(form, "const held = state.verification.badge;\n"+
+		"  const badge = `<span class=\"badge-option\" data-badge-option=\"${held ? held.number : \"\"}\">${badgeOptionHTML(held)}</span>`;") {
+		t.Errorf("formHTML does not draw the badge box in a slot naming the badge it offers:\n%s", form)
+	}
+	if css, err := fs.ReadFile(webFS(), "app.css"); err != nil {
+		t.Fatalf("reading app.css: %v", err)
+	} else if !strings.Contains(string(css), "\n.badge-option { display: contents; }\n") {
+		t.Error("the badge slot takes room of its own in the form's actions")
+	}
+
+	// The number is the page's own, one per credential, however often it is
+	// read: a form drawn before the Verify page read the same badge again
+	// still names it.
+	if !strings.Contains(code, "\nconst badgeNumbers = new Map();\n") {
+		t.Error("app.js does not keep badgeNumbers, the page's numbers for the credentials it has read")
+	}
+	if got, want := jsLines(jsFunction(t, script, "badgeNumber")), []string{
+		"function badgeNumber(token) {",
+		"if (!badgeNumbers.has(token)) badgeNumbers.set(token, String(badgeNumbers.size + 1));",
+		"return badgeNumbers.get(token);",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("badgeNumber runs\n\t%s\nwant one number per credential, kept for the visit:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "readBadge")),
+		"return { token, label: claims.label, expires, number: badgeNumber(token) };") {
+		t.Error("readBadge does not number the badge it reads")
+	}
+	if got, want := jsLines(jsFunction(t, script, "badgeOffered")), []string{
+		"function badgeOffered(form) {",
+		`const slot = form.querySelector("[data-badge-option]");`,
+		`return slot ? slot.dataset.badgeOption : "";`,
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("badgeOffered runs\n\t%s\nwant the number its slot names:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+
+	// What brings a form on screen into line, held whole: it reads no Verify
+	// step and draws nothing but posting forms' badge slots, which is why it
+	// may run in the badge's answer. The focus a redrawn box had goes to the
+	// box drawn in its place, or the form's button, not to the page.
+	if got, want := jsLines(jsFunction(t, script, "offerHeldBadge")), []string{
+		"function offerHeldBadge() {",
+		"const held = state.verification.badge;",
+		`const number = held ? held.number : "";`,
+		"let unticked = false;",
+		`for (const slot of el.main.querySelectorAll("[data-badge-option]")) {`,
+		"if (slot.dataset.badgeOption === number) continue;",
+		`const box = slot.querySelector('input[name="badge"]');`,
+		"if (box && box.checked) unticked = true;",
+		"const focused = slot.contains(document.activeElement);",
+		"slot.dataset.badgeOption = number;",
+		"slot.innerHTML = badgeOptionHTML(held);",
+		`const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');`,
+		"if (focused && next) next.focus({ preventScroll: true });",
+		"}",
+		"if (unticked) sayBadgeUnticked();",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("offerHeldBadge runs\n\t%s\nwant it to draw again, unticked, every badge box naming a badge no longer "+
+			"held, and nothing else:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if n := len(regexp.MustCompile(`\.dataset\.badgeOption\s*=[^=]`).FindAllString(code, -1)); n != 1 {
+		t.Errorf("app.js sets a slot's badge %d times; want once, in offerHeldBadge, which draws the box with it", n)
+	}
+
+	// A post goes under the badge its box named, or not at all; the check
+	// comes before the credential is chosen for the request.
+	submit := withoutComments(submitHandler(t, script))
+	held := strings.Index(submit, "const held = wantsBadge ? state.verification.badge : null;")
+	named := strings.Index(submit, "if (wantsBadge && !(held && badgeOffered(form) === held.number)) {\n    offerHeldBadge();\n")
+	headers := strings.Index(submit, "const headers = held ?")
+	if held < 0 || named < held || headers < named {
+		t.Errorf("the submit handler does not refuse a badge its box did not name before it chooses the credential:\n%s", submit)
+	} else if body, _, _ := strings.Cut(submit[named:], "\n  }\n"); !strings.HasSuffix(body, "return;") {
+		t.Errorf("the submit handler goes on with a badge its box did not name:\n%s", body)
+	}
+
+	// A draft ticks the box again only for the badge it was ticked for, and
+	// nothing else ticks it.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "captureDraft")), `badge: badge && badge.checked ? badgeOffered(form) : "",`) {
+		t.Error("a draft does not note which badge its box was ticked for")
+	}
+	restore := withoutComments(jsFunction(t, script, "restoreDraft"))
+	if !strings.Contains(restore, `if (badge) badge.checked = ticked !== "" && ticked === badgeOffered(form);`) {
+		t.Errorf("a draft ticks the badge box again whichever badge the form offers:\n%s", restore)
+	}
+	if n := len(regexp.MustCompile(`\.checked\s*=[^=]`).FindAllString(code, -1)) -
+		len(regexp.MustCompile(`\b(sage|spoiler|adult)\.checked\s*=[^=]`).FindAllString(code, -1)); n != 1 {
+		t.Errorf("app.js ticks or unticks a box %d times besides sage, spoiler and the attestation; want once, "+
+			"the badge box in restoreDraft", n)
 	}
 }

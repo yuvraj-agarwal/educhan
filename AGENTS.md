@@ -386,7 +386,8 @@ needs a browser check before the test changes.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
-  restored only alongside the file it was ticked for.
+  restored only alongside the file it was ticked for, and the badge box only for the
+  badge it was ticked for.
 - A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
@@ -427,7 +428,15 @@ needs a browser check before the test changes.
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
-  every badged post, so a forged local claim buys a 403 and nothing else.
+  every badged post, so a forged local claim buys a 403 and nothing else. A posting
+  form's badge box sits in a slot that names the badge it offers (`data-badge-option`,
+  a number `badgeNumber` gives each credential the page reads, never the credential
+  itself), and a post goes out only under the badge its box named. The badge can change
+  under a form: Verify pressed for another address, and the reader gone on to a board
+  before the answer. That answer redraws the box of any form on screen for the new
+  badge, unticked, and says so if it had been ticked (`offerHeldBadge`); before it, a box
+  ticked for one institution sent the other's credential
+  (`TestPostingFormSendsOnlyTheBadgeItNames`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
