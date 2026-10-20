@@ -785,13 +785,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   file is the only sizable thing any of them allocates. Each gives a safe answer for what
   it cannot read — orientation 1, the dearest cost, `storedJPEGQuality`, not animated
   (which leaves the file to the RIFF rewrite) — except the GIF walk and the RIFF rewrite,
-  which refuse the file. The EXIF reader follows no offset but IFD0's (no IFD chain, so no
-  loop). Whether the file is an image is the decoder's call alone (`TestHostileEXIF`,
-  `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`, `FuzzGIFFramePixels`;
-  `FuzzInspect` runs every walk `Inspect` makes over files of every format, and checks
-  that what it admits is estimated at no less than a byte a pixel and no more than the
-  budget; `FuzzStripWebP` runs the RIFF rewrite over lossless and lossy WebPs and checks
-  it is idempotent). No EXIF library is needed and none should be added.
+  which refuse the file. The EXIF reader follows no offset but IFD0's and, from IFD0
+  alone, its Exif sub-IFD's, which are where Chromium reads the orientation from, and it
+  reads the entries as Chromium does (`TestOrientationIsReadAsChromiumReadsIt`); no IFD
+  chain is walked, so there is no loop. Whether the file is an image is the decoder's call
+  alone (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`,
+  `FuzzJPEGQuality`, `FuzzGIFFramePixels`; `FuzzInspect` runs every walk `Inspect` makes
+  over files of every format, and checks that what it admits is estimated at no less than
+  a byte a pixel and no more than the budget; `FuzzStripWebP` runs the RIFF rewrite over
+  lossless and lossy WebPs and checks it is idempotent). No EXIF library is needed and
+  none should be added.
 - **No filename is kept.** A camera's or a phone's filename can name a date and a person,
   so `parseSubmission` reads only the file's bytes, and an attachment's name is
   `attachmentName(stored path)`: `image` plus the stored format's extension (`image.jpg`),

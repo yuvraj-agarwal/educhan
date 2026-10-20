@@ -365,6 +365,11 @@ func TestHostileEXIF(t *testing.T) {
 	outside := append([]byte(nil), header...)
 	le.PutUint32(outside[4:8], 0xFFFFFFF0)
 
+	// IFD0 names itself as its Exif sub-IFD, and the sub-IFD, read once,
+	// names itself again; or names a sub-IFD past the end of the segment.
+	exifLoop := appendIFD(append([]byte(nil), header...), le, []tiffEntry{longEntry(le, 0x8769, 8)}, 8)
+	exifOutside := appendIFD(append([]byte(nil), header...), le, []tiffEntry{longEntry(le, 0x8769, 0xFFFFFFF0)}, 0)
+
 	wrongType := appendIFD(append([]byte(nil), header...), le, []tiffEntry{longEntry(le, 0x0112, 6)}, 0)
 	outOfRange := orientationTIFF(le, 9)
 
@@ -380,6 +385,8 @@ func TestHostileEXIF(t *testing.T) {
 		// Read for the one entry it holds, as Chromium reads it.
 		{"huge entry count", withSegments(base, exifSegment(hugeCount)), 6, false},
 		{"IFD offsets in a loop", withSegments(base, exifSegment(loop)), 6, false},
+		{"Exif sub-IFD offsets in a loop", withSegments(base, exifSegment(exifLoop)), 1, false},
+		{"Exif sub-IFD offset outside the segment", withSegments(base, exifSegment(exifOutside)), 1, false},
 		{"orientation of the wrong type", withSegments(base, exifSegment(wrongType)), 1, false},
 		{"orientation out of range", withSegments(base, exifSegment(outOfRange)), 1, false},
 		{"bad byte order", withSegments(base, exifSegment([]byte("XX\x00\x2a\x00\x00\x00\x08"))), 1, false},
@@ -420,11 +427,15 @@ func TestHostileEXIF(t *testing.T) {
 
 // The orientation is read from EXIF as Chromium reads it, so that the stored
 // picture is turned as the poster's browser showed it, in a JPEG's Exif
-// segment and a PNG's eXIf chunk alike: the first Orientation entry that is a
-// single SHORT from 1 to 8 counts, one that is not is passed over rather than
-// read as upright, and an IFD that claims more entries than it holds is read
-// for the ones it holds. Each want is what Chromium 141 did with both files,
-// loaded as images: turned them by it, or, for 1, left them as they were.
+// segment and a PNG's eXIf chunk alike: IFD0's entries are read in order, and
+// the Exif sub-IFD's where IFD0's entry naming it, a single LONG, stands; the
+// first Orientation entry that is a single SHORT from 1 to 8 counts, and one
+// that is not is passed over rather than read as upright. An IFD that claims
+// more entries than it holds is read for the ones it holds, IFD0 is read at
+// any offset, overlapping the header too, and nothing else is followed: not a
+// sub-IFD named by a SHORT or by the sub-IFD, nor the next IFD. Each want is
+// what Chromium 141 did with both files, loaded as images: turned them by it,
+// or, for 1, left them as they were.
 func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 	le := binary.LittleEndian
 	o := func(v uint16) tiffEntry { return shortEntry(le, 0x0112, v) }
@@ -436,6 +447,33 @@ func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 		return out
 	}
 	twoShorts := tiffEntry{tag: 0x0112, typ: tiffTypeShort, count: 2, value: le.AppendUint16(le.AppendUint16(nil, 6), 6)}
+	// ifds lays IFDs out one after another from offset 8, and after is where
+	// the one after IFDs of so many entries each starts. exif names the Exif
+	// sub-IFD at an offset.
+	ifds := func(lists ...[]tiffEntry) []byte {
+		b := tiffHeader(le)
+		for _, l := range lists {
+			b = appendIFD(b, le, l, 0)
+		}
+		return b
+	}
+	after := func(entries ...int) uint32 {
+		at := 8
+		for _, n := range entries {
+			at += 2 + 12*n + 4
+		}
+		return uint32(at)
+	}
+	exif := func(at uint32) tiffEntry { return longEntry(le, 0x8769, at) }
+	// nextIFD is IFD0 holding the camera's make, followed by IFD1 holding
+	// the orientation, as the next IFD in the chain.
+	nextIFD := appendIFD(appendIFD(tiffHeader(le), le, []tiffEntry{asciiEntry(0x010F, "A")}, after(1)), le, []tiffEntry{o(6)}, 0)
+	// at4 and at0 put IFD0 at offsets 4 and 0, so that its count is read from
+	// the header (4, from the offset itself; 0x4949, from "II") and its
+	// entries start inside it; the orientation is the second entry.
+	entry := appendIFD(nil, le, []tiffEntry{o(6)}, 0)[2:14]
+	at4 := append(append(append([]byte("II*\x00\x04\x00\x00\x00"), make([]byte, 10)...), entry...), 0, 0, 0, 0)
+	at0 := append(append([]byte("II*\x00\x00\x00\x00\x00"), make([]byte, 6)...), entry...)
 	cases := []struct {
 		name string
 		tiff []byte
@@ -452,6 +490,17 @@ func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 		{"orientation 9 alone", ifd0(o(9)), 1},
 		{"orientation as a LONG alone", ifd0(longEntry(le, 0x0112, 6)), 1},
 		{"orientation of two SHORTs alone", ifd0(twoShorts), 1},
+		{"IFD0 at offset 4", at4, 6},
+		{"IFD0 at offset 0", at0, 6},
+		{"orientation in the Exif sub-IFD alone", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{o(6)}), 6},
+		{"the Exif sub-IFD's orientation, then IFD0's", ifds([]tiffEntry{exif(after(2)), o(1)}, []tiffEntry{o(6)}), 6},
+		{"IFD0's orientation, then the Exif sub-IFD's", ifds([]tiffEntry{o(1), exif(after(2))}, []tiffEntry{o(6)}), 1},
+		{"orientation 9, then the Exif sub-IFD's", ifds([]tiffEntry{o(9), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"the Exif sub-IFD's orientation 9, then its 6", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{o(9), o(6)}), 6},
+		{"an Exif sub-IFD named by a SHORT", ifds([]tiffEntry{shortEntry(le, 0x8769, uint16(after(1)))}, []tiffEntry{o(6)}), 1},
+		{"an Exif sub-IFD named by the sub-IFD", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{exif(after(1, 1))}, []tiffEntry{o(6)}), 1},
+		{"orientation in the next IFD", nextIFD, 1},
+		{"an Exif sub-IFD that is IFD0, then IFD0's orientation", ifd0(exif(8), o(6)), 6},
 	}
 	pic := quadrants(64, 32)
 	jpg, pngFile := encodeJPEGImage(t, pic), pngOf(t, pic)

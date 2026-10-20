@@ -28,7 +28,9 @@ import (
 
 const (
 	exifOrientationTag = 0x0112
+	exifIFDTag         = 0x8769 // the offset of the Exif sub-IFD
 	tiffTypeShort      = 3
+	tiffTypeLong       = 4
 )
 
 // jpegOrientation reads the Orientation tag from the first Exif APP1 segment
@@ -45,9 +47,11 @@ const (
 //
 // The upload is hostile until proven otherwise, so the reader works on the
 // bytes in place: every offset is checked against the segment before it is
-// used, nothing is allocated, and the only offset followed is the one to IFD0,
-// where the tag lives. With no chain of IFDs walked there is no loop to be
-// caught in, however the offsets point.
+// used, nothing is allocated, and the only offsets followed are the two to
+// where Chromium looks for the tag: IFD0's, and from IFD0 alone, its Exif
+// sub-IFD's (tiffOrientation). Nothing is followed from the sub-IFD, so with
+// no chain of IFDs walked there is no loop to be caught in, however the
+// offsets point.
 func jpegOrientation(data []byte) int {
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return 1
@@ -90,14 +94,16 @@ func pngOrientation(data []byte) int {
 	return 1
 }
 
-// tiffOrientation reads the Orientation entry of IFD0 in a TIFF structure, the
-// body of an Exif segment or an eXIf chunk, under the same rules as
-// jpegOrientation, and the way Chromium reads it, so that the picture is
-// stored turned as the poster's browser showed it: the first Orientation entry
-// that is a single SHORT from 1 to 8 counts, and one that is not (of another
-// type or count, or 0, or 9) is passed over rather than read as upright; and
-// an IFD that claims more entries than the segment holds is read for the
-// entries it does hold (TestOrientationIsReadAsChromiumReadsIt).
+// tiffOrientation reads the Orientation tag of a TIFF structure, the body of
+// an Exif segment or an eXIf chunk, under the same rules as jpegOrientation,
+// and the way Chromium reads it, so that the picture is stored turned as the
+// poster's browser showed it (TestOrientationIsReadAsChromiumReadsIt). It
+// reads IFD0's entries in order, and the Exif sub-IFD's where IFD0's entry
+// for it stands, and the first Orientation entry that is a single SHORT from 1
+// to 8 counts: one that is not (of another type or count, or 0, or 9) is
+// passed over rather than read as upright. An IFD that claims more entries
+// than the segment holds is read for the entries it does hold, and IFD0 is
+// read wherever the header puts it, overlapping the header too.
 func tiffOrientation(tiff []byte) int {
 	if len(tiff) < 8 {
 		return 1
@@ -114,24 +120,40 @@ func tiffOrientation(tiff []byte) int {
 	if order.Uint16(tiff[2:4]) != 42 {
 		return 1
 	}
+	if o, ok := ifdOrientation(tiff, order, order.Uint32(tiff[4:8]), true); ok {
+		return o
+	}
+	return 1
+}
+
+// ifdOrientation reads the IFD at offset in tiff for tiffOrientation, and
+// reports whether it found an Orientation entry that counts. In IFD0 (ifd0)
+// an Exif sub-IFD entry, a single LONG, is followed where it stands, and the
+// sub-IFD read the same way but for that: nothing is followed from it.
+func ifdOrientation(tiff []byte, order binary.ByteOrder, offset uint32, ifd0 bool) (int, bool) {
 	// Compared as 64-bit so an offset near 4 GiB cannot wrap on a 32-bit build.
-	offset := uint64(order.Uint32(tiff[4:8]))
-	if offset < 8 || offset+2 > uint64(len(tiff)) {
-		return 1
+	if uint64(offset)+2 > uint64(len(tiff)) {
+		return 0, false
 	}
 	entries := tiff[offset+2:]
 	count := min(int(order.Uint16(tiff[offset:offset+2])), len(entries)/12)
 	for k := 0; k < count; k++ {
 		entry := entries[12*k : 12*k+12]
-		if order.Uint16(entry[0:2]) != exifOrientationTag ||
-			order.Uint16(entry[2:4]) != tiffTypeShort || order.Uint32(entry[4:8]) != 1 {
-			continue
-		}
-		if v := int(order.Uint16(entry[8:10])); v >= 1 && v <= 8 {
-			return v
+		typ, n := order.Uint16(entry[2:4]), order.Uint32(entry[4:8])
+		switch order.Uint16(entry[0:2]) {
+		case exifOrientationTag:
+			if v := int(order.Uint16(entry[8:10])); typ == tiffTypeShort && n == 1 && v >= 1 && v <= 8 {
+				return v, true
+			}
+		case exifIFDTag:
+			if ifd0 && typ == tiffTypeLong && n == 1 {
+				if v, ok := ifdOrientation(tiff, order, order.Uint32(entry[8:12]), false); ok {
+					return v, true
+				}
+			}
 		}
 	}
-	return 1
+	return 0, false
 }
 
 // orientedPoint is where pixel (x, y) of a w×h image lands once orientation o
