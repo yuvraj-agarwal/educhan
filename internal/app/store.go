@@ -1241,9 +1241,13 @@ var verificationTables = [...]string{"verification_credentials", "verification_p
 // each table and index would date the last confirmation before the sweep, so
 // restampScans makes them the sweep's.
 //
-// It works on a connection of its own rather than one from the pool, for the
-// two settings the pool's connections should not carry: the lock timeout, and
-// a handler for the warnings with which VACUUM reports a table it skipped.
+// It works on a connection of its own rather than one from the pool, for what
+// the pool's connections should not carry: the lock timeout, and a handler for
+// the warnings with which VACUUM reports a table it skipped. The connection
+// asks for those warnings itself (client_min_messages), because DATABASE_URL
+// or a role's or the database's default can turn them off, and without the
+// warning a table another session held looks like one the role may not
+// vacuum (vacuumVerificationTable).
 func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 	notices := &noticeLog{}
 	config := s.pool.Config().ConnConfig
@@ -1251,6 +1255,7 @@ func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 		config.RuntimeParams = map[string]string{}
 	}
 	config.RuntimeParams["lock_timeout"] = verificationLockTimeout
+	config.RuntimeParams["client_min_messages"] = "warning"
 	config.OnNotice = notices.add
 	conn, err := pgx.ConnectConfig(ctx, config)
 	if err != nil {

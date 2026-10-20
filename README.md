@@ -1166,10 +1166,15 @@ credentials table, or locked rows in it, holds up. While it waits, confirmations
 queue behind it, each holding one of its server instance's few database
 connections, and once they hold them all every request on that instance waits
 too; five seconds bounds that. The vacuum never waits for a lock. It passes over
-a table another session holds, and runs again until each table's new file holds
-none of the old rows, which lasts as long as the oldest transaction that began
-before the rewrite. It keeps at that for a minute and then fails, so a session
-holding a table or an old snapshot for longer — an export, say — costs a failed
+a table another session holds, which VACUUM reports only as a warning; the
+sweep's connection asks for warnings itself, so a `client_min_messages` in
+`DATABASE_URL` or a role's default cannot make a moment's reader look like a
+role that may not vacuum the table
+(`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). It runs again
+until each table's new file holds none of the old rows, which lasts as long as
+the oldest transaction that began before the rewrite. It keeps at that for a
+minute and then fails, so a session holding a table or an old snapshot for
+longer — an export, say — costs a failed
 run, which the Job's retry or the next night's run repeats, rather than a
 stalled site or a run that reports success with the old rows still on disk.
 

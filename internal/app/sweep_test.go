@@ -1146,6 +1146,66 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	}
 }
 
+// The sweep tells a table VACUUM skipped because another session held it from
+// one it skipped because the role may not vacuum it by the warning VACUUM
+// sends, and client_min_messages decides whether the client is sent warnings
+// at all. Set to error — in DATABASE_URL, as here, or as a role's or the
+// database's default — it would make a moment's reader on a verification
+// table look like a role that does not own it, and the sweep fail at once
+// instead of waiting the reader out. The sweeper's own connection asks for
+// warnings whatever the pool's connections ask for.
+func TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor(t *testing.T) {
+	h := testServer(t, func(cfg *Config) { cfg.DatabaseURL += "&client_min_messages=error" })
+	ctx := context.Background()
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		VALUES ('\x01', '\x02', 'Quiet College', date_trunc('day', now()) + interval '181 days')`)
+	// Positive control: the pool's connections really are sent no warnings.
+	var level string
+	if err := h.app.pool.QueryRow(ctx, `SHOW client_min_messages`).Scan(&level); err != nil {
+		t.Fatalf("read client_min_messages: %v", err)
+	}
+	if level != "error" {
+		t.Fatalf("the pool's connections have client_min_messages %q, want error; the test cannot see the bug", level)
+	}
+
+	reader, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = reader.Rollback(ctx) })
+	if _, err := reader.Exec(ctx, `SELECT count(*) FROM verification_credentials`); err != nil {
+		t.Fatalf("read the credentials: %v", err)
+	}
+
+	files := h.relationFiles("verification_credentials", "verification_pending")
+	swept := h.sweepLater()
+	// The vacuum takes the credentials table first and the pending table
+	// next, so the pending table in a new file means the credentials were
+	// tried, and passed over, at least once.
+	deadline := time.After(10 * time.Second)
+	for h.relationFiles("verification_pending")[0] == files[1] {
+		select {
+		case sweep := <-swept:
+			t.Fatalf("the sweep ended (%v) while a reader held the credentials table, "+
+				"before it had vacuumed the pending table; want it to pass over the credentials and wait", sweep.err)
+		case <-deadline:
+			t.Fatal("timed out waiting for the sweep to vacuum the pending table")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+	if err := reader.Rollback(ctx); err != nil {
+		t.Fatalf("end the reader: %v", err)
+	}
+
+	sweep := await(t, "the sweep", swept)
+	if sweep.err != nil {
+		t.Fatalf("a sweep whose reader ended while it waited: %v", sweep.err)
+	}
+	if after := h.relationFiles("verification_credentials")[0]; after == files[0] {
+		t.Errorf("the credentials table is still in file %d after a sweep that finished", after)
+	}
+}
+
 // PostgreSQL's statistics keep the time of the last scan of every table and
 // index (last_seq_scan, last_idx_scan), and a confirmation checking the
 // credentials' primary key is such a scan: on a day with a single issuance it

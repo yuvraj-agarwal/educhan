@@ -802,11 +802,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
     dates its issuance to the minutes between two of them; freezing keeps `xmin`, and
     `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's last
-    step, works on a connection of its own, with `lock_timeout` at five seconds and a
-    handler that collects notices. It locks `verification_credentials`
-    `IN EXCLUSIVE MODE` in a read-committed transaction (writers wait, `CredentialLabel`
-    reads on), deletes every row and inserts the returned copy back `ORDER BY random()`
-    in one statement, and notes the transaction's id. `restampScans` then reads each
+    step, works on a connection of its own, with `lock_timeout` at five seconds,
+    `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
+    the database's default can hide the `55P03` below), and a handler that collects
+    notices. It locks `verification_credentials` `IN EXCLUSIVE MODE` in a
+    read-committed transaction (writers wait, `CredentialLabel` reads on), deletes
+    every row and inserts the returned copy back `ORDER BY random()` in one statement,
+    and notes the transaction's id. `restampScans` then reads each
     verification table whole and through each of its indexes, which it finds in the
     catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
     show for them is the sweep's rather than the last confirmation's. Last,
@@ -848,6 +850,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `TestSweepWaitsForAnOlderTransactionToEnd`,
     `TestSweepFailsWhenVacuumLeavesATableInItsFile`,
     `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
+    `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
     `TestSweepLeavesNoScanTimeFromBeforeIt` and
     `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
