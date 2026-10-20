@@ -475,27 +475,33 @@ needs a browser check before the test changes.
   (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else, and
   "Copy the code" on the clipboard, which Remove the Pass and Forget this browser empty
   again inside their click, whatever is on it by then, when this tab copied it with Copy
-  the code since it was loaded and nothing has been copied or cut in this tab since (a
-  document `copy` or `cut` event that takes a selection, `forgetCopiedPassCode`: one with
-  nothing selected, or a caret in a box, copies nothing and counts for nothing;
-  `navigator.clipboard`'s own write fires neither), unless another tab has since removed
-  or replaced the Pass (`passCodeCopied`, `emptyCopiedPassCode`, `followPassStorage`). A
-  code copied any other way, by hand included, stays until something else is copied, and
-  the Pass page, the Verify page and the FAQ name the button and promise no more than
-  that. Buying and renewing leave for Stripe's hosted page by `location.assign`: no
-  Stripe script, frame or stylesheet ever loads on this origin, and the CSP has no
-  exception for Stripe. While `GET /api/pass` says `"claim"`, the page draws a collecting
-  state with no form to pay with (or, with a Pass already here, says a checkout from this
-  browser hasn't been collected yet, which may be a payment Stripe is still confirming,
-  and keeps Renew) and asks `/api/pass/claim` on every visit, with a pause that grows
-  while it is open (`collectPass`). Each checkout's claim holds its own order and no
-  other, so starting another stops this browser collecting the one before; Start again
-  and the open-checkout note say so, and that a payment made on the earlier one after all
-  is still the buyer's, by a reissue code asked for at the support address on Stripe's
-  receipt, and the forms drawn again over a checkout left behind (`passStartedAgain`:
-  Start again, Stripe's cancel link, or a checkout answered after the reader left the
-  Pass page or pressed Remove or Forget, which `submitPass` marks before it declines to
-  follow it) keep Stop collecting it here (`passEarlierCheckoutHTML`). Every claim
+  the code since it was loaded and no copy or cut in this tab has certainly put something
+  on the clipboard since, unless another tab has since removed or replaced the Pass
+  (`passCodeCopied`, `emptyCopiedPassCode`, `followPassStorage`). A document event that
+  may have put nothing there does not count, so the two err toward emptying the clipboard
+  (`forgetCopiedPassCode`): a `copy` counts when a text box's own selection holds
+  something, where the box says, and otherwise when the document's does (an email box, a
+  checkbox, the file picker, a button, a link or the page); a `cut` counts only that way
+  and in a box that can be typed in, neither read-only nor disabled, or in editable
+  content; `navigator.clipboard`'s own write fires neither. A code copied any other way,
+  by hand included, stays until something else is copied, and the Pass page, the Verify
+  page and the FAQ name the button, say that it empties the clipboard even after a copy
+  educhan can't see took anything (from an email box, in some browsers), and promise no
+  more than that. Buying and renewing leave for Stripe's hosted page by
+  `location.assign`: no Stripe script, frame or stylesheet ever loads on this origin, and
+  the CSP has no exception for Stripe. While `GET /api/pass` says `"claim"`, the page
+  draws a collecting state with no form to pay with (or, with a Pass already here, says a
+  checkout from this browser hasn't been collected yet, which may be a payment Stripe is
+  still confirming, and keeps Renew) and asks `/api/pass/claim` on every visit, with a
+  pause that grows while it is open (`collectPass`). Each checkout's claim holds its own
+  order and no other, so starting another stops this browser collecting the one before;
+  Start again and the open-checkout note say so, and that a payment made on the earlier
+  one after all is still the buyer's, by a reissue code asked for at the support address
+  on Stripe's receipt, and the forms drawn again over a checkout left behind
+  (`passStartedAgain`: Start again, Stripe's cancel link, or a checkout answered after
+  the reader left the Pass page, after they pressed Remove or Forget, or after the Pass
+  held changed meanwhile, in another tab say, which `submitPass` marks before it declines
+  to follow it) keep Stop collecting it here (`passEarlierCheckoutHTML`). Every claim
   carries the collection's nonce (`educhan:pass-nonce`, kept until an answer says nothing
   more is waiting): the server derives the code from the claim cookie and the nonce
   together, so a claim whose answer was lost is asked again and handed the same code, and
@@ -546,18 +552,29 @@ needs a browser check before the test changes.
   which every other Pass answer (a reissue code, a code checked with
   `/api/pass/activate`, Check it again, a checkout) notes before its request: one that
   arrives after them, or while their request is on its way (`passCodeForgetting`), stores
-  nothing (`passForgotten`); one asked for while a forget is on its way, Stop's included,
-  is sent once that is settled (`passForgetsSettled`) and notes the counters then. Stop
-  leaves a reissue code and those answers alone, since it is about a checkout and a
-  reissue it dropped would be spent for nothing, though a reissue answer that lands after
-  it does not draw back the claim Stop dropped (`passForgets`, read before the request).
-  Until the server has that request (`passForgetting`), nothing collects: `renderPass`
-  and `collectPass` wait on it, and Check now and Stop collecting it here stay off
-  meanwhile, in every tab and in anything drawn meanwhile (`PASS_COLLECT_BUTTONS`, which
-  `drawPass` and `followPassForget` turn off); turned away, Stop turns them back on, says
-  so and goes on collecting. The browser's other tabs do all of this too: the tab it was
-  pressed in keeps a mark under `educhan:pass-forget` (`code:` for Remove and Forget,
-  `claim:` for Stop) while the request is on its way, and a tab that sees it appear
+  nothing (`passForgotten`). Four presses wait while a forget is on its way, Stop's
+  included: Use this code here (a Pass code or a reissue code), Check it again, Buy on
+  Stripe and Renew on Stripe. Each is sent once that is settled (`passForgetsSettled`)
+  and notes the counters then, but `passForgetsSettled` notes `passCodeForgets` and
+  `passForgets` as the button is pressed too, and if either has moved by the end of the
+  wait (Remove or Forget pressed meanwhile, here or in another tab, since Check now and
+  Stop are off until then) the press sends nothing: its button comes back and
+  `PASS_FORGOTTEN_MEANWHILE` says why. A press made after the Remove goes, and not ahead
+  of Stop's request: a forget sent while this tab's earlier one is on its way leaves the
+  page waiting on both (`passForgetSent`), whichever is answered first, or a checkout
+  started once Remove's was answered could have its claim dropped by Stop's, arriving
+  after it. Another tab's forget still on its way when this tab sends one is not waited
+  for, since this tab's mark takes the place of that tab's. Stop leaves a reissue code and
+  those answers alone, since it is about a checkout and a reissue it dropped would be
+  spent for nothing, though a reissue answer that lands after it does not draw back the
+  claim Stop dropped (`passForgets`, read before the request). Until the server has that
+  request (`passForgetting`), nothing collects: `renderPass` and `collectPass` wait on it,
+  and Check now and Stop collecting it here stay off meanwhile, in every tab and in
+  anything drawn meanwhile (`PASS_COLLECT_BUTTONS`, which `drawPass` and
+  `followPassForget` turn off); turned away, Stop turns them back on, says so and
+  goes on collecting. The browser's other tabs do all of this too: the tab it was pressed
+  in keeps a mark under `educhan:pass-forget` (`code:` for Remove and Forget, `claim:`
+  for Stop) while the request is on its way, and a tab that sees it appear
   (`followPassForget`, by the `storage` event) stops, drops the collection's nonce, for
   Remove and Forget the reissue code's too, its mark, `passLost` and its code box, and
   waits for the mark to go, or `PASS_FORGET_WAIT_MS` (30 seconds, which the README

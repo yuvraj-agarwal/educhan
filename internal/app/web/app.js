@@ -1883,8 +1883,9 @@ function forgetBrowserHTML() {
         code to collect it with. If you used Copy the code on the Pass page since you last
         opened educhan in this tab, and have copied nothing in this tab since, it empties the
         clipboard too, whatever is on it by then, unless another tab removed or replaced the
-        Pass meanwhile; a Pass code copied any other way, by hand included, stays there until
-        something else is copied.</p>
+        Pass meanwhile. It does so even after a copy in this tab that educhan can't see took
+        anything, such as one from an email box in some browsers. A Pass code copied any other
+        way, by hand included, stays there until something else is copied.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
     </div>`;
 }
@@ -2174,6 +2175,10 @@ const PASS_PAUSED = "The Pass is not on sale right now.";
 // afresh, or, when an earlier try's answer may have been lost, perhaps used
 // for them already.
 const PASS_REISSUE_SPENT = "this reissue code has been used, has run out or was cancelled";
+// Said instead of sending what was asked for while a forget was on its way,
+// once Remove the Pass or Forget this browser has been pressed since
+// (passForgetsSettled): whoever pressed it meant this browser to keep no Pass.
+const PASS_FORGOTTEN_MEANWHILE = "Nothing was sent: the Pass was removed, or this browser forgotten, before it could go.";
 // Said when the browser will not keep a Pass: its storage for the site is
 // blocked or full, so the Pass cannot ride on the next post.
 const PASS_NOT_KEPT =
@@ -2216,21 +2221,32 @@ let passCodeForgetting = null;
 
 // passForgetting is the request that drops this browser's claim
 // (forgetPassClaim) while it is on its way, or, when another tab sent it, the
-// wait for that tab's mark to go (followPassForget). Until the server has the
-// request, the claim is still this browser's, and GET /api/pass still says
-// there is something to collect, so nothing starts collecting meanwhile: the
-// Pass page waits for it before asking (renderPass), and so does a collection
-// before each claim (collectPass).
+// wait for that tab's mark to go (followPassForget), either of them with any
+// this tab sent before that is still on its way (passForgetSent). Until the
+// server has the request, the claim is still this browser's, and GET
+// /api/pass still says there is something to collect, so nothing starts
+// collecting meanwhile: the Pass page waits for it before asking
+// (renderPass), and so does a collection before each claim (collectPass).
 let passForgetting = null;
+
+// passForgetSent is this tab's own request to drop the claim while it is on
+// its way, with any it sent before that is still unanswered (forgetPassClaim).
+// What a forget leaves the page to wait on waits for it too: Remove the Pass
+// pressed before Stop's request is answered is settled only once both are,
+// whichever answer comes first, or a checkout started once Remove's was
+// answered could have its claim dropped by Stop's, arriving after it. Another
+// tab's forget is not waited on here: this tab's mark takes the place of that
+// tab's, so its going would never be heard.
+let passForgetSent = null;
 
 // passStartedAgain is set when the visitor leaves Stripe without paying, or
 // says so while a purchase is being collected, or when a checkout opened that
-// the page did not send them to, because they had left the Pass page or a
-// forget came first (submitPass): the page then offers to buy again, and goes
-// on collecting underneath until another checkout starts, so a payment that
-// does go through meanwhile is still collected. A checkout gives the browser a
-// new claim, and the earlier one is no longer collected here
-// (passCollectingHTML says so).
+// the page did not send them to, because they had left the Pass page, a forget
+// came first, or the Pass held changed meanwhile, in another tab say
+// (submitPass): the page then offers to buy again, and goes on collecting
+// underneath until another checkout starts, so a payment that does go through
+// meanwhile is still collected. A checkout gives the browser a new claim, and
+// the earlier one is no longer collected here (passCollectingHTML says so).
 let passStartedAgain = false;
 
 // passCodeTyped is what is in the Pass page's code box, a Pass code or a
@@ -2245,9 +2261,9 @@ let passCodeTyped = "";
 // passCodeCopied is the Pass code this tab has put on the clipboard (Copy the
 // code) since it was loaded, so Remove the Pass and Forget this browser empty
 // the clipboard again (emptyCopiedPassCode). It is forgotten once a copy or a
-// cut in this tab takes something (forgetCopiedPassCode), which takes the
-// code's place there, and once the browser no longer holds that code because
-// another tab removed or replaced it (followPassStorage).
+// cut in this tab certainly puts something there in the code's place
+// (forgetCopiedPassCode), and once the browser no longer holds that code
+// because another tab removed or replaced it (followPassStorage).
 let passCodeCopied = "";
 
 // passForgetHeard ends the wait on a forget another tab of this browser has
@@ -2387,7 +2403,7 @@ function forgetPassClaim(emptyBoxes = false) {
   }
   const mark = `${emptyBoxes ? "code" : "claim"}:${newPassNonce()}`;
   storageSet(PASS_FORGET_STORAGE_KEY, mark);
-  const forgetting = (async () => {
+  const request = (async () => {
     try {
       await api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true }) });
       return true;
@@ -2395,6 +2411,8 @@ function forgetPassClaim(emptyBoxes = false) {
       return err.status === 403;
     }
   })();
+  const forgetting = passForgetSent ? Promise.all([request, passForgetSent]).then(() => request) : request;
+  passForgetSent = forgetting;
   passForgetting = forgetting;
   if (emptyBoxes) {
     passCodeForgetting = forgetting;
@@ -2403,6 +2421,9 @@ function forgetPassClaim(emptyBoxes = false) {
   // attached first, and the mark taken off unless a later forget has put its
   // own there.
   forgetting.then(() => {
+    if (passForgetSent === forgetting) {
+      passForgetSent = null;
+    }
     if (passForgetting === forgetting) {
       passForgetting = null;
     }
@@ -2432,11 +2453,19 @@ function passForgotten(forgets) {
 // tab, which a request about a Pass the reader asks for meanwhile goes after:
 // a code typed in once Remove the Pass was pressed is then not dropped for
 // being sent before Remove's own request was done (passForgotten), and a
-// checkout's claim is not dropped by a forget sent before it.
+// checkout's claim is not dropped by a forget sent before it. It resolves to
+// whether another forget came while it waited (Remove the Pass or Forget this
+// browser, here or in another tab, since Check now and Stop are off until the
+// one on its way is settled): the forgets are noted when it is called, which
+// is when the button was pressed, so a press made before that forget sends
+// nothing (PASS_FORGOTTEN_MEANWHILE), and one made after it goes.
 async function passForgetsSettled() {
+  const codes = passCodeForgets;
+  const claims = passForgets;
   while (passForgetting || passCodeForgetting) {
     await (passCodeForgetting || passForgetting);
   }
+  return codes !== passCodeForgets || claims !== passForgets;
 }
 
 // passPageShown says whether the reader is still on the Pass page, which
@@ -2460,9 +2489,10 @@ function forgetTypedCode() {
 // emptyCopiedPassCode empties the clipboard after this tab put a Pass code
 // there (Copy the code), for Remove the Pass and Forget this browser. The page
 // cannot read the clipboard without asking the reader's leave, so it empties
-// whatever is on it by then, unless something has been copied or cut in this
-// tab since (forgetCopiedPassCode); something copied in another tab or app
-// meanwhile goes too, and the page says so. Writing to the clipboard takes the
+// whatever is on it by then, unless a copy or a cut in this tab has certainly
+// put something there since (forgetCopiedPassCode); something copied in
+// another tab or app meanwhile goes too, and so does a copy here the page
+// cannot be sure of, and the page says so. Writing to the clipboard takes the
 // reader's click, so it is called inside one; a browser that will not write
 // leaves the clipboard as it was. A code copied any other way, by hand, in
 // another tab, before this tab was last loaded, or before another tab removed
@@ -2478,23 +2508,31 @@ function emptyCopiedPassCode() {
   }
 }
 
-// forgetCopiedPassCode follows a copy or a cut in this tab that takes
-// something, which puts it on the clipboard in the code's place, or the code
-// again by hand: Remove the Pass and Forget this browser then leave the
-// clipboard as it is. One with nothing selected sets the event off all the
-// same and leaves the clipboard as it was, code and all, so it does not count:
-// in a text box the selection has to hold something, and elsewhere the
-// document's does. A box whose selection cannot be read (an email box) is
-// taken at its word. Copy the code sets off neither event, since the clipboard
-// API's own write does not, and nor does a copy from the browser's own menus
-// (Copy link address, say), which the page never hears of.
+// forgetCopiedPassCode follows a copy or a cut in this tab that certainly put
+// something on the clipboard, in the code's place, or the code again by hand:
+// Remove the Pass and Forget this browser then leave the clipboard as it is.
+// Either event goes off with nothing selected too, or for a cut that removes
+// nothing, and leaves the clipboard as it was, code and all, so one that may
+// have put nothing there does not count, and the two err toward emptying the
+// clipboard of the code. A copy takes what is selected: in a text box whose
+// selection can be read, the box's own has to hold something, and anywhere
+// else the document's does, for a box that does not say (an email box, which
+// Chromium counts in the document's and Firefox does not), a checkbox, the
+// file picker, a button, a link or the page. A cut takes something only from
+// a box that can be typed in, neither read-only nor disabled, or from editable
+// content, with something selected there. Copy the code sets off neither
+// event, since the clipboard API's own write does not, and nor does a copy
+// from the browser's own menus (Copy link address, say), which the page never
+// hears of.
 function forgetCopiedPassCode(event) {
-  const box = event.target;
-  const taken =
-    box instanceof HTMLInputElement || box instanceof HTMLTextAreaElement
-      ? box.selectionStart === null || box.selectionStart !== box.selectionEnd
-      : String(document.getSelection() || "") !== "";
-  if (taken) {
+  const target = event.target;
+  const box = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : null;
+  const readable = box !== null && box.selectionStart !== null;
+  const selected = readable ? box.selectionStart !== box.selectionEnd : String(document.getSelection() || "") !== "";
+  const editable = box
+    ? (readable || box.type === "email" || box.type === "number") && !box.readOnly && !box.disabled
+    : target instanceof HTMLElement && target.isContentEditable;
+  if (selected && (event.type === "copy" || editable)) {
     passCodeCopied = "";
   }
 }
@@ -2687,12 +2725,14 @@ function passHeldHTML(info, held, codeOnScreen) {
           collecting anything bought here that hasn't arrived yet. If you used Copy the code
           since you last opened educhan in this tab, and have copied nothing in this tab since,
           removing it empties the clipboard too, whatever is on it by then, unless another tab
-          removed or replaced the Pass meanwhile; a code copied any other way, by hand
-          included, stays on the clipboard until something else is copied. To use the Pass
-          again afterwards you need its code, so show it and write it down first. If you lose
-          it, write to the support address on the receipt Stripe emailed you, and you'll be
-          sent a reissue code to enter on this page, which gives your Pass a new code; if the
-          payment that bought it was refunded or disputed, that may no longer be possible.</p>
+          removed or replaced the Pass meanwhile. It does so even after a copy in this tab that
+          educhan can't see took anything, such as one from an email box in some browsers. A
+          code copied any other way, by hand included, stays on the clipboard until something
+          else is copied. To use the Pass again afterwards you need its code, so show it and
+          write it down first. If you lose it, write to the support address on the receipt
+          Stripe emailed you, and you'll be sent a reissue code to enter on this page, which
+          gives your Pass a new code; if the payment that bought it was refunded or disputed,
+          that may no longer be possible.</p>
         <button class="btn danger" type="button" data-action="forget-pass">Remove the Pass from this browser</button>
       </div>
     </div>`;
@@ -3406,15 +3446,20 @@ function canonicalCode(typed) {
 // only then is a refusal taken for what may follow a code spent here. A
 // renewal, which hands over no code, is refused when asked again, so the Pass
 // held is checked then (passAfterLostAnswer). Asked for while a forget is on
-// its way, it is sent once that is done (passForgetsSettled), and an answer
-// that arrives after Remove the Pass or Forget this browser, here or in
-// another tab, is dropped unstored (passForgotten); Stop collecting it here
-// leaves it alone, but for what it says about the claim Stop dropped
-// (passForgets).
+// its way, it is sent once that is done (passForgetsSettled), and not at all
+// if Remove the Pass or Forget this browser was pressed meanwhile; an answer
+// that arrives after one of them, here or in another tab, is dropped unstored
+// (passForgotten). Stop collecting it here leaves it alone, but for what it
+// says about the claim Stop dropped (passForgets).
 async function redeemPassReissue(typed) {
   let res = null;
   let failed = null;
-  await passForgetsSettled();
+  if (await passForgetsSettled()) {
+    if (passPageShown()) {
+      showNotice(PASS_FORGOTTEN_MEANWHILE);
+    }
+    return;
+  }
   const forgets = passCodeForgets;
   const claims = passForgets;
   const again = passNoncePending(PASS_REISSUE_UNANSWERED_STORAGE_KEY);
@@ -3513,16 +3558,26 @@ function passStillHeld(before) {
 
 // checkHeldPass asks the server about the Pass this browser holds, for one
 // that looks expired here but may have been renewed on another device. Like a
-// code typed in, the code goes in the body of /api/pass/activate. What the
-// answer says is stored only while this browser still holds that Pass and
-// nothing has forgotten it (passForgotten), and drawn only while the reader
-// is on the Pass page.
+// code typed in, the code goes in the body of /api/pass/activate, once no
+// forget is on its way (passForgetsSettled), and not at all if Remove the
+// Pass or Forget this browser was pressed meanwhile. What the answer says is
+// stored only while this browser still holds that Pass and nothing has
+// forgotten it (passForgotten), and drawn only while the reader is on the
+// Pass page.
 async function checkHeldPass(button) {
   const held = storedPass();
   if (!held) {
     return;
   }
   button.disabled = true;
+  if (await passForgetsSettled()) {
+    button.disabled = false;
+    if (passPageShown()) {
+      refocus(button);
+      showNotice(PASS_FORGOTTEN_MEANWHILE);
+    }
+    return;
+  }
   const forgets = passCodeForgets;
   let res = null;
   let failed = null;
@@ -3579,13 +3634,14 @@ async function checkHeldPass(button) {
 // submitPass drives the Pass page's three forms. Buying and renewing leave for
 // Stripe's page by an ordinary navigation, so nothing of Stripe's ever loads
 // here. A request asked for while a forget is on its way is sent once that is
-// done (passForgetsSettled). An answer about a Pass that left this browser
+// done (passForgetsSettled), and not at all if Remove the Pass or Forget this
+// browser was pressed meanwhile. An answer about a Pass that left this browser
 // while it was awaited (removed, or replaced, here or in another tab) is
 // dropped (passStillHeld), and so is any answer once Remove the Pass or Forget
-// this browser has been pressed (passForgotten). One that arrives after the
-// reader left the Pass page stores what it is still right to store, and draws
-// nothing, and starts no checkout: one it opened is left behind
-// (passStartedAgain).
+// this browser has been pressed (passForgotten), and neither starts a
+// checkout: one it opened is left behind (passStartedAgain). One that arrives
+// after the reader left the Pass page stores what it is still right to store,
+// and draws nothing, and starts no checkout either.
 async function submitPass(form) {
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
@@ -3594,7 +3650,8 @@ async function submitPass(form) {
 
   let request;
   if (kind === "activate") {
-    // Sent as the server writes a code, whatever stood between its groups.
+    // Sent as the server writes a code, whatever stood between its groups,
+    // and with an O, I or L as the digit the server reads it as.
     const typed = canonicalCode(String(field(form, "pass").value || ""));
     // A reissue code is spent at once: typing it and pressing the button is
     // the reader's say-so to put its Pass in place of one held here.
@@ -3605,6 +3662,9 @@ async function submitPass(form) {
       await redeemPassReissue(typed);
       button.disabled = false;
       button.textContent = label;
+      if (passPageShown()) {
+        refocus(button);
+      }
       return;
     }
     // Another Pass's code typed over a good one held would put that one out
@@ -3646,7 +3706,15 @@ async function submitPass(form) {
   button.disabled = true;
   button.textContent = kind === "activate" ? "Checking…" : "Opening Stripe…";
   clearNotice();
-  await passForgetsSettled();
+  if (await passForgetsSettled()) {
+    button.disabled = false;
+    button.textContent = label;
+    if (passPageShown()) {
+      refocus(button);
+      showNotice(PASS_FORGOTTEN_MEANWHILE);
+    }
+    return;
+  }
   const forgets = passCodeForgets;
   let res = null;
   let failed = null;
@@ -4013,8 +4081,10 @@ const FAQ_SECTIONS = [
         collect it with. If you used <strong>Copy the code</strong> since you last opened
         educhan in the same tab, and have copied nothing in that tab since, either also
         empties the clipboard, whatever is on it by then, unless another tab removed or
-        replaced the Pass meanwhile; a code copied any other way, by hand included, stays
-        there until something else is copied.</p>`,
+        replaced the Pass meanwhile. They do so even after a copy in that tab that educhan
+        can't see took anything, such as one from an email box in some browsers. A code
+        copied any other way, by hand included, stays there until something else is
+        copied.</p>`,
   },
   {
     id: "faq-tripcodes",
@@ -5189,10 +5259,11 @@ function followPassForget(event) {
     forgetTypedCode();
     passLost = "";
   }
-  const waited = new Promise((resolve) => {
+  const heardOut = new Promise((resolve) => {
     passForgetHeard = resolve;
     setTimeout(resolve, PASS_FORGET_WAIT_MS);
   });
+  const waited = passForgetSent ? Promise.all([heardOut, passForgetSent]).then(() => {}) : heardOut;
   passForgetting = waited;
   if (code) {
     passCodeForgetting = waited;
