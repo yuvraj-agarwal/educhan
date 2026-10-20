@@ -3699,14 +3699,15 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	// A game named nearby excuses a kill only where the sentence names no
 	// place: "i will kill everyone at school tomorrow then play valo" holds.
 	if gameVerb.MatchString(cm) && (gameAfterAPreposition(next) ||
-		sportKill.MatchString(cm) && sportAfterAPreposition(next, wordsIn(sentence)) ||
-		gameNamed(text, m) && !anyIn(wordsIn(sentence), threatPlaceWords)) {
+		sportKill.MatchString(cm) && sportAfterAPreposition(next, wordsIn(sentence)) &&
+			sportBanter(slices.Concat(ws, next), wordsIn(sentence)) ||
+		gameNamed(text, m) && !placeNamed(wordsIn(sentence))) {
 		return false
 	}
 	// "I'm shooting all of you on ascent": a shot in a game, where no place
 	// is named.
 	if (strings.Contains(cm, "shoot") || strings.Contains(cm, "stab")) && gameNamed(text, m) &&
-		!anyIn(wordsIn(sentence), threatPlaceWords) {
+		!placeNamed(wordsIn(sentence)) {
 		return false
 	}
 	return true
@@ -4035,26 +4036,62 @@ var (
 	gameTitles = canonSetOf(`valo valorant fortnite minecraft roblox pubg bgmi freefire warzone amogus csgo cs2 apex
 		overwatch gta fifa coc dota r6 tekken ranked respawn smp bedwars skywars ascent icebox`)
 	// gamePairs are games named in two words, by the first.
-	gamePairs = map[string]string{"among": "us", "free": "fire", "counter": "strike", "rocket": "league",
-		"brawl": "stars", "rainbow": "six", "5": "stack", "five": "stack", "clash": "royale"}
+	gamePairs = canonPairs(map[string]string{"among": "us", "free": "fire", "counter": "strike",
+		"rocket": "league", "brawl": "stars", "rainbow": "six", "5": "stack", "five": "stack", "clash": "royale"})
+	// playedGames and playedPairs are games that excuse a kill only named
+	// straight after "at", "in" or "on" ("murder you in Smash", "kill you at
+	// ping pong"), since their words are also verbs, seasons and the like
+	// elsewhere ("smash his face in", "kill you in the fall").
+	playedGames = canonSetOf(`smash paintball scrabble monopoly kahoot splatoon pokemon darts bowling foosball
+		airsoft jenga pictionary trivia mariokart tetris`)
+	playedPairs = canonPairs(map[string]string{"mario": "kart", "laser": "tag", "ping": "pong",
+		"spelling": "bee", "fall": "guys", "just": "dance", "table": "tennis", "air": "hockey",
+		"street": "fighter", "mortal": "kombat", "smash": "bros", "super": "smash", "pokemon": "go"})
+	// timeBefore makes a place a time: "after school", "before class".
+	timeBefore = canonSetOf(`after before till until til`)
 )
 
+// canonPairs adds to pairs of words their loose view's spelling of the first,
+// which is how the loose view's text has it ("ciash" for "clash"); the
+// second is compared with is, which reads either.
+func canonPairs(pairs map[string]string) map[string]string {
+	for k, v := range pairs {
+		pairs[canon(k)] = v
+	}
+	return pairs
+}
+
+// placeNamed reports a place a threat may be aimed at among ws, where it is
+// not a time: "at school", not "after school" or "before class".
+func placeNamed(ws []string) bool {
+	for i, w := range ws {
+		if threatPlaceWords[w] && !(i > 0 && timeBefore[ws[i-1]]) {
+			return true
+		}
+	}
+	return false
+}
+
 // gameAfterAPreposition reports a game named after "at", "in" or "on" in the
-// words after a match: "kill them at the match", not "kill my teacher after
-// the game". A school or a class first ends the look.
+// words after a match: "kill them at the match", "murder you on Mario Kart",
+// not "kill my teacher after the game". A school or a class first ends the
+// look, unless it is a time: "murder you at Tekken after school".
 func gameAfterAPreposition(next []string) bool {
 	for i, w := range next {
-		if is(w, "school") || is(w, "class") {
+		if (is(w, "school") || is(w, "class")) && !(i > 0 && timeBefore[next[i-1]]) {
 			return false
 		}
 		if w != "at" && w != "in" && w != "on" {
 			continue
 		}
-		for _, g := range next[i+1 : min(len(next), i+4)] {
+		for k := i + 1; k < min(len(next), i+4); k++ {
+			g := next[k]
 			if is(g, "school") || is(g, "class") {
 				return false // "at the school football game"
 			}
-			if gameWords[g] {
+			if gameWords[g] || gameTitles[g] || playedGames[g] ||
+				k+1 < len(next) && (gamePairs[g] != "" && is(next[k+1], gamePairs[g]) ||
+					playedPairs[g] != "" && is(next[k+1], playedPairs[g])) {
 				return true
 			}
 		}
@@ -4260,6 +4297,50 @@ func sportAfterAPreposition(next, sentence []string) bool {
 	}
 	return false
 }
+
+// sportBanter reads a kill at a sport as said of the other side, in fun:
+// done to "them", "you", "him" or the other team (named in ws, the words of
+// the match and those after it, before the "at", "in" or "on" the sport
+// follows), not to "everyone", and with nothing in the sentence that makes
+// it serious ("i'm serious", "not a joke", "for real", "and then myself",
+// "bring the bat").
+func sportBanter(ws, sentence []string) bool {
+	opponent := false
+	for _, w := range ws {
+		if is(w, "at") || is(w, "in") || is(w, "on") {
+			break
+		}
+		if sportOpponents[w] || opponentHeads[w] {
+			opponent = true
+			break
+		}
+		if harmObjects[w] {
+			return false // "everyone", "all", "people"
+		}
+	}
+	if !opponent || anyIn(sentence, seriousWords) {
+		return false
+	}
+	for i, w := range sentence {
+		next := ""
+		if i+1 < len(sentence) {
+			next = sentence[i+1]
+		}
+		if is(w, "for") && is(next, "real") || (is(w, "not") || is(w, "no")) && (is(next, "joke") ||
+			is(next, "joking") || is(next, "kidding") || is(next, "a") && i+2 < len(sentence) && is(sentence[i+2], "joke")) {
+			return false
+		}
+	}
+	return true
+}
+
+var (
+	// sportOpponents are who a kill at a sport may be said of in fun.
+	sportOpponents = canonSetOf(`them you u ya him her y'all yall`)
+	opponentHeads  = canonSetOf(`team teams side sides opposition opponent opponents rivals`)
+	// seriousWords make a kill at a sport no banter.
+	seriousWords = canonSetOf(`serious myself bat bats hammer crowbar pipe knife gun`)
+)
 
 // nextWords splits the start of s into at most n words of letters, digits
 // and hyphens. It reads no further than the nth word, since s is often all
@@ -4817,8 +4898,9 @@ func (f *scannedField) threatFrameCheck(v *view, m []int) bool {
 		return false
 	}
 	if after := nextWords(clauseAfter(v.text, end), 6); gameActs[verb] && (gameAfterAPreposition(after) ||
-		sportKill.MatchString(verb) && sportAfterAPreposition(after, sentence) ||
-		gameNamed(v.text, whole) && !anyIn(sentence, threatPlaceWords)) {
+		sportKill.MatchString(verb) && sportAfterAPreposition(after, sentence) &&
+			sportBanter(wordsIn(v.text[at:end]), sentence) ||
+		gameNamed(v.text, whole) && !placeNamed(sentence)) {
 		return false
 	}
 	if armed && unnegatedIn(sentence, propWords, gameWords, toyWeapon, festivalWords) {
@@ -5187,7 +5269,7 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			break
 		}
 		sentence := wordsIn(sentenceAround(v.text, at, at+len(after)))
-		if anyIn(sentence, fuelWords) {
+		if anyIn(sentence, fuelWords) || explicitHarm(sentence) {
 			return act(end)
 		}
 		for k := end; k < len(ws); k++ {
@@ -5314,8 +5396,9 @@ var (
 		surprise celebrate celebrating celebration rizz outfit outfits smile vibe vibes energy presence aura fairy
 		rangoli annual rally rallies pep orientation`)
 	labHeads        = canonSetOf(`lab labs laboratory laboratories`)
-	experimentWords = canonSetOf(`experiment experiments practical practicals demo demonstration reaction`)
-	clothesWords    = canonSetOf(`outfit outfits fit fits drip jacket jackets dress dresses saree sarees sari
+	experimentWords = canonSetOf(`experiment experiments practical practicals demo demonstration reaction fair expo
+		exhibition`)
+	clothesWords = canonSetOf(`outfit outfits fit fits drip jacket jackets dress dresses saree sarees sari
 		lehenga kurta kurti suit blazer hoodie sneakers shoes heels`)
 	wornOwners = canonSetOf(`my our his her their`)
 )
@@ -6704,6 +6787,23 @@ func (r *wordReading) postHas(name string, set map[string]bool) bool {
 	return r.has[name]
 }
 
+// postHasPair reports a word of set followed by second anywhere in the text,
+// read once for each name: "break up".
+func (r *wordReading) postHasPair(name string, set map[string]bool, second string) bool {
+	if r.has == nil {
+		r.has = map[string]bool{}
+	}
+	if found, ok := r.has[name]; ok {
+		return found
+	}
+	found := false
+	for k := 0; k+1 < len(r.ws) && !found; k++ {
+		found = set[r.ws[k]] && is(r.ws[k+1], second)
+	}
+	r.has[name] = found
+	return found
+}
+
 // wordReading reads the plain view's words once, for menace and goads.
 func (f *scannedField) wordReading() *wordReading {
 	if f.words == nil {
@@ -6841,6 +6941,9 @@ func (r *wordReading) excused(p *menacePhrase, i int) bool {
 	}
 	switch p.kind {
 	case menaceAfter, menaceVerdict:
+		if p.ruin && explicitHarm(ws) {
+			return false // "I'm going to light up the school, they'll never know it was me"
+		}
 		if !p.ruin && schoolHyperbole(ws) || untimed(ws, eventWords) {
 			return true
 		}
@@ -7173,7 +7276,7 @@ var (
 		{kind: menaceWarned, run: runOf(`swear down|to|on god|my|everything? life|mum|mom|mother?`)},
 		{kind: menaceWarned, run: runOf(`yaad rakhna|rakhiyo|rakhiye`)},
 		{kind: menaceWarned, run: runOf(`dekhna tum|sab|sabko|ab`)},
-		{kind: menaceWarned, run: runOf(`last chance`)},
+		{kind: menaceWarned, run: runOf(`last chance`), check: notAnOffer},
 
 		// The wrong it answers.
 		{kind: menaceGrievance, run: runOf(`$wrong at|about|on|off|out|over? me|us`), check: wrongedBy},
@@ -7211,6 +7314,9 @@ func harmComing(r *wordReading, lo, hi int) (strong, ok bool) {
 // at sports day"), and not lamps or a festival ("light it up with diyas").
 func lightingUp(r *wordReading, lo, hi int) (strong, ok bool) {
 	from, to := max(r.sentence[lo], lo-readReach), min(r.sentenceEnd[lo], lo+readReach)
+	if explicitHarm(r.ws[from:to]) {
+		return true, true // "light up the gym at the pep rally so nobody gets out"
+	}
 	// The phrase's own "light" is no lamp.
 	return false, !anyIn(r.ws[from:lo], litUp) && !anyIn(r.ws[min(hi, to):to], litUp)
 }
@@ -7237,13 +7343,70 @@ func lockedIn(r *wordReading, lo, hi int) (strong, ok bool) {
 	if p := readNoun(r.ws[k+1 : end]); !p.place() && !(k+1 < end && menacePlaces[r.ws[k+1]]) {
 		return false, false
 	}
-	if ws := r.sentenceWords(lo); !alightIn(ws) &&
-		(anyIn(ws, lockedInExcuses) || escapeRoom(ws) || lockedToStudy(ws)) {
+	if ws := r.sentenceWords(lo); !alightIn(ws) && !explicitHarm(ws) &&
+		(anyIn(ws, lockedInExcuses) || escapeRoom(ws) || lockedToStudy(ws) || lockedFor(ws)) {
 		return false, false
 	}
 	s := r.subjectBefore(lo)
 	return np.quantified && (s == "" || posterSubject[s]), true
 }
+
+// lockedFor reports a purpose of study or a school occasion after "for":
+// "for the test", "for revision", "for the class photo", "for the 24h study
+// marathon".
+func lockedFor(ws []string) bool {
+	for i, w := range ws {
+		if !is(w, "for") {
+			continue
+		}
+		for _, x := range ws[i+1 : min(len(ws), i+5)] {
+			if lockedPurposes[x] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// explicitHarm reports harm named outright in ws, which no occasion or
+// purpose excuses: a weapon, people shot, stabbed, gassed or killed
+// ("and shoot them", "the experiment will kill them all"), nobody getting
+// out or escaping, the poster not being found out ("they'll never know it
+// was me"), or a lesson taught ("so they learn their lesson").
+func explicitHarm(ws []string) bool {
+	if anyIn(ws, weaponHeads) {
+		return true
+	}
+	for i, w := range ws {
+		rest := ws[i+1 : min(len(ws), i+4)]
+		switch {
+		case harmVerbs[w] && anyIn(rest[:min(len(rest), 2)], harmObjects):
+			return true
+		case (is(w, "nobody") || is(w, "noone") || is(w, "nobody's") || is(w, "no") && len(rest) > 0 &&
+			is(rest[0], "one")) && anyIn(rest, escapeWords):
+			return true
+		case cantWords[w] && len(rest) > 0 && (escapeWords[rest[0]] || len(rest) > 1 && is(rest[0], "get") &&
+			is(rest[1], "out")):
+			return true
+		case is(w, "never") && len(rest) > 0 && is(rest[0], "know"):
+			return true
+		case is(w, "learn") && len(rest) > 1 && (is(rest[0], "their") || is(rest[0], "a")) && is(rest[1], "lesson"):
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	lockedPurposes = canonSetOf(`test tests practical practicals revision revising meeting meetings photo photos
+		picture pictures fair marathon session sessions study studying lesson lessons review quiz quizzes class
+		classes extra rehearsal assembly`)
+	harmVerbs = canonSetOf(`shoot shooting shot stab stabbing stabbed gas gassing gassed kill killing murder
+		murdering slaughter slaughtering burn burning poison poisoning`)
+	harmObjects = canonSetOf(`them everyone everybody all him her you y'all yall people us`)
+	escapeWords = canonSetOf(`out escape escapes escaping leave leaves leaving survive survives surviving alive`)
+	cantWords   = canonSetOf(`can't cant cannot won't wont never`)
+)
 
 // escapeRoom reports an escape room in ws, which locks people in for fun.
 func escapeRoom(ws []string) bool {
@@ -7258,19 +7421,50 @@ func escapeRoom(ws []string) bool {
 // alightIn reports something set alight in ws: a fuel (fuelWords), a fire
 // set ("on fire", "set fire", "setting fire"), "ablaze", "alight" or a
 // burning: "lock them all in the gym for the event and set it on fire".
+//
+// "Burnt out" is tiredness, and someone being "on fire" ("the team is on
+// fire", "we're on fire") doing well.
 func alightIn(ws []string) bool {
 	for i, w := range ws {
-		if fuelWords[w] || alightWords[w] ||
-			is(w, "fire") && i > 0 && (is(ws[i-1], "on") || setVerbs[ws[i-1]]) {
+		switch {
+		case fuelWords[w]:
+			return true
+		case alightWords[w]:
+			if i+1 < len(ws) && is(ws[i+1], "out") {
+				continue
+			}
+			return true
+		case is(w, "fire") && i > 0 && setVerbs[ws[i-1]]:
+			return true
+		case is(w, "fire") && i > 0 && is(ws[i-1], "on"):
+			if onFireIdiom(ws[:i-1]) {
+				continue
+			}
 			return true
 		}
 	}
 	return false
 }
 
+// onFireIdiom reports that the words before "on fire" make it someone
+// doing well: "the team is", "we're", "i'm".
+func onFireIdiom(before []string) bool {
+	if len(before) == 0 {
+		return false
+	}
+	last := before[len(before)-1]
+	if onFireSubjects[last] {
+		return true
+	}
+	return len(before) > 1 && (is(last, "is") || is(last, "are") || is(last, "am")) &&
+		onFirePeople[before[len(before)-2]]
+}
+
 var (
-	alightWords = canonSetOf(`ablaze alight burn burns burning burnt burned`)
-	setVerbs    = canonSetOf(`set sets setting`)
+	onFireSubjects = canonSetOf(`we're were i'm im he's hes she's shes they're theyre you're youre ur team's`)
+	onFirePeople   = canonSetOf(`team squad we class i everyone he she they you batch group`)
+	alightWords    = canonSetOf(`ablaze alight burn burns burning burnt burned`)
+	setVerbs       = canonSetOf(`set sets setting`)
 )
 
 // lockedToStudy reports a "so" with studying or attending in the four
@@ -7331,8 +7525,30 @@ func leftIn(r *wordReading, lo, hi int) (strong, ok bool) {
 		}
 		last = "bodybag"
 	}
-	return leftInStrong[last], !anyIn(r.sentenceWords(lo), medicalWords)
+	ws := r.sentenceWords(lo)
+	return leftInStrong[last], !anyIn(ws, medicalWords) && !anyIn(ws, harmlessCauses)
 }
+
+// notAnOffer reads "last chance" as a warning, not the last chance to sign
+// up, to buy tickets or to get a seat.
+func notAnOffer(r *wordReading, lo, hi int) (strong, ok bool) {
+	after := r.restOfClause(hi, 3)
+	if len(after) > 1 && (is(after[0], "to") || is(after[0], "for")) && anyIn(after[1:], lastChanceOffers) {
+		return false, false
+	}
+	return false, true
+}
+
+var (
+	// lastChanceOffers are what there is a last chance to do or to have.
+	lastChanceOffers = canonSetOf(`sign register enrol enroll apply submit join book buy order get grab vote enter rsvp
+		pay see catch tickets ticket entries entry registration registrations signups signup applications seats
+		seat spots places discount sale deal`)
+	// harmlessCauses put someone in an ambulance or a hospital without
+	// anyone meaning to: the canteen's food, a run in PE, the heat.
+	harmlessCauses = canonSetOf(`food foods pizza burger burgers biryani curry spicy chilli chili run running laps lap
+		5k 10k marathon beep pacer workout exercise heat heatwave sun`)
+)
 
 // nobodyLeaves reads "nobody walks out of the gym alive", "not everyone's
 // going home from that hall" and "nobody in our form room is making it to
@@ -7548,11 +7764,19 @@ func getsIt(r *wordReading, lo, hi int) (strong, ok bool) {
 
 // stayAway reads a warning to stay away from a place or at a time: said as
 // an instruction to someone else, with the place or the time, or ending its
-// sentence, and with no reason given for it (stayAwayReasons).
+// sentence, and with no reason given for it (stayAwayReasons) in its sentence
+// or the ones either side ("the canteen pizza on friday is a crime. stay
+// away"), nor a purpose after it ("leave early to catch the bus").
 func stayAway(r *wordReading, lo, hi int) (strong, ok bool) {
 	ws := r.sentenceWords(lo)
-	if anyIn(ws, stayAwayReasons) {
+	if anyIn(ws, stayAwayReasons) || r.reasonNextTo(lo) {
 		return false, false
+	}
+	after := r.restOfClause(hi, 8)
+	for k := 0; k+1 < len(after); k++ {
+		if (is(after[k], "to") || is(after[k], "and")) && stayPurposes[after[k+1]] {
+			return false, false
+		}
 	}
 	// Said to someone ("pls don't come", "better stay inside"), not of
 	// them ("he never comes to class", "the bus doesn't go there").
@@ -7573,6 +7797,36 @@ func stayAway(r *wordReading, lo, hi int) (strong, ok bool) {
 		}
 	}
 	return false, false
+}
+
+// reasonNextTo reports a reason to stay away in the sentence before word i's
+// or the one after it: food, a crowd, an exam, a teacher in a mood ("the
+// maths teacher is so done with us").
+func (r *wordReading) reasonNextTo(i int) bool {
+	var near [][]string
+	if s := r.sentence[i]; s > 0 {
+		near = append(near, r.ws[max(r.sentence[s-1], s-readReach):s])
+	}
+	if e := r.sentenceEnd[i]; e < len(r.ws) {
+		near = append(near, r.ws[e:min(r.sentenceEnd[e], e+readReach)])
+	}
+	for _, ws := range near {
+		if anyIn(ws, stayAwayReasons) || anyIn(ws, teacherWords) && (anyIn(ws, moodWords) || doneWith(ws)) {
+			return true
+		}
+	}
+	return false
+}
+
+// doneWith reports "done with us" or "done with you" in ws: fed up, not
+// finished off.
+func doneWith(ws []string) bool {
+	for k := 0; k+2 < len(ws); k++ {
+		if is(ws[k], "done") && is(ws[k+1], "with") && (is(ws[k+2], "us") || is(ws[k+2], "you") || is(ws[k+2], "u")) {
+			return true
+		}
+	}
+	return false
 }
 
 // wrongedBy reads a wrong done to the poster by someone else: not "I failed
@@ -7658,7 +7912,14 @@ var (
 		floods weather heat heatwave hot snow snowing holiday holidays vacation off closed closure cancelled
 		canceled bandh strike protest hartal curfew pollution smog aqi traffic jam crowd crowded queue queues
 		rush construction repair repairs maintenance renovation drill fumigation exam exams test results revision
-		study sale`)
+		study sale packed full busy rammed jammed noisy loud smell smells smelly stinks stinking stink food foods
+		pizza burger burgers biryani curry lunch menu meal meals mopped slippery wet painted paint pest pests rats
+		cockroaches`)
+	// stayPurposes, after "to" or "and", give a reason to leave early or
+	// stay away: "leave early to catch the bus".
+	stayPurposes  = canonSetOf(`catch get grab beat avoid make reach board find save`)
+	teacherWords  = canonSetOf(`teacher teachers sir maam ma'am miss principal prof professor coach hod warden`)
+	moodWords     = canonSetOf(`mood moody angry mad furious cranky grumpy strict fuming raging annoyed irritated`)
 	relativeWords = canonSetOf(`who whoever that wey jo jisne`)
 )
 
@@ -7975,6 +8236,13 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		if !ownSubject(text, m[0]) {
 			return false
 		}
+	case thinkWords[first]:
+		// "thinking about suicide" with no "I" is the poster's unless its
+		// subject is someone else: "my mum is thinking about suicide",
+		// "Hamlet considering suicide", "why do teens think about suicide".
+		if f.someoneElseThinks(v, m, ws) {
+			return false
+		}
 	case is(first, "suicidal") && len(ws) == 2 && !is(last, "again"):
 		// "suicidal thoughts aren't a character flaw" says what they are,
 		// not that the poster has them.
@@ -8048,6 +8316,9 @@ func (f *scannedField) supportPhrasing(text string, m []int, ws, next []string) 
 	switch {
 	case len(ws) > 2 && (is(ws[1], "tried") || is(ws[1], "attempted")):
 		if is(last, "it") || is(last, "all") {
+			if endingARelationship(r, next) {
+				return false, true
+			}
 			return len(next) == 0 || pastTimes[next[0]] || trailFillers[next[0]], true
 		}
 		return true, true
@@ -8061,11 +8332,17 @@ func (f *scannedField) supportPhrasing(text string, m []int, ws, next []string) 
 		if anyIn(sentence, schoolWorkWords) || anyIn(sentence, hindiStudyWords) || len(next) == 0 {
 			return false, true
 		}
-		// An age, not a time of day: "to 18", not "till 12 tonight".
+		// An age, not a time of day or a count: "to 18", not "till 12
+		// tonight", "to 18:00" or "to 18 credits".
 		n, err := strconv.Atoi(next[0])
-		age := err == nil && n >= 13 && n <= 30 && !(len(next) > 1 && clockWords[next[1]])
+		age := err == nil && n >= 13 && n <= 30 && !(len(next) > 1 && (clockWords[next[1]] || countNouns[next[1]])) &&
+			!clockAfter(text, m[1])
 		return age || ageMarks[next[0]] || len(next) > 1 && is(next[0], "my") && ageMarks[next[1]], true
 	case is(last, "post") || is(last, "message") || is(last, "thread"):
+		// "my last post on this thread" leaves a thread, not the board.
+		if anyIn(next[:min(len(next), 3)], threadWords) {
+			return false, true
+		}
 		return r.postHas("farewell", farewellWords) && !r.postHas("break", breakWords), true
 	case (is(first, "i'm") || is(first, "im") || is(first, "i")) && hasWord(ws, "on") && (is(last, "roof") ||
 		is(last, "rooftop") || is(last, "terrace") || is(last, "ledge") || is(last, "bridge") || is(last, "edge")):
@@ -8093,6 +8370,52 @@ func (f *scannedField) supportPhrasing(text string, m []int, ws, next []string) 
 	}
 	return false, false
 }
+
+// endingARelationship reads "I tried to end it" as a break-up: "with my
+// boyfriend" after it, or a break-up named in the post ("should i break up
+// with him"), or a partner and a fight ("me and my gf have been fighting"),
+// with nothing in the post that an attempt leaves behind (a hospital,
+// pills, a rope).
+func endingARelationship(r *wordReading, next []string) bool {
+	for k := 0; k+1 < len(next) && k < 5; k++ {
+		if is(next[k], "with") && (romanticPartners[next[k+1]] ||
+			k+2 < len(next) && (is(next[k+1], "my") || is(next[k+1], "him") || is(next[k+1], "her")) &&
+				romanticPartners[next[k+2]]) {
+			return true
+		}
+	}
+	if r.postHas("attemptSigns", attemptSigns) {
+		return false
+	}
+	return r.postHas("breakup", breakupWords) || r.postHasPair("breakUp", breakVerbs, "up") ||
+		r.postHas("partner", romanticPartners) && r.postHas("fight", partnerFights)
+}
+
+// clockAfter reports a time of day written with a colon after offset i:
+// "18:00".
+func clockAfter(text string, i int) bool {
+	rest := strings.TrimLeft(text[i:min(len(text), i+12)], " ")
+	j := 0
+	for j < len(rest) && isASCIIDigit(rest[j]) {
+		j++
+	}
+	return j > 0 && j+1 < len(rest) && (rest[j] == ':' || rest[j] == '.') && isASCIIDigit(rest[j+1])
+}
+
+var (
+	romanticPartners = canonSetOf(`boyfriend girlfriend bf gf partner ex husband wife crush relationship`)
+	breakupWords     = canonSetOf(`breakup dump dumped dumping dumps`)
+	breakVerbs       = canonSetOf(`break broke breaking breaks`)
+	partnerFights    = canonSetOf(`fight fighting fights fought argue arguing argued argument arguments cheated
+		cheating`)
+	attemptSigns = canonSetOf(`hospital ambulance icu pills overdose overdosed rope noose wrists survived pumped
+		paramedics`)
+	// countNouns after a number make it a count, not an age: "make it to 18
+	// credits".
+	countNouns = canonSetOf(`credits credit points marks percent hours hrs minutes mins pages units subjects
+		courses classes lectures questions km kms miles laps reps days weeks months followers subs subscribers`)
+	threadWords = canonSetOf(`thread threads topic board subject`)
+)
 
 var (
 	// medicineNames are medicines by name: "overdosed on my antidepressants".
@@ -8132,6 +8455,7 @@ var (
 	pillContainers = canonSetOf(`bottle bottles box boxes packet packets case cases organiser organizer wrapper wrappers strip strips`)
 	ownActs        = canonSetOf(`hurt hurting harmed harming harm cut cutting burned burnt burning burn starved starving starve self`)
 	wantWords      = canonSetOf(`want wanted wanting wanna wana need wish wished wishing`)
+	thinkWords     = canonSetOf(`think thinking thought considering contemplating`)
 	reasonWords    = canonSetOf(`no nothing any a the zero`)
 	// genericVerbs, straight after "suicidal thoughts", make it a statement
 	// about them: "suicidal thoughts are more common than people think".
@@ -8279,6 +8603,66 @@ var (
 		honestly literally actually also always often sometimes lowkey finally secretly basically even already
 		now today yesterday tonight lately recently back to used am was 'm do did so ngl tbh fr like ok okay
 		anyway anyways yeah well because cause cuz bc but tho though lol idk`)
+)
+
+// someoneElseThinks reports that the thinking a support match starts with
+// ("thinking about suicide", "considering ending it") is someone else's.
+// The poster's own needs no "I" ("been thinking about suicide every day",
+// "staring at the ceiling thinking about suicide"), so it is turned down
+// only when, walking back from it over the words that only carry a verb, a
+// subject that is not the poster turns up: a person or a pronoun ("my mum",
+// "teens", "a classmate who"), a name with a capital ("is Hamlet thinking"),
+// any word before "is" or "was" ("the narrator of The Bell Jar is
+// thinking"), or any word at all before "think" or "thought", which take
+// their subject straight before them ("why do teenagers think").
+func (f *scannedField) someoneElseThinks(v *view, m []int, ws []string) bool {
+	text := v.text
+	if hasFirstPerson(ws) || ownSubject(text, m[0]) {
+		return false
+	}
+	clause := clauseBefore(text, m[0])
+	at := m[0] - len(clause)
+	finite := !strings.HasSuffix(ws[0], "ing")
+	aux := false
+	sp := wordSpans(clause)
+	for k := len(sp) - 1; k >= 0; k-- {
+		w := clause[sp[k][0]:sp[k][1]]
+		switch {
+		case thirdAux[w]:
+			aux = true
+			continue
+		case carriers[w]:
+			continue
+		case otherPeople[w] || otherSubjects[w] && !is(w, "it") || otherObjects[w] || hindiOtherPeople[w] ||
+			otherThinkers[w]:
+			return true
+		case strings.HasSuffix(w, "'s") && !notPossessive[w]:
+			return true // "my mum's been thinking"
+		}
+		if finite || aux {
+			return true
+		}
+		if k > 0 {
+			a, b := v.span(at+sp[k][0], at+sp[k][1])
+			r, _ := utf8.DecodeRuneInString(f.src[a:b])
+			return unicode.IsUpper(r)
+		}
+		return false
+	}
+	return false
+}
+
+var (
+	// thirdAux are the forms of "be" and "have" that carry another
+	// person's verb: "my roommate is thinking", "the poet was thinking".
+	thirdAux = canonSetOf(`is isn't isnt are aren't arent was wasn't wasnt were weren't werent has hasn't hasnt been`)
+	// otherThinkers are people the poster talks about.
+	otherThinkers = canonSetOf(`teens teen teenagers teenager adolescents youth young children child kids kid mum mom
+		mummy mommy mother dad daddy father papa mama parent parents roommate roommates roomie classmate classmates
+		mate mates bestie bff cousin uncle aunt aunty auntie grandma grandpa nan boyfriend girlfriend bf gf partner
+		husband wife narrator speaker poet author writer novelist patient patients men women boys girls guy guys
+		girl boy person student pupil pupils teacher sibling siblings`)
+	notPossessive = canonSetOf(`it's that's what's there's here's let's who's where's how's`)
 )
 
 // doneAgain reads a bare "self harming" or "cut again" as something the
@@ -11931,9 +12315,11 @@ func operandBefore(v *view, before, after string) bool {
 // name must be one only code has (one letter, or with "_", ".", or a digit
 // in it, or R's "$" or "@": "df$id") or start a line or a statement (after
 // ";", "{", "(", ":" or ","), and must not be a word that points at the
-// poster or the number ("me", "mine", "here", "digits"), and a phone word
-// in the rest of its line ("# my number", "whatsapp", "text only", "hmu")
-// makes it the poster's number after all.
+// poster or the number ("me", "mine", "here", "digits"). A phone word in
+// the rest of its line ("whatsapp", "text only", "hmu") makes it the
+// poster's number after all, and so does a call cue in a comment ("# my
+// number", "# call me"), where a phone word alone only says what the value
+// is ("# number of rows").
 func rAssigns(v *view, s, after string) bool {
 	s = strings.TrimRight(s, " \t")
 	i := len(s)
@@ -11955,7 +12341,10 @@ func rAssigns(v *view, s, after string) bool {
 		return false
 	}
 	line, _, _ := strings.Cut(windowAfter(after, 0, 48), "\n")
-	return !phoneCue.matchIn(v, line)
+	// A comment says what the value is ("# number of rows"), so only a
+	// call cue there, "# call me", is read as one.
+	code, comment, _ := strings.Cut(line, "#")
+	return !phoneCue.matchIn(v, code) && !callCue.matchIn(v, comment)
 }
 
 // isASCIILetterByte reports an ASCII letter.

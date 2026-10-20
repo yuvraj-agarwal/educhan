@@ -231,3 +231,4 @@
 {"id": "contact-231", "body": "R doubt: big <- 9876543210L gives NA with a warning, why? isn't L just integer", "subject": "", "name": "", "expect": "publish", "why": "R code: a number assigned to a variable with \"<-\""}
 {"id": "contact-232", "body": "workshop is on webex training, join at madeup.webex.com/madeup/k2/j.php?MTID=m0f1e2d3c4b5a6978 at 6", "subject": "", "name": "", "expect": "block", "why": "a Webex Training join link, whose j.php comes after the site's name and \"k2\""}
 {"id": "contact-233", "body": "everyone says it's 'cause i'm lonely lol. dm me on insta", "subject": "", "name": "", "expect": "block", "why": "the poster's own ask to talk on Instagram; \"'cause\" is not a quotation that \"everyone says\" owns"}
+{"id": "contact-234", "body": "x <- 9123456780 # whatsapp me", "subject": "", "name": "", "expect": "block", "why": "an R-looking arrow, but the comment asks to be messaged on WhatsApp"}

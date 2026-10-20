@@ -236,3 +236,36 @@
 {"id": "life-236", "body": "he told me \"i'm bringing a knife to school tomorrow\" — should i tell someone?", "subject": "", "name": "", "expect": "publish", "why": "a threat reported; the question after the dash is the poster going on, not an attribution of the quote to the poster"}
 {"id": "life-237", "body": "someone told me \"go kill yourself\" — I don't know how to deal with this", "subject": "", "name": "", "expect": "publish", "why": "being told to kill oneself, reported; \"— I don't know\" is the poster going on, not \"- me\""}
 {"id": "life-238", "body": "a guy on discord said \"i'm going to shoot up the school friday\" - I reported it", "subject": "", "name": "", "expect": "publish", "why": "a threat reported and reported on; \"- I reported it\" is not an attribution"}
+{"id": "life-239", "body": "my mum is thinking about suicide and I don't know what to do", "subject": "", "name": "", "expect": "publish", "why": "the poster's mother is the one thinking it; asking how to help someone else is not crisis language in the poster's voice"}
+{"id": "life-240", "body": "My roommate is thinking about suicide, what do I do?", "subject": "", "name": "", "expect": "publish", "why": "someone else's thinking, asked about"}
+{"id": "life-241", "body": "how do I help a classmate who is thinking about suicide?", "subject": "", "name": "", "expect": "publish", "why": "\"who is thinking\" is the classmate's"}
+{"id": "life-242", "body": "my best mate is thinking about suicide and asked me not to tell", "subject": "", "name": "", "expect": "publish", "why": "a friend's thinking, with \"my\" before the subject and \"me\" after it"}
+{"id": "life-243", "body": "my mum's been thinking about suicide since dad left, how do i help", "subject": "", "name": "", "expect": "publish", "why": "\"mum's been\": someone else's, joined to \"has\""}
+{"id": "life-244", "body": "I'm going to murder you all in Smash Bros at the club tomorrow", "subject": "", "name": "", "expect": "publish", "why": "game banter: a kill in Smash, which counts only straight after \"in\""}
+{"id": "life-245", "body": "gonna murder you at Tekken after school", "subject": "", "name": "", "expect": "publish", "why": "game banter; \"after school\" is when, not a place"}
+{"id": "life-246", "body": "we're going to slaughter them at laser tag on Saturday", "subject": "", "name": "", "expect": "publish", "why": "laser tag, named in two words, the first of which the loose view reads as \"iaser\""}
+{"id": "life-247", "body": "I'm going to kill you at ping pong at break", "subject": "", "name": "", "expect": "publish", "why": "a kill at ping pong"}
+{"id": "life-248", "body": "we'll massacre them at the spelling bee on Friday", "subject": "", "name": "", "expect": "publish", "why": "a spelling bee, the other side massacred"}
+{"id": "life-249", "body": "I'm going to murder you on Mario Kart after school", "subject": "", "name": "", "expect": "publish", "why": "game banter after school"}
+{"id": "life-250", "body": "after class I'm going to murder you at Among Us", "subject": "", "name": "", "expect": "publish", "why": "\"after class\" is a time; Among Us is named after \"at\""}
+{"id": "life-251", "body": "I'll murder you at Kahoot tomorrow in chem", "subject": "", "name": "", "expect": "publish", "why": "a quiz game in a lesson"}
+{"id": "life-252", "body": "Last chance to sign up for the trip! Leave early on Friday to catch the bus", "subject": "", "name": "", "expect": "publish", "why": "a sign-up deadline and a reason to leave early, not a warning and a stay-away"}
+{"id": "life-253", "body": "PSA: stay away from the canteen today, the food is literally poison. not kidding", "subject": "", "name": "", "expect": "publish", "why": "the food is the reason to stay away"}
+{"id": "life-254", "body": "I'm warning you all, the canteen pizza on friday is a crime. stay away", "subject": "", "name": "", "expect": "publish", "why": "the reason to stay away is in the sentence before"}
+{"id": "life-255", "body": "Exams start Monday. It's happening. Don't come to the library, it's packed", "subject": "", "name": "", "expect": "publish", "why": "a crowded library is the reason"}
+{"id": "life-256", "body": "Not joking, the maths teacher is so done with us. Stay away from room 12 tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a teacher fed up with the class is the reason, in the sentence before"}
+{"id": "life-257", "body": "I swear to god the canteen food will put someone in hospital one day", "subject": "", "name": "", "expect": "publish", "why": "the food is what will put someone in hospital"}
+{"id": "life-258", "body": "someone's leaving in an ambulance tomorrow if the PE teacher makes us run 5k again", "subject": "", "name": "", "expect": "publish", "why": "hyperbole about a run in PE, not anyone meaning harm"}
+{"id": "life-259", "body": "i tried to end it last night but he begged me to stay, should i break up with him?", "subject": "", "name": "", "expect": "publish", "why": "ending a relationship: a break-up named in the post"}
+{"id": "life-260", "body": "me and my gf have been fighting, i tried to end it yesterday but she cried", "subject": "", "name": "", "expect": "publish", "why": "a partner and a fight: \"end it\" is the relationship"}
+{"id": "life-261", "body": "I tried to end it last week with my boyfriend but he won't accept it", "subject": "", "name": "", "expect": "publish", "why": "\"end it with my boyfriend\""}
+{"id": "life-262", "body": "i don't think i'll make it to 18:00, the bus is late", "subject": "", "name": "", "expect": "publish", "why": "a time of day with a colon, not an age"}
+{"id": "life-263", "body": "I don't think I'll make it to 18 credits this semester", "subject": "", "name": "", "expect": "publish", "why": "a count of credits, not an age"}
+{"id": "life-264", "body": "this is my last post on this thread, bye guys, good luck everyone", "subject": "", "name": "", "expect": "publish", "why": "leaving a thread, not the board"}
+{"id": "life-265", "body": "we're going to kill the other team at rugby tomorrow", "subject": "", "name": "", "expect": "publish", "why": "sport banter said of the other team"}
+{"id": "life-266", "body": "we're locking everyone in the classroom tomorrow for the test", "subject": "", "name": "", "expect": "publish", "why": "locked in for a test"}
+{"id": "life-267", "body": "we're locking everyone in the lab tomorrow for the practical", "subject": "", "name": "", "expect": "publish", "why": "for a practical"}
+{"id": "life-268", "body": "i'm locking everyone in the hall tomorrow for the class photo", "subject": "", "name": "", "expect": "publish", "why": "for the class photo"}
+{"id": "life-269", "body": "gonna light up the physics lab tomorrow for the science fair", "subject": "", "name": "", "expect": "publish", "why": "a science fair lights up a lab"}
+{"id": "life-270", "body": "we're locking everyone in the classroom tomorrow for the group project, we're all burnt out lol", "subject": "", "name": "", "expect": "publish", "why": "\"burnt out\" is tiredness, not something burnt"}
+{"id": "life-271", "body": "we're locking everyone in the classroom tomorrow for the group project, the team is on fire", "subject": "", "name": "", "expect": "publish", "why": "\"the team is on fire\" is doing well"}

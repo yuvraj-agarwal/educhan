@@ -218,3 +218,10 @@
 {"id": "acad-218", "body": "Carnot engine between 527°C and 27°C: η = 1 − 300/800 = 62.5%. ALWAYS convert to kelvin, lost 3 marks on this in mid sem", "subject": "", "name": "", "expect": "publish", "why": "thermodynamics"}
 {"id": "acad-219", "body": "class 11 unit test 1: phy 17/25, chem 21/25, maths 12/25. coaching + school at the same time is not working", "subject": "", "name": "", "expect": "publish", "why": "marks"}
 {"id": "acad-220", "body": "deleted Instagram 3 months before boards. screen time went from 5h to 1h. best decision of class 12", "subject": "", "name": "", "expect": "publish", "why": "app mention only"}
+{"id": "acad-221", "body": "'To be or not to be' is Hamlet thinking about suicide right? essay due Thursday", "subject": "", "name": "", "expect": "publish", "why": "a character's thinking, named, in a literature question: the subject of \"thinking about suicide\" is not the poster"}
+{"id": "acad-222", "body": "Why is Hamlet considering suicide in Act 3 but not in Act 5?", "subject": "", "name": "", "expect": "publish", "why": "\"considering suicide\" said of a character"}
+{"id": "acad-223", "body": "the narrator of The Bell Jar is thinking about suicide for most of the book", "subject": "", "name": "", "expect": "publish", "why": "the narrator's thinking, with \"is\" before it"}
+{"id": "acad-224", "body": "Psychology essay: why do teenagers think about suicide more after exam results?", "subject": "", "name": "", "expect": "publish", "why": "\"think about suicide\" with \"teenagers\" as its subject, in an essay question"}
+{"id": "acad-225", "body": "In the poem the speaker is thinking about suicide, how do I analyse the imagery", "subject": "", "name": "", "expect": "publish", "why": "a poem's speaker, not the poster"}
+{"id": "acad-226", "body": "[code]n <- 9876543210  # number of rows[/code]", "subject": "", "name": "", "expect": "publish", "why": "R code: a comment saying what the value is, not a phone cue"}
+{"id": "acad-227", "body": "seed <- 9876543210 # call set.seed with this", "subject": "", "name": "", "expect": "publish", "why": "an R comment naming a function to call"}

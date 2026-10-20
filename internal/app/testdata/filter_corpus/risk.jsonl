@@ -245,3 +245,24 @@
 {"id": "risk-245", "body": ">>12345\n>be me\n>15\n>how old are you anon? add me on snap", "subject": "", "name": "", "expect": "hold", "why": "the poster's age question and Snapchat ask, in their own greentext story"}
 {"id": "risk-246", "body": "you know who you are—don't come to school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a callout with a warning to stay away, set off by an em dash, which the plain view reads as a hyphen"}
 {"id": "risk-247", "body": "this is your final warning—don't come to school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a warning and a stay-away set off by an em dash"}
+{"id": "risk-248", "body": "staring at the ceiling thinking about suicide again", "subject": "", "name": "", "expect": "support", "why": "no \"I\", but no one else either: the poster's own, which a third-person reading must not turn down"}
+{"id": "risk-249", "body": "is it normal to keep thinking about suicide every day", "subject": "", "name": "", "expect": "support", "why": "a question about the poster's own thoughts, with no other person as the subject"}
+{"id": "risk-250", "body": "gonna murder you at school after class", "subject": "", "name": "", "expect": "hold", "why": "a kill at school: \"after class\" is a time, but \"at school\" is a place, and no game is named"}
+{"id": "risk-251", "body": "this is your last chance. stay away from school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a warning and a stay-away with no reason: \"last chance\" before nothing on offer still warns"}
+{"id": "risk-252", "body": "my bf and i broke up and i tried to end it last night with pills", "subject": "", "name": "", "expect": "support", "why": "a break-up and an attempt: pills in the post say it was an attempt"}
+{"id": "risk-253", "body": "i'm going to lock everyone in the hall tomorrow for the event and shoot them", "subject": "", "name": "", "expect": "hold", "why": "an event does not excuse people locked in and shot"}
+{"id": "risk-254", "body": "i'm going to lock everyone in the gym tomorrow for the workshop, then stab them one by one", "subject": "", "name": "", "expect": "hold", "why": "locked in and stabbed"}
+{"id": "risk-255", "body": "i'm locking all the teachers in the staffroom during the fest and gassing them", "subject": "", "name": "", "expect": "hold", "why": "locked in and gassed"}
+{"id": "risk-256", "body": "i'm locking them all in the hall tomorrow for the event so nobody gets out", "subject": "", "name": "", "expect": "hold", "why": "nobody getting out is the point of locking them in"}
+{"id": "risk-257", "body": "i'm going to trap everyone in the auditorium tomorrow for orientation, with a knife", "subject": "", "name": "", "expect": "hold", "why": "a knife in the sentence"}
+{"id": "risk-258", "body": "i'm going to lock everyone in the gym tomorrow so they learn their lesson", "subject": "", "name": "", "expect": "hold", "why": "a lesson taught by locking people in"}
+{"id": "risk-259", "body": "i'm going to light up the gym at the pep rally tomorrow so nobody gets out", "subject": "", "name": "", "expect": "hold", "why": "a pep rally does not excuse lighting a place up so nobody gets out"}
+{"id": "risk-260", "body": "i'm going to light up the school tomorrow in my new jacket and lock the doors so nobody gets out", "subject": "", "name": "", "expect": "hold", "why": "the jacket does not excuse locking the doors so nobody gets out"}
+{"id": "risk-261", "body": "i'm going to light up the school tomorrow in my black hoodie, they'll never know it was me", "subject": "", "name": "", "expect": "hold", "why": "not being found out makes the hoodie a disguise"}
+{"id": "risk-262", "body": "i'm going to light up the chem lab tomorrow, the experiment will kill them all", "subject": "", "name": "", "expect": "hold", "why": "an experiment that kills them all is no lab demo"}
+{"id": "risk-263", "body": "i'm going to lock everyone in the gym tomorrow for the fest so they can't escape", "subject": "", "name": "", "expect": "hold", "why": "\"so they can't escape\""}
+{"id": "risk-264", "body": "i'm going to murder everyone at netball tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a kill at netball said of everyone, not the other side"}
+{"id": "risk-265", "body": "i'm going to kill everyone at rugby tomorrow, not a joke", "subject": "", "name": "", "expect": "hold", "why": "\"not a joke\""}
+{"id": "risk-266", "body": "i will kill them all at netball tomorrow and then myself", "subject": "", "name": "", "expect": "hold", "why": "\"and then myself\""}
+{"id": "risk-267", "body": "i'm going to kill him at netball tomorrow, he's dead for real", "subject": "", "name": "", "expect": "hold", "why": "\"for real\""}
+{"id": "risk-268", "body": "i'm going to murder him at dodgeball tomorrow, bring the bat", "subject": "", "name": "", "expect": "hold", "why": "a bat at dodgeball"}
