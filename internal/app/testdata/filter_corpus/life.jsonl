@@ -229,3 +229,105 @@
 {"id": "life-229", "body": "i'm going to light up the school tomorrow in my new jacket, finally got it", "subject": "", "name": "", "expect": "publish", "why": "lighting a place up with what the poster wears"}
 {"id": "life-230", "body": "we're locking everyone in the classroom tomorrow for the group project, phones off and laptops out", "subject": "", "name": "", "expect": "publish", "why": "a group locked in for a project's work, a figure of speech for making them stay"}
 {"id": "life-231", "body": "class rep here. i'm going to lock everyone in the classroom tomorrow so nobody bunks lol", "subject": "", "name": "", "expect": "publish", "why": "keeping a class from bunking: a purpose of attendance"}
+{"id": "life-232", "body": "he messaged me: \"where exactly do you live? don't tell your mum\" is this grooming? should i block him", "subject": "", "name": "", "expect": "publish", "why": "a grooming message reported: \"he messaged me:\" is a clause whose verb names the sender, not a label naming the poster"}
+{"id": "life-233", "body": "my ex sent me: \"kys nobody would miss you\"", "subject": "", "name": "", "expect": "publish", "why": "being told to kill oneself, reported: the ex sent it, the poster got it"}
+{"id": "life-234", "body": "she said to me: \"I'm going to stab you tomorrow at school\"", "subject": "", "name": "", "expect": "publish", "why": "a threat reported, said to the poster by someone named before the colon"}
+{"id": "life-235", "body": "my bully to me: \"i'm bringing a knife to school tomorrow\" what should i do", "subject": "", "name": "", "expect": "publish", "why": "a threat reported with a label naming its speaker and who it was said to"}
+{"id": "life-236", "body": "he told me \"i'm bringing a knife to school tomorrow\" — should i tell someone?", "subject": "", "name": "", "expect": "publish", "why": "a threat reported; the question after the dash is the poster going on, not an attribution of the quote to the poster"}
+{"id": "life-237", "body": "someone told me \"go kill yourself\" — I don't know how to deal with this", "subject": "", "name": "", "expect": "publish", "why": "being told to kill oneself, reported; \"— I don't know\" is the poster going on, not \"- me\""}
+{"id": "life-238", "body": "a guy on discord said \"i'm going to shoot up the school friday\" - I reported it", "subject": "", "name": "", "expect": "publish", "why": "a threat reported and reported on; \"- I reported it\" is not an attribution"}
+{"id": "life-239", "body": "my mum is thinking about suicide and I don't know what to do", "subject": "", "name": "", "expect": "publish", "why": "the poster's mother is the one thinking it; asking how to help someone else is not crisis language in the poster's voice"}
+{"id": "life-240", "body": "My roommate is thinking about suicide, what do I do?", "subject": "", "name": "", "expect": "publish", "why": "someone else's thinking, asked about"}
+{"id": "life-241", "body": "how do I help a classmate who is thinking about suicide?", "subject": "", "name": "", "expect": "publish", "why": "\"who is thinking\" is the classmate's"}
+{"id": "life-242", "body": "my best mate is thinking about suicide and asked me not to tell", "subject": "", "name": "", "expect": "publish", "why": "a friend's thinking, with \"my\" before the subject and \"me\" after it"}
+{"id": "life-243", "body": "my mum's been thinking about suicide since dad left, how do i help", "subject": "", "name": "", "expect": "publish", "why": "\"mum's been\": someone else's, joined to \"has\""}
+{"id": "life-244", "body": "I'm going to murder you all in Smash Bros at the club tomorrow", "subject": "", "name": "", "expect": "publish", "why": "game banter: a kill in Smash, which counts only straight after \"in\""}
+{"id": "life-245", "body": "gonna murder you at Tekken after school", "subject": "", "name": "", "expect": "publish", "why": "game banter; \"after school\" is when, not a place"}
+{"id": "life-246", "body": "we're going to slaughter them at laser tag on Saturday", "subject": "", "name": "", "expect": "publish", "why": "laser tag, named in two words, the first of which the loose view reads as \"iaser\""}
+{"id": "life-247", "body": "I'm going to kill you at ping pong at break", "subject": "", "name": "", "expect": "publish", "why": "a kill at ping pong"}
+{"id": "life-248", "body": "we'll massacre them at the spelling bee on Friday", "subject": "", "name": "", "expect": "publish", "why": "a spelling bee, the other side massacred"}
+{"id": "life-249", "body": "I'm going to murder you on Mario Kart after school", "subject": "", "name": "", "expect": "publish", "why": "game banter after school"}
+{"id": "life-250", "body": "after class I'm going to murder you at Among Us", "subject": "", "name": "", "expect": "publish", "why": "\"after class\" is a time; Among Us is named after \"at\""}
+{"id": "life-251", "body": "I'll murder you at Kahoot tomorrow in chem", "subject": "", "name": "", "expect": "publish", "why": "a quiz game in a lesson"}
+{"id": "life-252", "body": "Last chance to sign up for the trip! Leave early on Friday to catch the bus", "subject": "", "name": "", "expect": "publish", "why": "a sign-up deadline and a reason to leave early, not a warning and a stay-away"}
+{"id": "life-253", "body": "PSA: stay away from the canteen today, the food is literally poison. not kidding", "subject": "", "name": "", "expect": "publish", "why": "the food is the reason to stay away"}
+{"id": "life-254", "body": "I'm warning you all, the canteen pizza on friday is a crime. stay away", "subject": "", "name": "", "expect": "publish", "why": "the reason to stay away is in the sentence before"}
+{"id": "life-255", "body": "Exams start Monday. It's happening. Don't come to the library, it's packed", "subject": "", "name": "", "expect": "publish", "why": "a crowded library is the reason"}
+{"id": "life-256", "body": "Not joking, the maths teacher is so done with us. Stay away from room 12 tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a teacher fed up with the class is the reason, in the sentence before"}
+{"id": "life-257", "body": "I swear to god the canteen food will put someone in hospital one day", "subject": "", "name": "", "expect": "publish", "why": "the food is what will put someone in hospital"}
+{"id": "life-258", "body": "someone's leaving in an ambulance tomorrow if the PE teacher makes us run 5k again", "subject": "", "name": "", "expect": "publish", "why": "hyperbole about a run in PE, not anyone meaning harm"}
+{"id": "life-259", "body": "i tried to end it last night but he begged me to stay, should i break up with him?", "subject": "", "name": "", "expect": "publish", "why": "ending a relationship: a break-up named in the post"}
+{"id": "life-260", "body": "me and my gf have been fighting, i tried to end it yesterday but she cried", "subject": "", "name": "", "expect": "publish", "why": "a partner and a fight: \"end it\" is the relationship"}
+{"id": "life-261", "body": "I tried to end it last week with my boyfriend but he won't accept it", "subject": "", "name": "", "expect": "publish", "why": "\"end it with my boyfriend\""}
+{"id": "life-262", "body": "i don't think i'll make it to 18:00, the bus is late", "subject": "", "name": "", "expect": "publish", "why": "a time of day with a colon, not an age"}
+{"id": "life-263", "body": "I don't think I'll make it to 18 credits this semester", "subject": "", "name": "", "expect": "publish", "why": "a count of credits, not an age"}
+{"id": "life-264", "body": "this is my last post on this thread, bye guys, good luck everyone", "subject": "", "name": "", "expect": "publish", "why": "leaving a thread, not the board"}
+{"id": "life-265", "body": "we're going to kill the other team at rugby tomorrow", "subject": "", "name": "", "expect": "publish", "why": "sport banter said of the other team"}
+{"id": "life-266", "body": "we're locking everyone in the classroom tomorrow for the test", "subject": "", "name": "", "expect": "publish", "why": "locked in for a test"}
+{"id": "life-267", "body": "we're locking everyone in the lab tomorrow for the practical", "subject": "", "name": "", "expect": "publish", "why": "for a practical"}
+{"id": "life-268", "body": "i'm locking everyone in the hall tomorrow for the class photo", "subject": "", "name": "", "expect": "publish", "why": "for the class photo"}
+{"id": "life-269", "body": "gonna light up the physics lab tomorrow for the science fair", "subject": "", "name": "", "expect": "publish", "why": "a science fair lights up a lab"}
+{"id": "life-270", "body": "we're locking everyone in the classroom tomorrow for the group project, we're all burnt out lol", "subject": "", "name": "", "expect": "publish", "why": "\"burnt out\" is tiredness, not something burnt"}
+{"id": "life-271", "body": "we're locking everyone in the classroom tomorrow for the group project, the team is on fire", "subject": "", "name": "", "expect": "publish", "why": "\"the team is on fire\" is doing well"}
+{"id": "life-272", "body": "i want to hang out tonight", "subject": "", "name": "", "expect": "publish", "why": "\"hang out\" is meeting friends"}
+{"id": "life-273", "body": "i need to hang my coat somewhere", "subject": "", "name": "", "expect": "publish", "why": "hanging a coat"}
+{"id": "life-274", "body": "i need to cut my hair", "subject": "", "name": "", "expect": "publish", "why": "cutting hair"}
+{"id": "life-275", "body": "i want to cut down on sugar", "subject": "", "name": "", "expect": "publish", "why": "\"cut down on\" something is eating less of it"}
+{"id": "life-276", "body": "i need to cut 5 kg before the meet", "subject": "", "name": "", "expect": "publish", "why": "cutting weight for a sport"}
+{"id": "life-277", "body": "i'm going to drown myself in coffee this week", "subject": "", "name": "", "expect": "publish", "why": "drowning oneself in coffee is a figure of speech"}
+{"id": "life-278", "body": "i need to take all my pills before breakfast, doctor said", "subject": "", "name": "", "expect": "publish", "why": "all the pills as the doctor prescribed"}
+{"id": "life-279", "body": "i'm going to shoot myself a reminder on whatsapp", "subject": "", "name": "", "expect": "publish", "why": "shooting oneself a message"}
+{"id": "life-280", "body": "i'll stab myself with the compass by accident one day lol", "subject": "", "name": "", "expect": "publish", "why": "a stab by accident"}
+{"id": "life-281", "body": "i hope i don't wake up late tomorrow", "subject": "", "name": "", "expect": "publish", "why": "waking up late"}
+{"id": "life-282", "body": "i'd rather be dead than wear that outfit lol", "subject": "", "name": "", "expect": "publish", "why": "\"rather be dead than\" weighs something trivial"}
+{"id": "life-283", "body": "i'd rather be dead last than skip the race", "subject": "", "name": "", "expect": "publish", "why": "\"dead last\" is a race result"}
+{"id": "life-284", "body": "i want to sleep forever after this exam week lol", "subject": "", "name": "", "expect": "publish", "why": "tiredness after exams, laughed off"}
+{"id": "life-285", "body": "i hope i get hit by a bus so i can skip the exam lol", "subject": "", "name": "", "expect": "publish", "why": "exam dread, laughed off"}
+{"id": "life-286", "body": "just took 2 paracetamol for my headache", "subject": "", "name": "", "expect": "publish", "why": "two tablets for a headache"}
+{"id": "life-287", "body": "i took all my pills this morning like the doctor said", "subject": "", "name": "", "expect": "publish", "why": "pills as prescribed"}
+{"id": "life-288", "body": "i'm ending it with my boyfriend tonight", "subject": "", "name": "", "expect": "publish", "why": "ending a relationship"}
+{"id": "life-289", "body": "we're ending it tonight, last episode of the series", "subject": "", "name": "", "expect": "publish", "why": "ending a series"}
+{"id": "life-290", "body": "gonna end it soon, this series has dragged on", "subject": "", "name": "", "expect": "publish", "why": "ending a series"}
+{"id": "life-291", "body": "i cut my hair last night", "subject": "", "name": "", "expect": "publish", "why": "cutting hair"}
+{"id": "life-292", "body": "been cutting carbs for 2 years", "subject": "", "name": "", "expect": "publish", "why": "cutting carbs"}
+{"id": "life-293", "body": "i relapsed on sugar last night lol", "subject": "", "name": "", "expect": "publish", "why": "a relapse on sugar"}
+{"id": "life-294", "body": "by the time you read this i'll be gone to goa for the holidays", "subject": "", "name": "", "expect": "publish", "why": "gone on holiday"}
+{"id": "life-295", "body": "tere liye jaan de dunga bhai", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: \"I'd die for you\", devotion"}
+{"id": "life-296", "body": "desh ke liye jaan de dunga", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: \"I'd die for my country\""}
+{"id": "life-297", "body": "how to stop eating junk food at night", "subject": "", "name": "", "expect": "publish", "why": "eating habits"}
+{"id": "life-298", "body": "how to stop eating so fast", "subject": "", "name": "", "expect": "publish", "why": "eating habits"}
+{"id": "life-299", "body": "how high do you have to jump to dunk", "subject": "", "name": "", "expect": "publish", "why": "basketball"}
+{"id": "life-300", "body": "how many ibuprofen can i take for a migraine", "subject": "", "name": "", "expect": "publish", "why": "a dosing question for a migraine"}
+{"id": "life-301", "body": "where do i cut my hair in this town", "subject": "", "name": "", "expect": "publish", "why": "a haircut"}
+{"id": "life-302", "body": "how to eat less than 1200 calories while bulking? asking for my coach", "subject": "", "name": "", "expect": "publish", "why": "more than 800 calories"}
+{"id": "life-303", "body": "how long does it take to die from old age lol", "subject": "", "name": "", "expect": "publish", "why": "no method named"}
+{"id": "life-304", "body": "you should end it with him, he's toxic", "subject": "", "name": "", "expect": "publish", "why": "ending a relationship"}
+{"id": "life-305", "body": "just end it already, the series has dragged for 6 seasons", "subject": "", "name": "", "expect": "publish", "why": "ending a series"}
+{"id": "life-306", "body": "just stop eating after 8pm, it helped my digestion", "subject": "", "name": "", "expect": "publish", "why": "eating habits"}
+{"id": "life-307", "body": "you should stop eating so much sugar before exams", "subject": "", "name": "", "expect": "publish", "why": "eating habits"}
+{"id": "life-308", "body": "ja mar gaya bhai, exam tough tha", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: \"I'm dead, bro\", said of an exam"}
+{"id": "life-309", "body": "just end it already lol this match is boring", "subject": "", "name": "", "expect": "publish", "why": "ending a match"}
+{"id": "life-310", "body": "i stop eating fatty food on weekdays", "subject": "", "name": "", "expect": "publish", "why": "\"fatty food\", not an insult"}
+{"id": "life-311", "body": "i'll beat up the dough after school", "subject": "", "name": "", "expect": "publish", "why": "baking"}
+{"id": "life-312", "body": "gonna shoot baskets after class", "subject": "", "name": "", "expect": "publish", "why": "basketball"}
+{"id": "life-313", "body": "i'm going to beat him at chess tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a chess game"}
+{"id": "life-314", "body": "i'll slap some stickers on my laptop after school", "subject": "", "name": "", "expect": "publish", "why": "decorating a laptop"}
+{"id": "life-315", "body": "the movie about the kidnapping comes out friday", "subject": "", "name": "", "expect": "publish", "why": "a film's release"}
+{"id": "life-316", "body": "punch the dough after school and let it rise", "subject": "", "name": "", "expect": "publish", "why": "baking"}
+{"id": "life-317", "body": "i made a bath bomb and i'm bringing it to school monday", "subject": "", "name": "", "expect": "publish", "why": "a bath bomb as a gift"}
+{"id": "life-318", "body": "i'd rather be dead tired than fail this exam", "subject": "", "name": "", "expect": "publish", "why": "\"dead tired\": dead as \"very\" (R2-M1)"}
+{"id": "life-319", "body": "i'd rather be dead broke than work in sales", "subject": "", "name": "", "expect": "publish", "why": "\"dead broke\" (R2-M1)"}
+{"id": "life-320", "body": "can't wait to die my hair blue after boards", "subject": "", "name": "", "expect": "publish", "why": "dyeing hair, spelt \"die\" (R2-M1)"}
+{"id": "life-321", "body": "gonna hang myself upside down on the monkey bars at recess lol", "subject": "", "name": "", "expect": "publish", "why": "hanging upside down in a playground (R2-M3)"}
+{"id": "life-322", "body": "i'm going to hang myself from the pull-up bar for a minute every day to fix my posture", "subject": "", "name": "", "expect": "publish", "why": "a dead hang from a pull-up bar (R2-M3)"}
+{"id": "life-323", "body": "i'm ending it tonight with a final revision of organic chem", "subject": "", "name": "", "expect": "publish", "why": "ending the day's study with a revision (R2-M4)"}
+{"id": "life-324", "body": "jaan de dunga is project ke liye, itni mehnat ki hai", "subject": "", "name": "", "expect": "publish", "why": "\"jaan de dunga ... ke liye\": devotion to a project, the \"liye\" after it (R2-M4)"}
+{"id": "life-325", "body": "i want to sleep forever after the last exam, hibernation mode", "subject": "", "name": "", "expect": "publish", "why": "sleep after the last exam (R2-M2)"}
+{"id": "life-326", "body": "i cut last night's study session short because of a headache", "subject": "", "name": "", "expect": "publish", "why": "a study session cut short (R2-M3)"}
+{"id": "life-327", "body": "i want to cut again, my bangs grew out", "subject": "", "name": "", "expect": "publish", "why": "cutting bangs (R2-M3)"}
+{"id": "life-328", "body": "need to cut again, my nails are too long for guitar", "subject": "", "name": "", "expect": "publish", "why": "cutting nails (R2-M3)"}
+{"id": "life-329", "body": "3 months clean from sh and relapsed", "subject": "", "name": "", "expect": "support", "why": "a relapse after three months clean, the README's own example (R2-relapse)"}
+{"id": "life-330", "body": "6 months clean from sh. relapsed last night", "subject": "", "name": "", "expect": "support", "why": "a relapse after six months clean, in two sentences (R2-relapse)"}
+{"id": "life-331", "body": "i'm ending it tonight with pills", "subject": "", "name": "", "expect": "support", "why": "ending it with pills: a method, not a revision (R2-M4 control)"}
+{"id": "life-332", "body": "i want to cut again, my parents found the scars", "subject": "", "name": "", "expect": "support", "why": "cutting again with nothing groomed named (R2-M3 control)"}
+{"id": "life-333", "body": "i'm going to hang myself from the ceiling fan", "subject": "", "name": "", "expect": "support", "why": "a method, not a bar (R2-M3 control)"}

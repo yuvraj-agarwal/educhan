@@ -2137,6 +2137,63 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		// readNoun: a magazine is a gun's only when it is full or loaded.
 		{"bringing a loaded mag to school tomorrow", threat},
 		{"bring your mags to the library tomorrow", publish},
+		// lowerName: a name in small letters after a verb done to people,
+		// not a subject, a pastime, a plural or what is cooked.
+		{"i'm going to stab rahul tomorrow at school", threat},
+		{"i'll kill kabir after school", threat},
+		{"imma beat up rohan after school", threat},
+		{"i'm going to put rohan in the hospital tomorrow", threat},
+		{"i'm going to kill physics tomorrow at school", publish},
+		{"gonna stab the potato at lunch", publish},
+		{"i'll kill boredom after school with some anime", publish},
+		{"gonna shoot hoops after school tomorrow", publish},
+		{"i'll beat up the dough after school", publish},
+		{"i'll kill rahul's presentation tomorrow with my slides lol", publish},
+		// threatFrame: a name beaten unconscious, the shit beaten out of
+		// someone, a pulp, a punch, a kick to the head, a slap; not a game,
+		// an exam, a team or what is cooked.
+		{"I'll beat Kabir unconscious after school", threat},
+		{"gonna beat the shit out of him at lunch tomorrow", threat},
+		{"i'll beat him to a pulp after school", threat},
+		{"imma beat his ass after school tomorrow", threat},
+		{"i'm going to punch him in the face tomorrow at recess", threat},
+		{"i'll kick his head in after school tomorrow", threat},
+		{"imma slap her after school tomorrow", threat},
+		{"i'm going to beat the crap out of this exam tomorrow", publish},
+		{"imma beat his ass at fifa after school", publish},
+		{"i'll kick his butt at badminton tomorrow", publish},
+		{"i'm going to batter the fish for dinner tomorrow", publish},
+		{"we're going to batter them on sunday, their back four is shambolic", publish},
+		{"i'll punch in at work tomorrow at 9", publish},
+		// threatFrame: a bomb left in a place, made or built; kidnapping,
+		// rape and an acid attack. Not a bomb emoji, a bath bomb, a bomb
+		// made selling notes, or a kidnap that is an invitation.
+		{"i'm going to put a bomb in the canteen tomorrow", threat},
+		{"i'll leave a bomb in the library on friday", threat},
+		{"i've made a bomb and i'm bringing it to school monday", threat},
+		{"i'll kidnap her after school tomorrow", threat},
+		{"i'm going to rape her after school tomorrow", threat},
+		{"i'll acid attack her tomorrow outside college", threat},
+		{"i'll put a bomb emoji on the group poster tomorrow lol", publish},
+		{"i made a bath bomb and i'm bringing it to school monday", publish},
+		{"made a bomb selling notes at school today", publish},
+		{"i'm going to kidnap you for coffee after class tomorrow", publish},
+		{"in the play the villain kidnaps her after school", publish},
+		// frameSpeaker: "planning to" opening a clause.
+		{"planning to shoot up the school next week", threat},
+		{"planning to shoot a short film at school next week", publish},
+		// schoolShootingRules: a mass shooting, the next school shooter or
+		// columbine, a massacre at school, on a day; not one the words round
+		// it put in the past, a drill, or a day of exams.
+		{"i'm planning a school shooting for monday", threat},
+		{"school shooting on monday. stay home", threat},
+		{"i'm going to commit a mass shooting at school tomorrow", threat},
+		{"i'll be the next school shooter, monday", threat},
+		{"our school is going to be the next columbine, friday", threat},
+		{"monday's going to be a massacre at our school", threat},
+		{"there was a school shooting in texas on monday", publish},
+		{"the next school shooter drill is on monday", publish},
+		{"monday's going to be a massacre at our school, three exams back to back", publish},
 		// notAGame: "finals week" is exams.
 		{"the toilets will be blown up during finals week", threat},
 		{"our team will be blown up in the finals this week lol", publish},
@@ -2263,6 +2320,14 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"not everyone is going home from the auditorium after assembly tomorrow", threat},
 		{"assembly hall, 10am thursday. i've got enough for every single one of you.", threat},
 		{"there'll be a package under the stage at the farewell on saturday. enjoy", threat},
+		// The README's own examples, as it quotes them: a stage is a place a
+		// hint may be put at, a locker a place at school, and a verb of
+		// coming opening a clause has a speaker when it comes armed.
+		{"there'll be a package under the stage", threat},
+		{"got my uncle's pistol in my locker", threat},
+		{"come back monday with a full mag", threat},
+		{"come back monday with a full tank of petrol for my bike", publish},
+		{"there'll be a surprise for you under the stage", publish},
 		{"got a list. 9 names. all from 12C. starting friday", threat},
 		// Two kinds together.
 		{"the staff room on wednesday will be a bloodbath. stay home.", threat},
@@ -2547,6 +2612,33 @@ func TestFilterReadsGroomingCuesInOtherWords(t *testing.T) {
 		{"tumhari age kya hai? koi pic bhejo na, sirf mere liye", grooming},
 		{"kaunse saal mein ho college ke? apni photo bhejo, main bhi bhejunga. secret rakhna", grooming},
 		{"kaunse saal mein ho? second year ka syllabus tough hai", publish},
+		// Someone looked for by an age or a class, and the reader's age
+		// remarked on by number (R1-M9), with a bare "dm" as the cue.
+		{"girls under 16 dm me", grooming},
+		{"any girls aged 14? dm me", grooming},
+		{"any class 9 girls here? dm me", grooming},
+		{"looking for a girl 13-15 to chat with, dm me", grooming},
+		{"you're so mature for 13, we should meet", grooming},
+		{"u r so mature for a 14 yr old, dm me", grooming},
+		{"how old are you? dm", grooming},
+		{"the under 16 category in the olympiad is open till friday", publish},
+		{"girls under 16 cricket trials are on monday at the ground", publish},
+		{"any class 9 girls here? which elective did you pick", publish},
+		{"how old are you? i'm 15. check your dm settings, they're open to everyone", publish},
+		// The cue after the age question as well as before it, a gift in
+		// English, a visit to the school, a picture asked for, and the
+		// school asked without "are" (R1-M10).
+		{"how old are you? are you alone?", grooming},
+		{"how old are you? are your parents home?", grooming},
+		{"how old are you? i'll buy you a gift", grooming},
+		{"where do you live? i'll send you a gift", grooming},
+		{"how old are you? i'll come to your school", grooming},
+		{"how old are you? can i see a pic", grooming},
+		{"what school u at? we could meet", grooming},
+		{"u in high school? dm me", grooming},
+		{"how old are you? can i see a pic of the question you're stuck on", publish},
+		{"what grade are you in? i'll send you a pdf of the notes", publish},
+		{"what school u at? i'm at a cbse school and the syllabus is huge", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
@@ -2593,7 +2685,7 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"who wants to be my snap streak buddy", contact},
 		{"my snap streak buddy ghosted me after 300 days", publish},
 		{"riot id: madeupbaingan#IND1 val pe aaja shaam ko", contact},
-		{"steam friend code 9412877305, add me we need a 4th", contact},
+		{"steam friend code 4410877305, add me we need a 4th", contact},
 		{"session id 0515cee4fa0394e660be657b7e4033b7f26b6da202de62ebd149d552f228b8a721 if u want to talk", contact},
 		{"Tele me or whatsapp 9137 2684, got the O level chem TYS worked solutions", contact},
 		{"my hp is 9 6 2 8 - 4 0 1 7 lah, just msg", contact},
@@ -2612,6 +2704,90 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"need to fill this for the NSP portal, is this right: 8 3 4 1 2 9 0 6 7 5 2 9", id},
 		{"national insurance no. sh 71 58 20 d, the letter finally came today", id},
 		{"on 12 34 56 a the shop closed", publish},
+		// "<app> me" after a lead that is not a subject and its verb: a
+		// condition, a relative, a purpose or whom it asks (R1 A7-1).
+		{"lonely girls whatsapp me", contact},
+		{"if ur bored kik me", contact},
+		{"anyone who wants the notes whatsapp me", contact},
+		{"for more pics snapchat me", contact},
+		{"she keeps trying to kik me", publish},
+		{"random guys kik me all the time and it's creepy", publish},
+		{"why would you whatsapp me at 3am", publish},
+		// Everyone's numbers asked for (R1-M11).
+		{"anyone wanna make a whatsapp group for jee 2027? drop your numbers", contact},
+		{"send your numbers in the comments", contact},
+		{"drop ur numbers i'll add you", contact},
+		{"post your numbers from the mock test here", publish},
+		{"drop your numbers in the poll for the best anime", publish},
+		// Everyone's numbers in a post about results are scores, unless a
+		// way to reach people is named (R2-M11).
+		{"results are out! drop your numbers below", publish},
+		{"what did everyone get? drop your numbers", publish},
+		{"how did everyone do? drop your numbers below", publish},
+		{"exam's over, drop your numbers", publish},
+		{"results are out, drop your phone numbers below", contact},
+		{"results out, dm me your numbers", contact},
+		{"mock results are out, drop your numbers, making a gc for the toppers", contact},
+		{"girls drop your numbers below", contact},
+		// A group set up on an app, named after the group (R1-M13).
+		{"make a gc on snap", contact},
+		{"creating a whatsapp group for neet 2027 aspirants", contact},
+		{"anyone want to start a telegram group", contact},
+		{"made a discord server for jee 2027 join", contact},
+		{"can someone add me to the whatsapp group", contact},
+		{"my mom made a whatsapp group for the relatives and it's chaos", publish},
+		{"creating a discord server is easy, there's a template", publish},
+		{"my school is creating a telegram group for notices", publish},
+		// A message asked for with "me" before it, open DMs, and an
+		// account asked about without a question mark (R1-M14).
+		{"send me a dm on insta", contact},
+		{"shoot me a text on whatsapp", contact},
+		{"dms open on discord", contact},
+		{"do u have telegram", contact},
+		{"have you got snapchat?", contact},
+		{"is anyone here on telegram", contact},
+		{"my friend sent me a dm on insta that made me cry, what do i do", publish},
+		{"do you use discord for studying or is it distracting? asking for tips", publish},
+		{"r u on minecraft rn", publish},
+		// A handle after "user", a pointing emoji or "~", and reddit's u/
+		// (R1-M15).
+		{"my roblox user is madeup_riya", contact},
+		{"insta 👉 madeup.riya", contact},
+		{"snap ~ madeup_r", contact},
+		{"my reddit is u/madeup_riya", contact},
+		{"my threads is @madeup.riya", contact},
+		{"my roblox user is banned lol", publish},
+		{"threads is just twitter again", publish},
+		// Talking privately, in private, one on one or somewhere else
+		// (R1-M16).
+		{"can we talk privately?", contact},
+		{"lets talk in private", contact},
+		{"can we talk somewhere else?", contact},
+		{"lets go private", contact},
+		{"can we talk 1 on 1?", contact},
+		{"i want to talk privately with my parents about this, how do i start", publish},
+		{"we should talk in private with the teacher about the marks", publish},
+		{"can we talk elsewhere? this thread is for physics only", publish},
+		{"lets go private colleges if govt doesn't work out", publish},
+		// "snap me", a call suggested, a video call on an app and the
+		// Hinglish "<app> karo" (R1-M17).
+		{"snap me later", contact},
+		{"can we facetime?", contact},
+		{"can we video call on whatsapp", contact},
+		{"mujhe whatsapp karo", contact},
+		{"snap me back to reality lol, exams are in 2 days", publish},
+		{"can we facetime grandma tonight", publish},
+		{"maine whatsapp kar diya tha", publish},
+		// A South African or Irish mobile run together after its cue, and a
+		// North American number with a slash after its area code after one
+		// (R1-M20).
+		{"my number is 0821234567", contact},
+		{"the reference number is 0821234567 on the receipt", publish},
+		{"phone 495/418-3927", contact},
+		{"call me on 495 / 418-3927", contact},
+		{"120/555-1234", publish},
+		{"the ratio was 495/418-3927 in the lab", publish},
+		{"phone battery 495/418-3927 lol", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
@@ -2664,6 +2840,25 @@ func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
 		{"our college page is linkedin.com/school/dps, they post placement stats", publish},
 		{"linkedin.com/company/infosys lists the openings", publish},
 		{"the meeting id was 123 on the board", publish},
+		// A meeting ID straight after the app, Webex's own wording, and a
+		// Meet code after Meet's name (R1-M12, D5); Teams' and Zoom's web
+		// join links (D4); and a LinkedIn profile's path or name after the
+		// word (R1-M18).
+		{"join zoom 845 2219 6630 at 7", contact},
+		{"zoom (845 2219 6630)", contact},
+		{"webex: 2634 123 4567", contact},
+		{"Meeting number (access code): 2634 123 4567", contact},
+		{"Join meeting\nMeeting number: 2634 123 4567\nPassword: abc", contact},
+		{"gmeet: abc-defg-hij", contact},
+		{"study session on gmeet, code abc-defg-hij", contact},
+		{"https://teams.microsoft.com/meet/2547913827125?p=Xy7Kq2Lm", contact},
+		{"https://us02web.zoom.us/wc/join/84522196630?pwd=abc", contact},
+		{"LinkedIn - /in/madeup-riya", contact},
+		{"linkedin: madeup-riya-123456", contact},
+		{"zoom 2x speed on lectures is a lifesaver", publish},
+		{"meet: tuesday 5pm, room 204", publish},
+		{"https://zoom.us/wc/ is the web client, it's slow", publish},
+		{"linkedin: covid-19 posts everywhere", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
@@ -2750,10 +2945,20 @@ func TestFilterReadsReportedSpeechAsSomeoneElses(t *testing.T) {
 		{"a 'b' c 'add me on snap", contact},
 		{"'ve been thinking about killing myself all evening and I'm not joking", support},
 		{"'s continue this on telegram, too many lurkers here", contact},
+		// Curly single quotes are read as the straight apostrophe the view
+		// folds them to, which quotationAround reads as above: a quotation
+		// opens after a space, not inside "I’m".
+		{"she said ‘kys’ to me in class", publish},
+		{"she said ‘I’m bringing a gun to school tomorrow’ and walked off", publish},
+		{"‘kys’", selfHarm},
+		{"‘I’m bringing a gun to school tomorrow’ – me", threat},
 	} {
 		if got := verdictName(bodyVerdict(c.body)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
 		}
+	}
+	if got := plainView("‘’ʼ′", nil).text; got != "''''" {
+		t.Errorf("curly single quotes read as %q, want straight apostrophes", got)
 	}
 }
 
@@ -2988,10 +3193,10 @@ func TestFilterSaysWhichCopyItRefused(t *testing.T) {
 func TestFilterPatternsSurviveCanon(t *testing.T) {
 	rules := map[string][]rule{
 		"askRules": askRules, "supportRules": supportRules, "selfHarmRules": selfHarmRules,
-		"selfHarmMethodRules": selfHarmMethodRules,
-		"threatIntentRules":   threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
+		"selfHarmMethodRules": selfHarmMethodRules, "pillQuestionRules": pillQuestionRules,
+		"threatIntentRules": threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
 		"threatWarningRules": threatWarningRules, "threatWarningCues": threatWarningCues,
-		"schoolShootingRules": schoolShootingRules, "futureTimeRules": futureTimeRules,
+		"schoolShootingRules": schoolShootingRules, "shootingTimeRules": shootingTimeRules,
 		"ageQuestionRules": ageQuestionRules, "privateCueRules": privateCueRules,
 		"myAppRule": {myAppRule}, "appColonHandle": {appColonHandle}, "appAtHandle": {appAtHandle},
 		"appLabelHandle": {appLabelHandle}, "spacedInviteRule": {spacedInviteRule},
@@ -3098,6 +3303,16 @@ func TestFilterCostIsBounded(t *testing.T) {
 	rep := func(unit string) func(n int) string {
 		return func(n int) string { return strings.Repeat(unit, n/utf8.RuneCountInString(unit)) }
 	}
+	// apart puts the pieces as far apart as the length allows, with spaces.
+	apart := func(pieces ...string) func(n int) string {
+		return func(n int) string {
+			gap := n
+			for _, p := range pieces {
+				gap -= utf8.RuneCountInString(p)
+			}
+			return strings.Join(pieces, strings.Repeat(" ", gap/(len(pieces)-1)))
+		}
+	}
 	bodies := map[string]func(n int) string{
 		"digits":       rep("9 "),
 		"digit groups": rep("98765 "),
@@ -3173,13 +3388,18 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"hinglish":         rep("usko kal maar dunga "),
 		// The threat grammar's openings next to a place or a time, which is
 		// when what follows them is read: a speaker and a verb, harm said
-		// to be coming, a place said to burn, a day someone won't see, and
-		// Hinglish pronouns with a time between; and an act urged, and a
+		// to be coming, a place said to burn, a day someone won't see, a
+		// bomb left or made, a name in small letters, a shooting on a day,
+		// and Hinglish pronouns with a time between; and an act urged, and a
 		// reader's grade asked about beside a cue.
 		"frame by a place":  rep("school i'm going to "),
 		"coming harm":       rep("everyone in the lab will get hurt tomorrow "),
 		"burning place":     rep("the hostel will burn "),
 		"won't see":         rep("the warden won't see monday "),
+		"bomb left":         rep("school i'll leave a bomb under the "),
+		"bomb made":         rep("i made a bomb at school "),
+		"small-letter name": rep("i'll stab rahul at school "),
+		"shooting on a day": rep("school shooting on monday "),
 		"pronoun then time": rep("kal sabko "),
 		"urged":             rep("bro just rope "),
 		"grade then cue":    rep("what grade are you in? come alone "),
@@ -3206,6 +3426,15 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"on the roof":      rep("i'm on the roof "),
 		"sab khatam":       rep("sab khatam kar dunga "),
 		"disclaimed pills": rep("how many pills asking for a friend "),
+		// The newer phrasings read with what is round them: a relapse
+		// looked for in the post, a height question's sentence read for a
+		// death, a calorie count read after "eat less", and "ja mar" read
+		// for "gaya".
+		"clean from sh":   rep("clean from sh "),
+		"height question": rep("how high is the "),
+		"eat less":        rep("eat less junk "),
+		"ja mar gaya":     rep("ja mar gaya "),
+		"end it with him": rep("you should end it with him "),
 		// Grooming cues read with the sentence round them: "alone" said
 		// last, a secret kept "between us", and "tell no one".
 		"alone said last": rep("come here, alone. "),
@@ -3253,6 +3482,43 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"lookalike digits":   rep("8 l 2 O "),
 		"reversed":           rep("my number in reverse 0 1 2 3 4 5 6 7 8 1 "),
 		"area code after":    rep("482-0196 area code 494 "),
+		// Long runs of spaces between the places a run of letters or spaces
+		// can end, each read once rather than once from every place in it:
+		// what an address's name or a spelled-out address can end at, and
+		// what an arrow can point back over.
+		"addresses far apart": apart("@a.aa", "@a.aa", "@a.aa"),
+		"spaces far apart":    apart("at", "at", "at"),
+		"arrows far apart":    apart("x", "->", "->"),
+		// Weapon emoji, in a run and spaced, which all stand at one reading
+		// position; and a pill question next to a handle pointed at an app,
+		// whose medicine never ends a word.
+		"knives":             rep("🔪"),
+		"spaced guns":        rep("🔫 "),
+		"pills and a handle": rep("howmany@pills_(snap "),
+		"pills run on":       rep("howmany@pills/how'many pills_(snap pills_(snap "),
+		// The newer asks, each read with the words round it: an app made a
+		// verb after a lead, everyone's numbers with the post round them
+		// read for a group, a group set up on an app, talking privately or
+		// going private, a call suggested, the Hinglish "<app> karo", an
+		// account asked about without its question mark, a Meet code after
+		// Meet's name, reddit's u/ and a LinkedIn profile's name; and a bare
+		// "dm" after an age question.
+		"app me after a lead": rep("lonely girls whatsapp me "),
+		"numbers asked":       rep("drop your numbers "),
+		"group on an app":     rep("make a gc on snap "),
+		"privately":           rep("can we talk privately "),
+		"go private":          rep("lets go private "),
+		"call suggested":      rep("lets facetime "),
+		"app karo":            rep("mujhe whatsapp karo "),
+		"account asked":       rep("do u have telegram "),
+		"meet code":           rep("gmeet abc-defg-hij "),
+		"reddit u":            rep("reddit u/ab "),
+		"linkedin name":       rep("linkedin: a-b-12345 "),
+		"bare dm":             rep("age? dm. "),
+		"slash area code":     rep("phone 495/418-3927 "),
+		// Asks named or taken back, each read on for what follows it.
+		"ask named":      rep("snap me is what she said "),
+		"ask taken back": rep("snap me jk post it here "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
@@ -3280,6 +3546,47 @@ func TestFilterCostIsBounded(t *testing.T) {
 	// above hold of nothing.
 	if full, size := cost(bodies["words"](maxBodyLen)); full < size {
 		t.Errorf("%d steps counted for %d bytes of words", full, size)
+	}
+}
+
+// TestFilterCountsMenacePairing holds menace's pairing of hints to the count
+// TestFilterCostIsBounded bounds. Spaced gun emoji are each a hint and all
+// stand at one reading position, so each is near all the others: pairing them
+// by looking at every hint near each one is quadratic, and before the hints
+// were filed by kind and searched by halving it was also counted as nothing,
+// so the step count could not see the 85 ms of CPU 8,000 bytes of them took.
+// The pairing has to cost steps, at least one for each hint, and eight times
+// the hints at most sixteen times the steps (a search by halving costs a few
+// more steps a hint as the hints grow; looking at every pair costs
+// sixty-four times).
+func TestFilterCountsMenacePairing(t *testing.T) {
+	noPlaces := func() nearSpans { return nearSpans{} }
+	pairing := func(guns int) (hints, steps int) {
+		f := scanField(fieldBody, strings.Repeat("🔫 ", guns), nil)
+		// The first reading builds the words and their positions, which
+		// later ones reuse; the second costs what menace's own reading does.
+		f.menaceHints()
+		before := f.plain.work
+		hints = len(f.menaceHints())
+		reading := f.plain.work - before
+		before = f.plain.work
+		if menace([]*scannedField{f}, noPlaces) {
+			t.Fatalf("%d spaced guns read as a threat with no place or time", guns)
+		}
+		return hints, f.plain.work - before - reading
+	}
+	smallHints, small := pairing(500)
+	hints, full := pairing(4000)
+	if smallHints != 500 || hints != 4000 {
+		t.Fatalf("%d and %d hints from 500 and 4,000 spaced guns, want one a gun", smallHints, hints)
+	}
+	for _, c := range []struct{ hints, steps int }{{smallHints, small}, {hints, full}} {
+		if c.steps < c.hints {
+			t.Errorf("pairing %d hints counted %d steps, fewer than one a hint", c.hints, c.steps)
+		}
+	}
+	if full > 16*small {
+		t.Errorf("pairing 4,000 hints counted %d steps against %d for 500; more than linear", full, small)
 	}
 }
 
@@ -3452,8 +3759,19 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 		"c2-122": "a Steam friend code, digits",
 	}
 	// A Steam friend code is an account's 32-bit number, so one past what 32
-	// bits hold is no one's.
+	// bits hold is no one's account; and one the filter does not read as a
+	// phone number on its own is no one's phone ("9412877305" is an Indian
+	// mobile's shape).
 	steamCode := regexp.MustCompile(`(?i)\bsteam\b[^\d]{0,24}\b(\d{6,12})\b`)
+	someonesSteamCode := func(code string) string {
+		if n, err := strconv.ParseUint(code, 10, 64); err == nil && n <= math.MaxUint32 {
+			return "fits in 32 bits, so it may be someone's account"
+		}
+		if verdictName(checkContent(contentInput{Body: code}, false)) != "publish" {
+			return "reads as a phone number on its own, so it may be someone's phone"
+		}
+		return ""
+	}
 	madeUp := func(s string) bool {
 		letters := strings.Map(func(r rune) rune {
 			if unicode.IsLetter(r) {
@@ -3504,9 +3822,13 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	aadhaarNumber := regexp.MustCompile(`(?:^|[^\d])([2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?:[^\d]|$)`)
 	aadhaars := 0
 	// An exam roll, application, registration or student number the filter
-	// should publish has zeroes for its serial, so it is no one's.
+	// should publish has zeroes for its serial, so it is no one's: after its
+	// label, a plural one ("roll numbers") and "is", "was" or "hai" between
+	// ("my roll number is 21CS0000"), and both ends of a range ("22CS1000–
+	// 22CS2000").
 	studentNumber := regexp.MustCompile(`(?i)\b(?:roll|application|registration|reg|enrol?ment|enrollment|student|` +
-		`hall ticket|admit card)(?:[\s.:#-]+(?:no|number|num|id|card))*[\s.:#-]+(\d[\dA-Z]{4,19})\b`)
+		`hall ticket|admit card)s?(?:[\s.:#-]+(?:nos?|numbers?|nums?|ids?|cards?|is|was|are|were|hai|h))*` +
+		`[\s.:#-]+(\d[\dA-Z]{4,19})\b(?:[ \t]*(?:[-–—]|to|se)[ \t]*(\d[\dA-Z]{4,19})\b)?`)
 	serials := 0
 	labelledAadhaars := func(where, text string) {
 		lower := strings.ToLower(text)
@@ -3573,8 +3895,8 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			}
 			post := it.Name + "\n" + it.Subject + "\n" + it.Body
 			for _, m := range steamCode.FindAllStringSubmatch(post, -1) {
-				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
-					t.Errorf("%s: the Steam account number %s fits in 32 bits, so it may be someone's", it.ID, m[1])
+				if why := someonesSteamCode(m[1]); why != "" {
+					t.Errorf("%s: the Steam account number %s %s", it.ID, m[1], why)
 				}
 			}
 			for _, field := range []string{it.Name, it.Subject, it.Body} {
@@ -3604,10 +3926,15 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			}
 			if it.Expect == "publish" {
 				for _, m := range studentNumber.FindAllStringSubmatch(post, -1) {
-					serials++
-					if !strings.HasSuffix(strings.TrimRight(m[1], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
-						"000") {
-						t.Errorf("%s: the published number %q has a serial that is not zeroes", it.ID, m[1])
+					for _, number := range m[1:] {
+						if number == "" {
+							continue
+						}
+						serials++
+						if !strings.HasSuffix(strings.TrimRight(number, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
+							"000") {
+							t.Errorf("%s: the published number %q has a serial that is not zeroes", it.ID, number)
+						}
 					}
 				}
 				continue // a decorator in code, "@staticmethod", is no one's
@@ -3638,11 +3965,98 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			}
 			noOnesNumbers(fmt.Sprintf("%s:%d", path, i+1), line, false)
 			for _, m := range steamCode.FindAllStringSubmatch(line, -1) {
-				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
-					t.Errorf("%s:%d: the Steam account number %s fits in 32 bits, so it may be someone's", path, i+1, m[1])
+				if why := someonesSteamCode(m[1]); why != "" {
+					t.Errorf("%s:%d: the Steam account number %s %s", path, i+1, m[1], why)
 				}
 			}
 		}
+	}
+	// The README, AGENTS.md and the filter's own comments quote examples of
+	// what it reads, and are held to the same where an example is the kind
+	// the filter blocks: an address spelled out a character at a time ("m a d
+	// e u p . 0 9 @ g m a i l . c o m"), closed up and read as the corpus's
+	// are; ten digits run together straight after the name of a line, which
+	// the filter reads as a North American number ("cell 2954820174"), in an
+	// area code never assigned; a Steam friend code as the corpus's are; and
+	// a quoted example the filter blocks as an address or a username, which
+	// says "madeup" or stands in for the name with "x", "x_y", "name" or
+	// "you" ("snap: x_y_z", "disc: name#1234", and the verification
+	// examples' "you" at an institution's domain, which names no one).
+	docs := []string{filepath.Join("..", "..", "README.md"), filepath.Join("..", "..", "AGENTS.md")}
+	sources, _ := filepath.Glob("filter*.go")
+	for _, path := range sources {
+		if !strings.HasSuffix(path, "_test.go") {
+			docs = append(docs, path)
+		}
+	}
+	spelledOut := regexp.MustCompile(`(?:[\pL\pN._] ){2,}@(?: [\pL\pN._])+`)
+	lineThenDigits := regexp.MustCompile(`(?i)\b(?:cell|phone|ph|mobile|mob|tel|voice|my number is)\W{0,3}([2-9]\d{9})\b`)
+	quotedExample := regexp.MustCompile(`"([^"\n]{3,200})"`)
+	placeholder := regexp.MustCompile(`(?i)(?:^|[^\pL\pN_.])(?:@|u/)?(?:[xyz](?:[._][xyz])*|name\d*|you)` +
+		`(?:#(?:\d{4}|tag|ind1))?(?:\.bsky\.social)?(?:[^\pL\pN_.]|$)`)
+	notAName := map[string]string{
+		"insta id python3": "a tool's name, which the label before it makes a handle",
+		"my snap is ...":   "an ellipsis where the handle goes",
+	}
+	// A friend code of zeroes ("friend code SW-0000-0000-0000") is no one's.
+	zeroedCode := func(s string) bool {
+		digits := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, s)
+		return len(digits) >= 8 && strings.Trim(digits, "0") == ""
+	}
+	docNumbers, docNames := 0, 0
+	for _, path := range docs {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			where := fmt.Sprintf("%s:%d", filepath.Base(path), i+1)
+			for _, spelled := range spelledOut.FindAllString(line, -1) {
+				closed := strings.ReplaceAll(spelled, " ", "")
+				if at := email.FindStringIndex(closed); at != nil && !fineAddress(closed, at) {
+					t.Errorf("%s: the spelled-out address %q is not marked made up", where, spelled)
+				}
+			}
+			for _, m := range lineThenDigits.FindAllStringSubmatch(line, -1) {
+				docNumbers++
+				if area := m[1][:3]; nanp(m[1]) && area[1] != '9' && area[:2] != "37" && area[:2] != "96" &&
+					!tollFree[area] {
+					t.Errorf("%s: the North American number %s is in an area code that is assigned", where, m[1])
+				}
+			}
+			for _, m := range steamCode.FindAllStringSubmatch(line, -1) {
+				if why := someonesSteamCode(m[1]); why != "" {
+					t.Errorf("%s: the Steam account number %s %s", where, m[1], why)
+				}
+			}
+			if strings.HasSuffix(path, ".go") && !strings.Contains(line, "//") {
+				continue // a string in the code, not an example in a comment
+			}
+			for _, q := range quotedExample.FindAllStringSubmatch(line, -1) {
+				v := checkContent(contentInput{Body: q[1]}, false)
+				if v.Outcome != contentBlock || v.Message != blockMessage(kindEmail, v.Field) &&
+					v.Message != blockMessage(kindHandle, v.Field) {
+					continue
+				}
+				docNames++
+				if !madeUp(q[1]) && !placeholder.MatchString(q[1]) && notAName[q[1]] == "" &&
+					!steamCode.MatchString(q[1]) && !zeroedCode(q[1]) {
+					t.Errorf("%s: the address or username in %q is not marked made up", where, q[1])
+				}
+			}
+		}
+	}
+	if docNumbers < 3 {
+		t.Fatalf("only %d numbers after the name of a line found in the docs and comments, want three and more",
+			docNumbers)
+	}
+	if docNames < 40 {
+		t.Fatalf("only %d addresses and usernames found in the docs and comments, want forty and more", docNames)
 	}
 	if numbers < 40 {
 		t.Fatalf("only %d North American numbers found, want the corpus's and the tests' forty and more", numbers)
@@ -3650,8 +4064,8 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	if aadhaars < 10 {
 		t.Fatalf("only %d labelled Aadhaar numbers found, want the corpus's ten and more", aadhaars)
 	}
-	if serials < 15 {
-		t.Fatalf("only %d published roll, application and student numbers found, want the corpus's fifteen and more",
+	if serials < 20 {
+		t.Fatalf("only %d published roll, application and student numbers found, want the corpus's twenty and more",
 			serials)
 	}
 }

@@ -228,3 +228,151 @@
 {"id": "risk-228", "body": "gonna light up the chem lab tomorrow with petrol, call it an experiment", "subject": "", "name": "", "expect": "hold", "why": "a lab set alight with petrol; calling it an experiment makes the fuel no chemistry practical"}
 {"id": "risk-229", "body": "i'm going to kill everyone at rugby practice tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a crowd killed at a sport's practice, which says where the poster will be, not a game against another side"}
 {"id": "risk-230", "body": "locking them all in the gym tomorrow for the fest and setting it on fire", "subject": "", "name": "", "expect": "hold", "why": "a crowd locked in and the place set alight; the fest names when, and excuses nothing"}
+{"id": "risk-231", "body": "me to him: \"i'm going to stab you tomorrow at school\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat, labelled with who it is said to: the speaker is before \"to\""}
+{"id": "risk-232", "body": "note to my bully: \"i'm bringing a knife to school tomorrow\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat addressed to someone: who comes after \"to\" in a label is spoken to, not speaking"}
+{"id": "risk-233", "body": "to everyone in 10B: \"don't come to school tomorrow, i'm bringing my dad's gun\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's warning and threat addressed to a class"}
+{"id": "risk-234", "body": "to OP: \"just kys already\"", "subject": "", "name": "", "expect": "hold", "why": "telling the post above to kill themselves, addressed to them in a label"}
+{"id": "risk-235", "body": "my dad said i'm a failure 'cause of my grades. i'm going to kill myself tonight", "subject": "", "name": "", "expect": "support", "why": "the poster's own crisis; the apostrophe of \"'cause\" opens no quotation for \"my dad said\" to own"}
+{"id": "risk-236", "body": "my mum told me i'm grounded 'til friday. i want to die", "subject": "", "name": "", "expect": "support", "why": "the poster's own crisis; \"'til\" is a word with letters left out, not a quotation"}
+{"id": "risk-237", "body": "they keep telling me i'm useless 'n i want to die", "subject": "", "name": "", "expect": "support", "why": "the poster's own crisis after a report of what others say; \"'n\" is \"and\""}
+{"id": "risk-238", "body": "he said he's 5'10\" lol. anyway i'm going to shoot up the school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat; the inch mark after 5'10 opens no quotation"}
+{"id": "risk-239", "body": "ppl say i'm weird 'cause i'm quiet. how old are you? we should meet up alone", "subject": "", "name": "", "expect": "hold", "why": "the poster asking a reader's age and to meet alone; \"'cause\" quotes nothing"}
+{"id": "risk-240", "body": "you heard me im going to shoot up the school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "\"you heard me\" stands by the poster's own words; nobody else's are reported"}
+{"id": "risk-241", "body": "already told everyone \"i'm bringing a gun to school tomorrow\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat, told by them: \"already\" is an adverb, not someone named as the speaker"}
+{"id": "risk-242", "body": "seriously told him \"i'm going to stab you tomorrow at school\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat, told by them: \"seriously\" names no speaker"}
+{"id": "risk-243", "body": ">>12345\n>be me\n>bullied every day\n>bringing my dad's glock to school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a greentext story the poster opens with \"be me\" after a reply link: the whole run of lines is the poster's, not a quote of the post above"}
+{"id": "risk-244", "body": ">>12345\n>be me\n>16\n>parents hate me\n>going to kill myself tonight", "subject": "", "name": "", "expect": "support", "why": "the poster's own crisis told as a greentext story that opens \"be me\""}
+{"id": "risk-245", "body": ">>12345\n>be me\n>15\n>how old are you anon? add me on snap", "subject": "", "name": "", "expect": "hold", "why": "the poster's age question and Snapchat ask, in their own greentext story"}
+{"id": "risk-246", "body": "you know who you are—don't come to school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a callout with a warning to stay away, set off by an em dash, which the plain view reads as a hyphen"}
+{"id": "risk-247", "body": "this is your final warning—don't come to school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a warning and a stay-away set off by an em dash"}
+{"id": "risk-248", "body": "staring at the ceiling thinking about suicide again", "subject": "", "name": "", "expect": "support", "why": "no \"I\", but no one else either: the poster's own, which a third-person reading must not turn down"}
+{"id": "risk-249", "body": "is it normal to keep thinking about suicide every day", "subject": "", "name": "", "expect": "support", "why": "a question about the poster's own thoughts, with no other person as the subject"}
+{"id": "risk-250", "body": "gonna murder you at school after class", "subject": "", "name": "", "expect": "hold", "why": "a kill at school: \"after class\" is a time, but \"at school\" is a place, and no game is named"}
+{"id": "risk-251", "body": "this is your last chance. stay away from school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a warning and a stay-away with no reason: \"last chance\" before nothing on offer still warns"}
+{"id": "risk-252", "body": "my bf and i broke up and i tried to end it last night with pills", "subject": "", "name": "", "expect": "support", "why": "a break-up and an attempt: pills in the post say it was an attempt"}
+{"id": "risk-253", "body": "i'm going to lock everyone in the hall tomorrow for the event and shoot them", "subject": "", "name": "", "expect": "hold", "why": "an event does not excuse people locked in and shot"}
+{"id": "risk-254", "body": "i'm going to lock everyone in the gym tomorrow for the workshop, then stab them one by one", "subject": "", "name": "", "expect": "hold", "why": "locked in and stabbed"}
+{"id": "risk-255", "body": "i'm locking all the teachers in the staffroom during the fest and gassing them", "subject": "", "name": "", "expect": "hold", "why": "locked in and gassed"}
+{"id": "risk-256", "body": "i'm locking them all in the hall tomorrow for the event so nobody gets out", "subject": "", "name": "", "expect": "hold", "why": "nobody getting out is the point of locking them in"}
+{"id": "risk-257", "body": "i'm going to trap everyone in the auditorium tomorrow for orientation, with a knife", "subject": "", "name": "", "expect": "hold", "why": "a knife in the sentence"}
+{"id": "risk-258", "body": "i'm going to lock everyone in the gym tomorrow so they learn their lesson", "subject": "", "name": "", "expect": "hold", "why": "a lesson taught by locking people in"}
+{"id": "risk-259", "body": "i'm going to light up the gym at the pep rally tomorrow so nobody gets out", "subject": "", "name": "", "expect": "hold", "why": "a pep rally does not excuse lighting a place up so nobody gets out"}
+{"id": "risk-260", "body": "i'm going to light up the school tomorrow in my new jacket and lock the doors so nobody gets out", "subject": "", "name": "", "expect": "hold", "why": "the jacket does not excuse locking the doors so nobody gets out"}
+{"id": "risk-261", "body": "i'm going to light up the school tomorrow in my black hoodie, they'll never know it was me", "subject": "", "name": "", "expect": "hold", "why": "not being found out makes the hoodie a disguise"}
+{"id": "risk-262", "body": "i'm going to light up the chem lab tomorrow, the experiment will kill them all", "subject": "", "name": "", "expect": "hold", "why": "an experiment that kills them all is no lab demo"}
+{"id": "risk-263", "body": "i'm going to lock everyone in the gym tomorrow for the fest so they can't escape", "subject": "", "name": "", "expect": "hold", "why": "\"so they can't escape\""}
+{"id": "risk-264", "body": "i'm going to murder everyone at netball tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a kill at netball said of everyone, not the other side"}
+{"id": "risk-265", "body": "i'm going to kill everyone at rugby tomorrow, not a joke", "subject": "", "name": "", "expect": "hold", "why": "\"not a joke\""}
+{"id": "risk-266", "body": "i will kill them all at netball tomorrow and then myself", "subject": "", "name": "", "expect": "hold", "why": "\"and then myself\""}
+{"id": "risk-267", "body": "i'm going to kill him at netball tomorrow, he's dead for real", "subject": "", "name": "", "expect": "hold", "why": "\"for real\""}
+{"id": "risk-268", "body": "i'm going to murder him at dodgeball tomorrow, bring the bat", "subject": "", "name": "", "expect": "hold", "why": "a bat at dodgeball"}
+{"id": "risk-269", "body": "i want to hang myself", "subject": "", "name": "", "expect": "support", "why": "a method named: hanging oneself"}
+{"id": "risk-270", "body": "im gonna hang myself tonight", "subject": "", "name": "", "expect": "support", "why": "a method named, with a time"}
+{"id": "risk-271", "body": "i feel like hanging myself", "subject": "", "name": "", "expect": "support", "why": "the method as a gerund"}
+{"id": "risk-272", "body": "i'll hang myself if i fail", "subject": "", "name": "", "expect": "support", "why": "a method named after \"i'll\", with the condition after it"}
+{"id": "risk-273", "body": "i want to overdose", "subject": "", "name": "", "expect": "support", "why": "an overdose wanted, nothing after it"}
+{"id": "risk-274", "body": "gonna overdose on my meds", "subject": "", "name": "", "expect": "support", "why": "an overdose on the poster's own medicine"}
+{"id": "risk-275", "body": "i'm going to take all my pills tonight", "subject": "", "name": "", "expect": "support", "why": "all the poster's pills, with no routine named"}
+{"id": "risk-276", "body": "i want to slit my wrists", "subject": "", "name": "", "expect": "support", "why": "a method named"}
+{"id": "risk-277", "body": "i want to drown myself", "subject": "", "name": "", "expect": "support", "why": "a method named, nothing after it"}
+{"id": "risk-278", "body": "i want to poison myself", "subject": "", "name": "", "expect": "support", "why": "a method named"}
+{"id": "risk-279", "body": "i want to shoot myself", "subject": "", "name": "", "expect": "support", "why": "a method named"}
+{"id": "risk-280", "body": "i want to stab myself", "subject": "", "name": "", "expect": "support", "why": "a method named"}
+{"id": "risk-281", "body": "i want to cut again", "subject": "", "name": "", "expect": "support", "why": "self-harm wanted again"}
+{"id": "risk-282", "body": "i need to cut", "subject": "", "name": "", "expect": "support", "why": "cutting with nothing cut named is self-harm"}
+{"id": "risk-283", "body": "urge to cut is so strong tonight", "subject": "", "name": "", "expect": "support", "why": "an urge to cut"}
+{"id": "risk-284", "body": "i hope i die in my sleep", "subject": "", "name": "", "expect": "support", "why": "hoping to die"}
+{"id": "risk-285", "body": "i hope i don't wake up tomorrow", "subject": "", "name": "", "expect": "support", "why": "hoping not to wake up"}
+{"id": "risk-286", "body": "can't wait to die honestly", "subject": "", "name": "", "expect": "support", "why": "longing to die"}
+{"id": "risk-287", "body": "i want to sleep forever", "subject": "", "name": "", "expect": "support", "why": "sleeping forever wished for"}
+{"id": "risk-288", "body": "i'd rather be dead", "subject": "", "name": "", "expect": "support", "why": "rather dead, with nothing it is weighed against"}
+{"id": "risk-289", "body": "i want death", "subject": "", "name": "", "expect": "support", "why": "death wanted"}
+{"id": "risk-290", "body": "praying for death", "subject": "", "name": "", "expect": "support", "why": "death prayed for"}
+{"id": "risk-291", "body": "hope i get hit by a bus", "subject": "", "name": "", "expect": "support", "why": "hoping to be killed"}
+{"id": "risk-292", "body": "life isn't worth living anymore", "subject": "", "name": "", "expect": "support", "why": "life not worth living"}
+{"id": "risk-293", "body": "my life isn't worth living", "subject": "", "name": "", "expect": "support", "why": "the poster's life not worth living"}
+{"id": "risk-294", "body": "no point living anymore", "subject": "", "name": "", "expect": "support", "why": "no point in living, without \"in\""}
+{"id": "risk-295", "body": "I swallowed a whole strip of pills an hour ago", "subject": "", "name": "", "expect": "support", "why": "an overdose just taken"}
+{"id": "risk-296", "body": "just took 20 paracetamol", "subject": "", "name": "", "expect": "support", "why": "twenty tablets just taken"}
+{"id": "risk-297", "body": "i took a bunch of pills", "subject": "", "name": "", "expect": "support", "why": "a bunch of pills taken, no routine named"}
+{"id": "risk-298", "body": "took too many pills, feeling dizzy, goodbye", "subject": "", "name": "", "expect": "support", "why": "too many pills taken"}
+{"id": "risk-299", "body": "ending it tonight. goodbye", "subject": "", "name": "", "expect": "support", "why": "ending it, with a time and a goodbye"}
+{"id": "risk-300", "body": "goodbye everyone, i'm ending it tonight", "subject": "", "name": "", "expect": "support", "why": "ending it tonight"}
+{"id": "risk-301", "body": "i'm ending it", "subject": "", "name": "", "expect": "support", "why": "ending it with nothing ended named"}
+{"id": "risk-302", "body": "gonna end it soon", "subject": "", "name": "", "expect": "support", "why": "ending it soon, nothing ended named"}
+{"id": "risk-303", "body": "I've written my suicide note", "subject": "", "name": "", "expect": "support", "why": "a suicide note written"}
+{"id": "risk-304", "body": "by the time you read this i'll be gone", "subject": "", "name": "", "expect": "support", "why": "a farewell note's opening"}
+{"id": "risk-305", "body": "i relapsed on self harm last night", "subject": "", "name": "", "expect": "support", "why": "a self-harm relapse"}
+{"id": "risk-306", "body": "i was 3 months clean from sh and relapsed", "subject": "", "name": "", "expect": "support", "why": "clean from self-harm, then a relapse"}
+{"id": "risk-307", "body": "i cut last night", "subject": "", "name": "", "expect": "support", "why": "cutting told with a time"}
+{"id": "risk-308", "body": "been cutting for 2 years", "subject": "", "name": "", "expect": "support", "why": "cutting for years"}
+{"id": "risk-309", "body": "i attempted last month", "subject": "", "name": "", "expect": "support", "why": "an attempt told with a time"}
+{"id": "risk-310", "body": "I wan die", "subject": "", "name": "", "expect": "support", "why": "Nigerian Pidgin: \"I want to die\""}
+{"id": "risk-311", "body": "make I just die", "subject": "", "name": "", "expect": "support", "why": "Pidgin: \"let me just die\""}
+{"id": "risk-312", "body": "I no wan live again", "subject": "", "name": "", "expect": "support", "why": "Pidgin: \"I don't want to live any more\""}
+{"id": "risk-313", "body": "life don tire me", "subject": "", "name": "", "expect": "support", "why": "Pidgin: \"life has worn me out\""}
+{"id": "risk-314", "body": "I dey cut myself", "subject": "", "name": "", "expect": "support", "why": "Pidgin: \"I cut myself\", ongoing"}
+{"id": "risk-315", "body": "mai khud ko khatam karna chahta hu", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I want to end myself\""}
+{"id": "risk-316", "body": "main suicide karne wala hoon", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'm about to commit suicide\""}
+{"id": "risk-317", "body": "mera jeene ka mann nahi hai", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I don't feel like living\""}
+{"id": "risk-318", "body": "mujhe mar jana chahiye", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I should die\""}
+{"id": "risk-319", "body": "main fanda laga lunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll hang myself\""}
+{"id": "risk-320", "body": "mai apni jaan de dunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll give up my life\", for no one named"}
+{"id": "risk-321", "body": "neend ki goliyan kha lungi", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll take sleeping pills\""}
+{"id": "risk-322", "body": "mann karta hai mar jaun", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I feel like dying\""}
+{"id": "risk-323", "body": "suicide ke thoughts aa rahe hain", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'm having suicidal thoughts\""}
+{"id": "risk-324", "body": "zindagi khatam kar dunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll end my life\""}
+{"id": "risk-325", "body": "mai apne aap ko maar dunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll kill myself\""}
+{"id": "risk-326", "body": "ab jeene ka koi matlab nahi", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"there's no point living now\""}
+{"id": "risk-327", "body": "how to slit wrists", "subject": "", "name": "", "expect": "support", "why": "method question: slitting wrists"}
+{"id": "risk-328", "body": "how deep do you have to cut", "subject": "", "name": "", "expect": "support", "why": "method question: how deep to cut, with \"have to\""}
+{"id": "risk-329", "body": "where to cut to bleed out", "subject": "", "name": "", "expect": "support", "why": "method question: where to cut"}
+{"id": "risk-330", "body": "which vein to cut", "subject": "", "name": "", "expect": "support", "why": "method question: which vein"}
+{"id": "risk-331", "body": "best way to cut without getting caught", "subject": "", "name": "", "expect": "support", "why": "method question: cutting unseen"}
+{"id": "risk-332", "body": "how high to jump to die", "subject": "", "name": "", "expect": "support", "why": "method question: a height to die from"}
+{"id": "risk-333", "body": "which floor to jump from to die", "subject": "", "name": "", "expect": "support", "why": "method question: a floor to die from"}
+{"id": "risk-334", "body": "what height is fatal", "subject": "", "name": "", "expect": "support", "why": "method question: a fatal height"}
+{"id": "risk-335", "body": "how long does it take to die from hanging", "subject": "", "name": "", "expect": "support", "why": "method question: how long hanging takes"}
+{"id": "risk-336", "body": "how many ibuprofen will kill you", "subject": "", "name": "", "expect": "support", "why": "method question: \"will kill you\""}
+{"id": "risk-337", "body": "what pills can kill you", "subject": "", "name": "", "expect": "support", "why": "method question: which pills kill"}
+{"id": "risk-338", "body": "what household chemicals can kill you", "subject": "", "name": "", "expect": "support", "why": "method question: which chemicals kill"}
+{"id": "risk-339", "body": "can you die from taking 20 paracetamol", "subject": "", "name": "", "expect": "support", "why": "method question: an overdose asked about with \"you\""}
+{"id": "risk-340", "body": "how to throw up after eating", "subject": "", "name": "", "expect": "support", "why": "purging asked about"}
+{"id": "risk-341", "body": "how to stop eating", "subject": "", "name": "", "expect": "support", "why": "starving asked about, nothing after it"}
+{"id": "risk-342", "body": "how to hide not eating from parents", "subject": "", "name": "", "expect": "support", "why": "hiding not eating asked about"}
+{"id": "risk-343", "body": "tips to eat less than 500 calories a day", "subject": "", "name": "", "expect": "support", "why": "a starvation diet asked for"}
+{"id": "risk-344", "body": "jaa mar", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: \"go die\""}
+{"id": "risk-345", "body": "ja mar ja", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: \"go, die\""}
+{"id": "risk-346", "body": "drink some bleach", "subject": "", "name": "", "expect": "hold", "why": "encouragement: drinking bleach"}
+{"id": "risk-347", "body": "you should end it", "subject": "", "name": "", "expect": "hold", "why": "encouragement to end it, nothing ended named"}
+{"id": "risk-348", "body": "just end it already", "subject": "", "name": "", "expect": "hold", "why": "encouragement to end it, with \"already\""}
+{"id": "risk-349", "body": "you should stop eating", "subject": "", "name": "", "expect": "hold", "why": "pro-eating-disorder encouragement"}
+{"id": "risk-350", "body": "just stop eating lol", "subject": "", "name": "", "expect": "hold", "why": "pro-eating-disorder encouragement"}
+{"id": "risk-351", "body": "stop eating fatty", "subject": "", "name": "", "expect": "hold", "why": "pro-eating-disorder insult"}
+{"id": "risk-352", "body": "go starve", "subject": "", "name": "", "expect": "hold", "why": "encouragement to starve"}
+{"id": "risk-353", "body": "gonna stab aditi after school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be stabbed, the name in small letters, a time"}
+{"id": "risk-354", "body": "i'm going to shoot kabir at school on monday", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be shot, the name in small letters, a place and a day"}
+{"id": "risk-355", "body": "im going to kill rahul tomorrow at school", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be killed, the name in small letters, a time and a place"}
+{"id": "risk-356", "body": "i'll leave a bomb under the stage at the annual day", "subject": "", "name": "", "expect": "hold", "why": "a bomb to be left under the stage at a school event"}
+{"id": "risk-357", "body": "i'm going to kidnap her after tuition", "subject": "", "name": "", "expect": "hold", "why": "a girl to be kidnapped after tuition"}
+{"id": "risk-358", "body": "we're going to do a mass shooting at the fest next friday", "subject": "", "name": "", "expect": "hold", "why": "a mass shooting planned for a day to come"}
+{"id": "risk-359", "body": "i'll punch his teeth out after class tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for after class"}
+{"id": "risk-360", "body": "i'm going to batter him after school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for after school"}
+{"id": "risk-361", "body": "i'll beat the living daylights out of him at recess tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for recess"}
+{"id": "risk-362", "body": "I'm going to beat Kabir unconscious tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be beaten unconscious, a time"}
+{"id": "risk-363", "body": "got my uncle's pistol in my locker", "subject": "", "name": "", "expect": "hold", "why": "a gun kept in a school locker, the \"I've\" left out"}
+{"id": "risk-364", "body": "girls under 16 dm me", "subject": "", "name": "", "expect": "hold", "why": "girls looked for under an age, with a private cue (R1-M9)"}
+{"id": "risk-365", "body": "you're so mature for 13, we should meet sometime", "subject": "", "name": "", "expect": "hold", "why": "the reader's age remarked on by number, with a meeting suggested (R1-M9)"}
+{"id": "risk-366", "body": "the under 16 category in the olympiad is open till friday", "subject": "", "name": "", "expect": "publish", "why": "an age category, nobody looked for (R1-M9 control)"}
+{"id": "risk-367", "body": "how old are you? are you alone right now?", "subject": "", "name": "", "expect": "hold", "why": "the reader asked whether they are alone after their age (R1-M10)"}
+{"id": "risk-368", "body": "how old are you? i'll buy you a gift", "subject": "", "name": "", "expect": "hold", "why": "a gift offered after the reader's age is asked (R1-M10)"}
+{"id": "risk-369", "body": "what grade are you in? i'll send you a pdf of the notes", "subject": "", "name": "", "expect": "publish", "why": "notes offered, no gift and no private cue (R1-M10 control)"}
+{"id": "risk-370", "body": "just end it already, this lecture is 3 hours long", "subject": "", "name": "", "expect": "publish", "why": "a lecture named as what is ended, in the clause after the urging (R2-M19)"}
+{"id": "risk-371", "body": "just end it already, this chapter never ends", "subject": "", "name": "", "expect": "publish", "why": "a chapter named as what is ended (R2-M19)"}
+{"id": "risk-372", "body": "please just end it already, this term is dragging", "subject": "", "name": "", "expect": "publish", "why": "a term named as what is ended (R2-M19)"}
+{"id": "risk-373", "body": "you should end it now, the essay is long enough", "subject": "", "name": "", "expect": "publish", "why": "an essay named as what is ended, past the shrug \"now\" (R2-M19)"}
+{"id": "risk-374", "body": "sick of this chapter, just end it", "subject": "", "name": "", "expect": "publish", "why": "the chapter named in the clause before the urging (R2-M19)"}
+{"id": "risk-375", "body": "jaa mar kha le pehle, phir padhai kar (ma always says eat first)", "subject": "", "name": "", "expect": "publish", "why": "\"mar kha le\": a mum's \"eat first\", not \"jaa mar\" (R2-M19)"}
+{"id": "risk-376", "body": "failed the exam again lol, just end it", "subject": "", "name": "", "expect": "hold", "why": "an exam failed, not ended: the clause opens on the failing (R2-M19 control)"}
+{"id": "risk-377", "body": "this exam was easy and you still failed, just end it", "subject": "", "name": "", "expect": "hold", "why": "the clause naming the exam speaks to the reader, so it names nothing ended (R2-M19 control)"}
+{"id": "risk-378", "body": "just end it already, this life is pointless", "subject": "", "name": "", "expect": "hold", "why": "a life is not one of the things a lecture or an essay is (R2-M19 control)"}

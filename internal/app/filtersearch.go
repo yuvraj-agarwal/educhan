@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -1560,10 +1561,10 @@ type searchIndex struct {
 	// groups holds, per group, the places its branches can start, in
 	// order, and the next place it matches.
 	groups []groupState
-	// skipFrom and skipTo are, per class, the last run of it measured
-	// forwards; runFrom and runTo the last measured both ways.
-	skipFrom, skipTo []int
-	runFrom, runTo   []int
+	// runs holds, per class slot, the runs of the class measured so far,
+	// each as long as it goes both ways, as sorted [from, to) pairs that do
+	// not touch (runOf).
+	runs [][]int
 	// work counts what searching costs, in steps that do not depend on the
 	// computer: trie nodes visited, characters scanned, and the threads a
 	// machine ran at each character (machine.work).
@@ -1585,11 +1586,10 @@ func (v *view) searchIndex(family int) *searchIndex {
 func newSearchIndex(text string, family int) *searchIndex {
 	n := searches.slots[family]
 	ix := &searchIndex{
-		text:     text,
-		trie:     searches.tries[family],
-		groups:   make([]groupState, searches.groups[family]),
-		skipFrom: make([]int, n), skipTo: make([]int, n),
-		runFrom: make([]int, n), runTo: make([]int, n),
+		text:   text,
+		trie:   searches.tries[family],
+		groups: make([]groupState, searches.groups[family]),
+		runs:   make([][]int, n),
 	}
 	ix.walk()
 	return ix
@@ -1749,35 +1749,41 @@ func (w *walker) visit(n int32, at int) {
 	}
 }
 
-// skipEnd is where the run of c starting at at ends. A run is measured once:
-// the walk asks about places in increasing order, and every place inside a
-// run measured from before it ends where that run does.
+// skipEnd is where the run of c starting at at ends.
 func (ix *searchIndex) skipEnd(c *runeClass, slot int32, at int) int {
-	if at >= ix.skipFrom[slot] && at < ix.skipTo[slot] {
-		return ix.skipTo[slot]
+	if at == len(ix.text) {
+		return at
 	}
-	end := at
-	for end < len(ix.text) {
-		r, w := decodeRune(ix.text, end)
-		if !c.has(r) {
-			break
-		}
-		end += w
+	if r, _ := decodeRune(ix.text, at); !c.has(r) {
+		return at
 	}
-	ix.work += end - at
-	if end > at {
-		ix.skipFrom[slot], ix.skipTo[slot] = at, end
-	}
-	return end
+	_, to := ix.runOf(c, slot, at)
+	return to
 }
 
-// runStart is where the run of c that ends at q starts.
+// runStart is where the run of c that ends at q, or holds it, starts.
 func (ix *searchIndex) runStart(c *runeClass, slot int32, q int) int {
-	if q >= ix.runFrom[slot] && q <= ix.runTo[slot] && ix.runTo[slot] > 0 {
-		return ix.runFrom[slot]
+	from, _ := ix.runOf(c, slot, q)
+	return from
+}
+
+// runOf is the run of c that holds at or ends there, as long as it goes
+// both ways: at, at, when there is none. Each run is measured once, and
+// kept, whatever order it is asked about in. The walk asks about places
+// further and further on from each start, so it can ask about one run, then
+// one after it, then the first again from the next start: a search that kept
+// only the last run it measured measured the first one again from every
+// start in it, and two long runs of spaces with an arrow after each cost the
+// square of their length (TestFilterCostIsBounded, "arrows far apart").
+func (ix *searchIndex) runOf(c *runeClass, slot int32, at int) (int, int) {
+	rs := ix.runs[slot]
+	n := len(rs) / 2
+	i := sort.Search(n, func(k int) bool { return rs[2*k+1] >= at })
+	if i < n && rs[2*i] <= at {
+		return rs[2*i], rs[2*i+1]
 	}
 	text := ix.text
-	from := q
+	from := at
 	for from > 0 {
 		r, w := utf8.DecodeLastRuneInString(text[:from])
 		if !c.has(r) {
@@ -1785,7 +1791,7 @@ func (ix *searchIndex) runStart(c *runeClass, slot int32, q int) int {
 		}
 		from -= w
 	}
-	to := q
+	to := at
 	for to < len(text) {
 		r, w := decodeRune(text, to)
 		if !c.has(r) {
@@ -1794,8 +1800,11 @@ func (ix *searchIndex) runStart(c *runeClass, slot int32, q int) int {
 		to += w
 	}
 	ix.work += to - from
-	ix.runFrom[slot], ix.runTo[slot] = from, to
-	return from
+	if to > from {
+		rs = slices.Insert(rs, 2*i, from, to)
+		ix.runs[slot] = rs
+	}
+	return from, to
 }
 
 // groupState is what a view knows about a group: the places, in order,
@@ -1929,52 +1938,69 @@ func (ix *searchIndex) nextRun(b *branch, from int) int {
 		if q < 0 {
 			return -1
 		}
-		_, qw := decodeRune(text, q)
-		at = q + qw
-		lo := ix.runStart(b.runMore, b.slot, q)
-		// p is where the runMore characters start: from runMax of them
-		// before q to runMin of them before q, inside the run.
-		hi := q
-		for range b.runMin {
-			if hi <= lo {
-				hi = -1
-				break
-			}
-			_, w := utf8.DecodeLastRuneInString(text[:hi])
-			hi -= w
-		}
-		if hi < 0 {
-			continue
-		}
-		p := hi
-		for k := b.runMin; k < b.runMax && p > lo; k++ {
-			_, w := utf8.DecodeLastRuneInString(text[:p])
-			p -= w
-		}
-		ix.work += q - p
-		best := -1
-		for ; p <= hi; p++ {
-			if p == 0 || p < len(text) && !utf8.RuneStart(text[p]) {
-				continue
-			}
-			r, w := utf8.DecodeLastRuneInString(text[:p])
-			rp := p - w
-			if !b.runFirst.has(r) {
-				continue
-			}
-			if b.hasLeadRune && rp > 0 {
-				if x, wx := utf8.DecodeLastRuneInString(text[:rp]); x == b.leadRune && rp-wx >= from && (best < 0 || rp-wx < best) {
-					best = rp - wx
-				}
-			}
-			if rp >= from && holds(b.leadOp, text, rp) && (best < 0 || rp < best) {
-				best = rp
-			}
-		}
-		if best >= 0 {
+		if best := ix.runEndingAt(b, from, q); best >= 0 {
 			return best
 		}
+		// None of the runs that end at q starts a match, and the next place
+		// a run can end is just after the next character a run is made of:
+		// what follows the run can match at every place of a run of spaces
+		// in front of an "@", and looking from each of them again for where
+		// it matches read the rest of the run from each.
+		for at = q; at < len(text); {
+			r, w := decodeRune(text, at)
+			at += w
+			if b.runFirst.has(r) || b.runMore.has(r) {
+				break
+			}
+		}
+		if at == q {
+			return -1
+		}
+		ix.work += at - q
 	}
+}
+
+// runEndingAt is the leftmost start at or after from of a run of b that ends
+// at q, with its lead, or -1.
+func (ix *searchIndex) runEndingAt(b *branch, from, q int) int {
+	text := ix.text
+	lo := ix.runStart(b.runMore, b.slot, q)
+	// p is where the runMore characters start: from runMax of them
+	// before q to runMin of them before q, inside the run.
+	hi := q
+	for range b.runMin {
+		if hi <= lo {
+			return -1
+		}
+		_, w := utf8.DecodeLastRuneInString(text[:hi])
+		hi -= w
+	}
+	p := hi
+	for k := b.runMin; k < b.runMax && p > lo; k++ {
+		_, w := utf8.DecodeLastRuneInString(text[:p])
+		p -= w
+	}
+	ix.work += q - p
+	best := -1
+	for ; p <= hi; p++ {
+		if p == 0 || p < len(text) && !utf8.RuneStart(text[p]) {
+			continue
+		}
+		r, w := utf8.DecodeLastRuneInString(text[:p])
+		rp := p - w
+		if !b.runFirst.has(r) {
+			continue
+		}
+		if b.hasLeadRune && rp > 0 {
+			if x, wx := utf8.DecodeLastRuneInString(text[:rp]); x == b.leadRune && rp-wx >= from && (best < 0 || rp-wx < best) {
+				best = rp - wx
+			}
+		}
+		if rp >= from && holds(b.leadOp, text, rp) && (best < 0 || rp < best) {
+			best = rp
+		}
+	}
+	return best
 }
 
 // run returns the first match of b at or after from, as indexes into the

@@ -119,7 +119,7 @@
 {"id": "c2-119", "body": "Childline 0800 1111 helped me loads in year 9, they don't judge and it doesnt show on the phone bill", "subject": "", "name": "", "expect": "publish", "why": "published helpline UK"}
 {"id": "c2-120", "body": "my email is madeup underscore jess04 at hotmail dot co dot uk x", "subject": "", "name": "", "expect": "block", "why": "email spelled out with underscore"}
 {"id": "c2-121", "body": "whatsapp: ९८२० ४७१ ३३६ (hindi keyboard se likha hai)", "subject": "", "name": "", "expect": "block", "why": "devanagari digits"}
-{"id": "c2-122", "body": "steam friend code 9412877305, add me we need a 4th for the co-op campaign", "subject": "", "name": "", "expect": "block", "why": "steam friend code; a Steam friend code is the account's 32-bit number, so this one is above 4294967295 and can be no one's"}
+{"id": "c2-122", "body": "steam friend code 4410877305, add me we need a 4th for the co-op campaign", "subject": "", "name": "", "expect": "block", "why": "steam friend code; a Steam friend code is the account's 32-bit number, so this one is above 4294967295 and can be no one's account, and it is no phone's shape either (it was 9412877305, an Indian mobile's shape; V7)"}
 {"id": "c2-123", "body": "my mob is 0 7 4 5 8 2 1 3 9 0 6 cheers x", "subject": "", "name": "", "expect": "block", "why": "UK mobile one digit per space"}
 {"id": "c2-124", "body": "numbr bhej rha hu, 7O42 l9 8836 save kar lena, notes wahi bhejunga", "subject": "", "name": "", "expect": "block", "why": "look-alike letters in mobile, hinglish"}
 {"id": "c2-125", "body": "find the remainder when 7^2026 is divided by 13. I keep getting 4, is that right?", "subject": "", "name": "", "expect": "publish", "why": "maths question"}
