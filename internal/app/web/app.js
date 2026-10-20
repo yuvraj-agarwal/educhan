@@ -1800,6 +1800,18 @@ let verifyStep = { step: "email", label: "" };
 // one's box.
 let verifyBusy = null;
 
+// The last Verify request submitVerification took on, as a promise that
+// settles once it is done with that request, whatever the answer was and
+// whether or not it was sent. The next request, from whichever step, waits for
+// it before it is sent. An answer from a step the reader has left is dropped,
+// but not the cookie it carries: the server checks a code against the
+// pending-code cookie the browser holds, and the browser holds whichever one
+// landed last. Sent side by side, a code asked for from the address step that
+// Forget this browser drew could land before one still out from the step it
+// replaced, and the code box then on screen refused its own right code,
+// spending its attempts, while the server checked it against the other address.
+let verifyRequest = Promise.resolve();
+
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
 // the server refused it. Shown once on the verification page, which is the only
 // page that can do anything about it.
@@ -3683,7 +3695,12 @@ el.main.addEventListener("submit", async (event) => {
 // wait is kept in verifyBusy as well as on the form's buttons, and the step is
 // drawn again waiting (verifyViewHTML); a second request from a step whose
 // first is out is never sent, since the page could then show the first one's
-// answer while the server acts on the second.
+// answer while the server acts on the second. A request from another step is
+// sent only once submitVerification is done with the one before it
+// (verifyRequest), so their answers set the pending-code cookie in the order
+// they were asked for and the newest one's is the cookie the browser keeps; if
+// the reader moves the page to yet another step while it waits, it is never
+// sent.
 async function submitVerification(form) {
   if (verifyBusy === verifyStep) return;
   const button = form.querySelector('button[type="submit"]');
@@ -3707,7 +3724,16 @@ async function submitVerification(form) {
   button.textContent = requesting ? VERIFY_SENDING : VERIFY_CHECKING;
   verifyBusy = sentFrom;
   clearNotice();
+  const earlier = verifyRequest;
+  let release;
+  verifyRequest = new Promise((resolve) => {
+    release = resolve;
+  });
   try {
+    // Whatever the request before this one was, its answer, and the cookie
+    // with it, is in before this one goes.
+    await earlier;
+    if (verifyStep !== sentFrom) return;
     if (requesting) {
       const sent = await api("/api/verify/request", {
         method: "POST",
@@ -3781,8 +3807,10 @@ async function submitVerification(form) {
     });
   } finally {
     // The answer is in, kept or dropped. A request sent since from another
-    // step — after Forget this browser — is still out, and keeps its wait.
+    // step — after Forget this browser — is still out, and keeps its wait;
+    // it goes now, if it was waiting for this one.
     if (verifyBusy === sentFrom) verifyBusy = null;
+    release();
   }
 }
 

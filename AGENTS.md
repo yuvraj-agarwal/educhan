@@ -478,19 +478,24 @@ needs a browser check before the test changes.
   `verifyViewHTML` draws that step waiting, so nothing can give up a step whose badge the
   server is issuing (for the same address, retiring the one held here) or send a second
   code while the page goes on to show the first one's box. No second request goes out
-  from a step whose first is out. So every change of step assigns a new object, nothing
-  edits one in place, and the places that make one are a list the test holds
-  (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that arrives after the
-  reader has left the page (`onVerifyPage`) only sets `verifyStep`: nothing is drawn over
-  the page they went to, and coming back shows the step it left
-  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). Nor does `renderVerify`, through which an
-  issued badge is drawn after one more request, draw once the page has moved to another
-  step meanwhile: whatever moved it drew that step, and the badge's late redraw once wiped
-  Forget this browser's confirmation. `replacing` puts the badge panel away for
-  "Verify another address", and both steps then offer "Keep my badge" back to it
-  (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over at
-  the address step. A reload drops a pending code too, since nothing about it is stored:
-  the page shows the badge held here, or the address step when there is none.
+  from a step whose first is out, and one from another step waits until
+  `submitVerification` is done with the one before it (`verifyRequest`), then goes only
+  if the page is still on its step: a dropped answer's pending-code cookie still lands,
+  and the browser keeps whichever lands last, so a code box drawn after Forget this
+  browser once refused its own right code while the server checked it against the
+  address asked for before. Telling answers apart by step needs every change of step to
+  assign a new object: nothing edits one in place, and the places that make one are a
+  list the test holds (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer
+  that arrives after the reader has left the page (`onVerifyPage`) only sets
+  `verifyStep`: nothing is drawn over the page they went to, and coming back shows the
+  step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). Nor does `renderVerify`,
+  through which an issued badge is drawn after one more request, draw once the page has
+  moved to another step meanwhile: whatever moved it drew that step, and the badge's late
+  redraw once wiped Forget this browser's confirmation. `replacing` puts the badge panel
+  away for "Verify another address", and both steps then offer "Keep my badge" back to it
+  (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
+  at the address step. A reload drops a pending code too, since nothing about it is
+  stored: the page shows the badge held here, or the address step when there is none.
 
 ### Child safety
 

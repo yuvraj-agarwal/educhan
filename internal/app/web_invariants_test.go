@@ -967,11 +967,46 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 	if ageRefused < 0 || busy < ageRefused || tried < busy || first < tried {
 		t.Error("submitVerification does not set verifyBusy once it is sure to send, before the try that clears it")
 	}
-	if !regexp.MustCompile(`\n  \} finally \{\s*if \(verifyBusy === sentFrom\) verifyBusy = null;\n  \}\n\}$`).MatchString(submit) {
-		t.Error("submitVerification does not end by clearing verifyBusy once its answer is in, and only its own wait")
+	if !regexp.MustCompile(`\n  \} finally \{\s*if \(verifyBusy === sentFrom\) verifyBusy = null;\n    release\(\);\n  \}\n\}$`).MatchString(submit) {
+		t.Error("submitVerification does not end by clearing verifyBusy once its answer is in, and only its own wait, " +
+			"and then letting the next request go")
 	}
 	if n := len(regexp.MustCompile(`\bverifyBusy\s*=[^=]`).FindAllString(code, -1)); n != 3 {
 		t.Errorf("app.js sets verifyBusy %d times; want three: its declaration, and in submitVerification", n)
+	}
+	// One request at a time across steps, too. An answer from a step the
+	// reader has left is dropped, but the pending-code cookie it carries still
+	// lands, and the browser keeps whichever cookie landed last. After Forget
+	// this browser mid-Send code, a second Send code from the fresh address
+	// step could land first: its code box was then on screen while the server
+	// checked codes against the first address, and the right code was refused
+	// until the attempts ran out. So a request waits until submitVerification
+	// is done with the one before it, whichever step that was from
+	// (verifyRequest); it is sent only if the page is still on its step then;
+	// and it lets the next one go in the finally, whatever its own answer was.
+	// Nothing returns between taking its turn and the try, or the next request
+	// would wait for ever.
+	if !strings.Contains(code, "\nlet verifyRequest = Promise.resolve();\n") {
+		t.Fatal("app.js does not keep verifyRequest, the last Verify request, for the next one to wait on")
+	}
+	queued := strings.Index(submit, "\n  const earlier = verifyRequest;\n")
+	turn := strings.Index(submit, "\n  verifyRequest = new Promise((resolve) => {\n    release = resolve;\n  });\n")
+	waited := -1
+	if at := regexp.MustCompile(`\n  try \{\s*await earlier;\n    if \(verifyStep !== sentFrom\) return;\n`).FindStringIndex(submit); at != nil {
+		waited = at[0]
+	}
+	if busy < 0 || queued < busy || turn < queued || waited < turn || first < waited {
+		t.Error("submitVerification does not wait for the Verify request before it, and check that the page is " +
+			"still on its step, before it sends its own")
+	} else if strings.Contains(submit[queued:waited], "return") {
+		t.Errorf("submitVerification can return between taking its turn and the try that hands it on:\n%s",
+			submit[queued:waited])
+	}
+	if n := len(regexp.MustCompile(`\bverifyRequest\s*=[^=]`).FindAllString(code, -1)); n != 2 {
+		t.Errorf("app.js sets verifyRequest %d times; want two: its declaration, and in submitVerification", n)
+	}
+	if n := len(regexp.MustCompile(`\brelease\b`).FindAllString(code, -1)); n != 3 {
+		t.Errorf("app.js names release %d times; want three, all in submitVerification: declared, set and called", n)
 	}
 	if !strings.Contains(submit, "button.textContent = requesting ? VERIFY_SENDING : VERIFY_CHECKING;") {
 		t.Error("submitVerification's waiting labels are not VERIFY_SENDING and VERIFY_CHECKING, which the redrawn step shows")
