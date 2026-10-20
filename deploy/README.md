@@ -607,7 +607,7 @@ sale right now." where Buy and Renew were. Everything else goes on: Stripe's
 webhooks are still verified and recorded, so a checkout opened before the pause
 and paid after it is collected, and a refund or dispute still takes back what it
 paid for; existing Passes keep skipping the captcha; and the page still
-collects, shows and checks codes, and reissue links are still made and spent.
+collects, shows and checks codes, and reissue codes are still made and redeemed.
 `EDUCHAN_PASS_SALES=open` (the default) sells again; any other value refuses to
 start. Re-running `first-deploy.sh` keeps the pause.
 
@@ -632,6 +632,13 @@ day) and no refund or dispute pending. The tables stay and the sweep keeps
 pruning them; setting the same `educhan-pass-secret` again brings back every
 Pass not yet pruned. Before that, check in the Stripe Dashboard that the
 webhook endpoint is still enabled: Stripe can disable one that keeps failing.
+
+**Reissuing a lost code needs the moderation key.** The owner makes a reissue
+code with `POST /api/pass/reissue`, which sits behind `EDUCHAN_MOD_KEY`
+(the README's *Lost codes*). `first-deploy.sh` already sets that key on the
+service, so there is nothing to add here; a service set up by hand needs it
+too, or no lost code can be reissued. It is not a Pass setting, so it stays
+when the Pass is retired.
 
 **Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
 payment record is a hash under it, so rotating it cancels every Pass that was
