@@ -519,8 +519,11 @@ needs a browser check before the test changes.
   with every other check passing. `replacing` puts the badge panel away for "Verify
   another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
-  at the address step. A reload drops a pending code too, since nothing about it is
-  stored: the page shows the badge held here, or the address step when there is none.
+  at the address step; Forget this credential says so at the top of it (`badgeLost`,
+  `CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
+  (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since nothing
+  about it is stored: the page shows the badge held here, or the address step when there
+  is none.
   Whatever a step draws in place of another, or says, is brought into view clear of the
   sticky header (`revealClearOfHeader`, which measures it) and focused without scrolling
   (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element

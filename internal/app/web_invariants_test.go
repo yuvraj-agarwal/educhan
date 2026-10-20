@@ -1676,3 +1676,34 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 			"the badge box in restoreDraft", n)
 	}
 }
+
+// Forget this credential draws the address step in place of the badge panel,
+// which takes the button and the focus with it. It once left a keyboard on
+// the page itself, with nothing to tell a screen reader that the badge had
+// gone. So the address step opens by saying so (badgeLost), and that is
+// brought into view clear of the header and focused, as Forget this browser's
+// confirmation is.
+func TestForgettingTheCredentialSaysSo(t *testing.T) {
+	script := appScript(t)
+	if said := jsString(t, script, "CREDENTIAL_FORGOTTEN"); !regexp.MustCompile(`^[A-Z][^"]*badge\.$`).MatchString(said) {
+		t.Errorf("CREDENTIAL_FORGOTTEN is %q; want a sentence saying the badge has gone", said)
+	}
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	if !strings.Contains(view, "`<p class=\"verify-note\" id=\"badge-lost\" tabindex=\"-1\">${esc(badgeLost)} Verify again to get a new one.</p>`") {
+		t.Errorf("the note saying why the badge went cannot be focused from script:\n%s", view)
+	}
+	handler := verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-verification"]')) {`)
+	lost, drawn := strings.Index(handler, "badgeLost = CREDENTIAL_FORGOTTEN;"), strings.Index(handler, "renderVerify()")
+	if lost < 0 || drawn < lost {
+		t.Errorf("Forget this credential does not say the badge has gone in the step it draws:%s", handler)
+	}
+	if !strings.Contains(handler, "renderVerify().then((drawn) => {\n"+
+		"      const lost = drawn && document.getElementById(\"badge-lost\");\n"+
+		"      if (lost) {\n"+
+		"        revealClearOfHeader(lost);\n"+
+		"        lost.focus({ preventScroll: true });\n"+
+		"      }\n"+
+		"    });") {
+		t.Errorf("Forget this credential does not bring what it said into view clear of the header and focus it:%s", handler)
+	}
+}

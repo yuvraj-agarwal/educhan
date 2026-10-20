@@ -1885,10 +1885,13 @@ let verifyShown = { step: null, node: null };
 // sending the form again does too (clearVerifyRefusal).
 let verifyRefusal = null;
 
-// Why the badge that was here has gone, when it is worth saying: it ran out, or
-// the server refused it. Shown once on the verification page, which is the only
-// page that can do anything about it.
+// Why the badge that was here has gone, when it is worth saying: it ran out,
+// the server refused it, or the reader forgot it (CREDENTIAL_FORGOTTEN). Shown
+// once on the verification page, which is the only page that can do anything
+// about it.
 let badgeLost = "";
+
+const CREDENTIAL_FORGOTTEN = "This browser no longer holds a badge.";
 
 // localStorage throws rather than degrading in some privacy modes, so every
 // access is guarded. Losing the credential costs a full re-verification: the
@@ -2273,7 +2276,7 @@ function verifyViewHTML() {
   }
 
   const lost = badgeLost
-    ? `<p class="verify-note">${esc(badgeLost)} Verify again to get a new one.</p>`
+    ? `<p class="verify-note" id="badge-lost" tabindex="-1">${esc(badgeLost)} Verify again to get a new one.</p>`
     : "";
   // The code box this step replaced, and why it went, said at the top of the
   // form, where the box was, and read out with the address field, as is the
@@ -3499,14 +3502,22 @@ document.addEventListener("click", (event) => {
 
   // Forgetting a badge is entirely local: the server was never told which
   // browser held it, so there is nothing there to tell. The address step that
-  // takes the badge panel's place is brought into view clear of the header.
+  // takes the badge panel's place opens by saying the badge has gone
+  // (badgeLost), and that is brought into view clear of the header and
+  // focused, with the address form under it. The redraw took the button and
+  // the focus with it, and left a keyboard on the page itself, with nothing
+  // to tell a screen reader that the badge was gone.
   if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
     forgetCredential();
+    badgeLost = CREDENTIAL_FORGOTTEN;
     verifyStep = { step: "email", label: "" };
     renderVerify().then((drawn) => {
-      const form = drawn && el.main.querySelector("form[data-verify]");
-      if (form) revealClearOfHeader(form);
+      const lost = drawn && document.getElementById("badge-lost");
+      if (lost) {
+        revealClearOfHeader(lost);
+        lost.focus({ preventScroll: true });
+      }
     });
     return;
   }
