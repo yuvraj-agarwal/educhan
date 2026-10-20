@@ -144,8 +144,9 @@ func (a *App) WarnServingSettings() {
 	}
 }
 
-// minCaptchaSecretLen is the shortest EDUCHAN_CAPTCHA_SECRET accepted.
-// `openssl rand -hex 32` makes one of 64 characters.
+// minCaptchaSecretLen is the shortest EDUCHAN_CAPTCHA_SECRET accepted, in
+// bytes: what a secret is worth is in its bytes, whatever characters spell
+// them. `openssl rand -hex 32` makes one of 64.
 const minCaptchaSecretLen = 32
 
 // checkCaptchaSecret refuses a short captcha secret rather than starting with
@@ -153,7 +154,7 @@ const minCaptchaSecretLen = 32
 // guessed lets a script sign challenges of its own and skip the work.
 func checkCaptchaSecret(cfg Config) error {
 	if cfg.CaptchaSecret != "" && len(cfg.CaptchaSecret) < minCaptchaSecretLen {
-		return fmt.Errorf("EDUCHAN_CAPTCHA_SECRET must be at least %d characters", minCaptchaSecretLen)
+		return fmt.Errorf("EDUCHAN_CAPTCHA_SECRET must be at least %d bytes", minCaptchaSecretLen)
 	}
 	return nil
 }

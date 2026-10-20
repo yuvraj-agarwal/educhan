@@ -245,7 +245,7 @@ Flood control is on by default (`EDUCHAN_THREAD_COOLDOWN=30`, `EDUCHAN_POST_COOL
 EDUCHAN_THREAD_COOLDOWN=0 EDUCHAN_POST_COOLDOWN=0 EDUCHAN_UPLOAD_COOLDOWN=0 make run
 ```
 
-The captcha is off unless `EDUCHAN_CAPTCHA_SECRET` is set, to at least 32 characters, and
+The captcha is off unless `EDUCHAN_CAPTCHA_SECRET` is set, to at least 32 bytes, and
 `GET /api/site` says which. The curl examples above assume it is off: with it on, every
 post without a badge and every code request is refused (`403`, `"captcha": "required"`)
 unless it carries a solved puzzle as `"captcha"` (a form field beside an image), so test
@@ -501,9 +501,9 @@ check before the test changes.
   `TestForgettingTheBrowserCancelsWhatIsOnItsWay` pin these; the worker needs no CSP
   change (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). The server's
   figures that the README, `.env.example` and `app.js` quote (300 challenges a minute,
-  half an hour, a work of 1500, a secret of at least 32 characters) are pinned as
-  figures, not by the names of their constants (`TestTheCaptchaNumbersTheDocsQuote`), so
-  changing one means changing those pages too. On the server the answer is checked
+  half an hour, a work of 1500, a secret of at least 32 bytes) are pinned as figures,
+  not by the names of their constants (`TestTheCaptchaNumbersTheDocsQuote`), so changing
+  one means changing those pages too. On the server the answer is checked
   (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not already
   spent) before flood control. Flood control comes in two halves: the check
   (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429` and starts

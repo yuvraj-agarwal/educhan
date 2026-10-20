@@ -565,10 +565,10 @@ func TestCaptchaConfig(t *testing.T) {
 func TestCaptchaRefusesAShortSecret(t *testing.T) {
 	short := strings.Repeat("s", minCaptchaSecretLen-1)
 	if err := checkCaptchaSecret(Config{CaptchaSecret: short}); err == nil {
-		t.Error("a secret one character short was accepted")
+		t.Error("a secret one byte short was accepted")
 	}
 	if err := checkCaptchaSecret(Config{CaptchaSecret: short + "s"}); err != nil {
-		t.Errorf("a secret of exactly %d characters: %v", minCaptchaSecretLen, err)
+		t.Errorf("a secret of exactly %d bytes: %v", minCaptchaSecretLen, err)
 	}
 	if err := checkCaptchaSecret(Config{}); err != nil {
 		t.Errorf("no secret (captcha off): %v", err)
@@ -598,10 +598,16 @@ func TestTheCaptchaNumbersTheDocsQuote(t *testing.T) {
 		{"GET /api/captcha answers 429 past 300 a minute from one address", captchaChallengeLimit, 300},
 		{"a challenge's expiry is half an hour away", captchaTTL, 30 * time.Minute},
 		{"EDUCHAN_CAPTCHA_WORK is 1500 when unset", cfg.CaptchaWork, 1500},
-		{"an EDUCHAN_CAPTCHA_SECRET of 31 characters is refused",
+		{"an EDUCHAN_CAPTCHA_SECRET of 31 bytes is refused",
 			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("s", 31)}) != nil, true},
-		{"an EDUCHAN_CAPTCHA_SECRET of 32 characters is taken",
+		{"an EDUCHAN_CAPTCHA_SECRET of 32 bytes is taken",
 			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("s", 32)}) == nil, true},
+		// Bytes and not characters: sixteen two-byte characters are enough,
+		// and 31 bytes are not, however few characters spell them.
+		{"an EDUCHAN_CAPTCHA_SECRET of 32 bytes in 16 characters is taken",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("é", 16)}) == nil, true},
+		{"an EDUCHAN_CAPTCHA_SECRET of 31 bytes in 16 characters is refused",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("é", 15) + "s"}) != nil, true},
 	} {
 		if tc.got != tc.want {
 			t.Errorf("the docs say %s, which no longer holds: got %v, want %v", tc.quoted, tc.got, tc.want)
