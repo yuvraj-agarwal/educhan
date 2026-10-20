@@ -1076,9 +1076,11 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	if strings.Contains(hint, "badge") || !strings.Contains(badgeHint, "badge") || !strings.HasSuffix(badgeHint, hint[1:]) {
 		t.Errorf("CHECK_HINT should say nothing of a badge, and CHECK_HINT_WITH_BADGE add only that: %q, %q", hint, badgeHint)
 	}
-	if n := strings.Count(code, "dropBadgeOption(form);"); n != 2 || !strings.Contains(submitHandler(t, script), "dropBadgeOption(form);") ||
+	if n := strings.Count(code, "dropBadgeOption(form);"); n != 3 || !strings.Contains(submitHandler(t, script), "dropBadgeOption(form);") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "followCredentialStorage")), "dropBadgeOption(form);") ||
 		strings.Count(code, "#f-badge-hint") != 1 {
-		t.Errorf("the badge option is taken out of a form %d times besides in dropBadgeOption; want twice, a forget's and the submit handler's", n)
+		t.Errorf("the badge option is taken out of a form %d times besides in dropBadgeOption; want three times, "+
+			"a forget's, the submit handler's and followCredentialStorage's", n)
 	}
 	// A redraw's draft is read before the page is fetched, so a forget can
 	// come between the two: the draft notes browserForgets as it is read, and
@@ -1226,6 +1228,40 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	}
 	if strings.Count(code, "forgottenElsewhere(") != 2 || strings.Count(code, "forgetOnThisPage(") != 3 {
 		t.Error("forgetOnThisPage or forgottenElsewhere is called from somewhere besides a forget")
+	}
+}
+
+// "Forget this credential" pressed in one tab takes the badge out of every
+// other educhan tab open in the browser too, and so does the server refusing
+// the badge there as run out or replaced, or another address verified there:
+// the tab it happened in changes the credential in storage, and every other
+// tab, told by the storage event, reads it again from storage, so a badged
+// post from any of them sends only what the browser still holds. A tab whose
+// badge has gone takes the option out of every posting form on screen, which
+// would offer a badge the browser no longer holds, and draws /verify again if
+// it shows that badge. It acts on the credential's key, and on storage
+// cleared, and on nothing else.
+func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	forget := squash(jsBraced(t, code, `if (event.target.closest('[data-action="forget-verification"]')) {`))
+	if !strings.Contains(forget, "event.preventDefault(); forgetCredential();") ||
+		!strings.Contains(squash(withoutComments(jsFunction(t, script, "forgetCredential"))), "localStorage.removeItem(CREDENTIAL_STORAGE_KEY);") {
+		t.Error("Forget this credential no longer takes the credential out of storage, which is what the other tabs hear")
+	}
+	follow := squash(withoutComments(jsFunction(t, script, "followCredentialStorage")))
+	if follow != `function followCredentialStorage(event) { if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) { return; } `+
+		"const offered = state.verification.badge; state.verification.badge = state.verification.enabled ? readBadge() : null; "+
+		"const held = state.verification.badge; if (!offered || (held && held.token === offered.token)) { return; } "+
+		`for (const form of el.main.querySelectorAll("form[data-kind]")) { dropBadgeOption(form); } `+
+		`if (state.route.view === "verify" && !verifyStep.replacing && ageStatus() === "ok") { renderVerify(state.route); } }` {
+		t.Errorf("a tab no longer reads the badge again when another changes it, or no longer drops the option to post "+
+			"with one that has gone, or draws /verify again in some other case: %s", follow)
+	}
+	if strings.Count(code, `addEventListener("storage",`) != 1 ||
+		!strings.Contains(code, "\nwindow.addEventListener(\"storage\", followCredentialStorage);\n") ||
+		strings.Count(code, "followCredentialStorage") != 2 {
+		t.Error("followCredentialStorage is no longer the one thing a tab does when another changes storage, or is called from elsewhere")
 	}
 }
 
@@ -1492,14 +1528,17 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	}
 	// /verify is drawn for the route it was asked for, as that route was before
 	// the request: by render, by the confirmation, and after a forget, pressed
-	// here or heard from another tab, only while /verify is the page being
-	// drawn, whose notice is said only where it drew.
+	// here or heard from another tab, or a badge another tab took away, only
+	// while /verify is the page being drawn, whose notice is said only where it
+	// drew.
 	code := withoutComments(script)
 	forgot := "renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(BROWSER_FORGOTTEN); } });"
-	if squashed := squash(code); strings.Count(code, "renderVerify(") != 6 || strings.Count(code, "await renderVerify(route);") != 2 ||
+	if squashed := squash(code); strings.Count(code, "renderVerify(") != 7 || strings.Count(code, "await renderVerify(route);") != 2 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { renderVerify(state.route); }`) != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { `+forgot+" }") != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok") { `+forgot+" }") != 1 ||
+		strings.Count(squashed, `if (state.route.view === "verify" && !verifyStep.replacing && ageStatus() === "ok") { `+
+			"renderVerify(state.route); }") != 1 ||
 		!strings.Contains(squash(withoutComments(jsFunction(t, script, "render"))), "await renderVerify(route);") {
 		t.Error("renderVerify is called somewhere without the route it draws for, or for a page that is not /verify, " +
 			"or a forget's notice is said where it did not draw")

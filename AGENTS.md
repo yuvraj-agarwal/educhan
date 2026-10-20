@@ -568,11 +568,18 @@ check before the test changes.
   readers to verify (`data-verify-footer` in `index.html`) stays hidden until
   `GET /api/verify` says the feature is on. The header's Verify link stays regardless:
   `/verify` also holds Forget this browser.
-- The verification credential lives in `localStorage` under `educhan:credential` and
-  is attached to exactly one request in the whole application: the badged post, in
+- The verification credential lives in `localStorage` under `educhan:credential` and is
+  attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
-  every badged post, so a forged local claim buys a 403 and nothing else.
+  every badged post, so a forged local claim buys a 403 and nothing else. Every open tab
+  offers the one badge storage holds: a tab that sees the credential change in another
+  (Forget this credential or Forget this browser pressed there, the badge refused there
+  as expired or revoked, another address verified there) reads it again and, when it is
+  not the badge that tab offered, takes the option out of every posting form on screen
+  (`dropBadgeOption`) and draws `/verify` again if it shows that badge, leaving an
+  address form there as it is (`followCredentialStorage`, by the `storage` event,
+  `TestForgettingTheBadgeReachesEveryTab`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -614,9 +621,10 @@ check before the test changes.
   storage still holds it as that tab stored it: never a badge confirmed or a key made in
   another tab since, however late it hears (a name is compared by its text, so the same
   name stored since goes too). In a browser without `BroadcastChannel` a forget covers
-  the tab it was pressed in and no other (`TestForgettingTheBrowserReachesEveryTab`). It
-  is what the FAQ's shared-computer advice points to: the key left behind would give the
-  next person at the computer the same IDs in the same threads.
+  the tab it was pressed in, and the other tabs drop only the badge, as they do for
+  Forget this credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the
+  FAQ's shared-computer advice points to: the key left behind would give the next
+  person at the computer the same IDs in the same threads.
 
 ### Child safety
 

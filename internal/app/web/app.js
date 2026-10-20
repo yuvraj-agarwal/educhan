@@ -2055,7 +2055,9 @@ function forgottenElsewhere() {
 
 // forgetChannel is this tab's end of FORGET_CHANNEL, opened once at start-up,
 // or null in a browser without BroadcastChannel, or one that will not open it:
-// there a forget covers the tab it was pressed in and no other.
+// there a forget covers the tab it was pressed in, and the other tabs drop
+// only the badge, as they do for Forget this credential
+// (followCredentialStorage).
 const forgetChannel = openForgetChannel();
 
 function openForgetChannel() {
@@ -2074,6 +2076,37 @@ function openForgetChannel() {
     return null;
   }
 }
+
+// followCredentialStorage is a tab's answer to the badge changing in another
+// tab of this browser: Forget this credential or Forget this browser pressed
+// there, the server refusing the badge there as run out or replaced, or
+// another address verified there. The browser holds one badge, in storage, so
+// this tab reads it again, and a badged post from here sends only the badge
+// the browser still holds. If that is not the one this tab offered, every
+// posting form on screen loses the option, which named the badge that has
+// gone (dropBadgeOption), and /verify, when it shows that badge, is drawn
+// again; an address form on /verify that the reader may be filling in is left
+// as it is. The storage event reaches every other tab, with BroadcastChannel
+// or without.
+function followCredentialStorage(event) {
+  if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
+    return;
+  }
+  const offered = state.verification.badge;
+  state.verification.badge = state.verification.enabled ? readBadge() : null;
+  const held = state.verification.badge;
+  if (!offered || (held && held.token === offered.token)) {
+    return;
+  }
+  for (const form of el.main.querySelectorAll("form[data-kind]")) {
+    dropBadgeOption(form);
+  }
+  if (state.route.view === "verify" && !verifyStep.replacing && ageStatus() === "ok") {
+    renderVerify(state.route);
+  }
+}
+
+window.addEventListener("storage", followCredentialStorage);
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
 // whatever state verification is in, since the key and the name are there
@@ -3575,9 +3608,11 @@ document.addEventListener("click", (event) => {
   }
 
   // Forgetting a badge is entirely local: the server was never told which
-  // browser held it, so there is nothing there to tell. Either forget draws
-  // /verify again only while it is the page being drawn: pressed on a page the
-  // reader has just left, it leaves the screen to the page they went to.
+  // browser held it, so there is nothing there to tell. The browser's other
+  // tabs see it go from storage and stop offering it (followCredentialStorage).
+  // Either forget draws /verify again only while it is the page being drawn:
+  // pressed on a page the reader has just left, it leaves the screen to the
+  // page they went to.
   if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
     forgetCredential();
@@ -4636,8 +4671,9 @@ async function submitVerification(form) {
     // Offered from now on, on every posting form drawn, so a reader who has
     // left /verify, or leaves before it is drawn again, has it on the next one.
     // Drawing /verify again withdraws nothing if its GET /api/verify fails
-    // (loadVerification): only the server saying the feature is off, a forget
-    // or the badge running out takes it away.
+    // (loadVerification). The badge goes only when the server says the feature
+    // is off, when it runs out, and when it is refused on a post, forgotten or
+    // replaced, in this tab or in another (followCredentialStorage).
     state.verification.badge = readBadge();
     verifyStep = { step: "email", label: "" };
     if (!onScreen()) {
