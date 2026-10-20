@@ -456,16 +456,19 @@ needs a browser check before the test changes.
   held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step,
   which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`) and
   brings that into view, since on a phone the notice is a screen above it; a wrong code
-  keeps the box. The server answers the wrong code that spends the last attempt with
-  `CODE_GUESSES_SPENT`, so the box a wrong code leaves up takes the right code until it
-  expires. An answer that arrives after the reader has left the page (`onVerifyPage`)
-  only sets `verifyStep`: nothing is drawn over the page they went to, and coming back
-  shows the step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `replacing` puts
-  the badge panel away for "Verify another address", and both steps then offer "Keep my
-  badge" back to it (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the
-  browser starts over at the address step. A reload drops a pending code too, since
-  nothing about it is stored: the page shows the badge held here, or the address step
-  when there is none.
+  keeps the box. An expired code reaches a browser as `NO_CODE_PENDING`, not
+  `CODE_EXPIRED`: the pending cookie lasts exactly as long as the code, so the browser
+  has dropped it by then, and that note leads with expiry
+  (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that spends
+  the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up takes the
+  right code until it expires. An answer that arrives after the reader has left the page
+  (`onVerifyPage`) only sets `verifyStep`: nothing is drawn over the page they went to,
+  and coming back shows the step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`).
+  `replacing` puts the badge panel away for "Verify another address", and both steps
+  then offer "Keep my badge" back to it (`TestReplacingABadgeCanGoBackToIt`). Forgetting
+  the badge or the browser starts over at the address step. A reload drops a pending
+  code too, since nothing about it is stored: the page shows the badge held here, or the
+  address step when there is none.
 
 ### Child safety
 

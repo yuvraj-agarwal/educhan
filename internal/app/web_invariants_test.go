@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io/fs"
 	"net/http"
+	"net/http/cookiejar"
 	"regexp"
 	"strconv"
 	"strings"
@@ -552,6 +553,58 @@ func TestClientKnowsWhenNoCodeIsPending(t *testing.T) {
 	}
 	if wrongWords == "" {
 		t.Error("no wrong code was answered")
+	}
+}
+
+// A code that has expired reaches a browser as NO_CODE_PENDING, not as
+// CODE_EXPIRED: the cookie a code is confirmed against lasts exactly as long
+// as the code, so by the time the code has expired the browser has dropped the
+// cookie, and the server cannot tell which verification is meant. CODE_EXPIRED
+// is left the moment between the two. So the note NO_CODE_PENDING leaves in
+// the address step says first that the code expired. It once said only that
+// the server was no longer waiting for a code from this browser, and a reader
+// whose code had run out was never told so.
+func TestAnExpiredCodeIsSaidToHaveExpired(t *testing.T) {
+	script := appScript(t)
+	h := verifyServer(t, nil)
+
+	if status, out := h.requestCode("late@iitb.ac.in"); status != http.StatusAccepted {
+		t.Fatalf("request code: %d %s", status, out.Error)
+	}
+	sent := h.mail.last(t)
+	var pending *http.Cookie
+	for _, c := range (&http.Response{Header: h.lastHeader}).Cookies() {
+		if c.Name == pendingCookieName {
+			pending = c
+		}
+	}
+	if pending == nil {
+		t.Fatal("requesting a code set no pending cookie")
+	}
+	if ttl := int(h.app.cfg.VerifyCodeTTL.Seconds()); pending.MaxAge != ttl {
+		t.Errorf("the pending cookie lasts %ds and the code %ds; this test, and the note it holds the page to, "+
+			"rest on the browser dropping the cookie as the code expires", pending.MaxAge, ttl)
+	}
+
+	// The code expires, and the browser drops the cookie with it.
+	h.exec(`UPDATE verification_pending SET expires_at = now() - interval '1 minute'`)
+	jar, err := cookiejar.New(nil)
+	if err != nil {
+		t.Fatalf("cookie jar: %v", err)
+	}
+	h.http.Jar = jar
+	status, out := h.confirmCode(sent.Code)
+	if want := jsString(t, script, "NO_CODE_PENDING"); status != http.StatusBadRequest || out.Error != want {
+		t.Errorf("an expired code from a browser that has dropped its cookie is answered %d %q; want 400 %q",
+			status, out.Error, want)
+	}
+
+	note := regexp.MustCompile(`(?m)^  \[NO_CODE_PENDING\]: "([^"]+)",$`).FindStringSubmatch(script)
+	if note == nil {
+		t.Fatal("CODE_ENDED_NOTES has no note for NO_CODE_PENDING")
+	}
+	if !strings.HasPrefix(note[1], "That code has expired") {
+		t.Errorf("NO_CODE_PENDING's note is %q; an expired code is what it nearly always means, so it says that first", note[1])
 	}
 }
 

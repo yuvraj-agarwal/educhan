@@ -1930,6 +1930,12 @@ const BADGE_AGE_REFUSED = "the badge is for students aged 18 and over; you can s
 // against what the server answers. A wrong code is not among them: the right
 // one still works, since the server answers the wrong code that spends the
 // last attempt with CODE_GUESSES_SPENT.
+//
+// An expired code reaches a browser as NO_CODE_PENDING, not CODE_EXPIRED: the
+// cookie a code is confirmed against lasts exactly as long as the code, so
+// once the code has expired the browser no longer sends it, and the server
+// cannot tell which verification it was. CODE_EXPIRED is left the moment
+// between the two (TestAnExpiredCodeIsSaidToHaveExpired).
 const NO_CODE_PENDING = "no verification in progress, request a code first";
 const CODE_EXPIRED = "that code has expired, request a new one";
 const CODE_GUESSES_SPENT = "too many wrong codes, request a new one";
@@ -1938,8 +1944,11 @@ const CODE_GUESSES_SPENT = "too many wrong codes, request a new one";
 // to the field the reader is sent to. The notice at the top of the page is
 // not enough on its own: on a phone the box sits a screen below it, and the
 // box would turn into an empty address form with its reason out of sight.
+// NO_CODE_PENDING's note puts expiry first, since that is what it usually
+// means; otherwise the code was confirmed in another tab, or replaced by a
+// newer one asked for the same address somewhere else.
 const CODE_ENDED_NOTES = {
-  [NO_CODE_PENDING]: "The server is no longer waiting for a code from this browser.",
+  [NO_CODE_PENDING]: "That code has expired or can no longer be used.",
   [CODE_EXPIRED]: "That code has expired.",
   [CODE_GUESSES_SPENT]: "Too many wrong codes were tried, so that code no longer works.",
 };
