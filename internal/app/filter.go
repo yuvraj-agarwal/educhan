@@ -453,6 +453,9 @@ type view struct {
 	// cache lineStart: the line holding offset lineAt starts at line.
 	link         int
 	lineAt, line int
+	// loose is set for the loose view, which a window search is read on in
+	// the loose form of its pattern.
+	loose bool
 }
 
 // span maps text[a:b] back to the source.
@@ -526,7 +529,7 @@ type scannedField struct {
 func (f *scannedField) asksForAMethod() bool {
 	if f.method == 0 {
 		f.method = 1
-		if f.anyMatch(selfHarmMethodRules, methodCheck) {
+		if f.anyMatch(selfHarmMethodRules, methodCheck) || f.anyMatch(pillQuestionRules, pillQuestionCheck) {
 			f.method = 2
 		}
 	}
@@ -846,7 +849,9 @@ func looseView(p *view, src string) view {
 		}
 		b.add(r, sr.from, sr.to)
 	}
-	return b.view()
+	v := b.view()
+	v.loose = true
+	return v
 }
 
 // closeUpSpacedLetters removes the gaps from runs of three or more one-
@@ -2955,12 +2960,6 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		`to~kill~`+words(`me`, `you`, `someone`, `a~person`),
 		`to~overdose`, `to~od`, `overdose`, `be~fatal`, `be~lethal`, `be~deadly`, `is~fatal`, `is~lethal`,
 		`is~deadly`, `would~kill~`+words(`me`, `you`, `someone`, `a~person`), `to~end~it`, `to~end~my~life`),
-	// "how many sleeping pills are lethal", "how many of my mum's sleeping
-	// pills would it take": only with a medicine named, since "how many
-	// snakes are deadly" is a biology question.
-	`how~many~`+window(60)+medicines+`[^.?!\n]{0,60}?~`+words(`are~`+
-		words(`lethal`, `fatal`, `deadly`, `enough~to~`+words(`die`, `kill~`+words(`me`, `you`, `someone`), `od`,
-			`overdose`)), words(`would`, `will`, `does`, `do`)+`~it~take`),
 	// "will 20 pills kill me"
 	words(`will`, `would`, `could`, `can`, `does`, `do`)+`~(?:\d+~)?`+medicines+`~`+
 		words(`kill~me`, `kill~you`, `kill~someone`, `be~fatal`, `be~lethal`, `be~enough`),
@@ -2980,12 +2979,6 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		words(`die`, `kill~`+words(`my`, `your`, `ur`, `one`)+`~self`, `commit~suicide`,
 			`end~`+words(`my`, `your`, `one'?s`)+`~life`, `od`, `overdose`, `end~it(?:~all)?`, `go`),
 	`suicide~`+words(`method`, `methods`, `guide`, `instructions`, `tips`),
-	// A how-many question about pills with a disclaimer after it: "kitni
-	// neend ki goliyan leni padti hain? bas pooch raha hoon", "how many
-	// sleeping pills do you take? asking for a friend". methodCheck turns
-	// it down when an ailment is named.
-	words(`kitni`, `kitne`, `how~many`)+`~(?:\pL+~){0,3}?`+words(`goliyan`, `golian`, `goliya`, `pills`, `tablets`)+
-		`[^\n]{0,60}?`+words(`just~asking`, `asking~for~a~friend`, `bas~pooch`, `bas~puch`, `sirf~pooch`),
 	// "how deep should i cut"
 	`how~deep~`+words(`should`, `do`, `can`, `would`, `to`, `must`)+`~(?:`+words(`i`, `you`, `u`, `one`)+`~)?cut`,
 	// The poster's own death as what a question is about: "is there a way
@@ -2998,10 +2991,84 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		`~to~`+words(`not`, `never`)+`~`+words(`survive`, `wake~up`),
 ) + `\b`)}
 
-// medicines are what an overdose question names.
-var medicines = words(`pills?`, `tablets?`, `capsules?`, `paracetamol`, `tylenol`, `acetaminophen`, `ibuprofen`,
-	`aspirin`, `advil`, `panadol`, `crocin`, `dolo`, `meds`, `medicines?`, `medications?`, `antidepressants?`,
-	`sleeping~pills`, `insulin`, `xanax`, `benadryl`, `melatonin`)
+// pillQuestionRules are how-many questions about medicine, read only as far
+// as the medicine: "how many sleeping pills are lethal", "how many of my
+// mum's sleeping pills would it take" (only with a medicine named, since "how
+// many snakes are deadly" is a biology question), and one about pills with a
+// disclaimer after it, "how many sleeping pills do you take? asking for a
+// friend", "kitni neend ki goliyan leni padti hain? bas pooch raha hoon".
+// pillQuestionCheck reads what makes it a question about dying after the
+// medicine, in its sentence, or the disclaimer, on its line. Written as one
+// pattern the three were read 60 characters on from every medicine named
+// after every "how many" in reach, so a post of "howmany@pills_(snap " over
+// and over, where no medicine ends a word, cost about 220 steps a byte
+// (TestFilterCostIsBounded, "pills and a handle"). Now the medicine has to
+// start a word, so the names are tried only where a word starts, and they
+// are tried in the order of the alphabet, so that names with the same first
+// letters are tried as one until they part; the order changes nothing that
+// matches, since no name is the start of another that also ends a word.
+var pillQuestionRules = []rule{bothViews(`\b` + words(
+	`how~many~`+window(60)+`\b`+sortedMedicines,
+	words(`kitni`, `kitne`)+`~(?:\pL+~){0,3}?`+words(`goliyan`, `golian`, `goliya`, `pills`, `tablets`),
+) + `\b`)}
+
+var (
+	pillDeath = phrase(`\b` + words(`are~`+words(`lethal`, `fatal`, `deadly`, `enough~to~`+words(`die`,
+		`kill~`+words(`me`, `you`, `someone`), `od`, `overdose`)), words(`would`, `will`, `does`, `do`)+`~it~take`) +
+		`\b`)
+	pillDeathPlain = newWindowSearch(pillDeath)
+	pillDeathLoose = newWindowSearch(canon(pillDeath))
+	disclaimer     = phrase(`\b` + words(`just~asking`, `asking~for~a~friend`, `bas~pooch`, `bas~puch`, `sirf~pooch`) +
+		`\b`)
+	disclaimerPlain = newWindowSearch(disclaimer)
+	disclaimerLoose = newWindowSearch(canon(disclaimer))
+	// disclaimedPills are what a disclaimed question may ask about.
+	disclaimedPills = canonSetOf(`goliyan golian goliya pills tablets`)
+)
+
+// pillQuestionCheck reads on from a pillQuestionRules match, to a death named
+// in the medicine's sentence within 60 characters, or, for pills with at most
+// three words before them, a disclaimer on its line within 60, and puts the
+// question as far as that to methodCheck.
+func pillQuestionCheck(v *view, m []int) bool {
+	text := v.text
+	after := text[m[1]:min(len(text), m[1]+64)]
+	find := func(plain, loose *search, s string) int {
+		w := plain
+		if v.loose {
+			w = loose
+		}
+		if x := w.findIn(v, s); x != nil && x[0] <= 60 {
+			return m[1] + x[1]
+		}
+		return -1
+	}
+	sentence := after
+	if j := strings.IndexAny(after, ".?!\n"); j >= 0 {
+		sentence = after[:j]
+	}
+	end := find(pillDeathPlain, pillDeathLoose, sentence)
+	if ws := wordsIn(text[m[0]:m[1]]); end < 0 && disclaimedPills[ws[len(ws)-1]] &&
+		(!is(ws[0], "how") || len(ws) <= 6) {
+		line, _, _ := strings.Cut(after, "\n")
+		end = find(disclaimerPlain, disclaimerLoose, line)
+	}
+	return end >= 0 && methodCheck(v, []int{m[0], end})
+}
+
+// medicines are what an overdose question names; sortedMedicines are the
+// same names in the order of the alphabet.
+var (
+	overdoseMedicines = []string{`pills?`, `tablets?`, `capsules?`, `paracetamol`, `tylenol`, `acetaminophen`, `ibuprofen`,
+		`aspirin`, `advil`, `panadol`, `crocin`, `dolo`, `meds`, `medicines?`, `medications?`, `antidepressants?`,
+		`sleeping~pills`, `insulin`, `xanax`, `benadryl`, `melatonin`}
+	medicines       = words(overdoseMedicines...)
+	sortedMedicines = func() string {
+		names := slices.Clone(overdoseMedicines)
+		slices.Sort(names)
+		return words(names...)
+	}()
+)
 
 // window is up to n characters of one sentence, read lazily, written to
 // follow a "~": "how many~" + window(60) + "pills". Written as
@@ -6456,6 +6523,8 @@ const (
 	menaceStayAway                         // a warning to stay away: don't come, stay inside, leave early
 	menaceWarned                           // a warning that it is one: this is a warning, mark my words
 	menaceGrievance                        // the wrong it answers: who failed me, said a word about me
+
+	numMenaceKinds = iota
 )
 
 // menacing reports that hints of kinds, read together, threaten: two kinds,
@@ -6486,19 +6555,45 @@ func menace(fields []*scannedField, placesAndTimes func() nearSpans) bool {
 		hs = append(hs, f.menaceHints()...)
 	}
 	slices.SortFunc(hs, func(a, b menaceHint) int { return a.at[0] - b.at[0] })
-	lo := 0
+	// A hint is near another when each starts within threatWindow of the
+	// other's end. The hints of each kind, and the placed ones, are kept in
+	// order of where they start, with the furthest any of them up to each
+	// reaches, so whether one of a kind is near a hint is a binary search,
+	// not a look at every hint near it: a post of 4,000 spaced gun emoji,
+	// which all stand at one reading position, made that a look at every
+	// pair, and none of it was counted (TestFilterCostIsBounded, "spaced
+	// guns"). The searches are counted as a step for each halving.
+	if len(fields) > 0 {
+		fields[0].plain.work += len(hs) * (numMenaceKinds + 1) * bits.Len(uint(len(hs)))
+	}
+	var near [numMenaceKinds + 1]struct{ starts, reach []int }
 	for _, h := range hs {
-		for hs[lo].at[0] < h.at[0]-2*threatWindow {
-			lo++
+		for k := range near {
+			if k < numMenaceKinds && h.kind&(1<<k) == 0 || k == numMenaceKinds && !h.placed {
+				continue
+			}
+			n := &near[k]
+			reach := h.at[1]
+			if len(n.reach) > 0 {
+				reach = max(reach, n.reach[len(n.reach)-1])
+			}
+			n.starts, n.reach = append(n.starts, h.at[0]), append(n.reach, reach)
 		}
-		kinds, placed := h.kind, h.placed
-		for j := lo; j < len(hs) && hs[j].at[0] <= h.at[1]+threatWindow; j++ {
-			if hs[j].at[1] >= h.at[0]-threatWindow {
-				kinds |= hs[j].kind
-				placed = placed || hs[j].placed
+	}
+	nearby := func(k int, h menaceHint) bool {
+		n := &near[k]
+		i, _ := slices.BinarySearch(n.starts, h.at[1]+threatWindow+1)
+		return i > 0 && n.reach[i-1] >= h.at[0]-threatWindow
+	}
+	for _, h := range hs {
+		kinds := h.kind
+		for k := range numMenaceKinds {
+			if nearby(k, h) {
+				kinds |= 1 << k
 			}
 		}
-		if (h.strong || menacing(kinds)) && (placed || placesAndTimes().near(h.at, threatWindow)) {
+		if (h.strong || menacing(kinds)) && (h.placed || nearby(numMenaceKinds, h) ||
+			placesAndTimes().near(h.at, threatWindow)) {
 			return true
 		}
 	}
@@ -6544,15 +6639,20 @@ func (f *scannedField) menaceHints() []menaceHint {
 			}
 		}
 	}
-	for k := 0; k < len(v.text); {
+	// A run of weapon emoji is one hint, read from its first: the rest
+	// stand at the same reading position, so they would add the same hint,
+	// each read again for what is round it (TestFilterCostIsBounded,
+	// "knives").
+	for k, run := 0, false; k < len(v.text); {
 		c, size := utf8.DecodeRuneInString(v.text[k:])
-		if weaponEmoji[c] {
+		if weaponEmoji[c] && !run {
 			v.work += checkWork
 			ws := wordsIn(sentenceAround(v.text, k, k+size))
 			if !unnegatedIn(ws, gameWords, toyWeapon, festivalWords) && !storyNamed(ws) {
 				add(menaceArmed, false, false, k, k+size)
 			}
 		}
+		run = weaponEmoji[c]
 		k += size
 	}
 	return out

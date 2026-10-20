@@ -2988,8 +2988,8 @@ func TestFilterSaysWhichCopyItRefused(t *testing.T) {
 func TestFilterPatternsSurviveCanon(t *testing.T) {
 	rules := map[string][]rule{
 		"askRules": askRules, "supportRules": supportRules, "selfHarmRules": selfHarmRules,
-		"selfHarmMethodRules": selfHarmMethodRules,
-		"threatIntentRules":   threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
+		"selfHarmMethodRules": selfHarmMethodRules, "pillQuestionRules": pillQuestionRules,
+		"threatIntentRules": threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
 		"threatWarningRules": threatWarningRules, "threatWarningCues": threatWarningCues,
 		"schoolShootingRules": schoolShootingRules, "futureTimeRules": futureTimeRules,
 		"ageQuestionRules": ageQuestionRules, "privateCueRules": privateCueRules,
@@ -3097,6 +3097,16 @@ func TestFilterCostIsBounded(t *testing.T) {
 	const workPerByte = 160
 	rep := func(unit string) func(n int) string {
 		return func(n int) string { return strings.Repeat(unit, n/utf8.RuneCountInString(unit)) }
+	}
+	// apart puts the pieces as far apart as the length allows, with spaces.
+	apart := func(pieces ...string) func(n int) string {
+		return func(n int) string {
+			gap := n
+			for _, p := range pieces {
+				gap -= utf8.RuneCountInString(p)
+			}
+			return strings.Join(pieces, strings.Repeat(" ", gap/(len(pieces)-1)))
+		}
 	}
 	bodies := map[string]func(n int) string{
 		"digits":       rep("9 "),
@@ -3253,6 +3263,20 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"lookalike digits":   rep("8 l 2 O "),
 		"reversed":           rep("my number in reverse 0 1 2 3 4 5 6 7 8 1 "),
 		"area code after":    rep("482-0196 area code 494 "),
+		// Long runs of spaces between the places a run of letters or spaces
+		// can end, each read once rather than once from every place in it:
+		// what an address's name or a spelled-out address can end at, and
+		// what an arrow can point back over.
+		"addresses far apart": apart("@a.aa", "@a.aa", "@a.aa"),
+		"spaces far apart":    apart("at", "at", "at"),
+		"arrows far apart":    apart("x", "->", "->"),
+		// Weapon emoji, in a run and spaced, which all stand at one reading
+		// position; and a pill question next to a handle pointed at an app,
+		// whose medicine never ends a word.
+		"knives":             rep("🔪"),
+		"spaced guns":        rep("🔫 "),
+		"pills and a handle": rep("howmany@pills_(snap "),
+		"pills run on":       rep("howmany@pills/how'many pills_(snap pills_(snap "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.

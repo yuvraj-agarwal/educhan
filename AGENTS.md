@@ -682,7 +682,12 @@ maximum length with and without a place or a time, `TestFilterCostIsBounded`'s b
 and method questions with words between the count and the pills, 1,251 in all, and
 16,549 method questions with their heads, marks, fillers and runs of spaces varied and
 their words shuffled; each timed at the best of two runs, then the slowest 120 at the
-best of 15, and the slowest 40 three times more). Before the searches were planned the
+best of 15, and the slowest 40 three times more). The seven bodies added to
+`TestFilterCostIsBounded` since (runs of spaces far apart, weapon emoji, a pill question
+run into a handle) take about 2 to 14 ms, timed the same way at the best of 11, three
+times over, with the machine's load at about 7 (the busiest, a gun emoji and a space over
+and over, 12–14 ms; "ig " over and over took about 15 ms beside them, against 13 ms
+before, so those runs were slower all round). Before the searches were planned the
 typical post, the repeated sentence and a post of `㏂`, which folds to `maxFoldRunes`,
 took about 4 ms, 36 ms and 400–490 ms.
 `go test -run - -bench CheckContent ./internal/app` times both kinds of maximum-length
@@ -698,10 +703,17 @@ for it. The plain view is skipped when the loose one is only it with `l` read as
   places tried, the characters read, the machines' steps, and each check a match is put
   to, `checkWork`), so it passes or fails alike on any machine and under `-race`. The
   bodies built to be slow may cost at most `workPerByte` (160) steps per byte of the
-  post (the most, of its bodies and of the 17,800 the timings below were taken on, is a
-  pill question with words after the pills, about 142, so the bound is about 12% above
-  it, and the next about 136; the steps are the same with Go 1.22, 1.24 and 1.25), and
-  eight times the text at most ten times the steps. A pattern whose `~` runs straight
+  post (the most, of its bodies, is a pill question run into a handle pointed at an app,
+  "howmany@pills_(snap " over and over, about 135, so the bound is about 19% above it,
+  and the next, the same with more pills, about 126; the method questions of the 17,800
+  the timings below were taken on, whose most was then about 142, now come to about 86
+  at most; the steps are the same with Go 1.22, 1.24 and 1.25), and eight times the text
+  at most ten times the steps. Its bodies include what made searching quadratic before:
+  spaces between the places a run can end ("addresses far apart", "arrows far apart",
+  read once now, since `nextRun` steps over what no run is made of and `runOf` keeps
+  every run it measured), weapon emoji, which all stand at one reading position (a run
+  of them is one hint, and `menace` pairs hints by binary search and counts it), and a
+  pill question whose medicine ends no word. A pattern whose `~` runs straight
   into a stretch of any characters, `~[^.?!\n]{0,60}?`, keeps a copy of the stretch for
   every space of a run before it, which cost the pill questions up to about 300 steps a
   byte; `window` starts the stretch at a letter or a digit, matches the same text, and

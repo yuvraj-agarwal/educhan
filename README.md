@@ -514,7 +514,7 @@ It runs in-process, sends nothing anywhere, and takes time linear in the
 length of the post: on one core of an Intel Xeon at 2.1 GHz, about 0.5 ms for
 an ordinary 500-character post, about 4.5 ms for an ordinary post of the
 maximum length, and no more than about 16 ms for the slowest of the 17,800
-posts built to be slow. The ordinary posts are the corpus's published ones
+posts built to be slow and the seven added since. The ordinary posts are the corpus's published ones
 (below) run together and cut into 411 pieces of 500 characters and 25 of
 8,000, and the figures are the median piece's (3.6 to 5.2 ms across the long
 pieces); one sentence repeated to the maximum length takes about 2.6 to 3 ms,
