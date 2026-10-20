@@ -575,22 +575,36 @@ WEBHOOK_SECRET=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STR
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])')
 unset STRIPE_ADMIN
 
-openssl rand -hex 32 \
-  | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
-printf '%s' "$STRIPE_KEY" \
-  | gcloud secrets create educhan-stripe-secret-key --replication-policy=automatic --data-file=-
-printf '%s' "$WEBHOOK_SECRET" \
-  | gcloud secrets create educhan-stripe-webhook-secret --replication-policy=automatic --data-file=-
+# Store nothing unless every value came back: a call above that failed leaves
+# its variable empty, and the server refuses to start on an empty setting.
+if [[ $STRIPE_KEY == [rs]k_* && $PRICE_ID == price_* && $WEBHOOK_SECRET == whsec_* && $PUBLIC_URL == https://* ]]; then
+  # Made once and never replaced: every stored Pass is a hash under it.
+  gcloud secrets describe educhan-pass-secret >/dev/null 2>&1 ||
+    openssl rand -hex 32 | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
+  # The two Stripe values get a new version on every run, to match what it made.
+  for secret in educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+    gcloud secrets describe "$secret" >/dev/null 2>&1 ||
+      gcloud secrets create "$secret" --replication-policy=automatic
+  done
+  printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
+  printf '%s' "$WEBHOOK_SECRET" | gcloud secrets versions add educhan-stripe-webhook-secret --data-file=-
+  for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+    gcloud secrets add-iam-policy-binding "$secret" \
+      --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
+  done
+  gcloud run services update educhan --region "$REGION" \
+    --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+    --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
+else
+  echo 'A value above is missing, so nothing was stored. Fix it and run the block again.'
+fi
 unset STRIPE_KEY WEBHOOK_SECRET
-for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
-  gcloud secrets add-iam-policy-binding "$secret" \
-    --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
-done
-
-gcloud run services update educhan --region "$REGION" \
-  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
-  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
 ```
+
+Running the block again is safe, but each run makes another Product, Price and
+webhook endpoint in Stripe, and the service keeps only the newest endpoint's
+signing secret. Delete the older endpoints (*Developers → Webhooks*), whose
+deliveries the server can no longer verify, and archive the older Products.
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price. To have Stripe Tax add sales tax, VAT or GST, switch Stripe Tax on in the
