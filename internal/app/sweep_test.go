@@ -900,6 +900,96 @@ func TestSweepDeletesCodesThatExpiredUnconfirmed(t *testing.T) {
 	}
 }
 
+// A confirmation locks its code's pending row first and writes to the
+// credentials table after, so the sweep must not hold the credentials table
+// while its delete of expired codes waits for a pending row: each would wait
+// for the other until PostgreSQL broke the deadlock by failing one. That is
+// why the delete runs before the rewrite's transaction rather than in it.
+// Here the code expires while its confirmation is under way — checked in
+// time, its row locked, and held at a gate before it writes anything else —
+// so the sweep's delete wants that row and waits; then the confirmation goes
+// on, and both finish.
+func TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable(t *testing.T) {
+	h := verifyServer(t, nil)
+	if status, out := h.requestCode("late@iitb.ac.in"); status != http.StatusAccepted {
+		t.Fatalf("request a code: status %d (%s)", status, out.Error)
+	}
+	code := h.mail.last(t).Code
+	h.exec(`UPDATE verification_pending SET expires_at = now() + interval '1 second'`)
+
+	// The gate holds the confirmation's own delete of its row, which comes
+	// after the row is locked and before the credentials table is touched;
+	// the sweep's delete of expired codes passes straight through.
+	h.exec(`CREATE TABLE confirm_gate (open boolean NOT NULL)`)
+	h.exec(`INSERT INTO confirm_gate VALUES (false)`)
+	h.exec(`CREATE FUNCTION wait_at_confirm_gate() RETURNS trigger LANGUAGE plpgsql AS $$
+		BEGIN
+			IF current_query() LIKE '%token_hash%' THEN
+				WHILE NOT (SELECT open FROM confirm_gate) LOOP
+					PERFORM pg_sleep(0.002);
+				END LOOP;
+			END IF;
+			RETURN NULL;
+		END $$`)
+	h.exec(`CREATE TRIGGER wait_at_confirm_gate BEFORE DELETE ON verification_pending
+		FOR EACH STATEMENT EXECUTE FUNCTION wait_at_confirm_gate()`)
+	openGate := func() {
+		_, _ = h.app.pool.Exec(context.Background(), `UPDATE confirm_gate SET open = true`)
+	}
+	t.Cleanup(openGate)
+
+	confirmed := h.confirmLater(code)
+	var confirmPID int32
+	waitUntil(t, "the confirmation has locked its code and waits at the gate", func() bool {
+		err := h.app.pool.QueryRow(context.Background(), `
+			SELECT pid FROM pg_stat_activity
+			WHERE datname = current_database() AND state = 'active'
+			  AND query LIKE 'DELETE FROM verification_pending WHERE token_hash%'`).Scan(&confirmPID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return false
+		}
+		if err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return true
+	})
+	waitUntil(t, "the code has expired", func() bool {
+		var expired bool
+		if err := h.app.pool.QueryRow(context.Background(),
+			`SELECT expires_at <= now() FROM verification_pending`).Scan(&expired); err != nil {
+			t.Fatalf("read the code's expiry: %v", err)
+		}
+		return expired
+	})
+
+	swept := h.sweepLater()
+	waitUntil(t, "the sweep's delete waits for the confirmation", func() bool {
+		var n int
+		if err := h.app.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY (pg_blocking_pids(pid))`,
+			confirmPID).Scan(&n); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return n > 0
+	})
+	openGate()
+
+	confirm := await(t, "the confirmation", confirmed)
+	if confirm.err != nil || confirm.status != http.StatusOK {
+		t.Errorf("confirmation: status %d, %v (%s)", confirm.status, confirm.err, confirm.out.Error)
+	}
+	sweep := await(t, "the sweep", swept)
+	if sweep.err != nil {
+		t.Errorf("sweep: %v", sweep.err)
+	}
+	if n := h.countRows("verification_credentials"); n != 1 {
+		t.Errorf("%d credential rows, want the one confirmed", n)
+	}
+	if n := h.countRows("verification_pending"); n != 0 {
+		t.Errorf("%d pending rows, want none", n)
+	}
+}
+
 // postsGap counts the transaction ids handed out after one post on a board was
 // written and before another, and used by neither: what a plain query on
 // posts, which the application's own role can run, finds missing between

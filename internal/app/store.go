@@ -1313,13 +1313,17 @@ const vacuumProbeTable = "vacuum_probe"
 // its email hash is the address's: an address that already holds a credential
 // — a second browser asking for a code it never confirms, say — joins it to
 // that credential, which it then says was issued before that time. So before
-// the rewrite those rows are deleted, in a transaction of their own: one older
-// than the rewrite, so that the vacuum, which is measured against the rewrite,
-// drops them from the file too, and one that holds no lock on the credentials
-// table while it waits for a pending row a confirmation has locked, since that
-// confirmation may be waiting for the credentials table. A code still in
-// flight stays, and still confirms; the README says what its row keeps, and
-// until when.
+// the rewrite those rows are deleted. The delete must come no later than the
+// rewrite: what the vacuum is checked against is the rewrite's transaction
+// id, which says nothing of rows a later transaction deleted (no test holds
+// this order). And it runs in a transaction of its own rather than in the
+// rewrite's, because a confirmation locks its code's pending row before it
+// writes to the credentials table: in the rewrite's transaction, which holds
+// that table, a delete waiting for such a row would wait for a confirmation
+// waiting for the rewrite, until PostgreSQL failed one of them
+// (TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable). A code
+// still in flight stays, and still confirms; the README says what its row
+// keeps, and until when.
 //
 // None of this reaches the posts. Requesting a code and confirming one are
 // writes, and each takes a transaction id from the counter posts take theirs

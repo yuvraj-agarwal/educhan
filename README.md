@@ -320,9 +320,16 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    never confirms, say — that is the credential's email hash too, and the row
    says the credential was issued before then, on the day its expiry gives,
    which points at the confirmations just before then among the gaps in the
-   posts' transaction ids (below). It does this in a transaction of its own,
-   before the rewrite, so that the vacuum in step 4 takes the rows out of the
-   table's file as well (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
+   posts' transaction ids (below). The vacuum in step 4 then takes the rows out
+   of the table's file as well (`TestSweepDeletesCodesThatExpiredUnconfirmed`),
+   which it can be relied on to do only for rows deleted no later than the
+   rewrite, since that is what its check is measured against; no test holds
+   that order. The delete runs before the rewrite, in a transaction of its own:
+   a confirmation locks its code's row before it writes to the credentials
+   table, and a delete in the rewrite's transaction, which holds that table,
+   would wait for such a row while the confirmation waited for it, until
+   PostgreSQL failed one of them
+   (`TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`).
 2. In one transaction, holding a lock that makes writers wait and lets readers
    through, it deletes every credential row and inserts the copy back in random
    order. Every row then carries the sweep's transaction id, and where a row

@@ -825,17 +825,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     without both, and its check that the error is PostgreSQL's fails without the
     handler; `TestCancelledSweepWaitsForPgxsOwnCancelRequest`, where the handler's
     cancel request never arrives, fails without the wait.
-    First it deletes the codes that expired unconfirmed, which a request prunes too,
-    but nothing says when one will come: an abandoned code's row keeps the time it
-    was asked for, to the microsecond, under the address's email hash, which for an
-    address that already holds a credential (a second browser's request, say) is
-    the credential's, and says it was issued before then. It does so in a statement
-    of its own, before the rewrite's transaction: deleted by an older transaction
-    than the rewrite, the rows leave the file with the vacuum below, which is
-    measured against the rewrite; and inside that transaction the delete would wait,
-    holding the credentials table, for a row locked by a confirmation that may be
-    waiting for that table (`TestSweepDeletesCodesThatExpiredUnconfirmed`). A code
-    still in flight stays, and still confirms. Then it locks
+    First it deletes the codes that expired unconfirmed, which a request prunes too, but
+    nothing says when one will come: an abandoned code's row keeps the time it was asked
+    for, to the microsecond, under the address's email hash, which for an address that
+    already holds a credential (a second browser's request, say) is the credential's,
+    and says it was issued before then (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
+    The delete must come no later than the rewrite, since the vacuum below is checked
+    against the rewrite's transaction id, which says nothing of rows a later transaction
+    deleted; no test holds that order. And it is a statement of its own, before the
+    rewrite's transaction rather than in it: a confirmation locks its code's pending row
+    before it writes to the credentials table, so a delete waiting for that row while
+    holding the table would deadlock with it
+    (`TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`). A code still in
+    flight stays, and still confirms. Then it locks
     `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed transaction
     (`CredentialLabel` reads on; everything else on the table waits, and holds the
     lock up: writers and row lockers, `VACUUM`, `ANALYZE`, index builds, schema
@@ -939,6 +941,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     section 2.2); changing either means changing that README section in the same commit.
     `TestSweepTakesIssuanceTimeOutOfCredentials`,
     `TestSweepDeletesCodesThatExpiredUnconfirmed`,
+    `TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`,
     `TestSweepStoresCredentialsOutOfIssuanceOrder`,
     `TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
     `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`,
