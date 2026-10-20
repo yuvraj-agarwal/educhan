@@ -644,25 +644,25 @@ server that would refuse what it sends.
   large bodies and send nothing; its next image post past that answers `429`, with a
   `Retry-After` of 10 seconds and no cooldown started. A client here is one address, as
   flood control counts them, except that the addresses of one IPv6 /64 network count as
-  one client, since a host can usually take any address in its /64: the people on one
-  such network share that half, as those behind one IPv4 address do, while flood control
-  still counts each of their addresses apart. A post waits for room in either budget for
-  about ten seconds at most. Once there is room to read it, its body has 30 seconds to
-  arrive, at an even pace with 5 seconds to spare — a body that falls further behind the
-  pace that would bring it all in by then, sending nothing or a trickle, is cut off then
-  and its room given back — and once it has arrived its image has 25 seconds to be
-  processed and stored. A post that cannot be taken in time — no room within the wait, or
-  its image not stored within those 25 seconds — answers `503` (see [Flood
-  control](#flood-control)) with nothing stored, rather than being made after its answer
-  could no longer be sent. A body that takes longer than its 30 seconds, or falls behind
-  its pace, is the connection's doing, not the server's, and answers `408` with
-  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
-  post spent waiting for room is not counted against its body. A body sent without a
-  `Content-Length` (chunked), whose length the server learns only at its end, is held to
-  the pace of the largest body a post may have, and when it is slower than that it is cut
-  off only once it has sent nothing for 5 seconds: a small image sent slowly still
-  arrives, but such a body that trickles keeps its room for the 30 seconds, and only its
-  client's share of the upload budget limits how many do.
+  one client, since a host can usually take any address in its /64: the people on one such
+  network share that half, as those behind one IPv4 address do, while flood control still
+  counts each of their addresses apart. A post waits for room in either budget for about
+  ten seconds at most. Once there is room to read it, its body has 30 seconds to arrive,
+  at an even pace with 5 seconds to spare — a body that falls further behind the pace that
+  would bring it all in by then, sending nothing or a trickle, is cut off then and its
+  room given back — and once it has arrived its image has 25 seconds to be processed and
+  stored. A post that cannot be taken in time — no room within the wait, or its image not
+  stored within those 25 seconds — answers `503` (see [Flood control](#flood-control))
+  with nothing stored, rather than being made after its answer could no longer be sent. A
+  body that takes longer than its 30 seconds, or falls behind its pace, is the
+  connection's doing, not the server's, and answers `408` with `{"error":"upload too
+  slow"}`, with nothing stored and no cooldown started; the time a post spent waiting for
+  room is not counted against its body. A form has to say how long its body is, as
+  browsers' forms do: one sent without a `Content-Length` (chunked), whose length the
+  server would learn only at its end, answers `411` at once, before any room is taken for
+  it or any of it read, with nothing stored and no cooldown started: the room it took
+  would have to be the most a body may be, and a few such bodies trickling a few bytes a
+  second could hold the whole budget for their 30 seconds.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -1013,21 +1013,20 @@ is over. A post with an image from a client whose other image posts already hold
 room for upload bodies answers `429` the same way, at once, with a `Retry-After` and
 `retry_after` of 10 seconds and no cooldown started. A post whose body takes longer than
 30 seconds to arrive, counted from when there was room to read it, or falls more than 5
-seconds behind the even pace that would bring it in by then (a body sent without a
-`Content-Length`: behind the pace for the largest body a post may have, and sending
-nothing for 5 seconds), answers `408` with `{"error":"upload too slow"}` and no
-`Retry-After`, since waiting does not make a connection faster; it is refused before
-flood control, so it starts no cooldown. A request
-rejected for any other reason — an empty body, an oversized image, a file that is not an
-accepted image or whose header shows it unusable (see **Formats**), a reply to a missing,
-locked or archived thread or an image past a thread's cap — does not start a cooldown, so
-a typo never costs a wait. Three refusals come only after the cooldowns have started: an
-image whose header reads but whose pixels do not decode, or whose rewritten file would be
-too large to store, which only decoding and encoding it can find; a GIF refused while it
-is played (`image too large to process`, see **Formats** under
-[Image attachments](#image-attachments)), which only playing it can find, and those two
-are the cost the upload cooldown is there for; and the loser of two replies racing for a
-thread's last image slot (see the HTTP API).
+seconds behind the even pace that would bring it in by then, answers `408` with
+`{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
+connection faster, and, with uploads on, a form sent without a `Content-Length` answers
+`411` at once (see **Memory**); both are refused before flood control, so they start no
+cooldown. A request rejected for any other reason — an empty body, an oversized image, a
+file that is not an accepted image or whose header shows it unusable (see **Formats**), a
+reply to a missing, locked or archived thread or an image past a thread's cap — does not
+start a cooldown, so a typo never costs a wait. Three refusals come only after the
+cooldowns have started: an image whose header reads but whose pixels do not decode, or
+whose rewritten file would be too large to store, which only decoding and encoding it can
+find; a GIF refused while it is played (`image too large to process`, see **Formats**
+under [Image attachments](#image-attachments)), which only playing it can find, and those
+two are the cost the upload cooldown is there for; and the loser of two replies racing for
+a thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and they are the only place the
 server holds one. A sweep runs once a minute and drops every entry whose
@@ -1141,14 +1140,16 @@ the image limit posts at once when sent again without the image. (Two replies
 racing for a thread's last image slot can both get that far; the loser is
 refused inside the transaction, after its cooldowns have started.)
 
-JSON request bodies must be `application/json`; unknown fields are rejected. The
-two posting endpoints also accept `multipart/form-data` with the same fields
-plus an `image` file. Errors are `{"error": "..."}`. A request refused by flood
-control (`429`) and a post turned away because the server is too busy (`503`) add
-`retry_after` plus a `Retry-After` header; the other `429` and `503`, too many wrong
-verification codes and `/healthz` with the database down, carry neither. An image
-post whose body does not arrive within 30 seconds of there being room to read it
-answers `408` (`upload too slow`).
+JSON request bodies must be `application/json`; unknown fields are rejected. The two
+posting endpoints also accept `multipart/form-data` with the same fields plus an `image`
+file. Errors are `{"error": "..."}`. A request refused by flood control (`429`) and a post
+turned away because the server is too busy (`503`) add `retry_after` plus a `Retry-After`
+header; the other `429` and `503`, too many wrong verification codes and `/healthz` with
+the database down, carry neither. An image post whose body does not arrive within 30
+seconds of there being room to read it answers `408` (`upload too slow`). With uploads on,
+a `multipart/form-data` post has to send a `Content-Length`, as browsers do: one sent
+without (chunked) answers `411` (`a post with a file needs a Content-Length`) before any
+of its body is read.
 
 ```bash
 curl -s localhost:8080/api/boards

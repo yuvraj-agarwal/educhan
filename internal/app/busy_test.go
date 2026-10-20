@@ -533,21 +533,24 @@ func stalledUpload(t *testing.T, base string) (int, string) {
 }
 
 // idleBody is a raw connection that has sent an image post's headers,
-// declaring a body it does not send, and been told by the server to go on
-// (Expect: 100-continue), which the server says only once its handler starts
-// reading the body: past the wait for room, holding it or refused it.
+// declaring a body it has not sent yet. One from idleUpload has also been
+// told by the server to go on (Expect: 100-continue), which the server says
+// only once its handler starts reading the body: past the wait for room,
+// holding it or refused it.
 type idleBody struct {
 	conn    net.Conn
 	read    *bufio.Reader
-	chunked bool // declared no length (idleUpload)
+	chunked bool // declared no length (rawUpload)
+	closes  bool // the answer said the connection closes after it (answer)
 }
 
-// idleUpload opens an idleBody for an image thread on /general/ from client
+// rawUpload opens an idleBody for an image thread on /general/ from client
 // (sent as X-Forwarded-For; none when empty), declaring size bytes of body;
 // or, when size is negative, declaring no length, its body to be sent chunked
-// (idleBody.trickle), so that the server learns its length only at its end. The
+// (idleBody.trickle), so that the server learns its length only at its end.
+// With expect, it asks to be told to go on before it sends the body. The
 // test's cleanup closes it.
-func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
+func rawUpload(t *testing.T, base, client string, size int64, expect bool) *idleBody {
 	t.Helper()
 	addr := strings.TrimPrefix(base, "http://")
 	conn, err := net.Dial("tcp", addr)
@@ -563,27 +566,36 @@ func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
 		"Host: " + addr + "\r\n" +
 		"Content-Type: multipart/form-data; boundary=BOUND\r\n" +
 		length +
-		"Expect: 100-continue\r\n" +
 		"Connection: close\r\n"
+	if expect {
+		req += "Expect: 100-continue\r\n"
+	}
 	if client != "" {
 		req += "X-Forwarded-For: " + client + "\r\n"
 	}
 	if _, err := io.WriteString(conn, req+"\r\n"); err != nil {
 		t.Fatalf("write request: %v", err)
 	}
-	read := bufio.NewReader(conn)
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	line, err := read.ReadString('\n')
+	return &idleBody{conn: conn, read: bufio.NewReader(conn), chunked: size < 0}
+}
+
+// idleUpload is a rawUpload that asks to be told to go on, once it has been.
+func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
+	t.Helper()
+	b := rawUpload(t, base, client, size, true)
+	_ = b.conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	line, err := b.read.ReadString('\n')
 	if err != nil || !strings.HasPrefix(line, "HTTP/1.1 100 ") {
 		t.Fatalf("waiting to send the body: %q, %v; want 100 Continue", line, err)
 	}
-	if blank, err := read.ReadString('\n'); err != nil || blank != "\r\n" {
+	if blank, err := b.read.ReadString('\n'); err != nil || blank != "\r\n" {
 		t.Fatalf("after 100 Continue: %q, %v", blank, err)
 	}
-	return &idleBody{conn: conn, read: read, chunked: size < 0}
+	return b
 }
 
-// answer reads the server's final answer to the idle body, within wait.
+// answer reads the server's final answer to the idle body, within wait, and
+// notes in closes whether it said the connection closes after it.
 func (b *idleBody) answer(t *testing.T, wait time.Duration) (int, string) {
 	t.Helper()
 	_ = b.conn.SetReadDeadline(time.Now().Add(wait))
@@ -592,6 +604,7 @@ func (b *idleBody) answer(t *testing.T, wait time.Duration) (int, string) {
 		t.Fatalf("read the answer to an idle body: %v", err)
 	}
 	defer resp.Body.Close()
+	b.closes = resp.Close
 	out, _ := io.ReadAll(resp.Body)
 	return resp.StatusCode, string(out)
 }
@@ -764,10 +777,9 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 
 // trickle sends body in pieces of at most size bytes with pause after each,
 // as chunks if the body was declared no length, leaving the body open, and
-// reports whether all of it went. It stops early
-// once the server has answered or the connection refuses a chunk, so that the
-// test can read an early answer, which sending on past it could lose to the
-// connection's reset.
+// reports whether all of it went. It stops early once the server has answered
+// or the connection refuses a chunk, so that the test can read an early
+// answer, which sending on past it could lose to the connection's reset.
 func (b *idleBody) trickle(body []byte, size int, pause time.Duration) bool {
 	for len(body) > 0 {
 		_ = b.conn.SetReadDeadline(time.Now().Add(time.Millisecond))
@@ -793,9 +805,9 @@ func (b *idleBody) end() {
 	_, _ = io.WriteString(b.conn, "0\r\n\r\n")
 }
 
-// unsizedForm is an image post's multipart body under the boundary idleUpload
-// declares, led by a part of filler bytes that the server reads past.
-func unsizedForm(t *testing.T, filler int, body string, image []byte) []byte {
+// boundForm is an image post's multipart body under the boundary rawUpload
+// declares (BOUND), led by a part of filler bytes that the server reads past.
+func boundForm(t *testing.T, filler int, body string, image []byte) []byte {
 	t.Helper()
 	var buf bytes.Buffer
 	form := multipart.NewWriter(&buf)
@@ -827,96 +839,149 @@ func unsizedForm(t *testing.T, filler int, body string, image []byte) []byte {
 	return buf.Bytes()
 }
 
-// A body sent without a Content-Length, chunked, has room reserved for the
-// most a post's body may be, and paced against that (pacedBody) it had to
-// arrive at about 300 KiB/s whatever its real length: a small image post sent
-// slowly, well inside its read window, was cut off 408 once the grace was
-// over. Its length unknown, such a body is now cut off only when it is behind
-// the pace for the largest body by more than the grace and has also sent
-// nothing for the grace: a slow small body posts, one ahead of that pace may
-// pause as a body with a length may, and one that stops is still cut off
-// after the grace, giving its room back.
-func TestUnsizedUploadsAreCutOffOnlyWhenTheyStop(t *testing.T) {
-	t.Run("a slow small body posts", func(t *testing.T) {
-		h := testServer(t, nil)
+// A post's body holds its room in the upload budget from before it is read,
+// and a body sent without a Content-Length (chunked) would have held room for
+// the most a body may be, its length known only at its end. Held to the pace
+// of that, a small one sent slowly was cut off; held to none, one trickling a
+// few bytes a second kept its room for the whole read window, so seven such
+// bodies from three addresses, each within its share, held the whole budget
+// at almost no cost, and every other image post was turned away 503. With
+// uploads on, such a post is now refused 411 on its headers, before anything
+// is reserved for it or read of it, and charged nothing: every body that
+// holds room has a length and is held to its own pace.
+func TestPostsWithoutALengthAreRefused(t *testing.T) {
+	t.Run("at once, holding nothing and charged nothing", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) {
+			cfg.ThreadCooldown = time.Minute
+			cfg.UploadCooldown = time.Minute
+		})
+		h.addBoard("general")
+		drainShares(t, h, "127.0.0.1")
+
+		// Nothing of the body is sent: the answer comes on the headers.
+		b := rawUpload(t, h.base, "", -1, false)
+		status, text := b.answer(t, 5*time.Second)
+		if status != http.StatusLengthRequired || !strings.Contains(text, lengthRequired) {
+			t.Fatalf("an image post declaring no length: status %d (%s), want 411 %q", status, text, lengthRequired)
+		}
+		if !b.closes {
+			t.Error("the 411 answer keeps the connection open, want it closed: the body is not read past")
+		}
+		if got := h.app.uploadShares.of("127.0.0.1"); got != 0 {
+			t.Errorf("the refused post's client holds %d bytes of the upload budget, want none", got)
+		}
+
+		// No cooldown was started: the same post with a length posts at once.
+		var created createdPost
+		if status := uploadFrom(t, h, "127.0.0.1", &created); status != http.StatusCreated {
+			t.Fatalf("the same client's image post with a length: status %d (%s), want 201", status, created.Error)
+		}
+		if n := h.countRows("posts"); n != 1 {
+			t.Errorf("%d posts stored, want only the one with a length", n)
+		}
+	})
+
+	t.Run("trickles from three addresses hold no room", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
 		h.addBoard("general")
 		h.app.uploadPaceGrace = 2 * time.Second
-		h.app.uploadReadTimeout = time.Minute
-		drainShares(t, h, "127.0.0.1")
-		body := unsizedForm(t, 0, "slow, small and chunked", pngBytes(t, 32, 32))
-		const chunks = 12
-		pause := h.app.uploadPaceGrace / 5 // between chunks, the whole body taking twice the grace and more
+		h.app.uploadReadTimeout = 6 * time.Second
+		h.app.postDeadline = 17 * time.Second // a wait for room gives up after two seconds
+		holders := []string{"203.0.113.1", "203.0.113.1", "203.0.113.1",
+			"203.0.113.2", "203.0.113.2", "203.0.113.2", "203.0.113.3"}
+		const other = "198.51.100.9"
+		drainShares(t, h, "203.0.113.1", "203.0.113.2", "203.0.113.3", other)
+		stop := make(chan struct{})
+		var trickling sync.WaitGroup
+		defer func() {
+			close(stop)
+			trickling.Wait()
+		}()
+		var bodies []*idleBody
+		for _, client := range holders {
+			b := rawUpload(t, h.base, client, -1, false)
+			bodies = append(bodies, b)
+			// A byte every 100 ms, as a chunk of its own, until the
+			// connection refuses one: each body well within its pace's
+			// grace from one byte to the next.
+			trickling.Add(1)
+			go func() {
+				defer trickling.Done()
+				tick := time.NewTicker(100 * time.Millisecond)
+				defer tick.Stop()
+				for {
+					select {
+					case <-stop:
+						return
+					case <-tick.C:
+						if _, err := io.WriteString(b.conn, "1\r\nx\r\n"); err != nil {
+							return
+						}
+					}
+				}
+			}()
+		}
+		// Long enough for the seven to be answered, or, were they read, to
+		// have taken their room.
+		time.Sleep(300 * time.Millisecond)
 
-		b := idleUpload(t, h.base, "", -1)
-		start := time.Now()
-		if b.trickle(body, len(body)/chunks+1, pause) {
-			b.end()
+		// An image post of more than the megabyte the seven would leave.
+		body := boundForm(t, 2<<20, "from another client", pngBytes(t, 32, 32))
+		req, err := http.NewRequest(http.MethodPost, h.base+"/api/boards/general/threads", bytes.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
 		}
-		status, text := b.answer(t, 30*time.Second)
-		took := time.Since(start)
-		if status != http.StatusCreated {
-			t.Fatalf("a %d-byte chunked image post sent over %v: status %d (%s) after %v, want 201",
-				len(body), chunks*pause, status, text, took)
+		req.Header.Set("Content-Type", "multipart/form-data; boundary=BOUND")
+		req.Header.Set("X-Forwarded-For", other)
+		var created createdPost
+		if status := h.client.send(req, &created); status != http.StatusCreated {
+			t.Errorf("another client's %d-byte image post: status %d (%s), want 201", len(body), status, created.Error)
 		}
-		if took < 2*h.app.uploadPaceGrace {
-			t.Fatalf("the body arrived in %v, inside twice the %v grace; the test proves nothing", took, h.app.uploadPaceGrace)
+
+		for i, b := range bodies {
+			if status, text := b.answer(t, 2*time.Second); status != http.StatusLengthRequired {
+				t.Errorf("body %d from %s, declaring no length: status %d (%s), want 411", i, holders[i], status, text)
+			}
 		}
-		if n := h.countRows("posts"); n != 1 {
-			t.Errorf("%d posts stored, want the slow upload made", n)
+		for _, client := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+			if got := h.app.uploadShares.of(client); got != 0 {
+				t.Errorf("%s holds %d bytes of the upload budget, want none", client, got)
+			}
 		}
 	})
+}
 
-	t.Run("a body ahead of the pace for the largest body may pause", func(t *testing.T) {
-		h := testServer(t, nil)
-		h.addBoard("general")
-		h.app.uploadPaceGrace = time.Second
-		h.app.uploadReadTimeout = time.Minute
-		drainShares(t, h, "127.0.0.1")
-		// 2 MiB of a body that may be 9 is a fifth of the way there at once,
-		// twelve seconds ahead of the pace that brings 9 MiB in in a minute.
-		const filler = 2 << 20
-		body := unsizedForm(t, filler, "fast, then a pause", pngBytes(t, 32, 32))
-		pause := 3 * h.app.uploadPaceGrace
+// pacedBody holds a body to an even pace through its read window, with
+// uploadPaceGrace to fall behind it by, not to a rate from one read to the
+// next: a body ahead of its pace may pause, as an upload does when its
+// connection drops for a moment, and still post. 2 MiB of a body of a little
+// over 8 MiB is a quarter of it at once, about fifteen seconds ahead of the
+// pace that brings it all in in a minute, and a pause of three times the
+// grace leaves it well ahead.
+func TestABodyAheadOfItsPaceMayPause(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("general")
+	h.app.uploadPaceGrace = time.Second
+	h.app.uploadReadTimeout = time.Minute
+	drainShares(t, h, "127.0.0.1")
+	const first, filler = 2 << 20, 8 << 20
+	body := boundForm(t, filler, "fast, then a pause", pngBytes(t, 32, 32))
+	pause := 3 * h.app.uploadPaceGrace
 
-		b := idleUpload(t, h.base, "", -1)
-		if !b.trickle(body[:filler], 64<<10, 0) {
-			t.Fatal("the body's first 2 MiB were not taken")
-		}
-		time.Sleep(pause)
-		if b.trickle(body[filler:], 64<<10, 0) {
-			b.end()
-		}
-		if status, text := b.answer(t, 30*time.Second); status != http.StatusCreated {
-			t.Fatalf("a chunked image post that paused %v, ahead of its pace: status %d (%s), want 201", pause, status, text)
-		}
-		if n := h.countRows("posts"); n != 1 {
-			t.Errorf("%d posts stored, want the paused upload made", n)
-		}
-	})
-
-	t.Run("a body that stops is cut off", func(t *testing.T) {
-		h := testServer(t, nil)
-		h.addBoard("general")
-		h.app.uploadPaceGrace = 300 * time.Millisecond
-		h.app.uploadReadTimeout = time.Minute
-		drainShares(t, h, "127.0.0.1")
-		body := unsizedForm(t, 0, "and then nothing", pngBytes(t, 32, 32))
-		cut := bytes.Index(body, []byte("\x89PNG")) + 8 // the image's signature and nothing more
-
-		b := idleUpload(t, h.base, "", -1)
-		start := time.Now()
-		if !b.trickle(body[:cut], len(body), 0) {
-			t.Fatal("the start of the body was not taken")
-		}
-		status, text := b.answer(t, 20*time.Second)
-		if status != http.StatusRequestTimeout {
-			t.Fatalf("a chunked body that stopped: status %d (%s), want 408", status, text)
-		}
-		if took := time.Since(start); took > 5*time.Second {
-			t.Errorf("a chunked body that stopped was answered after %v, want soon after the %v grace, not at the %v window's end",
-				took, h.app.uploadPaceGrace, h.app.uploadReadTimeout)
-		}
-	})
+	b := idleUpload(t, h.base, "", int64(len(body)))
+	if !b.trickle(body[:first], 64<<10, 0) {
+		t.Fatal("the body's first 2 MiB were not taken")
+	}
+	time.Sleep(pause)
+	if !b.trickle(body[first:], 64<<10, 0) {
+		t.Fatal("the rest of the body was not taken")
+	}
+	if status, text := b.answer(t, 30*time.Second); status != http.StatusCreated {
+		t.Fatalf("an image post that paused %v, ahead of its pace: status %d (%s), want 201", pause, status, text)
+	}
+	if n := h.countRows("posts"); n != 1 {
+		t.Errorf("%d posts stored, want the paused upload made", n)
+	}
 }
 
 // A part's header line cut short reached the form's reader as a malformed
@@ -936,12 +1001,14 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 		return i + len("Content-Disp")
 	}
 	for _, sized := range []bool{true, false} {
-		name := "a chunked body that stops there is answered 408"
+		// A body without a length is read only with uploads off: with them
+		// on, its post is refused on its headers (refuseUnsized).
+		name := "a chunked body that stops there, with uploads off, is answered 408"
 		if sized {
 			name = "a body with a length that stops there is answered 408"
 		}
 		t.Run(name, func(t *testing.T) {
-			h := testServer(t, nil)
+			h := testServer(t, func(cfg *Config) { cfg.UploadsEnabled = sized })
 			h.addBoard("general")
 			// Most of a short body with a length has arrived by the cut, far
 			// ahead of its pace: a short window has it cut off soon all the
@@ -949,7 +1016,7 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 			h.app.uploadPaceGrace = 300 * time.Millisecond
 			h.app.uploadReadTimeout = 2 * time.Second
 			drainShares(t, h, "127.0.0.1")
-			body := unsizedForm(t, 0, "cut in a header", pngBytes(t, 32, 32))
+			body := boundForm(t, 0, "cut in a header", pngBytes(t, 32, 32))
 			size := int64(-1)
 			if sized {
 				size = int64(len(body))
@@ -970,9 +1037,9 @@ func TestABodyCutOffInsideAPartHeaderIsAnsweredForTheCut(t *testing.T) {
 		h.addBoard("general")
 		// A text field long enough that the switched-off limit, a JSON
 		// post's worth, falls inside the image part's header after it.
-		probe := unsizedForm(t, 0, "", []byte("x"))
+		probe := boundForm(t, 0, "", []byte("x"))
 		text := strings.Repeat("a", maxRequestBytes-cutIn(probe))
-		body := unsizedForm(t, 0, text, []byte("x"))
+		body := boundForm(t, 0, text, []byte("x"))
 		if got := cutIn(body); got != maxRequestBytes {
 			t.Fatalf("the limit cuts the body at %d, inside the header at %d; the test proves nothing", maxRequestBytes, got)
 		}

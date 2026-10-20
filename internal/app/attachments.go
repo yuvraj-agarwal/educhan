@@ -116,23 +116,17 @@ const uploadPaceGrace = 5 * time.Second
 // admits must be on average, has the grace to fall behind by on the way. A
 // body cut off is answered 408 (upload too slow), as one past the window is.
 //
-// A body sent without a Content-Length (unsized: chunked) has room reserved
-// for the most a body may be, and the pace for that would hold a small one to
-// the rate of the largest, about 300 KiB/s by default, whatever its own
-// length: a small image sent slowly, on course to arrive well inside the
-// window, would be cut off once the grace was over. Its length unknown until
-// it ends, such a body also has the grace from each read, so that it is cut
-// off only once it is behind that pace and has sent nothing for the grace.
-// That gives up some of what the pace is for: a body without a length that
-// trickles keeps its room to the window's end, and only its client's share of
-// the budget (clientUploadShare) bounds what such bodies hold.
+// Every body that holds room in the upload budget has a length, so its pace
+// is its own: with uploads on, a multipart post without a Content-Length is
+// refused before anything is reserved for it (parseSubmission). A body
+// without one is read only with uploads off, holding no room, and is paced as
+// the most it may be, a JSON post's worth (maxRequestBytes).
 type pacedBody struct {
 	io.ReadCloser
 	setDeadline   func(time.Time) error
 	start         time.Time
 	window, grace time.Duration
 	size, n       int64
-	unsized       bool
 }
 
 func (p *pacedBody) Read(b []byte) (int, error) {
@@ -140,9 +134,6 @@ func (p *pacedBody) Read(b []byte) (int, error) {
 	due := end
 	if p.size > 0 {
 		due = p.start.Add(p.grace + time.Duration(float64(p.window)*float64(p.n)/float64(p.size)))
-	}
-	if wait := time.Now().Add(p.grace); p.unsized && wait.After(due) {
-		due = wait
 	}
 	if due.After(end) {
 		due = end
@@ -163,6 +154,22 @@ const uploadFieldName = "image"
 // uploadsSwitchedOff is the refusal of an image post on a server with uploads
 // switched off. Clients match on it, so it does not change.
 const uploadsSwitchedOff = "image uploads are switched off on this server"
+
+// lengthRequired is the refusal of a multipart post sent without a
+// Content-Length while uploads are on (refuseUnsized).
+const lengthRequired = "a post with a file needs a Content-Length"
+
+// refuseUnsized answers a multipart post that came without a Content-Length,
+// with uploads on: 411, before anything is reserved for its body or read of
+// it (parseSubmission). Its body is not read past either, because only the
+// client decides when it ends: the connection is closed once the answer is
+// written, and the read deadline set to now, so the server does not wait on
+// the rest of the body to close it.
+func refuseUnsized(w http.ResponseWriter) {
+	w.Header().Set("Connection", "close")
+	_ = http.NewResponseController(w).SetReadDeadline(time.Now())
+	writeError(w, http.StatusLengthRequired, lengthRequired)
+}
 
 // mediaCacheControl is safe to set aggressively: stored names are random and
 // their contents never change.
@@ -228,12 +235,21 @@ type submissionForm interface {
 // A multipart body, with uploads on, is read only once there is room for it
 // in the upload budget (media.ReserveUpload), which counts the bodies being
 // read and held until their posts are answered: as much as the request says
-// it is, or the most it may be. ctx is the post's reserveContext: with no room
-// in time the body is read to its end unkept and the post is answered 503
-// (busy), before flood control has charged it anything. The room comes out of
-// the client's share of the budget first (reserveUpload): a post whose
-// client's other posts hold that already is read to its end unkept and
-// answered 429 at once, without waiting, and also charged nothing.
+// it is. ctx is the post's reserveContext: with no room in time the body is
+// read to its end unkept and the post is answered 503 (busy), before flood
+// control has charged it anything. The room comes out of the client's share
+// of the budget first (reserveUpload): a post whose client's other posts hold
+// that already is read to its end unkept and answered 429 at once, without
+// waiting, and also charged nothing.
+//
+// Such a body has to say how long it is: one without a Content-Length
+// (chunked) is answered 411 before anything is reserved for it or read of it
+// (refuseUnsized), and charged nothing. Its length known only at its end, it
+// would have had room reserved for the most a body may be, and could only be
+// held to the pace of that, which cut a small body sent slowly off, or to
+// none, which let a trickle of a few bytes a second hold that room for the
+// whole read window: three addresses' shares turned every other image post
+// away 503. Browsers send a Content-Length with every form.
 //
 // A multipart body sets its own connection deadlines, because it may take
 // longer than one WriteTimeout from the end of its headers allows: the body
@@ -241,12 +257,12 @@ type submissionForm interface {
 // even pace with uploadPaceGrace to spare (pacedBody), and a body slower than
 // that is answered 408 (upload too slow), not the 503 a server with no room
 // gives; the write deadline covers that read and the answer to it, and
-// processContext resets it for the processing that follows.
-// The deadlines are set once the wait for room is over, whatever its outcome,
-// so a post that waited has its whole uploadReadTimeout for its body — the
-// wait was the server's, and taken out of the body's time it would turn a
-// busy server into a slow upload — and a post turned away has that long for
-// the rest of its body to be read past and the answer written.
+// processContext resets it for the processing that follows. The deadlines are
+// set once the wait for room is over, whatever its outcome, so a post that
+// waited has its whole uploadReadTimeout for its body — the wait was the
+// server's, and taken out of the body's time it would turn a busy server into
+// a slow upload — and a post turned away has that long for the rest of its
+// body to be read past and the answer written.
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -265,6 +281,9 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	bodyLimit := a.cfg.MaxUploadBytes + multipartOverhead
 	if !a.cfg.UploadsEnabled {
 		bodyLimit = maxRequestBytes
+	} else if r.ContentLength < 0 {
+		refuseUnsized(w)
+		return nil, false
 	}
 	size := bodyLimit
 	if r.ContentLength >= 0 {
@@ -283,8 +302,7 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
 	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
 	r.Body = &pacedBody{ReadCloser: r.Body, setDeadline: rc.SetReadDeadline,
-		start: now, window: a.uploadReadTimeout, grace: a.uploadPaceGrace,
-		size: size, unsized: r.ContentLength < 0}
+		start: now, window: a.uploadReadTimeout, grace: a.uploadPaceGrace, size: size}
 	if err != nil {
 		// The browser is still sending the body. Answered before it has
 		// finished, a connection closed under it can reach the poster as a

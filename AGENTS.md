@@ -882,9 +882,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   without preconditions never makes (`TestGCSPutAllocatesNoBufferOfItsOwn`). The uploads'
   own bytes have a budget of their own, `media.UploadBudget` (64 MiB), which
   `parseSubmission` takes from (`media.ReserveUpload`) before it reads a multipart body,
-  as much as the request's `Content-Length` or the most the body may be, and which the
-  handler gives back when the post is answered (`submission.release`). For that to be what
-  the body costs, `readMultipart` reads the body itself rather than through
+  as much as the request's `Content-Length` says, up to the most a body may be, and which
+  the handler gives back when the post is answered (`submission.release`). For that to be
+  what the body costs, `readMultipart` reads the body itself rather than through
   `ParseMultipartForm`, which keeps a file over its memory limit in a temporary file
   (memory again on Cloud Run) and then hands it over to be copied: the image is read once
   into a buffer the size of what is left of the body (`TestAnUploadIsReadOnce`). Its text
@@ -907,13 +907,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   have at the pace that brings it all in by the window's end, so a body that sends nothing
   or a trickle is answered `408` and gives its room back after the grace, not at the
   window's end (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a
-  `Content-Length` (chunked) is paced against the most a body may be, which is what it
-  reserved, and at that pace a small one sent slowly was cut off, so it also has the grace
-  from each read: it is cut off only once it is both behind that pace and silent for the
-  grace, and one that trickles keeps its room to the window's end, bounded by the share
-  alone (`TestUnsizedUploadsAreCutOffOnlyWhenTheyStop`). Between them the two budgets hold
-  320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process is
-  about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
+  `Content-Length` (chunked) would have to reserve the most a body may be, and could then
+  be held only to the pace of that, which cut a small one sent slowly off, or to none,
+  which let seven trickles from three addresses hold the whole budget for the window; so,
+  with uploads on, such a post is answered `411` on its headers (`refuseUnsized`), before
+  anything is reserved for it or read of it, charged nothing, its connection closed
+  (`TestPostsWithoutALengthAreRefused`), and every body that holds room is held to its own
+  pace. Browsers send a `Content-Length` with every form. Between them the two budgets
+  hold 320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process
+  is about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
   `GOMEMLIMIT=400MiB` peaked at 330 MiB resident (786 MiB before the upload budget), so a
   512 MiB instance needs that limit, which this code does not set. **Every wait is
   bounded, and a slow client is told apart from a busy server.** A post waits for room in
