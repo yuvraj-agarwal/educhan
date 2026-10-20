@@ -166,9 +166,21 @@ func processingCost(format Format, data []byte, cfg image.Config, frames gifFram
 // encoder's output (bounded by storedLimit) and the thumbnail scaler's
 // scratch.
 func completedCost(format Format, data []byte, cfg image.Config, frames gifFrames) int64 {
-	phases := decodingPhases(format, data, cfg, frames)
+	phases := completedPhases(format, data, cfg, frames)
 	if phases == nil {
 		return processingBudget + 1
+	}
+	return peakOf(phases...) + processingSlack
+}
+
+// completedPhases are the phases completedCost is the peak of: the decoding
+// phases (decodingPhases), then the encoder's, and last, for all but a GIF,
+// whose thumbnail is made among its decoding phases, the thumbnail scaler's.
+// They are nil for a format it does not know.
+func completedPhases(format Format, data []byte, cfg image.Config, frames gifFrames) []phase {
+	phases := decodingPhases(format, data, cfg, frames)
+	if phases == nil {
+		return nil
 	}
 	held := phases[len(phases)-1].after
 	upload := int64(len(data))
@@ -181,8 +193,7 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 		// thumbnail was made among its decoding phases, and its frames are
 		// let go once they are written.
 		play := gifPlayScratch(int64(cfg.Width), int64(cfg.Height), frames)
-		phases = append(phases, phase{first: min(upload, limit) + play, alloc: play + 2*limit, after: limit})
-		return peakOf(phases...) + processingSlack
+		return append(phases, phase{first: min(upload, limit) + play, alloc: play + 2*limit, after: limit})
 	}
 	// The thumbnail is made of the picture as it is stored, turned upright.
 	tw, th := cfg.Width, cfg.Height
@@ -193,16 +204,21 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 	// The encoder writes into a buffer the size of the upload, which
 	// doubles up to limit, holding the old and the new while it grows
 	// (storedBuffer), and image/png through rows of the picture
-	// (pngEncoderRows). What it wrote is kept for the thumbnail.
+	// (pngEncoderRows), all six of which it allocates before it writes
+	// the first: they are part of what the phase allocates as it begins,
+	// and so are counted on top of what the phase before it held at its
+	// peak (peakOf) — for a PNG that is turned, both pictures. Its
+	// compressor, about half a megabyte, is made as the first row is
+	// written, and is left to processingSlack. What it wrote is kept for
+	// the thumbnail.
 	rows := pngEncoderRows(format, data, tw)
-	phases = append(phases, phase{first: min(upload, limit), alloc: 2*limit + rows, after: held + limit})
+	phases = append(phases, phase{first: min(upload, limit) + rows, alloc: 2*limit + rows, after: held + limit})
 	// The scaler allocates its scratch whole as it starts. What the
 	// encoder wrote is kept after it, until it has been stored (Save
 	// holds the budget until then), but nothing larger is made for
 	// that: the local store writes the file from it as it is, and the
 	// Cloud Storage writer is given no buffer of its own (GCSStore.Put).
-	phases = append(phases, phase{first: scratch, alloc: scratch, after: limit})
-	return peakOf(phases...) + processingSlack
+	return append(phases, phase{first: scratch, alloc: scratch, after: limit})
 }
 
 // pngEncoderRows is what image/png's encoder writes a picture tw pixels wide

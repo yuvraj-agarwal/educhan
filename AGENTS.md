@@ -840,7 +840,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
   `pngLimit` of its size instead, which the header gives, so its cost refuses it up front
   rather than after decoding), the six rows of the stored picture `image/png`'s encoder
-  writes a PNG through (`pngEncoderRows`), and the thumbnail scaler's scratch
+  writes a PNG through (`pngEncoderRows`, all made before the first row is written, so
+  counted in what the encoder allocates as it begins: on top of both pictures of a turned
+  PNG, `TestPNGEncoderRowsAreChargedAsItBegins`), and the thumbnail scaler's scratch
   (`thumbScratch`, for the picture as it is stored, turned upright by `storedOnItsSide`):
   its buffer, as wide as the thumbnail and as tall as the picture, and its tables of
   weights, 64 bytes for every pixel of the two sides, which are most of it for a long

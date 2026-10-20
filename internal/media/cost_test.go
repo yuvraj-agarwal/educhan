@@ -914,6 +914,63 @@ func TestPNGEncoderRowsAreCharged(t *testing.T) {
 	}
 }
 
+// image/png's encoder allocates its six rows before it writes the first, so
+// they are charged as part of what the encoder's phase allocates as it begins,
+// on top of the most the phase before it held (completedPhases, peakOf): for a
+// PNG turned by its orientation, both pictures, the decoded one and its turned
+// copy, which a collection that began as orient finished keeps live until it
+// ends. A strip of 8-bit RGBA turned around (o3), four rows of a million
+// pixels, is decoded and turned here as sanitizePNG does it, and encoded the
+// same way while the decoded picture is held as such a collection holds it.
+// What it holds is measured against the phases up to the encoder's, without
+// the thumbnail's: the scaler's scratch for a strip this long is larger than
+// all of them and comes on top of them, so the cost of the whole would hide
+// the rows charged late. The decoder's rows are let go before the turn, as
+// they are not here what is in question. Charged only in the rest of the
+// phase, on top of the turned picture alone, the rows leave the bound
+// megabytes under what the strip holds, which is checked as well, so the
+// strip is one that shows them.
+func TestPNGEncoderRowsAreChargedAsItBegins(t *testing.T) {
+	const w, h = 1 << 20, 4
+	data := withPNGChunks(rawPNG(t, w, h, 6, 8, false, false), pngChunk("eXIf", orientationTIFF(binary.BigEndian, 3)))
+	in, err := inspect(data)
+	if err != nil {
+		t.Fatalf("inspect: %v", err)
+	}
+	cfg, _, err := image.DecodeConfig(bytes.NewReader(data))
+	if err != nil {
+		t.Fatalf("DecodeConfig: %v", err)
+	}
+	phases := completedPhases(in.format, data, cfg, in.frames)
+	encoding := phases[:len(phases)-1] // without the thumbnail scaler's
+	want := peakOf(encoding...) + processingSlack
+	late := slices.Clone(encoding)
+	late[len(late)-1].first -= pngEncoderRows(in.format, data, w)
+	charged := peakOf(late...) + processingSlack
+
+	held := leastPeak(t, "turned strip", want, func() error {
+		src, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			return err
+		}
+		reduceHiddenColour(src)
+		runtime.GC() // lets the decoder's rows go
+		pic := orient(src, pngOrientation(data))
+		buf := newStoredBuffer(context.Background(), len(data), in.limit)
+		_, err = buf.encoded(FormatPNG, storedPNG.Encode(buf, pic))
+		runtime.KeepAlive(src) // as a collection that began as orient finished would
+		return err
+	})
+	mib := func(n int64) float64 { return float64(n) / (1 << 20) }
+	t.Logf("turned strip: encoding held %.1f MiB of %.1f, %.1f with the rows charged late", mib(held), mib(want), mib(charged))
+	if held > want {
+		t.Errorf("a %dx%d strip turned around held %d bytes live while it was encoded, over the estimate up to its encoding, %d", w, h, held, want)
+	}
+	if held <= charged {
+		t.Errorf("a %dx%d strip turned around held %d bytes live while it was encoded, within %d, the estimate with the encoder's rows charged after it begins: the strip does not show them", w, h, held, charged)
+	}
+}
+
 // What image/gif keeps of each frame besides its pixels fits in
 // gifFrameOverhead, for the frames that keep the most for the fewest bytes
 // of file (each with its own copy of a 256-colour palette) and for frames
