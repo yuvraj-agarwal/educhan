@@ -564,29 +564,31 @@ curl -X POST https://<site>/api/pass/reissue -H 'X-Mod-Key: …' \
 # -> {"code":"REISSUE-…","expires_at":"…"}
 ```
 
-and emails the reissue code, from the support address, to the address the
-buyer wrote in from. The owner never sees a Pass code. A reissue code is the
-word REISSUE and then 28 letters and digits, from the same alphabet as a Pass
-code, in groups of four, to read out or paste: 140 random bits, and never
-mistaken for a Pass code, which has no U. The server takes it in either case,
-with or without the word in front and with dashes, spaces or nothing between
-the groups. Typed on the Pass page, it gives the Pass a new code, shown once,
-and the old one stops working. For a purchase or a renewal paid and never
-collected, it collects it instead: a purchase's reissue code makes the Pass,
-with its code shown once, and a renewal's renews the Pass it was for and shows
-no code, or makes a new Pass if that one has gone. It works once, until a
-deadline like an order's (a week, to the next midnight UTC); a newer reissue
-code for the same payment replaces it, and a refund cancels it, as does a
-renewal that takes its payment's right to reissue away (below). It is never in
-an address, so no browser history, address bar or `Referer` holds it. The page
-sends it in the body of one claim, with a nonce of its own, and the new Pass
-code is derived from the two, so a reissue whose answer was lost is asked
-again and gives the same Pass code; the server keeps only the reissue code's
-SHA-256 hash. A renewal's reissue code asked again is refused like any spent
-one, since a renewal hands over no code; the renewal is on the Pass all the
-same, and the page then checks the code it holds, as for a claim, and says its
-new date. Without a Pass to check, it says the code has been used, and that a
-renewal it made is on its Pass already, rather than to ask for another.
+and emails the reissue code, from the support address, to the address the buyer
+wrote in from. The owner never sees a Pass code. A reissue code is the word
+REISSUE and then 28 letters and digits, from the same alphabet as a Pass code,
+in groups of four, to read out or paste: 140 random bits, and never mistaken
+for a Pass code, which has no U. The server takes it in either case, with or
+without the word in front and with dashes, spaces or nothing between the
+groups, a no-break space, another dash or a character nobody sees, which a
+paste out of mail can bring, included; the page skips the same ones. Typed on
+the Pass page, it gives the Pass a new code, shown once, and the old one stops
+working. For a purchase or a renewal paid and never collected, it collects it
+instead: a purchase's reissue code makes the Pass, with its code shown once,
+and a renewal's renews the Pass it was for and shows no code, or makes a new
+Pass if that one has gone. It works once, until a deadline like an order's (a
+week, to the next midnight UTC); a newer reissue code for the same payment
+replaces it, and a refund or a dispute cancels it, as does a renewal that takes
+its payment's right to reissue away (below). It is never in an address, so no
+browser history, address bar or `Referer` holds it. The page sends it in the
+body of one claim, with a nonce of its own, and the new Pass code is derived
+from the two, so a reissue whose answer was lost is asked again and gives the
+same Pass code; the server keeps only the reissue code's SHA-256 hash. A
+renewal's reissue code asked again is refused like any spent one, since a
+renewal hands over no code; the renewal is on the Pass all the same, and the
+page then checks the code it holds, as for a claim, and says its new date.
+Without a Pass to check, it says the code has been used, and that a renewal it
+made is on its Pass already, rather than to ask for another.
 
 Only the payment that made a Pass, or a paid purchase or renewal nobody
 collected, can be reissued. The payment of a renewal that was collected

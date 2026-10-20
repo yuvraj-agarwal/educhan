@@ -113,9 +113,10 @@ func formatPassCode(code string) string {
 	return b.String()
 }
 
-// parsePassCode reads a code as a person might type it: any case, with or
-// without the dashes, with spaces, and with the letters Crockford's alphabet
-// folds into digits (O for 0, I and L for 1).
+// parsePassCode reads a code as a person might type or paste it: any case,
+// with or without the dashes, with spaces or other separators between the
+// groups (codeSeparators), and with the letters Crockford's alphabet folds
+// into digits (O for 0, I and L for 1).
 func parsePassCode(raw string) (string, bool) {
 	return parseCode(raw, passCodeLen)
 }
@@ -143,7 +144,21 @@ func parseCode(raw string, n int) (string, bool) {
 	return string(out), true
 }
 
-func isCodeSeparator(r rune) bool { return r == '-' || r == ' ' || r == '\t' }
+// codeSeparators are what may stand between a code's groups, which parseCode
+// skips: the hyphen, and the dashes and minus sign a word processor or a mail
+// client may turn it into; white space and line breaks, every Unicode space
+// among them, the no-break and narrow ones a paste out of mail or a web page
+// brings included; and the soft hyphen, zero-width space, word joiner and
+// byte-order mark, which a paste can carry unseen. The Pass page skips exactly
+// these, as CODE_SEPARATORS in app.js, so a code it reads as one kind is read
+// as that kind here; TestPageAndServerSkipTheSameSeparators holds the two
+// together.
+const codeSeparators = "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212" +
+	" \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006" +
+	"\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000" +
+	"\u00ad\u200b\u2060\ufeff"
+
+func isCodeSeparator(r rune) bool { return strings.ContainsRune(codeSeparators, r) }
 
 // A reissue code is what the owner sends a buyer who lost their code
 // (handlePassReissue), to type or paste on the Pass page. It is the word

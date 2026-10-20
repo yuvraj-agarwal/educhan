@@ -2123,6 +2123,15 @@ const PASS_FORGET_WAIT_MS = 30000;
 // and never stored.
 const REISSUE_CODE_WORD = "REISSUE";
 const REISSUE_CODE_LENGTH = 28;
+// What may stand between a code's groups, which the page skips: exactly what
+// the server skips (codeSeparators in pass.go), the hyphen and the dashes it
+// may become, every Unicode space and line break, and the invisible characters
+// a paste can carry. TestPageAndServerSkipTheSameSeparators reads both.
+const CODE_SEPARATORS =
+  "-\u2010\u2011\u2012\u2013\u2014\u2015\u2212" +
+  " \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006" +
+  "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000" +
+  "\u00ad\u200b\u2060\ufeff";
 // Written and read back before a checkout, to learn whether this browser keeps
 // anything at all, and removed straight away.
 const STORAGE_PROBE_KEY = "educhan:storage-probe";
@@ -3171,11 +3180,23 @@ async function collectPass(visit) {
   }
 }
 
+// codeCharacters is what was typed in the code box in capitals, with the
+// separators the server skips (CODE_SEPARATORS) left out.
+function codeCharacters(typed) {
+  let bare = "";
+  for (const c of typed.toUpperCase()) {
+    if (!CODE_SEPARATORS.includes(c)) {
+      bare += c;
+    }
+  }
+  return bare;
+}
+
 // isReissueCode says whether what was typed in the code box is a reissue code
 // rather than a Pass code: it starts with the word, or, typed without it, has
 // a reissue code's length once the separators the server skips are left out.
 function isReissueCode(typed) {
-  const bare = typed.toUpperCase().replace(/[\s-]/g, "");
+  const bare = codeCharacters(typed);
   return bare.startsWith(REISSUE_CODE_WORD) || bare.length === REISSUE_CODE_LENGTH;
 }
 

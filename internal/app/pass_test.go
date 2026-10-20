@@ -6,10 +6,14 @@ import (
 	"io"
 	"log/slog"
 	"reflect"
+	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
+	"unicode"
 )
 
 func TestPassCodes(t *testing.T) {
@@ -68,6 +72,13 @@ func TestPassCodes(t *testing.T) {
 		" 0o0o0-iIlL1-23456-789AB ":   "00000111112345678 9AB",
 		"OOOOOIIIIILLLLL01234":        "00000111111111101234",
 		"\tABCDE-FGHJK-MNPQR-STVWX\t": "ABCDEFGHJKMNPQRSTVWX",
+		// Pasted out of mail or a web page, which can turn the dashes into
+		// no-break, narrow or thin spaces, or into other dashes, and carry
+		// characters nobody sees.
+		"ABCDE\u00a0FGHJK\u202fMNPQR\u2009STVWX":       "ABCDEFGHJKMNPQRSTVWX",
+		"ABCDE\u2013FGHJK\u2212MNPQR\u2011STVWX":       "ABCDEFGHJKMNPQRSTVWX",
+		"\ufeffABCDE\u200bFGHJK\u00adMNPQR\u2060STVWX": "ABCDEFGHJKMNPQRSTVWX",
+		"ABCDE\r\nFGHJK\u3000MNPQR\u2028STVWX\n":       "ABCDEFGHJKMNPQRSTVWX",
 	} {
 		want = strings.ReplaceAll(want, " ", "")
 		if got, ok := parsePassCode(raw); !ok || got != want {
@@ -78,9 +89,57 @@ func TestPassCodes(t *testing.T) {
 		"", "ABCDE", "ABCDE-FGHJK-MNPQR-STVW", "ABCDE-FGHJK-MNPQR-STVWXY",
 		"ABCDE-FGHJK-MNPQR-STVWU", // U is not in the alphabet
 		"ABCDE-FGHJK-MNPQR-STVW!", "ABCDE-FGHJK-MNPQR-STVWé", "ABCDE_FGHJK_MNPQR_STVWX",
+		"ABCDE.FGHJK.MNPQR.STVWX", "ABCDE/FGHJK/MNPQR/STVWX",
 	} {
 		if got, ok := parsePassCode(raw); ok {
 			t.Errorf("parse(%q) accepted as %q", raw, got)
+		}
+	}
+}
+
+// TestPageAndServerSkipTheSameSeparators holds the Pass page and the server
+// to one set of characters that may stand between a code's groups. The page
+// tells a reissue code from a Pass code by its characters once the
+// separators are left out, and sends it as one or the other; a server that
+// skipped fewer would refuse a code the page read, pasted with a no-break
+// space say, as "not a reissue code" or "not a Pass code". Every character Go
+// counts as a space is one of them, the ones JavaScript's \s matches among
+// them.
+func TestPageAndServerSkipTheSameSeparators(t *testing.T) {
+	found := regexp.MustCompile(`\nconst CODE_SEPARATORS =\s*((?:"(?:[^"\\]|\\.)*"\s*\+?\s*)+);`).FindStringSubmatch(appScript(t))
+	if found == nil {
+		t.Fatal("app.js has no CODE_SEPARATORS made of string literals")
+	}
+	var page strings.Builder
+	for _, literal := range regexp.MustCompile(`"(?:[^"\\]|\\.)*"`).FindAllString(found[1], -1) {
+		s, err := strconv.Unquote(literal)
+		if err != nil {
+			t.Fatalf("CODE_SEPARATORS: %s: %v", literal, err)
+		}
+		page.WriteString(s)
+	}
+	set := func(s string) []rune {
+		runes := []rune(s)
+		slices.Sort(runes)
+		return slices.Compact(runes)
+	}
+	if got, want := set(page.String()), set(codeSeparators); !slices.Equal(got, want) {
+		t.Fatalf("the page skips %+q between a code's groups, the server %+q", string(got), string(want))
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if unicode.IsSpace(r) && !isCodeSeparator(r) {
+			t.Errorf("%U is a space, and is not skipped between a code's groups", r)
+		}
+	}
+	for _, r := range "\u00a0\u202f\u2009\ufeff\u2013" {
+		if !isCodeSeparator(r) {
+			t.Errorf("%U is not skipped between a code's groups", r)
+		}
+	}
+	// None of them is a character of a code.
+	for _, r := range codeSeparators {
+		if strings.ContainsRune(passAlphabet+"OIL"+strings.ToLower(passAlphabet+"OIL"), r) {
+			t.Errorf("%U is a code's character and a separator", r)
 		}
 	}
 }
@@ -117,6 +176,11 @@ func TestReissueCodes(t *testing.T) {
 			bare,
 			reissueCodePrefix + bare,
 			"reissue " + strings.ToLower(bare),
+			strings.ReplaceAll(written, "-", "\u00a0"),
+			strings.ReplaceAll(written, "-", "\u202f"),
+			strings.ReplaceAll(written, "-", "\u2013"),
+			strings.ReplaceAll(written, "-", "\r\n"),
+			"\u200b" + strings.ReplaceAll(written, "-", "\u2009") + "\ufeff",
 		} {
 			if back, ok := parseReissueCode(typed); !ok || back != code {
 				t.Fatalf("parse(%q) = %q, %v; want %q", typed, back, ok, code)
