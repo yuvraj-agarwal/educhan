@@ -763,7 +763,7 @@ func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, n
 			"claim":      claim,
 		})
 	default:
-		refusePass(w, passInvalid, "this reissue code has been used, has run out or was cancelled by a refund")
+		refusePass(w, passInvalid, passReissueSpent)
 	}
 }
 
@@ -999,11 +999,14 @@ func (b *passBudget) sweepExpired() {
 
 // passReissueRenewal answers a reissue asked for with a renewal's payment, and
 // passReissueNoOrigin one for a Pass that no payment can reissue any more.
+// passReissueSpent refuses a reissue code that gives nothing, which the Pass
+// page knows by these words (PASS_REISSUE_SPENT).
 const (
 	passReissueRenewal = "that payment renewed a Pass; reissue it with the payment that bought the Pass, " +
 		"or, if that one was refunded, with the one renewal that then paid for all the time it had left"
 	passReissueNoOrigin = "this Pass can no longer be reissued: the payment that bought it was refunded or disputed, " +
 		"and no one payment left on it paid for all the time it had left"
+	passReissueSpent = "this reissue code has been used, has run out or was cancelled by a refund"
 )
 
 type passReissueBody struct {
