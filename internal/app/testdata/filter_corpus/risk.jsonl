@@ -367,3 +367,12 @@
 {"id": "risk-367", "body": "how old are you? are you alone right now?", "subject": "", "name": "", "expect": "hold", "why": "the reader asked whether they are alone after their age (R1-M10)"}
 {"id": "risk-368", "body": "how old are you? i'll buy you a gift", "subject": "", "name": "", "expect": "hold", "why": "a gift offered after the reader's age is asked (R1-M10)"}
 {"id": "risk-369", "body": "what grade are you in? i'll send you a pdf of the notes", "subject": "", "name": "", "expect": "publish", "why": "notes offered, no gift and no private cue (R1-M10 control)"}
+{"id": "risk-370", "body": "just end it already, this lecture is 3 hours long", "subject": "", "name": "", "expect": "publish", "why": "a lecture named as what is ended, in the clause after the urging (R2-M19)"}
+{"id": "risk-371", "body": "just end it already, this chapter never ends", "subject": "", "name": "", "expect": "publish", "why": "a chapter named as what is ended (R2-M19)"}
+{"id": "risk-372", "body": "please just end it already, this term is dragging", "subject": "", "name": "", "expect": "publish", "why": "a term named as what is ended (R2-M19)"}
+{"id": "risk-373", "body": "you should end it now, the essay is long enough", "subject": "", "name": "", "expect": "publish", "why": "an essay named as what is ended, past the shrug \"now\" (R2-M19)"}
+{"id": "risk-374", "body": "sick of this chapter, just end it", "subject": "", "name": "", "expect": "publish", "why": "the chapter named in the clause before the urging (R2-M19)"}
+{"id": "risk-375", "body": "jaa mar kha le pehle, phir padhai kar (ma always says eat first)", "subject": "", "name": "", "expect": "publish", "why": "\"mar kha le\": a mum's \"eat first\", not \"jaa mar\" (R2-M19)"}
+{"id": "risk-376", "body": "failed the exam again lol, just end it", "subject": "", "name": "", "expect": "hold", "why": "an exam failed, not ended: the clause opens on the failing (R2-M19 control)"}
+{"id": "risk-377", "body": "this exam was easy and you still failed, just end it", "subject": "", "name": "", "expect": "hold", "why": "the clause naming the exam speaks to the reader, so it names nothing ended (R2-M19 control)"}
+{"id": "risk-378", "body": "just end it already, this life is pointless", "subject": "", "name": "", "expect": "hold", "why": "a life is not one of the things a lecture or an essay is (R2-M19 control)"}

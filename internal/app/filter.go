@@ -10058,7 +10058,7 @@ func selfHarmCheck(v *view, m []int) bool {
 		// argument or a series as often: only with nothing but a shrug
 		// after it, and none of those before or after it.
 		if !onlyShrugs(next) || anyIn(wordsIn(text[max(0, m[0]-120):m[0]]), endItOthers) ||
-			anyIn(wordsIn(text[m[1]:min(len(text), m[1]+120)]), endItOthers) {
+			anyIn(wordsIn(text[m[1]:min(len(text), m[1]+120)]), endItOthers) || namesWhatIsEnded(text, m) {
 			return false
 		}
 	case is(last, "starve") || is(last, "eating"):
@@ -10076,8 +10076,10 @@ func selfHarmCheck(v *view, m []int) bool {
 			return false
 		}
 	case (is(first, "ja") || is(first, "jaa") || is(first, "jao")) && len(ws) > 1 && strings.HasPrefix(ws[1], "mar"):
-		// "ja mar gaya" is "died", told.
-		if nextIn(0, diedWords) || len(ws) == 2 && len(next) > 0 && strings.HasPrefix(next[0], "gay") {
+		// "ja mar gaya" is "died", told; "jaa mar kha le" is a beating taken
+		// ("maar khana") or "go on, eat first".
+		if nextIn(0, diedWords) || len(ws) == 2 && len(next) > 0 && strings.HasPrefix(next[0], "gay") ||
+			len(next) > 0 && strings.HasPrefix(next[0], "kha") {
 			return false
 		}
 	case is(first, "take") && nextIn(0, pillRoutine) && !(is(next[0], "at") && len(next) > 1 && is(next[1], "once")):
@@ -11469,6 +11471,81 @@ func saidFirst(before string) bool {
 	}
 	return true
 }
+
+// namesWhatIsEnded reports that the clause next to "just end it" or "you
+// should end it" opens on what is being ended, and it is a lecture, an essay
+// or a season rather than a life: "just end it already, this lecture is 3
+// hours long", "you should end it now, the essay is long enough", "sick of
+// this chapter, just end it". The clause after the urging is read past the
+// shrugs that end its own ("already", "now"), and the one before it as well
+// as what comes before the urging in its own clause. A clause that speaks to
+// the reader ("this exam was easy and you still failed") or that does not
+// open on the thing ("failed the exam again, just end it") names nothing
+// ended.
+func namesWhatIsEnded(text string, m []int) bool {
+	const marks = ".!?\n,;:()"
+	var near []string
+	before := text[max(0, m[0]-120):m[0]]
+	i := strings.LastIndexAny(before, marks)
+	near = append(near, before[i+1:])
+	if i >= 0 {
+		prev := before[:i]
+		near = append(near, prev[strings.LastIndexAny(prev, marks)+1:])
+	}
+	after := text[m[1]:min(len(text), m[1]+120)]
+	if j := strings.IndexAny(after, marks); j >= 0 {
+		rest := after[j+1:]
+		if k := strings.IndexAny(rest, marks); k >= 0 {
+			rest = rest[:k]
+		}
+		near = append(near, rest)
+	}
+	for _, clause := range near {
+		if opensOnEnded(wordsIn(clause)) {
+			return true
+		}
+	}
+	return false
+}
+
+// opensOnEnded reads a clause's words for namesWhatIsEnded: past any
+// imperativeFillers, an endItThings word, or a determiner and one within two
+// words after it, the determiner opening the clause or straight after an "of"
+// in its first four words ("sick of this lecture"); and no one spoken to.
+func opensOnEnded(ws []string) bool {
+	if anyIn(ws, readerWords) || anyIn(ws, secondPerson) {
+		return false
+	}
+	for len(ws) > 0 && imperativeFillers[ws[0]] {
+		ws = ws[1:]
+	}
+	if len(ws) == 0 {
+		return false
+	}
+	if endItThings[ws[0]] {
+		return true
+	}
+	for k := 0; k < min(len(ws), 5); k++ {
+		if !endItDeterminers[ws[k]] || k > 0 && !is(ws[k-1], "of") {
+			continue
+		}
+		return anyIn(ws[k+1:min(len(ws), k+4)], endItThings)
+	}
+	return false
+}
+
+var (
+	// endItThings are what "just end it" may be said of on a student board
+	// when the clause beside it names them: a class, a piece of work, a
+	// meeting, something watched or read.
+	endItThings = canonSetOf(`lecture lectures lec class classes period periods chapter chapters term terms semester
+		semesters sem sems exam exams paper papers test tests quiz essay essays assignment assignments homework hw
+		syllabus portion portions meeting meetings call calls movie movies film films video videos book books novel
+		season seasons episode episodes ep anime manga arc project projects presentation presentations speech lesson
+		lessons module modules unit units session sessions practice rehearsal seminar webinar lab labs viva shift
+		training workshop tournament round podcast stream livestream song playlist`)
+	endItDeterminers = canonSetOf(`this that the these those my our`)
+)
 
 // conditionWords open a condition: "if", "agar".
 var conditionWords = canonSetOf(`if agar`)
