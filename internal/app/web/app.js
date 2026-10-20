@@ -151,16 +151,23 @@ async function api(path, options = {}) {
 
 // errorMessage turns an API failure into something worth reading. The server's
 // own message is kept; only the cases where it needs context are rewritten.
-// What is being sent stays in its form after a refusal, so these say so.
+// What was being sent stays in its form after a refusal, as far as the form
+// still holds it, so these say what it holds: hasText, whether it holds text,
+// and imageOff, why the image is gone when a redraw while the post was held
+// had release take it off ("" when it did not: holdForm). The caller adds
+// that to anything but the two refusals of the image itself (imageTakenOff).
 // action is what was refused — "post", or "code" for a verification code
 // request — so a cooldown tells the reader to do that again, not something
 // they were not doing.
-function errorMessage(err, { hasText = true, action = "post" } = {}) {
+function errorMessage(err, { hasText = true, imageOff = "", action = "post" } = {}) {
+  // A post of only an image, which release took off: nothing is left of it.
+  const nothingLeft = !hasText && imageOff !== "";
   if (err.unreachable) {
-    return `${UNREACHABLE} What you wrote is still in the box.`;
+    return nothingLeft ? UNREACHABLE : `${UNREACHABLE} What you wrote is still in the box.`;
   }
   if (err.status === 413) {
-    return imageTooLargeMessage();
+    // An image taken off since cannot be swapped for a smaller one.
+    return imageOff ? "That image was too large." : imageTooLargeMessage();
   }
   if (err.status === 429) {
     const seconds = err.payload && err.payload.retry_after;
@@ -197,17 +204,34 @@ function errorMessage(err, { hasText = true, action = "post" } = {}) {
     if (action === "code") {
       return "The anti-spam check didn't go through, so no code was sent. Request a code again.";
     }
+    if (nothingLeft) {
+      return "The anti-spam check didn't go through, so nothing was posted.";
+    }
     return hasText
       ? "The anti-spam check didn't go through, so nothing was posted. Your text is still in the box; post again."
       : "The anti-spam check didn't go through, so nothing was posted. Your image is still attached; post again.";
   }
   if (err.status === 403 && err.message === "thread is archived") {
-    return "This thread was archived while you were writing, so it no longer takes replies. Your text is still in the box.";
+    const kept = nothingLeft ? "" : " Your text is still in the box.";
+    return `This thread was archived while you were writing, so it no longer takes replies.${kept}`;
   }
   if (err.status === 403) {
     return `${err.message}.`;
   }
   return err.message;
+}
+
+// imageTakenOff follows a notice about a post with why its image is gone, when
+// release took it off (reason, the note the picker was switched off with:
+// holdForm), and tells a post left with nothing to send to write something
+// instead. A post left with its text needs nothing more: the next press sends
+// the text on its own.
+function imageTakenOff(message, reason, { hasText, isThread }) {
+  if (!reason) {
+    return message;
+  }
+  const next = hasText ? "" : isThread ? " Write something to post text instead." : " Write a reply to post text instead.";
+  return `${message} The image has been taken off your post. ${reason}${next}`;
 }
 
 /* Storage ------------------------------------------------------------------ */
@@ -2912,6 +2936,9 @@ async function render({ draft = captureDraft() } = {}) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
   const requested = window.location.href;
+  // What the page on screen was drawn for, put back by a redraw that keeps the
+  // page and then fails to load (below).
+  const shown = { path: renderedPath, route: state.route, thread: state.thread, expanded: expandedLink };
   renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   state.route = route;
@@ -2937,7 +2964,8 @@ async function render({ draft = captureDraft() } = {}) {
   // A redraw of the page a post is on its way from keeps the page on screen,
   // dimmed, rather than a skeleton, so the form the post went from stays in
   // the document until it goes into the new page (restoreDraft).
-  const finish = beginLoading({ skeleton: !(draft && draft.held && draft.key === routeKey(route)) });
+  const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route));
+  const finish = beginLoading({ skeleton: !keepPage });
   let resolved = null;
   try {
     if (age === "ok") {
@@ -2999,6 +3027,33 @@ async function render({ draft = captureDraft() } = {}) {
         ? `${Number.isSafeInteger(route.no) ? `No. ${route.no}` : "That post"} is not on ${boardLabel(route.slug)} — it may have been deleted, or the number may be wrong.`
         : "That board or thread is not here — it may have been deleted, or have aged out of the archive.";
       board = known ? route.slug : null;
+    }
+    // A redraw that kept the page for a post on its way leaves the page there,
+    // with the form the post went from, when the new one will not load: the
+    // post goes ahead and is answered on its form, and a success goes to the
+    // new post, as without the redraw. What the top of render reset is put back
+    // as the page was drawn with it (its address, the thread its controls read,
+    // the image still open on it, unless the reader has opened another since),
+    // and the error is a notice above the page, after anything said since the
+    // redraw began, the post's own answer say. The notice is an alert, so it is
+    // heard, and the title stays the page's. A newer render has the screen, and
+    // is left to it.
+    if (keepPage) {
+      if (state.route !== route) {
+        return;
+      }
+      if (draft.held.isConnected) {
+        renderedPath = shown.path;
+        state.route = shown.route;
+        state.thread = shown.thread;
+        const open = shown.expanded;
+        if (!expandedLink && open && open.isConnected && open.classList.contains("expanded")) {
+          expandedLink = open;
+        }
+        const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
+        showNotice(said ? `${said} ${message}` : message);
+        return;
+      }
     }
     el.main.innerHTML = emptyStateHTML(message, board);
     announce(notFound ? "Not found" : "Could not load this page");
@@ -3977,7 +4032,8 @@ function runCaptchaWorkers(challenge, signal) {
 // the next puzzle is started for one.
 // Pressing Update while a post waits does not take its form away: the redrawn
 // page shows the same form, still held, as does another page of the same
-// board's index, drawn with the same new-thread form.
+// board's index, drawn with the same new-thread form, and a redraw that will
+// not load leaves the page on screen, form and all.
 async function sendWithCaptcha(needsIt, send, solving, onScreen) {
   for (let retried = false; ; retried = true) {
     let taken = null;
@@ -4047,15 +4103,17 @@ function notSent() {
 // formOnScreen says whether a form is still the one the reader is looking at:
 // in the document, on the page that drew it. Going to another page changes
 // state.route at once, while the old form stays in the document until the new
-// page is drawn over it. A redraw of the same page, Update say, keeps a
-// posting form whose post is on its way in the document throughout, and puts
-// it in the new page in place of the one drawn there (render, restoreDraft),
-// so the post goes ahead and is answered on that form: a posting form stays on
-// screen across any render of a page with the same routeKey, another page of
-// the same board's index included. No redraw carries a /verify form, so one
-// is on screen only until the next render, of /verify too: a code requested
-// from the form a redraw is about to replace would be answered on a page that
-// shows the address step, with nothing to say a code was sent.
+// page is drawn over it. A redraw of the same page, Update say, or of another
+// page of the same board's index (the same routeKey), keeps a posting form
+// whose post is on its way in the document: it puts the form in place of the
+// one the new page draws for the same thread or board (restoreDraft) or, when
+// the new page will not load, leaves the page on screen, form and all
+// (render). Either way the post goes ahead and is answered on that form. Only
+// a new page that draws no such form, the thread locked or archived meanwhile,
+// takes it off the screen. No redraw carries a /verify form, so one is on
+// screen only until the next render, of /verify too: a code requested from the
+// form a redraw is about to replace would be answered on a page that shows the
+// address step, with nothing to say a code was sent.
 function formOnScreen(form, route) {
   return form.isConnected && (form.dataset.kind ? routeKey(state.route) === routeKey(route) : state.route === route);
 }
@@ -4075,20 +4133,23 @@ const redrawnPickers = new WeakMap();
 // What is sent was read from the form at the press, so a change made in the
 // meantime would be left out of it, and wiped by the reset after a success. It
 // returns release, which switches back on the controls it switched off, and no
-// others: a picker switched off for its own reason stays off. A redraw of the
-// page meanwhile has the last word on the picker, whatever the answer
-// (redrawnPickers): it goes as the redraw drew it, switched off with that
-// drawing's reason or switched on, and is switched off with the site's reason
-// where the redraw drew none. With refocus, a form that had the focus at the
-// press, which disabling the focused control took away, gets it back on its
-// button, ready to press again; put back in a box to write in, it would start
-// another puzzle. That is only while the focus is still lost, on the page
-// itself or nowhere: a reader who moved it during the wait, to read a post say,
-// keeps it where they put it. And it does not scroll the page: a reader who
-// scrolled away during the wait stays where they are. The notice saying what
-// happened is at the top of the page, in view only of a reader who is there.
-// Until release, the form is in heldForms, and a redraw of its page carries it
-// across as it is (captureDraft, restoreDraft).
+// others: a picker switched off for its own reason stays off. When the hold
+// ends, success or refusal, release leaves the picker as a redraw of the page
+// meanwhile drew it (redrawnPickers): switched off with that drawing's reason,
+// or on, or off with the site's reason where the redraw drew none. A picker it
+// switches off loses the image it held, and release then returns the reason,
+// for the notice to say why the image went (imageTakenOff), and "" otherwise. A
+// refusal of the image itself, the image limit reached or uploads switched off,
+// then switches the picker off in the submit handler. With refocus, a form that
+// had the focus at the press, which disabling the focused control took away,
+// gets it back on its button, ready to press again; put back in a box to write
+// in, it would start another puzzle. That is only while the focus is still
+// lost, on the page itself or nowhere: a reader who moved it during the wait,
+// to read a post say, keeps it where they put it. And it does not scroll the
+// page: a reader who scrolled away during the wait stays where they are. The
+// notice saying what happened is at the top of the page, in view only of a
+// reader who is there. Until release, the form is in heldForms, and a redraw of
+// its page carries it across as it is (captureDraft, restoreDraft).
 function holdForm(form) {
   const controls = Array.from(form.elements).filter((control) => !control.disabled);
   const focused = form.contains(document.activeElement);
@@ -4101,11 +4162,15 @@ function holdForm(form) {
     for (const control of controls) {
       control.disabled = false;
     }
+    let imageOff = "";
     if (redrawnPickers.has(form)) {
       const reason = redrawnPickers.get(form);
       const picker = form.querySelector("[data-file-field]");
       redrawnPickers.delete(form);
       if (reason) {
+        if (picker.querySelector(".file-input").files.length > 0) {
+          imageOff = reason;
+        }
         blockFileField(picker, reason);
       } else {
         unblockFileField(picker);
@@ -4115,6 +4180,7 @@ function holdForm(form) {
     if (refocus && focused && lost) {
       form.querySelector('button[type="submit"]')?.focus({ preventScroll: true });
     }
+    return imageOff;
   };
 }
 
@@ -4252,9 +4318,11 @@ el.main.addEventListener("submit", async (event) => {
     }
     await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);
   } catch (err) {
-    // Switched back on first, so a picker switched off below stays off.
+    // Switched back on first, so a picker switched off below stays off. A
+    // redraw while the post was held may have release switch the picker off,
+    // taking the image off, and say why (imageOff).
     const shown = onScreen();
-    release(shown);
+    const imageOff = release(shown);
     button.textContent = label;
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
@@ -4291,18 +4359,25 @@ el.main.addEventListener("submit", async (event) => {
     if (!shown) {
       return;
     }
+    // What a notice says the form still holds is what it holds now, after
+    // release: its text, read from the box, and its image unless release took
+    // that off, which the notice then says, with why (imageTakenOff). The two
+    // refusals of the image itself say so in their own words.
+    const box = field(form, "body");
+    const hasText = Boolean(box && box.value.trim());
     // A post sendWithCaptcha did not send from a form still on screen was
     // stopped by the forget: before its first send, or before the second that
     // a refused answer calls for, the forget heard while the first was on its
     // way or while the second puzzle was solving. It says so rather than
     // wording a refusal, and keeps its text for whoever presses again.
     if (err.notSent) {
-      showNotice(FORGOTTEN_BEFORE_SENDING);
+      showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));
       return;
     }
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
-    if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {
+    const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED;
+    if (limitReached) {
       const fileField = form.querySelector("[data-file-field]");
       const thread = state.thread;
       if (fileField) {
@@ -4325,7 +4400,8 @@ el.main.addEventListener("submit", async (event) => {
       }
       redrawThreadCounts();
     }
-    showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    const message = errorMessage(err, { hasText, imageOff });
+    showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread }));
   }
 });
 

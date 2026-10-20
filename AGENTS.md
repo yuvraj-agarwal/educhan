@@ -444,16 +444,27 @@ check before the test changes.
   `app.css` shows the held controls switched off). A redraw of the form's own page while
   it is held (Update, or another page of the same board's index, which has the same
   `routeKey`: the view, the board and the thread, never the index page) keeps the page,
-  dimmed, in place of the skeleton, and puts the held form itself into the new page in
-  place of the one drawn there (`heldForms`, `captureDraft`, `restoreDraft`), so the post
-  goes ahead and is answered on the form on screen; when the hold ends, whatever the
-  answer, the held form's picker goes as the new page drew it, switched off with that
-  page's reason (or the site's, where it drew none) or switched on (`redrawnPickers`); a
-  form answered by then is read for its values like any draft, emptied after a success. A
-  request that succeeds keeps the answer it took; a refusal carrying `"captcha"` drops it
-  and, while the form is on screen, sends once more with a fresh one, and `"required"`
-  also turns `state.site.captcha` on for a page drawn without knowing. Any other refusal,
-  or no response at all, puts the answer back, unless it carries `Educhan-Captcha: spent`
+  dimmed, in place of the skeleton (`keepPage` in `render`), and puts the held form
+  itself into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
+  `restoreDraft`); a form answered by then is read for its values like any draft, emptied
+  after a success. A redraw that fails to load leaves the kept page on screen, held form
+  and all, with what the top of `render` reset put back (`renderedPath`, `state.route`,
+  `state.thread`, the open image) and the error in a notice, unless a newer render has
+  begun, which has the screen. Either way the post goes ahead and is answered on the form
+  on screen, and a success goes to it. When the hold ends, success or refusal, `release`
+  leaves the held form's picker as a redraw meanwhile drew it, switched off with that
+  drawing's reason (or the site's, where it drew none) or switched on (`redrawnPickers`),
+  and a refusal of the image itself (image limit reached, uploads switched off) then
+  switches it off in the submit handler. A picker `release` switches off loses its image,
+  and `release` then returns the reason, which every later notice but those two refusals,
+  a refusal's or a forget's, adds, saying the image was taken off and why
+  (`imageTakenOff`). Each notice is worded for what the form still holds, its text read
+  from the box after `release` (`errorMessage`'s `hasText` and `imageOff`), so a post
+  left with nothing is told to write something instead. A request that succeeds keeps the
+  answer it took; a refusal carrying `"captcha"` drops it and, while the form is on
+  screen, sends once more with a fresh one, and `"required"` also turns
+  `state.site.captcha` on for a page drawn without knowing. Any other refusal, or no
+  response at all, puts the answer back, unless it carries `Educhan-Captcha: spent`
   (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from the second flood-control
   check included), which drops it and starts the next puzzle at once if the form is on
   screen. A post that carries the badge never waits for or sends an answer

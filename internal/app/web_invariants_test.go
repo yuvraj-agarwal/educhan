@@ -845,7 +845,8 @@ func TestCaptchaIsNotWorkedOnForNothing(t *testing.T) {
 // leave meanwhile, for another page. A request whose form has gone by the time
 // its answer is ready is not sent, and its answer is put back for the next
 // press. A posting form stays on screen across a redraw of its own page, by
-// route key, since the redraw carries it across while it is held
+// route key, while it is held: the redraw puts it in place of the form the
+// new page draws, or keeps the page around it when the new one will not load
 // (TestAHeldFormSurvivesARedrawOfItsPage). No redraw carries a /verify form,
 // so one leaves the screen at the next render, of /verify too: a code request
 // sent from the form a redraw was replacing would leave the page on the
@@ -896,15 +897,18 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		// forgotten either (TestForgettingTheBrowserCancelsWhatIsOnItsWay).
 		onScreen := "const route = state.route; const onScreen = () => formOnScreen(form, route);"
 		sends := "() => onScreen() && !forgotten(), );"
+		// A post's release says what it took off (TestCaptchaRefusalSaysWhatTheFormStillHolds).
+		released := "} catch (err) { const shown = onScreen(); const imageOff = release(shown); button.textContent = label;"
 		if name == "submitVerification" {
 			onScreen = "const route = state.route; const forgets = browserForgets; const forgotten = () => forgets !== browserForgets; " +
 				"const onScreen = () => formOnScreen(form, route) && !forgotten();"
 			sends = "onScreen, );"
+			released = "} catch (err) { const shown = onScreen(); release(shown); button.textContent = label;"
 		}
 		inOrder(t, name, fn,
 			onScreen,
 			sends,
-			"} catch (err) { const shown = onScreen(); release(shown); button.textContent = label;",
+			released,
 			"if (!shown) { return; }",
 		)
 		catch := fn[strings.Index(fn, "} catch (err) {"):]
@@ -1078,8 +1082,9 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		"if (!held && forgets === browserForgets) { storageSet(NAME_STORAGE_KEY, name); storedHere.set(NAME_STORAGE_KEY, name); }",
 		`nameField.value = held || forgets !== browserForgets ? storageGet(NAME_STORAGE_KEY) || "" : name;`,
 		`if (reason === "expired" || reason === "revoked") { if (forgets === browserForgets) { forgetCredential(); badgeLost =`,
-		"if (!shown) { return; } if (err.notSent) { showNotice(FORGOTTEN_BEFORE_SENDING); return; }",
-		"showNotice(errorMessage(err,",
+		`if (!shown) { return; } const box = field(form, "body"); const hasText = Boolean(box && box.value.trim()); if (err.notSent) { `+
+			"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread })); return; }",
+		"const message = errorMessage(err, { hasText, imageOff });",
 	)
 	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
 		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
@@ -1297,24 +1302,30 @@ func TestAPendingFormIsHeld(t *testing.T) {
 }
 
 // Pressing Update while a post is on its way redraws the thread, and a redraw
-// replaces the form. The post belongs to the page, so the form it went from
-// is carried across as itself, still held, and put in the new page in place
-// of the one drawn there; the post goes ahead and is answered on the form the
-// reader sees. A copy of its text in a live form would show a post that went
-// as one not sent, and post it twice on the next press. So that the held form
-// stays in the document meanwhile, a redraw of its own page keeps the page,
-// dimmed, rather than drawing a skeleton over it. A held form that has been
-// answered by the time the page is drawn is read like any draft, so one whose
-// post went is drawn empty. Its page is told by routeKey, which leaves out the
-// index page, so another page of the same board's index carries a held
-// new-thread form as Update does. And its picker ends up as the new page drew
-// one when the hold ends, whatever the answer: a redraw that drew it switched
-// off, the thread having reached its image limit meanwhile, has the held
-// form's switched off with the same reason, rather than offering an image to a
-// thread that takes no more; one that drew it live, the limit raised
-// meanwhile, has it switched on, though it was switched off at the press; and
-// one that drew none, on a site that takes no images, has it switched off with
-// the site's reason.
+// replaces the form. The post belongs to the page, so the form it went from is
+// carried across as itself, still held, and put in the new page in place of the
+// one drawn there; the post goes ahead and is answered on the form the reader
+// sees. A copy of its text in a live form would show a post that went as one
+// not sent, and post it twice on the next press. So that the held form stays in
+// the document meanwhile, a redraw of its own page keeps the page, dimmed,
+// rather than drawing a skeleton over it, and one that then fails to load
+// leaves the page there, as it was drawn, with the error in a notice above it
+// rather than in its place, unless a newer render has begun, which has the
+// screen. A held form that has been answered by the time the page is drawn is
+// read like any draft, so one whose post went is drawn empty. Its page is told
+// by routeKey, which leaves out the index page, so another page of the same
+// board's index carries a held new-thread form as Update does. And when the
+// hold ends, success or refusal, release leaves its picker as the new page drew
+// one: a redraw that drew it switched off, the thread having reached its image
+// limit meanwhile, has the held form's switched off with the same reason,
+// rather than offering an image to a thread that takes no more, and the image
+// it held taken off, which release reports for the notice to say
+// (TestCaptchaRefusalSaysWhatTheFormStillHolds); one that drew it live, the
+// limit raised meanwhile, has it switched on, though it was switched off at the
+// press; and one that drew none, on a site that takes no images, has it
+// switched off with the site's reason. A refusal of the image itself, the image
+// limit reached or uploads switched off, then switches it off in the submit
+// handler.
 func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	script := appScript(t)
 	if !strings.Contains(withoutComments(script), "\nconst heldForms = new WeakSet();\n") {
@@ -1349,9 +1360,11 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// live is switched on here, and left as a live one is drawn.
 	inOrder(t, "holdForm", squash(withoutComments(jsFunction(t, script, "holdForm"))),
 		"return (refocus) => { heldForms.delete(form); for (const control of controls) { control.disabled = false; }",
-		`if (redrawnPickers.has(form)) { const reason = redrawnPickers.get(form); `+
+		`let imageOff = ""; if (redrawnPickers.has(form)) { const reason = redrawnPickers.get(form); `+
 			`const picker = form.querySelector("[data-file-field]"); redrawnPickers.delete(form); `+
-			"if (reason) { blockFileField(picker, reason); } else { unblockFileField(picker); } }",
+			`if (reason) { if (picker.querySelector(".file-input").files.length > 0) { imageOff = reason; } `+
+			"blockFileField(picker, reason); } else { unblockFileField(picker); } }",
+		"return imageOff; }; }",
 	)
 	if n := strings.Count(withoutComments(script), "redrawnPickers"); !strings.Contains(withoutComments(script),
 		"\nconst redrawnPickers = new WeakMap();\n") || n != 5 {
@@ -1368,10 +1381,32 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",
-		"state.route = route;",
-		"const finish = beginLoading({ skeleton: !(draft && draft.held && draft.key === routeKey(route)) });",
+		"const shown = { path: renderedPath, route: state.route, thread: state.thread, expanded: expandedLink }; "+
+			"renderedPath = window.location.pathname + window.location.search;",
+		"state.route = route; state.thread = null;",
+		"expandedLink = null;",
+		"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); "+
+			"const finish = beginLoading({ skeleton: !keepPage });",
+		"} catch (err) {",
+		"if (keepPage) {",
+		"el.main.innerHTML = emptyStateHTML(message, board);",
+		"} finally {",
 		"restoreDraft(draft);",
 	)
+	// A kept page whose redraw will not load stays, with the held form in it,
+	// unless a newer render has begun: it gets back what the top of render
+	// reset, and the error as a notice, never in place of the page.
+	keep := jsBraced(t, render, "if (keepPage) {")
+	if want := "if (keepPage) { if (state.route !== route) { return; } if (draft.held.isConnected) { " +
+		"renderedPath = shown.path; state.route = shown.route; state.thread = shown.thread; const open = shown.expanded; " +
+		`if (!expandedLink && open && open.isConnected && open.classList.contains("expanded")) { expandedLink = open; } ` +
+		`const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; ` +
+		"showNotice(said ? `${said} ${message}` : message); return; } }"; keep != want {
+		t.Errorf("render no longer keeps a page held for a post when its redraw fails to load: %s", keep)
+	}
+	if n := strings.Count(render, "keepPage"); n != 3 {
+		t.Errorf("keepPage appears %d times in render; want its declaration, the skeleton and the failed load", n)
+	}
 	loading := squash(withoutComments(jsFunction(t, script, "beginLoading")))
 	if !strings.Contains(loading, "function beginLoading({ skeleton = true } = {}) {") ||
 		!strings.Contains(loading, "if (skeleton) { el.main.innerHTML =") || strings.Count(loading, "el.main.innerHTML") != 1 {
@@ -1415,21 +1450,65 @@ func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
 	}
 }
 
-// A post refused by the captcha keeps what was in its form, and the notice
-// says so in the terms of what was there: text in the box, or only an image.
+// A refused post keeps what its form still holds, and the notice says so in
+// the terms of what is there once the hold has ended, never of what was
+// pressed: text in the box, or only an image, or nothing, when a redraw while
+// the post was held drew its picker switched off and release took the image
+// off. release then returns the picker's reason, and every notice after it but
+// the two refusals of the image itself, which say so in their own words, adds
+// that the image has been taken off and why, and tells a post left with
+// nothing to write something instead. So a captcha refusal says "Your image is
+// still attached" only of an image that is.
 func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	script := appScript(t)
 	message := squash(withoutComments(jsFunction(t, script, "errorMessage")))
+	if !strings.HasPrefix(message, `function errorMessage(err, { hasText = true, imageOff = "", action = "post" } = {}) { `+
+		`const nothingLeft = !hasText && imageOff !== "";`) {
+		t.Errorf("errorMessage no longer tells a post left with nothing from one that kept its text or its image: %.200s", message)
+	}
 	branch := jsBraced(t, message, "if (err.status === 403 && err.payload && err.payload.captcha) {")
-	m := regexp.MustCompile(`return hasText \? "([^"]*)" : "([^"]*)";`).FindStringSubmatch(branch)
+	m := regexp.MustCompile(`if \(nothingLeft\) \{ return "([^"]*)"; \} return hasText \? "([^"]*)" : "([^"]*)";`).FindStringSubmatch(branch)
 	if m == nil {
-		t.Fatalf("errorMessage no longer words a post the captcha refused by whether it had text: %s", branch)
+		t.Fatalf("errorMessage no longer words a post the captcha refused by what its form still holds: %s", branch)
 	}
-	if !strings.Contains(m[1], "Your text is still in the box") || strings.Contains(m[2], "text") || !strings.Contains(m[2], "image") {
-		t.Errorf("a refused post with text should hear its text is in the box, and one without, that its image is: %q, %q", m[1], m[2])
+	if !strings.Contains(m[1], "nothing was posted") || strings.Contains(m[1], "text") || strings.Contains(m[1], "image") ||
+		strings.Contains(m[1], "again") {
+		t.Errorf("a refused post left with nothing should hear only that nothing was posted: %q", m[1])
 	}
-	if !strings.Contains(squash(withoutComments(submitHandler(t, script))), `showNotice(errorMessage(err, { hasText: body.trim() !== "" }));`) {
-		t.Error("the submit handler no longer tells errorMessage whether the post had text")
+	if !strings.Contains(m[2], "Your text is still in the box") || strings.Contains(m[3], "text") || !strings.Contains(m[3], "image") {
+		t.Errorf("a refused post with text should hear its text is in the box, and one without, that its image is: %q, %q", m[2], m[3])
+	}
+	// The other wordings that say what is still there say it only of what is.
+	for _, want := range []string{
+		"if (err.unreachable) { return nothingLeft ? UNREACHABLE : `${UNREACHABLE} What you wrote is still in the box.`; }",
+		`if (err.status === 413) { return imageOff ? "That image was too large." : imageTooLargeMessage(); }`,
+		`const kept = nothingLeft ? "" : " Your text is still in the box.";`,
+	} {
+		if !strings.Contains(message, want) {
+			t.Errorf("errorMessage no longer words this for what the form still holds: missing %s", want)
+		}
+	}
+	taken := squash(withoutComments(jsFunction(t, script, "imageTakenOff")))
+	if taken != "function imageTakenOff(message, reason, { hasText, isThread }) { if (!reason) { return message; } "+
+		`const next = hasText ? "" : isThread ? " Write something to post text instead." : " Write a reply to post text instead."; `+
+		"return `${message} The image has been taken off your post. ${reason}${next}`; }" {
+		t.Errorf("imageTakenOff no longer says the image was taken off and why, and what a post left with nothing can do: %s", taken)
+	}
+	// The submit handler reads the text from the box after release, and adds
+	// what release took off to every notice but the image's own refusals.
+	submit := squash(withoutComments(submitHandler(t, script)))
+	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
+	inOrder(t, "the submit handler", refused,
+		"const imageOff = release(shown);",
+		`const box = field(form, "body"); const hasText = Boolean(box && box.value.trim());`,
+		"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));",
+		"const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED; if (limitReached) {",
+		"const message = errorMessage(err, { hasText, imageOff }); "+
+			"showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread }));",
+	)
+	if strings.Count(refused, "showNotice(") != 2 || strings.Count(refused, "body.trim()") != 0 ||
+		strings.Count(withoutComments(script), "imageTakenOff(") != 3 {
+		t.Error("the submit handler words a refusal somewhere besides the two notices this test reads, or from the text pressed")
 	}
 }
 
