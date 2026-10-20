@@ -366,17 +366,16 @@ after all is not collected there. The page says so where it shows a checkout
 being collected, beside Start again, beside a checkout not collected yet, and
 under the forms drawn again over a checkout left behind (Start again, back from
 Stripe's cancel link, or a checkout whose answer came after the reader left the
-Pass page, after they pressed Remove the Pass or Forget this browser, or after
-the Pass held changed meanwhile, in another tab say, which is not followed to
-Stripe), each with Stop collecting it here, but not in a tab drawn before the
-other checkout started. That payment is still the buyer's, and the owner
-reissues it from the payment on the receipt (see **Lost codes**). The cookie is
-set at checkout to outlast its order's deadline, and 30 days past Stripe's
-24-hour checkout, which is as long as a slow payment holds its order (below)
-when Stripe reports the checkout completed as it happens. Nothing else sets the
-cookie, and only forgetting the claim clears it. A paid order nobody has
-collected by the time the cookie runs out is kept longer, and is collected with
-a reissue code.
+Pass page or after the Pass held changed meanwhile, in another tab say, which
+is not followed to Stripe), each with Stop collecting it here, but not in a
+tab drawn before the other checkout started. That payment is still the buyer's,
+and the owner reissues it from the payment on the receipt (see **Lost codes**).
+The cookie is set at checkout to outlast its order's deadline, and 30 days past
+Stripe's 24-hour checkout, which is as long as a slow payment holds its order
+(below) when Stripe reports the checkout completed as it happens. Nothing else
+sets the cookie, and only forgetting the claim clears it. A paid order nobody
+has collected by the time the cookie runs out is kept longer, and is collected
+with a reissue code.
 
 Collecting takes the order under the claim once it is paid: a renewal renews
 its Pass by the order's own term, and anything else makes a new Pass, as does
@@ -414,17 +413,18 @@ while the request is on its way the page keeps a mark in `localStorage`
 (`educhan:pass-forget:` and a random token, a mark for each forget, holding the
 time it was set), and a tab that sees one appear, or finds one when it is
 opened or brought back from the back-forward cache, stops, and starts nothing
-until each such mark goes, or for 30 seconds at most, in case the tab that set
-it was closed first, counted from the time the mark holds; it then draws the
-Pass page if it is open, and a tab opened on an older mark removes it. An
+until each such mark goes, or for 30 seconds at most, in case the tab that
+set it was closed first, counted from the time the mark holds; it then draws
+the Pass page if it is open, and a tab opened on an older mark removes it. An
 answer to a claim already on its way, in any tab, when one of them is pressed is
 dropped without being stored or shown; a Pass it brought is still the buyer's,
-and a reissue code from its payment gives it a new code. Remove the Pass and
-Forget this browser go further, in every tab: they also drop a reissue code's
-nonce, and an answer on its way to a reissue code or to a check of a Pass code,
-until the server has the request. Stop collecting it here leaves those alone,
-since it is about a checkout, and a reissue it dropped would be spent with
-nothing to show for it.
+and a reissue code from its payment gives it a new code. A checkout still on
+its way then is not followed to Stripe once it answers, and the claim it set
+is dropped (below). Remove the Pass and Forget this browser go further, in
+every tab: they also drop a reissue code's nonce, and an answer on its way to
+a reissue code or to a check of a Pass code, until the server has the request.
+Stop collecting it here leaves those alone, since it is about a checkout, and a
+reissue it dropped would be spent with nothing to show for it.
 
 A page on another subdomain of the same site can set a cookie of the same name
 for the whole site, at a path the browser sends ahead of the server's own, to
@@ -438,12 +438,24 @@ nothing under it.
 
 A checkout's answer also names its order (`"order"`), by what the database holds
 of its claim, a hash that collects nothing: collecting takes the claim itself,
-which the page cannot see. `{"forget": true, "order": …}` drops that claim
+which the page cannot see. The page uses it for a checkout whose answer arrives
+after Remove the Pass, Forget this browser or Stop collecting it here was
+pressed since its request went, in its own tab or another: that forget went too
+soon to see the claim the answer set. The page does not follow such a checkout
+to Stripe, and sends `{"forget": true, "order": …}`, which drops that claim
 alone, as a forget drops each of the browser's, and reads no cookie and clears
 none: another checkout, started later, may have set its own cookie by the time
-the request is answered, and clearing would clear that one. So the cookie of a
-claim dropped this way can stay in the browser, with nothing under it, until
-another checkout replaces it or it runs out.
+the request is answered, and clearing would clear that one. So the cookie of
+a claim dropped this way can stay in the browser, with nothing under it, until
+another checkout replaces it or it runs out. It replaces one itself, as every
+checkout answered later does, whichever started first: a checkout started after
+the forget whose answer came before this one's, because Stripe was slower to
+open the earlier checkout, loses its cookie to it, and a payment on it is still
+the buyer's, by a reissue code from the payment on the receipt. The name is
+kept in memory for that one request and nowhere else, and the drop sets no mark
+and stops nothing in any tab, since it reaches no other claim. A checkout whose
+answer reaches its tab in the moment before that tab hears of a forget pressed
+in another is handled as one answered before it.
 
 An order nobody paid for goes at its deadline, or as soon as Stripe reports
 its checkout expired or its payment failed, or reports it paid with a payment
@@ -944,18 +956,18 @@ not-found view.
   checkout from it has not been collected yet, which may be a payment Stripe is still
   confirming, and keeps Renew; either way it says that starting another checkout, a
   renewal included, stops this browser collecting that one, and the forms drawn again over
-  a checkout left behind (Start again, back from Stripe's cancel link, or a checkout
-  whose answer came after the reader left the page, after they pressed Remove or Forget,
-  or after the Pass held changed meanwhile, in another tab say, which is not followed to
-  Stripe) still offer **Stop collecting it here**. It asks on every visit, with a growing
-  pause while it is open, and sends the collection's nonce (`educhan:pass-nonce`) each
-  time until an answer says nothing more is waiting, so an answer lost on the way is asked
-  for again and brings the same code; refused then, it checks the Pass it holds and says a
-  date that moved on. A code the server hands over is stored before anything else and
-  stays on screen, beside any code it took the place of, until the reader leaves the page;
-  it can be shown again from the held Pass's panel to write down, and a browser that will
-  not store it is told so. A code typed in after it ran out, within its month of grace, is
-  kept as run out, with its date, to renew. A Pass that has run out here can be checked
+  a checkout left behind (Start again, back from Stripe's cancel link, or a checkout whose
+  answer came after the reader left the page or after the Pass held changed meanwhile,
+  in another tab say, which is not followed to Stripe) still offer **Stop collecting
+  it here**. It asks on every visit, with a growing pause while it is open, and sends
+  the collection's nonce (`educhan:pass-nonce`) each time until an answer says nothing
+  more is waiting, so an answer lost on the way is asked for again and brings the same
+  code; refused then, it checks the Pass it holds and says a date that moved on. A
+  code the server hands over is stored before anything else and stays on screen, beside
+  any code it took the place of, until the reader leaves the page; it can be shown
+  again from the held Pass's panel to write down, and a browser that will not store
+  it is told so. A code typed in after it ran out, within its month of grace, is kept
+  as run out, with its date, to renew. A Pass that has run out here can be checked
   again, in case it was renewed elsewhere. A renewal the page collects is checked against
   the Pass it holds (`/api/pass/activate`) before it says that Pass is renewed; one it
   cannot match to the Pass it holds is reported as a renewal of a Pass, by a payment from
@@ -982,11 +994,13 @@ not-found view.
   a Pass the check finds no longer valid is removed, with word that the right reissue
   code, entered again, gets its new code. The box has autocomplete off, and is emptied by
   **Remove the Pass** and **Forget this browser**, pressed in any tab of the browser, and
-  by leaving the page. Those two and **Stop collecting it here** stop any collection under
-  way, drop its nonce and then the browser's claim, and drop unstored an answer to a claim
-  that was already on its way, in every tab of the browser (the `storage` event), so the
-  next person at a shared computer collects nothing. Remove and Forget also drop the
-  reissue code's nonce and its note, any note that a Pass was found gone, and an answer on
+  by leaving the page. Those two and **Stop collecting it here** stop any collection
+  under way, drop its nonce and then the browser's claim, and drop unstored an answer
+  to a claim that was already on its way, in every tab of the browser (the `storage`
+  event), so the next person at a shared computer collects nothing. A checkout still
+  opening when one of them is pressed, in any tab, is not followed to Stripe once it
+  answers, and the claim it set is dropped then. Remove and Forget also drop the reissue
+  code's nonce and its note, any note that a Pass was found gone, and an answer on
   its way to a reissue code or to a check of a code; Stop leaves those alone, since a
   reissue it dropped would be spent for nothing. Nothing collects again until the server
   has that request: **Check now** and **Stop collecting it here** stay off meanwhile, in

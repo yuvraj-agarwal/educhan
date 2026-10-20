@@ -759,7 +759,7 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	// included), Check it again, and a reissue code.
 	for name, guard := range map[string]string{
 		"checkHeldPass":     "if (passForgotten(forgets) || !passStillHeld(held)) {",
-		"submitPass":        "if (passForgotten(forgets) || !passStillHeld(held)) {",
+		"submitPass":        "if (dropped || passForgotten(forgets) || !passStillHeld(held)) {",
 		"redeemPassReissue": "if (passForgotten(forgets)) {",
 	} {
 		body := withoutComments(jsFunction(t, script, name))
@@ -836,9 +836,59 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	// One asked for before the forget and dropped for it gives the button that
 	// waited its focus back, rather than leaving it on the top of the document.
 	if !strings.Contains(withoutComments(jsFunction(t, script, "submitPass")),
-		"if (passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n    button.textContent = label;\n"+
+		"if (dropped || passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n    button.textContent = label;\n"+
 			"    if (passPageShown()) {\n      refocus(button);\n    }\n    return;\n  }") {
 		t.Error("submitPass drops an answer for a forget and leaves focus on the top of the document")
+	}
+	// A checkout still on its way when Remove the Pass, Forget this browser or
+	// Stop collecting it here is pressed, here or in another tab, sets a claim
+	// that forget never saw. It is not followed to Stripe, and that claim is
+	// dropped by the order its answer names: never by a forget of every claim,
+	// which would take a checkout's started after the forget, nor by the
+	// forget's marks and counters, which would stop other tabs collecting what
+	// is rightly theirs. Both counters are noted when the request goes, once no
+	// forget is on its way, so only a forget pressed after it counts.
+	checkout := withoutComments(jsFunction(t, script, "submitPass"))
+	noted := strings.Index(checkout, "const forgets = passCodeForgets;\n  const claims = passForgets;\n")
+	asked := strings.Index(checkout, "res = await api(request.path,")
+	late := strings.Index(checkout, "const dropped = Boolean(res) && kind !== \"activate\" && (claims !== passForgets || passForgotten(forgets));\n"+
+		"  if (dropped) {\n    forgetPassOrder(res.order);\n  }\n")
+	guard := strings.Index(checkout, "if (dropped || passForgotten(forgets) || !passStillHeld(held)) {")
+	assign := strings.Index(checkout, "window.location.assign(res.url);")
+	if noted < 0 || asked < noted || noted < strings.Index(checkout, "await passForgetsSettled();") || late < asked || guard < late || assign < guard ||
+		len(regexp.MustCompile(`\bpassForgets\b`).FindAllString(checkout, -1)) != 2 {
+		t.Error("a checkout answered after a forget pressed since it went keeps the claim it set, or is followed to Stripe")
+	}
+	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
+	named := strings.Index(order, `api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true, order }) })`)
+	if checked := strings.Index(order, "if (typeof order !== \"string\" || !order) {\n    return;\n  }"); checked < 0 || named < checked ||
+		strings.Count(order, "api(") != 1 {
+		t.Error("forgetPassOrder no longer drops the one claim its order names, or asks for a forget of every claim when there is no name")
+	}
+	for _, kept := range []string{"storageSet(", "localStorage", "PASS_FORGET_STORAGE_KEY", "passVisit", "passForgets", "passCodeForgets",
+		"dropPassNonce(", "waitOnPassForget(", "heedPassForget("} {
+		if strings.Contains(order, kept) {
+			t.Errorf("forgetPassOrder does %q: the order's name is sent once and kept nowhere, and the drop stops nothing else", kept)
+		}
+	}
+	if strings.Count(code, "forgetPassOrder(") != 2 || strings.Count(code, ".order") != 1 {
+		t.Error("a checkout's order is read, or forgotten by name, other than where a checkout answered after a forget is dropped")
+	}
+	// What offers Remove the Pass and Forget this browser says so, as a
+	// shared computer's reader needs to hear it.
+	for name, want := range map[string][2]string{
+		"Forget this browser": {"forgetBrowserHTML", "It also stops this browser collecting a Pass bought here that hasn't arrived yet, " +
+			"even one whose checkout was still opening;"},
+		"the held Pass": {"passHeldHTML", "Removing it also stops this browser collecting anything bought here that hasn't " +
+			"arrived yet, even a checkout still opening."},
+	} {
+		if !strings.Contains(words(jsFunction(t, script, want[0])), want[1]) {
+			t.Errorf("%s no longer says a checkout still opening is stopped too (%q)", name, want[1])
+		}
+	}
+	if want := "Either also stops the browser collecting a Pass bought there that hasn't arrived yet, even one whose " +
+		"checkout was still opening, so the next person can't collect it;"; !strings.Contains(words(faqAnswer(t, script, "faq-pass")), want) {
+		t.Errorf("the FAQ's Pass entry no longer says a checkout still opening is stopped too (%q)", want)
 	}
 	submit := withoutComments(submitHandler(t, script))
 	sent := strings.Index(submit, "const sent = pass && passStillHeld(pass) ? pass : null;")
@@ -889,13 +939,14 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 		"submitPass":           submit,
 		"redeemPassReissue":    withoutComments(jsFunction(t, script, "redeemPassReissue")),
 		"followPassForget":     withoutComments(jsFunction(t, script, "followPassForget")),
+		"forgetPassOrder":      withoutComments(jsFunction(t, script, "forgetPassOrder")),
 		"Remove the Pass":      handler(`if (event.target.closest('[data-action="forget-pass"]')) {`),
 		"Stop collecting":      handler(`const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`),
 		"Copy the code":        handler(`if (event.target.closest('[data-action="copy-pass"]')) {`),
 		"Check now":            handler(`if (event.target.closest('[data-action="collect-pass"]')) {`),
 		"another tab's change": withoutComments(jsFunction(t, script, "followPassStorage")),
 	}
-	waits := regexp.MustCompile(`\bawait |\.then\(`)
+	waits := regexp.MustCompile(`\bawait |\.then\(|\.catch\(`)
 	draws := regexp.MustCompile(`\b(drawPass|redrawPass|passFocus|focusPassPanel|showNotice|refocus|renderPass|announce)\(|location\.assign\(`)
 	gates := regexp.MustCompile(`passPageShown\(\)|if \(drawn\) \{`)
 	for name, body := range bodies {
@@ -942,11 +993,13 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 		}
 	}
 	// A checkout opened that the reader is not then sent to, because they
-	// left the page or a forget came first, is one left behind, as if they had
-	// left Stripe without paying: the forms come back over it, and it is not
-	// drawn as a payment Stripe has yet to confirm.
+	// left the page, the Pass held changed or a forget came first, is one left
+	// behind, as if they had left Stripe without paying: the forms come back
+	// over it, and it is not drawn as a payment Stripe has yet to confirm. One
+	// a forget came first for has its claim dropped as well (forgetPassOrder,
+	// pinned in TestPassAnswerAboutAPassThatLeftIsDropped).
 	left := strings.Index(submit, "if (res && kind !== \"activate\") {\n    passStartedAgain = true;\n  }")
-	if guarded := strings.Index(submit, "if (passForgotten(forgets) || !passStillHeld(held)) {"); left < 0 || guarded < left ||
+	if guarded := strings.Index(submit, "if (dropped || passForgotten(forgets) || !passStillHeld(held)) {"); left < 0 || guarded < left ||
 		!strings.Contains(submit, "passStartedAgain = false;\n    window.location.assign(res.url);") {
 		t.Error("a checkout answered after the reader left the Pass page, or after a forget, is drawn as one to collect")
 	}
@@ -1736,7 +1789,7 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		}
 	}
 	for counter, users := range map[string][]string{
-		"passForgets":        {"forgetPassClaim", "collectPass", "followPassForget", "redeemPassReissue", "passForgetsSettled"},
+		"passForgets":        {"forgetPassClaim", "collectPass", "followPassForget", "redeemPassReissue", "submitPass", "passForgetsSettled"},
 		"passCodeForgets":    {"forgetPassClaim", "followPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
 		"passCodeForgetting": {"settlePassForgetting", "passForgotten"},
 	} {

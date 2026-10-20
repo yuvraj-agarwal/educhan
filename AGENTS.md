@@ -500,11 +500,19 @@ needs a browser check before the test changes.
   collecting the one before; Start again and the open-checkout note say so, and that a
   payment made on the earlier one after all is still the buyer's, by a reissue code asked
   for at the support address on Stripe's receipt, and the forms drawn again over a
-  checkout left behind (`passStartedAgain`: Start again, Stripe's cancel link, or a
-  checkout answered after the reader left the Pass page, after they pressed Remove or
-  Forget, or after the Pass held changed meanwhile, in another tab say, which
-  `submitPass` marks before it declines to follow it) keep Stop collecting it here
-  (`passEarlierCheckoutHTML`). Every claim carries the collection's nonce
+  checkout left behind (`passStartedAgain`: Start again, Stripe's cancel link, or
+  a checkout answered after the reader left the Pass page or after the Pass held
+  changed meanwhile, in another tab say, which `submitPass` marks before it declines
+  to follow it) keep Stop collecting it here (`passEarlierCheckoutHTML`). A checkout
+  answered after Remove, Forget or Stop was pressed since its request went, here or
+  in another tab, is not followed either, and the claim its answer set, which that
+  forget went too soon to see, is dropped at once by the name the answer gives its
+  order (`forgetPassOrder`, `{"forget": true, "order"}`): that claim alone, since
+  it sets no mark, moves no counter and clears no cookie, so a checkout started
+  after the forget, in any tab, keeps its claim, unless it was answered first: the
+  dropped checkout's cookie then took its place, as a checkout answered later always
+  does, and a payment on it is the buyer's by a reissue code. The dropped claim's
+  cookie can stay with nothing under it. Every claim carries the collection's nonce
   (`educhan:pass-nonce`, kept until an answer says nothing more is waiting): the server
   derives the code from the claim cookie and the nonce together, so a claim whose answer
   was lost is asked again and handed the same code, and a nonce is worth nothing beside

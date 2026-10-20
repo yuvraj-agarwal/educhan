@@ -1880,13 +1880,14 @@ function forgetBrowserHTML() {
         keep the key, the name and any badge they have, and a post from one of them puts the
         key and the name back, so close them first. To use the Pass again afterwards, show its
         code on the <a href="/pass">Pass</a> page and write it down first. It also stops this
-        browser collecting a Pass bought here that hasn't arrived yet; if you've paid for one,
-        write to the support address on the receipt Stripe emailed you, and you'll be sent a
-        reissue code to collect it with. If you used Copy the code on the Pass page since you
-        last opened educhan in this tab, and have copied nothing in this tab since, it empties
-        the clipboard too, whatever is on it by then, unless another tab removed or replaced
-        the Pass meanwhile. It does so even after a copy in this tab that educhan can't see
-        took anything, such as one from an email box in some browsers. A Pass code copied any
+        browser collecting a Pass bought here that hasn't arrived yet, even one whose
+        checkout was still opening; if you've paid for one, write to the support address
+        on the receipt Stripe emailed you, and you'll be sent a reissue code to collect
+        it with. If you used Copy the code on the Pass page since you last opened educhan
+        in this tab, and have copied nothing in this tab since, it empties the clipboard
+        too, whatever is on it by then, unless another tab removed or replaced the Pass
+        meanwhile. It does so even after a copy in this tab that educhan can't see took
+        anything, such as one from an email box in some browsers. A Pass code copied any
         other way, by hand included, stays there until something else is copied.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
     </div>`;
@@ -2252,8 +2253,10 @@ const passForgetWaits = new Map();
 // came first, or the Pass held changed meanwhile, in another tab say
 // (submitPass): the page then offers to buy again, and goes on collecting
 // underneath until another checkout starts, so a payment that does go through
-// meanwhile is still collected. A checkout gives the browser a new claim, and
-// the earlier one is no longer collected here (passCollectingHTML says so).
+// meanwhile is still collected. One answered after a forget has its claim
+// dropped at once (forgetPassOrder), and leaves nothing to collect. A checkout
+// gives the browser a new claim, and the earlier one is no longer collected
+// here (passCollectingHTML says so).
 let passStartedAgain = false;
 
 // passCodeTyped is what is in the Pass page's code box, a Pass code or a
@@ -2434,6 +2437,34 @@ function forgetPassClaim(emptyBoxes = false) {
     })
   );
   return passForgetting.then(() => request);
+}
+
+// forgetPassOrder drops the claim a checkout's answer has just set, by the
+// name that answer gives its order: the checkout was on its way when Remove
+// the Pass, Forget this browser or Stop collecting it here was pressed, here
+// or in another tab, and the claim it set would otherwise outlive that forget,
+// for the next person at the computer to find being collected (submitPass,
+// which does not follow it to Stripe). That claim and no other: a checkout
+// started after the forget, here or in another tab, may have set its own by
+// now, which a forget of the browser's claims would take, so this reads no
+// cookie and clears none, and the cookie it set can stay, with nothing under
+// it, until another checkout replaces it. The name is sent once, here, and
+// kept nowhere. It needs no mark and stops nothing, since it reaches no other
+// claim. A server that gave no name is asked nothing: a forget without one is
+// a forget of every claim.
+function forgetPassOrder(order) {
+  if (typeof order !== "string" || !order) {
+    return;
+  }
+  api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true, order }) }).catch((err) => {
+    // The claim is still this browser's, unless the server sells no Pass now,
+    // and the Pass page offers to stop collecting it once it is drawn again.
+    if (err.status !== 403 && passPageShown()) {
+      showNotice(
+        "educhan couldn't be reached to drop the checkout that was still opening, so this browser may still be collecting it. Use Forget this browser on the Verify page when you're back online."
+      );
+    }
+  });
 }
 
 // waitOnPassForget notes a forget on its way under its mark's key, one that
@@ -2830,17 +2861,17 @@ function passHeldHTML(info, held, codeOnScreen) {
       <div class="verify-forget">
         <p><strong>On a shared or borrowed computer, remove it before you walk away.</strong>
           Anyone using this browser could post with it. Removing it also stops this browser
-          collecting anything bought here that hasn't arrived yet. If you used Copy the code
-          since you last opened educhan in this tab, and have copied nothing in this tab since,
-          removing it empties the clipboard too, whatever is on it by then, unless another tab
-          removed or replaced the Pass meanwhile. It does so even after a copy in this tab that
-          educhan can't see took anything, such as one from an email box in some browsers. A
-          code copied any other way, by hand included, stays on the clipboard until something
-          else is copied. To use the Pass again afterwards you need its code, so show it and
-          write it down first. If you lose it, write to the support address on the receipt
-          Stripe emailed you, and you'll be sent a reissue code to enter on this page, which
-          gives your Pass a new code; if the payment that bought it was refunded or disputed,
-          that may no longer be possible.</p>
+          collecting anything bought here that hasn't arrived yet, even a checkout still
+          opening. If you used Copy the code since you last opened educhan in this tab,
+          and have copied nothing in this tab since, removing it empties the clipboard too,
+          whatever is on it by then, unless another tab removed or replaced the Pass meanwhile.
+          It does so even after a copy in this tab that educhan can't see took anything, such
+          as one from an email box in some browsers. A code copied any other way, by hand
+          included, stays on the clipboard until something else is copied. To use the Pass
+          again afterwards you need its code, so show it and write it down first. If you lose
+          it, write to the support address on the receipt Stripe emailed you, and you'll be
+          sent a reissue code to enter on this page, which gives your Pass a new code; if the
+          payment that bought it was refunded or disputed, that may no longer be possible.</p>
         <button class="btn danger" type="button" data-action="forget-pass">Remove the Pass from this browser</button>
       </div>
     </div>`;
@@ -3751,9 +3782,10 @@ async function checkHeldPass(button) {
 // (removed, or replaced, here or in another tab) is dropped (passStillHeld),
 // and so is any answer once Remove the Pass or Forget this browser has been
 // pressed (passForgotten), and neither starts a checkout: one it opened is left
-// behind (passStartedAgain). One that arrives after the reader left the Pass
-// page stores what it is still right to store, and draws nothing, and starts no
-// checkout either.
+// behind (passStartedAgain), or, opened before a forget that came after the
+// press, Stop's included, has its claim dropped too (forgetPassOrder). One that
+// arrives after the reader left the Pass page stores what it is still right to
+// store, and draws nothing, and starts no checkout either.
 async function submitPass(form) {
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
@@ -3829,6 +3861,7 @@ async function submitPass(form) {
     return;
   }
   const forgets = passCodeForgets;
+  const claims = passForgets;
   let res = null;
   let failed = null;
   try {
@@ -3843,10 +3876,20 @@ async function submitPass(form) {
   if (res && kind !== "activate") {
     passStartedAgain = true;
   }
+  // A checkout answered after Remove the Pass, Forget this browser or Stop
+  // collecting it here was pressed, here or in another tab, set a claim that
+  // forget never saw: it is not followed to Stripe, and its claim is dropped
+  // at once, by the order its answer names (forgetPassOrder). A Stop leaves
+  // any other answer alone, a code checked or a checkout refused, as it leaves
+  // a reissue code.
+  const dropped = Boolean(res) && kind !== "activate" && (claims !== passForgets || passForgotten(forgets));
+  if (dropped) {
+    forgetPassOrder(res.order);
+  }
   // The forget that dropped it draws the page again once it is settled; until
   // then the button that waited has focus back, if nothing else took it and
   // the reader is still on the Pass page.
-  if (passForgotten(forgets) || !passStillHeld(held)) {
+  if (dropped || passForgotten(forgets) || !passStillHeld(held)) {
     button.disabled = false;
     button.textContent = label;
     if (passPageShown()) {
@@ -4191,15 +4234,15 @@ const FAQ_SECTIONS = [
       <p>On a shared computer, remove the Pass on the <a href="/pass">Pass</a> page, or use
         <strong>Forget this browser</strong> on the <a href="/verify#forget-browser">Verify</a>
         page, before you leave. Either also stops the browser collecting a Pass bought there
-        that hasn't arrived yet, so the next person can't collect it; if you've paid for one,
-        write to the support address on the receipt, and you'll be sent a reissue code to
-        collect it with. If you used <strong>Copy the code</strong> since you last opened
-        educhan in the same tab, and have copied nothing in that tab since, either also
-        empties the clipboard, whatever is on it by then, unless another tab removed or
-        replaced the Pass meanwhile. They do so even after a copy in that tab that educhan
-        can't see took anything, such as one from an email box in some browsers. A code
-        copied any other way, by hand included, stays there until something else is
-        copied.</p>`,
+        that hasn't arrived yet, even one whose checkout was still opening, so the next
+        person can't collect it; if you've paid for one, write to the support address on the
+        receipt, and you'll be sent a reissue code to collect it with. If you used
+        <strong>Copy the code</strong> since you last opened educhan in the same tab, and have
+        copied nothing in that tab since, either also empties the clipboard, whatever is on
+        it by then, unless another tab removed or replaced the Pass meanwhile. They do so even
+        after a copy in that tab that educhan can't see took anything, such as one from an
+        email box in some browsers. A code copied any other way, by hand included, stays there
+        until something else is copied.</p>`,
   },
   {
     id: "faq-tripcodes",
