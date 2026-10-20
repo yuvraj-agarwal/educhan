@@ -290,6 +290,7 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"secret without stripe":          {"EDUCHAN_STRIPE_SECRET_KEY": "", "EDUCHAN_STRIPE_WEBHOOK_SECRET": "", "EDUCHAN_STRIPE_PRICE_ID": "", "EDUCHAN_PUBLIC_URL": ""},
 		"stripe without secret":          {"EDUCHAN_PASS_SECRET": ""},
 		"short secret":                   {"EDUCHAN_PASS_SECRET": "short"},
+		"secret of 31 characters":        {"EDUCHAN_PASS_SECRET": strings.Repeat("x", 31)},
 		"webhook secret shape":           {"EDUCHAN_STRIPE_WEBHOOK_SECRET": "sk_x"},
 		"publishable key":                {"EDUCHAN_STRIPE_SECRET_KEY": "pk_live_x"},
 		"key shape":                      {"EDUCHAN_STRIPE_SECRET_KEY": "whsec_x"},
@@ -345,6 +346,15 @@ func TestPassConfigFromEnv(t *testing.T) {
 	if _, err := passConfigFromEnv(); err != nil {
 		t.Fatalf("restricted key: %v", err)
 	}
+
+	// The secret is at least 32 characters, as the README and .env.example
+	// say, and 32 is enough.
+	env["EDUCHAN_PASS_SECRET"] = strings.Repeat("x", 32)
+	set(t, env)
+	if cfg, err := passConfigFromEnv(); err != nil || cfg.Secret != env["EDUCHAN_PASS_SECRET"] {
+		t.Fatalf("a secret of 32 characters: %+v, %v", cfg, err)
+	}
+	env["EDUCHAN_PASS_SECRET"] = testPassSecret
 
 	// The term may be up to a hundred years, and sales open or paused, in
 	// any case.

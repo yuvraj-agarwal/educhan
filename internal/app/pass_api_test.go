@@ -977,10 +977,19 @@ func TestPassRefundsAndDisputes(t *testing.T) {
 		t.Fatalf("a disputed Pass still works: status %d", status)
 	}
 
-	// Refunded after paying and before collecting: nothing to collect.
+	// Refunded after paying and before collecting: nothing to collect. The
+	// order goes with the refund, so the browser is told at once that
+	// nothing waits, and the refunded payment's hash is not kept beside a
+	// claim until a claim from that browser, which may never come.
 	session := p.checkout("")
 	p.paid(session, "pi_uncollected")
 	p.webhook(stripeChargeRefunded, map[string]any{"object": "charge", "payment_intent": "pi_uncollected", "refunded": true})
+	if p.reportsClaim() {
+		t.Fatal("the browser is still told to collect a refunded order")
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("the refunded order was kept: %d rows", n)
+	}
 	if status, _ := p.claim(); status != http.StatusBadRequest {
 		t.Fatalf("a refunded order could still be collected: status %d", status)
 	}
@@ -3251,14 +3260,22 @@ func TestPassLogsAreBare(t *testing.T) {
 		}
 	}
 
-	// A slow payment held, then paid, collected, and delivered again.
+	// A slow payment held, then paid, collected, asked again with the same
+	// nonce as after a lost answer, which logs no second issue, and delivered
+	// again.
 	slow := p.checkout("")
 	deliver(stripeCheckoutCompleted, session(slow, "pi_logs_slow", "unpaid"))
 	deliver(stripeCheckoutAsyncSuccess, session(slow, "pi_logs_slow", "paid"))
-	_, issued := p.claim()
+	nonce := p.collectNonce()
+	_, issued := p.claimWith(nonce)
 	if issued.Status != "issued" {
 		t.Fatalf("collecting the slow payment: %+v", issued)
 	}
+	status, again := p.claimWith(nonce)
+	if again.Status != "issued" || again.Pass != issued.Pass {
+		t.Fatalf("collecting the slow payment asked again: %+v", again)
+	}
+	p.keepNonce(status, again)
 	deliver(stripeCheckoutCompleted, session(slow, "pi_logs_slow", "paid"))
 	// A slow payment that failed, and a checkout left until Stripe closed it.
 	failed := p.checkout("")
@@ -3275,9 +3292,14 @@ func TestPassLogsAreBare(t *testing.T) {
 	// refunded renewal and a disputed purchase.
 	p.renew(issued.Pass, "pi_logs_renewal")
 	_, _, reissueCode := p.reissueCode("mod-key", "pi_logs_slow")
-	_, reissued := p.otherBrowser().redeem(reissueCode)
+	elsewhere := p.otherBrowser()
+	nonce = elsewhere.collectNonce()
+	_, reissued := elsewhere.redeemWith(reissueCode, nonce)
 	if reissued.Status != "issued" {
 		t.Fatalf("redeeming the reissue code: %+v", reissued)
+	}
+	if _, again := elsewhere.redeemWith(reissueCode, nonce); again.Status != "issued" || again.Pass != reissued.Pass {
+		t.Fatalf("redeeming the reissue code asked again: %+v", again)
 	}
 	p.paid(p.otherBrowser().checkout(""), "pi_logs_uncollected")
 	deliver(stripeChargeRefunded, charge("pi_logs_uncollected"))
