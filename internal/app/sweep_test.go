@@ -7,14 +7,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
 
@@ -249,6 +252,113 @@ func TestSweepStopsWhenCancelled(t *testing.T) {
 	}
 	if status := h.threadStatus("halted", thread.ThreadNo); status != http.StatusOK {
 		t.Errorf("a cancelled sweep deleted the thread anyway: GET answers %d", status)
+	}
+}
+
+// A sweep cancelled while a statement of RewriteCredentials runs has stopped
+// that statement on the server by the time it returns. The process exits as
+// soon as it does, and PostgreSQL does not notice a closed socket until the
+// statement ends, so a cancel left to be sent afterwards never comes: a VACUUM
+// FULL runs on, holding its table against every read, and commits, and a
+// rewrite holds its lock to its end. Here the rewrite's statement is held at
+// the gate with the table locked. The test stands in for the exit: once the
+// rewrite has returned, its dials fail, and a dial started before then is held
+// back for longer than the return takes, so that what pgx's default does — a
+// cancel request sent from a goroutine after the statement has given up —
+// never reaches the server.
+func TestCancelledSweepStopsItsStatementOnTheServer(t *testing.T) {
+	h := testServer(t, nil)
+	h.issueDirectly(3)
+	gate := newRewriteGate(h)
+
+	const sweeper = "cancelled-sweep"
+	var slow, exited atomic.Bool
+	config := h.app.pool.Config()
+	config.ConnConfig.RuntimeParams["application_name"] = sweeper
+	var dialer net.Dialer
+	config.ConnConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if slow.Load() {
+			timer := time.NewTimer(500 * time.Millisecond)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return nil, ctx.Err()
+			}
+		}
+		if exited.Load() {
+			return nil, errors.New("the sweeper has exited")
+		}
+		return dialer.DialContext(ctx, network, addr)
+	}
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatalf("sweeper's pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	store := NewStore(pool)
+
+	backends := func() int {
+		var n int
+		if err := h.app.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE application_name = $1`, sweeper).Scan(&n); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return n
+	}
+
+	gate.set(false)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := store.RewriteCredentials(ctx)
+		done <- err
+	}()
+	waitUntil(t, "the rewrite holds the credentials table", gate.lock("ExclusiveLock", true))
+	waitUntil(t, "the rewrite's statement is at the gate", func() bool {
+		var n int
+		if err := h.app.pool.QueryRow(context.Background(), `
+			SELECT count(*) FROM pg_stat_activity
+			WHERE application_name = $1 AND state = 'active' AND query LIKE '%WITH copy%'`,
+			sweeper).Scan(&n); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return n > 0
+	})
+
+	slow.Store(true)
+	cancel()
+	err = await(t, "the cancelled rewrite", done)
+	exited.Store(true)
+	if err == nil {
+		t.Fatal("a cancelled rewrite reported success")
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("a cancelled rewrite says %q, which does not say it was cancelled", err)
+	}
+
+	// The backend ends once it reads what the sweeper sent last, which it
+	// can only do once the statement has stopped. The gate stays shut, so
+	// nothing else would stop it.
+	deadline := time.Now().Add(3 * time.Second)
+	for backends() > 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the cancelled rewrite's statement is still running on the server after the sweep "+
+				"returned (%v), holding the credentials table: %t", err, gate.lock("ExclusiveLock", true)())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if gate.lock("ExclusiveLock", true)() {
+		t.Error("the credentials table is still locked after the cancelled rewrite ended")
+	}
+	// And it rolled back whole: the rows are those issued, each still under
+	// its own transaction id, for the next sweep to rewrite.
+	if n := h.countRows("verification_credentials"); n != 3 {
+		t.Errorf("%d credential rows after a cancelled rewrite, want the 3 issued", n)
+	}
+	if n := h.credentialXmins(nil); n != 3 {
+		t.Errorf("the credentials carry %d transaction ids after a cancelled rewrite, want their own 3", n)
 	}
 }
 

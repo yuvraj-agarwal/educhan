@@ -78,11 +78,15 @@ func run(args []string, logs io.Writer) error {
 
 // runSweep makes one pass over the archive. SIGTERM, which a Cloud Run Job
 // receives when it overruns its task timeout, stops it at the next batch or
-// the next file, or cancels the credential rewrite or the vacuum after it. A
-// batch commits or rolls back whole, and its files' keys are queued in the
-// same transaction, so a file the run did not get to is removed by the next
-// one; a cancelled rewrite or vacuum rolls back whole too, and the next run
-// does it again.
+// the next file, or has PostgreSQL cancel the credential rewrite or the vacuum
+// after it before the sweep returns (Store.RewriteCredentials), so that
+// neither runs on, holding its table, after the process has exited. A batch
+// commits or rolls back whole, and its files' keys are queued in the same
+// transaction, so a file the run did not get to is removed by the next one; a
+// cancelled rewrite or vacuum rolls back whole too, and the next run does it
+// again. (A vacuum that had finished when the cancel reached it has committed,
+// and that table is done.) The deferred Close in run waits for the pool's
+// connections to send their own cancel requests.
 func runSweep(application *app.App) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

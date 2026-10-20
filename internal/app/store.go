@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -1292,35 +1293,33 @@ const vacuumProbeTable = "vacuum_probe"
 // dates, and TestIssuanceLeavesGapsAmongThePostsTransactionIDs holds it.
 //
 // It works on a connection of its own rather than one from the pool, for what
-// the pool's connections should not carry: the lock timeout, and a handler for
-// the warnings with which VACUUM reports a table it skipped. The connection
-// asks for those warnings itself (client_min_messages), because DATABASE_URL
-// or a role's or the database's default can turn them off, and without the
-// warning a table another session held looks like one the role may not
-// vacuum (vacuumFull).
-func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
+// the pool's connections should not carry: the lock timeout, a handler for
+// the warnings with which VACUUM reports a table it skipped, and a
+// cancellation that stops the statement on the server before it returns
+// (sweepConnection). The connection asks for those warnings itself
+// (client_min_messages), because DATABASE_URL or a role's or the database's
+// default can turn them off, and without the warning a table another session
+// held looks like one the role may not vacuum (vacuumFull).
+func (s *Store) RewriteCredentials(ctx context.Context) (rewritten int, err error) {
+	// A statement the cancellation stopped fails with PostgreSQL's
+	// "canceling statement due to user request"; the error says why as well.
+	defer func() {
+		if err != nil && ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+			err = fmt.Errorf("%w: %w", ctx.Err(), err)
+		}
+	}()
 	notices := &noticeLog{}
-	config := s.pool.Config().ConnConfig
-	if config.RuntimeParams == nil {
-		config.RuntimeParams = map[string]string{}
-	}
-	config.RuntimeParams["lock_timeout"] = verificationLockTimeout
-	config.RuntimeParams["client_min_messages"] = "warning"
-	config.OnNotice = notices.add
-	conn, err := pgx.ConnectConfig(ctx, config)
+	conn, err := s.sweepConnection(ctx, notices)
 	if err != nil {
 		return 0, fmt.Errorf("connect: %w", err)
 	}
-	defer conn.Close(context.WithoutCancel(ctx))
+	defer closeSweepConnection(ctx, conn)
 
 	if _, err := conn.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
 		return 0, fmt.Errorf("delete expired codes: %w", err)
 	}
 
-	var (
-		rewritten int
-		rewrite   uint32 // the rewriting transaction's id
-	)
+	var rewrite uint32 // the rewriting transaction's id
 	err = pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
 		if _, err := tx.Exec(ctx, `LOCK TABLE verification_credentials IN EXCLUSIVE MODE`); err != nil {
 			return fmt.Errorf("lock credentials: %w", err)
@@ -1352,6 +1351,57 @@ func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 		return rewritten, err
 	}
 	return rewritten, s.vacuumVerificationTables(ctx, conn, notices, rewrite)
+}
+
+// cancelGrace is how long a statement on RewriteCredentials's connection
+// waits, once the sweep is cancelled, for PostgreSQL to answer the cancel
+// request, and then how long the sweep waits for pgx to finish with the
+// connection if it did not.
+const cancelGrace = 3 * time.Second
+
+// sweepConnection opens the connection RewriteCredentials works on, set up as
+// that function says, with notices collecting the codes of the warnings it is
+// sent.
+//
+// A sweep is cancelled by SIGTERM, which a Job past its task timeout gets, or
+// by Ctrl-C on make sweep, and the process exits as soon as the sweep returns.
+// pgx's default answer to a cancelled context is to give up on the socket at
+// once and send PostgreSQL's cancel request from a goroutine, which the exit
+// usually comes before; and PostgreSQL does not notice a closed socket until
+// the statement on it ends. So a VACUUM FULL in flight would run on, holding
+// its table against every read, and commit, and a rewrite would hold its lock
+// to the end of its statement. Here the cancel request goes first, and the
+// statement waits up to cancelGrace for PostgreSQL's answer, which is the
+// statement stopping. (The pool's connections still give up at once, but
+// closing the pool waits for their cancel requests to go out, and the sweeper
+// closes it before it exits.)
+func (s *Store) sweepConnection(ctx context.Context, notices *noticeLog) (*pgx.Conn, error) {
+	config := s.pool.Config().ConnConfig
+	if config.RuntimeParams == nil {
+		config.RuntimeParams = map[string]string{}
+	}
+	config.RuntimeParams["lock_timeout"] = verificationLockTimeout
+	config.RuntimeParams["client_min_messages"] = "warning"
+	config.OnNotice = notices.add
+	config.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: cancelGrace}
+	}
+	return pgx.ConnectConfig(ctx, config)
+}
+
+// closeSweepConnection closes RewriteCredentials's connection. When
+// PostgreSQL did not answer a cancel request within cancelGrace, pgx gave up
+// on the connection and is sending another, and then closing it, from a
+// goroutine, so this waits up to cancelGrace for that to finish before the
+// sweep returns and the process exits.
+func closeSweepConnection(ctx context.Context, conn *pgx.Conn) {
+	_ = conn.Close(context.WithoutCancel(ctx))
+	timer := time.NewTimer(cancelGrace)
+	defer timer.Stop()
+	select {
+	case <-conn.PgConn().CleanupDone():
+	case <-timer.C:
+	}
 }
 
 // vacuumVerificationTables runs VACUUM FULL on each verification table once it

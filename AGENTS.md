@@ -805,11 +805,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `ctid` follows issuance order. `RewriteCredentials` (`store.go`), the sweep's last
     step, works on a connection of its own, with `lock_timeout` at five seconds,
     `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
-    the database's default can hide the `55P03` below), and a handler that collects
-    notices. First it deletes the codes that expired unconfirmed, which a request
-    prunes too, but requests are few at night: an abandoned code's row keeps the time
-    it was asked for, to the microsecond, under the address's email hash, which for
-    an address that already holds a credential (a second browser's request, say) is
+    the database's default can hide the `55P03` below), a handler that collects
+    notices, and pgx's `CancelRequestContextWatcherHandler`, so that a cancelled
+    sweep (SIGTERM, Ctrl-C) has PostgreSQL stop the statement in flight before it
+    returns and the process exits: with pgx's default the cancel request goes out
+    from a goroutine the exit usually beats, and PostgreSQL does not notice a closed
+    socket until the statement ends, so a `VACUUM FULL` ran on, holding its table,
+    and committed (`sweepConnection`, `TestCancelledSweepStopsItsStatementOnTheServer`).
+    First it deletes the codes that expired unconfirmed, which a request prunes too,
+    but requests are few at night: an abandoned code's row keeps the time it was
+    asked for, to the microsecond, under the address's email hash, which for an
+    address that already holds a credential (a second browser's request, say) is
     the credential's, and says it was issued before then. It does so in a statement
     of its own, before the rewrite's transaction: deleted by an older transaction
     than the rewrite, the rows leave the file with the vacuum below, which is
