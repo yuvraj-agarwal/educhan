@@ -589,15 +589,19 @@ check before the test changes.
   step goes, drawn again as the panel with a notice if it is on screen
   (`codeSpentElsewhere`; `CODE_SPENT_ELSEWHERE` says an address was verified in another
   tab and the code here no longer works, never that the one is why). A confirmation
-  already on its way, its form held, may have reached the server first and verified this
-  tab's address, so it is left to its answer, the step only marked (`spentElsewhere`): a
-  success draws the panel for the badge it earned, and a refusal of any kind puts the
-  step away then, with the notice where its form is still on screen. A code request
-  still on its way draws its code step when answered, the cookie its answer sets holding
-  the browser's verification from then on (`followCredentialStorage`, by the `storage`
-  event, `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked,
-  idle or with its badged post on its way, refuses its next press once, saying the badge
-  has gone and that pressing again posts without it, under the same ID as the reader's
+  already on its way, counted on the step (`confirming`) from before it is sent until it
+  is answered, whether its form is still on screen or `/verify` has been drawn again
+  over it, may have reached the server first and verified this tab's address, so it is
+  left to its answer, the step only marked (`spentElsewhere`): a success draws the panel
+  for the badge it earned, over its own form or over the code step or panel that
+  `/verify` drawn again meanwhile shows, never over an address step, which may be half
+  filled in; and a refusal of any kind puts the step away then, with the notice wherever
+  a code step is on screen. A code request still on its way draws its code step when
+  answered, the cookie its answer sets holding the browser's verification from then on
+  (`followCredentialStorage`, by the `storage` event,
+  `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
+  with its badged post on its way, refuses its next press once, saying the badge has
+  gone and that pressing again posts without it, under the same ID as the reader's
   unbadged posts in a reply's thread while the poster key is the one it had
   (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go

@@ -2201,30 +2201,31 @@ const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, and the co
 
 // codeSpentElsewhere is a tab's answer to a badge newly verified in another:
 // the browser has one verification in progress at a time, held by its cookie,
-// so a code step this tab drew and has not confirmed is for a code that
-// verified the badge there or was replaced by the one that did, and the server
-// takes it no more. The step goes, so /verify next shows the badge panel, and
-// is drawn again now, with a word on why, when the code step is on screen. A
-// confirmation from this tab already on its way, its form held, is left to its
-// answer: it may have reached the server before the other tab's verification
-// and verified this tab's address, so the step is only marked (spentElsewhere)
-// and submitVerification settles it. A success stores the badge it earned and,
-// while its form is on screen, draws the panel for it; a refusal of any kind
-// comes back here, the form no longer held, and the step goes as above. A code
-// request from this tab still on its way is not a code step yet, and draws its
-// own when answered: the cookie that answer sets holds the browser's
-// verification from then on, and its code is the one asked for.
+// so a code step this tab drew, with no confirmation of it on its way, is for a
+// code that verified the badge there or was replaced by the one that did, and
+// the server takes it no more. The step goes, so /verify next shows the badge
+// panel, and is drawn again now, with a word on why, when a code step is on
+// screen. A confirmation of the step already on its way, counted on the step
+// (confirming) whether its form is still on screen or /verify has been drawn
+// again over it since, may have reached the server before the other tab's
+// verification and verified this tab's address, so it is left to its answer:
+// the step is only marked (spentElsewhere), and submitVerification settles it.
+// A success stores the badge it earned and draws the panel for it wherever
+// /verify shows a code step or the panel; a refusal of any kind comes back
+// here, and the step goes as above once no other confirmation of it is on its
+// way. A code request from this tab still on its way is not a code step yet,
+// and draws its own when answered: the cookie that answer sets holds the
+// browser's verification from then on, and its code is the one asked for.
 function codeSpentElsewhere() {
   if (verifyStep.step !== "code") {
     return;
   }
-  const confirm = el.main.querySelector('form[data-verify="confirm"]');
-  if (confirm && heldForms.has(confirm)) {
+  if (verifyStep.confirming > 0) {
     verifyStep.spentElsewhere = true;
     return;
   }
   verifyStep = { step: "email", label: "" };
-  if (state.route.view === "verify" && ageStatus() === "ok" && confirm) {
+  if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) {
     renderVerify(state.route).then((drawn) => {
       if (drawn) {
         showNotice(CODE_SPENT_ELSEWHERE);
@@ -4838,10 +4839,20 @@ async function submitVerification(form) {
     }
     // The one time the credential is ever handed out. It is kept here rather
     // than set as a cookie, so nothing sends it until a post asks for a badge.
-    const issued = await api("/api/verify/confirm", {
-      method: "POST",
-      body: JSON.stringify({ code: String(data.get("code") || "") }),
-    });
+    // Until it is answered it is counted on the code step it confirms, so
+    // another tab's verification meanwhile leaves the step to this answer
+    // (codeSpentElsewhere), even once /verify is drawn again over this form.
+    const step = verifyStep;
+    step.confirming = (step.confirming || 0) + 1;
+    let issued;
+    try {
+      issued = await api("/api/verify/confirm", {
+        method: "POST",
+        body: JSON.stringify({ code: String(data.get("code") || "") }),
+      });
+    } finally {
+      step.confirming -= 1;
+    }
     if (forgotten()) {
       return;
     }
@@ -4854,17 +4865,31 @@ async function submitVerification(form) {
     // replaced, in this tab or in another (followCredentialStorage).
     state.verification.badge = readBadge();
     verifyStep = { step: "email", label: "" };
-    if (!onScreen()) {
-      return;
+    if (onScreen()) {
+      await renderVerify(route);
+    } else if (
+      state.route.view === "verify" &&
+      ageStatus() === "ok" &&
+      el.main.querySelector('form[data-verify="confirm"], [data-action="forget-verification"]')
+    ) {
+      // /verify drawn again while this was on its way, the reader back from
+      // another page say, shows what this answer has overtaken: a code step,
+      // for this code, now spent, or for one asked for since, whose
+      // verification in progress ended when this answer, coming after that
+      // request's, cleared the cookie; or the panel, for a badge this one
+      // replaces. It is drawn again for the badge just earned, as this form
+      // would have been. The address step, which the reader may be filling
+      // in, is left as it is.
+      renderVerify(state.route);
     }
-    await renderVerify(route);
   } catch (err) {
     const shown = onScreen();
     release(shown);
     button.textContent = label;
     // A confirmation another tab's verification found on its way: refused,
     // whatever the refusal said, its step goes now as it would have then
-    // (codeSpentElsewhere), on screen or not.
+    // (codeSpentElsewhere), on screen or not, once no other confirmation of it
+    // is on its way.
     if (verifyStep.spentElsewhere) {
       codeSpentElsewhere();
       return;

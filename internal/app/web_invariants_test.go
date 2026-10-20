@@ -108,6 +108,11 @@ func jsBraced(t *testing.T, src, opener string) string {
 
 // inOrder fails the test unless every one of steps occurs in src, each after
 // the one before it.
+// verifyOvertaken is how a confirmation answered after its form went asks
+// whether /verify, drawn again meanwhile, shows what the answer has overtaken.
+const verifyOvertaken = `else if ( state.route.view === "verify" && ageStatus() === "ok" && ` +
+	`el.main.querySelector('form[data-verify="confirm"], [data-action="forget-verification"]') ) { `
+
 func inOrder(t *testing.T, what, src string, steps ...string) {
 	t.Helper()
 	at := 0
@@ -970,14 +975,16 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	// carried it while it was held does not show the post again. A badge
 	// confirmed is offered from then on, /verify on screen or not, so a page
 	// the reader goes to while /verify is being drawn again, which that
-	// drawing then leaves alone, has it too.
+	// drawing then leaves alone, has it too. Its form gone, the confirmation
+	// draws /verify again only where /verify, drawn again over it, shows a code
+	// step or the badge panel (TestForgettingTheBadgeReachesEveryTab).
 	inOrder(t, "the submit handler", submit, "() => onScreen() && !forgotten(), );", "form.reset();",
 		"release(false); if (!onScreen()) { return; } await navigate(")
 	inOrder(t, "submitVerification", verify,
 		"onScreen, );", "if (!onScreen()) { return; }", "el.main.innerHTML = verifyViewHTML();",
 		`await api("/api/verify/confirm"`,
 		`storeCredential(issued.credential); state.verification.badge = readBadge(); verifyStep = { step: "email", label: "" }; `+
-			"if (!onScreen()) { return; } await renderVerify(route);",
+			"if (onScreen()) { await renderVerify(route); } "+verifyOvertaken+"renderVerify(state.route); } } catch (err) {",
 	)
 	// And that drawing's GET /api/verify failing withdraws neither the badge
 	// nor the feature: a failed request keeps the feature as the last answer
@@ -1134,7 +1141,7 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		"const release = holdForm(form);",
 		"onScreen, ); if (forgotten()) { return; } verifyStep = { step: \"code\"",
 		`await api("/api/verify/confirm", { method: "POST", body: JSON.stringify({ code: String(data.get("code") || "") }), }); `+
-			"if (forgotten()) { return; } storeCredential(issued.credential);",
+			"} finally { step.confirming -= 1; } if (forgotten()) { return; } storeCredential(issued.credential);",
 	)
 	if strings.Count(verify, "verifyStep =") != 2 || strings.Count(verify, "storeCredential(") != 1 || strings.Count(verify, "readBadge(") != 1 {
 		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
@@ -1283,14 +1290,16 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 // verified there. The browser has one verification in progress, so that badge
 // spent or replaced the code a code step with no confirmation on its way asks
 // for: the step goes, and is drawn again, saying so, if it is on screen
-// (codeSpentElsewhere). A confirmation on its way, its form held, may have
-// reached the server first and verified this tab's address: it is left to its
-// answer, the step only marked, and a refusal of it, whatever it says, puts the
-// step away then, on screen or not (submitVerification), while a success draws
-// the badge it earned. The notice says another tab verified an address and the
-// code here no longer works, and not that the one is why. A code request still
-// on its way is not a code step yet, and keeps its own. It acts on the
-// credential's key, and on storage cleared, and on nothing else.
+// (codeSpentElsewhere). A confirmation on its way, counted on the step whether
+// its form is still on screen or /verify has been drawn again over it, may
+// have reached the server first and verified this tab's address: it is left
+// to its answer, the step only marked, and a refusal of it, whatever it says,
+// puts the step away then, on screen or not (submitVerification), while a
+// success draws the badge it earned wherever /verify shows the step. The
+// notice says another tab verified an address and the code here no longer
+// works, and not that the one is why. A code request still on its way is not
+// a code step yet, and keeps its own. It acts on the credential's key, and on
+// storage cleared, and on nothing else.
 func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1318,12 +1327,11 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	}
 	spent := squash(withoutComments(jsFunction(t, script, "codeSpentElsewhere")))
 	if spent != `function codeSpentElsewhere() { if (verifyStep.step !== "code") { return; } `+
-		`const confirm = el.main.querySelector('form[data-verify="confirm"]'); `+
-		`if (confirm && heldForms.has(confirm)) { verifyStep.spentElsewhere = true; return; } `+
+		`if (verifyStep.confirming > 0) { verifyStep.spentElsewhere = true; return; } `+
 		`verifyStep = { step: "email", label: "" }; `+
-		`if (state.route.view === "verify" && ageStatus() === "ok" && confirm) { `+
+		`if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) { `+
 		`renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(CODE_SPENT_ELSEWHERE); } }); } }` ||
-		strings.Count(code, "codeSpentElsewhere(") != 3 || strings.Count(code, `data-verify="confirm"`) != 2 {
+		strings.Count(code, "codeSpentElsewhere(") != 3 || strings.Count(code, `data-verify="confirm"`) != 3 {
 		t.Errorf("a code step drawn before another tab verified a badge is no longer put away, or drawn again saying so "+
 			"only while on screen, or a confirmation of it on its way is no longer left to its answer, or the step is "+
 			"put away from somewhere besides followCredentialStorage and that confirmation's refusal: %s", spent)
@@ -1337,6 +1345,23 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 		"} catch (err) { const shown = onScreen(); release(shown); button.textContent = label; "+
 			"if (verifyStep.spentElsewhere) { codeSpentElsewhere(); return; } if (!shown) { return; }",
 	)
+	// What tells codeSpentElsewhere a confirmation is on its way is a count on
+	// the step it confirms, not its form, which /verify drawn again since, the
+	// reader back from another page say, has taken off the screen: it goes up
+	// before the request is sent and down when it is answered, however that
+	// ends. A success with its form gone draws /verify again where that
+	// drawing shows what the success has overtaken, a code step or the panel
+	// for another badge, as the form, had it stayed, would have been; an
+	// address step, which may be half filled in, is left as it is.
+	inOrder(t, "submitVerification", verify,
+		`const step = verifyStep; step.confirming = (step.confirming || 0) + 1; let issued; try { issued = await api("/api/verify/confirm",`,
+		"} finally { step.confirming -= 1; } if (forgotten()) { return; }",
+		`verifyStep = { step: "email", label: "" }; if (onScreen()) { await renderVerify(route); } `+verifyOvertaken+"renderVerify(state.route); }",
+	)
+	if strings.Count(code, ".confirming") != 4 {
+		t.Error("a confirmation on its way is counted somewhere besides submitVerification, or the count is read " +
+			"somewhere besides codeSpentElsewhere")
+	}
 	if strings.Count(code, "spentElsewhere") != 2 || strings.Count(code, "verifyStep.spentElsewhere") != 2 {
 		t.Error("a code step is marked as left to its confirmation somewhere besides codeSpentElsewhere, or the mark " +
 			"is read somewhere besides that confirmation's refusal")
@@ -1346,15 +1371,15 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 		t.Errorf("CODE_SPENT_ELSEWHERE = %s, want it to say an address was verified in another tab and the code no "+
 			"longer works, and not that the one is why: a confirmation from the tab may have spent the code itself", got)
 	}
-	// What followCredentialStorage looks for is the badge panel's own button,
-	// and only the panel draws it; a pending code step is drawn whatever badge
-	// is held.
+	// What followCredentialStorage, and a confirmation answered after its form
+	// went, look for is the badge panel's own button, and only the panel draws
+	// it; a pending code step is drawn whatever badge is held.
 	view := squash(withoutComments(jsFunction(t, script, "verifyViewHTML")))
 	panel := `if (v.badge && !verifyStep.replacing && verifyStep.step !== "code") {`
 	if !strings.Contains(view, panel) || strings.Count(view, `data-action="forget-verification"`) != 1 ||
 		strings.Index(view, `data-action="forget-verification"`) < strings.Index(view, panel) ||
 		strings.Index(view, `data-action="forget-verification"`) > strings.Index(view, `if (verifyStep.step === "code") {`) ||
-		strings.Count(code, `data-action="forget-verification"`) != 3 {
+		strings.Count(code, `data-action="forget-verification"`) != 4 {
 		t.Error("the badge panel is no longer the one part of /verify that draws Forget this credential, or a pending code " +
 			"step is put away for the panel when a badge is held")
 	}
@@ -1729,14 +1754,16 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	}
 	// /verify is drawn for the route it was asked for, as that route was before
 	// the request: by render, by the confirmation, and after a forget, pressed
-	// here or heard from another tab, a badge another tab took away, or a code
-	// step another tab's verification spent, only while /verify is the page
+	// here or heard from another tab, a badge another tab took away, a code
+	// step another tab's verification spent, or a confirmation answered after
+	// /verify was drawn again over its form, only while /verify is the page
 	// being drawn, whose notice is said only where it drew.
 	code := withoutComments(script)
 	forgot := "renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(BROWSER_FORGOTTEN); } });"
 	spent := "renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(CODE_SPENT_ELSEWHERE); } });"
-	if squashed := squash(code); strings.Count(code, "renderVerify(") != 8 || strings.Count(code, "await renderVerify(route);") != 2 ||
-		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok" && confirm) { `+spent+" }") != 1 ||
+	codeStep := `if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) { `
+	if squashed := squash(code); strings.Count(code, "renderVerify(") != 9 || strings.Count(code, "await renderVerify(route);") != 2 ||
+		strings.Count(squashed, codeStep+spent+" }") != 1 || strings.Count(squashed, verifyOvertaken+"renderVerify(state.route); }") != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { renderVerify(state.route); }`) != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify") { `+forgot+" }") != 1 ||
 		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok") { `+forgot+" }") != 1 ||
