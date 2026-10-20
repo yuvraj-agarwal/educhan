@@ -83,8 +83,8 @@ func run(args []string, logs io.Writer) error {
 	return fatal(serve(cfg, application, log))
 }
 
-// fatal logs err, when there is one, as the process's last word, and returns
-// it.
+// fatal logs err, when there is one, before the application is closed, and
+// returns it.
 func fatal(err error) error {
 	if err != nil {
 		slog.Error("fatal", "error", err)

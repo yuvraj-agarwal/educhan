@@ -813,12 +813,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   otherwise delete nothing and report success (`TestSweepAgainstAnotherMediaStoreFails`).
   That is why the sweep checks with `Get` before `Delete` rather than going through
   `removeBlobs`, whose `Delete` treats a missing key as done, as a moderator's deletion
-  should. A cancelled sweep stops between files, never between a file and its key. Last,
-  whatever happened to the threads and the files, `PruneSpentCaptchas` deletes the spent
-  captcha answers past their day (`captcha_spent`, `0013`), the ones no later spend
-  pruned: after a batch that failed, as a broken queue fails the batch of an image thread
-  that is due (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails`), a removal the
-  store refused (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not hold
+  should. A cancelled sweep stops between files, never between a file and its key, and a
+  stop while it looks up the next key ends the lookup there, with nothing in hand
+  (`TestSweepStoppedLookingForAFileStopsThere`). Last, whatever happened to the threads
+  and the files, `PruneSpentCaptchas` deletes the spent captcha answers past their day
+  (`captcha_spent`, `0013`), the ones no later spend pruned: after a batch that failed,
+  as a broken queue fails the batch of an image thread that is due
+  (`TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails`), a removal the store refused
+  (`TestSweepRetriesFilesItCouldNotRemove`), a file it did not hold
   (`TestSweepAgainstAnotherMediaStoreFails`) or a queue it could not read once the
   threads were done (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) too, and a
   failure there never keeps deleted threads' images up

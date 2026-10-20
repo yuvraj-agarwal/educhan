@@ -980,36 +980,44 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 // afterID that no other sweep is working on, hands it to remove, and forgets
 // it when remove reports the file gone. It returns the key's id, so the caller
 // can carry on past a key it could not remove, and found false once nothing is
-// left after afterID.
+// left after afterID, or when ctx ended the lookup before a key was found.
 //
 // One key per transaction keeps the gap between a file going and its key
 // going as short as it can be: a sweep killed in between leaves a key whose
 // file is already gone, which the next sweep reports as missing.
+//
+// ctx stops the lookup, which has nothing in hand yet, and nothing after it:
+// a key once found has its file removed and is forgotten whatever ctx says,
+// since stopping between the two would leave a key whose file is gone.
 func (s *Store) NextMediaDeletion(ctx context.Context, afterID int64, remove func(key string) bool) (id int64, found bool, err error) {
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		var key string
-		err := tx.QueryRow(ctx, `
-			SELECT id, key FROM media_deletions
-			WHERE id > $1
-			ORDER BY id
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED`, afterID).Scan(&id, &key)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("next media deletion: %w", err)
-		}
-		found = true
-		if !remove(key) {
-			return nil
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM media_deletions WHERE id = $1`, id); err != nil {
-			return fmt.Errorf("forget media deletion: %w", err)
-		}
-		return nil
-	})
-	return id, found, err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("next media deletion: %w", err)
+	}
+	// The transaction ends on the context of the step it ended in.
+	end := ctx
+	defer func() { _ = tx.Rollback(end) }()
+	var key string
+	err = tx.QueryRow(ctx, `
+		SELECT id, key FROM media_deletions
+		WHERE id > $1
+		ORDER BY id
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, afterID).Scan(&id, &key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("next media deletion: %w", err)
+	}
+	end = context.WithoutCancel(ctx)
+	if !remove(key) {
+		return id, true, nil
+	}
+	if _, err := tx.Exec(end, `DELETE FROM media_deletions WHERE id = $1`, id); err != nil {
+		return id, true, fmt.Errorf("forget media deletion: %w", err)
+	}
+	return id, true, tx.Commit(end)
 }
 
 /* Verification ------------------------------------------------------------- */

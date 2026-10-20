@@ -405,6 +405,36 @@ func TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas(t *testing.T) {
 	}
 }
 
+// Stopped while it looks for the next file to remove, held up behind a lock
+// here as it would be behind a database that has stopped answering, the sweep
+// has no file in hand to finish: it stops there and then, rather than when the
+// lookup is answered, and prunes the spent answers before it returns the stop.
+// That is what lets a stopped Job exit before Cloud Run kills it however far
+// through its files it is, short of a file being removed.
+func TestSweepStoppedLookingForAFileStopsThere(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweep looked for its files"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	pid, release := h.holdTable("media_deletions")
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := len(logs.String())
+	done := sweepInBackground(h, ctx)
+	// The lookup waits on the queue.
+	h.waitForSpends(pid, 1)
+	cancel()
+	// Ended with the queue still held: the lookup did not wait to be answered.
+	report, err := sweepEnded(t, done, 5*time.Second)
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep media: context canceled" {
+		t.Errorf("a sweep stopped looking for a file returned %v, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{SpentCaptchas: 1})
+}
+
 // A stop that comes once the files are done, while the spent answers go, finds
 // nothing left to stop: the prune runs past it, and the sweep ends as one that
 // was not stopped would, here with no error, the spent answer counted in its
@@ -497,6 +527,12 @@ func TestSweepsPruneIsGivenFiveSeconds(t *testing.T) {
 // ends it. pid is the open transaction's backend, which the prune waits on.
 func (h *harness) holdThePrune() (pid uint32, release func()) {
 	h.t.Helper()
+	return h.holdTable("captcha_spent")
+}
+
+// holdTable locks table against everything, as holdThePrune does.
+func (h *harness) holdTable(table string) (pid uint32, release func()) {
+	h.t.Helper()
 	ctx := context.Background()
 	tx, err := h.app.pool.Begin(ctx)
 	if err != nil {
@@ -506,8 +542,8 @@ func (h *harness) holdThePrune() (pid uint32, release func()) {
 	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
 		h.t.Fatalf("backend pid: %v", err)
 	}
-	if _, err := tx.Exec(ctx, `LOCK TABLE captcha_spent IN ACCESS EXCLUSIVE MODE`); err != nil {
-		h.t.Fatalf("hold the prune: %v", err)
+	if _, err := tx.Exec(ctx, `LOCK TABLE `+table+` IN ACCESS EXCLUSIVE MODE`); err != nil {
+		h.t.Fatalf("hold %s: %v", table, err)
 	}
 	return pid, func() { _ = tx.Rollback(context.Background()) }
 }

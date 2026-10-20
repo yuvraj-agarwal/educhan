@@ -159,15 +159,17 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 // returns the first removal error, with the key taken out of it, for the
 // sweep's own error to carry.
 //
-// A cancelled sweep stops between files. The file in hand is finished, and its
-// key forgotten, whatever the context says: stopping half way would leave a
-// key whose file is gone, which every later sweep would report as missing.
+// A cancelled sweep stops between files, or in looking up the next, which has
+// no file in hand yet. The file in hand is finished, and its key forgotten,
+// whatever the context says: stopping half way would leave a key whose file is
+// gone, which every later sweep would report as missing. Either way the error
+// is the stop, as for a sweep stopped before it began.
 func (a *App) removeQueuedMedia(ctx context.Context, report *SweepReport) (string, error) {
 	work := context.WithoutCancel(ctx)
 	var firstFailure string
 	var after int64
 	for ctx.Err() == nil {
-		id, found, err := a.store.NextMediaDeletion(work, after, func(key string) bool {
+		id, found, err := a.store.NextMediaDeletion(ctx, after, func(key string) bool {
 			switch err := removeExisting(work, a.media, key); {
 			case err == nil:
 				report.BlobsRemoved++
@@ -182,10 +184,13 @@ func (a *App) removeQueuedMedia(ctx context.Context, report *SweepReport) (strin
 			}
 			return false
 		})
-		if err != nil {
+		switch {
+		case err != nil && !found && ctx.Err() != nil:
+			// The stop ended the lookup, with no file in hand.
+			return firstFailure, fmt.Errorf("sweep media: %w", ctx.Err())
+		case err != nil:
 			return firstFailure, fmt.Errorf("sweep media: %w", err)
-		}
-		if !found {
+		case !found:
 			return firstFailure, nil
 		}
 		after = id
