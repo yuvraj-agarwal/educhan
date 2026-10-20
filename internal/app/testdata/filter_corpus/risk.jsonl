@@ -361,3 +361,9 @@
 {"id": "risk-361", "body": "i'll beat the living daylights out of him at recess tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for recess"}
 {"id": "risk-362", "body": "I'm going to beat Kabir unconscious tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be beaten unconscious, a time"}
 {"id": "risk-363", "body": "got my uncle's pistol in my locker", "subject": "", "name": "", "expect": "hold", "why": "a gun kept in a school locker, the \"I've\" left out"}
+{"id": "risk-364", "body": "girls under 16 dm me", "subject": "", "name": "", "expect": "hold", "why": "girls looked for under an age, with a private cue (R1-M9)"}
+{"id": "risk-365", "body": "you're so mature for 13, we should meet sometime", "subject": "", "name": "", "expect": "hold", "why": "the reader's age remarked on by number, with a meeting suggested (R1-M9)"}
+{"id": "risk-366", "body": "the under 16 category in the olympiad is open till friday", "subject": "", "name": "", "expect": "publish", "why": "an age category, nobody looked for (R1-M9 control)"}
+{"id": "risk-367", "body": "how old are you? are you alone right now?", "subject": "", "name": "", "expect": "hold", "why": "the reader asked whether they are alone after their age (R1-M10)"}
+{"id": "risk-368", "body": "how old are you? i'll buy you a gift", "subject": "", "name": "", "expect": "hold", "why": "a gift offered after the reader's age is asked (R1-M10)"}
+{"id": "risk-369", "body": "what grade are you in? i'll send you a pdf of the notes", "subject": "", "name": "", "expect": "publish", "why": "notes offered, no gift and no private cue (R1-M10 control)"}

@@ -6186,6 +6186,12 @@ var (
 		ageNumber+ageUnit+`~`+youthNoun,
 		words(`any`, `looking~for`, `want`, `need`, `searching~for`)+`~(?:`+words(`a`, `an`, `some`)+`~)?`+
 			ageNumber+ageUnit,
+		// "girls under 16", "any girls aged 14", "looking for a girl
+		// 13-15", "any class 9 girls".
+		youthNoun+`~(?:here~)?`+words(`under`, `below`, `aged?`)+`~\d{1,2}`,
+		words(`any`, `looking~for`, `searching~for`)+`~(?:`+words(`a`, `an`, `some`)+`~)?`+youthNoun+`~\d{1,2}`+
+			`(?:~?(?:-|to)~?\d{1,2})?`,
+		`any~`+words(`class`, `grade`, `std`, `year`)+`~\d{1,2}(?:st|nd|rd|th)?~`+youthNoun,
 		`any~`+youthNoun+`~(?:here~)?`+words(`in`, `from`)+`~(?:`+words(`class`, `grade`, `std`, `standard`,
 			`year`)+`~\d{1,2}|\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?)`,
 		`where~(?:exactly~)?`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
@@ -6234,12 +6240,14 @@ var (
 		words(`what`, `which`)+`~`+words(readerPlaces, readerAreas)+`~`+
 			words(`do`, `d`)+`~`+words(`you`, `u`)+`~`+words(`go~to`, `attend`, `study~at`, `study~in`, `study`,
 			`live~in`, `live`, `stay~in`, `stay`, `come~from`, `belong~to`),
-		words(`what`, `which`)+`~`+words(readerPlaces, readerAreas)+`~`+
-			words(`are`, `r`)+`~`+words(`you`, `u`)+`~`+words(`in`, `at`, `from`, `studying`, `living`, `staying`),
+		words(`what`, `which`)+`~`+words(readerPlaces, readerAreas)+`~(?:`+
+			words(`are`, `r`)+`~)?`+words(`you`, `u`)+`~`+words(`in`, `at`, `from`, `studying`, `living`, `staying`),
 		`what'?s?~(?:is~)?`+words(`your`, `ur`)+`~`+words(`school`, `address`, `location`, `city`, `town`, `area`,
 			`postcode`, `pincode`, `zip`),
 		words(`do`, `d`)+`~`+words(`you`, `u`)+`~live~`+words(`near`, `in`, `around`, `close`),
 		`mature~for~`+words(`your`, `ur`)+`~age`,
+		// "so mature for 13", "mature for a 14 yr old".
+		`mature~for~(?:`+words(`a`, `an`)+`~)?1\d`,
 		// Hinglish: "kitne saal ke ho", "kahan rehte ho", "kaunsa school".
 		words(`kitne`, `kitni`)+`~saal~`+words(`ke`, `ki`)+`~`+words(`ho`, `hai`, `h`),
 		words(`kitni`, `kya`)+`~`+words(`umar`, `umr`, `age`)+`~`+words(`hai`, `h`),
@@ -6280,8 +6288,8 @@ var (
 			`\b`+words(`you'?re`, `you~are`, `u~r`, `ur`, `u'?re`)+`~(?:in~)?`+words(`1\d`,
 				`\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?`,
 				words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`[^\pL\pN?]*\?`,
-			`\b`+words(`you`, `u`)+`~in~`+words(`year`, `grade`, `class`, `std`, `form`)+`~\d{1,2}(?:~or~\d{1,2})?`+
-				`[^\pL\pN?]*\?`,
+			`\b`+words(`you`, `u`)+`~in~`+words(words(`year`, `grade`, `class`, `std`, `form`)+`~\d{1,2}(?:~or~\d{1,2})?`,
+				words(`high`, `middle`, `secondary`, `junior`, `primary`)+`~school`)+`[^\pL\pN?]*\?`,
 			`(?:^|[.!?\n,;:])[^\pL\pN]*`+words(`1[0-7]`, words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`~or~`+
 				words(`1[0-7]`, words(`year`, `grade`, `class`, `std`)+`~\d{1,2}`)+`[^\pL\pN?]*\?`,
 		)),
@@ -6336,7 +6344,12 @@ var (
 			words(`visit`, `meet`, `come~(?:and~)?`+words(`meet`, `see`, `visit`, `get`, `find`))+`~`+words(`you`, `u`),
 			`pick~`+words(`you`, `u`)+`~up`, `wait~for~`+words(`you`, `u`), `be~waiting~for~`+words(`you`, `u`),
 			`keep~`+words(`you`, `u`)+`~company`, `be~waiting`, `wait~there`, `walk~(?:with~)?`+words(`you`, `u`),
-			`come~up`),
+			`come~up`,
+			// "I'll buy you a gift", "i want to send you a present", "I'll
+			// get you a new phone".
+			words(`buy`, `get`, `send`, `give`, `bring`)+`~`+words(`you`, `u`)+`~(?:`+words(`a`, `an`, `some`, `a~new`,
+				`new`, `a~nice`, `nice`)+`~)?`+words(`gifts?`, `presents?`, `phone`, `iphone`, `chocolates?`, `treats?`,
+				`something~nice`)),
 		// "I fit come pick you after lesson", "do u walk home alone?".
 		`come~pick~`+words(`you`, `u`),
 		words(`you`, `u`)+`~(?:`+words(`usually`, `always`, `ever`, `often`, `still`)+`~)?`+words(`walk`, `go`, `get`,
@@ -6347,6 +6360,12 @@ var (
 		`come~`+words(`without`, `w/o`)+`~`+words(`your`, `ur`, `telling`, `anyone`),
 		`come~to~`+words(`my`, `our`, `your`, `ur`)+`~`+words(`place`, `house`, `home`, `room`, `flat`, `hostel`, `car`,
 			`office`, `apartment`),
+		// "I'll come to your school", "i can come to ur tuition".
+		`come~to~`+words(`your`, `ur`)+`~`+words(`school`, `college`, `class`, `tuition`, `coaching`, `classes`),
+		// "can i see a pic", "could i get a selfie": privateCue wants it
+		// not of something else ("can i see a pic of the question").
+		words(`can`, `could`, `may`)+`~i~`+words(`see`, `get`, `have`)+`~(?:`+words(`a`, `some`, `your`, `ur`,
+			`another`, `more`, `a~new`)+`~)?`+words(`pics?`, `pictures?`, `photos?`, `selfies?`),
 		words(`wait`, `waiting`)+`~for~me`, `meet~me~`+words(`at`, `after`, `outside`, `near`, `behind`, `by`, `in`),
 		// "your parents at work till late?", "your mum works nights", "do
 		// your parents know".
@@ -6436,6 +6455,10 @@ var (
 		bothViews(`\balone[^\pL\pN]*(?:[.!?\n]|$)`),
 		// "let's meet at the metro station, just you", where it ends.
 		bothViews(`\bjust~` + words(`you`, `u`) + `[^\pL\pN]*(?:[.!?\n]|$)`),
+		// "age? dm", "how old are you? pm pls": a bare "dm" said as a
+		// sentence of its own.
+		bothViews(`(?:^|[.!?\n,;:])[^\pL\pN]*(?:` + words(`pls`, `plz`, `please`, `just`) + `~)?` +
+			words(`dm`, `pm`, `inbox`, `dms`) + `(?:~` + words(`pls`, `plz`, `please`, `me`) + `)?[^\pL\pN]*(?:[.!?\n]|$)`),
 		// "I can train you privately", "I can help with your project
 		// privately": cueCheck wants the poster offering it to the reader.
 		bothViews(`\b` + words(`privately`, `in~private`) + `\b`),
@@ -6562,6 +6585,10 @@ func privateCue(v *view, m []int, openMeetings bool) bool {
 				return false
 			}
 		}
+	case pictureWords[last] && canModals[first]:
+		// "can i see a pic", not "can i see a pic of the question".
+		return !(nextIn(0, setOf(`of`)) && len(next) > 1 && !secondPerson[next[1]] && !is(next[1], "you") &&
+			!is(next[1], "yourself") && !is(next[1], "urself"))
 	}
 	return true
 }
@@ -6707,8 +6734,9 @@ func ageCheck(v *view, m []int) bool {
 		}
 	}
 	// "if someone asks how old you are": a question reported, not asked.
+	// Only its own clause: "how old are you? are you alone?" asks.
 	if is(ws[0], "how") && !is(ws[len(ws)-1], "old") {
-		next := nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
+		next := nextWords(clauseAfter(v.text, m[1]), 1)
 		before := wordsBefore(v.text, m[0], 1)
 		if len(next) > 0 && is(next[0], "are") || len(before) > 0 && askedWords[before[0]] {
 			return false

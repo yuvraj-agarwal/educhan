@@ -2612,6 +2612,33 @@ func TestFilterReadsGroomingCuesInOtherWords(t *testing.T) {
 		{"tumhari age kya hai? koi pic bhejo na, sirf mere liye", grooming},
 		{"kaunse saal mein ho college ke? apni photo bhejo, main bhi bhejunga. secret rakhna", grooming},
 		{"kaunse saal mein ho? second year ka syllabus tough hai", publish},
+		// Someone looked for by an age or a class, and the reader's age
+		// remarked on by number (R1-M9), with a bare "dm" as the cue.
+		{"girls under 16 dm me", grooming},
+		{"any girls aged 14? dm me", grooming},
+		{"any class 9 girls here? dm me", grooming},
+		{"looking for a girl 13-15 to chat with, dm me", grooming},
+		{"you're so mature for 13, we should meet", grooming},
+		{"u r so mature for a 14 yr old, dm me", grooming},
+		{"how old are you? dm", grooming},
+		{"the under 16 category in the olympiad is open till friday", publish},
+		{"girls under 16 cricket trials are on monday at the ground", publish},
+		{"any class 9 girls here? which elective did you pick", publish},
+		{"how old are you? i'm 15. check your dm settings, they're open to everyone", publish},
+		// The cue after the age question as well as before it, a gift in
+		// English, a visit to the school, a picture asked for, and the
+		// school asked without "are" (R1-M10).
+		{"how old are you? are you alone?", grooming},
+		{"how old are you? are your parents home?", grooming},
+		{"how old are you? i'll buy you a gift", grooming},
+		{"where do you live? i'll send you a gift", grooming},
+		{"how old are you? i'll come to your school", grooming},
+		{"how old are you? can i see a pic", grooming},
+		{"what school u at? we could meet", grooming},
+		{"u in high school? dm me", grooming},
+		{"how old are you? can i see a pic of the question you're stuck on", publish},
+		{"what grade are you in? i'll send you a pdf of the notes", publish},
+		{"what school u at? i'm at a cbse school and the syllabus is huge", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
@@ -3366,6 +3393,8 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"spaced guns":        rep("🔫 "),
 		"pills and a handle": rep("howmany@pills_(snap "),
 		"pills run on":       rep("howmany@pills/how'many pills_(snap pills_(snap "),
+		// A bare "dm" after an age question.
+		"bare dm": rep("age? dm. "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
