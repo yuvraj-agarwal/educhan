@@ -122,7 +122,10 @@ func parsePassCode(raw string) (string, bool) {
 	return parseCode(raw, passCodeLen)
 }
 
-// parseCode reads n characters of passAlphabet as parsePassCode does.
+// parseCode reads n characters of passAlphabet as parsePassCode does. The
+// Pass page folds the same letters before it sends a code, as CODE_FOLDS in
+// app.js, so it sends the code as it is read here;
+// TestPageAndServerFoldTheSameLetters holds the two together.
 func parseCode(raw string, n int) (string, bool) {
 	out := make([]byte, 0, n)
 	for _, r := range strings.ToUpper(raw) {

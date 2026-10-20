@@ -144,6 +144,48 @@ func TestPageAndServerSkipTheSameSeparators(t *testing.T) {
 	}
 }
 
+// TestPageAndServerFoldTheSameLetters holds the Pass page and the server to one
+// reading of the letters a code's alphabet leaves out. The server reads O as 0
+// and I or L as 1 (parseCode), and the page sends a code typed with them
+// written as those digits (canonicalCode, by CODE_FOLDS), which is how the
+// server writes a code. Every character is put through both: the server's
+// reading of it as a code's character, and the page's, in capitals as
+// codeCharacters puts it and then folded by its table. Where the server reads
+// the character as one of a code's, the two agree; where the server refuses it,
+// the page folds nothing, so it sends no code the server would not have read
+// from what was typed.
+func TestPageAndServerFoldTheSameLetters(t *testing.T) {
+	found := regexp.MustCompile(`\nconst CODE_FOLDS = \{([^}]*)\};\n`).FindStringSubmatch(appScript(t))
+	if found == nil {
+		t.Fatal("app.js has no CODE_FOLDS table")
+	}
+	folds := map[rune]rune{}
+	entry := regexp.MustCompile(`^\s*([A-Z]): "([0-9A-Z])"\s*$`)
+	for _, e := range strings.Split(found[1], ",") {
+		m := entry.FindStringSubmatch(e)
+		if m == nil {
+			t.Fatalf("CODE_FOLDS: %q is not a capital and the character it is read as", e)
+		}
+		folds[rune(m[1][0])] = rune(m[2][0])
+	}
+	for r := rune(0); r <= unicode.MaxRune; r++ {
+		if isCodeSeparator(r) {
+			continue // skipped by both (TestPageAndServerSkipTheSameSeparators)
+		}
+		page, folded := folds[unicode.ToUpper(r)]
+		if !folded {
+			page = unicode.ToUpper(r)
+		}
+		server, ok := parseCode(string(r), 1)
+		switch {
+		case ok && rune(server[0]) != page:
+			t.Errorf("the server reads %+q as %q, the page as %+q", r, server[0], page)
+		case !ok && folded:
+			t.Errorf("the page reads %+q as %q, a character the server refuses", r, page)
+		}
+	}
+}
+
 // TestReissueCodes holds a reissue code to a form a person can read out and
 // type back, which the page and the server can tell from a Pass code: the word
 // REISSUE and 28 characters of the alphabet, at least the 128 random bits a

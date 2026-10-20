@@ -1208,10 +1208,13 @@ func TestPassReissueCodeIsTypedAndNeverKept(t *testing.T) {
 // The code box takes a code however it was typed or pasted, and the page
 // sends it as the server writes it: in capitals, without whatever stood
 // between its groups (CODE_SEPARATORS, which
-// TestPageAndServerSkipTheSameSeparators holds to the server's own set), and
-// grouped with dashes as formatPassCode and formatReissueCode group it. What
-// reaches the server does not depend on which separators it skips, and a code
-// the page reads as one kind is sent as that kind.
+// TestPageAndServerSkipTheSameSeparators holds to the server's own set), with
+// the letters the server reads as digits written as those digits after a
+// reissue code's word (CODE_FOLDS, which TestPageAndServerFoldTheSameLetters
+// holds to the server's reading), and grouped with dashes as formatPassCode
+// and formatReissueCode group it. What reaches the server does not depend on
+// which separators it skips or which letters it folds, and a code the page
+// reads as one kind is sent as that kind.
 func TestPassPageSendsCodesAsTheServerWritesThem(t *testing.T) {
 	script := appScript(t)
 	if !strings.Contains(script, "\nconst PASS_CODE_LENGTH = "+strconv.Itoa(passCodeLen)+";\n") {
@@ -1223,12 +1226,18 @@ func TestPassPageSendsCodesAsTheServerWritesThem(t *testing.T) {
 	}
 	passGroup := strings.Index(formatPassCode(strings.Repeat("0", passCodeLen)), "-")
 	reissueGroup := strings.Index(strings.TrimPrefix(formatReissueCode(strings.Repeat("0", reissueCodeLen)), reissueCodePrefix+"-"), "-")
+	if folded := withoutComments(jsFunction(t, script, "foldedCode")); !strings.Contains(folded,
+		"for (const c of text) {\n    folded += CODE_FOLDS[c] ?? c;") {
+		t.Error("foldedCode no longer writes each letter the server reads as a digit as that digit")
+	}
 	canonical := withoutComments(jsFunction(t, script, "canonicalCode"))
 	for _, want := range []string{
 		"const bare = codeCharacters(typed);",
-		"const rest = bare.startsWith(REISSUE_CODE_WORD) ? bare.slice(REISSUE_CODE_WORD.length) : bare;",
+		`const word = bare.startsWith(REISSUE_CODE_WORD) ? REISSUE_CODE_WORD : "";`,
+		"const rest = foldedCode(bare.slice(word.length));",
 		"if (rest.length === REISSUE_CODE_LENGTH) {\n    return [REISSUE_CODE_WORD, ...codeGroups(rest, " + strconv.Itoa(reissueGroup) + ")].join(\"-\");",
-		"if (bare.length === PASS_CODE_LENGTH) {\n    return codeGroups(bare, " + strconv.Itoa(passGroup) + ").join(\"-\");",
+		"if (bare.length === PASS_CODE_LENGTH) {\n    return codeGroups(word + rest, " + strconv.Itoa(passGroup) + ").join(\"-\");",
+		"return word + rest;",
 	} {
 		if !strings.Contains(canonical, want) {
 			t.Errorf("canonicalCode no longer writes a code as the server does (%q)", want)

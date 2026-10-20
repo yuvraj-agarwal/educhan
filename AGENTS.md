@@ -531,9 +531,11 @@ needs a browser check before the test changes.
   otherwise the code may be mistyped, used, run out or cancelled), and a held Pass the
   check finds no longer valid is removed with word that the right reissue code, entered
   again, gets its new code. Otherwise a refusal says to check the code. A code typed or
-  pasted in, of either kind, is sent as the server writes it (`canonicalCode`: the
-  separators `CODE_SEPARATORS` skips removed, capitals, dashes between groups), and
-  `TestPageAndServerSkipTheSameSeparators` holds the page's separators to the server's.
+  pasted in, of either kind, is sent as the server writes it (`canonicalCode`: capitals,
+  the separators `CODE_SEPARATORS` skips removed, O as 0 and I or L as 1 after a reissue
+  code's word, whose own I stays as it is (`CODE_FOLDS`), dashes between groups). The page
+  and the server skip the same separators and fold the same letters, which is what
+  `TestPageAndServerSkipTheSameSeparators` and `TestPageAndServerFoldTheSameLetters` hold.
   The box has `autocomplete="off"`, and Remove the Pass, Forget this browser and leaving
   the page (`render`, `pagehide`) empty it (`forgetTypedCode`). Remove the Pass, Forget
   this browser and Stop collecting it here stop the collection under way (`passVisit`) and

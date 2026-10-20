@@ -588,9 +588,11 @@ in groups of four, to read out or paste: 140 random bits, and never mistaken for
 a Pass code, which has no U. The server takes it in either case, with or without
 the word in front and with dashes, spaces or nothing between the groups, a
 no-break space, another dash or a character nobody sees, which a paste out of
-mail can bring, included. The page skips the same ones, and sends a code typed
-or pasted in, a Pass code or a reissue code, as the server writes it: in
-capitals, grouped with dashes. Typed on the Pass page, a reissue code gives the
+mail can bring, included, and after the word it reads an O as 0 and an I or L as
+1, as in a Pass code, whose alphabet has none of the three. The page skips and
+reads them the same way, and sends a code typed or pasted in, a Pass code or a
+reissue code, as the server writes it: in capitals, with those letters as
+digits, grouped with dashes. Typed on the Pass page, a reissue code gives the
 Pass a new code, shown once, and the old one stops working. For a purchase or a
 renewal paid and never collected, it collects it instead: a purchase's reissue
 code makes the Pass, with its code shown once, and a renewal's renews the Pass

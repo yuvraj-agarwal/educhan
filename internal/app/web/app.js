@@ -2151,6 +2151,11 @@ const CODE_SEPARATORS =
   " \t\n\v\f\r\u0085\u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006" +
   "\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000" +
   "\u00ad\u200b\u2060\ufeff";
+// The letters a code's alphabet leaves out that the server reads as digits, in
+// capitals as codeCharacters puts them: O as 0, and I or L as 1 (parseCode in
+// pass.go). The page sends a code with them written as those digits, which is
+// how the server writes it. TestPageAndServerFoldTheSameLetters reads both.
+const CODE_FOLDS = { O: "0", I: "1", L: "1" };
 // Written and read back before a checkout, to learn whether this browser keeps
 // anything at all, and removed straight away.
 const STORAGE_PROBE_KEY = "educhan:storage-probe";
@@ -3339,6 +3344,16 @@ function codeCharacters(typed) {
   return bare;
 }
 
+// foldedCode is text with each letter the server reads as a digit written as
+// that digit (CODE_FOLDS).
+function foldedCode(text) {
+  let folded = "";
+  for (const c of text) {
+    folded += CODE_FOLDS[c] ?? c;
+  }
+  return folded;
+}
+
 // isReissueCode says whether what was typed in the code box is a reissue code
 // rather than a Pass code: it starts with the word, or, typed without it, has
 // a reissue code's length once the separators the server skips are left out.
@@ -3358,19 +3373,23 @@ function codeGroups(text, size) {
 
 // canonicalCode is what was typed in the code box written as the server
 // writes a code, which is how the page sends it: in capitals, with the
-// separators left out (codeCharacters), and grouped with dashes, a Pass code
-// in fives and a reissue code in fours after its word. What has neither
-// length goes without its separators, for the server to refuse.
+// separators left out (codeCharacters), the letters the server reads as
+// digits written as those digits (foldedCode), and grouped with dashes, a Pass
+// code in fives and a reissue code in fours after its word. The server folds
+// a reissue code only after its word, which has an I of its own, and so does
+// the page. What has neither length goes without its separators, for the
+// server to refuse.
 function canonicalCode(typed) {
   const bare = codeCharacters(typed);
-  const rest = bare.startsWith(REISSUE_CODE_WORD) ? bare.slice(REISSUE_CODE_WORD.length) : bare;
+  const word = bare.startsWith(REISSUE_CODE_WORD) ? REISSUE_CODE_WORD : "";
+  const rest = foldedCode(bare.slice(word.length));
   if (rest.length === REISSUE_CODE_LENGTH) {
     return [REISSUE_CODE_WORD, ...codeGroups(rest, 4)].join("-");
   }
   if (bare.length === PASS_CODE_LENGTH) {
-    return codeGroups(bare, 5).join("-");
+    return codeGroups(word + rest, 5).join("-");
   }
-  return bare;
+  return word + rest;
 }
 
 // redeemPassReissue spends a reissue code typed in the code box (typed, as
