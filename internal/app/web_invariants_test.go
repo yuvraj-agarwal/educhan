@@ -927,7 +927,7 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		"release(false); if (!onScreen()) { return; } await navigate(")
 	inOrder(t, "submitVerification", verify,
 		"onScreen, );", "if (!onScreen()) { return; }", "el.main.innerHTML = verifyViewHTML();",
-		`await api("/api/verify/confirm"`, "storeCredential(issued.credential);", "if (!onScreen()) {", "await renderVerify();",
+		`await api("/api/verify/confirm"`, "storeCredential(issued.credential);", "if (!onScreen()) {", "await renderVerify(route);",
 	)
 }
 
@@ -1084,7 +1084,8 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		`if (reason === "expired" || reason === "revoked") { if (forgets === browserForgets) { forgetCredential(); badgeLost =`,
 		`if (!shown) { return; } const box = field(form, "body"); const hasText = Boolean(box && box.value.trim()); if (err.notSent) { `+
 			"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread })); return; }",
-		"const message = errorMessage(err, { hasText, imageOff });",
+		"showNotice(errorMessage(err, { hasText, imageOff }));",
+		"imageTakenOff(errorMessage(err, { hasText, imageOff: off }), off, { hasText, isThread, closed });",
 	)
 	if strings.Count(submit, "storageSet(") != 1 || strings.Count(submit, "badgeLost") != 1 || strings.Count(submit, "forgetCredential(") != 1 {
 		t.Error("the submit handler keeps something, or drops a badge, without checking it against browserForgets")
@@ -1094,7 +1095,7 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 	mark := squash(withoutComments(jsFunction(t, script, "notSent")))
 	if mark != `function notSent() { const err = new Error("not sent"); err.notSent = true; return err; }` ||
 		strings.Count(code, "notSent") != 5 || strings.Count(send, "throw notSent();") != 2 || strings.Count(code, "notSent()") != 3 ||
-		strings.Count(refused, "err.notSent") != 1 || strings.Count(send, "new Error(") != 0 || strings.Count(refused, "showNotice(") != 2 {
+		strings.Count(refused, "err.notSent") != 1 || strings.Count(send, "new Error(") != 0 || strings.Count(refused, "showNotice(") != 3 {
 		t.Error("an error sendWithCaptcha throws for a request it did not send, before a send or in place of the " +
 			"second, is no longer marked, or no longer answered by the submit handler alone and before it words any other error")
 	}
@@ -1156,7 +1157,8 @@ func TestForgettingTheBrowserReachesEveryTab(t *testing.T) {
 	elsewhere := squash(withoutComments(jsFunction(t, script, "forgottenElsewhere")))
 	if elsewhere != `function forgottenElsewhere() { for (const [key, value] of storedHere) { `+
 		`if (storageGet(key) === value) { storageRemove(key); } } forgetOnThisPage(); `+
-		`if (state.route.view === "verify" && ageStatus() === "ok") { renderVerify().then(() => { showNotice(BROWSER_FORGOTTEN); }); } }` {
+		`if (state.route.view === "verify" && ageStatus() === "ok") { renderVerify(state.route).then((drawn) => { `+
+		`if (drawn) { showNotice(BROWSER_FORGOTTEN); } }); } }` {
 		t.Errorf("a tab that hears the forget no longer removes only what it stored and storage still holds, "+
 			"forgets what it holds, or draws /verify again: %s", elsewhere)
 	}
@@ -1335,24 +1337,35 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		"function routeKey(route) { return `${route.view}:${route.slug || \"\"}:${route.no || \"\"}`; }" {
 		t.Errorf("routeKey is no longer the view, the board and the thread, without the index page: %s", key)
 	}
+	// A draft is keyed by the page on screen, which the render that drew it
+	// noted, never by a render begun since that has not drawn: the second of a
+	// double click would carry this page's form into the other page's.
 	capture := squash(withoutComments(jsFunction(t, script, "captureDraft")))
 	inOrder(t, "captureDraft", capture,
+		"const key = routeKey(drawnFor.route || state.route);",
 		`const form = el.main.querySelector("form[data-kind]");`,
-		"if (heldForms.has(form)) { return { key: routeKey(state.route), held: form }; }",
-		"return { key: routeKey(state.route), ...formDraft(form) };",
+		"return unsent ? { key, open: true, body: unsent.value } : null;",
+		"if (heldForms.has(form)) { return { key, held: form }; }",
+		"return { key, ...formDraft(form) };",
 	)
+	if strings.Count(capture, "routeKey(") != 1 || strings.Count(capture, "key") != 4 {
+		t.Error("captureDraft keys a draft by something besides the page on screen")
+	}
 	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
 	inOrder(t, "restoreDraft", restore,
 		"if (!draft || draft.key !== routeKey(state.route)) { return; }",
 		`const form = el.main.querySelector("form[data-kind]");`,
 		"if (draft.held) { const held = draft.held; if ( heldForms.has(held) && form && "+
 			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
-			`const drawn = form.querySelector("[data-file-field]"); const reason = !drawn ? UPLOADS_OFF_REASON : `+
-			`drawn.classList.contains("blocked") ? drawn.querySelector(".file-blocked").textContent : ""; `+
-			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, reason); } form.replaceWith(held);`,
-		"return; } draft = { key: draft.key, ...formDraft(held) }; }",
+			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, pickerRefusal(form)); } form.replaceWith(held);`,
+		"return; } answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held) }; }",
 		"if (!form) { keepUnsentDraft(draft); return; }",
 	)
+	if refusal := squash(withoutComments(jsFunction(t, script, "pickerRefusal"))); refusal != "function pickerRefusal(form) { "+
+		`const drawn = form.querySelector("[data-file-field]"); if (!drawn) { return UPLOADS_OFF_REASON; } `+
+		`return drawn.classList.contains("blocked") ? drawn.querySelector(".file-blocked").textContent : ""; }` {
+		t.Errorf("pickerRefusal no longer says why a form just drawn takes no image, by its picker or the site's: %s", refusal)
+	}
 	// What the redraw drew is applied when the hold ends, after the controls
 	// the hold switched off are switched back on, and by release, which both
 	// the success and the refusal call (TestAPendingFormIsHeld): a picker
@@ -1384,13 +1397,17 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// or not, and one that draws notes what the page was drawn for (drawnFor),
 	// which a kept page whose redraw will not load gets back, with the error
 	// as a notice, never in place of the page: after two redraws that fail, the
-	// page is still the one drawn, not the first redraw's half-begun one.
+	// page is still the one drawn, not the first redraw's half-begun one. Every
+	// render begun, the age screen's and the rules' included, ends the loading
+	// state of any before it (below).
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",
 		"renderedPath = window.location.pathname + window.location.search; const route = parseRoute(); state.route = route; "+
+			"rendersBegun += 1; endLoading(); "+
 			"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); "+
 			"if (!keepPage) { state.thread = null; expandedLink = null; }",
+		"renderAgeGate(age); return; }",
 		"const finish = beginLoading({ skeleton: !keepPage });",
 		"await loadSite();",
 		"if (overtaken(route)) { return; } renderNav(route);",
@@ -1412,23 +1429,60 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		t.Errorf("overtaken no longer says whether a newer render has begun: %s", over)
 	}
 	if code := withoutComments(script); !strings.Contains(code, "\nlet drawnFor = { path: null, route: null, thread: null };\n") ||
-		strings.Count(code, "drawnFor") != 5 {
-		t.Error("drawnFor is no longer only declared, noted by a render that draws, and put back by a kept page's failed redraw")
+		strings.Count(code, "drawnFor") != 6 {
+		t.Error("drawnFor is no longer only declared, noted by a render that draws, read by captureDraft and put back by a " +
+			"kept page's failed redraw")
 	}
-	for _, view := range []string{"renderIndex", "renderCatalog", "renderArchive", "renderThread"} {
+	for _, view := range []string{"renderIndex", "renderCatalog", "renderArchive", "renderThread", "renderVerify"} {
 		fn := squash(withoutComments(jsFunction(t, script, view)))
 		steps := []string{" = await api(", "if (overtaken(route)) { return; }", "el.main.innerHTML = "}
-		if view == "renderThread" {
+		switch view {
+		case "renderThread":
 			steps = []string{" = await api(", "if (overtaken(route)) { return; }", "state.thread = detail;", "el.main.innerHTML = "}
+		case "renderVerify":
+			steps = []string{"async function renderVerify(route) { await loadVerification(); if (overtaken(route)) { return false; } " +
+				`el.main.innerHTML = verifyViewHTML(); badgeLost = ""; announce("Institutional verification"); return true; }`}
 		}
 		inOrder(t, view, fn, steps...)
 	}
-	loading := squash(withoutComments(jsFunction(t, script, "beginLoading")))
-	if !strings.Contains(loading, "function beginLoading({ skeleton = true } = {}) {") ||
-		!strings.Contains(loading, "if (skeleton) { el.main.innerHTML =") || strings.Count(loading, "el.main.innerHTML") != 1 {
-		t.Error("beginLoading draws its skeleton over a page that asked to stay")
+	// /verify is drawn for the route it was asked for, as that route was before
+	// the request: by render, by the confirmation, and after a forget, pressed
+	// here or heard from another tab, only while /verify is the page being
+	// drawn, whose notice is said only where it drew.
+	code := withoutComments(script)
+	forgot := "renderVerify(state.route).then((drawn) => { if (drawn) { showNotice(BROWSER_FORGOTTEN); } });"
+	if squashed := squash(code); strings.Count(code, "renderVerify(") != 6 || strings.Count(code, "await renderVerify(route);") != 2 ||
+		strings.Count(squashed, `if (state.route.view === "verify") { renderVerify(state.route); }`) != 1 ||
+		strings.Count(squashed, `if (state.route.view === "verify") { `+forgot+" }") != 1 ||
+		strings.Count(squashed, `if (state.route.view === "verify" && ageStatus() === "ok") { `+forgot+" }") != 1 ||
+		!strings.Contains(squash(withoutComments(jsFunction(t, script, "render"))), "await renderVerify(route);") {
+		t.Error("renderVerify is called somewhere without the route it draws for, or for a page that is not /verify, " +
+			"or a forget's notice is said where it did not draw")
 	}
-	if n := strings.Count(withoutComments(script), "beginLoading("); n != 2 {
+	// The loading state is the latest render's: beginning one ends any before
+	// it, and a render's skeleton and its finish act only while it is the
+	// latest, so an overtaken render neither blanks the newer page nor takes
+	// the dimming off one still loading. overtaken would not do: a kept page's
+	// failed redraw overtakes itself.
+	loading := squash(withoutComments(jsFunction(t, script, "beginLoading")))
+	inOrder(t, "beginLoading", loading,
+		`function beginLoading({ skeleton = true } = {}) { const begun = rendersBegun; el.main.setAttribute("aria-busy", "true"); `+
+			"loadingTimer = setTimeout(() => { if (skeleton && begun === rendersBegun) { el.main.innerHTML =",
+		"}, 250); return () => { if (begun === rendersBegun) { endLoading(); } }; }",
+	)
+	if strings.Count(loading, "el.main.innerHTML") != 1 {
+		t.Error("beginLoading draws something besides its skeleton")
+	}
+	if end := squash(withoutComments(jsFunction(t, script, "endLoading"))); end !=
+		`function endLoading() { clearTimeout(loadingTimer); el.main.removeAttribute("aria-busy"); }` {
+		t.Errorf("endLoading no longer takes the dimming and the skeleton to come off the page: %s", end)
+	}
+	if !strings.Contains(code, "\nlet rendersBegun = 0;\n") || !strings.Contains(code, "\nlet loadingTimer = 0;\n") ||
+		strings.Count(code, "rendersBegun") != 5 || strings.Count(code, "rendersBegun += 1;") != 1 ||
+		strings.Count(code, "loadingTimer") != 3 || strings.Count(code, "endLoading(") != 3 || strings.Count(code, `"aria-busy"`) != 2 {
+		t.Error("the loading state is started, ended or counted somewhere besides beginLoading, endLoading and render's start")
+	}
+	if n := strings.Count(code, "beginLoading("); n != 2 {
 		t.Errorf("beginLoading is called %d times in app.js; want once, in render", n-1)
 	}
 }
@@ -1475,9 +1529,11 @@ func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
 // that the image has been taken off and why, and tells a post left with
 // nothing to write something instead; a refusal of the thread itself
 // (archived, locked, gone) adds only that the image was taken off, since no
-// post can go there. So a captcha refusal says "Your image is still attached"
-// only of an image that is, and an archived thread is not answered with
-// "Text replies still work".
+// post can go there. A refusal answered before the redraw has drawn ends the
+// same: restoreDraft words its notice again with the picker's reason, as it
+// would have read had the redraw come first. So a captcha refusal or a
+// connection lost says "Your image is still attached" only of an image that
+// is, and an archived thread is not answered with "Text replies still work".
 func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	script := appScript(t)
 	message := squash(withoutComments(jsFunction(t, script, "errorMessage")))
@@ -1499,7 +1555,8 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	}
 	// The other wordings that say what is still there say it only of what is.
 	for _, want := range []string{
-		"if (err.unreachable) { return nothingLeft ? UNREACHABLE : `${UNREACHABLE} What you wrote is still in the box.`; }",
+		"if (err.unreachable) { return nothingLeft ? UNREACHABLE : hasText ? `${UNREACHABLE} What you wrote is still in the box.` : " +
+			"`${UNREACHABLE} Your image is still attached.`; }",
 		`if (err.status === 413) { return imageOff ? "That image was too large." : imageTooLargeMessage(); }`,
 		`const kept = hasText ? " Your text is still in the box." : "";`,
 	} {
@@ -1525,13 +1582,37 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 		`const box = field(form, "body"); const hasText = Boolean(box && box.value.trim());`,
 		"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));",
 		"const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED; if (limitReached) {",
+		"if (limitReached || uploadsOff) { showNotice(errorMessage(err, { hasText, imageOff })); return; }",
 		`const closed = err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || `+
-			`err.message === "thread is locked")); const message = errorMessage(err, { hasText, imageOff }); `+
-			"showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread, closed }));",
+			`err.message === "thread is locked")); `+
+			"const notice = (off) => imageTakenOff(errorMessage(err, { hasText, imageOff: off }), off, { hasText, isThread, closed }); "+
+			"refusalNotices.set(form, notice); showNotice(notice(imageOff)); } });",
 	)
-	if strings.Count(refused, "showNotice(") != 2 || strings.Count(refused, "body.trim()") != 0 ||
-		strings.Count(withoutComments(script), "imageTakenOff(") != 3 {
-		t.Error("the submit handler words a refusal somewhere besides the two notices this test reads, or from the text pressed")
+	code := withoutComments(script)
+	if strings.Count(refused, "showNotice(") != 3 || strings.Count(refused, "body.trim()") != 0 ||
+		strings.Count(code, "imageTakenOff(") != 4 {
+		t.Error("the submit handler words a refusal somewhere besides the three notices this test reads, or from the text pressed, " +
+			"or something besides it and restoreDraft says an image was taken off")
+	}
+	// A held form answered while a redraw of its page loaded, refused before the
+	// redraw drew, is read like any draft, and an image the new page takes none
+	// of is taken off, its notice saying so as it would have, had the redraw
+	// come first, rather than giving way to the picker's reason: the refusal's
+	// own notice, still on screen, worded again with that reason by the wording
+	// the submit handler kept, and any other with the image's going added.
+	restore := squash(withoutComments(jsFunction(t, script, "restoreDraft")))
+	inOrder(t, "restoreDraft", restore,
+		"let answered = null;",
+		"answered = heldForms.has(held) ? null : held; draft = { key: draft.key, ...formDraft(held) }; }",
+		`const fileField = form.querySelector("[data-file-field]"); const refusal = answered && draft.file ? pickerRefusal(form) : ""; `+
+			`if (refusal) { const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
+			"const notice = refusalNotices.get(answered); "+
+			`const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" }; `+
+			`showNotice(notice && said === notice("") ? notice(refusal) : said ? imageTakenOff(said, refusal, kept) : refusal); } `+
+			"else if (fileField && draft.file && setFile(fileField, draft.file)) {",
+	)
+	if !strings.Contains(code, "\nconst refusalNotices = new WeakMap();\n") || strings.Count(code, "refusalNotices") != 3 {
+		t.Error("refusalNotices is no longer only declared, kept by the submit handler and read by restoreDraft")
 	}
 }
 

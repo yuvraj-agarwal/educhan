@@ -441,33 +441,46 @@ check before the test changes.
   straight into the `try` whose catch releases them, and switched back on after a
   refusal, with the focus on the button, without scrolling to it, if the form had it and
   it is still lost, on the page or nowhere, or after a success once the form is emptied;
-  `app.css` shows the held controls switched off). A redraw of the form's own page while
-  it is held (Update, or another page of the same board's index, which has the same
-  `routeKey`: the view, the board and the thread, never the index page) keeps the page,
-  dimmed, in place of the skeleton (`keepPage` in `render`), with the thread its
-  controls read and the open image left as they are until a new page is drawn, so a
-  refusal answered meanwhile updates the page on screen, and puts the held form itself
-  into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
-  `restoreDraft`); a form answered by then is read for its values like any draft,
-  emptied after a success. A redraw that fails to load leaves the kept page on screen,
-  held form and all, with `renderedPath`, `state.route` and `state.thread` put back
-  as that page was drawn for them (`drawnFor`, noted by the render that drew it,
-  however many redraws of it have failed since) and the error in a notice. A render a
-  newer one has overtaken draws nothing, loaded or not, and says nothing (`overtaken`,
-  which the board and thread views ask once their request is answered), so of two
-  redraws only the later one is shown or said to have failed. Either way the post
-  goes ahead and is answered on the form on screen, and a success goes to it. When
-  the hold ends, success or refusal, `release` leaves the held form's picker as a
-  redraw meanwhile drew it, switched off with that drawing's reason (or the site's,
-  where it drew none) or switched on (`redrawnPickers`), and a refusal of the image
-  itself (image limit reached, uploads switched off) then switches it off in the
-  submit handler. A picker `release` switches off loses its image, and `release` then
-  returns the reason, which every later notice but those two refusals, a refusal's
-  or a forget's, adds, saying the image was taken off and why (`imageTakenOff`),
-  or, for a refusal of the thread itself (archived, locked, gone), only that it was
-  taken off, since no post can go there. Each notice is worded for what the form
-  still holds, its text read from the box after `release` (`errorMessage`'s `hasText`
-  and `imageOff`), so a post left with nothing is told to write something instead.
+  `app.css` shows the held controls switched off). A redraw of the form's own page
+  while it is held (Update, or another page of the same board's index, which has
+  the same `routeKey`: the view, the board and the thread, never the index page)
+  keeps the page, dimmed, in place of the skeleton (`keepPage` in `render`), with
+  the thread its controls read and the open image left as they are until a new page
+  is drawn, so a refusal answered meanwhile updates the page on screen, and puts the
+  held form itself into the new page in place of the one drawn there (`heldForms`,
+  `captureDraft`, `restoreDraft`); a form answered by then is read for its values like
+  any draft, emptied after a success. A draft, held or not, is keyed by the page on
+  screen (`drawnFor` in `captureDraft`), never by a render begun since that has not
+  drawn yet, so the second of a double click neither carries the form into the page
+  it goes to nor keeps the page on screen under that page's address. A redraw that
+  fails to load leaves the kept page on screen, held form and all, with `renderedPath`,
+  `state.route` and `state.thread` put back as that page was drawn for them (`drawnFor`,
+  noted by the render that drew it, however many redraws of it have failed since)
+  and the error in a notice. A render a newer one has overtaken draws nothing, loaded
+  or not, and says nothing (`overtaken`, which the board, thread and /verify views
+  ask once their request is answered, /verify drawn again after a confirmation or
+  a forget too, a forget drawing it only while /verify is the page being drawn), so
+  of two redraws only the later one is shown or said to have failed. Either way the
+  post goes ahead and is answered on the form on screen, and a success goes to it.
+  The loading state, the dimming and the skeleton that may follow it, is the latest
+  render's (`rendersBegun`): every render begun, whatever its view, ends any before it
+  (`endLoading`), so an older render still loading neither blanks a newer page nor shows
+  one still loading as loaded. When the hold ends, success or refusal, `release` leaves
+  the held form's picker as a redraw meanwhile drew it, switched off with that drawing's
+  reason (or the site's, where it drew none) or switched on (`redrawnPickers`), and
+  a refusal of the image itself (image limit reached, uploads switched off) then
+  switches it off in the submit handler. A picker `release` switches off loses its
+  image, and `release` then returns the reason, which every later notice but those two
+  refusals, a refusal's or a forget's, adds, saying the image was taken off and why
+  (`imageTakenOff`), or, for a refusal of the thread itself (archived, locked, gone),
+  only that it was taken off, since no post can go there. A refusal answered while a
+  redraw loads, before it draws, ends the same: when the new page takes the image off
+  (`pickerRefusal`), `restoreDraft` words the refusal's notice again with that reason,
+  as the submit handler kept it (`refusalNotices`), or adds the image's going and
+  why to any other notice on screen, rather than putting the picker's reason in its
+  place. Each notice is worded for what the form still holds, its text read from the
+  box after `release` (`errorMessage`'s `hasText` and `imageOff`), so a post left with
+  nothing is told to write something instead, unless the thread takes no posts at all.
   A request that succeeds keeps the answer it took; a refusal carrying `"captcha"`
   drops it and, while the form is on screen, sends once more with a fresh one, and
   `"required"` also turns `state.site.captcha` on for a page drawn without knowing.

@@ -163,7 +163,11 @@ function errorMessage(err, { hasText = true, imageOff = "", action = "post" } = 
   // A post of only an image, which release took off: nothing is left of it.
   const nothingLeft = !hasText && imageOff !== "";
   if (err.unreachable) {
-    return nothingLeft ? UNREACHABLE : `${UNREACHABLE} What you wrote is still in the box.`;
+    return nothingLeft
+      ? UNREACHABLE
+      : hasText
+        ? `${UNREACHABLE} What you wrote is still in the box.`
+        : `${UNREACHABLE} Your image is still attached.`;
   }
   if (err.status === 413) {
     // An image taken off since cannot be swapped for a smaller one.
@@ -2041,8 +2045,10 @@ function forgottenElsewhere() {
   }
   forgetOnThisPage();
   if (state.route.view === "verify" && ageStatus() === "ok") {
-    renderVerify().then(() => {
-      showNotice(BROWSER_FORGOTTEN);
+    renderVerify(state.route).then((drawn) => {
+      if (drawn) {
+        showNotice(BROWSER_FORGOTTEN);
+      }
     });
   }
 }
@@ -2267,12 +2273,20 @@ function verifyViewHTML() {
     ${forgetBrowserHTML()}`;
 }
 
-async function renderVerify() {
+// renderVerify draws /verify for route, the render or the press that asked for
+// it, unless a newer render has begun while it asked the server: then, like
+// the other views, it draws nothing and says nothing (overtaken). It returns
+// whether it drew.
+async function renderVerify(route) {
   await loadVerification();
+  if (overtaken(route)) {
+    return false;
+  }
   el.main.innerHTML = verifyViewHTML();
   // Explained once, on the page that can do something about it.
   badgeLost = "";
   announce("Institutional verification");
+  return true;
 }
 
 /* Rules and FAQ ------------------------------------------------------------ */
@@ -2924,19 +2938,43 @@ function emptyStateHTML(message, slug = null) {
   return `<p class="empty">${esc(message)}<br />${board}<a href="/">Back to the board list</a></p>`;
 }
 
+// The loading state, the dimming and the skeleton that may follow it, is the
+// latest render's. rendersBegun counts the renders begun, whatever their view,
+// and beginning one ends the loading state of any before it (endLoading), so a
+// page that loads nothing, the rules say, is never left dimmed, or blanked, by
+// an older render still loading. loadingTimer times the latest one's skeleton.
+let rendersBegun = 0;
+let loadingTimer = 0;
+
+// endLoading takes the loading state off the page: the dimming, and the
+// skeleton not yet drawn.
+function endLoading() {
+  clearTimeout(loadingTimer);
+  el.main.removeAttribute("aria-busy");
+}
+
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
 // With skeleton false the current view stays, dimmed, however long it takes.
+// The skeleton is drawn, and the finish it returns takes the dimming off, only
+// while its render is still the latest: an overtaken render's skeleton would
+// blank the newer page for good, since the overtaken render then draws
+// nothing, and its finish would show a newer render still loading, a kept page
+// say, as loaded. The latest is counted rather than asked of overtaken: a kept
+// page whose redraw fails puts back the route it was drawn for, which
+// overtakes that redraw too.
 function beginLoading({ skeleton = true } = {}) {
+  const begun = rendersBegun;
   el.main.setAttribute("aria-busy", "true");
-  const timer = setTimeout(() => {
-    if (skeleton) {
+  loadingTimer = setTimeout(() => {
+    if (skeleton && begun === rendersBegun) {
       el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
     }
   }, 250);
   return () => {
-    clearTimeout(timer);
-    el.main.removeAttribute("aria-busy");
+    if (begun === rendersBegun) {
+      endLoading();
+    }
   };
 }
 
@@ -2949,11 +2987,11 @@ async function resolvePost(route) {
 
 // overtaken says whether a newer render has begun since the one for route. An
 // overtaken render draws nothing, loaded or not, and leaves the screen to the
-// newer one: the board and thread views ask once their request is answered,
-// and render after the board list and before anything else it does to the
-// page. (/verify, which no redraw keeps, is drawn regardless.) A redraw that
-// fails and keeps its page puts back the route that page was drawn for, which
-// overtakes every render still loading.
+// newer one: the board, thread and /verify views ask once their request is
+// answered, /verify drawn again after a forget or a confirmation too, and
+// render after the board list and before anything else it does to the page. A
+// redraw that fails and keeps its page puts back the route that page was drawn
+// for, which overtakes every render still loading.
 function overtaken(route) {
   return state.route !== route;
 }
@@ -2971,6 +3009,10 @@ async function render({ draft = captureDraft() } = {}) {
   renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   state.route = route;
+  // The loading state is this render's from here: whatever an older one left
+  // loading ends (beginLoading).
+  rendersBegun += 1;
+  endLoading();
   // A redraw of the page a post is on its way from keeps the page on screen
   // (below), and with it what the page's controls read, its thread and the
   // image open on it, until a new page is drawn over it: a refusal answered
@@ -3036,7 +3078,7 @@ async function render({ draft = captureDraft() } = {}) {
         resolved = await resolvePost(route);
         break;
       case "verify":
-        await renderVerify();
+        await renderVerify(route);
         break;
       case "rules":
         renderRules();
@@ -3161,18 +3203,23 @@ function field(form, name) {
 // A form whose post is on its way (holdForm) is carried as itself: restoreDraft
 // puts it, still held, in the new page, so the post on its way is what that
 // page shows, and is read for its values only if its post has been answered by
-// then (emptied after a success, released after a refusal).
+// then (emptied after a success, released after a refusal). A draft is keyed
+// by the page on screen, which the render that drew it noted (drawnFor), not by
+// the newest render begun: one begun before the last has drawn, the second of a
+// double click say, would carry this page's form, held or not, into the form of
+// the page it goes to.
 function captureDraft() {
+  const key = routeKey(drawnFor.route || state.route);
   const form = el.main.querySelector("form[data-kind]");
   if (!form) {
     // A reply the thread closed on is carried as far as its text goes.
     const unsent = el.main.querySelector("textarea[data-unsent]");
-    return unsent ? { key: routeKey(state.route), open: true, body: unsent.value } : null;
+    return unsent ? { key, open: true, body: unsent.value } : null;
   }
   if (heldForms.has(form)) {
-    return { key: routeKey(state.route), held: form };
+    return { key, held: form };
   }
-  return { key: routeKey(state.route), ...formDraft(form) };
+  return { key, ...formDraft(form) };
 }
 
 // formDraft reads what a posting form holds, noting browserForgets as it was,
@@ -3205,6 +3252,9 @@ function restoreDraft(draft) {
     return;
   }
   const form = el.main.querySelector("form[data-kind]");
+  // A held form whose post was answered while its page was drawn again, its
+  // notice on screen (below).
+  let answered = null;
   if (draft.held) {
     // Still held, its post still on its way: the form itself takes the place
     // of the one just drawn for the same thread, or the same board's new
@@ -3222,20 +3272,15 @@ function restoreDraft(draft) {
       // images; or live, the limit raised since a press on a full thread say.
       // Until the hold ends it shows what is being sent, so that waits until
       // then (holdForm).
-      const drawn = form.querySelector("[data-file-field]");
-      const reason = !drawn
-        ? UPLOADS_OFF_REASON
-        : drawn.classList.contains("blocked")
-          ? drawn.querySelector(".file-blocked").textContent
-          : "";
       if (held.querySelector("[data-file-field]")) {
-        redrawnPickers.set(held, reason);
+        redrawnPickers.set(held, pickerRefusal(form));
       }
       form.replaceWith(held);
       const details = held.closest("details");
       if (details) details.open = true;
       return;
     }
+    answered = heldForms.has(held) ? null : held;
     draft = { key: draft.key, ...formDraft(held) };
   }
   if (!form) {
@@ -3261,9 +3306,22 @@ function restoreDraft(draft) {
   if (badge) badge.checked = draft.badge;
 
   // A form with no image field, on a site that takes no images, gets no file
-  // back; a switched-off field refuses it in setFile and says why.
+  // back; a switched-off field refuses it in setFile and says why. A held form
+  // answered while its page was drawn again, refused say, has its notice on
+  // screen already, and an image the new page takes none of is taken off as
+  // release takes it off when the redraw comes first, the notice saying so
+  // rather than giving way to the picker's reason: the refusal's own notice,
+  // still on screen, is worded again with that reason (refusalNotices), and
+  // any other has it added (imageTakenOff). So whichever comes first, the
+  // answer or the redraw, the notice ends the same.
   const fileField = form.querySelector("[data-file-field]");
-  if (fileField && draft.file && setFile(fileField, draft.file)) {
+  const refusal = answered && draft.file ? pickerRefusal(form) : "";
+  if (refusal) {
+    const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
+    const notice = refusalNotices.get(answered);
+    const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" };
+    showNotice(notice && said === notice("") ? notice(refusal) : said ? imageTakenOff(said, refusal, kept) : refusal);
+  } else if (fileField && draft.file && setFile(fileField, draft.file)) {
     // Only alongside the file it was ticked for.
     const spoiler = field(form, "spoiler");
     if (spoiler) spoiler.checked = draft.spoiler;
@@ -3272,6 +3330,17 @@ function restoreDraft(draft) {
   if (details && (draft.open || draft.body || draft.file)) {
     details.open = true;
   }
+}
+
+// pickerRefusal is why a posting form just drawn takes no image: the reason
+// its picker was drawn switched off with, or the site's where it drew none,
+// the site taking no images; "" for a picker drawn live.
+function pickerRefusal(form) {
+  const drawn = form.querySelector("[data-file-field]");
+  if (!drawn) {
+    return UPLOADS_OFF_REASON;
+  }
+  return drawn.classList.contains("blocked") ? drawn.querySelector(".file-blocked").textContent : "";
 }
 
 // keepUnsentDraft is for a draft whose thread was archived or locked under it:
@@ -3497,21 +3566,29 @@ document.addEventListener("click", (event) => {
   }
 
   // Forgetting a badge is entirely local: the server was never told which
-  // browser held it, so there is nothing there to tell.
+  // browser held it, so there is nothing there to tell. Either forget draws
+  // /verify again only while it is the page being drawn: pressed on a page the
+  // reader has just left, it leaves the screen to the page they went to.
   if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
     forgetCredential();
     verifyStep = { step: "email", label: "" };
-    renderVerify();
+    if (state.route.view === "verify") {
+      renderVerify(state.route);
+    }
     return;
   }
 
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     forgetBrowser();
-    renderVerify().then(() => {
-      showNotice(BROWSER_FORGOTTEN);
-    });
+    if (state.route.view === "verify") {
+      renderVerify(state.route).then((drawn) => {
+        if (drawn) {
+          showNotice(BROWSER_FORGOTTEN);
+        }
+      });
+    }
     return;
   }
 
@@ -4175,6 +4252,14 @@ const heldForms = new WeakSet();
 // the hold ends, and goes as the redraw drew it then (holdForm).
 const redrawnPickers = new WeakMap();
 
+// How each posting form's last refusal was worded, by form, as a function of
+// why release took its image off ("" for not at all): a refusal answered while
+// a redraw of the page loads, which then draws the picker switched off, is
+// worded again with the picker's reason (restoreDraft), so it reads as it
+// would had the redraw come first. The two refusals of the image itself take
+// the image off themselves, and keep nothing here.
+const refusalNotices = new WeakMap();
+
 // holdForm switches off a form's controls while its request is pending, from
 // the press until the answer, with whatever the reader wrote left where it is.
 // What is sent was read from the form at the press, so a change made in the
@@ -4447,12 +4532,20 @@ el.main.addEventListener("submit", async (event) => {
       }
       redrawThreadCounts();
     }
+    if (limitReached || uploadsOff) {
+      showNotice(errorMessage(err, { hasText, imageOff }));
+      return;
+    }
     // A thread archived, locked or gone (or, for a new thread, its board gone)
     // takes no post at all, whatever is left of this one.
     const closed =
       err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || err.message === "thread is locked"));
-    const message = errorMessage(err, { hasText, imageOff });
-    showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread, closed }));
+    // Worded for the image release took off, or for none, and kept with the
+    // form: a redraw still loading that then takes the image off words it
+    // again, as it would have read had the redraw come first (restoreDraft).
+    const notice = (off) => imageTakenOff(errorMessage(err, { hasText, imageOff: off }), off, { hasText, isThread, closed });
+    refusalNotices.set(form, notice);
+    showNotice(notice(imageOff));
   }
 });
 
@@ -4537,7 +4630,7 @@ async function submitVerification(form) {
       state.verification.badge = readBadge();
       return;
     }
-    await renderVerify();
+    await renderVerify(route);
   } catch (err) {
     const shown = onScreen();
     release(shown);
