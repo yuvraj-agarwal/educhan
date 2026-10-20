@@ -185,8 +185,8 @@ func TestBoardSetLeavesExistingBoardsAlone(t *testing.T) {
 }
 
 // Phase 0 reserved only the server's own routes, so a moderator could open
-// /archive/ or /rules/; those words are now pages of the site, and the UI
-// reads the path as the page. Starting up moves such a board to
+// /archive/, /rules/ or /pass/; those words are now pages of the site, and the
+// UI reads the path as the page. Starting up moves such a board to
 // "<slug>-board", keeping its row and its threads, rather than leaving it in
 // the board list with every link to it landing somewhere else.
 func TestBoardsUnderNewlyReservedSlugsAreRenamed(t *testing.T) {
@@ -194,15 +194,18 @@ func TestBoardsUnderNewlyReservedSlugsAreRenamed(t *testing.T) {
 	ctx := context.Background()
 	if _, err := pool.Exec(ctx, `
 		INSERT INTO boards (slug, name) VALUES
-		    ('archive', 'Archive'), ('rules', 'Rules'), ('rules-board', 'Taken'), ('u', 'U')`); err != nil {
+		    ('archive', 'Archive'), ('rules', 'Rules'), ('rules-board', 'Taken'), ('u', 'U'), ('pass', 'Pass')`); err != nil {
 		t.Fatalf("insert boards: %v", err)
 	}
 	seedThread(t, pool, "archive", "posted on /archive/")
-	ids := map[string]int{"archive": boardID(t, pool, "archive"), "rules": boardID(t, pool, "rules"), "u": boardID(t, pool, "u")}
+	seedThread(t, pool, "pass", "posted on /pass/")
+	ids := map[string]int{"archive": boardID(t, pool, "archive"), "rules": boardID(t, pool, "rules"), "u": boardID(t, pool, "u"),
+		"pass": boardID(t, pool, "pass")}
 
 	var logs syncBuffer
 	h := testServerLogging(t, func(cfg *Config) { cfg.DatabaseURL = url }, &logs)
-	for old, renamed := range map[string]string{"archive": "archive-board", "rules": "rules-board-2", "u": "board-u"} {
+	for old, renamed := range map[string]string{"archive": "archive-board", "rules": "rules-board-2", "u": "board-u",
+		"pass": "pass-board"} {
 		if id := boardID(t, pool, renamed); id != ids[old] {
 			t.Errorf("/%s/ is row %d, want row %d, the /%s/ it was renamed from", renamed, id, ids[old], old)
 		}
@@ -210,8 +213,10 @@ func TestBoardsUnderNewlyReservedSlugsAreRenamed(t *testing.T) {
 			t.Errorf("the rename of /%s/ to /%s/ was not logged:\n%s", old, renamed, logs.String())
 		}
 	}
-	if detail := fetchThread(t, h, "archive-board", 1); detail.Subject != "posted on /archive/" {
-		t.Errorf("/archive-board/ thread 1 = %q, want the thread from /archive/", detail.Subject)
+	for board, subject := range map[string]string{"archive-board": "posted on /archive/", "pass-board": "posted on /pass/"} {
+		if detail := fetchThread(t, h, board, 1); detail.Subject != subject {
+			t.Errorf("/%s/ thread 1 = %q, want %q, the thread it had before it was renamed", board, detail.Subject, subject)
+		}
 	}
 	var taken Board
 	h.get("/api/boards/rules-board", &taken)

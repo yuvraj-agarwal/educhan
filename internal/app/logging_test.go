@@ -143,4 +143,7 @@ func TestServingWarningsAreTheServersAlone(t *testing.T) {
 	if got := strings.Count(out, `"level":"WARN"`); got != 3 {
 		t.Errorf("%d warnings, want 3:\n%s", got, out)
 	}
+	if strings.Contains(out, "Pass") {
+		t.Errorf("a server with no Pass warned about one:\n%s", out)
+	}
 }
