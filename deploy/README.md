@@ -70,7 +70,8 @@ by submitting a build (section 2.5), not by building locally.
 ## 2. Cloud Run
 
 **The short way.** In [Cloud Shell](https://shell.cloud.google.com), with a
-project that has billing linked, one script does every step in this section:
+project that has billing linked, one script does every step in this section but
+the Pass (2.10):
 APIs, Artifact Registry, service accounts, Cloud SQL, the media bucket, secrets,
 the build, the deploy, and the request-log exclusion. It leaves image uploads
 and verification off, keeps one instance warm for a demo (`MIN_INSTANCES=0` in
@@ -83,7 +84,7 @@ bash deploy/first-deploy.sh YOUR_PROJECT_ID            # region defaults to asia
 
 It runs builds as a service account of its own (`educhan-build`) rather than
 the project's default build account, so the build grants below are the same in
-every project. The rest of this section is what the script does, step by step.
+every project. Sections 2.1 to 2.9 are what the script does, step by step.
 
 ### 2.1 One-time project setup
 
@@ -543,11 +544,13 @@ refuses any other address Stripe hands back.
 In Cloud Shell (the `read`s keep the keys out of your shell history):
 
 ```bash
-export REGION=asia-south1   # the region the service runs in
+export REGION="${REGION:-asia-south1}"   # the region the service runs in
 export RUN_SA="educhan-run@$(gcloud config get-value project).iam.gserviceaccount.com"
-# The one address readers use, as a bare origin (any path is refused): the
-# service's own, unless readers come in through a domain of yours (below).
-export PUBLIC_URL="$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')"
+# The one address readers use, as a bare origin (any path is refused). With a
+# domain of your own, export PUBLIC_URL=https://YOUR-DOMAIN before every run of
+# this block (below); without one, it is the run.app address first-deploy.sh
+# prints.
+export PUBLIC_URL="${PUBLIC_URL:-$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')}"
 
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
@@ -615,14 +618,49 @@ once). Three more settings have working defaults and need no change:
 `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and `EDUCHAN_PASS_COOLDOWN`
 (section 4).
 
-`PUBLIC_URL` is where Stripe sends a buyer back, and it has to be the one
-address readers use: the cookie that lets a browser collect its code belongs to
-the address the checkout began on, so a checkout begun anywhere else cannot be
-collected where Stripe returns the buyer. If readers come in through a domain
-of your own, set `PUBLIC_URL` to it and turn the `run.app` address off
+`PUBLIC_URL` is where Stripe sends a buyer back and where it sends its
+webhooks, and it has to be the one address readers use: the cookie that lets a
+browser collect its code belongs to the address the checkout began on, so a
+checkout begun anywhere else cannot be collected where Stripe returns the buyer.
+A service answers on more than one `run.app` address (`gcloud` may print another
+as "Service URL" while it deploys), so give readers only the one the block
+takes, which `first-deploy.sh` prints after "educhan is live at". If readers
+come in through a domain of your own, export `PUBLIC_URL` with it before running
+the block, and turn the `run.app` addresses off once the domain serves the site
 (`gcloud run services update educhan --region "$REGION" --no-default-url`);
-`first-deploy.sh` then checks, and prints, an address that no longer answers,
-so check your domain's `/healthz` yourself.
+`first-deploy.sh` then checks and prints an address that no longer answers, so
+check your domain's `/api/pass` yourself.
+
+**Moving to a domain once the Pass is on sale** takes the webhook endpoint with
+it. Editing the endpoint's URL keeps its signing secret, so Secret Manager needs
+no change; the return address and the `run.app` addresses then go in one
+update:
+
+```bash
+export REGION="${REGION:-asia-south1}"
+export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin, as above
+curl -s "${PUBLIC_URL}/api/pass"        # must answer "enabled":true before anything moves
+
+read -rsp 'Stripe secret key: ' STRIPE_ADMIN; echo
+# Newest first: the service holds the secret of the newest one the block made.
+curl -fsS 'https://api.stripe.com/v1/webhook_endpoints?limit=100' -u "${STRIPE_ADMIN}:" \
+  | python3 -c 'import sys,json;[print(e["id"],e["url"]) for e in sorted(json.load(sys.stdin)["data"],key=lambda e:-e["created"])]'
+read -rp 'Endpoint to move (we_…): ' ENDPOINT
+curl -fsS "https://api.stripe.com/v1/webhook_endpoints/${ENDPOINT}" -u "${STRIPE_ADMIN}:" \
+  -d url="${PUBLIC_URL}/api/pass/stripe-webhook" >/dev/null && echo 'endpoint moved'
+unset STRIPE_ADMIN
+
+gcloud run services update educhan --region "$REGION" \
+  --update-env-vars "EDUCHAN_PUBLIC_URL=${PUBLIC_URL}" --no-default-url
+```
+
+Give readers the domain only after that update: until then Stripe sends buyers
+back to `run.app`. From the update on, a checkout begun on a `run.app` address
+and not yet collected can no longer be collected: one still open, one whose
+buyer closed the tab before collecting, and a slow payment still clearing. Their
+buyers write to the support address on the receipt and get a reissue code (the
+README's *Lost codes*). Pausing sales a day before the update (below), and
+opening them again after it, leaves only the last two.
 
 Re-running `first-deploy.sh` keeps these settings. Applying `service.yaml` with
 `services replace`, or running the long form in section 2.6 again, does not:
@@ -631,7 +669,11 @@ retires the Pass without the pause (below). If you manage the service that way,
 uncomment the Pass entries in `service.yaml` with your Price ID and
 `PUBLIC_URL`, and `EDUCHAN_STRIPE_AUTOMATIC_TAX` if you set it, or add them to
 the long form, before you run it again, and keep `EDUCHAN_PASS_SALES=paused`
-there while sales are paused, or the next run opens them.
+there while sales are paused, or the next run opens them. With the `run.app`
+addresses turned off, `service.yaml` needs
+`run.googleapis.com/default-url-disabled: "true"` under the Service's
+`metadata.annotations` as well (it is there, commented out), or each
+`services replace` turns them back on.
 
 **To stop selling, pause.** This leaves everything already sold working:
 

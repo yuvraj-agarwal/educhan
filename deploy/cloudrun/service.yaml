@@ -10,6 +10,11 @@ metadata:
   name: educhan
   labels:
     cloud.googleapis.com/location: ${REGION}
+  # Once readers come in through a domain of your own and the run.app
+  # addresses are turned off (deploy/README.md section 2.10), keep them off
+  # here: applying this file without it turns them back on.
+  # annotations:
+  #   run.googleapis.com/default-url-disabled: "true"
 spec:
   template:
     metadata:
