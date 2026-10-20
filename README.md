@@ -464,10 +464,10 @@ cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
 What it does with posts like the ones it is written for is pinned by a corpus:
-3,156 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
+3,201 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
 three for each kind of post: `academic.jsonl`, `academic_2.jsonl` and
-`academic_3.jsonl` (725 posts), the same three for `life` (805, student life),
-for `contact` (768, contact details) and for `risk` (858, risky posts), each
+`academic_3.jsonl` (725 posts), the same three for `life` (821, student life),
+for `contact` (788, contact details) and for `risk` (867, risky posts), each
 labelled with what the filter should do. Every address, username and profile in
 them says "madeup" or is at a reserved domain, so none is a real person's
 (`TestFilterCorpusDetailsAreMadeUp`); a number meant to be blocked is ordinary
@@ -478,7 +478,7 @@ assigned, so it is no one's.
 wrong, except those marked as known misses, each with a note saying why the
 miss is accepted, and logs how many ordinary posts were stopped and how much of
 each kind was caught (`go test -run TestFilterCorpus -v ./internal/app`).
-**The rules were fitted to all 3,156 posts.** They were first written against
+**The rules were fitted to all 3,201 posts.** They were first written against
 the files without `_2` or `_3`; the `_2` files were written apart from them and
 then used to rewrite the threat, self-harm and grooming rules (which first held
 55 of their 135 risky posts) and then the contact and support rules (which
@@ -490,7 +490,7 @@ posts, blocked 146 of their 183 contact details, showed support for 24 of their
 41 crisis posts and held 85 of their 172 risky posts. They were then used to
 put those wrong stops right and to widen every kind of rule, cause by cause,
 and three posts whose numbers the filter passes on purpose (two drama numbers
-and a voided SSN) were given ordinary digits. The last 271 were written to pin
+and a voided SSN) were given ordinary digits. The last 316 were written to pin
 what a review of the rules found they missed or stopped wrongly, each beside
 the change that put it right, so they were fitted too. So the rates the test
 logs — no ordinary post stopped, and all but three contact details, all but one
