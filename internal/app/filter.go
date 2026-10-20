@@ -9074,6 +9074,8 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	switch {
 	case is(last, "kms"):
 		return f.kmsCheck(v, m, next)
+	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && cutsSomethingElse(text, m, next):
+		return false
 	case is(last, "cut"):
 		return !cutObject(next)
 	case is(last, "overdose") || is(last, "od"):
@@ -9096,13 +9098,18 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	case is(last, "forever") || is(last, "bus") || is(last, "car") || is(last, "truck") || is(last, "train") ||
 		is(last, "lorry"):
 		// "i want to sleep forever after this exam week lol", "hope i get
-		// hit by a bus so i can skip the exam lol".
+		// hit by a bus so i can skip the exam lol", and sleep after an exam
+		// with no laugh: "i want to sleep forever after the last exam".
 		sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+		if is(last, "forever") && nextIn(0, sleepUntil) && anyIn(next[1:min(len(next), 5)], examsSleptAfter) {
+			return false
+		}
 		return !(anyIn(sentence, schoolWorkWords) && anyIn(sentence, laughs))
 	case is(last, "dead") && hasWord(ws, "rather") || is(last, "death"):
-		// "i'd rather be dead than wear that", "rather be dead last", "i
-		// want Death Note".
-		return len(next) == 0 || !rankOrThan[next[0]] && (is(last, "dead") || deathTrail[next[0]])
+		// "i'd rather be dead than wear that", "rather be dead last", "i'd
+		// rather be dead tired than fail", "i want Death Note".
+		return len(next) == 0 || !rankOrThan[next[0]] && !deadIntensified[next[0]] &&
+			(is(last, "dead") || deathTrail[next[0]])
 	case is(last, "jumping"):
 		// "think about jumping" off something, or with somewhere high in
 		// the sentence; not "jumping to CSE".
@@ -9127,15 +9134,18 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		if len(next) > 0 && is(next[0], "for") && !(len(next) > 1 && (is(next[1], "real") || is(next[1], "good"))) {
 			return false
 		}
-		return !dieIdiom(next) && !hillToDieOn(text, m, next)
+		return !dieIdiom(next) && !hillToDieOn(text, m, next) && !dyesSomething(next)
 	case is(last, "disappear") && nextIn(0, setOf(`from for`)):
 		return anyIn(next[1:min(len(next), 3)], canonSetOf(`world earth existence life everyone everything good ever forever`))
 	case is(last, "myself") && (hasWord(ws, "kill") || hasWord(ws, "killing")) && nextIn(0, canonSetOf(`laughing laughin lol`)):
 		return false
+	case is(last, "myself") && (hasWord(ws, "hang") || hasWord(ws, "hanging")) && hangsFromABar(next):
+		return false
 	case is(last, "it") && (hasWord(ws, "end") || hasWord(ws, "ending")):
 		// "end it" is the end of something else unless nothing, or a time,
-		// comes after it: "i'm going to end it tonight", not "end it with her".
-		return len(next) == 0 || nextIn(0, endItTimes)
+		// comes after it: "i'm going to end it tonight", not "end it with her"
+		// or "ending it tonight with a final revision of organic chem".
+		return (len(next) == 0 || nextIn(0, endItTimes)) && !endsWithWork(next)
 	case is(last, "things") && hasWord(ws, "ending") && nextIn(0, canonSetOf(`with between`)):
 		// "ending things with my boyfriend", but not "ending things with pills".
 		return !anyIn(next[1:min(len(next), 4)], partnerWords)
@@ -9153,7 +9163,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 // paracetamol for my headache"); "ending it" and "gonna end it" only by the
 // poster and not of an essay or a series; cutting "for 2 years" and a
 // relapse only the poster's, "clean from sh" only with a relapse in the
-// post; "by the time you read this i'll be gone" not "to goa"; a suicide
+// post and the poster's "I" or only a duration before it; "by the time you read this i'll be gone" not "to goa"; a suicide
 // note not one written for a class or found in a book; "life isn't worth
 // living" not someone else's ("his life"); and the Hinglish "jaan de dunga"
 // not "tere liye" or "desh ke liye", "zindagi khatam kar dunga" not
@@ -9184,8 +9194,9 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 	case is(first, "clean"):
 		// "i was 3 months clean from sh and relapsed": the poster said
 		// "I" in the clause, not "my friend was".
+		before := wordsIn(clauseBefore(text, m[0]))
 		return r.postHas("relapse", relapseWords) &&
-			(ownSubject(text, m[0]) || anyIn(wordsIn(clauseBefore(text, m[0])), selfSubjects))
+			(ownSubject(text, m[0]) || anyIn(before, selfSubjects) || onlyADuration(before))
 	case is(first, "by"):
 		return !(len(next) > 0 && travelWords[next[0]])
 	case is(ws[len(ws)-1], "note") || is(ws[len(ws)-1], "letter") || len(ws) > 3 && is(ws[2], "note") ||
@@ -9194,7 +9205,9 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 	case is(first, "life") || is(first, "my") && len(ws) > 1 && is(ws[1], "life"):
 		return !otherOwners[prev]
 	case is(first, "apni") || is(first, "jaan"):
-		return !anyIn(wordsIn(clauseBefore(text, m[0])), forSomeone)
+		// "tere liye jaan de dunga", and after it, "jaan de dunga is
+		// project ke liye".
+		return !anyIn(wordsIn(clauseBefore(text, m[0])), forSomeone) && !anyIn(next, forSomeone)
 	case is(first, "zindagi") || is(first, "zindgi") || is(first, "jindagi"):
 		return !hindiOthers[prev]
 	case is(first, "neend") || is(first, "goliyan") || is(first, "goliya") || is(first, "golia"):
@@ -9229,6 +9242,72 @@ var (
 	otherOwners = canonSetOf(`his her their your ur whose its a the`)
 	forSomeone  = canonSetOf(`liye khatir vaaste waaste`)
 	hindiOthers = canonSetOf(`teri tera tumhari tumhara uski uska unki unka inki iski`)
+)
+
+// onlyADuration reports words before "clean from sh" that say only for how
+// long, with no one named: "3 months clean from sh and relapsed", "was
+// almost a year clean".
+func onlyADuration(ws []string) bool {
+	unit := false
+	for _, w := range ws {
+		switch {
+		case durationUnits[w]:
+			unit = true
+		case isASCIIDigit(w[0]) || durationWords[w] || carriers[w]:
+		default:
+			return false
+		}
+	}
+	return unit
+}
+
+// hangsFromABar reports "hang myself" from a bar or the rings, or upside
+// down: a hang in a gym or a playground, not from a fan, a tree or a rope.
+func hangsFromABar(next []string) bool {
+	if len(next) > 0 && is(next[0], "upside") {
+		return true
+	}
+	return len(next) > 1 && hangPlaces[next[0]] && anyIn(next[1:min(len(next), 5)], hangBars)
+}
+
+// cutsSomethingElse reports a cut that is of something named, short of the
+// object straight after it that cutObject reads: a session cut short ("i cut
+// last night's study session short"), or hair or nails in the sentence ("i
+// want to cut again, my bangs grew out").
+func cutsSomethingElse(text string, m []int, next []string) bool {
+	if anyIn(next[:min(len(next), 5)], cutShort) {
+		return true
+	}
+	return anyIn(wordsIn(sentenceAround(text, m[0], m[1])), groomed)
+}
+
+// endsWithWork reports "end it" or "ending it" with a piece of school work or
+// something watched: "ending it tonight with a final revision of organic
+// chem", "end it with a question", not "with pills".
+func endsWithWork(next []string) bool {
+	for i, w := range next {
+		if is(w, "with") {
+			later := next[i+1 : min(len(next), i+6)]
+			return anyIn(later, schoolWorkWords) || anyIn(later, endedThings) || anyIn(later, revisionWords)
+		}
+	}
+	return false
+}
+
+var (
+	durationUnits = canonSetOf(`day days week weeks month months year years yr yrs`)
+	durationWords = canonSetOf(`a an one two three four five six seven eight nine ten eleven twelve few couple of
+		almost nearly over about around like half whole full`)
+	hangPlaces    = canonSetOf(`from on off by`)
+	hangBars      = canonSetOf(`bar bars rings ring monkey pull pullup chinup chin jungle gym trapeze`)
+	cutShort      = canonSetOf(`short session sessions nap trip practice`)
+	groomed       = canonSetOf(`hair hairs bangs fringe nails nail beard mullet layers`)
+	revisionWords = canonSetOf(`revision revisions revise revising notes flashcards question questions problem problems
+		chapter syllabus chem physics maths math bio biology history`)
+	// sleepUntil and examsSleptAfter: "sleep forever after the last exam".
+	sleepUntil      = canonSetOf(`after till until once when`)
+	examsSleptAfter = canonSetOf(`exam exams boards finals final paper papers sem semester sems test tests mock mocks
+		jee neet assignment assignments submission deadline project olympiad`)
 )
 
 // cutObject reports something cut named after "cut": "cut my hair", "cut
@@ -9898,6 +9977,10 @@ var toCrisis = canonSetOf(`day days morning mornings tomorrow life world reality
 var (
 	waterWords = canonSetOf(`river lake sea ocean pool bath bathtub tub well canal tank water pond dam nadi`)
 	rankOrThan = canonSetOf(`than last first`)
+	// deadIntensified after "dead" make it "very": "dead tired", "dead
+	// broke", "dead serious".
+	deadIntensified = canonSetOf(`tired broke serious wrong sure certain set centre center even quiet silent asleep
+		bored beat scared bang`)
 	// deathTrail may follow "i want death" or "praying for death".
 	deathTrail = canonSetOf(`lol tbh honestly fr ngl anyway anyways though tho every each daily now already again
 		so to at rn tonight please pls`)
