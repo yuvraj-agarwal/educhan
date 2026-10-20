@@ -2719,6 +2719,16 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"drop ur numbers i'll add you", contact},
 		{"post your numbers from the mock test here", publish},
 		{"drop your numbers in the poll for the best anime", publish},
+		// Everyone's numbers in a post about results are scores, unless a
+		// way to reach people is named (R2-M11).
+		{"results are out! drop your numbers below", publish},
+		{"what did everyone get? drop your numbers", publish},
+		{"how did everyone do? drop your numbers below", publish},
+		{"exam's over, drop your numbers", publish},
+		{"results are out, drop your phone numbers below", contact},
+		{"results out, dm me your numbers", contact},
+		{"mock results are out, drop your numbers, making a gc for the toppers", contact},
+		{"girls drop your numbers below", contact},
 		// A group set up on an app, named after the group (R1-M13).
 		{"make a gc on snap", contact},
 		{"creating a whatsapp group for neet 2027 aspirants", contact},

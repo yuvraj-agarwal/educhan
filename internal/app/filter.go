@@ -1087,17 +1087,24 @@ var askRules = []rule{bothViews(`\b` + words(
 
 // numbersAskRule asks everyone for their numbers: "drop your numbers", "send
 // your numbers in the comments", "drop numbers for the group". Scores,
-// marks and readings are numbers too, so numbersCheck wants the ask to end
-// there or the post to be gathering people.
+// marks and readings are numbers too, so numbersCheck wants a way to reach
+// someone round the ask, or the ask to end there in a post about nothing
+// else.
 var numbersAskRule = bothViews(`\b` + words(`send`, `give`, `drop`, `dm`, `text`, `comment`, `leave`, `post`, `share`,
 	`reply~with`) + `~(?:me~)?(?:` + yours + `~)?(?:` + words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`) +
 	`~)?` + words(`numbers`, `nos`, `nums`) + `\b`)
 
-// numbersCheck reads what follows the numbers asked for, and round them:
-// the ask ends ("drop your numbers below", "send your numbers in the
-// comments"), or the post sets up a group or a call ("anyone wanna make a
-// whatsapp group? drop your numbers", "drop ur numbers i'll add you"); not
-// "post your numbers from the mock" or "drop your numbers in the poll".
+// numbersCheck reads what follows the numbers asked for, and round them. A
+// way to reach someone makes them phone numbers whatever else the post is
+// about: the ask names one ("drop your phone numbers", "dm me your
+// numbers") or the post sets up a group or a call ("anyone wanna make a
+// whatsapp group? drop your numbers", "drop ur numbers i'll add you"). Without
+// one, an ask that ends there ("drop your numbers below", "send your numbers
+// in the comments") is for phone numbers unless the post is about results,
+// where the commonest post after one asks for everyone's ("jee mains result
+// is out, drop your numbers", "what did everyone get? drop your numbers
+// below"); and numbers about something are figures: "post your numbers from
+// the mock", "drop your numbers in the poll".
 func numbersCheck(v *view, m []int) bool {
 	text := v.text
 	if !notNegated(v, m) || v.reported(m) {
@@ -1106,9 +1113,6 @@ func numbersCheck(v *view, m []int) bool {
 	after := nextWords(clauseAfter(text, m[1]), 4)
 	if len(after) > 0 && numbersTopics[after[0]] {
 		return false
-	}
-	if allIn(after, numbersTails) {
-		return true
 	}
 	lo, hi := max(0, m[0]-160), min(len(text), m[1]+160)
 	v.work += hi - lo
@@ -1120,7 +1124,32 @@ func numbersCheck(v *view, m []int) bool {
 	if lo > 0 && len(around) > 0 {
 		around = around[1:]
 	}
-	return anyIn(around, gatheringWords)
+	if anyIn(wordsIn(text[m[0]:m[1]]), numbersReach) || anyIn(around, gatheringWords) {
+		return true
+	}
+	return allIn(after, numbersTails) && !aboutResults(around)
+}
+
+// aboutResults reports that the words round an ask for everyone's numbers
+// are about an exam's results: a word for them ("result", "marks", "the
+// mock's", "topped"), "how many" or "how did", or what someone got or scored
+// ("what did everyone get?").
+func aboutResults(ws []string) bool {
+	for i, w := range ws {
+		switch {
+		case scoreWords[strings.TrimSuffix(w, "'s")]:
+			return true
+		case is(w, "how") && i+1 < len(ws) && (is(ws[i+1], "many") || is(ws[i+1], "much") || is(ws[i+1], "did")):
+			return true
+		case is(w, "did") || is(w, "do"):
+			for _, x := range ws[i+1 : min(len(ws), i+3)] {
+				if resultVerbs[x] {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 var (
@@ -1131,10 +1160,23 @@ var (
 	// numbersTopics after numbers make them scores or figures: "from the
 	// mock", "of the lab", "as they are", "on the test".
 	numbersTopics = canonSetOf(`from of as on per vs versus off up down out`)
+	// numbersReach in the ask itself make the numbers a way to reach
+	// someone: "drop your phone numbers", "dm me your numbers", "text me ur
+	// numbers".
+	numbersReach = canonSetOf(`phone mobile cell whatsapp contact dm text`)
 	// gatheringWords round an ask for numbers say what they are for: a
-	// group, a call or being added.
-	gatheringWords = canonSetOf(`group groups gc grp whatsapp telegram signal discord add adding added call contact
-		contacts`)
+	// group, a call, being added or texted, or an app.
+	gatheringWords = canonSetOf(`group groups gc grp whatsapp telegram signal discord insta instagram snap snapchat add
+		adding added call calls calling text texting txt contact contacts`)
+	// scoreWords round an ask for everyone's numbers make them an exam's
+	// results: "jee mains result is out, drop your numbers", "mock test 5
+	// done", "let's see who topped".
+	scoreWords = canonSetOf(`result results marks mark score scores scored scoring mock mocks test tests exam exams
+		paper papers rank ranks ranking percentile percentiles topped topper toppers cutoff cutoffs grade grades gpa
+		cgpa sgpa percentage marksheet attempt attempts attempted questions hours accuracy spreadsheet leaderboard`)
+	// resultVerbs after "did" or "do" ask what everyone got: "what did
+	// everyone get?", "how did u score".
+	resultVerbs = canonSetOf(`get got score scored`)
 )
 
 // atAskRule asks for a handle by its "@" alone: "drop ur @", "what's your @".
