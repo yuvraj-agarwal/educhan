@@ -19,9 +19,11 @@
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
 -- there lives from checkout until the Pass is collected, and is deleted the
--- moment it is. Unpaid, it is deleted at its deadline, a week after checkout
--- (longer while a slow payment confirms); paid and never collected, it is
--- kept for its own term past that, so the owner can still reissue it.
+-- moment it is. Unpaid, it is deleted at the first prune (a checkout, the
+-- daily sweep, or a claim from its own browser) after its deadline, a week
+-- after checkout (longer while a slow payment confirms), and until then a late
+-- payment still counts; paid and never collected, it is kept for its own term
+-- past that deadline, so the owner can still reissue it.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,
@@ -54,11 +56,14 @@ CREATE TABLE IF NOT EXISTS pass_payments (
     -- Whether a lost code can be reissued from this payment: 'bought' for the
     -- one that created the Pass, and NULL for a renewal. When the purchase is
     -- refunded or disputed and the Pass goes on, a renewal left becomes its
-    -- origin, 'moved', only if its term is the only one still running or to
-    -- come, so that it paid for all the time the Pass has left, and stops
-    -- being one when the Pass is renewed again, since then it no longer has.
-    -- Otherwise no one payment did, and the Pass has no origin and can no
-    -- longer be reissued.
+    -- origin, 'moved', only if it pays for all the time the Pass has left: its
+    -- term is the only one still running or to come, a paid renewal not
+    -- collected yet counting as one to come. Otherwise the Pass has no origin
+    -- and cannot be reissued, until a refund or a dispute of another of its
+    -- payments, or of a paid renewal not collected yet, leaves one payment
+    -- that does. A 'moved' origin gives no reissue code while a renewal of the
+    -- Pass is under way, paid or not yet, and stops being one when the Pass
+    -- is renewed again, since it then pays for only part of its time.
     origin       TEXT CHECK (origin IN ('bought', 'moved'))
 );
 
@@ -105,16 +110,19 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
 -- makes one for a payment (POST /api/pass/reissue) and sends it to the address
 -- the buyer wrote in from, and whoever types it on the Pass page is given a new
 -- code. The owner never sees a Pass code. A row lives until its reissue code is
--- used, refunded or past its deadline, rounded up to a UTC midnight like an
--- order's.
+-- used, replaced by a newer one, cancelled by a refund or a dispute or by a
+-- renewal of a Pass whose right had moved, or past its deadline, rounded up to
+-- a UTC midnight like an order's. One for a right that moved is refused, and
+-- kept, while a renewal of its Pass is under way.
 CREATE TABLE IF NOT EXISTS pass_reissues (
     -- SHA-256 of the reissue code's random characters, which only the
     -- owner's answer, the message to the buyer and the claim that redeems it
     -- carry.
     token_hash   BYTEA PRIMARY KEY,
-    -- The payment it reissues: the one that made a Pass, or a paid order not
-    -- collected yet. A newer reissue code for the same payment replaces this
-    -- one.
+    -- The payment it reissues: the Pass's origin (the purchase, or the
+    -- renewal the right moved to after a refund or a dispute), or a paid
+    -- order not collected yet. A newer reissue code for the same payment
+    -- replaces this one.
     payment_hash BYTEA NOT NULL UNIQUE,
     expires_at   TIMESTAMPTZ NOT NULL
 );
