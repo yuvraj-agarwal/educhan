@@ -820,11 +820,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed transaction
     (`CredentialLabel` reads on; everything else on the table waits, and holds the
     lock up: writers and row lockers, `VACUUM`, `ANALYZE`, index builds, schema
-    changes, another sweep), deletes every row and inserts the
-    returned copy back `ORDER BY random()` in one statement, and notes the
-    transaction's id. `lock_timeout` bounds the wait, not the hold: confirmations queue
-    for the rewrite's statement too, which grows with the table (about three seconds
-    for 220,000 credentials on a development machine). `restampScans` then reads each
+    changes, another sweep), deletes every row and inserts the returned copy back
+    `ORDER BY random()` in one statement, and notes the transaction's id.
+    `lock_timeout` bounds the wait, not the hold: confirmations queue for the
+    rewrite's statement too, which grows with the table (about three seconds for
+    220,000 credentials on a development machine). `restampScans` then reads each
     verification table whole and through each of its indexes, which it finds in the
     catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
     show for them is the sweep's rather than the last confirmation's. Last,
@@ -878,14 +878,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     joins its address's credential if there is one), backups (taken from 05:00 UTC,
     up to 09:00, seven kept), a night the sweep failed, autovacuum times recorded
     before `0015`, or the write-ahead log the server keeps for crash recovery,
-    which dates a credential until PostgreSQL
-    deletes or reuses the newest segment holding its row. With full-page writes on,
-    the log since the checkpoint before the sweep holds every credentials page as it
-    stood before the rewrite, issuance ids and all — the sweep's own delete logs the
-    image of each page no change since that checkpoint already had — so that segment
-    is the sweep's or close to it, not the issuance's. Point-in-time recovery stays
-    off and `track_commit_timestamp` stays off (`deploy/README.md` section 2.2);
-    changing either means changing that README section in the same commit.
+    which dates a credential until PostgreSQL deletes or reuses the newest segment
+    holding its row. With full-page writes on, the log since the checkpoint before
+    the sweep holds every credentials page as it stood before the rewrite, issuance
+    ids and all — the sweep's own delete logs the image of each page no change since
+    that checkpoint already had — so that segment is the sweep's or close to it, not
+    the issuance's. Point-in-time recovery stays off and `track_commit_timestamp`
+    stays off (`deploy/README.md` section 2.2); changing either means changing that
+    README section in the same commit.
     `TestSweepTakesIssuanceTimeOutOfCredentials`,
     `TestSweepDeletesCodesThatExpiredUnconfirmed`,
     `TestSweepStoresCredentialsOutOfIssuanceOrder`,

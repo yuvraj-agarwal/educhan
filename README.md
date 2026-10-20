@@ -404,13 +404,13 @@ What that protects, exactly:
   making it fail. Its row keeps the time it was asked for, to the microsecond,
   and the id of the transaction that last wrote it (the request, or a wrong
   guess at the code), until it is confirmed or, once it has expired, until the
-  next request or the next sweep deletes it — and in a
-  backup taken meanwhile, for as long as the backup is kept. If its address
-  already holds a credential, as when a second browser asks for a code, the
-  row's email hash joins it to that credential, which it says was issued before
-  then; if it is confirmed, a backup that holds it dates the credential it
-  becomes to within the code's lifetime. Requests are few at 03:17 UTC, so
-  this is seldom, but no sweep can rule it out.
+  next request or the next sweep deletes it — and in a backup taken meanwhile,
+  for as long as the backup is kept. If its address already holds a credential,
+  as when a second browser asks for a code, the row's email hash joins it to
+  that credential, which it says was issued before then; if it is confirmed, a
+  backup that holds it dates the credential it becomes to within the code's
+  lifetime. Requests are few at 03:17 UTC, so this is seldom, but no sweep can
+  rule it out.
 - **Backups** hold rows as they stood when they were taken. The instance keeps a
   daily backup, the last seven — about a week — each started in a window that
   opens at 05:00 UTC ([deploy guide](deploy/README.md) section 2.2). A
