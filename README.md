@@ -300,10 +300,17 @@ expiries, kept after the rows are gone. And the statistics views keep the time
 of the last scan of each table and index, and of autovacuum's last run on each
 table, which follow the requests that read and wrote it.
 
-So migration `0015` stops PostgreSQL sampling either table, drops the samples
-it already had, and turns autovacuum off on both
-(`TestVerificationTablesKeepNoStatistics`), and the archive sweeper ends every
-run on the verification tables (`RewriteCredentials` in `store.go`):
+So migration `0015` stops PostgreSQL sampling either table, deletes the samples
+it already had from `pg_statistic`, and turns autovacuum off on both
+(`TestVerificationTablesKeepNoStatistics`). Deleting the samples takes them out
+of `pg_stats`, not out of the catalog's files: like any deleted row, they stay
+in `pg_statistic`'s file, and the bigger ones — the email hashes' histogram —
+in its TOAST table's, where a superuser or root on the machine can read them,
+and in every backup that copies those files, until the catalog is written out
+anew. On a database that ran `0015` before any `ANALYZE` of the tables, as a new
+one does, there is nothing to find; on one upgraded across `0015` with
+verification in use, step 5 below is what removes them. And the archive sweeper
+ends every run on the verification tables (`RewriteCredentials` in `store.go`):
 
 1. It deletes the codes that expired unconfirmed. A request for a code deletes
    them too, but nothing says when one will come, and until one does an
@@ -354,13 +361,30 @@ run on the verification tables (`RewriteCredentials` in `store.go`):
    `TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil`). It checks
    each table's new file the same way afterwards, and tries again if it still
    holds those rows.
+5. Last, `VACUUM FULL` writes `pg_statistic` out anew, under the same checks,
+   so that the samples `0015` deleted leave its files too. No query can see an
+   old row version, so the sweep cannot tell whether a database still holds
+   them, and it does this every night. The catalog is small and a run is short
+   — about six milliseconds on a new database, on a development machine — but
+   while it runs any request whose query needs statistics its connection has
+   not cached waits, on any table, so this run too passes over the catalog while
+   another session holds it — one reading `pg_stats`, say — and tries again
+   (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Only a superuser, the
+   database's owner, or a role that belongs to the owner's role may vacuum the
+   catalog — owning the tables is not enough — and a sweeper whose role may not
+   fails (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). On Cloud SQL,
+   where no role is a superuser, that means the role that owns the database, or
+   membership of it; `SELECT pg_has_role(datdba, 'USAGE') FROM pg_database WHERE
+   datname = current_database()`, run as the sweeper's role, says whether it
+   has that, and this has not been tried there yet.
 
 The sweep keeps at this for up to a minute. A session that holds a table, or an
 old snapshot, for longer than that — an export, a `psql` left in a transaction
 — fails the sweep, which exits non-zero
 (`TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
 `TestSweepFailsWhenTheVerificationTablesAreHeld`). It does not report success
-with the old rows still in the tables' files.
+with the old rows still in the tables' files, or the old samples in
+`pg_statistic`'s.
 
 `TestSweepTakesIssuanceTimeOutOfCredentials` issues credentials between posts
 and checks that afterwards they all carry one transaction id, that none lies
@@ -375,11 +399,11 @@ What that protects, exactly:
 - **The verification tables of the live database, after the nightly sweep at
   03:17 UTC.** Nothing in either table dates a credential more closely than its
   expiry, rounded to the day: no live row and no row version in either table's
-  file, no sample in `pg_statistic`, and no last-scan time says more — but for
-  a code still in flight as the sweep ran (below). Times autovacuum recorded
-  before migration `0015` stay in the statistics views until the statistics are
-  reset, which takes a superuser. That is the tables, not the database: see the
-  next point.
+  file, no sample in `pg_statistic` or in its files, and no last-scan time says
+  more — but for a code still in flight as the sweep ran (below). Times
+  autovacuum recorded before migration `0015` stay in the statistics views until
+  the statistics are reset, which takes a superuser. That is the tables, not the
+  database: see the next point.
 - **Not the posts' own transaction ids**, which no sweep touches. Every code
   request that reaches the database, and every attempt at a code in flight, is a
   write and takes the next id, so each leaves a gap in the posts' `xmin` between
@@ -427,11 +451,14 @@ What that protects, exactly:
   09:00 UTC, is in that backup as it was before the next sweep — with its own
   transaction id, and its deleted pending row perhaps still in the file — for
   as long as the backup is kept. So is every credential on a night the sweep
-  failed. Every backup holds the posts, and with them the gaps above, whatever
-  the sweep did; and one that copies the write-ahead log with the instance's
-  files can hold that night's sweep's own copies of the credential rows as they
-  were before it (next point), which date every credential issued since the
-  night before.
+  failed. A backup that copies the instance's files, taken before the first
+  sweep after the upgrade to `0015` wrote `pg_statistic` out (step 5), holds the
+  samples `ANALYZE` took before `0015` — email hashes beside expiries to the
+  microsecond — in that catalog or its files. Every backup holds the posts, and
+  with them the gaps above, whatever the sweep did; and one that copies the
+  write-ahead log with the instance's files can hold that night's sweep's own
+  copies of the credential rows as they were before it (next point), which date
+  every credential issued since the night before.
 - **The write-ahead log the server keeps for its own crash recovery.** Every
   write reaches it first: each issuance's insert into `verification_credentials`,
   with the row in it, and the commit record of its transaction, with the time

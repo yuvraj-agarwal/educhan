@@ -1160,8 +1160,10 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 // trying for a while a table it cannot take, and a sweep that could not finish
 // either says so in its exit status. A session that writes to the credentials
 // table and stays open stops the rewrite; one that only reads the pending
-// table, as an export does, stops the vacuum after the rewrite has committed.
-// Either way the next sweep finishes.
+// table, as an export does, stops the vacuum after the rewrite has committed;
+// and one that reads the statistics views, which holds pg_statistic, stops
+// the vacuum of that catalog, which comes last. Either way the next sweep
+// finishes.
 func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
@@ -1214,6 +1216,24 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	for _, text := range []string{logs.String(), err.Error()} {
 		if strings.Contains(text, "Held College") {
 			t.Errorf("the failing sweep logged a credential's label: %s", text)
+		}
+	}
+
+	// While VACUUM FULL waited for pg_statistic, every query planned with
+	// statistics its connection had not cached would wait behind it, on any
+	// table; so it passes over the catalog too, rather than wait for it.
+	files = h.relationFiles("verification_credentials", "verification_pending")
+	statsReader := hold(`SELECT count(*) FROM pg_stats`)
+	if _, err = h.app.Sweep(ctx); err == nil || !strings.Contains(err.Error(), "could not take "+statisticsCatalog) {
+		t.Fatalf("a sweep held off pg_statistic returned %v, want it to say it could not take the catalog", err)
+	}
+	if err := statsReader.Rollback(ctx); err != nil {
+		t.Fatalf("end the statistics reader: %v", err)
+	}
+	for i, file := range h.relationFiles("verification_credentials", "verification_pending") {
+		if file == files[i] {
+			t.Errorf("a sweep held off pg_statistic left the verification tables in their files: %v", files)
+			break
 		}
 	}
 
@@ -1482,6 +1502,34 @@ func TestSweepFailsWhenVacuumLeavesATableInItsFile(t *testing.T) {
 	for _, text := range []string{logs.String(), err.Error()} {
 		if strings.Contains(text, "Unowned") || strings.Contains(text, "2033-03-03") {
 			t.Errorf("the failing sweep logged something of a credential's row: %s", text)
+		}
+	}
+}
+
+// pg_statistic can be vacuumed only by a superuser, the database's owner, or a
+// role that belongs to the owner: owning the verification tables, which is
+// enough for them, is not enough for it. A role that cannot leaves it in its
+// files with the samples 0015 deleted, with nothing worse than a warning, and
+// the sweep fails at once and says what the role lacks. A plain VACUUM stands
+// in for that role here, as for the tables above.
+func TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile(t *testing.T) {
+	h := testServer(t, nil)
+	h.app.store.statisticsVacuumCommand = "VACUUM (SKIP_LOCKED)"
+	files := h.relationFiles(verificationTables[:]...)
+
+	start := time.Now()
+	_, err := h.app.Sweep(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "must own the database") {
+		t.Fatalf("a sweep whose VACUUM FULL left pg_statistic in its file returned %v, "+
+			"want it to say the role must own the database", err)
+	}
+	if took := time.Since(start); took > vacuumPatience/2 {
+		t.Errorf("the sweep took %s to give up on something waiting cannot change", took)
+	}
+	for i, file := range h.relationFiles(verificationTables[:]...) {
+		if file == files[i] {
+			t.Errorf("%s is still in its file: the verification tables come before pg_statistic",
+				verificationTables[i])
 		}
 	}
 }

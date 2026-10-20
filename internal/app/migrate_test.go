@@ -249,9 +249,11 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 // pg_stats shows them, and autovacuum runs it by itself after enough writes:
 // for the pending table, email hashes of codes in flight beside expiries to
 // the microsecond, kept after the rows are gone and through every rewrite and
-// vacuum. 0015 drops what had been gathered before it, stops anything being
-// gathered again, and turns autovacuum off on both tables, since the times it
-// last ran follow the writes that set it off.
+// vacuum of the verification tables. 0015 deletes what had been gathered
+// before it, stops anything being gathered again, and turns autovacuum off on
+// both tables, since the times it last ran follow the writes that set it off.
+// Its delete leaves the old versions in pg_statistic's files, where no query
+// sees them, so the sweep writes that catalog out anew.
 func TestVerificationTablesKeepNoStatistics(t *testing.T) {
 	pool, url := databaseAt(t, 14)
 	ctx := context.Background()
@@ -321,5 +323,33 @@ func TestVerificationTablesKeepNoStatistics(t *testing.T) {
 	}
 	if len(autovacuumed) != 0 {
 		t.Errorf("autovacuum is still on for %v", autovacuumed)
+	}
+
+	// The samples are out of pg_stats, but 0015 only deleted them: the old
+	// versions, the email hashes' histogram in pg_statistic's TOAST table and
+	// the expiries' in the catalog itself, stay in those files until VACUUM
+	// FULL writes the catalog out anew, and a VACUUM FULL drops them only if
+	// its cutoff has passed the transaction that applied 0015.
+	statistics := func() (heap, toast int64, clean bool) {
+		t.Helper()
+		if err := h.app.pool.QueryRow(ctx, `
+			SELECT pg_relation_filenode(c.oid)::bigint, pg_relation_filenode(c.reltoastrelid)::bigint,
+			       age(c.relfrozenxid) < (SELECT age(m.xmin) FROM schema_migrations m WHERE m.version = 15)
+			FROM pg_class c WHERE c.oid = 'pg_catalog.pg_statistic'::regclass`).Scan(&heap, &toast, &clean); err != nil {
+			t.Fatalf("read pg_statistic's files: %v", err)
+		}
+		return heap, toast, clean
+	}
+	heap, toast, _ := statistics()
+	if _, err := h.app.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	swept, sweptToast, clean := statistics()
+	if swept == heap || sweptToast == toast {
+		t.Errorf("pg_statistic is in files %d and %d after the sweep, as before it: the samples 0015 deleted "+
+			"are still in them", swept, sweptToast)
+	}
+	if !clean {
+		t.Error("the sweep wrote pg_statistic out with a cutoff no newer than 0015, keeping what 0015 deleted")
 	}
 }

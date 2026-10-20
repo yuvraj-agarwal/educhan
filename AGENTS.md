@@ -862,15 +862,31 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     fails the sweep at once, and the sweeper connects as the role that ran the
     migrations, which owns `vacuum_probe` too.
     `0015` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
-    from copying email hashes beside their expiries into `pg_statistic`, drops what it
-    had copied, and turns autovacuum off on both, since the times it last ran follow
-    the writes; the nightly `VACUUM FULL` is their vacuum. A new write path into the
-    credentials table re-dates the rows it writes until the next sweep, so treat one
-    like a new column, and a new column on either table gets `SET STATISTICS 0` in its
-    migration. The README's "Transaction ids, and the nightly rewrite" says exactly
-    what this protects — the verification tables of the live database after the 03:17
-    UTC sweep, where nothing dates a credential more closely than its expiry day — and
-    what it does not. Above all, the posts: every code request that reaches the
+    from copying email hashes beside their expiries into `pg_statistic`, deletes what
+    it had copied, and turns autovacuum off on both, since the times it last ran follow
+    the writes; the nightly `VACUUM FULL` is their vacuum. Deleting the samples takes
+    them out of `pg_stats` only: their old versions stay in `pg_statistic`'s file and
+    its TOAST table's (the email hashes' histogram is stored out of line), and in every
+    backup of those files, until the catalog is written out anew, and no query can see
+    whether they are there. So after the verification tables the sweep runs the same
+    `VACUUM (FULL, SKIP_LOCKED)` on `pg_catalog.pg_statistic` every night, with the same
+    `relfrozenxid` check against the rewrite, which is later than `0015`. It takes
+    milliseconds, but while it runs a query whose plan needs statistics its connection
+    has not cached waits, on any table, which is why it too skips a held catalog
+    (a session reading `pg_stats` holds it). Only a superuser, the database's owner or
+    a member of the owner's role may vacuum that catalog, and anyone else gets it
+    skipped with a warning, which fails the sweep with its own message
+    (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`; the README's step 5 says how
+    to check the role on Cloud SQL, where it has not been tried).
+    `TestVerificationTablesKeepNoStatistics` checks that the sweep moves the catalog and
+    its TOAST table to new files with a cutoff past `0015`; no test can read an old
+    version without a superuser's `pageinspect`, which is how the leak was found. A
+    new write path into the credentials table re-dates the rows it writes until the
+    next sweep, so treat one like a new column, and a new column on either table gets
+    `SET STATISTICS 0` in its migration. The README's "Transaction ids, and the
+    nightly rewrite" says exactly what this protects — the verification tables of the
+    live database after the 03:17 UTC sweep, where nothing dates a credential more
+    closely than its expiry day — and what it does not. Above all, the posts: every code request that reaches the
     database, and every attempt at a code in flight, is a write, takes the next
     transaction id, and so leaves a gap in the posts' `xmin` between the two posts
     written around it, which one plain query on `posts` finds, in the live database
@@ -904,6 +920,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
     `TestSweepWaitsForAnOlderTransactionToEnd`,
     `TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+    `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`,
     `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
     `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
     `TestSweepLeavesNoScanTimeFromBeforeIt` and

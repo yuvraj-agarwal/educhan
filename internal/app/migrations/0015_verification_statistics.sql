@@ -6,12 +6,22 @@
 -- the table, and kept in a backup of the instance. For verification_pending
 -- that is a sample of the email hashes of codes in flight, beside expiries to
 -- the microsecond, and an email hash leads straight to the credential it
--- became. Neither the nightly rewrite nor VACUUM FULL touches pg_statistic,
--- and nothing educhan does needs these numbers: every query on either table
--- finds its rows by a unique key or by expiry. So no column of either table is
--- sampled any more, and the samples already taken are dropped: changing a
--- column's type drops its statistics, and changing it to the type it already
--- has changes nothing else.
+-- became. Neither the nightly rewrite nor a VACUUM FULL of either table
+-- touches pg_statistic, and nothing educhan does needs these numbers: every
+-- query on either table finds its rows by a unique key or by expiry. So no
+-- column of either table is sampled any more, and the samples already taken
+-- are deleted from pg_statistic: changing a column's type deletes its
+-- statistics, and changing it to the type it already has changes nothing else.
+--
+-- Deleted, not erased. Like any deleted row, a sample stays in pg_statistic's
+-- file — and one big enough to be stored out of line, as the email hashes'
+-- histogram is, in the file of its TOAST table — where a superuser or root on
+-- the machine can read it, and in every backup that copies those files, until
+-- VACUUM FULL writes the catalog out anew; a plain vacuum, autovacuum's
+-- included, leaves the bytes. The archive sweeper does that every night, after
+-- the verification tables (RewriteCredentials), so a database upgraded across
+-- this migration holds them until its first sweep. One that runs this
+-- migration before any ANALYZE of the tables, as a new one does, has none.
 --
 -- Autovacuum is off on both tables. The times it last vacuumed and analysed a
 -- table, which pg_stat_user_tables shows, follow the table's writes — a run

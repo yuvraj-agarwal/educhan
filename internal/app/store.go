@@ -58,16 +58,18 @@ const (
 type Store struct {
 	pool *pgxpool.Pool
 	// What RewriteCredentials runs on the probe and verification tables, and
-	// how long it keeps trying: vacuumCommand and vacuumPatience, which tests
-	// change to see a vacuum that skips a table, or a sweep that gives up
-	// sooner.
-	vacuumCommand  string
-	vacuumPatience time.Duration
+	// on pg_statistic, and how long it keeps trying: vacuumCommand (both of
+	// the first two) and vacuumPatience, which tests change to see a vacuum
+	// that skips a table, or a sweep that gives up sooner.
+	vacuumCommand           string
+	statisticsVacuumCommand string
+	vacuumPatience          time.Duration
 }
 
 // NewStore wraps an existing pool.
 func NewStore(pool *pgxpool.Pool) *Store {
-	return &Store{pool: pool, vacuumCommand: vacuumCommand, vacuumPatience: vacuumPatience}
+	return &Store{pool: pool, vacuumCommand: vacuumCommand, statisticsVacuumCommand: vacuumCommand,
+		vacuumPatience: vacuumPatience}
 }
 
 // Ping reports whether the database is reachable.
@@ -1225,16 +1227,21 @@ const (
 	vacuumMaxWait   = 5 * time.Second
 )
 
-// vacuumCommand is what RewriteCredentials runs on the probe table and each
-// verification table.
+// vacuumCommand is what RewriteCredentials runs on the probe table, each
+// verification table, and pg_statistic.
 const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED)"
 
 // sqlstateLockNotAvailable is the code of the warning VACUUM gives when
 // SKIP_LOCKED makes it pass over a table another session holds.
 const sqlstateLockNotAvailable = "55P03"
 
-// verificationTables are the tables RewriteCredentials vacuums.
+// verificationTables are the tables RewriteCredentials rewrites and vacuums.
 var verificationTables = [...]string{"verification_credentials", "verification_pending"}
+
+// statisticsCatalog is the catalog ANALYZE copied samples of the verification
+// tables' columns into before 0015, which RewriteCredentials vacuums after
+// them (vacuumVerificationTables says why).
+const statisticsCatalog = "pg_catalog.pg_statistic"
 
 // vacuumProbeTable is the empty table (0016) on which RewriteCredentials runs
 // VACUUM FULL to learn whether a run on a verification table would drop what
@@ -1267,9 +1274,11 @@ const vacuumProbeTable = "vacuum_probe"
 // The old versions are still in the table's file with their xmin, as are the
 // pending rows confirmations deleted, each with an email hash and an expiry to
 // the microsecond, and vacuumVerificationTables writes both tables to new
-// files without them. The times PostgreSQL's statistics keep of the last scan
-// of each table and index would date the last confirmation before the sweep,
-// so restampScans makes them the sweep's.
+// files without them; then pg_statistic, whose files can still hold the
+// samples ANALYZE took of the pending table before 0015, which are much the
+// same. The times PostgreSQL's statistics keep of the last scan of each table
+// and index would date the last confirmation before the sweep, so restampScans
+// makes them the sweep's.
 //
 // A code that expired unconfirmed leaves its pending row live until the next
 // request prunes it (StartVerification), whenever that comes. Its expiry, less
@@ -1445,11 +1454,29 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn) {
 // one it owns neither itself nor through owning the database. Waiting does
 // not change that, so the sweep fails at once. The table's file is compared
 // before and after to see whether VACUUM FULL ran at all.
+//
+// Once both verification tables are done it takes pg_statistic the same way.
+// Before 0015, ANALYZE copied samples of every column of the verification
+// tables into that catalog — for the pending table, the email hashes of codes
+// in flight beside their expiries, to the microsecond — and 0015 deleted them;
+// but a delete leaves the old versions in the catalog's file, and a sample big
+// enough to be stored out of line, as the email hashes' histogram is, in its
+// TOAST table's file, until something writes them out anew. Only VACUUM FULL
+// does: a plain vacuum, autovacuum's included, marks the space free and
+// leaves the bytes. No query sees an old version, so the sweep cannot tell
+// whether a database upgraded across 0015 still holds them, and it rewrites
+// the catalog every night. The catalog is small, so a run is short; but while
+// it runs, a query whose plan needs statistics its connection has not cached
+// waits, on any table, so here too the sweep passes over the catalog while
+// anybody holds it rather than queue them all behind its wait. Only a
+// superuser, the database's owner, or a role that belongs to the owner may
+// vacuum it — owning the tables is not enough — and a logical replication
+// slot holds its cutoff back as an older transaction does.
 func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
 	rewrite uint32) error {
 	deadline := time.Now().Add(s.vacuumPatience)
 	wait := vacuumFirstWait
-	left := verificationTables[:]
+	left := slices.Concat(verificationTables[:], []string{statisticsCatalog})
 	for {
 		var why []string
 		switch probe, err := s.vacuumFull(ctx, conn, notices, vacuumProbeTable, rewrite); {
@@ -1474,8 +1501,12 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 					why = append(why, fmt.Sprintf("VACUUM FULL could not take %s, which another session held",
 						table))
 				case vacuumTooSoon:
+					reader := "a transaction older than the rewrite"
+					if table == statisticsCatalog {
+						reader += ", or a logical replication slot,"
+					}
 					why = append(why, fmt.Sprintf("VACUUM FULL kept rows deleted from %s before the rewrite, "+
-						"which a transaction older than the rewrite could still read", table))
+						"which %s could still read", table, reader))
 				default:
 					continue
 				}
@@ -1525,8 +1556,13 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 	if err != nil {
 		return 0, err
 	}
+	command := s.vacuumCommand
+	if table == statisticsCatalog {
+		command = s.statisticsVacuumCommand
+	}
 	notices.take()
-	if _, err := conn.Exec(ctx, s.vacuumCommand+" "+pgx.Identifier{table}.Sanitize()); err != nil {
+	if _, err := conn.Exec(ctx,
+		command+" "+pgx.Identifier(strings.Split(table, ".")).Sanitize()); err != nil {
 		return 0, fmt.Errorf("vacuum %s: %w", table, err)
 	}
 	warnings := notices.take()
@@ -1535,8 +1571,13 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 		return 0, err
 	}
 	if after == before {
-		if slices.Contains(warnings, sqlstateLockNotAvailable) {
+		switch {
+		case slices.Contains(warnings, sqlstateLockNotAvailable):
 			return vacuumHeld, nil
+		case table == statisticsCatalog:
+			return 0, fmt.Errorf("VACUUM FULL left %s in its old file: only a superuser or the "+
+				"database's owner may vacuum it, so the sweeper's database role must own the database, "+
+				"or belong to the role that does", table)
 		}
 		return 0, fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
 			"must own the verification tables and %s, as the role that ran the migrations does, "+
