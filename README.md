@@ -694,7 +694,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Verification | Optional institutional badge from an emailed code; the address is never stored and the badge cannot be linked to a post |
 | Moderation | Sticky, lock, and delete a post or a whole thread, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so no row carries its issuance's transaction id; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed, then rewrites the verification credentials so that every credential issued before the sweep carries the sweep's transaction id rather than its own ([Transaction ids, and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite)); per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -1306,10 +1306,10 @@ deleted from `media_deletions` by hand.
 Last, whatever became of the files, it deletes the verification codes that
 expired unconfirmed, rewrites the verification credentials, and runs
 `VACUUM FULL` on both verification tables and then on the `pg_statistic`
-catalog, so that a credential row carries the sweep's transaction id rather than
-its own, no abandoned code keeps the time it was asked for, and no sample
-`ANALYZE` took of the tables before migration `0015` stays in the catalog's
-files ([Transaction ids, and the nightly
+catalog, so that every credential issued before the sweep carries the sweep's
+transaction id rather than its own, no abandoned code keeps the time it was
+asked for, and no sample `ANALYZE` took of the tables before migration `0015`
+stays in the catalog's files ([Transaction ids, and the nightly
 rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
 that protects). It needs no verification secret for that, but its database role
 needs two things. It must own the verification tables and `vacuum_probe`, or the

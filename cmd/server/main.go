@@ -3,8 +3,10 @@
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
 // archive_days have run out, with their media, rewrites the verification
-// credentials so that no row keeps the transaction id it was issued in, and
-// exits. That is the mode a scheduled Cloud Run Job runs, from the same image.
+// credentials so that every one issued before the sweep carries the sweep's
+// transaction id rather than its own (the README's "Transaction ids, and the
+// nightly rewrite" says what that leaves), and exits. That is the mode a
+// scheduled Cloud Run Job runs, from the same image.
 package main
 
 import (
