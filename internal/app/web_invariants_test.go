@@ -532,27 +532,40 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		t.Error("verifyViewHTML sets verifyStep; it draws the step it is given and decides nothing about it")
 	}
 
-	// And the code step is what a sent code leads to, and what is drawn. In
-	// the stretch that takes the request's answer it is the one step set, and
-	// it is set before the draw, so nothing after it puts another step in its
-	// place. renderVerify, which draws the page again for a reader who comes
-	// back, is held whole by TestVerifyStepIsDrawnForAReaderArriving. A gate on
-	// a held badge in either place — after the code step is set, or in
-	// renderVerify's redraw — once passed every check above;
-	// TestVerifyAnswersBelongToTheStepTheyWereSentFrom holds every place that
-	// sets verifyStep to the list it knows.
-	submit := withoutComments(jsFunction(t, script, "submitVerification"))
-	requests := regexp.MustCompile(`await api\(`).FindAllStringIndex(submit, -1)
-	if len(requests) != 2 {
-		t.Fatalf("submitVerification makes %d requests; this test knows two (the code sent, the badge issued)", len(requests))
-	}
-	sent := submit[requests[0][0]:requests[1][0]]
-	steps := verifyStepSet.FindAllString(sent, -1)
-	set, drawn := strings.Index(sent, stepToCode), strings.Index(sent, "drawVerifyStep();")
-	if len(steps) != 1 || steps[0] != stepToCode || drawn < 0 || set > drawn {
-		t.Errorf("once a code is sent, submitVerification sets %q; want %q alone, set before the step is drawn:\n%s",
-			steps, stepToCode, sent)
-	}
+	// And the code step is what a sent code leads to, and what is drawn, and
+	// the badge an issued code leads to is drawn the same way, through
+	// renderVerify. A gate on a held badge in either place once passed every
+	// check above: one that set the address step after a code was sent, then
+	// one that returned before the code box was drawn, or before renderVerify
+	// drew the step it found, each with the form's markup and every step this
+	// test knows still in place. Each left a badge holder with a pending code
+	// and nowhere to type it. So what runs once each answer is in is held here
+	// statement for statement, and anything added there fails this test:
+	// change these lists only with the reason the new statement cannot hide a
+	// step. renderVerify is held whole by TestVerifyStepIsDrawnForAReaderArriving,
+	// the refusals by TestVerifyRefusalsAreSaidInTheForm, and every place that
+	// sets verifyStep by TestVerifyAnswersBelongToTheStepTheyWereSentFrom.
+	submit := jsLines(jsFunction(t, script, "submitVerification"))
+	requested := `body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),`
+	confirmed := `body: JSON.stringify({ code: String(data.get("code") || "") }),`
+	holdLines(t, "the answer to a code sent", submit, requested, "}", []string{
+		"});",
+		"if (verifyStep !== sentFrom) return;",
+		stepToCode,
+		"if (!onVerifyPage()) return;",
+		"drawVerifyStep();",
+		`showVerifyField("f-code");`,
+		"return;",
+	})
+	holdLines(t, "the answer to a code confirmed", submit, confirmed, "} catch (err) {", []string{
+		"});",
+		"if (verifyStep !== sentFrom) return;",
+		"storeCredential(issued.credential);",
+		"state.verification.badge = readBadge();",
+		stepToAddress,
+		"if (!onVerifyPage()) return;",
+		"if (await renderVerify()) showHeldBadge();",
+	})
 }
 
 // verifyStepSet finds each place app.js moves the Verify page to a step, and
@@ -1249,33 +1262,47 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 	if !strings.Contains(submit, "refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });") {
 		t.Error("the page's own 18+ refusal is not said under the box")
 	}
-	// A refusal from the server other than one that ends the pending code is
-	// kept with the step it refused (verifyRefusal) and said in the form on
-	// screen, about its field. The form on screen can be the step drawn again
-	// for a reader who came back while the answer was on its way; it can also
-	// be none yet, while render() is still asking the server before it draws
-	// the step, and then the refusal, said nowhere, was lost: the code box came
-	// back with live buttons and nothing to say the code typed was wrong. So
-	// renderVerify says the refusal kept with the step once it draws it, and
-	// does so again if the step is drawn again on the same visit, which Verify
-	// in the header does while the form is on screen.
-	caught := submit[strings.Index(submit, "} catch (err) {"):]
-	for _, want := range []string{
-		`const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");`,
+	// What a refusal from the server does, statement for statement. One that
+	// ends the pending code goes back to the address step and says why there
+	// (TestEndedCodeSaysWhyWhereTheBoxWas). Any other is kept with the step it
+	// refused (verifyRefusal) and said in the form on screen, about its field.
+	// The form on screen can be the step drawn again for a reader who came
+	// back while the answer was on its way; it can also be none yet, while
+	// render() is still asking the server before it draws the step, and then
+	// the refusal, said nowhere, was lost: the code box came back with live
+	// buttons and nothing to say the code typed was wrong. So renderVerify says
+	// the refusal kept with the step once it draws it, and does so again if
+	// the step is drawn again on the same visit, which Verify in the header
+	// does while the form is on screen.
+	holdLines(t, "a refusal from the server", jsLines(submit), "} catch (err) {", "} finally {", []string{
+		"if (verifyStep !== sentFrom) return;",
+		"const ended = !requesting && [NO_CODE_PENDING, CODE_EXPIRED, CODE_GUESSES_SPENT].includes(err.message);",
+		"if (ended) {",
+		stepToEnded,
+		"}",
+		"if (!onVerifyPage()) return;",
+		"if (ended) {",
+		"drawVerifyStep();",
+		`const why = document.getElementById("f-email-ended");`,
+		`if (why) why.scrollIntoView({ block: "center" });`,
+		`const input = document.getElementById("f-email");`,
+		"if (input) input.focus({ preventScroll: true });",
+		"return;",
+		"}",
+		"const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;",
+		"verifyRefusal = {",
+		"step: sentFrom,",
 		`message: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }),`,
 		`about: refusedForAge ? "adult" : requesting ? "email" : "code",`,
-		`select: !requesting && err.status === 400,`,
+		"invalid: err.status === 400,",
+		"select: !requesting && err.status === 400,",
+		"};",
+		`const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");`,
+		"if (!shown) return;",
+		`for (const b of shown.querySelectorAll("button")) b.disabled = false;`,
+		`shown.querySelector('button[type="submit"]').textContent = label;`,
 		"sayVerifyRefusal(shown);",
-	} {
-		if !strings.Contains(caught, want) {
-			t.Errorf("a refusal from the server is not said in the form, about its field (no %s)", want)
-		}
-	}
-	if kept, shown := strings.Index(caught, "verifyRefusal = {\n      step: sentFrom,"),
-		strings.Index(caught, "const shown = "); kept < 0 || kept > shown {
-		t.Error("a refusal from the server is not kept with its step before the form to say it in is looked for, " +
-			"so with no form on screen yet it is said nowhere")
-	}
+	})
 	if got, want := jsLines(jsFunction(t, script, "sayVerifyRefusal")), []string{
 		"function sayVerifyRefusal(form) {",
 		"const refused = verifyRefusal;",
