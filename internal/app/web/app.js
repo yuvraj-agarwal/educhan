@@ -212,7 +212,7 @@ function errorMessage(err, { hasText = true, imageOff = "", action = "post" } = 
       : "The anti-spam check didn't go through, so nothing was posted. Your image is still attached; post again.";
   }
   if (err.status === 403 && err.message === "thread is archived") {
-    const kept = nothingLeft ? "" : " Your text is still in the box.";
+    const kept = hasText ? " Your text is still in the box." : "";
     return `This thread was archived while you were writing, so it no longer takes replies.${kept}`;
   }
   if (err.status === 403) {
@@ -225,13 +225,22 @@ function errorMessage(err, { hasText = true, imageOff = "", action = "post" } = 
 // release took it off (reason, the note the picker was switched off with:
 // holdForm), and tells a post left with nothing to send to write something
 // instead. A post left with its text needs nothing more: the next press sends
-// the text on its own.
-function imageTakenOff(message, reason, { hasText, isThread }) {
+// the text on its own. A refusal of the thread itself (closed: archived,
+// locked, or gone) leaves nothing a post can do there, so the notice says only
+// that the image was taken off: the picker's reason, which says text replies
+// still work, and the advice to write one would point at a press the server
+// will refuse again.
+function imageTakenOff(message, reason, { hasText, isThread, closed = false }) {
   if (!reason) {
     return message;
   }
+  // The server's own words, passed on as they are, end without a full stop.
+  const said = /[.!?]$/.test(message) ? message : `${message}.`;
+  if (closed) {
+    return `${said} The image has been taken off your post.`;
+  }
   const next = hasText ? "" : isThread ? " Write something to post text instead." : " Write a reply to post text instead.";
-  return `${message} The image has been taken off your post. ${reason}${next}`;
+  return `${said} The image has been taken off your post. ${reason}${next}`;
 }
 
 /* Storage ------------------------------------------------------------------ */
@@ -1690,6 +1699,9 @@ function pagerHTML(slug, page, pages) {
 
 async function renderIndex(route) {
   const index = await api(`/api/boards/${encodeURIComponent(route.slug)}/threads?page=${route.page}`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = index;
 
   const threads = index.threads
@@ -1728,6 +1740,9 @@ async function renderIndex(route) {
 
 async function renderCatalog(route) {
   const catalog = await api(`/api/boards/${encodeURIComponent(route.slug)}/catalog`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = catalog;
 
   const tiles = catalog.threads
@@ -1764,6 +1779,9 @@ async function renderCatalog(route) {
 
 async function renderThread(route) {
   const detail = await api(`/api/boards/${encodeURIComponent(route.slug)}/threads/${route.no}`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = detail;
   // Kept for what the page learns about the thread after drawing it: a reply
   // refused at the image limit updates its summary line from here.
@@ -1841,6 +1859,9 @@ function archiveKeptFor(board) {
 
 async function renderArchive(route) {
   const archive = await api(`/api/boards/${encodeURIComponent(route.slug)}/archive`);
+  if (overtaken(route)) {
+    return;
+  }
   const { board } = archive;
   const label = boardLabel(board.slug);
 
@@ -2926,6 +2947,17 @@ async function resolvePost(route) {
   return `${threadPath(found.board || route.slug, found.thread_no)}#p${found.no}`;
 }
 
+// overtaken says whether a newer render has begun since the one for route. An
+// overtaken render draws nothing, loaded or not, and leaves the screen to the
+// newer one: the board and thread views ask once their request is answered,
+// and render after the board list and before anything else it does to the
+// page. (/verify, which no redraw keeps, is drawn regardless.) A redraw that
+// fails and keeps its page puts back the route that page was drawn for, which
+// overtakes every render still loading.
+function overtaken(route) {
+  return state.route !== route;
+}
+
 // The draft defaults to whatever is on screen now; a render that hands over to
 // another passes its own along, because by then the screen may be a skeleton.
 async function render({ draft = captureDraft() } = {}) {
@@ -2936,18 +2968,22 @@ async function render({ draft = captureDraft() } = {}) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
   const requested = window.location.href;
-  // What the page on screen was drawn for, put back by a redraw that keeps the
-  // page and then fails to load (below).
-  const shown = { path: renderedPath, route: state.route, thread: state.thread, expanded: expandedLink };
   renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   state.route = route;
-  state.thread = null;
+  // A redraw of the page a post is on its way from keeps the page on screen
+  // (below), and with it what the page's controls read, its thread and the
+  // image open on it, until a new page is drawn over it: a refusal answered
+  // meanwhile updates the page it is shown on.
+  const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route));
+  if (!keepPage) {
+    state.thread = null;
+    // Whatever was expanded belongs to the view being replaced.
+    expandedLink = null;
+  }
   renderNav(route);
   clearNotice();
   hideQuotePreview();
-  // Whatever was expanded belongs to the view being replaced.
-  expandedLink = null;
 
   // Until the age screen has its answer, nothing of the site is shown or even
   // fetched, apart from the two pages that say what answering means.
@@ -2964,7 +3000,6 @@ async function render({ draft = captureDraft() } = {}) {
   // A redraw of the page a post is on its way from keeps the page on screen,
   // dimmed, rather than a skeleton, so the form the post went from stays in
   // the document until it goes into the new page (restoreDraft).
-  const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route));
   const finish = beginLoading({ skeleton: !keepPage });
   let resolved = null;
   try {
@@ -2975,6 +3010,9 @@ async function render({ draft = captureDraft() } = {}) {
         // The rules and the FAQ need nothing from the server, so a board list
         // that will not load costs them only the navigation.
         if (!ungated) throw err;
+      }
+      if (overtaken(route)) {
+        return;
       }
       renderNav(route);
     }
@@ -3011,6 +3049,9 @@ async function render({ draft = captureDraft() } = {}) {
         announce("Page not found");
     }
   } catch (err) {
+    if (overtaken(route)) {
+      return;
+    }
     // An expired thread and a mistyped board look the same from here, and both
     // are better served by a way out than by the raw error. A post number the
     // server cannot take at all (0, or more digits than a post number has) is
@@ -3031,30 +3072,22 @@ async function render({ draft = captureDraft() } = {}) {
     // A redraw that kept the page for a post on its way leaves the page there,
     // with the form the post went from, when the new one will not load: the
     // post goes ahead and is answered on its form, and a success goes to the
-    // new post, as without the redraw. What the top of render reset is put back
-    // as the page was drawn with it (its address, the thread its controls read,
-    // the image still open on it, unless the reader has opened another since),
-    // and the error is a notice above the page, after anything said since the
-    // redraw began, the post's own answer say. The notice is an alert, so it is
-    // heard, and the title stays the page's. A newer render has the screen, and
-    // is left to it.
-    if (keepPage) {
-      if (state.route !== route) {
-        return;
-      }
-      if (draft.held.isConnected) {
-        renderedPath = shown.path;
-        state.route = shown.route;
-        state.thread = shown.thread;
-        const open = shown.expanded;
-        if (!expandedLink && open && open.isConnected && open.classList.contains("expanded")) {
-          expandedLink = open;
-        }
-        const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
-        showNotice(said ? `${said} ${message}` : message);
-        return;
-      }
+    // new post, as without the redraw. The address and the route are put back
+    // as the page was drawn for them (drawnFor), however many redraws of it
+    // have failed, and so is its thread, which a refusal answered meanwhile
+    // has updated; the image open on it stays open. The error is a notice
+    // above the page, after anything said since the redraw began, the post's
+    // own answer say. The notice is an alert, so it is heard, and the title
+    // stays the page's.
+    if (keepPage && draft.held.isConnected) {
+      renderedPath = drawnFor.path;
+      state.route = drawnFor.route;
+      state.thread = drawnFor.thread;
+      const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
+      showNotice(said ? `${said} ${message}` : message);
+      return;
     }
+    expandedLink = null;
     el.main.innerHTML = emptyStateHTML(message, board);
     announce(notFound ? "Not found" : "Could not load this page");
     return;
@@ -3066,12 +3099,20 @@ async function render({ draft = captureDraft() } = {}) {
     // The history entry is replaced rather than added: /post/N is an address,
     // not a page, and Back should not land on it only to bounce forward again.
     // Skipped if the reader went somewhere else while the number was looked up.
-    if (window.location.href === requested) {
+    if (!overtaken(route) && window.location.href === requested) {
       window.history.replaceState(null, "", resolved);
       await render({ draft });
     }
     return;
   }
+  // A render overtaken while it loaded drew nothing, and leaves the screen to
+  // the newer one. Otherwise the page is this render's now, with no image open
+  // on it yet.
+  if (overtaken(route)) {
+    return;
+  }
+  drawnFor = { path: renderedPath, route, thread: state.thread };
+  expandedLink = null;
   enhancePosts(el.main);
   restoreDraft(draft);
   focusHash();
@@ -3508,6 +3549,12 @@ document.addEventListener("click", (event) => {
 
 // The address the view on screen was rendered for, less its fragment.
 let renderedPath = null;
+
+// What the page on screen was drawn for, noted by the render that drew it: its
+// address, less the fragment, its route, and the thread its controls read. A
+// redraw that keeps the page for a post on its way, and then will not load,
+// puts them back (render).
+let drawnFor = { path: null, route: null, thread: null };
 
 // A same-page quote link or backlink only moves the fragment, and the browser
 // reports that as a history change too. Re-rendering for it would fetch the
@@ -4400,8 +4447,12 @@ el.main.addEventListener("submit", async (event) => {
       }
       redrawThreadCounts();
     }
+    // A thread archived, locked or gone (or, for a new thread, its board gone)
+    // takes no post at all, whatever is left of this one.
+    const closed =
+      err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || err.message === "thread is locked"));
     const message = errorMessage(err, { hasText, imageOff });
-    showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread }));
+    showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread, closed }));
   }
 });
 

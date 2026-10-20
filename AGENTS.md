@@ -444,39 +444,46 @@ check before the test changes.
   `app.css` shows the held controls switched off). A redraw of the form's own page while
   it is held (Update, or another page of the same board's index, which has the same
   `routeKey`: the view, the board and the thread, never the index page) keeps the page,
-  dimmed, in place of the skeleton (`keepPage` in `render`), and puts the held form
-  itself into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
-  `restoreDraft`); a form answered by then is read for its values like any draft, emptied
-  after a success. A redraw that fails to load leaves the kept page on screen, held form
-  and all, with what the top of `render` reset put back (`renderedPath`, `state.route`,
-  `state.thread`, the open image) and the error in a notice, unless a newer render has
-  begun, which has the screen. Either way the post goes ahead and is answered on the form
-  on screen, and a success goes to it. When the hold ends, success or refusal, `release`
-  leaves the held form's picker as a redraw meanwhile drew it, switched off with that
-  drawing's reason (or the site's, where it drew none) or switched on (`redrawnPickers`),
-  and a refusal of the image itself (image limit reached, uploads switched off) then
-  switches it off in the submit handler. A picker `release` switches off loses its image,
-  and `release` then returns the reason, which every later notice but those two refusals,
-  a refusal's or a forget's, adds, saying the image was taken off and why
-  (`imageTakenOff`). Each notice is worded for what the form still holds, its text read
-  from the box after `release` (`errorMessage`'s `hasText` and `imageOff`), so a post
-  left with nothing is told to write something instead. A request that succeeds keeps the
-  answer it took; a refusal carrying `"captcha"` drops it and, while the form is on
-  screen, sends once more with a fresh one, and `"required"` also turns
-  `state.site.captcha` on for a page drawn without knowing. Any other refusal, or no
-  response at all, puts the answer back, unless it carries `Educhan-Captcha: spent`
-  (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from the second flood-control
-  check included), which drops it and starts the next puzzle at once if the form is on
-  screen. A post that carries the badge never waits for or sends an answer
-  (`() => state.site.captcha && !held`), and a code request always does.
+  dimmed, in place of the skeleton (`keepPage` in `render`), with the thread its
+  controls read and the open image left as they are until a new page is drawn, so a
+  refusal answered meanwhile updates the page on screen, and puts the held form itself
+  into the new page in place of the one drawn there (`heldForms`, `captureDraft`,
+  `restoreDraft`); a form answered by then is read for its values like any draft,
+  emptied after a success. A redraw that fails to load leaves the kept page on screen,
+  held form and all, with `renderedPath`, `state.route` and `state.thread` put back
+  as that page was drawn for them (`drawnFor`, noted by the render that drew it,
+  however many redraws of it have failed since) and the error in a notice. A render a
+  newer one has overtaken draws nothing, loaded or not, and says nothing (`overtaken`,
+  which the board and thread views ask once their request is answered), so of two
+  redraws only the later one is shown or said to have failed. Either way the post
+  goes ahead and is answered on the form on screen, and a success goes to it. When
+  the hold ends, success or refusal, `release` leaves the held form's picker as a
+  redraw meanwhile drew it, switched off with that drawing's reason (or the site's,
+  where it drew none) or switched on (`redrawnPickers`), and a refusal of the image
+  itself (image limit reached, uploads switched off) then switches it off in the
+  submit handler. A picker `release` switches off loses its image, and `release` then
+  returns the reason, which every later notice but those two refusals, a refusal's
+  or a forget's, adds, saying the image was taken off and why (`imageTakenOff`),
+  or, for a refusal of the thread itself (archived, locked, gone), only that it was
+  taken off, since no post can go there. Each notice is worded for what the form
+  still holds, its text read from the box after `release` (`errorMessage`'s `hasText`
+  and `imageOff`), so a post left with nothing is told to write something instead.
+  A request that succeeds keeps the answer it took; a refusal carrying `"captcha"`
+  drops it and, while the form is on screen, sends once more with a fresh one, and
+  `"required"` also turns `state.site.captcha` on for a page drawn without knowing.
+  Any other refusal, or no response at all, puts the answer back, unless it carries
+  `Educhan-Captcha: spent` (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from
+  the second flood-control check included), which drops it and starts the next puzzle
+  at once if the form is on screen. A post that carries the badge never waits for or
+  sends an answer (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
-  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
-  also holds `CAPTCHA_TIMEOUT_MS` to the hardest base puzzle at 4 ms an attempt),
-  `TestCaptchaWorkersAreAlwaysStopped`, `TestCaptchaIsNotWorkedOnForNothing`,
-  `TestARequestGoesOnlyFromAFormOnScreen`, `TestAPendingFormIsHeld`,
-  `TestAHeldFormSurvivesARedrawOfItsPage`, `TestCaptchaRefusalSaysWhatTheFormStillHolds`,
-  `TestTheCaptchaFAQSaysWhatThePageDoes`, `TestEachCaptchaAnswerGoesOnOneRequest` and
+  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha`
+  (which also holds `CAPTCHA_TIMEOUT_MS` to the hardest base puzzle at 4 ms an attempt),
+  `TestCaptchaWorkersAreAlwaysStopped`, `TestARequestGoesOnlyFromAFormOnScreen`,
+  `TestAPendingFormIsHeld`, `TestAHeldFormSurvivesARedrawOfItsPage`,
+  `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
+  `TestCaptchaIsNotWorkedOnForNothing`, `TestEachCaptchaAnswerGoesOnOneRequest` and
   `TestForgettingTheBrowserCancelsWhatIsOnItsWay` pin these; the worker needs no CSP
   change (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the
   answer is checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is

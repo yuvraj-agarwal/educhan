@@ -859,11 +859,12 @@ answered after a redraw, success or refusal, has its image picker left as the
 redraw drew it: switched off if the thread takes no more images, taking off the
 image a refused post still held, and back on if it takes them again; a refusal
 of the image itself then switches it off. Where the image was taken off, any
-other notice about the post says so, and why, and tells a post left with nothing
-to send to write something instead. Every page of a board's index carries the
-same new-thread form, so going to another page of the index keeps a new thread
-going as Update does: the page is drawn around the held form, and the thread is
-posted from there or, if that page will not load, from the page still on screen.
+other notice about the post says so and, unless the thread takes no posts at all
+(archived, locked or gone), says why and tells a post left with nothing to send
+to write something instead. Every page of a board's index carries the same
+new-thread form, so going to another page of the index keeps a new thread going
+as Update does: the page is drawn around the held form, and the thread is posted
+from there or, if that page will not load, from the page still on screen.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then double for every further 60, up to eight

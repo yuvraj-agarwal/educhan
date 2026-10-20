@@ -1378,34 +1378,50 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	if n := strings.Count(withoutComments(script), "unblockFileField("); n != 2 {
 		t.Errorf("unblockFileField is called %d times in app.js; want once, in release", n-1)
 	}
+	// A kept page keeps its thread and its open image until a new page is
+	// drawn over it, so a refusal answered while the redraw loads updates the
+	// page on screen. A render a newer one has overtaken draws nothing, loaded
+	// or not, and one that draws notes what the page was drawn for (drawnFor),
+	// which a kept page whose redraw will not load gets back, with the error
+	// as a notice, never in place of the page: after two redraws that fail, the
+	// page is still the one drawn, not the first redraw's half-begun one.
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",
-		"const shown = { path: renderedPath, route: state.route, thread: state.thread, expanded: expandedLink }; "+
-			"renderedPath = window.location.pathname + window.location.search;",
-		"state.route = route; state.thread = null;",
-		"expandedLink = null;",
-		"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); "+
-			"const finish = beginLoading({ skeleton: !keepPage });",
-		"} catch (err) {",
-		"if (keepPage) {",
-		"el.main.innerHTML = emptyStateHTML(message, board);",
+		"renderedPath = window.location.pathname + window.location.search; const route = parseRoute(); state.route = route; "+
+			"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); "+
+			"if (!keepPage) { state.thread = null; expandedLink = null; }",
+		"const finish = beginLoading({ skeleton: !keepPage });",
+		"await loadSite();",
+		"if (overtaken(route)) { return; } renderNav(route);",
+		"} catch (err) { if (overtaken(route)) { return; }",
+		"if (keepPage && draft.held.isConnected) { renderedPath = drawnFor.path; state.route = drawnFor.route; "+
+			`state.thread = drawnFor.thread; const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
+			"showNotice(said ? `${said} ${message}` : message); return; }",
+		"expandedLink = null; el.main.innerHTML = emptyStateHTML(message, board);",
 		"} finally {",
-		"restoreDraft(draft);",
+		"if (!overtaken(route) && window.location.href === requested) {",
+		"if (overtaken(route)) { return; } drawnFor = { path: renderedPath, route, thread: state.thread }; "+
+			"expandedLink = null; enhancePosts(el.main); restoreDraft(draft);",
 	)
-	// A kept page whose redraw will not load stays, with the held form in it,
-	// unless a newer render has begun: it gets back what the top of render
-	// reset, and the error as a notice, never in place of the page.
-	keep := jsBraced(t, render, "if (keepPage) {")
-	if want := "if (keepPage) { if (state.route !== route) { return; } if (draft.held.isConnected) { " +
-		"renderedPath = shown.path; state.route = shown.route; state.thread = shown.thread; const open = shown.expanded; " +
-		`if (!expandedLink && open && open.isConnected && open.classList.contains("expanded")) { expandedLink = open; } ` +
-		`const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; ` +
-		"showNotice(said ? `${said} ${message}` : message); return; } }"; keep != want {
-		t.Errorf("render no longer keeps a page held for a post when its redraw fails to load: %s", keep)
+	if n := strings.Count(render, "keepPage"); n != 4 {
+		t.Errorf("keepPage appears %d times in render; want its declaration, the resets, the skeleton and the failed load", n)
 	}
-	if n := strings.Count(render, "keepPage"); n != 3 {
-		t.Errorf("keepPage appears %d times in render; want its declaration, the skeleton and the failed load", n)
+	if over := squash(withoutComments(jsFunction(t, script, "overtaken"))); over !=
+		"function overtaken(route) { return state.route !== route; }" {
+		t.Errorf("overtaken no longer says whether a newer render has begun: %s", over)
+	}
+	if code := withoutComments(script); !strings.Contains(code, "\nlet drawnFor = { path: null, route: null, thread: null };\n") ||
+		strings.Count(code, "drawnFor") != 5 {
+		t.Error("drawnFor is no longer only declared, noted by a render that draws, and put back by a kept page's failed redraw")
+	}
+	for _, view := range []string{"renderIndex", "renderCatalog", "renderArchive", "renderThread"} {
+		fn := squash(withoutComments(jsFunction(t, script, view)))
+		steps := []string{" = await api(", "if (overtaken(route)) { return; }", "el.main.innerHTML = "}
+		if view == "renderThread" {
+			steps = []string{" = await api(", "if (overtaken(route)) { return; }", "state.thread = detail;", "el.main.innerHTML = "}
+		}
+		inOrder(t, view, fn, steps...)
 	}
 	loading := squash(withoutComments(jsFunction(t, script, "beginLoading")))
 	if !strings.Contains(loading, "function beginLoading({ skeleton = true } = {}) {") ||
@@ -1457,8 +1473,11 @@ func TestTheCaptchaFAQSaysWhatThePageDoes(t *testing.T) {
 // off. release then returns the picker's reason, and every notice after it but
 // the two refusals of the image itself, which say so in their own words, adds
 // that the image has been taken off and why, and tells a post left with
-// nothing to write something instead. So a captcha refusal says "Your image is
-// still attached" only of an image that is.
+// nothing to write something instead; a refusal of the thread itself
+// (archived, locked, gone) adds only that the image was taken off, since no
+// post can go there. So a captcha refusal says "Your image is still attached"
+// only of an image that is, and an archived thread is not answered with
+// "Text replies still work".
 func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	script := appScript(t)
 	message := squash(withoutComments(jsFunction(t, script, "errorMessage")))
@@ -1482,17 +1501,20 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 	for _, want := range []string{
 		"if (err.unreachable) { return nothingLeft ? UNREACHABLE : `${UNREACHABLE} What you wrote is still in the box.`; }",
 		`if (err.status === 413) { return imageOff ? "That image was too large." : imageTooLargeMessage(); }`,
-		`const kept = nothingLeft ? "" : " Your text is still in the box.";`,
+		`const kept = hasText ? " Your text is still in the box." : "";`,
 	} {
 		if !strings.Contains(message, want) {
 			t.Errorf("errorMessage no longer words this for what the form still holds: missing %s", want)
 		}
 	}
 	taken := squash(withoutComments(jsFunction(t, script, "imageTakenOff")))
-	if taken != "function imageTakenOff(message, reason, { hasText, isThread }) { if (!reason) { return message; } "+
+	if taken != "function imageTakenOff(message, reason, { hasText, isThread, closed = false }) { if (!reason) { return message; } "+
+		"const said = /[.!?]$/.test(message) ? message : `${message}.`; "+
+		"if (closed) { return `${said} The image has been taken off your post.`; } "+
 		`const next = hasText ? "" : isThread ? " Write something to post text instead." : " Write a reply to post text instead."; `+
-		"return `${message} The image has been taken off your post. ${reason}${next}`; }" {
-		t.Errorf("imageTakenOff no longer says the image was taken off and why, and what a post left with nothing can do: %s", taken)
+		"return `${said} The image has been taken off your post. ${reason}${next}`; }" {
+		t.Errorf("imageTakenOff no longer says the image was taken off and, unless the thread takes no posts, why and what a post "+
+			"left with nothing can do: %s", taken)
 	}
 	// The submit handler reads the text from the box after release, and adds
 	// what release took off to every notice but the image's own refusals.
@@ -1503,8 +1525,9 @@ func TestCaptchaRefusalSaysWhatTheFormStillHolds(t *testing.T) {
 		`const box = field(form, "body"); const hasText = Boolean(box && box.value.trim());`,
 		"showNotice(imageTakenOff(FORGOTTEN_BEFORE_SENDING, imageOff, { hasText, isThread }));",
 		"const limitReached = err.status === 403 && err.message === IMAGE_LIMIT_REACHED; if (limitReached) {",
-		"const message = errorMessage(err, { hasText, imageOff }); "+
-			"showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread }));",
+		`const closed = err.status === 404 || (err.status === 403 && (err.message === "thread is archived" || `+
+			`err.message === "thread is locked")); const message = errorMessage(err, { hasText, imageOff }); `+
+			"showNotice(limitReached || uploadsOff ? message : imageTakenOff(message, imageOff, { hasText, isThread, closed }));",
 	)
 	if strings.Count(refused, "showNotice(") != 2 || strings.Count(refused, "body.trim()") != 0 ||
 		strings.Count(withoutComments(script), "imageTakenOff(") != 3 {
