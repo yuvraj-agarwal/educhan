@@ -3546,6 +3546,47 @@ func TestFilterCostIsBounded(t *testing.T) {
 	}
 }
 
+// TestFilterCountsMenacePairing holds menace's pairing of hints to the count
+// TestFilterCostIsBounded bounds. Spaced gun emoji are each a hint and all
+// stand at one reading position, so each is near all the others: pairing them
+// by looking at every hint near each one is quadratic, and before the hints
+// were filed by kind and searched by halving it was also counted as nothing,
+// so the step count could not see the 85 ms of CPU 8,000 bytes of them took.
+// The pairing has to cost steps, at least one for each hint, and eight times
+// the hints at most sixteen times the steps (a search by halving costs a few
+// more steps a hint as the hints grow; looking at every pair costs
+// sixty-four times).
+func TestFilterCountsMenacePairing(t *testing.T) {
+	noPlaces := func() nearSpans { return nearSpans{} }
+	pairing := func(guns int) (hints, steps int) {
+		f := scanField(fieldBody, strings.Repeat("🔫 ", guns), nil)
+		// The first reading builds the words and their positions, which
+		// later ones reuse; the second costs what menace's own reading does.
+		f.menaceHints()
+		before := f.plain.work
+		hints = len(f.menaceHints())
+		reading := f.plain.work - before
+		before = f.plain.work
+		if menace([]*scannedField{f}, noPlaces) {
+			t.Fatalf("%d spaced guns read as a threat with no place or time", guns)
+		}
+		return hints, f.plain.work - before - reading
+	}
+	smallHints, small := pairing(500)
+	hints, full := pairing(4000)
+	if smallHints != 500 || hints != 4000 {
+		t.Fatalf("%d and %d hints from 500 and 4,000 spaced guns, want one a gun", smallHints, hints)
+	}
+	for _, c := range []struct{ hints, steps int }{{smallHints, small}, {hints, full}} {
+		if c.steps < c.hints {
+			t.Errorf("pairing %d hints counted %d steps, fewer than one a hint", c.hints, c.steps)
+		}
+	}
+	if full > 16*small {
+		t.Errorf("pairing 4,000 hints counted %d steps against %d for 500; more than linear", full, small)
+	}
+}
+
 // TestFilterReadsNoCharacterAsAPhrase holds the cap on what one character may
 // fold to: the compatibility forms a digit or a letter has still read as what
 // they show, and a character that folds to a whole phrase reads as itself, so a

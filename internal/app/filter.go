@@ -7462,12 +7462,17 @@ func menace(fields []*scannedField, placesAndTimes func() nearSpans) bool {
 	// not a look at every hint near it: a post of 4,000 spaced gun emoji,
 	// which all stand at one reading position, made that a look at every
 	// pair, and none of it was counted (TestFilterCostIsBounded, "spaced
-	// guns"). The searches are counted as a step for each halving.
+	// guns"). Filing each hint is counted as a step for each kind, and each
+	// search as a step for each halving it takes, as the search takes it, so
+	// the count is the work done and not an estimate of it
+	// (TestFilterCountsMenacePairing).
+	steps := 0
 	if len(fields) > 0 {
-		fields[0].plain.work += len(hs) * (numMenaceKinds + 1) * bits.Len(uint(len(hs)))
+		defer func() { fields[0].plain.work += steps }()
 	}
 	var near [numMenaceKinds + 1]struct{ starts, reach []int }
 	for _, h := range hs {
+		steps += numMenaceKinds + 1
 		for k := range near {
 			if k < numMenaceKinds && h.kind&(1<<k) == 0 || k == numMenaceKinds && !h.placed {
 				continue
@@ -7480,10 +7485,21 @@ func menace(fields []*scannedField, placesAndTimes func() nearSpans) bool {
 			n.starts, n.reach = append(n.starts, h.at[0]), append(n.reach, reach)
 		}
 	}
+	// nearby finds the first hint of kind k that starts past h's reach, by
+	// halving, and asks whether any before it reaches back to h.
 	nearby := func(k int, h menaceHint) bool {
 		n := &near[k]
-		i, _ := slices.BinarySearch(n.starts, h.at[1]+threatWindow+1)
-		return i > 0 && n.reach[i-1] >= h.at[0]-threatWindow
+		lo, hi := 0, len(n.starts)
+		for lo < hi {
+			steps++
+			if mid := int(uint(lo+hi) >> 1); n.starts[mid] <= h.at[1]+threatWindow {
+				lo = mid + 1
+			} else {
+				hi = mid
+			}
+		}
+		steps++
+		return lo > 0 && n.reach[lo-1] >= h.at[0]-threatWindow
 	}
 	for _, h := range hs {
 		kinds := h.kind
