@@ -484,7 +484,15 @@ What that protects, exactly:
   and the rewrite itself logs the rows it replaced.
 - **`track_commit_timestamp` must stay off**, as the deploy guide's section 2.2
   says. With it on, PostgreSQL records when each transaction committed, and a
-  row's `xmin` gives the time it was written to well under a second.
+  row's `xmin` gives the time it was written to well under a second; so does
+  each committed id missing from the posts' sequence, which turns a gap above
+  from the minutes between two posts into the moment of the write. The guide
+  gives as its reason that the setting defeats rounding the expiry to a day so
+  that an issuance cannot be matched to the posts around it; that sentence
+  predates the posts' gaps (second point), which match an issuance to the posts
+  around it with the setting off. The rounding keeps the credential's own row
+  from saying more than its day; keeping the setting off keeps each gap at the
+  minutes between two posts rather than the moment of the write.
 
 Nothing more than that. In particular, the files `VACUUM FULL` drops and the
 log segments PostgreSQL deletes or reuses go the ordinary way, not wiped: what
