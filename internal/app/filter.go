@@ -406,8 +406,8 @@ type reading struct {
 // it; the code itself is read like any other text. A [spoiler] tag reads as
 // nothing, because a spoiler is drawn inline and the reader who opens it sees
 // the text on either side run on: "98765[spoiler]43210[/spoiler]" is one
-// number, "sn[spoiler]ap[/spoiler]" is "snap", and "coolkid[spoiler]2009[/spoiler]"
-// is "coolkid2009". A number hidden in a spoiler straight after a word ("call
+// number, "sn[spoiler]ap[/spoiler]" is "snap", and "madeup[spoiler]2009[/spoiler]"
+// is "madeup2009". A number hidden in a spoiler straight after a word ("call
 // me[spoiler]98765…") still stands on its own, because firstNumber reads the
 // place where a tag was as the edge of a word.
 func markupReadings(body string) []reading {
@@ -1415,8 +1415,8 @@ var notAHandle = func() map[string]bool {
 }()
 
 // myMailRule and mailColonHandle name an address by its provider and the
-// part before the "@": "my gmail is coolkid12", "gmail: coolkid12", "email ->
-// coolkid12". They need the same evidence as a handle. Without "my", "=",
+// part before the "@": "my gmail is madeup12", "gmail: madeup12", "email ->
+// madeup12". They need the same evidence as a handle. Without "my", "=",
 // "=>" and ">" are code ("email = user.email", "email => email.length",
 // "echo $email >> emails.txt"), not a separator.
 var (
@@ -1447,7 +1447,7 @@ var (
 	appLabelHandle = bothViews(`\b` + handleApps + `(?:~` +
 		words(`id`, `username`, `user~name`, `handle`, `tag`, `me`) + `)?(?:[ \t]+` + words(`is`, `hai`, `h`) +
 		`)?\s+(@?)([\pL\pN._]{2,30})(#\d{4})?`)
-	// "mera insta coolkid_12 hai": the handle before the copula.
+	// "mera insta madeup_12 hai": the handle before the copula.
 	hindiHandle = bothViews(`\b` + words(`mera`, `meri`, `mere`, `apna`, `apni`) + `~` + handleApps +
 		`(?:~id)?[ \t]+(@?)([\pL\pN._]{2,30})(#\d{4})?[ \t]+` + words(`hai`, `h`) + `\b`)
 	// "@x_y_z on snap", "x_y_z is my snap", "x_y_z (snap)": the handle first.
@@ -1505,7 +1505,7 @@ const (
 // accountNumberRules are accounts written as numbers no other rule reads: a
 // Session messenger ID, 66 hexadecimal digits starting "05", which nothing
 // else is written as; and a game's friend code after its name ("steam
-// friend code 9412877305", "friend code SW-1234-5678-9012").
+// friend code 4410877305", "friend code SW-0000-0000-0000").
 var accountNumberRules = []rule{
 	plainOnly(`\b05[0-9a-f]{64}\b`),
 	plainOnly(`\bfriend~?codes?(?:~is)?~(?:sw~?)?\d(?:~?\d){7,11}\b`),
@@ -1528,8 +1528,8 @@ var accountNumberRules = []rule{
 //   - the Hinglish forms, either way round ("insta pe aaja baat karte",
 //     "telegram pe join karo", "dm kar insta pe", "WhatsApp number do",
 //     "apna gmail id bata");
-//   - a handle a few lead words after the app ("snap pe aaja: aarav.0p",
-//     "my 👻 is sunset.sprinkles", "telegram: mridul underscore jee"), or
+//   - a handle a few lead words after the app ("snap pe aaja: madeup.0p",
+//     "my 👻 is madeup.sprinkles", "telegram: madeup underscore jee"), or
 //     quoted after "search" where an account is meant;
 //   - talking "there" once an app, or a link to it, has been named
 //     ("instagram.com/p/… comment there so we can talk");
@@ -1564,7 +1564,7 @@ var offBoardRule = bothViews(`\b` + words(
 
 // aWord is a word of a view and where it is: letters, digits, apostrophes
 // and underscores, an "@" before them, and a dot only inside it, so that
-// "aarav.0p" is one word and "instead." is "instead". quoted says a
+// "madeup.0p" is one word and "instead." is "instead". quoted says a
 // quotation mark opened just before it and closed just after it.
 type aWord struct {
 	w        string
@@ -2394,11 +2394,11 @@ var (
 )
 
 // handleAfterApp reads a handle a few lead words after the app: "snap pe
-// aaja: aarav.0p", "follow karo insta pe: kota_ki_kahani", "my 👻 is
-// sunset.sprinkles", "threema id 7KX2PQ9M"; one spelled with "underscore"
-// or "dot" after a separator ("telegram: mridul underscore jee"); and a
+// aaja: madeup.0p", "follow karo insta pe: madeup_ki_kahani", "my 👻 is
+// madeup.sprinkles", "threema id MADEUP42"; one spelled with "underscore"
+// or "dot" after a separator ("telegram: madeup underscore jee"); and a
 // quoted word after "search" where the sentence says an account is meant
-// ("telegram id same as here, search 'kotafactoryreal'"). It returns where
+// ("telegram id same as here, search 'madeupkotafactory'"). It returns where
 // the handle ends.
 func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool) (int, bool) {
 	text := v.text
@@ -2507,8 +2507,8 @@ func (f *scannedField) otherFieldNamed(text string, after []aWord, m []int) (int
 
 // splitAddress reads an address given in two halves: the provider with an
 // "@" and no name before it, and the name labelled apart, after it or before
-// it: "[at] gmail [dot] com — prefix is quietstorm2007", "username:
-// quietstorm2007, then @gmail.com". The name has to look like one
+// it: "[at] gmail [dot] com — prefix is madeup.quietstorm2007", "username:
+// madeup.quietstorm2007, then @gmail.com". The name has to look like one
 // (nameLike), since "prefix is your name" gives nothing away.
 func splitAddress(text string, before, following []aWord, m []int) (int, int, bool) {
 	at := addressAt(text, m[0])
@@ -11880,7 +11880,7 @@ var handleLabels = canonSetOf(`id username user userid name handle tag me is hai
 // myAppCheck judges "my snap is <word>" by the word: an "@" before it or a
 // username's marks make it a handle, notAHandle words do not, and a plain
 // word is a name only where the sentence ends on it and it reads as no
-// description ("my insta is priya", not "my insta is underrated").
+// description ("my insta is madeuppriya", not "my insta is underrated").
 func (f *scannedField) myAppCheck(v *view, m []int) bool {
 	word := v.text[m[2]:m[3]]
 	if strings.HasPrefix(word, "@") {
@@ -11945,10 +11945,10 @@ func emailAddress(local, domain, tld string, spaced bool) bool {
 // spelledEmail vets a spelled-out address. A "@" written next to the name, a
 // bracketed "at" or "at the rate" says it is one. A bare "at", or an "@" with
 // a space before it, needs one more sign that it is an address and not a
-// sentence: a name-like part before it ("priya_k", "coolkid12"), or a mail
+// sentence: a name-like part before it ("madeup_k", "madeup12"), or a mail
 // provider's domain with something other than "sign in" or "me" before it;
-// with "dot" spelled out, an institution's domain will do too ("priya at iitb
-// dot ac dot in"). A site followed by a path is a link: "docs at
+// with "dot" spelled out, an institution's domain will do too ("madeup at
+// iitb dot ac dot in"). A site followed by a path is a link: "docs at
 // docs.python.org/3/". A problem, a level or a job title ("Q3 at
 // leetcode.com", "SDE2 at amazon.com", "Div2 at codeforces.com") is shaped
 // like a name but is not one, except at a mail provider or a university; and
@@ -12023,10 +12023,10 @@ func spelledDomain(domain string) string {
 var spelledDotPattern = regexp.MustCompile(`\s*[(\[{<]\s*(?:d[o0]t|\.)\s*[)\]}>]\s*|[\s_]+d[o0]t[\s_]+`)
 
 // firstSpacedEmail finds an address written a character at a time with a
-// space after each, "s h r e y a s . 0 9 @ g m a i l . c o m", in the plain
+// space after each, "m a d e u p . 0 9 @ g m a i l . c o m", in the plain
 // view: the loose view closes up spaced letters, but not the digits, dots and
 // "@" among them. The word next to the "@" may be written whole
-// ("shreyas09 @ g m a i l . c o m"), and four characters at least must be
+// ("madeup09 @ g m a i l . c o m"), and four characters at least must be
 // spaced out. One pass from each "@" each way, which stops at the "@" before.
 func (f *scannedField) firstSpacedEmail() (int, int, bool) {
 	v := &f.plain

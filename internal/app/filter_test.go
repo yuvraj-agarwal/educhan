@@ -2685,7 +2685,7 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"who wants to be my snap streak buddy", contact},
 		{"my snap streak buddy ghosted me after 300 days", publish},
 		{"riot id: madeupbaingan#IND1 val pe aaja shaam ko", contact},
-		{"steam friend code 9412877305, add me we need a 4th", contact},
+		{"steam friend code 4410877305, add me we need a 4th", contact},
 		{"session id 0515cee4fa0394e660be657b7e4033b7f26b6da202de62ebd149d552f228b8a721 if u want to talk", contact},
 		{"Tele me or whatsapp 9137 2684, got the O level chem TYS worked solutions", contact},
 		{"my hp is 9 6 2 8 - 4 0 1 7 lah, just msg", contact},
@@ -3705,8 +3705,19 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 		"c2-122": "a Steam friend code, digits",
 	}
 	// A Steam friend code is an account's 32-bit number, so one past what 32
-	// bits hold is no one's.
+	// bits hold is no one's account; and one the filter does not read as a
+	// phone number on its own is no one's phone ("9412877305" is an Indian
+	// mobile's shape).
 	steamCode := regexp.MustCompile(`(?i)\bsteam\b[^\d]{0,24}\b(\d{6,12})\b`)
+	someonesSteamCode := func(code string) string {
+		if n, err := strconv.ParseUint(code, 10, 64); err == nil && n <= math.MaxUint32 {
+			return "fits in 32 bits, so it may be someone's account"
+		}
+		if verdictName(checkContent(contentInput{Body: code}, false)) != "publish" {
+			return "reads as a phone number on its own, so it may be someone's phone"
+		}
+		return ""
+	}
 	madeUp := func(s string) bool {
 		letters := strings.Map(func(r rune) rune {
 			if unicode.IsLetter(r) {
@@ -3757,9 +3768,13 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	aadhaarNumber := regexp.MustCompile(`(?:^|[^\d])([2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?:[^\d]|$)`)
 	aadhaars := 0
 	// An exam roll, application, registration or student number the filter
-	// should publish has zeroes for its serial, so it is no one's.
+	// should publish has zeroes for its serial, so it is no one's: after its
+	// label, a plural one ("roll numbers") and "is", "was" or "hai" between
+	// ("my roll number is 21CS0000"), and both ends of a range ("22CS1000–
+	// 22CS2000").
 	studentNumber := regexp.MustCompile(`(?i)\b(?:roll|application|registration|reg|enrol?ment|enrollment|student|` +
-		`hall ticket|admit card)(?:[\s.:#-]+(?:no|number|num|id|card))*[\s.:#-]+(\d[\dA-Z]{4,19})\b`)
+		`hall ticket|admit card)s?(?:[\s.:#-]+(?:nos?|numbers?|nums?|ids?|cards?|is|was|are|were|hai|h))*` +
+		`[\s.:#-]+(\d[\dA-Z]{4,19})\b(?:[ \t]*(?:[-–—]|to|se)[ \t]*(\d[\dA-Z]{4,19})\b)?`)
 	serials := 0
 	labelledAadhaars := func(where, text string) {
 		lower := strings.ToLower(text)
@@ -3826,8 +3841,8 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			}
 			post := it.Name + "\n" + it.Subject + "\n" + it.Body
 			for _, m := range steamCode.FindAllStringSubmatch(post, -1) {
-				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
-					t.Errorf("%s: the Steam account number %s fits in 32 bits, so it may be someone's", it.ID, m[1])
+				if why := someonesSteamCode(m[1]); why != "" {
+					t.Errorf("%s: the Steam account number %s %s", it.ID, m[1], why)
 				}
 			}
 			for _, field := range []string{it.Name, it.Subject, it.Body} {
@@ -3857,10 +3872,15 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			}
 			if it.Expect == "publish" {
 				for _, m := range studentNumber.FindAllStringSubmatch(post, -1) {
-					serials++
-					if !strings.HasSuffix(strings.TrimRight(m[1], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
-						"000") {
-						t.Errorf("%s: the published number %q has a serial that is not zeroes", it.ID, m[1])
+					for _, number := range m[1:] {
+						if number == "" {
+							continue
+						}
+						serials++
+						if !strings.HasSuffix(strings.TrimRight(number, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
+							"000") {
+							t.Errorf("%s: the published number %q has a serial that is not zeroes", it.ID, number)
+						}
 					}
 				}
 				continue // a decorator in code, "@staticmethod", is no one's
@@ -3891,11 +3911,98 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 			}
 			noOnesNumbers(fmt.Sprintf("%s:%d", path, i+1), line, false)
 			for _, m := range steamCode.FindAllStringSubmatch(line, -1) {
-				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
-					t.Errorf("%s:%d: the Steam account number %s fits in 32 bits, so it may be someone's", path, i+1, m[1])
+				if why := someonesSteamCode(m[1]); why != "" {
+					t.Errorf("%s:%d: the Steam account number %s %s", path, i+1, m[1], why)
 				}
 			}
 		}
+	}
+	// The README, AGENTS.md and the filter's own comments quote examples of
+	// what it reads, and are held to the same where an example is the kind
+	// the filter blocks: an address spelled out a character at a time ("m a d
+	// e u p . 0 9 @ g m a i l . c o m"), closed up and read as the corpus's
+	// are; ten digits run together straight after the name of a line, which
+	// the filter reads as a North American number ("cell 2954820174"), in an
+	// area code never assigned; a Steam friend code as the corpus's are; and
+	// a quoted example the filter blocks as an address or a username, which
+	// says "madeup" or stands in for the name with "x", "x_y", "name" or
+	// "you" ("snap: x_y_z", "disc: name#1234", and the verification
+	// examples' "you" at an institution's domain, which names no one).
+	docs := []string{filepath.Join("..", "..", "README.md"), filepath.Join("..", "..", "AGENTS.md")}
+	sources, _ := filepath.Glob("filter*.go")
+	for _, path := range sources {
+		if !strings.HasSuffix(path, "_test.go") {
+			docs = append(docs, path)
+		}
+	}
+	spelledOut := regexp.MustCompile(`(?:[\pL\pN._] ){2,}@(?: [\pL\pN._])+`)
+	lineThenDigits := regexp.MustCompile(`(?i)\b(?:cell|phone|ph|mobile|mob|tel|voice|my number is)\W{0,3}([2-9]\d{9})\b`)
+	quotedExample := regexp.MustCompile(`"([^"\n]{3,200})"`)
+	placeholder := regexp.MustCompile(`(?i)(?:^|[^\pL\pN_.])(?:@|u/)?(?:[xyz](?:[._][xyz])*|name\d*|you)` +
+		`(?:#(?:\d{4}|tag|ind1))?(?:\.bsky\.social)?(?:[^\pL\pN_.]|$)`)
+	notAName := map[string]string{
+		"insta id python3": "a tool's name, which the label before it makes a handle",
+		"my snap is ...":   "an ellipsis where the handle goes",
+	}
+	// A friend code of zeroes ("friend code SW-0000-0000-0000") is no one's.
+	zeroedCode := func(s string) bool {
+		digits := strings.Map(func(r rune) rune {
+			if r >= '0' && r <= '9' {
+				return r
+			}
+			return -1
+		}, s)
+		return len(digits) >= 8 && strings.Trim(digits, "0") == ""
+	}
+	docNumbers, docNames := 0, 0
+	for _, path := range docs {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			where := fmt.Sprintf("%s:%d", filepath.Base(path), i+1)
+			for _, spelled := range spelledOut.FindAllString(line, -1) {
+				closed := strings.ReplaceAll(spelled, " ", "")
+				if at := email.FindStringIndex(closed); at != nil && !fineAddress(closed, at) {
+					t.Errorf("%s: the spelled-out address %q is not marked made up", where, spelled)
+				}
+			}
+			for _, m := range lineThenDigits.FindAllStringSubmatch(line, -1) {
+				docNumbers++
+				if area := m[1][:3]; nanp(m[1]) && area[1] != '9' && area[:2] != "37" && area[:2] != "96" &&
+					!tollFree[area] {
+					t.Errorf("%s: the North American number %s is in an area code that is assigned", where, m[1])
+				}
+			}
+			for _, m := range steamCode.FindAllStringSubmatch(line, -1) {
+				if why := someonesSteamCode(m[1]); why != "" {
+					t.Errorf("%s: the Steam account number %s %s", where, m[1], why)
+				}
+			}
+			if strings.HasSuffix(path, ".go") && !strings.Contains(line, "//") {
+				continue // a string in the code, not an example in a comment
+			}
+			for _, q := range quotedExample.FindAllStringSubmatch(line, -1) {
+				v := checkContent(contentInput{Body: q[1]}, false)
+				if v.Outcome != contentBlock || v.Message != blockMessage(kindEmail, v.Field) &&
+					v.Message != blockMessage(kindHandle, v.Field) {
+					continue
+				}
+				docNames++
+				if !madeUp(q[1]) && !placeholder.MatchString(q[1]) && notAName[q[1]] == "" &&
+					!steamCode.MatchString(q[1]) && !zeroedCode(q[1]) {
+					t.Errorf("%s: the address or username in %q is not marked made up", where, q[1])
+				}
+			}
+		}
+	}
+	if docNumbers < 3 {
+		t.Fatalf("only %d numbers after the name of a line found in the docs and comments, want three and more",
+			docNumbers)
+	}
+	if docNames < 40 {
+		t.Fatalf("only %d addresses and usernames found in the docs and comments, want forty and more", docNames)
 	}
 	if numbers < 40 {
 		t.Fatalf("only %d North American numbers found, want the corpus's and the tests' forty and more", numbers)
@@ -3903,8 +4010,8 @@ func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
 	if aadhaars < 10 {
 		t.Fatalf("only %d labelled Aadhaar numbers found, want the corpus's ten and more", aadhaars)
 	}
-	if serials < 15 {
-		t.Fatalf("only %d published roll, application and student numbers found, want the corpus's fifteen and more",
+	if serials < 20 {
+		t.Fatalf("only %d published roll, application and student numbers found, want the corpus's twenty and more",
 			serials)
 	}
 }
