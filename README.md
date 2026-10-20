@@ -398,22 +398,27 @@ refused, the page checks the code it holds (`/api/pass/activate`), stores the
 date the server gives and, if it moved on, says the Pass is now good until
 then, without saying where the time came from, which it cannot know.
 
-`POST /api/pass/claim` with `{"forget": true}` drops the browser's claim, for
-a shared computer: its order moves under a random hash nobody holds, and the
-cookie is cleared, so whoever uses the browser next collects nothing of it,
-even with a copy of the cookie taken before. Paid, or paid later, the order is
-still the buyer's, and the owner reissues it from the payment on the receipt
-(see **Lost codes**). Remove the Pass, Forget this browser and Stop collecting
-it here all send it. The page stops any collection under way and drops its
-nonces before it does, and starts none until the server has the request, so a
-claim cannot collect what is being dropped. The browser's other tabs do the
-same: while the request is on its way the page keeps a mark in `localStorage`
+`POST /api/pass/claim` with `{"forget": true}` drops the browser's claim, for a
+shared computer: its order moves under a random hash nobody holds, and the
+cookie is cleared, so whoever uses the browser next collects nothing of it, even
+with a copy of the cookie taken before. Paid, or paid later, the order is still
+the buyer's, and the owner reissues it from the payment on the receipt (see
+**Lost codes**). Remove the Pass, Forget this browser and Stop collecting it
+here all send it. The page stops any collection under way and drops its nonce
+before it does, and starts none until the server has the request, so a claim
+cannot collect what is being dropped. The browser's other tabs do the same:
+while the request is on its way the page keeps a mark in `localStorage`
 (`educhan:pass-forget`, a random token), and a tab that sees it appear stops,
 and starts nothing until it goes, or for 30 seconds at most, in case the tab
-that set it was closed first. An answer already on its way, in any tab, when
-one of them is pressed is dropped without being stored or shown; a Pass it
-brought is still the buyer's, and a reissue code from its payment gives it a
-new code.
+that set it was closed first, and draws the Pass page then if it is open. An
+answer to a claim already on its way, in any tab, when one of them is pressed is
+dropped without being stored or shown; a Pass it brought is still the buyer's,
+and a reissue code from its payment gives it a new code. Remove the Pass and
+Forget this browser go further, in every tab: they also drop a reissue code's
+nonce, and an answer on its way to a reissue code or to a check of a Pass code,
+until the server has the request. Stop collecting it here leaves those alone,
+since it is about a checkout, and a reissue it dropped would be spent with
+nothing to show for it.
 
 A page on another subdomain of the same site can set a cookie of the same name
 for the whole site, at a path the browser sends ahead of the server's own, to
@@ -577,28 +582,34 @@ curl -X POST https://<site>/api/pass/reissue -H 'X-Mod-Key: …' \
 and emails the reissue code, from the support address, to the address the buyer
 wrote in from. The owner never sees a Pass code. A reissue code is the word
 REISSUE and then 28 letters and digits, from the same alphabet as a Pass code,
-in groups of four, to read out or paste: 140 random bits, and never mistaken
-for a Pass code, which has no U. The server takes it in either case, with or
-without the word in front and with dashes, spaces or nothing between the
-groups, a no-break space, another dash or a character nobody sees, which a
-paste out of mail can bring, included; the page skips the same ones. Typed on
-the Pass page, it gives the Pass a new code, shown once, and the old one stops
-working. For a purchase or a renewal paid and never collected, it collects it
-instead: a purchase's reissue code makes the Pass, with its code shown once,
-and a renewal's renews the Pass it was for and shows no code, or makes a new
-Pass if that one has gone. It works once, until a deadline like an order's (a
-week, to the next midnight UTC); a newer reissue code for the same payment
-replaces it, and a refund or a dispute cancels it, as does a renewal that takes
-its payment's right to reissue away (below). It is never in an address, so no
-browser history, address bar or `Referer` holds it. The page sends it in the
-body of one claim, with a nonce of its own, and the new Pass code is derived
-from the two, so a reissue whose answer was lost is asked again and gives the
-same Pass code; the server keeps only the reissue code's SHA-256 hash. A
-renewal's reissue code asked again is refused like any spent one, since a
-renewal hands over no code; the renewal is on the Pass all the same, and the
-page then checks the code it holds, as for a claim, and says its new date.
-Without a Pass to check, it says the code has been used, and that a renewal it
-made is on its Pass already, rather than to ask for another.
+in groups of four, to read out or paste: 140 random bits, and never mistaken for
+a Pass code, which has no U. The server takes it in either case, with or without
+the word in front and with dashes, spaces or nothing between the groups, a
+no-break space, another dash or a character nobody sees, which a paste out of
+mail can bring, included. The page skips the same ones, and sends a code typed
+or pasted in, a Pass code or a reissue code, as the server writes it: in
+capitals, grouped with dashes. Typed on the Pass page, a reissue code gives the
+Pass a new code, shown once, and the old one stops working. For a purchase or a
+renewal paid and never collected, it collects it instead: a purchase's reissue
+code makes the Pass, with its code shown once, and a renewal's renews the Pass
+it was for and shows no code, or makes a new Pass if that one has gone. It works
+once, until a deadline like an order's (a week, to the next midnight UTC); a
+newer reissue code for the same payment replaces it, and a refund or a dispute
+cancels it, as does a renewal that takes its payment's right to reissue away
+(below). It is never in an address, so no browser history, address bar or
+`Referer` holds it. The page sends it in the body of one claim, with a nonce of
+its own, and the new Pass code is derived from the two, so a reissue whose
+answer was lost is asked again and gives the same Pass code; the server keeps
+only the reissue code's SHA-256 hash. The page keeps that nonce until an answer
+says the code issued or renewed a Pass, or until Remove the Pass or Forget this
+browser, and never drops it on a refusal: an earlier try may have reached the
+server and its answer been lost, so the right code typed after a mistyped one
+still gets the same Pass code. A renewal's reissue code asked again is refused
+like any spent one, since a renewal hands over no code; the renewal is on the
+Pass all the same, and the page then checks the code it holds, as for a claim,
+and says its new date. With no Pass to check, or no later date, it says only
+what is known: an earlier try may have reached educhan and renewed the Pass
+already, and otherwise the code may be mistyped, used, run out or cancelled.
 
 Only the payment that made a Pass, or a paid purchase or renewal nobody
 collected, can be reissued. The payment of a renewal that was collected
@@ -881,60 +892,72 @@ not-found view.
   anything else. A badged post sends the credential instead, never both. The Name field
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
-  `/verify` drops the key, the name, any badge and any Pass, and any Pass purchase still
-  being collected, for a shared computer.
-- **educhan Pass**: the header links to `/pass` only once `GET /api/site` says the
-  server has the Pass, on sale or paused, or while this browser holds one, so a holder
-  can still show or remove it. `/pass` says what a Pass does and what it costs (with
-  "plus any tax" when Stripe adds it, and "a set time" until the server's terms are
-  known), sells and renews it through Stripe's own page, and takes a code typed in: a
-  Pass code, or a reissue code (see [Lost codes](#educhan-pass)). While sales are paused
-  it says "The Pass is not on sale right now." where Buy and Renew were. A browser that
-  keeps no cookies or storage is told so rather than sent to Stripe. The browser keeps
-  the Pass in `localStorage` and sends it on unbadged posts only (see [educhan
-  Pass](#educhan-pass)); the page sends it only in the body of a renewal or a check.
+  `/verify` drops the key, the name, any badge and any Pass, any Pass purchase still
+  being collected and any note that a Pass was found gone, for a shared computer.
+- **educhan Pass**: the header links to `/pass` only once `GET /api/site` says the server
+  has the Pass, on sale or paused, or while this browser holds one, so a holder can still
+  show or remove it. `/pass` says what a Pass does and what it costs (with "plus any tax"
+  when Stripe adds it, and "a set time" until the server's terms are known), sells and
+  renews it through Stripe's own page, and takes a code typed in: a Pass code, or a
+  reissue code (see [Lost codes](#educhan-pass)). While sales are paused it says "The Pass
+  is not on sale right now." where Buy and Renew were. A browser that keeps no cookies or
+  storage is told so rather than sent to Stripe. The browser keeps the Pass in
+  `localStorage` and sends it on unbadged posts only (see [educhan Pass](#educhan-pass));
+  the page sends it only in the body of a renewal or a check. When `GET /api/pass` cannot
+  be read, a Pass held here is still drawn, with Show the code and Remove but no Renew.
   While a purchase waits to be collected (`GET /api/pass` says `claim`), the page shows
   that in place of any form to pay with, or, when the browser already has a Pass, says a
   checkout from it has not been collected yet, which may be a payment Stripe is still
   confirming, and keeps Renew; either way it says that starting another checkout, a
-  renewal included, stops this browser collecting that one, and the forms drawn again
-  over a checkout left behind (Start again, or back from Stripe's cancel link) still
-  offer **Stop collecting it here**. It asks on every visit, with a growing pause while
-  it is open, and sends the collection's nonce (`educhan:pass-nonce`) each time until an
-  answer says nothing more is waiting, so an answer lost on the way is asked for again
-  and brings the same code; refused then, it checks the Pass it holds and says a date
-  that moved on. A code the server hands over is stored before anything else and stays
-  on screen, beside any code it took the place of, until the reader leaves the page; it
-  can be shown again from the held Pass's panel to write down, and a browser that will
-  not store it is told so. A code typed in after it ran out, within its month of grace,
-  is kept as run out, with its date, to renew. A Pass that has run out here can be
-  checked again, in case it was renewed elsewhere. A renewal the page collects is
-  checked against the Pass it holds (`/api/pass/activate`) before it says that Pass is
-  renewed; one it cannot match to the Pass it holds is reported as a renewal of a Pass,
-  by a payment from this browser or by the reissue code that brought it, with that
-  Pass's new date. An answer about a Pass, to a check or a post, that arrives after the
-  Pass left the browser (removed or replaced, here or in another tab) is dropped, not
-  stored back. Brought back from the back-forward cache, the Pass page is drawn again
-  from the start, age screen first. A reissue code is typed or pasted into the code box,
-  never carried in an address. Pressing the button spends it at once, even in a browser
-  that holds a Pass, whose code is then shown beside the new one to write down; a Pass
-  code typed over a good Pass is refused instead. It goes in the body of one claim, with
-  a nonce of its own (`educhan:pass-reissue-nonce`), and is never stored: it stays in
-  the box, in memory only, until an answer arrives, so pressing again after a lost
-  answer asks with the same nonce. The box has autocomplete off, and is emptied by
-  **Remove the Pass** and **Forget this browser**, pressed in any tab of the browser,
-  and by leaving the page. Those two and **Stop collecting it here** stop any collection
-  under way, drop its nonces and then the browser's claim, and drop unstored an answer
-  to a claim or a reissue code that was already on its way, in every tab of the browser
-  (the `storage` event), so the next person at a shared computer collects nothing.
-  Nothing collects again, **Check now** included, until the server has that request, and
-  a Stop that cannot reach educhan says so and goes on collecting. Remove and Forget
-  also empty the clipboard of a code **Copy the code** put there since educhan was last
-  opened in the same tab, unless another tab has removed or replaced the Pass meanwhile;
-  a code copied any other way stays. Removing the Pass, or forgetting the browser, in
-  another tab takes a code just handed over off this tab's screen. A post whose Pass was
-  no good goes out like any other, and its answer says so: the page forgets an unknown
-  Pass, keeps one that ran out to renew, and says the post was sent.
+  renewal included, stops this browser collecting that one, and the forms drawn again over
+  a checkout left behind (Start again, or back from Stripe's cancel link) still offer
+  **Stop collecting it here**. It asks on every visit, with a growing pause while it is
+  open, and sends the collection's nonce (`educhan:pass-nonce`) each time until an answer
+  says nothing more is waiting, so an answer lost on the way is asked for again and brings
+  the same code; refused then, it checks the Pass it holds and says a date that moved on.
+  A code the server hands over is stored before anything else and stays on screen, beside
+  any code it took the place of, until the reader leaves the page; it can be shown again
+  from the held Pass's panel to write down, and a browser that will not store it is told
+  so. A code typed in after it ran out, within its month of grace, is kept as run out,
+  with its date, to renew. A Pass that has run out here can be checked again, in case it
+  was renewed elsewhere. A renewal the page collects is checked against the Pass it holds
+  (`/api/pass/activate`) before it says that Pass is renewed; one it cannot match to the
+  Pass it holds is reported as a renewal of a Pass, by a payment from this browser or by
+  the reissue code that brought it, with that Pass's new date. An answer about a Pass, to
+  a check or a post, that arrives after the Pass left the browser (removed or replaced,
+  here or in another tab), or after Remove the Pass or Forget this browser was pressed, is
+  dropped, not stored back. An answer to anything the Pass page asked is drawn, focused or
+  announced only while the reader is still on the Pass page; one that arrives after they
+  left stores what is still right to store and draws nothing. Brought back from the
+  back-forward cache, the Pass page is drawn again from the start, age screen first. A
+  code typed or pasted in is sent as the server writes it, in capitals and grouped with
+  dashes, whatever separators it was pasted with. A reissue code is typed or pasted into
+  the code box, never carried in an address. Pressing the button spends it at once, even
+  in a browser that holds a Pass, whose code is then shown beside the new one to write
+  down; a Pass code typed over a good Pass is refused instead. It goes in the body of one
+  claim, with a nonce of its own (`educhan:pass-reissue-nonce`), and is never stored: it
+  stays in the box, in memory only, until an answer arrives, so pressing again after a
+  lost answer asks with the same nonce. The nonce stays until an answer says the code
+  issued or renewed a Pass, never going on a refusal, so the right code typed after a
+  mistyped one still gets back a Pass whose answer was lost. The box has autocomplete off,
+  and is emptied by **Remove the Pass** and **Forget this browser**, pressed in any tab of
+  the browser, and by leaving the page. Those two and **Stop collecting it here** stop any
+  collection under way, drop its nonce and then the browser's claim, and drop unstored an
+  answer to a claim that was already on its way, in every tab of the browser (the
+  `storage` event), so the next person at a shared computer collects nothing. Remove and
+  Forget also drop the reissue code's nonce, and an answer on its way to a reissue code or
+  to a check of a code; Stop leaves those alone, since a reissue it dropped would be spent
+  for nothing. Nothing collects again, **Check now** included, until the server has that
+  request, a tab that opens the Pass page meanwhile draws it once the request is settled,
+  and a Stop that cannot reach educhan says so and goes on collecting. Remove and Forget
+  also empty the clipboard, whatever is on it by then, when the code was copied with
+  **Copy the code** in the same tab since educhan was last opened there and nothing has
+  been copied or cut in that tab since, unless another tab has removed or replaced the
+  Pass meanwhile; a code copied any other way, by hand included, stays until something
+  else is copied. Removing the Pass, or forgetting the browser, in another tab takes a
+  code just handed over off this tab's screen. A post whose Pass was no good goes out like
+  any other, and its answer says so: the page forgets an unknown Pass, keeps one that ran
+  out to renew, and says the post was sent.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

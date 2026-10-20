@@ -223,14 +223,15 @@ func (a *App) passTokenHash(code string) []byte {
 // request has to hold, the claim cookie or the reissue code, and a nonce the
 // page draws for the collection, rather than drawn here, so collecting is
 // safe to repeat. The page keeps a claim's nonce until an answer says nothing
-// more is waiting, and a reissue's until an answer arrives, and a claim or
-// reissue whose answer was lost after the server had committed it (a tab
-// closed, a page reloaded, a connection dropped) is asked again with the same
-// cookie or reissue code and the same nonce, and handed the same code, where
-// a fresh draw would leave the buyer a Pass they can never see. A renewal
-// hands over no code, and is not answered again: the order or reissue code
-// is spent, so the retry is refused, and the page checks the code it holds
-// to learn the new date.
+// more is waiting, and a reissue's until an answer says it issued or renewed
+// a Pass (never on a refusal) or Remove the Pass or Forget this browser drops
+// it. So a claim or reissue whose answer was lost after the server had
+// committed it (a tab closed, a page reloaded, a connection dropped) is asked
+// again with the same cookie or reissue code and the same nonce, and handed
+// the same code, where a fresh draw would leave the buyer a Pass they can
+// never see. A renewal hands over no code, and is not answered again: the
+// order or reissue code is spent, so the retry is refused, and the page
+// checks the code it holds to learn the new date.
 //
 // Neither half is worth anything alone. A nonce copied off a browser, planted
 // in one or left behind in one gives nothing with any other cookie or reissue
@@ -739,8 +740,8 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 type passClaimBody struct {
 	// Nonce is what the page draws, 16 random bytes in base64url, for each
 	// collection, and sends with every claim until an answer says nothing more
-	// is waiting, and with a reissue code until an answer arrives
-	// (passClaimCode, passReissuedCode).
+	// is waiting, and with a reissue code until an answer says it issued or
+	// renewed a Pass (passClaimCode, passReissuedCode).
 	Nonce string `json:"nonce"`
 	// Reissue is a reissue code (handlePassReissue), which the reader types
 	// or pastes on the Pass page. Without it, the claim is the browser's
