@@ -419,6 +419,42 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 				"or a pending code can be hidden behind another panel", c)
 		}
 	}
+	// Nor can anything inside the code step, or between the branches, stand
+	// in for the code box: the step's first statement returns it, the
+	// not-configured page is the only one returned before it, and the view
+	// reads verifyStep without ever setting it. A gate nested in the branch —
+	// a held badge drawn instead, with the step put back — once brought the
+	// bug back with every check above passing.
+	opener := "\n  if (" + codeStep + ") {\n"
+	start := strings.Index(view, opener)
+	if start < 0 {
+		t.Fatalf("verifyViewHTML has no line opening the code step as %q", strings.TrimSpace(opener))
+	}
+	body := strings.TrimLeft(view[start+len(opener):], " \t\n")
+	if !strings.HasPrefix(body, "return `") {
+		first, _, _ := strings.Cut(body, "\n")
+		t.Errorf("the code step starts with %q; want it to return the code box, with nothing decided first", first)
+	}
+	// What it returns is the code box whatever is held: the template asks
+	// nothing about a badge, or about the step it was asked for over.
+	if box, _, ok := strings.Cut(body, "`;\n"); !ok {
+		t.Error("the code step's template does not end where this test can find it")
+	} else {
+		for _, banned := range []string{"v.badge", "replacing"} {
+			if strings.Contains(box, banned) {
+				t.Errorf("the code step's template reads %s, so a pending code's box can depend on it:\n%s", banned, box)
+			}
+		}
+		if !strings.Contains(box, `data-verify="confirm"`) || !strings.Contains(box, `id="f-code"`) {
+			t.Errorf("the code step does not return the code box:\n%s", box)
+		}
+	}
+	if n := len(regexp.MustCompile(`\breturn\b`).FindAllString(view[:start], -1)); n != 1 {
+		t.Errorf("verifyViewHTML returns %d times before the code step; want once, for the not-configured page", n)
+	}
+	if regexp.MustCompile(`\bverifyStep\s*=[^=]`).MatchString(view) {
+		t.Error("verifyViewHTML sets verifyStep; it draws the step it is given and decides nothing about it")
+	}
 	// And the code step is what a sent code leads to.
 	submit := withoutComments(jsFunction(t, script, "submitVerification"))
 	if !strings.Contains(submit, `verifyStep = { step: "code", label: sent.label || "" };`) {
