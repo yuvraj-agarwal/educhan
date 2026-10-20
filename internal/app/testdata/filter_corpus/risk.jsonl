@@ -350,3 +350,14 @@
 {"id": "risk-350", "body": "just stop eating lol", "subject": "", "name": "", "expect": "hold", "why": "pro-eating-disorder encouragement"}
 {"id": "risk-351", "body": "stop eating fatty", "subject": "", "name": "", "expect": "hold", "why": "pro-eating-disorder insult"}
 {"id": "risk-352", "body": "go starve", "subject": "", "name": "", "expect": "hold", "why": "encouragement to starve"}
+{"id": "risk-353", "body": "gonna stab aditi after school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be stabbed, the name in small letters, a time"}
+{"id": "risk-354", "body": "i'm going to shoot kabir at school on monday", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be shot, the name in small letters, a place and a day"}
+{"id": "risk-355", "body": "im going to kill rahul tomorrow at school", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be killed, the name in small letters, a time and a place"}
+{"id": "risk-356", "body": "i'll leave a bomb under the stage at the annual day", "subject": "", "name": "", "expect": "hold", "why": "a bomb to be left under the stage at a school event"}
+{"id": "risk-357", "body": "i'm going to kidnap her after tuition", "subject": "", "name": "", "expect": "hold", "why": "a girl to be kidnapped after tuition"}
+{"id": "risk-358", "body": "we're going to do a mass shooting at the fest next friday", "subject": "", "name": "", "expect": "hold", "why": "a mass shooting planned for a day to come"}
+{"id": "risk-359", "body": "i'll punch his teeth out after class tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for after class"}
+{"id": "risk-360", "body": "i'm going to batter him after school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for after school"}
+{"id": "risk-361", "body": "i'll beat the living daylights out of him at recess tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a beating promised for recess"}
+{"id": "risk-362", "body": "I'm going to beat Kabir unconscious tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be beaten unconscious, a time"}
+{"id": "risk-363", "body": "got my uncle's pistol in my locker", "subject": "", "name": "", "expect": "hold", "why": "a gun kept in a school locker, the \"I've\" left out"}

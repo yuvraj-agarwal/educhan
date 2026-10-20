@@ -2137,6 +2137,63 @@ func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
 		// readNoun: a magazine is a gun's only when it is full or loaded.
 		{"bringing a loaded mag to school tomorrow", threat},
 		{"bring your mags to the library tomorrow", publish},
+		// lowerName: a name in small letters after a verb done to people,
+		// not a subject, a pastime, a plural or what is cooked.
+		{"i'm going to stab rahul tomorrow at school", threat},
+		{"i'll kill kabir after school", threat},
+		{"imma beat up rohan after school", threat},
+		{"i'm going to put rohan in the hospital tomorrow", threat},
+		{"i'm going to kill physics tomorrow at school", publish},
+		{"gonna stab the potato at lunch", publish},
+		{"i'll kill boredom after school with some anime", publish},
+		{"gonna shoot hoops after school tomorrow", publish},
+		{"i'll beat up the dough after school", publish},
+		{"i'll kill rahul's presentation tomorrow with my slides lol", publish},
+		// threatFrame: a name beaten unconscious, the shit beaten out of
+		// someone, a pulp, a punch, a kick to the head, a slap; not a game,
+		// an exam, a team or what is cooked.
+		{"I'll beat Kabir unconscious after school", threat},
+		{"gonna beat the shit out of him at lunch tomorrow", threat},
+		{"i'll beat him to a pulp after school", threat},
+		{"imma beat his ass after school tomorrow", threat},
+		{"i'm going to punch him in the face tomorrow at recess", threat},
+		{"i'll kick his head in after school tomorrow", threat},
+		{"imma slap her after school tomorrow", threat},
+		{"i'm going to beat the crap out of this exam tomorrow", publish},
+		{"imma beat his ass at fifa after school", publish},
+		{"i'll kick his butt at badminton tomorrow", publish},
+		{"i'm going to batter the fish for dinner tomorrow", publish},
+		{"we're going to batter them on sunday, their back four is shambolic", publish},
+		{"i'll punch in at work tomorrow at 9", publish},
+		// threatFrame: a bomb left in a place, made or built; kidnapping,
+		// rape and an acid attack. Not a bomb emoji, a bath bomb, a bomb
+		// made selling notes, or a kidnap that is an invitation.
+		{"i'm going to put a bomb in the canteen tomorrow", threat},
+		{"i'll leave a bomb in the library on friday", threat},
+		{"i've made a bomb and i'm bringing it to school monday", threat},
+		{"i'll kidnap her after school tomorrow", threat},
+		{"i'm going to rape her after school tomorrow", threat},
+		{"i'll acid attack her tomorrow outside college", threat},
+		{"i'll put a bomb emoji on the group poster tomorrow lol", publish},
+		{"i made a bath bomb and i'm bringing it to school monday", publish},
+		{"made a bomb selling notes at school today", publish},
+		{"i'm going to kidnap you for coffee after class tomorrow", publish},
+		{"in the play the villain kidnaps her after school", publish},
+		// frameSpeaker: "planning to" opening a clause.
+		{"planning to shoot up the school next week", threat},
+		{"planning to shoot a short film at school next week", publish},
+		// schoolShootingRules: a mass shooting, the next school shooter or
+		// columbine, a massacre at school, on a day; not one the words round
+		// it put in the past, a drill, or a day of exams.
+		{"i'm planning a school shooting for monday", threat},
+		{"school shooting on monday. stay home", threat},
+		{"i'm going to commit a mass shooting at school tomorrow", threat},
+		{"i'll be the next school shooter, monday", threat},
+		{"our school is going to be the next columbine, friday", threat},
+		{"monday's going to be a massacre at our school", threat},
+		{"there was a school shooting in texas on monday", publish},
+		{"the next school shooter drill is on monday", publish},
+		{"monday's going to be a massacre at our school, three exams back to back", publish},
 		// notAGame: "finals week" is exams.
 		{"the toilets will be blown up during finals week", threat},
 		{"our team will be blown up in the finals this week lol", publish},
@@ -2263,6 +2320,14 @@ func TestFilterReadsAThreatToldByImplication(t *testing.T) {
 		{"not everyone is going home from the auditorium after assembly tomorrow", threat},
 		{"assembly hall, 10am thursday. i've got enough for every single one of you.", threat},
 		{"there'll be a package under the stage at the farewell on saturday. enjoy", threat},
+		// The README's own examples, as it quotes them: a stage is a place a
+		// hint may be put at, a locker a place at school, and a verb of
+		// coming opening a clause has a speaker when it comes armed.
+		{"there'll be a package under the stage", threat},
+		{"got my uncle's pistol in my locker", threat},
+		{"come back monday with a full mag", threat},
+		{"come back monday with a full tank of petrol for my bike", publish},
+		{"there'll be a surprise for you under the stage", publish},
 		{"got a list. 9 names. all from 12C. starting friday", threat},
 		// Two kinds together.
 		{"the staff room on wednesday will be a bloodbath. stay home.", threat},
@@ -3001,7 +3066,7 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 		"selfHarmMethodRules": selfHarmMethodRules, "pillQuestionRules": pillQuestionRules,
 		"threatIntentRules": threatIntentRules, "threatPlaceOrTimeRules": threatPlaceOrTimeRules,
 		"threatWarningRules": threatWarningRules, "threatWarningCues": threatWarningCues,
-		"schoolShootingRules": schoolShootingRules, "futureTimeRules": futureTimeRules,
+		"schoolShootingRules": schoolShootingRules, "shootingTimeRules": shootingTimeRules,
 		"ageQuestionRules": ageQuestionRules, "privateCueRules": privateCueRules,
 		"myAppRule": {myAppRule}, "appColonHandle": {appColonHandle}, "appAtHandle": {appAtHandle},
 		"appLabelHandle": {appLabelHandle}, "spacedInviteRule": {spacedInviteRule},
@@ -3193,13 +3258,18 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"hinglish":         rep("usko kal maar dunga "),
 		// The threat grammar's openings next to a place or a time, which is
 		// when what follows them is read: a speaker and a verb, harm said
-		// to be coming, a place said to burn, a day someone won't see, and
-		// Hinglish pronouns with a time between; and an act urged, and a
+		// to be coming, a place said to burn, a day someone won't see, a
+		// bomb left or made, a name in small letters, a shooting on a day,
+		// and Hinglish pronouns with a time between; and an act urged, and a
 		// reader's grade asked about beside a cue.
 		"frame by a place":  rep("school i'm going to "),
 		"coming harm":       rep("everyone in the lab will get hurt tomorrow "),
 		"burning place":     rep("the hostel will burn "),
 		"won't see":         rep("the warden won't see monday "),
+		"bomb left":         rep("school i'll leave a bomb under the "),
+		"bomb made":         rep("i made a bomb at school "),
+		"small-letter name": rep("i'll stab rahul at school "),
+		"shooting on a day": rep("school shooting on monday "),
 		"pronoun then time": rep("kal sabko "),
 		"urged":             rep("bro just rope "),
 		"grade then cue":    rep("what grade are you in? come alone "),
