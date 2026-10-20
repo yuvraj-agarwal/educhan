@@ -884,8 +884,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     through owning the database: an unchanged `pg_relation_filenode` with no `55P03`
     fails the sweep at once, and the sweeper connects as the role that ran the
     migrations, which owns `vacuum_probe` too. Owning the tables is not enough for
-    `pg_statistic`, below, so that role must also own the database or belong to the
-    role that does.
+    `pg_statistic`, below, so that role must also own the database or be a member of
+    the owner's role that inherits its privileges.
     `0015` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
     from copying email hashes beside their expiries into `pg_statistic`, deletes what
     it had copied, and turns autovacuum off on both, since the times it last ran follow
@@ -900,9 +900,11 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     has not cached waits, on any table, which is why it too skips a held catalog
     (a session reading `pg_stats` holds it), and why the lock timeout matters most
     there: `0015` left autovacuum on for the catalog, TOAST table included. Only a
-    superuser, the database's owner or a member of the owner's role may vacuum that
-    catalog — a role that owns every table but not the database may not — and anyone
-    else gets it skipped with a warning, which fails the sweep with its own message,
+    superuser or a role with the privileges of the database's owner — the owner, or a
+    member of its role that inherits them, which `pg_has_role(datdba, 'USAGE')` says —
+    may vacuum that catalog; a role that owns every table but not the database may
+    not, nor a member granted `WITH INHERIT FALSE`, and anyone else gets it skipped
+    with a warning, which fails the sweep with its own message, naming that query,
     every night (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). The README's
     archive sweeper section tells the operator, and its step 5 says how to check the
     role, on Cloud SQL too, where this has not been tried.

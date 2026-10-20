@@ -386,14 +386,15 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    for the catalog and vacuums its TOAST table on its own; when the run finds
    that table held, it waits for it a tenth of a second at most, those requests
    waiting with it, and then gives the catalog up and tries again too. Only a
-   superuser, the database's owner, or a role that belongs to the owner's role
-   may vacuum the catalog — owning the tables is not enough — and a sweeper
-   whose role may not fails
-   (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). On Cloud SQL, where
-   no role is a superuser, that means the role that owns the database, or
-   membership of it; `SELECT pg_has_role(datdba, 'USAGE') FROM pg_database WHERE
-   datname = current_database()`, run as the sweeper's role, says whether it has
-   that, and this has not been tried there yet.
+   superuser or a role with the privileges of the database's owner may vacuum
+   the catalog: the owner, or a member of the owner's role that inherits its
+   privileges. Owning the tables is not enough, and nor is a membership that
+   does not inherit, such as one granted `WITH INHERIT FALSE`; a sweeper whose
+   role may not fails (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`).
+   On Cloud SQL, where no role is a superuser, that means the role that owns the
+   database, or an inheriting member of it; `SELECT pg_has_role(datdba, 'USAGE')
+   FROM pg_database WHERE datname = current_database()`, run as the sweeper's
+   role, says whether it has that, and this has not been tried there yet.
 
 The sweep keeps at this for up to a minute. A session that holds a table, a
 lock its vacuum needs, or an old snapshot for longer than that — an export, a
@@ -1321,8 +1322,9 @@ rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
 that protects). It needs no verification secret for that, but its database role
 needs two things. It must own the verification tables and `vacuum_probe`, or the
 database, which the role that ran the migrations does. And it must own the
-database, belong to the role that owns it, or be a superuser, because only those
-may vacuum `pg_statistic`: owning every table is not enough. `VACUUM FULL` skips
+database, be a member of the owner's role that inherits its privileges, or be a
+superuser, because only those may vacuum `pg_statistic`: owning every table is
+not enough, and nor is a membership that does not inherit. `VACUUM FULL` skips
 a table or catalog its role may not vacuum with only a warning, so the sweep
 checks that each one moved to a new file and fails at once if not, with an error
 that says which (`TestSweepFailsWhenVacuumLeavesATableInItsFile`,

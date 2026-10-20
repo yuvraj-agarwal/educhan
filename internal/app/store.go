@@ -1518,10 +1518,12 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // waits, on any table, so here too the sweep passes over the catalog while
 // anybody holds it rather than queue them all behind its wait, and gives it up
 // after vacuumLockTimeout while anybody holds its TOAST table, which
-// autovacuum still vacuums on its own. Only a superuser, the database's owner,
-// or a role that belongs to the owner may vacuum it — owning the tables is not
-// enough — and a logical replication slot holds its cutoff back as an older
-// transaction does.
+// autovacuum still vacuums on its own. Only a superuser or a role with the
+// privileges of the database's owner may vacuum it — the owner, or a member of
+// the owner's role that inherits its privileges, which pg_has_role(datdba,
+// 'USAGE') says; a membership that does not inherit is not enough, and nor is
+// owning the tables — and a logical replication slot holds its cutoff back as
+// an older transaction does.
 func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
 	rewrite uint32) error {
 	if _, err := conn.Exec(ctx, `SELECT set_config('lock_timeout', $1, false)`, vacuumLockTimeout); err != nil {
@@ -1646,9 +1648,11 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 		case slices.Contains(warnings, sqlstateLockNotAvailable):
 			return vacuumHeld, nil
 		case table == statisticsCatalog:
-			return 0, fmt.Errorf("VACUUM FULL left %s in its old file: only a superuser or the "+
-				"database's owner may vacuum it, so the sweeper's database role must own the database, "+
-				"or belong to the role that does", table)
+			return 0, fmt.Errorf("VACUUM FULL left %s in its old file: only a superuser or a role with "+
+				"the privileges of the database's owner may vacuum it, so the sweeper's database role "+
+				"must own the database, or be a member of the owner's role that inherits its privileges; "+
+				"SELECT pg_has_role(datdba, 'USAGE') FROM pg_database WHERE datname = current_database(), "+
+				"run as that role, says whether it does", table)
 		}
 		return 0, fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
 			"must own the verification tables and %s, as the role that ran the migrations does, "+

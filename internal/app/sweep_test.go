@@ -1722,12 +1722,15 @@ func TestSweepFailsWhenVacuumLeavesATableInItsFile(t *testing.T) {
 	}
 }
 
-// pg_statistic can be vacuumed only by a superuser, the database's owner, or a
-// role that belongs to the owner: owning the verification tables, which is
-// enough for them, is not enough for it. A role that cannot leaves it in its
-// files with the samples 0015 deleted, with nothing worse than a warning, and
-// the sweep fails at once and says what the role lacks. A plain VACUUM stands
-// in for that role here, as for the tables above.
+// pg_statistic can be vacuumed only by a superuser or a role with the
+// privileges of the database's owner: the owner, or a member of its role that
+// inherits them. Owning the verification tables, which is enough for them, is
+// not enough for it, and nor is a membership granted WITH INHERIT FALSE. A
+// role that cannot leaves it in its files with the samples 0015 deleted, with
+// nothing worse than a warning, and the sweep fails at once and says what the
+// role lacks and how to check for it, since a member that does not inherit
+// would otherwise read the message as already met. A plain VACUUM stands in
+// for that role here, as for the tables above.
 func TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile(t *testing.T) {
 	h := testServer(t, nil)
 	h.app.store.statisticsVacuumCommand = "VACUUM (SKIP_LOCKED)"
@@ -1738,6 +1741,11 @@ func TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "must own the database") {
 		t.Fatalf("a sweep whose VACUUM FULL left pg_statistic in its file returned %v, "+
 			"want it to say the role must own the database", err)
+	}
+	for _, want := range []string{"inherits its privileges", "pg_has_role(datdba, 'USAGE')"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
 	}
 	if took := time.Since(start); took > vacuumPatience/2 {
 		t.Errorf("the sweep took %s to give up on something waiting cannot change", took)
