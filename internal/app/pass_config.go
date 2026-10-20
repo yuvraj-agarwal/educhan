@@ -198,8 +198,9 @@ func validatePassConfig(c PassConfig) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("EDUCHAN_PASS_SECRET is set but %s is not", strings.Join(missing, ", "))
 	}
+	// Counted in bytes, as the README says, since an HMAC's key is bytes.
 	if len(c.Secret) < 32 {
-		return errors.New("EDUCHAN_PASS_SECRET must be at least 32 characters")
+		return errors.New("EDUCHAN_PASS_SECRET must be at least 32 bytes")
 	}
 	if !strings.HasPrefix(c.StripeSecretKey, "sk_") && !strings.HasPrefix(c.StripeSecretKey, "rk_") {
 		return errors.New(`EDUCHAN_STRIPE_SECRET_KEY: want a secret or restricted API key, "sk_…" or "rk_…"`)

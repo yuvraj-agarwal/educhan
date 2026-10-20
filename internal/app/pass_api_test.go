@@ -26,7 +26,7 @@ import (
 )
 
 const (
-	testPassSecret    = "test-pass-secret-at-least-32-characters"
+	testPassSecret    = "test-pass-secret-of-at-least-32-bytes"
 	testWebhookSecret = "whsec_test_signing_secret"
 	testPriceID       = "price_test_pass"
 	testPublicURL     = "https://educhan.test"
