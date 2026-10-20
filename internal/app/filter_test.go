@@ -3516,6 +3516,9 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"linkedin name":       rep("linkedin: a-b-12345 "),
 		"bare dm":             rep("age? dm. "),
 		"slash area code":     rep("phone 495/418-3927 "),
+		// Asks named or taken back, each read on for what follows it.
+		"ask named":      rep("snap me is what she said "),
+		"ask taken back": rep("snap me jk post it here "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.

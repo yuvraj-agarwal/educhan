@@ -11941,12 +11941,12 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 	consider(from, to, ok, kindLink)
 
 	for _, r := range askRules {
-		from, to, ok = f.first(r, askCheck)
+		from, to, ok = f.first(r, askMade(askCheck))
 		consider(from, to, ok, kindAsk)
 	}
-	from, to, ok = f.first(numbersAskRule, numbersCheck)
+	from, to, ok = f.first(numbersAskRule, askMade(numbersCheck))
 	consider(from, to, ok, kindAsk)
-	from, to, ok = f.first(offBoardRule, offBoardCheck)
+	from, to, ok = f.first(offBoardRule, askMade(offBoardCheck))
 	consider(from, to, ok, kindAsk)
 	if from, to, kind, ok := f.firstAppFrame(); ok {
 		consider(from, to, ok, kind)
@@ -12005,7 +12005,7 @@ func (f *scannedField) firstAppFrame() (int, int, findingKind, bool) {
 				return true
 			}
 			a, b, k, ok := f.appFrame(vs.v, m)
-			if !ok {
+			if !ok || k == kindAsk && askNotMade(vs.v, []int{a, b}) {
 				return true
 			}
 			if sa, sb := vs.v.span(a, b); !found || sa < from {
@@ -12016,6 +12016,84 @@ func (f *scannedField) firstAppFrame() (int, int, findingKind, bool) {
 	}
 	return from, to, kind, found
 }
+
+// askMade is check, for an ask for contact, and the ask made rather than
+// named or taken back (askNotMade).
+func askMade(check matchCheck) matchCheck {
+	return func(v *view, m []int) bool { return check(v, m) && !askNotMade(v, m) }
+}
+
+// askNotMade reports an ask for contact that the words after it name rather
+// than make, or take back. Named: what someone else says or said ("send me a
+// dm on insta is what every spam bot says", "snap me later if you need the
+// notes is what she said"), or a kind of thing to ask ("can we facetime? is a
+// weird thing to ask a stranger"), in the rest of its sentence and with no
+// "I" or "we" saying it. Taken back: "jk", "i mean" and the like, then a place
+// on the board with no "not" between ("snap me a pic of the homework page
+// please? jk, just post it here", "can we talk privately? i mean in a
+// separate thread here"). Contact details are blocked however they are
+// named; only an ask can be a mention.
+func askNotMade(v *view, m []int) bool {
+	text := v.text
+	after := text[m[1]:min(len(text), m[1]+askAfterReach)]
+	v.work += len(after)
+	sentence := after
+	if j := strings.IndexAny(sentence, ".!\n,;:"); j >= 0 {
+		sentence = sentence[:j]
+	}
+	ws := wordsIn(sentence)
+	for k := 0; k+1 < len(ws); k++ {
+		if !is(ws[k], "is") && !is(ws[k], "was") {
+			continue
+		}
+		rest := ws[k+1 : min(len(ws), k+6)]
+		if is(rest[0], "what") {
+			for i, w := range rest[1:] {
+				if sayingVerbs[w] {
+					return i > 0 && !anyIn(rest[1:1+i], firstPersonSubjects)
+				}
+			}
+		}
+		for i := 0; i+2 < len(rest); i++ {
+			if (is(rest[i], "thing") || is(rest[i], "things")) && is(rest[i+1], "to") && askingVerbs[rest[i+2]] {
+				return true
+			}
+		}
+	}
+	all := wordsIn(after)
+	for k, w := range all {
+		taken := takeBacks[w] || k+1 < len(all) && is(w, "i") && (is(all[k+1], "mean") || is(all[k+1], "meant"))
+		if !taken {
+			continue
+		}
+		for _, x := range all[k+1 : min(len(all), k+10)] {
+			if negators[x] {
+				return false
+			}
+			if boardPlaces[x] {
+				return true
+			}
+		}
+		return false
+	}
+	return false
+}
+
+// askAfterReach is how far after an ask for contact askNotMade reads, in
+// bytes.
+const askAfterReach = 96
+
+var (
+	// askingVerbs, after "is a ... thing to", make an ask a kind of thing to
+	// ask.
+	askingVerbs = canonSetOf(`ask say send text type write message dm`)
+	// takeBacks take an ask back: "jk", "nvm", "scratch that".
+	takeBacks = canonSetOf(`jk jkjk kidding nvm nevermind scratch actually`)
+	// negators between a take-back and a place keep the ask: "jk not here".
+	negators = canonSetOf(`not no dont don't off outside never nahi mat`)
+	// boardPlaces are places on the board an ask can be moved back to.
+	boardPlaces = canonSetOf(`here thread threads board boards`)
+)
 
 // niLabelled reports a National Insurance number named just before it,
 // which makes one in lower case one too: "national insurance no. sh 71 58
