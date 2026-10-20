@@ -816,20 +816,33 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     verification table whole and through each of its indexes, which it finds in the
     catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
     show for them is the sweep's rather than the last confirmation's. Last,
-    `VACUUM (FULL, SKIP_LOCKED)` on each table, outside the transaction, takes the dead
-    versions — and deleted pending rows, with their email hash and an expiry to the
-    microsecond — off disk. `SKIP_LOCKED` passes over a table another session holds,
-    with a `55P03` warning, rather than queueing every badged post behind the vacuum.
-    `VACUUM FULL` keeps any deleted row an older snapshot could read: any statement or
-    transaction in the database that began before the rewrite committed and is still
-    running, the server's own requests included, or a transaction anywhere on the
-    instance that had written something by then. So the sweep requires each table's
-    `relfrozenxid` afterwards to be newer than the rewrite's transaction id, which
-    `VACUUM FULL` makes true exactly when it dropped those rows, and otherwise runs it
-    again, backing off, for up to `vacuumPatience` (a minute) before failing. It also
-    skips, with a different warning, a table its role owns neither itself nor through
-    owning the database: an unchanged `pg_relation_filenode` with no `55P03` fails the
-    sweep at once, and the sweeper connects as the role that ran the migrations.
+    `VACUUM (FULL, SKIP_LOCKED)` on each table, outside the transaction, writes both
+    tables to new files without the dead versions — or the deleted pending rows, with
+    their email hash and an expiry to the microsecond — and drops the old files, which
+    are not wiped (the README's "Transaction ids, and the nightly rewrite" ends on what
+    that leaves). `SKIP_LOCKED` passes over a table another session holds, with a
+    `55P03` warning, rather than queueing every badged post behind the vacuum's wait.
+    It does nothing about the run: once `VACUUM FULL` has a table it holds it against
+    reads as well as writes until it has written it out (between about half a second
+    and two and a half seconds at 220,000 credentials on development machines), every
+    badged post and confirmation waits for it, and three waiting on one instance hold
+    its whole pool. So each table is taken once a night, and never for a run that
+    cannot do its job. `VACUUM FULL` keeps any deleted row an older snapshot could
+    read: any statement or transaction in the database that began before the rewrite
+    committed and is still running, the server's own requests included, or a
+    transaction anywhere on the instance that had written something by then. So before
+    each attempt the sweep runs `VACUUM FULL` on `vacuum_probe` (`0009`), an empty table
+    nothing else touches, which computes the same cutoff in milliseconds and holds up
+    nobody, and takes the verification tables only once the probe's `relfrozenxid` is
+    newer than the rewrite's transaction id, which `VACUUM FULL` makes true exactly
+    when it drops those rows. It checks each verification table's `relfrozenxid` the
+    same way afterwards, and otherwise probes again, backing off, for up to
+    `vacuumPatience` (a minute) before failing
+    (`TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil` counts the runs).
+    It also skips, with a different warning, a table its role owns neither itself nor
+    through owning the database: an unchanged `pg_relation_filenode` with no `55P03`
+    fails the sweep at once, and the sweeper connects as the role that ran the
+    migrations, which owns `vacuum_probe` too.
     `0008` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
     from copying email hashes beside their expiries into `pg_statistic`, drops what it
     had copied, and turns autovacuum off on both, since the times it last ran follow

@@ -56,9 +56,10 @@ const (
 // Store is the PostgreSQL-backed persistence layer.
 type Store struct {
 	pool *pgxpool.Pool
-	// What RewriteCredentials runs on each verification table, and how long
-	// it keeps trying: vacuumCommand and vacuumPatience, which tests change
-	// to see a vacuum that skips a table, or a sweep that gives up sooner.
+	// What RewriteCredentials runs on the probe and verification tables, and
+	// how long it keeps trying: vacuumCommand and vacuumPatience, which tests
+	// change to see a vacuum that skips a table, or a sweep that gives up
+	// sooner.
 	vacuumCommand  string
 	vacuumPatience time.Duration
 }
@@ -1195,21 +1196,35 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 // table: about three seconds for 220,000 credentials, as measured on a
 // development machine. So a confirmation that arrives as the rewrite starts
 // can wait five seconds plus the rewrite. Reads do not queue behind the
-// rewrite, and nothing queues behind the vacuum, which takes a table only
-// when nobody else holds it (vacuumVerificationTables).
+// rewrite.
+//
+// The vacuum after it waits for no lock, since it passes over a table another
+// session holds, but VACUUM FULL holds a table it has taken against every
+// read and write, CredentialLabel's included, until it has written the table
+// out. Every badged post and confirmation that reaches the table meanwhile
+// waits, each holding a pooled connection, and three of them hold all an
+// instance has by default (EDUCHAN_DB_MAX_CONNS), so for the length of the run
+// every request on that instance can wait. That too grows with the table:
+// between about half a second and two and a half seconds for 220,000
+// credentials, as measured on development machines. So vacuumVerificationTables
+// takes each table once a night, after a probe says the run can do its job,
+// rather than again and again while an older transaction keeps it from doing
+// it.
 const verificationLockTimeout = "5s"
 
-// How long RewriteCredentials keeps trying VACUUM FULL on a verification
-// table it could not take, or whose new file still holds rows deleted before
-// the rewrite, before the sweep fails; and how long it waits between tries:
-// vacuumFirstWait at first, doubling each time up to vacuumMaxWait.
+// How long RewriteCredentials keeps trying VACUUM FULL on the verification
+// tables — while a transaction older than the rewrite is open, while another
+// session holds a table, or while a table's new file still holds rows deleted
+// before the rewrite — before the sweep fails; and how long it waits between
+// tries: vacuumFirstWait at first, doubling each time up to vacuumMaxWait.
 const (
 	vacuumPatience  = time.Minute
 	vacuumFirstWait = 100 * time.Millisecond
 	vacuumMaxWait   = 5 * time.Second
 )
 
-// vacuumCommand is what RewriteCredentials runs on each verification table.
+// vacuumCommand is what RewriteCredentials runs on the probe table and each
+// verification table.
 const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED)"
 
 // sqlstateLockNotAvailable is the code of the warning VACUUM gives when
@@ -1218,6 +1233,11 @@ const sqlstateLockNotAvailable = "55P03"
 
 // verificationTables are the tables RewriteCredentials vacuums.
 var verificationTables = [...]string{"verification_credentials", "verification_pending"}
+
+// vacuumProbeTable is the empty table (0009) on which RewriteCredentials runs
+// VACUUM FULL to learn whether a run on a verification table would drop what
+// the rewrite deleted, before it takes one (vacuumVerificationTables).
+const vacuumProbeTable = "vacuum_probe"
 
 // RewriteCredentials takes from the verification tables what PostgreSQL
 // records about every row whatever the schema leaves out, and returns how many
@@ -1262,7 +1282,7 @@ var verificationTables = [...]string{"verification_credentials", "verification_p
 // asks for those warnings itself (client_min_messages), because DATABASE_URL
 // or a role's or the database's default can turn them off, and without the
 // warning a table another session held looks like one the role may not
-// vacuum (vacuumVerificationTable).
+// vacuum (vacuumFull).
 func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 	notices := &noticeLog{}
 	config := s.pool.Config().ConnConfig
@@ -1315,17 +1335,20 @@ func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 	return rewritten, s.vacuumVerificationTables(ctx, conn, notices, rewrite)
 }
 
-// vacuumVerificationTables runs VACUUM FULL on each verification table until
-// the table's new file holds no row deleted by the rewrite (transaction id
-// rewrite) or before it, trying again for up to s.vacuumPatience.
+// vacuumVerificationTables runs VACUUM FULL on each verification table once it
+// can leave no row deleted by the rewrite (transaction id rewrite) or before
+// it in the table's new file, trying for up to s.vacuumPatience.
 //
 // VACUUM FULL writes a table to a new file and drops the old one; it cannot
-// run in a transaction. Three things can keep it from doing that job.
+// run in a transaction. For as long as it runs it holds the table against
+// every read and write, CredentialLabel's included (verificationLockTimeout
+// says what that costs), so it runs on each table only when it can do its
+// job: once a night, unless something gets in its way. Three things can.
 //
 // Another session can hold the table. VACUUM FULL waiting for it would queue
-// every badged post and confirmation behind it, so it runs with SKIP_LOCKED:
-// it passes over a table it cannot take at once, with a warning, and this
-// tries again a moment later.
+// every badged post and confirmation behind its wait as well as its run, so it
+// runs with SKIP_LOCKED: it passes over a table it cannot take at once, with a
+// warning, and this tries again a moment later.
 //
 // It copies, rather than drops, a deleted row that some snapshot could still
 // read: one deleted by a transaction no older than its cutoff. The cutoff is
@@ -1336,12 +1359,18 @@ func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 // use — a statement running then, which a request in flight is enough for, or
 // a transaction reading from one snapshot, as an export does — or a
 // transaction anywhere on the instance that had written something by then
-// puts every row the rewrite deleted into the new file, each with the xmin it
-// was issued under, and the pending rows confirmations deleted with them.
-// VACUUM FULL freezes what it keeps and moves the table's relfrozenxid up to
-// its cutoff, so those rows are gone exactly when relfrozenxid is newer than
-// the rewrite. Until it is, this waits for the older transactions to end and
-// runs VACUUM FULL again.
+// would put every row the rewrite deleted into the new file, each with the
+// xmin it was issued under, and the pending rows confirmations deleted with
+// them, after holding up every request on the table for nothing. VACUUM FULL
+// freezes what it keeps and moves the table's relfrozenxid up to its cutoff,
+// so those rows are gone exactly when relfrozenxid is newer than the rewrite.
+// A run on vacuum_probe, which holds nothing and which nothing else uses,
+// computes the same cutoff in a few milliseconds and holds up nobody; so
+// before each attempt this runs one there, and until the probe's relfrozenxid
+// is newer than the rewrite it waits for the older transactions to end rather
+// than take a verification table. A run on a verification table is still
+// checked the same way, and one that kept the rows is tried again after the
+// next probe.
 //
 // And it skips, with a different warning, a table its role may not vacuum —
 // one it owns neither itself nor through owning the database. Waiting does
@@ -1353,20 +1382,40 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 	wait := vacuumFirstWait
 	left := verificationTables[:]
 	for {
-		var held []string
 		var why []string
-		for _, table := range left {
-			reason, err := s.vacuumVerificationTable(ctx, conn, notices, table, rewrite)
-			if err != nil {
-				return err
-			}
-			if reason != "" {
+		switch probe, err := s.vacuumFull(ctx, conn, notices, vacuumProbeTable, rewrite); {
+		case err != nil:
+			return err
+		case probe == vacuumHeld:
+			why = append(why, fmt.Sprintf("VACUUM FULL could not take %s, which another session held",
+				vacuumProbeTable))
+		case probe == vacuumTooSoon:
+			why = append(why, "VACUUM FULL would keep the rows the rewrite deleted, which a transaction "+
+				"older than the rewrite could still read: a statement or transaction in this database, "+
+				"or one anywhere on the instance that had written something")
+		default:
+			var held []string
+			for _, table := range left {
+				outcome, err := s.vacuumFull(ctx, conn, notices, table, rewrite)
+				if err != nil {
+					return err
+				}
+				switch outcome {
+				case vacuumHeld:
+					why = append(why, fmt.Sprintf("VACUUM FULL could not take %s, which another session held",
+						table))
+				case vacuumTooSoon:
+					why = append(why, fmt.Sprintf("VACUUM FULL kept rows deleted from %s before the rewrite, "+
+						"which a transaction older than the rewrite could still read", table))
+				default:
+					continue
+				}
 				held = append(held, table)
-				why = append(why, reason)
 			}
-		}
-		if len(held) == 0 {
-			return nil
+			if len(held) == 0 {
+				return nil
+			}
+			left = held
 		}
 		if time.Until(deadline) < wait {
 			return fmt.Errorf("%s; tried for %s, and the next sweep tries again",
@@ -1380,47 +1429,60 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 		case <-timer.C:
 		}
 		wait = min(2*wait, vacuumMaxWait)
-		left = held
 	}
 }
 
-// vacuumVerificationTable runs VACUUM FULL on table once. It returns why the
-// run did not do its job when that is something waiting can change, and an
-// error when it is not.
-func (s *Store) vacuumVerificationTable(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
-	table string, rewrite uint32) (string, error) {
+// vacuumOutcome is what one VACUUM FULL of a table came to, when it is
+// something waiting can change.
+type vacuumOutcome int
+
+const (
+	// The table is in a new file holding no row deleted by the rewrite or
+	// before it.
+	vacuumDone vacuumOutcome = iota
+	// Another session held the table, and VACUUM FULL passed over it.
+	vacuumHeld
+	// The table is in a new file, but a transaction older than the rewrite
+	// held VACUUM FULL's cutoff back, so the file holds what the rewrite
+	// deleted from it.
+	vacuumTooSoon
+)
+
+// vacuumFull runs VACUUM FULL on table once and says what it came to, or
+// returns an error for what waiting cannot change.
+func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
+	table string, rewrite uint32) (vacuumOutcome, error) {
 	before, err := relationFile(ctx, conn, table)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	notices.take()
 	if _, err := conn.Exec(ctx, s.vacuumCommand+" "+pgx.Identifier{table}.Sanitize()); err != nil {
-		return "", fmt.Errorf("vacuum %s: %w", table, err)
+		return 0, fmt.Errorf("vacuum %s: %w", table, err)
 	}
 	warnings := notices.take()
 	after, err := relationFile(ctx, conn, table)
 	if err != nil {
-		return "", err
+		return 0, err
 	}
 	if after == before {
 		if slices.Contains(warnings, sqlstateLockNotAvailable) {
-			return fmt.Sprintf("VACUUM FULL could not take %s, which another session held", table), nil
+			return vacuumHeld, nil
 		}
-		return "", fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
-			"must own the verification tables, as the role that ran the migrations does, or the database", table)
+		return 0, fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
+			"must own the verification tables and %s, as the role that ran the migrations does, "+
+			"or the database", table, vacuumProbeTable)
 	}
 	var clean bool
 	if err := conn.QueryRow(ctx,
 		`SELECT age(relfrozenxid) < age($2::xid) FROM pg_class WHERE oid = $1::text::regclass`,
 		table, rewrite).Scan(&clean); err != nil {
-		return "", fmt.Errorf("read what VACUUM FULL kept of %s: %w", table, err)
+		return 0, fmt.Errorf("read what VACUUM FULL kept of %s: %w", table, err)
 	}
 	if !clean {
-		return fmt.Sprintf("VACUUM FULL kept rows deleted from %s before the rewrite, which a transaction "+
-			"older than the rewrite could still read: a statement or transaction in this database, "+
-			"or one anywhere on the instance that had written something", table), nil
+		return vacuumTooSoon, nil
 	}
-	return "", nil
+	return vacuumDone, nil
 }
 
 // restampScans reads each verification table through each of its indexes, and

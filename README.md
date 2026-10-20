@@ -312,25 +312,37 @@ run on the verification tables (`RewriteCredentials` in `store.go`):
    (`TestSweepLeavesNoScanTimeFromBeforeIt`).
 3. Then `VACUUM FULL` writes `verification_credentials` and
    `verification_pending` to new files without their dead rows, and drops the
-   old files; with autovacuum off, it is the vacuum both tables get. It takes
-   a table only when no other session holds it, so requests do not queue
-   behind it (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`); badged posts
-   and confirmations wait out only the moment it holds each one. But it copies,
-   rather than drops, any old row a snapshot from before the rewrite could
-   still read: any statement or transaction in the database that started before
-   the rewrite committed and is still running — the server's own requests
-   included — or any transaction anywhere on the instance that had written
-   something by then. So after each run the sweep checks that the table's new
-   file holds none of those rows (its `relfrozenxid` is newer than the
-   rewrite), and runs `VACUUM FULL` again, as the older transactions end, until
-   it does (`TestSweepWaitsForAnOlderTransactionToEnd`).
+   old files; with autovacuum off, it is the vacuum both tables get. It does not
+   wait for a table another session holds, so requests do not queue behind a
+   vacuum waiting to start: it passes over the table and tries again later
+   (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`). But once it has a table
+   it holds it against every read and write until it has written the table out,
+   so badged posts and confirmations wait for the whole run — between about half
+   a second and two and a half seconds for 220,000 credentials, measured on
+   development machines — each holding one of its server instance's few database
+   connections, and once they hold them all (three by default) every request on
+   that instance waits too. And it copies, rather than drops, any old row a
+   snapshot from before the rewrite could still read: any statement or
+   transaction in the database that started before the rewrite committed and is
+   still running — the server's own requests included — or any transaction
+   anywhere on the instance that had written something by then. A run then would
+   hold the site up and leave the old rows in the new file. So before each
+   attempt the sweep runs `VACUUM FULL` on `vacuum_probe`, an empty table of its
+   own (migration `0009`), which works out the same cutoff in milliseconds and
+   holds up nobody, and it takes the verification tables only once the probe's
+   `relfrozenxid` is newer than the rewrite — once the older transactions have
+   ended — which makes one run on each table a night
+   (`TestSweepWaitsForAnOlderTransactionToEnd`,
+   `TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil`). It checks
+   each table's new file the same way afterwards, and tries again if it still
+   holds those rows.
 
-The sweep keeps at a table for up to a minute. A session that holds one, or an
+The sweep keeps at this for up to a minute. A session that holds a table, or an
 old snapshot, for longer than that — an export, a `psql` left in a transaction
 — fails the sweep, which exits non-zero
 (`TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
 `TestSweepFailsWhenTheVerificationTablesAreHeld`). It does not report success
-with the old rows on disk.
+with the old rows still in the tables' files.
 
 `TestSweepTakesIssuanceTimeOutOfCredentials` issues credentials between posts
 and checks that afterwards they all carry one transaction id, that none lies
@@ -1234,13 +1246,22 @@ a lock. It passes over a table another session holds, which VACUUM reports only
 as a warning; the sweep's connection asks for warnings itself, so a
 `client_min_messages` in `DATABASE_URL` or a role's default cannot make a
 moment's reader look like a role that may not vacuum the table
-(`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). It runs again
-until each table's new file holds none of the old rows, which lasts as long as
-the oldest transaction that began before the rewrite. It keeps at that for a
-minute and then fails, so a session holding a table or an old snapshot for
-longer — an export, say — costs a failed
-run, which the Job's retry or the next night's run repeats, rather than a
-stalled site or a run that reports success with the old rows still on disk.
+(`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has a
+table, though, it holds it against reads as well as writes until it has written
+the table out, and badged posts and confirmations wait for the whole run:
+between about half a second and two and a half seconds for 220,000 credentials,
+measured on development machines, and once they hold all of a server instance's
+database connections (three by default) every request on that instance waits
+too. So the sweep takes a table only when the run can leave none of the old rows
+in its new file, which is not until the oldest transaction that began before the
+rewrite has ended; until then it waits, trying the cutoff on an empty table of
+its own (`vacuum_probe`) that holds nobody up. It keeps at that for a minute and
+then fails, so a session holding a table or an old snapshot for longer — an
+export, say — costs a failed run, which the Job's retry or the next night's run
+repeats, and for an old snapshot no run of `VACUUM FULL` on a verification table
+at all, rather than a site stalled again and again or a run that reports success
+with the old rows still in the tables' files. The run that succeeds still holds
+badged posts up for as long as it takes, once a night.
 
 It logs one line of counts (threads, posts, attachments, files removed, failed,
 and missing, and credentials rewritten) and nothing about which boards or

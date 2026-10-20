@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -379,6 +380,97 @@ func (h *harness) relationFiles(tables ...string) []int64 {
 	return files
 }
 
+// fileWatch follows the files some tables are stored in, which VACUUM FULL
+// replaces each time it runs, to count the runs. It polls far more often than
+// the sweep runs VACUUM FULL on any one table: the sweep waits at least
+// vacuumFirstWait between tries, and on a test's small tables a run takes
+// milliseconds.
+type fileWatch struct {
+	mu    sync.Mutex
+	files map[string][]int64 // every file each table has been seen in, in order
+	stop  chan struct{}
+	done  chan struct{}
+}
+
+// watchFiles starts a fileWatch on tables, on a connection of its own so
+// that it takes nothing from the server's pool.
+func (h *harness) watchFiles(tables ...string) *fileWatch {
+	h.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		h.t.Fatalf("connect: %v", err)
+	}
+	read := func() (map[string]int64, error) {
+		rows, err := conn.Query(ctx, `
+			SELECT relname::text, pg_relation_filenode(oid)::bigint FROM pg_class
+			WHERE oid = ANY ($1::text[]::regclass[])`, tables)
+		if err != nil {
+			return nil, err
+		}
+		seen := map[string]int64{}
+		var name string
+		var file int64
+		_, err = pgx.ForEachRow(rows, []any{&name, &file}, func() error {
+			seen[name] = file
+			return nil
+		})
+		return seen, err
+	}
+	first, err := read()
+	if err != nil {
+		conn.Close(ctx)
+		h.t.Fatalf("read the files of %v: %v", tables, err)
+	}
+	w := &fileWatch{files: map[string][]int64{}, stop: make(chan struct{}), done: make(chan struct{})}
+	for _, table := range tables {
+		w.files[table] = []int64{first[table]}
+	}
+	go func() {
+		defer close(w.done)
+		defer conn.Close(ctx)
+		for {
+			select {
+			case <-w.stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+			seen, err := read()
+			if err != nil {
+				h.t.Errorf("read the files of %v: %v", tables, err)
+				return
+			}
+			w.mu.Lock()
+			for table, file := range seen {
+				if files := w.files[table]; files[len(files)-1] != file {
+					w.files[table] = append(files, file)
+				}
+			}
+			w.mu.Unlock()
+		}
+	}()
+	h.t.Cleanup(w.close)
+	return w
+}
+
+// runs counts the times VACUUM FULL has moved table to a new file so far.
+func (w *fileWatch) runs(table string) int {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return len(w.files[table]) - 1
+}
+
+// close stops the watch and waits for its last poll; it may be called more
+// than once.
+func (w *fileWatch) close() {
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	<-w.done
+}
+
 // credentialRows is the credentials table's contents, in a fixed order, for
 // comparing before and after a rewrite.
 func (h *harness) credentialRows() []string {
@@ -420,10 +512,11 @@ func (h *verifyHarness) badgedPost(path, credential, label string) {
 // credential row written between two posts can be dated to the minutes
 // between them — what keeping created_at out of the table was for. The sweep
 // rewrites the table so every credential carries the sweep's transaction id,
-// and VACUUM FULL takes the old versions, and the pending rows confirmations
-// deleted, off disk with the files they were in. That is the credential rows
-// alone: what the posts' own transaction ids still say about an issuance is
-// TestIssuanceLeavesGapsAmongThePostsTransactionIDs.
+// and VACUUM FULL writes both tables to new files without the old versions or
+// the pending rows confirmations deleted, and drops the files they were in,
+// which are not wiped (the README says what that leaves). That is the
+// credential rows alone: what the posts' own transaction ids still say about
+// an issuance is TestIssuanceLeavesGapsAmongThePostsTransactionIDs.
 func TestSweepTakesIssuanceTimeOutOfCredentials(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.addBoard("dated")
@@ -990,13 +1083,15 @@ func (h *harness) assertNothingButLiveRows() {
 // its cutoff could still read it, and that cutoff is held back by any
 // statement or transaction in the database that began before the rewrite
 // committed, or by a transaction anywhere on the instance that had written
-// something by then. So every version the rewrite replaced can go into the new
-// file, issuance xmins and all, with the file's number changed as if nothing
-// were wrong. The sweep must not report success then: it tries again while the
-// older transaction lasts, and fails when it outlasts the sweep's patience.
-// Both kinds of holder are here — a snapshot, as a long read or an export
-// keeps, and a transaction that has written something, as a reply in flight
-// is.
+// something by then. So every version the rewrite replaced would go into the
+// new file, issuance xmins and all, with the file's number changed as if
+// nothing were wrong, after a run that held up every request on the table.
+// The sweep must neither report success then nor run VACUUM FULL on a
+// verification table at all: it waits for the older transaction to end, and
+// fails when it outlasts the sweep's patience. Both kinds of holder are here,
+// on the posts rather than a verification table — a snapshot, as a long read
+// or an export keeps, and a transaction that has written something, as a
+// reply in flight is.
 func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 	const issued = 200
 	for _, holder := range []struct {
@@ -1024,13 +1119,25 @@ func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 				t.Fatalf("hold: %v", err)
 			}
 
+			files := h.relationFiles(verificationTables[:]...)
+			probe := h.relationFiles(vacuumProbeTable)[0]
 			report, err := h.app.Sweep(ctx)
-			if err == nil || !strings.Contains(err.Error(), "kept rows deleted from verification_credentials") {
+			if err == nil || !strings.Contains(err.Error(), "would keep the rows the rewrite deleted") {
 				t.Fatalf("a sweep that overlapped an older transaction returned %v, "+
-					"want it to say VACUUM FULL kept the old rows", err)
+					"want it to say VACUUM FULL would keep the old rows", err)
 			}
 			if report.Credentials != issued {
 				t.Errorf("the sweep rewrote %d credentials, want %d", report.Credentials, issued)
+			}
+			for i, file := range h.relationFiles(verificationTables[:]...) {
+				if file != files[i] {
+					t.Errorf("the sweep ran VACUUM FULL on %s while an older transaction kept it from "+
+						"taking the old rows out, holding up every request on the table for nothing",
+						verificationTables[i])
+				}
+			}
+			if h.relationFiles(vacuumProbeTable)[0] == probe {
+				t.Errorf("%s is still in its file: the sweep never probed the cutoff", vacuumProbeTable)
 			}
 			if strings.Contains(logs.String(), "Somewhere") || strings.Contains(err.Error(), "Somewhere") {
 				t.Errorf("the failing sweep logged a credential's label")
@@ -1070,8 +1177,11 @@ func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 }
 
 // An older transaction that ends while the sweep is trying costs a wait, not
-// a failed run: VACUUM FULL runs again once nothing older than the rewrite is
-// left, and that run takes the old versions out.
+// a failed run, and not a run of VACUUM FULL on a verification table either:
+// a run then would hold every request on the table up and leave the old
+// versions in the new file, so the sweep probes the cutoff on a table of its
+// own until the older transaction has ended, and then takes each
+// verification table once.
 func TestSweepWaitsForAnOlderTransactionToEnd(t *testing.T) {
 	const issued = 200
 	h := testServer(t, nil)
@@ -1086,22 +1196,34 @@ func TestSweepWaitsForAnOlderTransactionToEnd(t *testing.T) {
 	if _, err := held.Exec(ctx, `SELECT count(*) FROM posts`); err != nil {
 		t.Fatalf("hold a snapshot: %v", err)
 	}
-	file := h.relationFiles("verification_credentials")[0]
+	watch := h.watchFiles(append([]string{vacuumProbeTable}, verificationTables[:]...)...)
 	swept := h.sweepLater()
-	waitUntil(t, "the sweep has run VACUUM FULL on the credentials once",
-		func() bool { return h.relationFiles("verification_credentials")[0] != file })
+	// Four probes are three decisions to wait, the last after 0.3 s of
+	// waiting; a run on the credentials table also ends the wait, so that a
+	// sweep that takes it too soon fails below rather than here.
+	waitUntil(t, "the sweep has probed the cutoff four times", func() bool {
+		return watch.runs(vacuumProbeTable) >= 4 || watch.runs("verification_credentials") > 0
+	})
+	// The rewrite has committed: the file holds its rows and the old versions.
+	kept := h.credentialsTableSize()
+	for _, table := range verificationTables {
+		if n := watch.runs(table); n != 0 {
+			t.Errorf("the sweep ran VACUUM FULL on %s %d times while a transaction older than the rewrite "+
+				"was open, holding up every request on it each time; want none until that transaction ends",
+				table, n)
+		}
+	}
 
-	// The file that run wrote holds the old versions: the snapshot reads them.
+	// Positive control: the snapshot predates the rewrite, and still reads
+	// the old versions, each with its issuance xmin.
 	var xmins int
 	if err := held.QueryRow(ctx,
 		`SELECT count(DISTINCT xmin::text) FROM verification_credentials`).Scan(&xmins); err != nil {
 		t.Fatalf("read the old rows: %v", err)
 	}
 	if xmins != issued {
-		t.Fatalf("the older snapshot reads %d transaction ids after the first VACUUM FULL, want the %d issuances'; "+
-			"this test did not catch the sweep before it finished", xmins, issued)
+		t.Fatalf("the older snapshot reads %d transaction ids, want the %d issuances'", xmins, issued)
 	}
-	kept := h.credentialsTableSize()
 	if err := held.Rollback(ctx); err != nil {
 		t.Fatalf("end the older transaction: %v", err)
 	}
@@ -1109,6 +1231,13 @@ func TestSweepWaitsForAnOlderTransactionToEnd(t *testing.T) {
 	sweep := await(t, "the sweep", swept)
 	if sweep.err != nil {
 		t.Fatalf("a sweep whose older transaction ended while it waited: %v", sweep.err)
+	}
+	watch.close()
+	for _, table := range verificationTables {
+		if n := watch.runs(table); n != 1 {
+			t.Errorf("the sweep ran VACUUM FULL on %s %d times, want once, after the older transaction ended",
+				table, n)
+		}
 	}
 	if size := h.credentialsTableSize(); size >= kept {
 		t.Errorf("the credentials table takes %d bytes after the sweep, as many as the %d it took "+
@@ -1176,7 +1305,10 @@ func TestSweepFailsWhenVacuumLeavesATableInItsFile(t *testing.T) {
 // one waiting would hold one of its instance's few database connections, and
 // once they held them all every request on the instance would wait. VACUUM
 // FULL waiting for its lock queues them; the sweep's vacuum takes a table only
-// when nobody holds it, and otherwise tries again later.
+// when nobody holds it, and otherwise tries again later. (Its run, once it has
+// a table, holds them up for as long as it lasts, which is why the sweep runs
+// it only when it can do its job:
+// TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil.)
 func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.app.store.vacuumPatience = 3 * time.Second
@@ -1227,6 +1359,97 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	if _, err := h.app.Sweep(ctx); err != nil {
 		t.Fatalf("sweep once the export has ended: %v", err)
 	}
+}
+
+// VACUUM FULL holds the table it rewrites against every read as well as every
+// write, so a run on the credentials table holds up each badged post that
+// arrives during it, and once the waiting posts hold all of an instance's
+// pooled connections, every request. While a transaction older than the
+// rewrite is open — here a long report on the posts, which never touches a
+// verification table, so SKIP_LOCKED has nothing to pass over — no run can
+// take the old rows out, and the sweep must run none: it probes the cutoff,
+// waits, and fails when its patience runs out, and the badged posts sent
+// throughout never meet a VACUUM FULL. The pool is the size an instance has
+// by default.
+func TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil(t *testing.T) {
+	h := verifyServer(t, func(cfg *Config) { cfg.DBMaxConns = defaultDBMaxConns })
+	h.app.store.vacuumPatience = 2 * time.Second
+	h.addBoard("report")
+	thread := h.createThread("report", "", "", "posting through a long report")
+	path := fmt.Sprintf("/api/boards/report/threads/%d/posts", thread.ThreadNo)
+	credential := h.verify("report@iitb.ac.in").Credential
+	ctx := context.Background()
+
+	// The report reads from one snapshot on a connection of its own, as a
+	// psql session or an export would.
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(ctx) })
+	report, err := conn.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead})
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if _, err := report.Exec(ctx, `SELECT count(*) FROM posts`); err != nil {
+		t.Fatalf("read the posts: %v", err)
+	}
+
+	watch := h.watchFiles(append([]string{vacuumProbeTable}, verificationTables[:]...)...)
+	swept := h.sweepLater()
+	var (
+		sweep   sweepOutcome
+		slowest time.Duration
+	)
+	for deadline, done := time.Now().Add(30*time.Second), false; !done; {
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for the sweep")
+		}
+		start := time.Now()
+		h.badgedPost(path, credential, "IIT Bombay")
+		slowest = max(slowest, time.Since(start))
+		select {
+		case sweep = <-swept:
+			done = true
+		case <-time.After(20 * time.Millisecond):
+		}
+	}
+	if sweep.err == nil || !strings.Contains(sweep.err.Error(), "would keep the rows the rewrite deleted") {
+		t.Errorf("a sweep that overlapped a long report returned %v, want it to say VACUUM FULL "+
+			"would keep the old rows", sweep.err)
+	}
+	if sweep.report.Credentials != 1 {
+		t.Errorf("the sweep rewrote %d credentials, want 1", sweep.report.Credentials)
+	}
+	for _, table := range verificationTables {
+		if n := watch.runs(table); n != 0 {
+			t.Errorf("the sweep ran VACUUM FULL on %s %d times while a report older than the rewrite was "+
+				"open, holding up every badged post each time for a run that could not do its job", table, n)
+		}
+	}
+	// Positive control: the sweep was trying, and waiting, while the posts
+	// went up.
+	if n := watch.runs(vacuumProbeTable); n < 2 {
+		t.Errorf("the sweep probed the cutoff %d times while the report was open, want it to keep trying", n)
+	}
+	if slowest > 2*time.Second {
+		t.Errorf("a badged post took %s while the sweep waited for a long report to end", slowest)
+	}
+
+	if err := report.Rollback(ctx); err != nil {
+		t.Fatalf("end the report: %v", err)
+	}
+	h.app.store.vacuumPatience = vacuumPatience
+	if _, err := h.app.Sweep(ctx); err != nil {
+		t.Fatalf("sweep once the report has ended: %v", err)
+	}
+	watch.close()
+	for _, table := range verificationTables {
+		if n := watch.runs(table); n != 1 {
+			t.Errorf("the sweep after the report ran VACUUM FULL on %s %d times, want once", table, n)
+		}
+	}
+	h.badgedPost(path, credential, "IIT Bombay")
 }
 
 // The sweep tells a table VACUUM skipped because another session held it from
