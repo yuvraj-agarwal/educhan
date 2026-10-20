@@ -656,9 +656,9 @@ while Stripe was opening it is refused with `409` instead, as a renewal of a
 Pass that is gone. If the renewal goes unpaid, or is refunded or disputed
 before it is collected, the reissue code works again until its deadline. An
 unpaid checkout goes unpaid when Stripe closes it, or once it is past its
-deadline and pruned, by the daily sweep or the next checkout, since Stripe can
-still report it paid until then. The purchase keeps its own right whatever
-renewal is under way.
+deadline and pruned, by the daily sweep, the next checkout or a claim from its
+own browser, since Stripe can still report it paid until then. The purchase
+keeps its own right whatever renewal is under way.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass
 (`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a

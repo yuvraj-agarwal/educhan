@@ -19,9 +19,11 @@
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
 -- there lives from checkout until the Pass is collected, and is deleted the
--- moment it is. Unpaid, it is deleted at its deadline, a week after checkout
--- (longer while a slow payment confirms); paid and never collected, it is
--- kept for its own term past that, so the owner can still reissue it.
+-- moment it is. Unpaid, it is deleted at the first prune (a checkout, the
+-- daily sweep, or a claim from its own browser) after its deadline, a week
+-- after checkout (longer while a slow payment confirms), and until then a late
+-- payment still counts; paid and never collected, it is kept for its own term
+-- past that deadline, so the owner can still reissue it.
 
 CREATE TABLE IF NOT EXISTS passes (
     id         BIGSERIAL PRIMARY KEY,

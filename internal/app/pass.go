@@ -1191,8 +1191,8 @@ func (a *App) handleStripeWebhook(w http.ResponseWriter, r *http.Request) {
 		}
 		// A completed session can still be waiting on a slow payment method, a
 		// bank debit say, which can take a couple of weeks. Its order is held
-		// that long, and its async_payment_succeeded event comes later and
-		// lands here again.
+		// for 30 days (passPendingPaymentTTL), longer than that, and its
+		// async_payment_succeeded event comes later and lands here again.
 		if ev.Type == stripeCheckoutCompleted && s.PaymentStatus == "unpaid" {
 			until := dayCeil(time.Now().Add(passPendingPaymentTTL))
 			if err := a.store.holdPassOrder(r.Context(), a.passSessionHash(s.ID), until); err != nil {
@@ -1449,7 +1449,7 @@ func (s *Store) passClaimWaiting(ctx context.Context, claimHashes [][]byte, now 
 // random hash of its own, which no token hashes to, so the claims collect
 // nothing. The orders are otherwise left as they were: paid, or paid later,
 // each waits to be reissued from its payment like any order nobody
-// collected, and unpaid it goes at its deadline.
+// collected, and unpaid it goes at the first prune past its deadline.
 func (s *Store) dropPassClaims(ctx context.Context, claimHashes [][]byte) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		for _, claimHash := range claimHashes {
@@ -1775,10 +1775,10 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 // (moveOrigin), while any order renews that Pass, paid or not yet. A reissue
 // then would hand the payer the Pass with that renewal still to land on it,
 // and somebody else's time with it, so it waits: an unpaid order goes when
-// Stripe closes its checkout, or once it is past its deadline and pruned,
-// since Stripe can still report it paid until then (markPassOrderPaid); a
-// refunded or disputed one goes at once; and a collected one takes the right
-// away (renewPass).
+// Stripe closes its checkout, or once it is past its deadline and pruned, by
+// prunePasses or by a claim from its own browser (claimOne), since Stripe can
+// still report it paid until then (markPassOrderPaid); a refunded or disputed
+// one goes at once; and a collected one takes the right away (renewPass).
 func renewalUnderWay(ctx context.Context, tx pgx.Tx, paymentHash []byte) (bool, error) {
 	var renewing bool
 	err := tx.QueryRow(ctx, `
