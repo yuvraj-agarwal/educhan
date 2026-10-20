@@ -520,11 +520,17 @@ func verificationCode() (string, error) {
 }
 
 // nextDayBoundary rounds a time up to the next UTC midnight. Credential rows
-// are stored with this rather than the exact expiry, which leaves an operator
-// able to tell what day an address was verified and not what minute — the
-// resolution that would let issuance be lined up against a post. It is half of
-// that: the other half is the nightly rewrite of the table, which takes away
-// the transaction id PostgreSQL keeps on every row (Store.RewriteCredentials).
+// are stored with this rather than the exact expiry, so that a row's expiry
+// tells what day an address was verified and not what minute — the resolution
+// that would let issuance be lined up against a post. That is half of what
+// keeps the credential's own row to the day: the other half is the nightly
+// rewrite of the table, which takes away the transaction id PostgreSQL keeps
+// on every row (Store.RewriteCredentials). It is not all an operator can see.
+// The code request and the confirmation each took a transaction id from the
+// counter the posts take theirs from, and the gaps they leave among the posts'
+// ids still place the issuance between two posts as closely as the row's own
+// id did, which can be to the minute: the README's "What that protects,
+// exactly" and TestIssuanceLeavesGapsAmongThePostsTransactionIDs.
 func nextDayBoundary(t time.Time) time.Time {
 	utc := t.UTC()
 	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
