@@ -1667,6 +1667,45 @@ func TestPostingFormSendsOnlyTheBadgeItNames(t *testing.T) {
 		t.Errorf("the submit handler goes on with a badge its box did not name:\n%s", body)
 	}
 
+	// A post refused because the badge it carried expired or was revoked
+	// forgets that credential, and only while it is still the one stored.
+	// Another can have been stored while the post was on its way: a Verify
+	// answer in this tab, or a badge issued in another, which is what revoked
+	// this one. Forgetting whatever was stored deleted that badge, which the
+	// server hands out once and cannot show again. So the form is brought into
+	// line with the badge held now instead (offerHeldBadge), and the notice
+	// says that badge is offered (sayBadgeReplaced) rather than repeating the
+	// server's words, which send the reader to verify again.
+	holdLines(t, "a post refused for the badge it carried", jsLines(submit),
+		"const reason = err.payload && err.payload.credential;",
+		"if (err.status === 403 && err.message === IMAGE_LIMIT_REACHED) {", []string{
+			"let replacedBy = null;",
+			`if (held && (reason === "expired" || reason === "revoked")) {`,
+			"if (storedCredential() === held.token) {",
+			"forgetCredential();",
+			"badgeLost =",
+			`reason === "expired"`,
+			`? "Your badge has expired."`,
+			`: "That badge was replaced by a newer verification.";`,
+			"} else {",
+			"state.verification.badge = readBadge();",
+			"replacedBy = state.verification.badge;",
+			"}",
+			"offerHeldBadge();",
+			"}",
+		})
+	if n := strings.Count(submit, "forgetCredential("); n != 1 {
+		t.Errorf("the submit handler forgets the credential in %d places; want one, for the credential refused", n)
+	}
+	if !strings.Contains(submit, "    if (replacedBy) {\n      sayBadgeReplaced(replacedBy);\n    } else {\n"+
+		"      showNotice(errorMessage(err, { hasText: body.trim() !== \"\" }));\n    }\n") {
+		t.Errorf("a post refused for a badge replaced since does not say which badge is offered now:\n%s", submit)
+	}
+	if said := withoutComments(jsFunction(t, script, "sayBadgeReplaced")); !strings.HasPrefix(said, "function sayBadgeReplaced(held) {\n  showNotice(\n") ||
+		!strings.Contains(said, "Verified: ${held.label}") || strings.Contains(strings.ToLower(said), "verify again") {
+		t.Errorf("sayBadgeReplaced does not say which badge is held now, or sends the reader to verify again:\n%s", said)
+	}
+
 	// A draft ticks the box again only for the badge it was ticked for, and
 	// nothing else ticks it.
 	if !strings.Contains(withoutComments(jsFunction(t, script, "captureDraft")), `badge: badge && badge.checked ? badgeOffered(form) : "",`) {

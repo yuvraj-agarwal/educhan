@@ -436,7 +436,12 @@ needs a browser check before the test changes.
   before the answer. That answer redraws the box of any form on screen for the new
   badge, unticked, and says so if it had been ticked (`offerHeldBadge`); before it, a box
   ticked for one institution sent the other's credential
-  (`TestPostingFormSendsOnlyTheBadgeItNames`).
+  (`TestPostingFormSendsOnlyTheBadgeItNames`). A post refused because the badge it
+  carried expired or was revoked forgets that credential only while it is still the one
+  stored. One stored since — that answer, or a badge issued in another tab, which is
+  what revoked it — is offered in its place, and the notice says so
+  (`sayBadgeReplaced`): forgetting whatever was stored deleted a badge the server cannot
+  hand out again.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

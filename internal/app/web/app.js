@@ -1439,6 +1439,16 @@ function sayBadgeUnticked() {
   );
 }
 
+// sayBadgeReplaced says why a badged post was not sent when the badge it
+// carried is no longer valid and this browser holds another, stored since the
+// post went out. The server's own words send the reader to verify again, for
+// a badge the form already offers them (offerHeldBadge).
+function sayBadgeReplaced(held) {
+  showNotice(
+    `The badge this post carried is no longer valid, so the post was not sent. Your badge in this browser is now Verified: ${held.label}. Tick its box to post with it.`,
+  );
+}
+
 /* File field behaviour ------------------------------------------------------ */
 
 function isAcceptedImage(file) {
@@ -3860,13 +3870,27 @@ el.main.addEventListener("submit", async (event) => {
     // than re-rendering, which leaves the half-written post exactly where it
     // is — so the retry that follows is an ordinary post instead of the same
     // refusal. The notice below says why.
+    //
+    // Only the credential refused is dropped, and only while it is the one
+    // stored. Another can have been stored since the post went out: a Verify
+    // answer that landed while it was on its way, or a badge issued in another
+    // tab, which is what revoked this one. Dropping whatever was stored then
+    // deleted that badge, which the server hands out once and cannot show
+    // again. The form is brought into line with the badge held now instead,
+    // and the notice says that one is offered (sayBadgeReplaced).
     const reason = err.payload && err.payload.credential;
-    if (reason === "expired" || reason === "revoked") {
-      forgetCredential();
-      badgeLost =
-        reason === "expired"
-          ? "Your badge has expired."
-          : "That badge was replaced by a newer verification.";
+    let replacedBy = null;
+    if (held && (reason === "expired" || reason === "revoked")) {
+      if (storedCredential() === held.token) {
+        forgetCredential();
+        badgeLost =
+          reason === "expired"
+            ? "Your badge has expired."
+            : "That badge was replaced by a newer verification.";
+      } else {
+        state.verification.badge = readBadge();
+        replacedBy = state.verification.badge;
+      }
       offerHeldBadge();
     }
     // The cap was reached after this form was drawn: take the image off and
@@ -3899,7 +3923,11 @@ el.main.addEventListener("submit", async (event) => {
       }
       redrawThreadCounts();
     }
-    showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    if (replacedBy) {
+      sayBadgeReplaced(replacedBy);
+    } else {
+      showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    }
     button.disabled = false;
     button.textContent = label;
   }
