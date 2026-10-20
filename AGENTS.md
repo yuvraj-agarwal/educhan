@@ -854,14 +854,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     their email hash and an expiry to the microsecond — and drops the old files, which
     are not wiped (the README's "Transaction ids, and the nightly rewrite" ends on what
     that leaves). `SKIP_LOCKED` passes over a table another session holds, with a
-    `55P03` warning, rather than queueing every badged post behind the vacuum's wait.
-    It covers only the table it names: once `VACUUM FULL` has the table it waits,
-    holding the table, for the other locks it needs — its TOAST table's, which a
-    `VACUUM` of the TOAST table by name holds, and its row in `pg_class`, which an
-    open `GRANT` on the table holds. (Autovacuum takes `pg_statistic`'s TOAST table
-    on its own, below, but not these: a TOAST table takes its table's
-    `autovacuum_enabled = false`, so autovacuum comes to them only near transaction id
-    wraparound, which the nightly `VACUUM FULL` keeps from coming due.) So
+    `55P03` warning, rather than queueing every badged post behind the vacuum's wait
+    (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum` watches `pg_locks` for that wait,
+    which at `vacuumLockTimeout` a try is too short to time). It covers only the table
+    it names: once `VACUUM FULL` has the table it waits, holding the table, for the
+    other locks it needs — its TOAST table's, which a `VACUUM` of the TOAST table by
+    name holds, and its row in `pg_class`, which an open `GRANT` on the table holds.
+    (Autovacuum takes `pg_statistic`'s TOAST table on its own, below, but not these: a
+    TOAST table takes its table's `autovacuum_enabled = false`, so autovacuum comes to
+    them only near transaction id wraparound, which the nightly `VACUUM FULL` keeps
+    from coming due.) So
     `vacuumVerificationTables` first sets `lock_timeout` to `vacuumLockTimeout`
     (100 ms), and a run that times out, with `55P03` as an error, has given the table
     up and is tried again like a skipped one

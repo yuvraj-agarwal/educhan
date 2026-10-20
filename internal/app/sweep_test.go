@@ -707,6 +707,110 @@ func (w *fileWatch) close() {
 	<-w.done
 }
 
+// lockWaitWatch looks out for requests for a lock on one table that have to
+// wait, which every later request for the table queues behind. It polls
+// pg_locks about every millisecond, so it sees any wait that lasts a few: one
+// of vacuumLockTimeout spans dozens of polls.
+type lockWaitWatch struct {
+	mu       sync.Mutex
+	seen     []string // each waiting request found, by lock mode and query
+	started  int      // polls begun
+	finished int      // the number of the last poll to finish
+	stop     chan struct{}
+	done     chan struct{}
+}
+
+// watchLockWaits starts a lockWaitWatch on table, on a connection of its own
+// so that it takes nothing from the server's pool.
+func (h *harness) watchLockWaits(table string) *lockWaitWatch {
+	h.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		h.t.Fatalf("connect: %v", err)
+	}
+	var oid uint32
+	if err := conn.QueryRow(ctx, `SELECT $1::text::regclass::oid`, table).Scan(&oid); err != nil {
+		conn.Close(ctx)
+		h.t.Fatalf("find %s: %v", table, err)
+	}
+	w := &lockWaitWatch{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		defer conn.Close(ctx)
+		for {
+			select {
+			case <-w.stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+			w.mu.Lock()
+			w.started++
+			poll := w.started
+			w.mu.Unlock()
+			rows, err := conn.Query(ctx, `
+				SELECT l.mode || ' for ' || coalesce(left(a.query, 60), 'pid ' || l.pid, 'a prepared transaction')
+				FROM pg_locks l LEFT JOIN pg_stat_activity a ON a.pid = l.pid
+				WHERE l.relation = $1 AND NOT l.granted`, oid)
+			if err != nil {
+				h.t.Errorf("read pg_locks: %v", err)
+				return
+			}
+			waiting, err := pgx.CollectRows(rows, pgx.RowTo[string])
+			if err != nil {
+				h.t.Errorf("read pg_locks: %v", err)
+				return
+			}
+			w.mu.Lock()
+			for _, request := range waiting {
+				if !slices.Contains(w.seen, request) {
+					w.seen = append(w.seen, request)
+				}
+			}
+			w.finished = poll
+			w.mu.Unlock()
+		}
+	}()
+	h.t.Cleanup(w.close)
+	return w
+}
+
+// take returns the waiting requests seen since it was last called, once a
+// poll begun after the call has finished, so that a wait which ended before
+// the call is never reported by the next one.
+func (w *lockWaitWatch) take() []string {
+	w.mu.Lock()
+	after := w.started
+	w.mu.Unlock()
+	for {
+		w.mu.Lock()
+		if w.finished > after {
+			seen := w.seen
+			w.seen = nil
+			w.mu.Unlock()
+			return seen
+		}
+		w.mu.Unlock()
+		select {
+		case <-w.done:
+			// The watch failed, and said so; nothing more will come.
+			return nil
+		case <-time.After(time.Millisecond):
+		}
+	}
+}
+
+// close stops the watch and waits for its last poll; it may be called more
+// than once.
+func (w *lockWaitWatch) close() {
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	<-w.done
+}
+
 // credentialRows is the credentials table's contents, in a fixed order, for
 // comparing before and after a rewrite.
 func (h *harness) credentialRows() []string {
@@ -1775,10 +1879,15 @@ func TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile(t *testing.T) {
 // reading the credentials, say — badged posts must not queue behind it: each
 // one waiting would hold one of its instance's few database connections, and
 // once they held them all every request on the instance would wait. VACUUM
-// FULL waiting for its lock queues them; the sweep's vacuum takes a table only
-// when nobody holds it, and otherwise tries again later. (Its run, once it has
-// a table, holds them up for as long as it lasts, which is why the sweep runs
-// it only when it can do its job:
+// FULL waiting for its lock queues every request for the table behind it for
+// as long as it waits: with the sweep's lock_timeout, vacuumLockTimeout at a
+// time, try after try, which no timing of a post can tell from a slow
+// machine. So the test watches pg_locks for the length of the sweep for what
+// a post would queue behind, a request for the credentials table that is
+// waiting, and there must never be one: the sweep's vacuum takes a table only
+// when nobody holds it (SKIP_LOCKED), and otherwise tries again later. (Its
+// run, once it has a table, holds them up for as long as it lasts, which is
+// why the sweep runs it only when it can do its job:
 // TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil.)
 func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	h := verifyServer(t, nil)
@@ -1798,18 +1907,30 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 		t.Fatalf("read the credentials: %v", err)
 	}
 
+	waits := h.watchLockWaits("verification_credentials")
+	// Positive control: the watch sees a wait as short as one of the vacuum's
+	// would be, were it to wait for the export.
+	if err := pgx.BeginFunc(ctx, h.app.pool, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`, vacuumLockTimeout); err != nil {
+			return err
+		}
+		_, err := tx.Exec(ctx, `LOCK TABLE verification_credentials IN ACCESS EXCLUSIVE MODE`)
+		return err
+	}); err == nil || !strings.Contains(err.Error(), sqlstateLockNotAvailable) {
+		t.Fatalf("asking for the table the export holds returned %v, want it to wait out its lock timeout", err)
+	}
+	if seen := waits.take(); len(seen) == 0 {
+		t.Fatalf("the watch saw nothing of a request that waited %s for the credentials table: "+
+			"it cannot see the wait it is for", vacuumLockTimeout)
+	}
+
 	pending := h.relationFiles("verification_pending")[0]
 	swept := h.sweepLater()
-	// The sweep has reached the vacuum once it is waiting for the credentials
-	// table, or, not waiting, has gone on to the pending table.
+	// The vacuum takes the credentials table first and the pending table next,
+	// so the pending table in a new file means the sweep has tried the
+	// credentials once.
 	waitUntil(t, "the sweep reaches the vacuum", func() bool {
-		var waiting bool
-		if err := h.app.pool.QueryRow(ctx, `
-			SELECT EXISTS (SELECT 1 FROM pg_locks WHERE relation = 'verification_credentials'::regclass
-			               AND mode = 'AccessExclusiveLock' AND NOT granted)`).Scan(&waiting); err != nil {
-			t.Fatalf("read pg_locks: %v", err)
-		}
-		return waiting || h.relationFiles("verification_pending")[0] != pending
+		return h.relationFiles("verification_pending")[0] != pending
 	})
 
 	start := time.Now()
@@ -1820,6 +1941,12 @@ func TestBadgedPostsDoNotQueueBehindTheSweepsVacuum(t *testing.T) {
 	}
 
 	sweep := await(t, "the sweep", swept)
+	if seen := waits.take(); len(seen) > 0 {
+		t.Errorf("while the sweep ran, requests for the credentials table waited behind the export "+
+			"(%s): VACUUM FULL waited for the table, and every request on it queued behind it",
+			strings.Join(seen, "; "))
+	}
+	waits.close()
 	if sweep.err == nil || !strings.Contains(sweep.err.Error(), "could not take verification_credentials") {
 		t.Errorf("a sweep that could not take the credentials table returned %v, want it to say so", sweep.err)
 	}
