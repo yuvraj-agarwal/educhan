@@ -450,6 +450,47 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		if !strings.Contains(box, `data-verify="confirm"`) || !strings.Contains(box, `id="f-code"`) {
 			t.Errorf("the code step does not return the code box:\n%s", box)
 		}
+		// Banning names was not enough: a gate on state.verification.badge
+		// reads no "v.badge", and with the form's markup still in the template
+		// it passed every check above while the box was not drawn. So what the
+		// template interpolates is a list this test knows — fixed markup, the
+		// badge the code would earn, the wait while a request is out, and
+		// keep, which adds the Keep my badge button to the form's actions and
+		// nothing else (TestReplacingABadgeCanGoBackToIt) — and it is one
+		// template, not pieces joined around a condition.
+		allowed := []string{
+			"${VERIFY_INTRO}",
+			"${verifiedBadgeHTML(verifyStep.label)}",
+			"${VERIFY_REFUSED_HTML}",
+			"${wait}",
+			`${busy ? VERIFY_CHECKING : "Verify"}`,
+			"${keep}",
+			"${forgetBrowserHTML()}",
+		}
+		for rest := box; ; {
+			at := strings.Index(rest, "${")
+			if at < 0 {
+				break
+			}
+			rest = rest[at:]
+			known := ""
+			for _, a := range allowed {
+				if strings.HasPrefix(rest, a) {
+					known = a
+					break
+				}
+			}
+			if known == "" {
+				what, _, _ := strings.Cut(rest, "\n")
+				t.Errorf("the code step's template interpolates %s; a pending code's box may interpolate only %q", what, allowed)
+				known = "${"
+			}
+			rest = rest[len(known):]
+		}
+		if n := strings.Count(box, "`"); n != 1 {
+			t.Errorf("the code step's return has %d backticks; want the one opening its template, so that no condition "+
+				"is joined into it:\n%s", n, box)
+		}
 	}
 	if n := len(regexp.MustCompile(`\breturn\b`).FindAllString(view[:start], -1)); n != 1 {
 		t.Errorf("verifyViewHTML returns %d times before the code step; want once, for the not-configured page", n)
