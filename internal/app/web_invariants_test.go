@@ -729,13 +729,23 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 	// whether verification is on before it draws: one more request the reader
 	// can leave during, so it asks onVerifyPage again once that is in, and
 	// the confirmation after forgetting the browser waits on what it says.
+	// The reader can also move the page to another step during it, and then
+	// whatever moved it has drawn that step: renderVerify notes the step it
+	// draws for before it asks, and draws nothing once that is no longer the
+	// step. Without that, Forget this browser pressed while an issued badge
+	// was being drawn had its confirmation, and the focus on it, wiped by the
+	// badge's late redraw.
 	render := withoutComments(jsFunction(t, script, "renderVerify"))
+	noted := strings.Index(render, "const step = verifyStep;")
 	asked := strings.Index(render, "await loadVerification();")
-	guarded := strings.Index(render, "if (!onVerifyPage()) return false;")
+	guarded := strings.Index(render, "if (!onVerifyPage() || verifyStep !== step) return false;")
 	drawn := strings.Index(render, "el.main.innerHTML = verifyViewHTML();")
-	if asked < 0 || drawn < 0 || guarded < asked || guarded > drawn {
+	if noted < 0 || asked < noted || drawn < 0 || guarded < asked || guarded > drawn {
 		t.Errorf("renderVerify draws the Verify page without checking, once its request is in, that the page is "+
-			"still on screen:\n%s", render)
+			"still on screen and on the step it was asked to draw:\n%s", render)
+	}
+	if n := strings.Count(render, "await "); n != 1 {
+		t.Errorf("renderVerify waits %d times; this test knows the one, for loadVerification:\n%s", n, render)
 	}
 	if !strings.Contains(withoutComments(script), "renderVerify().then((drawn) => {\n      if (drawn) confirmBrowserForgotten();") {
 		t.Error("forgetting the browser confirms it whether or not the Verify page was drawn")

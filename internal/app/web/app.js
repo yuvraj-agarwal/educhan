@@ -2181,10 +2181,15 @@ function verifyViewHTML() {
 // renderVerify draws the Verify page once it has asked the server whether
 // verification is on here, and says whether it did. The reader can leave while
 // it asks — after pressing Verify, say, since an issued badge is drawn through
-// here — and then nothing is drawn over the page they went to.
+// here — and then nothing is drawn over the page they went to. Nor is anything
+// drawn when the page has moved to another step meanwhile: whatever moved it
+// drew that step, and drawing it again would take away what was said there.
+// Forget this browser pressed while an issued badge was being drawn had its
+// confirmation wiped, and the focus with it, by the badge's late redraw.
 async function renderVerify() {
+  const step = verifyStep;
   await loadVerification();
-  if (!onVerifyPage()) return false;
+  if (!onVerifyPage() || verifyStep !== step) return false;
   el.main.innerHTML = verifyViewHTML();
   // Explained once, on the page that can do something about it.
   badgeLost = "";

@@ -483,7 +483,10 @@ needs a browser check before the test changes.
   (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that arrives after the
   reader has left the page (`onVerifyPage`) only sets `verifyStep`: nothing is drawn over
   the page they went to, and coming back shows the step it left
-  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `replacing` puts the badge panel away for
+  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). Nor does `renderVerify`, through which an
+  issued badge is drawn after one more request, draw once the page has moved to another
+  step meanwhile: whatever moved it drew that step, and the badge's late redraw once wiped
+  Forget this browser's confirmation. `replacing` puts the badge panel away for
   "Verify another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over at
   the address step. A reload drops a pending code too, since nothing about it is stored:
