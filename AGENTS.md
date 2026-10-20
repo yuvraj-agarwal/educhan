@@ -278,12 +278,12 @@ against the Pass held before it is reported, and the Pass held checked when a lo
 answer's retry is refused, an answer about a Pass that has left the browser dropped, a
 claim's nonce and the forgetting of a claim, nothing collected while a claim is being
 dropped, a code copied here emptied from the clipboard by Remove and Forget, another
-tab's removal followed, the age screen storing its outcome alone and sending nothing, the
-badge's 18+ box and the Pass's never ticked in advance or kept, `/api/site` fetched only
-past the age screen, the header's Pass link only where there is a Pass, the paused
-wording the server's own, KaTeX's options, and the highlighting cap. They are a floor,
-not a proof; a change that trips one has changed one of those properties and needs a
-browser check before the test changes.
+tab's removal and forgetting followed, the age screen storing its outcome alone and
+sending nothing, the badge's 18+ box and the Pass's never ticked in advance or kept,
+`/api/site` fetched only past the age screen, the header's Pass link only where there is
+a Pass, the paused wording the server's own, KaTeX's options, and the highlighting cap.
+They are a floor, not a proof; a change that trips one has changed one of those
+properties and needs a browser check before the test changes.
 
 ### Front end conventions
 
@@ -472,7 +472,9 @@ browser check before the test changes.
   (`/api/pass/activate`, one typed in or the one held, checked again) and renewing
   (`/api/pass/checkout`). "Show the code" puts it on the screen and nowhere else, and
   "Copy the code" on the clipboard, which Remove the Pass and Forget this browser empty
-  again inside their click when this tab copied it (`emptyCopiedPassCode`). Buying and
+  again inside their click when this tab copied it since it was loaded, unless another
+  tab has since removed or replaced the Pass (`passCodeCopied`, `emptyCopiedPassCode`,
+  `followPassStorage`); the page and the FAQ promise no more than that. Buying and
   renewing leave for Stripe's hosted page by `location.assign`: no Stripe script, frame or
   stylesheet ever loads on this origin, and the CSP has no exception for Stripe. While
   `GET /api/pass` says `"claim"`, the page draws a collecting state with no form to pay
@@ -516,18 +518,22 @@ browser check before the test changes.
   (`passForgets`), so the next person at a shared computer collects nothing. Until the
   server has that request (`passForgetting`), nothing collects: `renderPass` and
   `collectPass` wait on it, and Stop collecting it here takes Check now off meanwhile;
-  turned away, it says so and goes on collecting. An answer to a code check or a post acts
-  only on the Pass it was about, if this browser still holds it (`passStillHeld`), so a
-  Pass removed or replaced meanwhile, here or in another tab, is not written back. Another
-  tab's Remove or Forget reaches this one by the `storage` event (`followPassStorage`),
-  which drops a code just handed over that the browser no longer holds and draws the Pass
-  page again. A page brought back from the back-forward cache is drawn again through
-  `render` (the `pageshow` listener), so the age screen still comes first. A post whose
-  Pass was no good is a `201` like any other, carrying `"pass": "invalid"` or `"expired"`:
-  the page forgets the first, marks the second run out without a date, and says the post
-  was sent. A code typed in after it ran out is kept with the date the server gives. While
-  sales are paused the page says `PASS_PAUSED` where Buy and Renew were;
-  `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
+  turned away, it says so and goes on collecting. The browser's other tabs do all of this
+  too: the tab it was pressed in keeps a mark under `educhan:pass-forget` while the
+  request is on its way, and a tab that sees it appear (`followPassForget`, by the
+  `storage` event) stops, drops the nonces, empties its code box for Remove and Forget,
+  and waits for the mark to go, or `PASS_FORGET_WAIT_MS` at most. An answer to a code
+  check or a post acts only on the Pass it was about, if this browser still holds it
+  (`passStillHeld`), so a Pass removed or replaced meanwhile, here or in another tab, is
+  not written back. Another tab's Remove or Forget reaches this one by the `storage` event
+  (`followPassStorage`), which drops a code just handed over that the browser no longer
+  holds and draws the Pass page again. A page brought back from the back-forward cache is
+  drawn again through `render` (the `pageshow` listener), so the age screen still comes
+  first. A post whose Pass was no good is a `201` like any other, carrying
+  `"pass": "invalid"` or `"expired"`: the page forgets the first, marks the second run out
+  without a date, and says the post was sent. A code typed in after it ran out is kept
+  with the date the server gives. While sales are paused the page says `PASS_PAUSED` where
+  Buy and Renew were; `PASS_NOT_ON_SALE` is the server's `passNotOnSale` word for word
   (`TestPassPageWhileSalesArePaused`), and `PASS_REISSUE_SPENT` its `passReissueSpent`. A
   browser that keeps no cookies or storage is not sent to Stripe (`passCanBeKept`). The
   header's Pass link (`data-pass-link`) stays hidden until `GET /api/site` says `"pass"`

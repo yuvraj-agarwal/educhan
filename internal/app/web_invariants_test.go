@@ -1210,10 +1210,10 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	}
 	// The keys are spelled out once, and used only by the two requests that
 	// send a nonce, renderPass's look for one kept from an unanswered claim,
-	// and forgetting; passNonces only by the helpers.
+	// and forgetting, here or in another tab; passNonces only by the helpers.
 	nonceUsers := map[string][]string{
-		"PASS_NONCE_STORAGE_KEY":         {"renderPass", "collectPass", "forgetPassClaim"},
-		"PASS_REISSUE_NONCE_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim"},
+		"PASS_NONCE_STORAGE_KEY":         {"renderPass", "collectPass", "forgetPassClaim", "followPassForget"},
+		"PASS_REISSUE_NONCE_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
 		"passNonces":                     {"passNonce", "passNoncePending", "dropPassNonce"},
 	}
 	for name, users := range nonceUsers {
@@ -1312,19 +1312,23 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		}
 	}
 	forgetsUses := 1
-	for _, name := range []string{"forgetPassClaim", "collectPass", "redeemPassReissue"} {
+	for _, name := range []string{"forgetPassClaim", "collectPass", "redeemPassReissue", "followPassForget"} {
 		forgetsUses += len(regexp.MustCompile(`\bpassForgets\b`).FindAllString(withoutComments(jsFunction(t, script, name)), -1))
 	}
 	if n := len(regexp.MustCompile(`\bpassForgets\b`).FindAllString(code, -1)); n != forgetsUses {
-		t.Errorf("passForgets appears %d times; want its declaration and its uses in forgetPassClaim, collectPass and redeemPassReissue, %d in all", n, forgetsUses)
+		t.Errorf("passForgets appears %d times; want its declaration and its uses in forgetPassClaim, collectPass, redeemPassReissue "+
+			"and followPassForget, %d in all", n, forgetsUses)
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "return forgetPassClaim();") {
-		t.Error("Forget this browser no longer drops a purchase still being collected")
+	// Remove the Pass and Forget this browser have the browser's other tabs
+	// empty their code boxes too (followPassForget); Stop collecting it here
+	// leaves them.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "return forgetPassClaim(true);") {
+		t.Error("Forget this browser no longer drops a purchase still being collected, here and in the browser's other tabs")
 	}
 	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 	remove = remove[:strings.Index(remove, "\n  }\n")]
-	if !strings.Contains(remove, "const dropped = forgetPassClaim();") {
-		t.Error("Remove the Pass no longer drops a purchase still being collected")
+	if !strings.Contains(remove, "const dropped = forgetPassClaim(true);") {
+		t.Error("Remove the Pass no longer drops a purchase still being collected, here and in the browser's other tabs")
 	}
 	// Drawn at once, from what is already known, so the code is off the screen
 	// before the visitor walks away, and focus goes to what took its place.
@@ -1355,7 +1359,13 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		t.Error("Stop collecting it here leaves Check now to collect what it is dropping")
 	}
 	// Turned away, the claim is still this browser's, and the page goes on
-	// collecting it, as the notice and the panel say.
+	// collecting it, as the notice and the panel say. The collection it goes
+	// on with is the one forgetPassClaim has just begun by ending the last, so
+	// the visit is read after it: read before, it is never the page's, and
+	// nothing collects again.
+	if visit := strings.Index(stop, "const visit = passVisit;"); visit < 0 || visit < dropped || strings.Count(stop, "passVisit") != 2 {
+		t.Error("a Stop collecting it here that could not reach educhan reads the visit before forgetPassClaim ends it, and never collects again")
+	}
 	failed := regexp.MustCompile(`if \(!done\) \{\s*refocus\(stopClaim\);\s*showNotice\("Couldn't reach educhan, so this browser is still collecting it\.[^"]*"\);\s*` +
 		`if \(visit === passVisit\) \{\s*collectPass\(visit\);\s*\}\s*return;\s*\}`)
 	if !failed.MatchString(stop) {
@@ -1395,8 +1405,18 @@ func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 			t.Errorf("%s no longer checks the Pass held when a retry with a kept nonce is refused", name)
 		}
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "collectPass")), `const notice = again ? await passAfterLostAnswer() : "";`) {
+	collect := withoutComments(jsFunction(t, script, "collectPass"))
+	if !strings.Contains(collect, `const notice = again ? await passAfterLostAnswer() : "";`) {
 		t.Error("collectPass checks the Pass held after a refusal it has no reason to doubt")
+	}
+	// What a claim brought, and what a check after a lost answer found, is
+	// said even when the page was drawn again while it was awaited (Check
+	// now, say), which would otherwise drop the notice and leave the old date
+	// on screen; an answer with nothing to say is left to the newer drawing.
+	for _, shown := range []string{"if (visit === passVisit || news) {", "if (visit === passVisit || notice) {"} {
+		if strings.Count(collect, shown) != 1 {
+			t.Errorf("collectPass no longer shows what an answer brought once the page has been drawn again (%q)", shown)
+		}
 	}
 	after := withoutComments(jsFunction(t, script, "passAfterLostAnswer"))
 	if !strings.Contains(after, "const found = await recheckPass(held);") ||
@@ -1425,44 +1445,72 @@ func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 // Copy the code puts the Pass on the clipboard, where it would outlive Remove
 // the Pass and Forget this browser on a shared computer. Both empty it, inside
 // their click, since writing to the clipboard takes the reader's gesture, when
-// this tab copied a code; and the page says what they cannot reach.
+// this tab copied the code since it was loaded and the browser still holds
+// it; and the page says what they cannot reach.
 func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
 	copied := code[strings.Index(code, `if (event.target.closest('[data-action="copy-pass"]')) {`):]
 	copied = copied[:strings.Index(copied, "\n    return;\n  }")]
 	// Noted once the copy has succeeded, and only then: a refused copy leaves
-	// the reader's own clipboard, which is not the page's to empty.
-	if !regexp.MustCompile(`navigator\.clipboard\.writeText\(code\.textContent\.trim\(\)\)\.then\(\s*\(\) => \{\s*passCodeCopied = true;`).MatchString(copied) ||
-		strings.Count(code, "passCodeCopied = true;") != 1 {
-		t.Error("Copy the code no longer notes that this tab put a code on the clipboard, or notes it when it did not")
+	// the reader's own clipboard, which is not the page's to empty. What is
+	// noted is the code copied, so a tab that removes or replaces the Pass
+	// can be told apart from one that renews it (followPassStorage).
+	if !regexp.MustCompile(`const copying = code\.textContent\.trim\(\);\s*navigator\.clipboard\.writeText\(copying\)\.then\(\s*\(\) => \{\s*passCodeCopied = copying;`).MatchString(copied) ||
+		strings.Count(code, "passCodeCopied = copying;") != 1 {
+		t.Error("Copy the code no longer notes the code this tab put on the clipboard, or notes it when it did not")
+	}
+	// Set only there, and otherwise only ever cleared: by emptying the
+	// clipboard, and when the browser no longer holds the code copied.
+	if n := len(regexp.MustCompile(`\bpassCodeCopied = `).FindAllString(code, -1)); n != 4 ||
+		!strings.Contains(code, "\nlet passCodeCopied = \"\";\n") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "followPassStorage")), "if (!now || now.code !== passCodeCopied) {\n    passCodeCopied = \"\";\n  }") {
+		t.Errorf("passCodeCopied is set in %d places; want its declaration, Copy the code, emptying the clipboard and "+
+			"another tab's removal or replacement of the code copied", n)
 	}
 	empty := withoutComments(jsFunction(t, script, "emptyCopiedPassCode"))
-	if !strings.Contains(empty, "if (!passCodeCopied) {\n    return;\n  }\n  passCodeCopied = false;") ||
+	if !strings.Contains(empty, "if (!passCodeCopied) {\n    return;\n  }\n  passCodeCopied = \"\";") ||
 		!strings.Contains(empty, `navigator.clipboard.writeText("").catch(() => {});`) {
 		t.Error("emptyCopiedPassCode no longer empties the clipboard of a code this tab copied, and only then")
 	}
-	// Called in the click itself, before anything is awaited: the handler for
-	// Remove and forgetBrowser are not async.
+	// Called in the click itself, before anything is awaited and outside any
+	// callback: a clipboard write after the forget's answer, in a .then, has
+	// lost the reader's gesture, which Safari and Firefox require. The handler
+	// for Remove is not async, and forgetBrowser is called first thing in
+	// Forget's and returns the forget's promise without waiting on it.
 	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 	remove = remove[:strings.Index(remove, "\n  }\n")]
-	if !strings.Contains(remove, "emptyCopiedPassCode();") || strings.Contains(remove, "await ") {
+	emptied := strings.Index(remove, "emptyCopiedPassCode();")
+	if emptied < 0 || strings.Contains(remove, "await ") || emptied > strings.Index(remove, "const dropped = forgetPassClaim(true);") ||
+		emptied > strings.Index(remove, ".then(") || strings.Count(remove, "emptyCopiedPassCode") != 1 {
 		t.Error("Remove the Pass no longer empties the clipboard of a code copied here while the click allows it")
 	}
-	if !strings.Contains(script, "\nfunction forgetBrowser() {") ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "emptyCopiedPassCode();") {
+	browser := withoutComments(jsFunction(t, script, "forgetBrowser"))
+	emptied = strings.Index(browser, "emptyCopiedPassCode();")
+	forgetClick := code[strings.Index(code, `if (event.target.closest('[data-action="forget-browser"]')) {`):]
+	forgetClick = forgetClick[:strings.Index(forgetClick, "\n  }\n")]
+	if !strings.Contains(script, "\nfunction forgetBrowser() {") || emptied < 0 ||
+		emptied > strings.Index(browser, "return forgetPassClaim(true);") ||
+		strings.Contains(browser, "await ") || strings.Contains(browser, ".then(") ||
+		!regexp.MustCompile(`^if \(event\.target\.closest\('\[data-action="forget-browser"\]'\)\) \{\s*event\.preventDefault\(\);\s*const dropped = forgetBrowser\(\);`).MatchString(forgetClick) {
 		t.Error("Forget this browser no longer empties the clipboard of a code copied here while the click allows it")
 	}
 	if n := strings.Count(code, "emptyCopiedPassCode()"); n != 3 {
 		t.Errorf("emptyCopiedPassCode() appears %d times; want its definition, Remove the Pass and Forget this browser", n)
 	}
+	// The promise is as narrow as the flag: a code copied since educhan was
+	// last opened in this tab, and not one another tab has removed or
+	// replaced since.
 	for name, text := range map[string]string{
 		"the held Pass":       words(jsFunction(t, script, "passHeldHTML")),
 		"Forget this browser": words(jsFunction(t, script, "forgetBrowserHTML")),
 		"the FAQ":             words(faqAnswer(t, script, "faq-pass")),
 	} {
-		if !strings.Contains(text, "copied in another tab or app stays") {
-			t.Errorf("%s no longer says a code copied elsewhere stays on the clipboard", name)
+		for _, want := range []string{"since you last opened educhan in", "unless another tab removed or replaced the Pass meanwhile",
+			"copied any other way stays"} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s no longer says which copies of the code are emptied from the clipboard (%q)", name, want)
+			}
 		}
 	}
 }
@@ -1477,13 +1525,74 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 		t.Error("a tab no longer follows the Pass another tab removed or replaced")
 	}
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
-	if !strings.Contains(follow, "if (!now || (passJustIssued && passJustIssued.code !== now.code)) {\n    passJustIssued = null;\n    passCodeCopied = false;") ||
+	if !strings.Contains(follow, "if (!now || (passJustIssued && passJustIssued.code !== now.code)) {\n    passJustIssued = null;\n  }") ||
 		!strings.Contains(follow, `if (state.route.view === "pass" && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
 		t.Error("a code just handed over stays on screen after another tab removed or replaced the Pass")
 	}
+	// A code this tab copied stops counting as its to empty from the
+	// clipboard once the browser no longer holds that code, whether or not
+	// a code just handed over is on screen.
+	if !strings.Contains(follow, "if (!now || now.code !== passCodeCopied) {\n    passCodeCopied = \"\";\n  }") {
+		t.Error("a code this tab copied still counts as its to empty after another tab removed or replaced it")
+	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "passViewHTML")), "<div class=\"board-head\" data-pass-page>") {
 		t.Error("the Pass page no longer marks itself, so another tab's change can draw over the age screen")
+	}
+}
+
+// Remove the Pass, Forget this browser and Stop collecting it here, pressed
+// in one tab, stop the browser's other tabs as they stop that one: the
+// storage event carries a mark the pressing tab keeps while its request is on
+// the way, whether or not a Pass was held. Another tab then drops an answer
+// to a claim or a reissue code already on its way, sends no claim until the
+// mark goes, and, for Remove and Forget, empties its code box, so a reissue
+// code typed there is not left for the next person at the computer, even
+// when the Pass's own removal drew that tab again first.
+func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	if !strings.Contains(code, "\nwindow.addEventListener(\"storage\", followPassForget);\n") {
+		t.Error("a tab no longer follows a forget pressed in another tab")
+	}
+	if n := strings.Count(code, `"educhan:pass-forget"`); n != 1 || !strings.Contains(code, `const PASS_FORGET_STORAGE_KEY = "educhan:pass-forget";`) {
+		t.Errorf("app.js spells out the forget mark's key %d times; want once, as PASS_FORGET_STORAGE_KEY", n)
+	}
+	// The mark is set before the request is sent, carries whether to empty
+	// the code box and a random token, and is taken off once the request is
+	// answered unless a later forget has put its own there.
+	forget := withoutComments(jsFunction(t, script, "forgetPassClaim"))
+	marked := strings.Index(forget, "storageSet(PASS_FORGET_STORAGE_KEY, mark);")
+	asked := strings.Index(forget, `await api("/api/pass/claim"`)
+	if !strings.Contains(forget, "const mark = `${emptyBoxes ? \"code\" : \"claim\"}:${newPassNonce()}`;") || marked < 0 || marked > asked ||
+		!strings.Contains(forget, "if (storageGet(PASS_FORGET_STORAGE_KEY) === mark) {\n      try {\n        localStorage.removeItem(PASS_FORGET_STORAGE_KEY);") {
+		t.Error("forgetPassClaim no longer tells the browser's other tabs, before it asks the server, that it is forgetting")
+	}
+	if !strings.Contains(code, "\nfunction forgetPassClaim(emptyBoxes = false) {") || strings.Count(code, "forgetPassClaim(true)") != 2 ||
+		strings.Count(code, "forgetPassClaim()") != 1 {
+		t.Error("only Remove the Pass and Forget this browser have other tabs empty their code boxes")
+	}
+	follow := withoutComments(jsFunction(t, script, "followPassForget"))
+	gate := strings.Index(follow, "if (event.key !== PASS_FORGET_STORAGE_KEY) {\n    return;\n  }")
+	read := strings.Index(follow, "const mark = event.newValue;")
+	if gate != strings.Index(follow, "{")+4 || read < gate || strings.Count(follow, "event.") != 2 {
+		t.Error("followPassForget reads a storage event other than the forget mark's")
+	}
+	stop := strings.Index(follow, "if (!mark) {\n    return;\n  }")
+	for _, step := range []string{"passVisit += 1;", "passForgets += 1;", "dropPassNonce(PASS_NONCE_STORAGE_KEY);",
+		"dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);", "if (mark.startsWith(\"code:\")) {\n    forgetTypedCode();\n  }",
+		"passForgetting = waited;"} {
+		if at := strings.Index(follow, step); stop < 0 || stop < read || at < stop {
+			t.Errorf("followPassForget no longer does %q when another tab forgets", step)
+		}
+	}
+	// It waits for the mark to go, or a while for a tab closed before its
+	// answer, and draws the Pass page again from the server only then.
+	if !strings.Contains(follow, "passForgetHeard = resolve;\n    setTimeout(resolve, PASS_FORGET_WAIT_MS);") ||
+		!regexp.MustCompile(`const heard = passForgetHeard;\s*passForgetHeard = null;\s*if \(heard\) \{\s*heard\(\);\s*\}`).MatchString(follow) ||
+		!regexp.MustCompile(`waited\.then\(\(\) => \{\s*if \(passForgetting === waited\) \{\s*passForgetting = null;\s*\}\s*`+
+			`if \(state\.route\.view === "pass" && el\.main\.querySelector\("\[data-pass-page\]"\)\) \{\s*renderPass\(\);`).MatchString(follow) {
+		t.Error("followPassForget no longer keeps this tab from collecting until the other tab's request is answered")
 	}
 }
 
@@ -1642,8 +1751,8 @@ func TestHeaderLinksToThePassOnlyWhereItIs(t *testing.T) {
 	}
 }
 
-// What the Pass page and the FAQ say about refunds, hours, a server's unknown
-// terms and a Pass that is gone, as the server does it.
+// What the Pass page and the FAQ say about refunds, reissuing, hours, a
+// server's unknown terms and a Pass that is gone, as the server does it.
 func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 	script := appScript(t)
 	intro := words(withoutComments(jsFunction(t, script, "passIntroHTML")))
@@ -1662,6 +1771,18 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 		}
 		if strings.Contains(text, "cancel the Pass") || strings.Contains(text, "until the hour ends") {
 			t.Errorf("%s says a refund cancels the Pass, or that the hour is the reader's own", name)
+		}
+	}
+	// A lost code is reissued from the payment that bought the Pass, or, once
+	// that is refunded or disputed, only from one payment left paying for all
+	// its time (passReissueNoOrigin), so every promise of a reissue code for a
+	// lost code says it may no longer be possible then.
+	held := words(jsFunction(t, script, "passHeldHTML"))
+	for name, text := range map[string]string{"the held Pass": held, "the FAQ's Pass entry": faq} {
+		if !strings.Contains(text, "you'll be sent a reissue code") ||
+			!strings.Contains(text, "If the payment that bought the Pass was refunded or disputed, that may no longer be possible.") &&
+				!strings.Contains(text, "if the payment that bought it was refunded or disputed, that may no longer be possible.") {
+			t.Errorf("%s promises a reissue code for a lost code without saying a refunded purchase can end it", name)
 		}
 	}
 	if !strings.Contains(intro, `const term = info.enabled ? passTermText(info.days) : "a set time";`) {

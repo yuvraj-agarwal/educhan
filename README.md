@@ -406,7 +406,11 @@ still the buyer's, and the owner reissues it from the payment on the receipt
 (see **Lost codes**). Remove the Pass, Forget this browser and Stop collecting
 it here all send it. The page stops any collection under way and drops its
 nonces before it does, and starts none until the server has the request, so a
-claim cannot collect what is being dropped. An answer already on its way when
+claim cannot collect what is being dropped. The browser's other tabs do the
+same: while the request is on its way the page keeps a mark in `localStorage`
+(`educhan:pass-forget`, a random token), and a tab that sees it appear stops,
+and starts nothing until it goes, or for 30 seconds at most, in case the tab
+that set it was closed first. An answer already on its way, in any tab, when
 one of them is pressed is dropped without being stored or shown; a Pass it
 brought is still the buyer's, and a reissue code from its payment gives it a
 new code.
@@ -594,21 +598,21 @@ hands over no code.
 
 When the purchase is refunded or disputed and the Pass goes on, the right to
 reissue it moves to another payment only while that payment pays for all the
-time the Pass has left. When exactly one payment left on it has a term still
+time the Pass has left. If exactly one payment left on it has a term still
 running or to come, and any others have ended, the right moves to that one,
-and the `409` for another renewal's payment says to use it. Its payer can then
-have the Pass reissued without taking a day anybody else paid for. The right
-goes again as soon as anybody renews the Pass, its holder included, since the
-payment then pays for only part of its time, and a reissue code made for that
-payment is cancelled with it. Otherwise the Pass can no longer be reissued,
-and a reissue for any of its payments answers `409` saying so. Two terms still
-to come can be two payers', a holder's own renewal beside one somebody else
-gave who saw the code once, and the server cannot tell one payer from another,
-so handing the whole Pass to either could give them time the other paid for.
-Such a Pass goes on working for whoever holds its code, and a later refund
-that leaves one payment paying for all its time moves the right to that
-payment then; a term that simply runs out moves nothing, and a renewal only
-ever takes the right away.
+and the `409` for another renewal's payment says to use it; its payer can then
+have the Pass reissued without taking a day anybody else paid for on it.
+Otherwise the Pass can no longer be reissued, and a reissue for any of its
+payments answers `409` saying so. Two terms still to come can be two payers',
+a holder's own renewal beside one somebody else gave who saw the code once,
+and the server cannot tell one payer from another, so handing the whole Pass
+to either could give them time the other paid for. For the same reason the
+right goes again as soon as the Pass is renewed once more, by its holder or
+anybody else, since that payment then pays for only part of its time, and a
+reissue code made for it is cancelled with it. Such a Pass goes on working for
+whoever holds its code, and a later refund that leaves one payment paying for
+all its time moves the right to that payment then; a term that simply runs out
+moves nothing, and a renewal only ever takes the right away.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass
 (`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
@@ -896,17 +900,19 @@ not-found view.
   a nonce of its own (`educhan:pass-reissue-nonce`), and is never stored: it stays in
   the box, in memory only, until an answer arrives, so pressing again after a lost
   answer asks with the same nonce. The box has autocomplete off, and is emptied by
-  **Remove the Pass**, **Forget this browser** and leaving the page. Those two and
-  **Stop collecting it here** stop any collection under way, drop its nonces and then
-  the browser's claim, and drop unstored an answer to a claim or a reissue code that was
-  already on its way, so the next person at a shared computer collects nothing. Nothing
-  collects again, **Check now** included, until the server has that request, and a Stop
-  that cannot reach educhan says so and goes on collecting. Remove and Forget also empty
-  the clipboard of a code **Copy the code** put there in the same tab; one copied in
-  another tab or app stays. Removing the Pass, or forgetting the browser, in another tab
-  takes a code just handed over off this tab's screen (the `storage` event). A post
-  whose Pass was no good goes out like any other, and its answer says so: the page
-  forgets an unknown Pass, keeps one that ran out to renew, and says the post was sent.
+  **Remove the Pass** and **Forget this browser**, pressed in any tab of the browser,
+  and by leaving the page. Those two and **Stop collecting it here** stop any collection
+  under way, drop its nonces and then the browser's claim, and drop unstored an answer
+  to a claim or a reissue code that was already on its way, in every tab of the browser
+  (the `storage` event), so the next person at a shared computer collects nothing.
+  Nothing collects again, **Check now** included, until the server has that request, and
+  a Stop that cannot reach educhan says so and goes on collecting. Remove and Forget
+  also empty the clipboard of a code **Copy the code** put there since educhan was last
+  opened in the same tab, unless another tab has removed or replaced the Pass meanwhile;
+  a code copied any other way stays. Removing the Pass, or forgetting the browser, in
+  another tab takes a code just handed over off this tab's screen. A post whose Pass was
+  no good goes out like any other, and its answer says so: the page forgets an unknown
+  Pass, keeps one that ran out to renew, and says the post was sent.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

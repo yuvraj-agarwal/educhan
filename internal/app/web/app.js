@@ -1834,16 +1834,16 @@ function forgetCredential() {
   state.verification.badge = null;
 }
 
-// forgetBrowser removes everything this browser keeps that ties it to posts
-// or to a purchase: the badge, the Pass, the poster key every unbadged post's
-// ID is made from (which would otherwise give the next person at a shared
+// forgetBrowser removes everything this browser keeps that ties it to posts or
+// to a purchase: the badge, the Pass, the poster key every unbadged post's ID
+// is made from (which would otherwise give the next person at a shared
 // computer the same ID in the same threads, and show them which posts there
 // were yours) and the remembered name, with its tripcode secret. The age
 // answer stays: it says nothing about any post. All of that is local. A Pass
 // bought here and not yet collected is not: the claim on it is a cookie only
 // the server can drop, so it is asked to (forgetPassClaim), and what that
-// comes to is returned. It is called inside the click on Forget this
-// browser, which lets it empty the clipboard of a Pass code this tab copied.
+// comes to is returned. It is called inside the click on Forget this browser,
+// which lets it empty the clipboard of a Pass code this tab copied.
 function forgetBrowser() {
   forgetCredential();
   forgetPass();
@@ -1858,7 +1858,7 @@ function forgetBrowser() {
     }
   }
   pagePosterKey = "";
-  return forgetPassClaim();
+  return forgetPassClaim(true);
 }
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
@@ -1877,8 +1877,9 @@ function forgetBrowserHTML() {
         <a href="/pass">Pass</a> page and write it down first. It also stops this browser
         collecting a Pass bought here that hasn't arrived yet; if you've paid for one, write
         to the support address on the receipt Stripe emailed you, and you'll be sent a reissue
-        code to collect it with. A Pass code copied in this tab is emptied from the clipboard,
-        but one copied in another tab or app stays there until something else is copied.</p>
+        code to collect it with. A Pass code you copied since you last opened educhan in this
+        tab is emptied from the clipboard, unless another tab removed or replaced the Pass
+        meanwhile; one copied any other way stays there until something else is copied.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
     </div>`;
 }
@@ -2105,12 +2106,21 @@ const PASS_CLAIM_LONGEST_WAIT_MS = 60000;
 const PASS_NONCE_STORAGE_KEY = "educhan:pass-nonce";
 const PASS_REISSUE_NONCE_STORAGE_KEY = "educhan:pass-reissue-nonce";
 const PASS_NONCE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
+// While Remove the Pass, Forget this browser or Stop collecting it here waits
+// for the server to drop the claim, the tab it was pressed in keeps a mark
+// under this key, new each time, so the browser's other tabs stop as that one
+// does (followPassForget): "code:" and a random token for the first two,
+// which empty the code box too, and "claim:" for the third. A tab waits for
+// the mark to go for at most PASS_FORGET_WAIT_MS, in case the tab that set it
+// closes before its request is answered and never takes it off.
+const PASS_FORGET_STORAGE_KEY = "educhan:pass-forget";
+const PASS_FORGET_WAIT_MS = 30000;
 // A reissue code is what the owner sends a buyer who lost their code: the word
 // REISSUE and 28 characters of a Pass code's alphabet, in groups of four. No
 // Pass code has a U, so the code box tells the two apart by the word, or,
-// typed without it, by the length. The server reads it in either case, with
-// or without the word and the dashes. It is typed in, never put in an
-// address, and never stored.
+// typed without it, by the length. The server reads it in either case, with or
+// without the word and the dashes. It is typed in, never put in an address,
+// and never stored.
 const REISSUE_CODE_WORD = "REISSUE";
 const REISSUE_CODE_LENGTH = 28;
 // Written and read back before a checkout, to learn whether this browser keeps
@@ -2160,11 +2170,12 @@ let passVisit = 0;
 let passForgets = 0;
 
 // passForgetting is the request that drops this browser's claim
-// (forgetPassClaim) while it is on its way. Until the server has it, the
-// claim is still this browser's, and GET /api/pass still says there is
-// something to collect, so nothing starts collecting meanwhile: the Pass page
-// waits for it before asking (renderPass), and so does a collection before
-// each claim (collectPass).
+// (forgetPassClaim) while it is on its way, or, when another tab sent it, the
+// wait for that tab's mark to go (followPassForget). Until the server has the
+// request, the claim is still this browser's, and GET /api/pass still says
+// there is something to collect, so nothing starts collecting meanwhile: the
+// Pass page waits for it before asking (renderPass), and so does a collection
+// before each claim (collectPass).
 let passForgetting = null;
 
 // passStartedAgain is set when the visitor leaves Stripe without paying, or
@@ -2184,10 +2195,16 @@ let passStartedAgain = false;
 // (forgetTypedCode).
 let passCodeTyped = "";
 
-// passCodeCopied is set once this tab has put a Pass code on the clipboard
-// (Copy the code), so Remove the Pass and Forget this browser empty it again
-// (emptyCopiedPassCode).
-let passCodeCopied = false;
+// passCodeCopied is the Pass code this tab has put on the clipboard (Copy the
+// code) since it was loaded, so Remove the Pass and Forget this browser empty
+// it again (emptyCopiedPassCode). It is forgotten once the browser no longer
+// holds that code because another tab removed or replaced it
+// (followPassStorage).
+let passCodeCopied = "";
+
+// passForgetHeard ends the wait on a forget another tab of this browser has
+// sent (followPassForget), once its mark goes.
+let passForgetHeard = null;
 
 // passJustIssued is the code a claim or a reissue code has just handed over,
 // as { code, expires, kept, replaced, reissued, shown }: replaced is the code
@@ -2302,15 +2319,19 @@ function dropPassNonce(key) {
 // arrives (passForgets). Then the server drops the claim, which only it can
 // do, since the claim is a cookie the page cannot see; the purchase stays the
 // buyer's, for a reissue code from the receipt. Until the server has the
-// request, nothing starts collecting again (passForgetting). It resolves to
-// whether nothing is left to collect here: true once the server has
+// request, nothing starts collecting again (passForgetting), and a mark under
+// PASS_FORGET_STORAGE_KEY has the browser's other tabs do the same, emptying
+// their code boxes too when emptyBoxes is set (followPassForget). It resolves
+// to whether nothing is left to collect here: true once the server has
 // answered, or when it sells no Pass, and false when it could not be reached,
 // since the claim is then still this browser's.
-function forgetPassClaim() {
+function forgetPassClaim(emptyBoxes = false) {
   passVisit += 1;
   passForgets += 1;
   dropPassNonce(PASS_NONCE_STORAGE_KEY);
   dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);
+  const mark = `${emptyBoxes ? "code" : "claim"}:${newPassNonce()}`;
+  storageSet(PASS_FORGET_STORAGE_KEY, mark);
   const forgetting = (async () => {
     try {
       await api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true }) });
@@ -2321,10 +2342,18 @@ function forgetPassClaim() {
   })();
   passForgetting = forgetting;
   // Cleared before anything that waits on it goes on, since this was
-  // attached first.
+  // attached first, and the mark taken off unless a later forget has put its
+  // own there.
   forgetting.then(() => {
     if (passForgetting === forgetting) {
       passForgetting = null;
+    }
+    if (storageGet(PASS_FORGET_STORAGE_KEY) === mark) {
+      try {
+        localStorage.removeItem(PASS_FORGET_STORAGE_KEY);
+      } catch {
+        // Nothing was stored, so nothing needs removing.
+      }
     }
   });
   return forgetting;
@@ -2343,13 +2372,14 @@ function forgetTypedCode() {
 // there (Copy the code), for Remove the Pass and Forget this browser. Writing
 // to the clipboard takes the reader's click, so it is called inside one; a
 // browser that will not write leaves the clipboard as it was. A code copied
-// in another tab or app, and any clipboard history the computer keeps, are
-// beyond it, and the page says so.
+// in another tab or app, before this tab was last loaded, or before another
+// tab removed or replaced the Pass (followPassStorage), is beyond it, and the
+// page says so; so is any clipboard history the computer keeps.
 function emptyCopiedPassCode() {
   if (!passCodeCopied) {
     return;
   }
-  passCodeCopied = false;
+  passCodeCopied = "";
   if (navigator.clipboard) {
     navigator.clipboard.writeText("").catch(() => {});
   }
@@ -2537,11 +2567,13 @@ function passHeldHTML(info, held, codeOnScreen) {
         <p><strong>On a shared or borrowed computer, remove it before you walk away.</strong>
           Anyone using this browser could post with it. Removing it also stops this browser
           collecting anything bought here that hasn't arrived yet, and empties the clipboard
-          if this tab copied the code; a code copied in another tab or app stays on the
+          of a code you copied since you last opened educhan in this tab, unless another tab
+          removed or replaced the Pass meanwhile; a code copied any other way stays on the
           clipboard until something else is copied. To use the Pass again afterwards you need
           its code, so show it and write it down first. If you lose it, write to the support
           address on the receipt Stripe emailed you, and you'll be sent a reissue code to enter
-          on this page, which gives your Pass a new code.</p>
+          on this page, which gives your Pass a new code; if the payment that bought it was
+          refunded or disputed, that may no longer be possible.</p>
         <button class="btn danger" type="button" data-action="forget-pass">Remove the Pass from this browser</button>
       </div>
     </div>`;
@@ -3022,8 +3054,8 @@ async function passAfterLostAnswer() {
 // redrawPass draws the Pass page again, as drawPass does, for something that
 // arrived while the reader was on it, and keeps a keyboard where it was: focus
 // that was on the page moves to the first of selectors still on it
-// (passFocus), rather than falling to the top of the document with the
-// element that had it. Focus drawPass kept in the code box stays there.
+// (passFocus), rather than falling to the top of the document with the element
+// that had it. Focus drawPass kept in the code box stays there.
 function redrawPass(info, ...selectors) {
   const focused = el.main.contains(document.activeElement);
   drawPass(info);
@@ -3150,13 +3182,13 @@ function isReissueCode(typed) {
 // redeemPassReissue spends a reissue code typed in the code box (typed), which
 // goes to the server once, in the body of a claim, with a nonce of its own.
 // Pressing the button is the reader's say-so, so a Pass this browser holds is
-// replaced at once, and its code is shown beside the new one
-// (passIssuedHTML). Once an answer arrives the code leaves the box and the
-// nonce is dropped. Without one, both stay, so pressing again asks again with
-// the same nonce and is handed the same code; and a renewal, which hands over
-// no code, is refused when asked again, so the Pass held is checked then
-// (passAfterLostAnswer). An answer that arrives after this browser stopped
-// collecting is dropped unstored, as a claim's is (passForgets).
+// replaced at once, and its code is shown beside the new one (passIssuedHTML).
+// Once an answer arrives the code leaves the box and the nonce is dropped.
+// Without one, both stay, so pressing again asks again with the same nonce and
+// is handed the same code; and a renewal, which hands over no code, is refused
+// when asked again, so the Pass held is checked then (passAfterLostAnswer). An
+// answer that arrives after this browser stopped collecting is dropped
+// unstored, as a claim's is (passForgets).
 async function redeemPassReissue(typed) {
   let res = null;
   let failed = null;
@@ -3662,16 +3694,18 @@ const FAQ_SECTIONS = [
         <li>Keep a copy of the code: the Pass page can show it again while your browser has
           it. If you lose it, write to the support address on the receipt Stripe emailed you,
           and you'll be sent a reissue code. Enter it on the Pass page, and your Pass gets a
-          new code there; the old one stops working. A reissue code is never part of a link,
-          so no browser's history keeps it.</li>
+          new code there; the old one stops working. If the payment that bought the Pass was
+          refunded or disputed, that may no longer be possible. A reissue code is never part
+          of a link, so no browser's history keeps it.</li>
       </ul>
       <p>On a shared computer, remove the Pass on the <a href="/pass">Pass</a> page, or use
         <strong>Forget this browser</strong> on the <a href="/verify#forget-browser">Verify</a>
         page, before you leave. Either also stops the browser collecting a Pass bought there
         that hasn't arrived yet, so the next person can't collect it; if you've paid for one,
         write to the support address on the receipt, and you'll be sent a reissue code to
-        collect it with. Both empty the clipboard of a code copied in the same tab, but one
-        copied in another tab or app stays there until something else is copied.</p>`,
+        collect it with. Both empty the clipboard of a code you copied since you last opened
+        educhan in the same tab, unless another tab removed or replaced the Pass meanwhile;
+        one copied any other way stays there until something else is copied.</p>`,
   },
   {
     id: "faq-tripcodes",
@@ -4576,7 +4610,7 @@ document.addEventListener("click", (event) => {
     passJustIssued = null;
     forgetTypedCode();
     emptyCopiedPassCode();
-    const dropped = forgetPassClaim();
+    const dropped = forgetPassClaim(true);
     drawPass({ ...lastPassInfo, claim: false });
     passFocus("form[data-pass] input");
     showNotice("This browser no longer has a Pass.");
@@ -4635,9 +4669,10 @@ document.addEventListener("click", (event) => {
       // Noted only once the code is on the clipboard: a copy the browser
       // refused leaves the reader's own clipboard, which Remove the Pass then
       // has no business emptying.
-      navigator.clipboard.writeText(code.textContent.trim()).then(
+      const copying = code.textContent.trim();
+      navigator.clipboard.writeText(copying).then(
         () => {
-          passCodeCopied = true;
+          passCodeCopied = copying;
           showNotice("Copied. Paste it somewhere safe.");
         },
         () => showNotice("This browser wouldn't copy it. Select the code and copy it by hand.")
@@ -4766,10 +4801,10 @@ window.addEventListener("pagehide", () => {
 // it): removed there, by Remove the Pass or Forget this browser say, or
 // replaced by another code. A code just handed over here that this browser no
 // longer holds stops being drawn, so one forgotten in another tab is not left
-// on this tab's screen, and a code this tab copied no longer counts as its to
-// empty from the clipboard. The Pass page, if it is on screen here, is drawn
-// again from what this browser holds now, which also hides a code shown on
-// it.
+// on this tab's screen, and a code this tab copied that the browser no longer
+// holds no longer counts as its to empty from the clipboard. The Pass page,
+// if it is on screen here, is drawn again from what this browser holds now,
+// which also hides a code shown on it.
 function followPassStorage(event) {
   if (event.key !== PASS_STORAGE_KEY && event.key !== null) {
     return;
@@ -4777,14 +4812,62 @@ function followPassStorage(event) {
   const now = storedPass();
   if (!now || (passJustIssued && passJustIssued.code !== now.code)) {
     passJustIssued = null;
-    passCodeCopied = false;
+  }
+  if (!now || now.code !== passCodeCopied) {
+    passCodeCopied = "";
   }
   if (state.route.view === "pass" && el.main.querySelector("[data-pass-page]")) {
     redrawPass(lastPassInfo, "#pass-held", "form[data-pass] input");
   }
 }
 
+// followPassForget follows Remove the Pass, Forget this browser or Stop
+// collecting it here pressed in another tab of this browser, by the mark that
+// tab keeps under PASS_FORGET_STORAGE_KEY while its request is on the way
+// (forgetPassClaim). This tab stops as that one did: what it is collecting
+// ends, an answer to a claim or a reissue code already on its way is dropped
+// unstored (passForgets), and nothing collects here until the mark goes
+// (passForgetting), or for at most PASS_FORGET_WAIT_MS. Remove and Forget
+// empty the code box here too, so a reissue code typed in this tab is not
+// left for the next person at the computer. Once the wait ends, the Pass
+// page, if it is on screen here, is drawn again from the server.
+function followPassForget(event) {
+  if (event.key !== PASS_FORGET_STORAGE_KEY) {
+    return;
+  }
+  const heard = passForgetHeard;
+  passForgetHeard = null;
+  if (heard) {
+    heard();
+  }
+  const mark = event.newValue;
+  if (!mark) {
+    return;
+  }
+  passVisit += 1;
+  passForgets += 1;
+  dropPassNonce(PASS_NONCE_STORAGE_KEY);
+  dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);
+  if (mark.startsWith("code:")) {
+    forgetTypedCode();
+  }
+  const waited = new Promise((resolve) => {
+    passForgetHeard = resolve;
+    setTimeout(resolve, PASS_FORGET_WAIT_MS);
+  });
+  passForgetting = waited;
+  waited.then(() => {
+    if (passForgetting === waited) {
+      passForgetting = null;
+    }
+    if (state.route.view === "pass" && el.main.querySelector("[data-pass-page]")) {
+      renderPass();
+    }
+  });
+}
+
 window.addEventListener("storage", followPassStorage);
+window.addEventListener("storage", followPassForget);
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {
