@@ -422,8 +422,11 @@ prices, ISBNs, sums, decimals and ranges of them, numbers with thousands
 separators, IPv4 addresses, a program's output ("Output: …", "it returns …"),
 labelled references (an order, roll, seat, application, receipt or challan
 number, a hall ticket, "ISBN-10:", "PNR status for …", "the ISBN on my copy
-is …"), a number of one digit over and over ("9999999999") and digit runs inside longer numbers
-pass, and so do Ofcom's, ACMA's and the NANP's numbers
+is …"), a number of one digit over and over ("9999999999"), digit runs inside longer numbers and a number
+given as a maths answer ("the largest 10-digit number with distinct digits is
+9876543210", "Answer for Q4 came out as 7364181325", "Got 8247301956 for part
+(b)", "How many digits does 2^33 have? It's 8589934592"), unless a call or "my
+number" is beside it, pass, and so do Ofcom's, ACMA's and the NANP's numbers
 for drama and the crisis lines whose numbers look like phone numbers (iCall,
 the Vandrevala Foundation, AASRA and Tele-MANAS in India; the old National
 Suicide Prevention Lifeline, the Trevor Project, the National Domestic Violence

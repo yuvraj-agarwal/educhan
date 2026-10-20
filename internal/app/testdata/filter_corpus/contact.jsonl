@@ -288,3 +288,7 @@
 {"id": "contact-288", "body": "madeup @ gmail.com", "subject": "", "name": "", "expect": "block", "why": "a name spaced either side of the \"@\" at a provider is still an address (R2P-EMAIL-DOMAIN control)"}
 {"id": "contact-289", "body": "my email is riya @madeup.com", "subject": "", "name": "", "expect": "block", "why": "a plain name before a glued domain, after \"my email is\" (R2P-EMAIL-DOMAIN control)"}
 {"id": "contact-290", "body": "riya @madeup.com is my email btw", "subject": "", "name": "", "expect": "block", "why": "a plain name before a glued domain, with \"my email\" after it (R2P-EMAIL-DOMAIN control)"}
+{"id": "contact-291", "body": "my 10 digit number is 9814072356", "subject": "", "name": "", "expect": "block", "why": "\"my ... number\" makes a number someone's, whatever else is said (R2P-10DIGIT-MATHS control)"}
+{"id": "contact-292", "body": "got a new number 8247301956 text me", "subject": "", "name": "", "expect": "block", "why": "a call cue near the number (R2P-10DIGIT-MATHS control)"}
+{"id": "contact-293", "body": "it's 8589934592 text me", "subject": "", "name": "", "expect": "block", "why": "a call cue after the number (R2P-10DIGIT-MATHS control)"}
+{"id": "contact-294", "body": "largest coaching in kota, 9814072356", "subject": "", "name": "", "expect": "block", "why": "\"largest\" alone names no maths result (R2P-10DIGIT-MATHS control)"}

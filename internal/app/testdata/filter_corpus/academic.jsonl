@@ -243,3 +243,14 @@
 {"id": "acad-243", "body": "i'm going to beat the crap out of this exam tomorrow", "subject": "", "name": "", "expect": "publish", "why": "doing well in an exam"}
 {"id": "acad-244", "body": "acid base titration practical tomorrow at school", "subject": "", "name": "", "expect": "publish", "why": "a chemistry practical"}
 {"id": "acad-245", "body": "our essay on school shootings is due monday", "subject": "", "name": "", "expect": "publish", "why": "an essay topic"}
+{"id": "acad-253", "body": "Q: how many 10-digit numbers use each digit exactly once? e.g. 9876543210 is the largest", "subject": "", "name": "", "expect": "publish", "why": "digits counting down, given as an example beside talk of digits (R2P-10DIGIT-MATHS)"}
+{"id": "acad-254", "body": "Largest 10 digit number with distinct digits is 9876543210, smallest is 1023456789", "subject": "", "name": "", "expect": "publish", "why": "the largest number of a kind given as a result (R2P-10DIGIT-MATHS)"}
+{"id": "acad-255", "body": "The largest 10-digit number with all different digits is 9876543210", "subject": "", "name": "", "expect": "publish", "why": "the largest 10-digit number given as a result (R2P-10DIGIT-MATHS)"}
+{"id": "acad-256", "body": "The only self-descriptive 10 digit number is 6210001000, wild puzzle", "subject": "", "name": "", "expect": "publish", "why": "a self-descriptive number, a puzzle's answer (R2P-10DIGIT-MATHS)"}
+{"id": "acad-257", "body": "9814072356 is the largest square using every digit once, our maths club found it", "subject": "", "name": "", "expect": "publish", "why": "the largest square given as a result (R2P-10DIGIT-MATHS)"}
+{"id": "acad-258", "body": "Answer for Q4 came out as 7364181325, can someone check", "subject": "", "name": "", "expect": "publish", "why": "a result that \"came out as\" (R2P-10DIGIT-MATHS)"}
+{"id": "acad-259", "body": "Got 8247301956 for part (b), seems too big", "subject": "", "name": "", "expect": "publish", "why": "a result got \"for part (b)\" (R2P-10DIGIT-MATHS)"}
+{"id": "acad-260", "body": "My calculator shows 6.0221408e23 but the answer key says 6022140857, typo?", "subject": "", "name": "", "expect": "publish", "why": "the answer key's number (R2P-10DIGIT-MATHS)"}
+{"id": "acad-261", "body": "How many digits does 2^33 have? It's 8589934592 so 10", "subject": "", "name": "", "expect": "publish", "why": "a power in the sentence before the number (R2P-10DIGIT-MATHS)"}
+{"id": "acad-262", "body": "Write a program to reverse a number, e.g. input 1234567890 output 0987654321, then try 9876543210", "subject": "", "name": "", "expect": "publish", "why": "digits counting down in a program's example (R2P-10DIGIT-MATHS)"}
+{"id": "acad-263", "body": "is 9814072356 a perfect square? asking for the maths club", "subject": "", "name": "", "expect": "publish", "why": "a perfect square asked about (R2P-10DIGIT-MATHS)"}

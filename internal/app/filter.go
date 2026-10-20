@@ -13640,8 +13640,50 @@ func standsAlone(v *view, run digitRun) bool {
 	if !cued && (mathsResult.matchIn(v, near) || mathsContext.matchIn(v, near+" "+windowAfter(t, run.to, 32))) {
 		return false
 	}
-	return true
+	return cued || !mathsAnswer(v, run)
 }
+
+// mathsAnswer reports a number given as the answer to a maths question in
+// the words people give one, with nothing round it asking for a call or
+// saying whose it is: a largest or smallest number of some kind ("the
+// largest 10-digit number with distinct digits is 9876543210"), a result
+// that "came out as" or was got "for part (b)", the answer key's, a number
+// after a power or factorial in the sentence before ("How many digits does
+// 2^33 have? It's 8589934592"); and digits that count up or down by one
+// (0123456789, 9876543210) beside talk of digits, examples or a program's
+// input and output. A phone number is given with none of these.
+func mathsAnswer(v *view, run digitRun) bool {
+	t := v.text
+	wide := windowBefore(t, run.from, 64) + " " + windowAfter(t, run.to, 64)
+	if callCue.matchIn(v, wide) || ownNumber.matchIn(v, wide) {
+		return false
+	}
+	if mathsResultWords.matchIn(v, wide) || powerBefore.matchIn(v, windowBefore(t, run.from, 64)) {
+		return true
+	}
+	return counting(string(run.digits)) && countingTalk.matchIn(v, wide)
+}
+
+var (
+	// mathsResultWords give a number as a maths result.
+	mathsResultWords = newWindowSearch(phrase(`\b(?:` + words(
+		words(`largest`, `smallest`, `biggest`, `greatest`, `least`)+`~(?:\d+~)?`+words(`digit`, `square`,
+			`cube`, `prime`, `number`, `integer`, `palindrome`),
+		`\d+~digits?~`+words(`numbers?`, `integers?`, `answers?`),
+		`perfect~`+words(`squares?`, `cubes?`, `numbers?`),
+		`answer~key`, words(`came`, `comes`, `come`)+`~out~`+words(`as`, `to`), `for~part`, `pandigital`,
+		`self~descriptive`, `calculator`) + `)\b`))
+	// powerBefore is a power or a factorial written before a number.
+	powerBefore = newWindowSearch(`\d[ \t]*(?:\^|\*\*)[ \t]*\d|\d!`)
+	// ownNumber names a number as someone's: "my 10 digit number is".
+	ownNumber = newWindowSearch(`\b` + words(`my`, `mera`, `meri`, `mere`, `your`, `ur`, `his`, `her`, `their`) +
+		`\b[^.?!\n]{0,24}\b` + words(`number`, `no`, `num`, `contact`, `phone`, `mobile`) + `\b`)
+	// countingTalk, beside digits that count up or down, makes them an
+	// example: "e.g. 9876543210 is the largest", "input 1234567890".
+	countingTalk = newWindowSearch(`\b(?:` + words(`digits?`, `e\.?g`, `example`, `examples`, `input`, `output`,
+		`program`, `reverse`, `reversed`, `largest`, `smallest`, `biggest`, `ascending`, `descending`, `order`) +
+		`)\b`)
+)
 
 // operandAfter reports an operator after a number with an operand after it:
 // "= 2", "/ 2", "% of", "+ 1". An emoticon ("=)", "^^", "<3"), an arrow
