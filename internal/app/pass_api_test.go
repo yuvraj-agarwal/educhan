@@ -515,6 +515,46 @@ func TestPassAsyncPayment(t *testing.T) {
 	}
 }
 
+// TestPassPaidDeliveredAgainBeforeCollection holds a "paid" event that Stripe
+// delivers more than once before the Pass is collected, retried after an
+// answer that went astray or simply sent twice, to the order it already
+// paid: every delivery is answered 200, the log says nothing of the repeat,
+// and the claim collects one Pass. The warning that a paid checkout matched
+// no open order is for a checkout that matched none, which the owner checks
+// against a receipt; a repeat must never raise it.
+func TestPassPaidDeliveredAgainBeforeCollection(t *testing.T) {
+	var logs syncBuffer
+	p := passServerLogging(t, nil, &logs)
+	for _, event := range []string{stripeCheckoutCompleted, stripeCheckoutAsyncSuccess} {
+		buyer := p.otherBrowser()
+		object := map[string]any{"id": buyer.checkout(""), "object": "checkout.session", "mode": "payment",
+			"payment_status": "paid", "payment_intent": "pi_delivered_again"}
+		if event == stripeCheckoutAsyncSuccess {
+			object["payment_intent"] = "pi_delivered_again_slowly"
+			object["payment_status"] = "unpaid"
+			if status := buyer.webhook(stripeCheckoutCompleted, object); status != http.StatusOK {
+				t.Fatalf("the slow payment's checkout completed: status %d", status)
+			}
+			object["payment_status"] = "paid"
+		}
+		passes := p.count("passes")
+		for i := range 2 {
+			if status := buyer.webhook(event, object); status != http.StatusOK {
+				t.Fatalf("%s, delivery %d: status %d", event, i+1, status)
+			}
+		}
+		if status, out := buyer.claim(); status != http.StatusOK || out.Status != "issued" || out.Claim {
+			t.Fatalf("%s delivered twice, then claimed: status %d, %+v; want one Pass", event, status, out)
+		}
+		if n := p.count("passes"); n != passes+1 {
+			t.Fatalf("%s delivered twice made %d Passes, want 1", event, n-passes)
+		}
+	}
+	if out := logs.String(); strings.Contains(out, "matched no open Pass order") {
+		t.Fatalf("a paid event delivered again before its Pass was collected was logged as matching no order:\n%s", out)
+	}
+}
+
 // TestPassCheckoutGoesOnlyToStripe holds the page a checkout sends the buyer
 // to to Stripe's own checkout host. A session URL that comes back as anything
 // else is refused before an order or a claim is made.
@@ -731,7 +771,9 @@ func TestPassOrderDeadlineIsAMidnight(t *testing.T) {
 
 // TestPassPaidAfterItsDeadlineIsKept holds a paid order to its payment: paid
 // after its deadline, or paid in time and collected late, it is still a Pass.
-// Only an order nobody paid for lapses.
+// Only an order nobody paid for lapses, and once it has, neither GET /api/pass
+// nor a claim's answer counts it as waiting, though nothing has deleted it
+// yet.
 func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	p := passServer(t, nil)
 	session := p.checkout("")
@@ -754,13 +796,44 @@ func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 		t.Fatalf("a paid order collected after its deadline: status %d, %+v", status, out)
 	}
 
+	// An unpaid order past its deadline is nothing to collect, even before a
+	// prune or a claim deletes it.
 	p.checkout("")
+	if !p.reportsClaim() {
+		t.Fatal("GET /api/pass does not tell the page to collect an order inside its deadline")
+	}
 	p.exec(`UPDATE pass_orders SET expires_at = $1`, time.Now().Add(-time.Hour))
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass tells the page to collect an unpaid order past its deadline")
+	}
 	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
 		t.Fatalf("an unpaid order past its deadline: status %d, %+v", status, out)
 	}
 	if n := p.count("pass_orders"); n != 0 {
 		t.Fatalf("a lapsed unpaid order was kept: %d rows", n)
+	}
+
+	// Nor is it more to come beside a paid order under another claim cookie,
+	// which a claim collects first and stops at, before it reaches the lapsed
+	// one to delete it.
+	paid := p.otherBrowser()
+	paid.paid(paid.checkout(""), "pi_beside_a_lapsed_order")
+	paidToken, _ := paid.claimCookie()
+	lapsed := p.otherBrowser()
+	session = lapsed.checkout("")
+	lapsedToken, _ := lapsed.claimCookie()
+	p.exec(`UPDATE pass_orders SET expires_at = $1 WHERE session_hash = $2`, time.Now().Add(-time.Hour), p.app.passSessionHash(session))
+	status, out := paid.sendingClaimCookies(paidToken, lapsedToken).claim()
+	if status != http.StatusOK || out.Status != "issued" || out.Claim {
+		t.Fatalf("a paid claim beside a lapsed one: status %d, %+v; want the Pass and nothing more to come", status, out)
+	}
+	// The claim stopped at the paid order, so the lapsed one is still there,
+	// and only its deadline keeps it out of what is waiting.
+	if n := p.count("pass_orders"); n != 1 {
+		t.Fatalf("%d orders after the paid claim, want the lapsed one still there", n)
+	}
+	if lapsed.reportsClaim() {
+		t.Fatal("GET /api/pass tells the page to collect the lapsed order")
 	}
 }
 
@@ -785,7 +858,9 @@ func (p *passHarness) claimSetCookie() (int, *http.Cookie) {
 // that takes days to clear, a bank debit say, until it does: neither the
 // order nor the browser's claim lapses at the week a card payment gets. The
 // claim cookie is set for that long at checkout, since only a webhook holds
-// the order and a buyer may not come back until the debit has cleared.
+// the order and a buyer may not come back until the debit has cleared. A
+// report that the checkout completed unpaid, arriving after the payment did,
+// holds nothing.
 func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
 	p := passServer(t, nil)
 	session, cookie := p.checkoutSetCookie("")
@@ -846,6 +921,45 @@ func TestPassSlowPaymentIsWaitedFor(t *testing.T) {
 	}
 	if status, out := p.claim(); status != http.StatusBadRequest || out.Claim {
 		t.Fatalf("claim after the debit failed: status %d, %+v", status, out)
+	}
+
+	// Stripe does not order its deliveries: a debit's success can arrive
+	// before a retried report that its checkout completed unpaid. The late
+	// report holds nothing, so the paid order keeps the deadline it had, and
+	// goes its own term past that, as any paid order nobody collected does.
+	session = p.checkout("")
+	object = map[string]any{"id": session, "object": "checkout.session", "mode": "payment",
+		"payment_status": "paid", "payment_intent": "pi_debit_reported_late"}
+	if status := p.webhook(stripeCheckoutAsyncSuccess, object); status != http.StatusOK {
+		t.Fatalf("async webhook ahead of the completed one: status %d", status)
+	}
+	order := func() (time.Time, int) {
+		t.Helper()
+		var deadline time.Time
+		var days int
+		if err := p.app.pool.QueryRow(context.Background(), `
+			SELECT expires_at, days FROM pass_orders WHERE session_hash = $1 AND payment_hash IS NOT NULL`,
+			p.app.passSessionHash(session)).Scan(&deadline, &days); err != nil {
+			t.Fatalf("the paid order: %v", err)
+		}
+		return deadline, days
+	}
+	deadline, days := order()
+	object["payment_status"] = "unpaid"
+	if status := p.webhook(stripeCheckoutCompleted, object); status != http.StatusOK {
+		t.Fatalf("completed webhook after the payment: status %d", status)
+	}
+	if after, _ := order(); !after.Equal(deadline) {
+		t.Fatalf("a late report of the checkout completed unpaid moved the paid order's deadline from %v to %v",
+			deadline.UTC(), after.UTC())
+	}
+	if err := p.app.store.prunePasses(context.Background(), deadline.Add(time.Duration(days)*24*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	var kept bool
+	if err := p.app.pool.QueryRow(context.Background(), `
+		SELECT EXISTS (SELECT 1 FROM pass_orders WHERE session_hash = $1)`, p.app.passSessionHash(session)).Scan(&kept); err != nil || kept {
+		t.Fatalf("the paid order outlived its term past its deadline (%v)", err)
 	}
 }
 
@@ -1906,18 +2020,26 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 			days := func(n int) time.Time { return now.AddDate(0, 0, n) }
 			h.exec(`INSERT INTO passes (id, token_hash, expires_at) VALUES
 				(1, '\x01', $1), (2, '\x02', $2)`, days(-31), days(-1))
-			// Each paid order is kept for its own term past its deadline: a
-			// two-year one 400 days on, a 30-day one not 31 days on. The
-			// sweeper is run without EDUCHAN_PASS_DAYS (the server that is not
-			// on sale here has none), and needs none.
+			// Each paid order is kept for its own term past its deadline, and
+			// no longer: a year's or a 30-day one whose deadline is an hour
+			// less than its term ago stays, and one an hour more goes; a
+			// two-year one stays 400 days on. The sweeper is run without
+			// EDUCHAN_PASS_DAYS (the server that is not on sale here has
+			// none), and needs none.
+			termAgo := func(n int, more time.Duration) time.Time {
+				return now.Add(-time.Duration(n)*24*time.Hour - more)
+			}
 			h.exec(`INSERT INTO pass_orders (session_hash, claim_hash, payment_hash, days, expires_at) VALUES
 				('\xa1', '\xc1', NULL, 365, $1),
 				('\xa2', '\xc2', NULL, 365, $2),
 				('\xa3', '\xc3', '\xb3', 365, $3),
 				('\xa4', '\xc4', '\xb4', 365, $4),
 				('\xa5', '\xc5', '\xb5', 730, $5),
-				('\xa6', '\xc6', '\xb6', 30, $6)`,
-				now.Add(-time.Hour), days(1), days(-10), days(-366), days(-400), days(-31))
+				('\xa6', '\xc6', '\xb6', 30, $6),
+				('\xa7', '\xc7', '\xb9', 365, $7),
+				('\xa8', '\xc8', '\xba', 30, $8)`,
+				now.Add(-time.Hour), days(1), days(-10), termAgo(365, time.Hour), days(-400), termAgo(30, time.Hour),
+				termAgo(365, -time.Hour), termAgo(30, -time.Hour))
 			h.exec(`INSERT INTO pass_revocations (payment_hash, expires_at) VALUES
 				('\xb7', $1), ('\xb8', $2)`, now.Add(-time.Hour), days(1))
 			h.exec(`INSERT INTO pass_reissues (token_hash, payment_hash, expires_at) VALUES
@@ -1929,7 +2051,7 @@ func TestSweepPrunesThePassTables(t *testing.T) {
 				// A Pass a month past expiry goes; one within its grace month stays.
 				"SELECT string_agg(id::text, ',' ORDER BY id) FROM passes": "2",
 				// Unpaid past its deadline goes; paid stays a term past it.
-				"SELECT string_agg(encode(session_hash, 'hex'), ',' ORDER BY session_hash) FROM pass_orders": "a2,a3,a5",
+				"SELECT string_agg(encode(session_hash, 'hex'), ',' ORDER BY session_hash) FROM pass_orders": "a2,a3,a5,a7,a8",
 				"SELECT string_agg(encode(payment_hash, 'hex'), ',') FROM pass_revocations":                  "b8",
 				// A reissue code goes at its deadline.
 				"SELECT string_agg(encode(token_hash, 'hex'), ',') FROM pass_reissues": "d8",
@@ -2537,15 +2659,38 @@ func TestPassCheckoutGivesANewClaim(t *testing.T) {
 	// or anything else, is out of the page's scripts' reach, is not sent on
 	// another site's form, and lasts past Stripe's day and the 30 days a slow
 	// payment is held: 31 days, rounded up to a UTC midnight.
+	before := time.Now()
 	_, cookie := p.checkoutSetCookie("")
+	after := time.Now()
 	if cookie == nil {
 		t.Fatal("a checkout set no claim cookie")
 	}
-	day := 24 * 60 * 60
-	if cookie.Path != "/api/pass" || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode ||
-		cookie.MaxAge < 31*day-60 || cookie.MaxAge > 32*day {
-		t.Fatalf("the claim cookie: path %q, HttpOnly %v, SameSite %v, max age %ds; want /api/pass, HttpOnly, Lax and 31 to 32 days",
-			cookie.Path, cookie.HttpOnly, cookie.SameSite, cookie.MaxAge)
+	if cookie.Path != "/api/pass" || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode {
+		t.Fatalf("the claim cookie: path %q, HttpOnly %v, SameSite %v; want /api/pass, HttpOnly and Lax",
+			cookie.Path, cookie.HttpOnly, cookie.SameSite)
+	}
+	// The cookie runs out at the midnight that ends those 31 days, to within
+	// the second its max age is counted in, for a checkout started at any
+	// moment of the request.
+	lasts := time.Duration(cookie.MaxAge) * time.Second
+	ends := func(start time.Time) bool {
+		until := dayCeil(start.Add(31 * 24 * time.Hour))
+		return lasts <= until.Sub(before) && lasts >= until.Sub(after)-time.Second
+	}
+	if !ends(before) && !ends(after) {
+		t.Fatalf("the claim cookie's max age is %v, want what is left of 31 days rounded up to a UTC midnight", lasts)
+	}
+	// Those are 31 days exactly, not just to the midnight they round to: a
+	// checkout started at a midnight keeps the cookie to the midnight 31 days
+	// on, and one started a moment after to the midnight after that.
+	midnight := time.Date(2030, time.January, 1, 0, 0, 0, 0, time.UTC)
+	for start, want := range map[time.Time]time.Time{
+		midnight:                      midnight.AddDate(0, 0, 31),
+		midnight.Add(time.Nanosecond): midnight.AddDate(0, 0, 32),
+	} {
+		if got := passClaimCookieUntil(start); !got.Equal(want) {
+			t.Errorf("a checkout started at %v keeps its claim cookie until %v, want %v", start, got, want)
+		}
 	}
 
 	// Somebody starts a checkout on a shared computer, copies its claim
@@ -2762,8 +2907,8 @@ func TestPassReadsEveryClaimCookie(t *testing.T) {
 	}
 
 	// A token with nothing under it is no claim, however many there are; and
-	// past passClaimCookieLimit, cookies are not read at all, so one request
-	// queues no more lookups than that.
+	// past the 16th, cookies are not read at all (passClaimCookieLimit), so one
+	// request queues no more lookups than that.
 	buyer := p.otherBrowser()
 	buyer.paid(buyer.checkout(""), "pi_past_the_limit")
 	own, _ := buyer.claimCookie()
@@ -2776,8 +2921,8 @@ func TestPassReadsEveryClaimCookie(t *testing.T) {
 	if status, out := buyer.sendingClaimCookies(empty, own).redeem(code); status != http.StatusOK || out.Status != "issued" || !out.Claim {
 		t.Fatalf("a reissue code typed beside a planted cookie: status %d, %+v; want the purchase still to collect", status, out)
 	}
-	padding := make([]string, 0, passClaimCookieLimit+1)
-	for range passClaimCookieLimit - 1 {
+	padding := make([]string, 0, 16)
+	for range 15 {
 		token, err := randomToken()
 		if err != nil {
 			t.Fatal(err)
@@ -2789,7 +2934,7 @@ func TestPassReadsEveryClaimCookie(t *testing.T) {
 	}
 	padding = append(padding, empty)
 	if buyer.sendingClaimCookies(append(padding, own)...).reportsClaim() {
-		t.Fatalf("a claim behind %d others was read, past passClaimCookieLimit", len(padding))
+		t.Fatalf("a claim behind %d others was read, past the 16th", len(padding))
 	}
 }
 

@@ -239,8 +239,8 @@ func TestReservedBoardSlugs(t *testing.T) {
 	c := modServer(t)
 
 	reserved := []string{
-		"api", "media", "healthz", "lib", "verify", "mod", "u", "rules", "faq",
-		"legal", "terms", "privacy", "dmca", "report", "archive", "safety",
+		"api", "media", "healthz", "lib", "verify", "pass", "mod", "u", "rules",
+		"faq", "legal", "terms", "privacy", "dmca", "report", "archive", "safety",
 	}
 	for _, slug := range reserved {
 		for _, given := range []string{slug, strings.ToUpper(slug)} {
