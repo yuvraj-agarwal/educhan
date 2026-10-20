@@ -401,12 +401,29 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 	reduceHiddenColour(src)
 	pic := orient(src, pngOrientation(data))
 	buf := newStoredBuffer(ctx, len(data), limit)
-	stored, err := buf.encoded(FormatPNG, png.Encode(buf, pic))
+	stored, err := buf.encoded(FormatPNG, storedPNG.Encode(buf, pic))
 	if err != nil {
 		return sanitized{}, err
 	}
 	return sanitized{format: FormatPNG, data: stored, pic: pic}, nil
 }
+
+// storedPNG writes every stored PNG — a PNG upload's, a lossless WebP's and a
+// transparent lossy WebP's — at image/png's BestSpeed, which deflates in one
+// pass that tries one earlier place for each match, so that how long the
+// encoding takes depends on how many bytes the picture's rows come to and
+// little on what they hold. At the default level deflate tries up to 128
+// earlier places for each match, and rows of a few repeated byte values make
+// it try them all at almost every byte: measured in CPU time on one core, a
+// 25-megapixel 16-bit PNG of 1.4 MB took 16 to 18 s to process that way, and
+// an 8-bit one of 0.7 MB 8 to 9 s. At BestSpeed each takes under 3 s, and the
+// slowest PNG measured, a 16-bit one of 25 megapixels, 4 to 5 s
+// (processingAllowance). The cost is size: the PNGs of photos and screenshots
+// tried were stored 1% to 80% larger than at the default level, most of them
+// about a tenth, and smooth synthetic pictures up to three times, which can
+// bring a 16-bit picture of tens of megapixels near storedLimit. A thumbnail's
+// rows are a few hundred kilobytes at most, and it keeps the default level.
+var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 
 // sanitizeGIF decodes every frame of a GIF and stores what they show, and
 // nothing else (playGIF): each picture, for as long as it shows, and the loop
@@ -591,10 +608,10 @@ func sanitizeWebP(ctx context.Context, data []byte, limit int64) (sanitized, err
 	case *image.NYCbCrA: // lossy with transparency
 		rgb := lossyWebPToNRGBA(p)
 		pic = rgb
-		err = png.Encode(buf, rgb)
+		err = storedPNG.Encode(buf, rgb)
 	default: // lossless, decoded as *image.NRGBA
 		reduceHiddenColour(pic)
-		err = png.Encode(buf, pic)
+		err = storedPNG.Encode(buf, pic)
 	}
 	stored, err := buf.encoded(format, err)
 	if err != nil {

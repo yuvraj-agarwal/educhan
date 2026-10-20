@@ -1710,6 +1710,63 @@ func TestWebPIsStoredAsPNGOrJPEG(t *testing.T) {
 	}
 }
 
+// Every stored PNG is deflated at BestSpeed (storedPNG), whatever it was
+// made from: at the default level, deflate's search for matches makes the
+// encoding's CPU depend on what the rows hold, many times over for rows of a
+// few repeated byte values. compress/zlib's header says which: its second
+// byte is 0x01 at BestSpeed and 0x9C at the default level.
+func TestStoredPNGsAreDeflatedAtBestSpeed(t *testing.T) {
+	encode := func(m image.Image) []byte {
+		var buf bytes.Buffer
+		if err := png.Encode(&buf, m); err != nil {
+			t.Fatalf("encode: %v", err)
+		}
+		return buf.Bytes()
+	}
+	rgba := image.NewNRGBA(image.Rect(0, 0, 64, 48))
+	deep := image.NewNRGBA64(image.Rect(0, 0, 64, 48))
+	pal := image.NewPaletted(image.Rect(0, 0, 64, 48), palette.Plan9)
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 64; x++ {
+			rgba.SetNRGBA(x, y, color.NRGBA{uint8(x * 4), uint8(y * 5), 0x40, uint8(0xFF - x)})
+			deep.SetNRGBA64(x, y, color.NRGBA64{uint16(x * 1001), uint16(y * 1303), 0x1234, uint16(0xFFFF - x*500)})
+			pal.SetColorIndex(x, y, uint8(x+y))
+		}
+	}
+	for _, tc := range []struct {
+		name   string
+		upload []byte
+	}{
+		{"8-bit PNG with transparency", encode(rgba)},
+		{"16-bit PNG", encode(deep)},
+		{"palette PNG", encode(pal)},
+		{"lossless WebP", readTestdata(t, "sample.webp")},
+		{"lossy WebP with transparency", readTestdata(t, "lossy-alpha.webp")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := process(t, tc.upload)
+			if got.Format != FormatPNG {
+				t.Fatalf("stored as %s, want PNG", got.Format.Name)
+			}
+			var idat []byte
+			for i := 8; i+8 <= len(got.Data); {
+				n := int(binary.BigEndian.Uint32(got.Data[i : i+4]))
+				if string(got.Data[i+4:i+8]) == "IDAT" {
+					idat = got.Data[i+8 : i+8+n]
+					break
+				}
+				i += 12 + n
+			}
+			if len(idat) < 2 {
+				t.Fatalf("the stored PNG has no image data: chunks %v", pngChunkTypes(t, got.Data))
+			}
+			if idat[0] != 0x78 || idat[1] != 0x01 {
+				t.Errorf("the stored PNG's zlib header is % x, want 78 01 (BestSpeed)", idat[:2])
+			}
+		})
+	}
+}
+
 // A lossy WebP is stored with the colours it showed, not the washed-out ones
 // golang.org/x/image/webp's limited-range YCbCr gives when it is read as full
 // range. webp-swatches.webp is three flat 48×48 swatches — black, white and

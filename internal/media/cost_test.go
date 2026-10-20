@@ -900,7 +900,7 @@ func TestPNGEncoderRowsAreCharged(t *testing.T) {
 		out := bytes.NewBuffer(make([]byte, 0, 4<<20))
 		held := leastPeak(t, s.name, want, func() error {
 			out.Reset()
-			return png.Encode(out, s.pic)
+			return storedPNG.Encode(out, s.pic)
 		})
 		t.Logf("%s: encoding held %.1f MiB of %.1f", s.name, float64(held)/(1<<20), float64(want)/(1<<20))
 		if held > want {

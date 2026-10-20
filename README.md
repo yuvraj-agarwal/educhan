@@ -490,16 +490,22 @@ server that would refuse what it sends.
     a heavily compressed one, where those fixed tables outweigh the picture's own coded
     data.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
-    browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma
-    it is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
+    browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma it
+    is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
     colours first, so that it shows as it did (see below). Every opaque pixel otherwise
     keeps the value it decodes to, and a transparent or partly transparent one only as
     much colour as it shows (see the bullet on hidden channels below), though not always
-    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour
-    with a transparent colour key is stored as colour with an alpha channel (or with
-    none, if no pixel has the key's colour), and a palette keeps only the colours its
-    pixels use, written at as few bits a pixel (1, 2, 4 or 8) as that many colours need.
-    16-bit pictures stay 16-bit. An animated PNG keeps its still image.
+    in the form it came in: 1-, 2- and 4-bit grey is stored at 8 bits, grey or colour with
+    a transparent colour key is stored as colour with an alpha channel (or with none, if
+    no pixel has the key's colour), and a palette keeps only the colours its pixels use,
+    written at as few bits a pixel (1, 2, 4 or 8) as that many colours need. 16-bit
+    pictures stay 16-bit. An animated PNG keeps its still image. It is written at
+    deflate's fastest level, as every stored PNG is, so that how long writing it takes
+    depends on the picture's size rather than on what its pixels are: at the default
+    level, rows crafted to make deflate search took a 16-bit picture of 25 megapixels,
+    from an upload of 1.4 MB, about 17 seconds of CPU. Stored PNGs are larger for it,
+    about a tenth for most of the photos and screenshots tried and up to three times for
+    smooth synthetic pictures.
   - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
     shows one after another, each for as long as it shows, and the loop count (from either
     of the two extensions browsers read it from), and nothing else. It is read as Chromium

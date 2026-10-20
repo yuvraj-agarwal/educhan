@@ -34,9 +34,16 @@ const UploadBudget int64 = 64 << 20
 // image/jpeg revisit every block of a 25-megapixel picture — but its shape,
 // which Inspect reads from the header: the pixel cap (MaxPixels), the memory
 // estimate (processingCost), and, for a JPEG, the scan cap
-// (maxJPEGScanRevisits), so that no admitted upload decodes for more than a few
-// seconds of CPU on one core. The slowest kinds measured, each on one core:
-//   - a 25-megapixel PNG with transparency of about 7 MiB: ~4 s.
+// (maxJPEGScanRevisits); and a PNG is written at deflate's fastest level
+// (storedPNG), whose work follows the length of the rows rather than what
+// they hold. So no admitted upload is processed for more than a few seconds
+// of CPU on one core. The slowest kinds measured, each on one core:
+//   - a 25-megapixel 16-bit PNG: ~4-5 s; at 8 bits, one with transparency of
+//     about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted
+//     to make it search took a 16-bit one of 1.4 MB ~17 s.
+//   - a WebP stored as a PNG: a lossless one of 20 megapixels, ~2 s, and a
+//     lossy one with transparency of 16 megapixels, near the most the memory
+//     estimate admits, ~2.5 s.
 //   - a JPEG at the scan cap: the most blocks the memory estimate admits are
 //     ~0.8 million, a 25-megapixel 4:2:2 picture or ~17 megapixels at 4:4:4,
 //     and at the cap its scans decode in ~3-4 s and Process takes ~4-6 s,
