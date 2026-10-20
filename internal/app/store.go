@@ -1272,18 +1272,18 @@ const vacuumProbeTable = "vacuum_probe"
 // so restampScans makes them the sweep's.
 //
 // A code that expired unconfirmed leaves its pending row live until the next
-// request prunes it (StartVerification), and requests are few at night. Its
-// expiry, less the code's lifetime, is the time it was asked for, to the
-// microsecond, and its email hash is the address's: an address that already
-// holds a credential — a second browser asking for a code it never confirms,
-// say — joins it to that credential, which it then says was issued before
-// that time. So before the rewrite those rows are deleted, in a transaction of
-// their own: one older than the rewrite, so that the vacuum, which is
-// measured against the rewrite, drops them from the file too, and one that
-// holds no lock on the credentials table while it waits for a pending row a
-// confirmation has locked, since that confirmation may be waiting for the
-// credentials table. A code still in flight stays, and still confirms; the
-// README says what its row keeps.
+// request prunes it (StartVerification), whenever that comes. Its expiry, less
+// the code's lifetime, is the time it was asked for, to the microsecond, and
+// its email hash is the address's: an address that already holds a credential
+// — a second browser asking for a code it never confirms, say — joins it to
+// that credential, which it then says was issued before that time. So before
+// the rewrite those rows are deleted, in a transaction of their own: one older
+// than the rewrite, so that the vacuum, which is measured against the rewrite,
+// drops them from the file too, and one that holds no lock on the credentials
+// table while it waits for a pending row a confirmation has locked, since that
+// confirmation may be waiting for the credentials table. A code still in
+// flight stays, and still confirms; the README says what its row keeps, and
+// until when.
 //
 // None of this reaches the posts. Requesting a code and confirming one are
 // writes, and each takes a transaction id from the counter posts take theirs

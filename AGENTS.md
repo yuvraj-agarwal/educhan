@@ -813,8 +813,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     socket until the statement ends, so a `VACUUM FULL` ran on, holding its table,
     and committed (`sweepConnection`, `TestCancelledSweepStopsItsStatementOnTheServer`).
     First it deletes the codes that expired unconfirmed, which a request prunes too,
-    but requests are few at night: an abandoned code's row keeps the time it was
-    asked for, to the microsecond, under the address's email hash, which for an
+    but nothing says when one will come: an abandoned code's row keeps the time it
+    was asked for, to the microsecond, under the address's email hash, which for an
     address that already holds a credential (a second browser's request, say) is
     the credential's, and says it was issued before then. It does so in a statement
     of its own, before the rewrite's transaction: deleted by an older transaction
@@ -878,20 +878,23 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     between two posts whatever the sweep does; the rewrite takes away only the
     credential row's own issuance id (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`
     pins this as a known limit, and only verification tables on a PostgreSQL instance
-    of their own would close it). Nor does it cover a credential issued since the
-    last sweep, a code in flight as the sweep ran (its row keeps the time it was
-    asked for until it is confirmed, or deleted once expired, and its email hash
-    joins its address's credential if there is one), backups (taken from 05:00 UTC,
-    up to 09:00, seven kept), a night the sweep failed, autovacuum times recorded
-    before `0015`, or the write-ahead log the server keeps for crash recovery,
-    which dates a credential until PostgreSQL deletes or reuses the newest segment
-    holding its row. With full-page writes on, the log since the checkpoint before
-    the sweep holds every credentials page as it stood before the rewrite, issuance
-    ids and all — the sweep's own delete logs the image of each page no change since
-    that checkpoint already had — so that segment is the sweep's or close to it, not
-    the issuance's. Point-in-time recovery stays off and `track_commit_timestamp`
-    stays off (`deploy/README.md` section 2.2); changing either means changing that
-    README section in the same commit.
+    of their own would close it). Nor does it cover a credential issued since the last
+    sweep, a code in flight as the sweep ran (its row keeps the time it was asked for,
+    and once a confirmation, or the delete of the expired code, removes the row, its
+    dead version keeps that time in the table's file until the next sweep's
+    `VACUUM FULL`; its email hash joins its address's credential if there is one; and
+    the hour was chosen for the backup window, not for quiet — 03:17 UTC is morning to
+    afternoon across South and East Asia and Australia — so expect one on any weekday),
+    backups (taken from 05:00 UTC, up to 09:00, seven kept), a night the sweep failed,
+    autovacuum times recorded before `0015`, or the write-ahead log the server keeps for
+    crash recovery, which dates a credential until PostgreSQL deletes or reuses the
+    newest segment holding its row. With full-page writes on, the log since the
+    checkpoint before the sweep holds every credentials page as it stood before the
+    rewrite, issuance ids and all — the sweep's own delete logs the image of each page
+    no change since that checkpoint already had — so that segment is the sweep's or
+    close to it, not the issuance's. Point-in-time recovery stays off and
+    `track_commit_timestamp` stays off (`deploy/README.md` section 2.2); changing either
+    means changing that README section in the same commit.
     `TestSweepTakesIssuanceTimeOutOfCredentials`,
     `TestSweepDeletesCodesThatExpiredUnconfirmed`,
     `TestSweepStoresCredentialsOutOfIssuanceOrder`,

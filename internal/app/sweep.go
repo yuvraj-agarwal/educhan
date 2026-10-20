@@ -31,10 +31,11 @@ import (
 // credential row carries the sweep's transaction id rather than its own, which
 // would date its issuance against the posts written around it, and the
 // tables' files hold no other version of any row. A code still in flight as it
-// ran keeps its row, with the time it was asked for; rows written after it —
-// a confirmation, a code requested — keep their own transaction ids until the
-// next sweep; and a backup taken meanwhile holds both (the README's
-// "Transaction ids, and the nightly rewrite").
+// ran keeps its row, with the time it was asked for, in the table's file until
+// the next sweep, whether a confirmation or a delete has removed it by then or
+// not; rows written after it — a confirmation, a code requested — keep their
+// own transaction ids until the next sweep too; and a backup taken meanwhile
+// holds both (the README's "Transaction ids, and the nightly rewrite").
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.

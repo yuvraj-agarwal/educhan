@@ -713,15 +713,14 @@ func (h *harness) expiredCodesHeldByCredentials() (expired, joined int) {
 	return expired, joined
 }
 
-// A code that expires unconfirmed keeps its pending row until the next
-// request prunes it, and requests are few at the hour the sweep runs. The
-// row's expiry, less the code's lifetime, is the time the code was asked for,
-// to the microsecond, and its email hash is the address's: for an address
-// that already holds a credential — a second browser asking for a code it
-// never confirms, say — it joins that credential and says it was issued
-// before then. So the sweep deletes those rows, before its rewrite, and
-// VACUUM FULL leaves them out of the table's new file with the rest. A code
-// still in flight stays, and still confirms.
+// A code that expires unconfirmed keeps its pending row until the next request
+// prunes it, whenever that comes. The row's expiry, less the code's lifetime,
+// is the time the code was asked for, to the microsecond, and its email hash
+// is the address's: for an address that already holds a credential — a second
+// browser asking for a code it never confirms, say — it joins that credential
+// and says it was issued before then. So the sweep deletes those rows, before
+// its rewrite, and VACUUM FULL leaves them out of the table's new file with
+// the rest. A code still in flight stays, and still confirms.
 func TestSweepDeletesCodesThatExpiredUnconfirmed(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.verify("holder@iitb.ac.in")

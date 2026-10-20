@@ -45,12 +45,16 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
        ▼
   [Verified: IIT Bombay]
 
-  The columns hold only HMAC(secret, address), the label, and an expiry
-  rounded up to the day — in a table with no path to any post. PostgreSQL's
-  transaction ids date the issuance more closely: the row's own until the
-  nightly sweep rewrites it, and the gaps the request and the confirmation
-  leave among the posts' for as long as those posts exist (see
-  "Transaction ids, and the nightly rewrite").
+  The credentials table holds HMAC(secret, address), the SHA-256 of the
+  credential's random id, the label, and an expiry rounded up to the day,
+  and has no path to any post. A code's own row holds the same HMAC and an
+  expiry to the microsecond, the time it was asked for plus its lifetime,
+  and stays in the table's file until the first nightly sweep after the
+  code is confirmed or expires. PostgreSQL's transaction ids date the
+  issuance more closely: the credential row's own until the nightly sweep
+  rewrites it, and the gaps the request and the confirmation leave among
+  the posts' for as long as those posts exist (see "Transaction ids, and
+  the nightly rewrite").
 ```
 
 1. Submit an institutional address on `/verify`, ticking the box that confirms
@@ -302,16 +306,16 @@ it already had, and turns autovacuum off on both
 run on the verification tables (`RewriteCredentials` in `store.go`):
 
 1. It deletes the codes that expired unconfirmed. A request for a code deletes
-   them too, but requests are few at the hour the sweep runs, and until one
-   comes an abandoned code's row keeps the time it was asked for, to the
-   microsecond (its expiry less the code's lifetime), under the address's email
-   hash. When the address already holds a credential — a second browser asking
-   for a code it never confirms, say — that is the credential's email hash too,
-   and the row says the credential was issued before then, on the day its
-   expiry gives, which points at the confirmations just before then among the
-   gaps in the posts' transaction ids (below). It does this in a transaction of
-   its own, before the rewrite, so that the vacuum in step 4 takes the rows out
-   of the table's file as well (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
+   them too, but nothing says when one will come, and until one does an
+   abandoned code's row keeps the time it was asked for, to the microsecond (its
+   expiry less the code's lifetime), under the address's email hash. When the
+   address already holds a credential — a second browser asking for a code it
+   never confirms, say — that is the credential's email hash too, and the row
+   says the credential was issued before then, on the day its expiry gives,
+   which points at the confirmations just before then among the gaps in the
+   posts' transaction ids (below). It does this in a transaction of its own,
+   before the rewrite, so that the vacuum in step 4 takes the rows out of the
+   table's file as well (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
 2. In one transaction, holding a lock that makes writers wait and lets readers
    through, it deletes every credential row and inserts the copy back in random
    order. Every row then carries the sweep's transaction id, and where a row
@@ -403,14 +407,19 @@ What that protects, exactly:
 - **A code in flight as the sweep ran**, which the sweep cannot delete without
   making it fail. Its row keeps the time it was asked for, to the microsecond,
   and the id of the transaction that last wrote it (the request, or a wrong
-  guess at the code), until it is confirmed or, once it has expired, until the
-  next request or the next sweep deletes it — and in a backup taken meanwhile,
-  for as long as the backup is kept. If its address already holds a credential,
-  as when a second browser asks for a code, the row's email hash joins it to
-  that credential, which it says was issued before then; if it is confirmed, a
-  backup that holds it dates the credential it becomes to within the code's
-  lifetime. Requests are few at 03:17 UTC, so this is seldom, but no sweep can
-  rule it out.
+  guess at the code). Confirming the code deletes the row, and once the code has
+  expired the next request or the next sweep does; but a deleted row stays in
+  the table's file, with both, until a sweep's `VACUUM FULL` writes the table
+  out anew. So the row stays in the file, time and all, until the first sweep
+  after the code is confirmed or expires — the next night's — and in a backup
+  taken before then, that morning's included, for as long as the backup is kept.
+  If its address already holds a credential, as when a second browser asks for a
+  code, the row's email hash joins it to that credential, which it says was
+  issued before then; if it is confirmed, a backup that holds it dates the
+  credential it becomes to within the code's lifetime. The sweep runs at 03:17
+  UTC to finish before the backup window opens, not because few codes are asked
+  for then: it is morning to afternoon across South and East Asia and Australia,
+  so expect a code in flight on any weekday. No sweep can rule one out.
 - **Backups** hold rows as they stood when they were taken. The instance keeps a
   daily backup, the last seven — about a week — each started in a window that
   opens at 05:00 UTC ([deploy guide](deploy/README.md) section 2.2). A
