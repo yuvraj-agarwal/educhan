@@ -491,16 +491,21 @@ check before the test changes.
   sends an answer (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
-  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha`
-  (which also holds `CAPTCHA_TIMEOUT_MS` to the hardest base puzzle at 4 ms an attempt),
+  `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
+  also holds the hardest base puzzle at 4 ms an attempt to half of `CAPTCHA_TIMEOUT_MS`,
+  and `CAPTCHA_MAX_WORKERS` to the four copies the README names),
   `TestCaptchaWorkersAreAlwaysStopped`, `TestARequestGoesOnlyFromAFormOnScreen`,
   `TestAPendingFormIsHeld`, `TestAHeldFormSurvivesARedrawOfItsPage`,
   `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
   `TestCaptchaIsNotWorkedOnForNothing`, `TestEachCaptchaAnswerGoesOnOneRequest` and
   `TestForgettingTheBrowserCancelsWhatIsOnItsWay` pin these; the worker needs no CSP
-  change (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). On the server the
-  answer is checked (`checkCaptcha`: signature, expiry, the work, and a lookup that it is
-  not already spent) before flood control. Flood control comes in two halves: the check
+  change (`TestContentSecurityPolicyNeedsNoExceptionForTheCaptcha`). The server's
+  figures that the README, `.env.example` and `app.js` quote (300 challenges a minute,
+  half an hour, a work of 1500, a secret of at least 32 characters) are pinned as
+  figures, not by the names of their constants (`TestTheCaptchaNumbersTheDocsQuote`), so
+  changing one means changing those pages too. On the server the answer is checked
+  (`checkCaptcha`: signature, expiry, the work, and a lookup that it is not already
+  spent) before flood control. Flood control comes in two halves: the check
   (`notCoolingDown`, or `waitedOut` for a code request) refuses with a `429` and starts
   nothing, then the answer is spent (`spendCaptcha`), and only then does `allow` (or
   `allowAction`) check again and start the cooldowns, before any upload is processed. So

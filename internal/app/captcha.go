@@ -67,19 +67,20 @@ const (
 	captchaTTL = 30 * time.Minute
 	// defaultCaptchaWork is the work a challenge asks for: the average counter
 	// its answer is at, which takes one attempt more than that to reach
-	// (captchaCounter). At captchaCost that is about two seconds on a laptop
-	// in Chromium, which runs every worker's Web Crypto on one thread, and a
-	// few more on a slow phone, spent while the post is being written.
+	// (captchaCounter), and at most twice as many. How long an attempt at
+	// captchaCost takes depends on the device and the browser; app.js's
+	// timeout is sized for a slow phone at 4 ms an attempt, at which this is
+	// six seconds on average, spent while the post is being written.
 	defaultCaptchaWork = 1500
 	// maxCaptchaWork caps the work a challenge asks for, scaled up for a busy
 	// address included, and EDUCHAN_CAPTCHA_WORK is held to an eighth of it
 	// (captchaMaxScale). A counter is drawn from up to just under twice the
 	// work, and the worker tries every counter from zero up to it, so the base
-	// puzzle, the one people are given, asks at most 15,000 attempts: about
-	// twenty seconds on a laptop and at most a minute on a slow phone at 4 ms
-	// an attempt, inside the two minutes app.js gives a puzzle before saying
-	// it could not finish. Only an address asking for challenges far faster
-	// than anyone posts is given more than that.
+	// puzzle, the one people are given, asks at most 15,000 attempts: at most
+	// a minute on a slow phone at 4 ms an attempt, half the two minutes app.js
+	// gives a puzzle before saying it could not finish
+	// (TestClientAndServerAgreeOnTheCaptcha). Only an address asking for
+	// challenges far faster than anyone posts is given more than that.
 	maxCaptchaWork = 60000
 	// maxCaptchaPayload bounds an answer before it is decoded. A real one is
 	// about seven hundred bytes.

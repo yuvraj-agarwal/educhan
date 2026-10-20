@@ -579,6 +579,36 @@ func TestCaptchaRefusesAShortSecret(t *testing.T) {
 	}
 }
 
+// The README, AGENTS.md, .env.example and app.js's comments quote these
+// numbers as figures, not by the names of the constants behind them, and the
+// tests above read the names, so a change to one would leave those pages
+// saying the old figure with every test still passing. Here they are the
+// figures, so a change fails until the pages and this table change with it.
+func TestTheCaptchaNumbersTheDocsQuote(t *testing.T) {
+	t.Setenv("EDUCHAN_CAPTCHA_SECRET", "")
+	t.Setenv("EDUCHAN_CAPTCHA_WORK", "")
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	for _, tc := range []struct {
+		quoted    string
+		got, want any
+	}{
+		{"GET /api/captcha answers 429 past 300 a minute from one address", captchaChallengeLimit, 300},
+		{"a challenge's expiry is half an hour away", captchaTTL, 30 * time.Minute},
+		{"EDUCHAN_CAPTCHA_WORK is 1500 when unset", cfg.CaptchaWork, 1500},
+		{"an EDUCHAN_CAPTCHA_SECRET of 31 characters is refused",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("s", 31)}) != nil, true},
+		{"an EDUCHAN_CAPTCHA_SECRET of 32 characters is taken",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("s", 32)}) == nil, true},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("the docs say %s, which no longer holds: got %v, want %v", tc.quoted, tc.got, tc.want)
+		}
+	}
+}
+
 // sortedKeys lists a map's keys in order.
 func sortedKeys[V any](m map[string]V) []string {
 	keys := make([]string, 0, len(m))

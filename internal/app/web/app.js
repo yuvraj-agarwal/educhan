@@ -3840,9 +3840,9 @@ const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
 const CAPTCHA_SPENT_HEADER = "Educhan-Captcha";
 // Up to this many copies of the worker share a puzzle, each trying every nth
-// counter, for a browser that runs them side by side. Chromium runs every
-// copy's Web Crypto on one thread, so there they take turns and finish no
-// sooner than one copy would.
+// counter, for a browser that runs them side by side. How much the extra
+// copies help differs by browser: Chromium runs every copy's Web Crypto on one
+// thread, so there they take turns.
 const CAPTCHA_MAX_WORKERS = 4;
 // CAPTCHA_LIFETIME_MS is how long after its challenge was fetched an answer is
 // used for. The server takes one for half an hour (captchaTTL in captcha.go);

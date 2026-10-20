@@ -653,7 +653,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
 | `EDUCHAN_CAPTCHA_SECRET` | empty | Keys the [captcha](#captcha): the signature on every challenge. **Unset switches the captcha off**, so posts and code requests need no answer. At least 32 characters (`openssl rand -hex 32`), the same on every instance; rotating it only invalidates the challenges out at the time |
-| `EDUCHAN_CAPTCHA_WORK` | `1500` | Work a challenge asks of the browser: the average counter its answer is at, so about this many PBKDF2 attempts (one more on average), before an address asking fast is given harder ones; 1 to 7500. At the default a laptop takes about two seconds and a slow phone a few more; above a few thousand a slow phone waits a long while before every post |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` | Work a challenge asks of the browser: the average counter its answer is at, so about this many PBKDF2 attempts (one more on average), before an address asking fast is given harder ones; 1 to 7500. How long an attempt takes depends on the device and the browser; at the 4 ms an attempt the page allows a slow phone, the default takes six seconds on average, and above a few thousand a slow phone waits a long while before every post |
 
 ### Storage backends
 
@@ -789,13 +789,16 @@ script from anywhere else runs on the page, and no cookie is set.
    the work, and deriving PBKDF2 over the nonce with that counter appended.
 2. ALTCHA's worker, vendored at `web/lib/altcha/pbkdf2.js`, runs in up to four
    copies and tries counters until a key starts with that half. That is about
-   1500 attempts on average at the default work and never more than 3000, about
-   two seconds on a laptop and a few more on a slow phone, done while the post
-   is being written. (Chromium runs every copy's Web Crypto on one thread, so
-   there the copies take turns.) The worker needs Web Crypto, which a browser
-   gives only to a page on HTTPS or `localhost`; anywhere else, with the captcha
-   on, the page fetches no challenge, sends no unbadged post and no code
-   request, and says the check needs a secure (https) connection.
+   1500 attempts on average at the default work and never more than 3000, done
+   while the post is being written. How long an attempt takes depends on the
+   device and the browser; the page's two-minute timeout is sized for a slow
+   phone at 4 ms an attempt, at which the default work takes six seconds on
+   average. How much the extra copies help differs by browser too: Chromium
+   runs every copy's Web Crypto on one thread, so there the copies take turns.
+   The worker needs Web Crypto, which a browser gives only to a page on HTTPS
+   or `localhost`; anywhere else, with the captcha on, the page fetches no
+   challenge, sends no unbadged post and no code request, and says the check
+   needs a secure (https) connection.
 3. The post carries the answer, the challenge and the key it found, as
    `"captcha"`. The server checks the signature, the expiry and an HMAC of the
    key, at most two HMACs and never a key derivation, so a wrong answer costs it

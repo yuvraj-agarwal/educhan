@@ -708,10 +708,13 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 	// time for the hardest puzzle the server gives at the base work. The work
 	// is at most maxCaptchaWork/captchaMaxScale (EDUCHAN_CAPTCHA_WORK's
 	// ceiling) and the counter under twice the work (captchaCounter), so that
-	// puzzle takes at most 2*maxCaptchaWork/captchaMaxScale attempts.
+	// puzzle takes at most 2*maxCaptchaWork/captchaMaxScale attempts, and at
+	// slowAttempt it takes at most half the timeout, as app.js and captcha.go
+	// say, which leaves the other half for a phone slower still.
 	// slowAttempt is what one attempt at captchaCost is allowed to cost a slow
-	// phone: three times the 1.3 ms or so a laptop's Chromium takes, by
-	// defaultCaptchaWork's two seconds for 1500.
+	// phone. It is an allowance, not a measurement: in headless Chromium 141 on
+	// a four-core 2.1 GHz Xeon, one copy of the worker took about 0.56 ms an
+	// attempt and four copies together 0.38 ms.
 	const slowAttempt = 4 * time.Millisecond
 	m = regexp.MustCompile(`(?m)^const CAPTCHA_TIMEOUT_MS = ([0-9 *]+);$`).FindStringSubmatch(script)
 	if m == nil {
@@ -725,11 +728,19 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		}
 		timeout *= time.Duration(n)
 	}
-	if hardest := time.Duration(2*maxCaptchaWork/captchaMaxScale) * slowAttempt; hardest > timeout {
-		t.Errorf("a worker gives up after %s, but the hardest base puzzle can take a slow phone %s", timeout, hardest)
+	if hardest := time.Duration(2*maxCaptchaWork/captchaMaxScale) * slowAttempt; 2*hardest > timeout {
+		t.Errorf("a worker gives up after %s, but the hardest base puzzle can take a slow phone %s, more than half of that",
+			timeout, hardest)
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), "timeout: CAPTCHA_TIMEOUT_MS,") {
 		t.Error("runCaptchaWorkers no longer gives the worker CAPTCHA_TIMEOUT_MS")
+	}
+	// The README and the vendored worker's README say the page runs the worker
+	// in up to four copies, as a figure.
+	if !regexp.MustCompile(`(?m)^const CAPTCHA_MAX_WORKERS = 4;$`).MatchString(script) ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "runCaptchaWorkers")),
+			"const count = Math.min(CAPTCHA_MAX_WORKERS, Math.max(1, navigator.hardwareConcurrency || 1));") {
+		t.Error("app.js no longer runs the worker in up to four copies (CAPTCHA_MAX_WORKERS), as the READMEs say")
 	}
 
 	send := withoutComments(jsFunction(t, script, "sendWithCaptcha"))
