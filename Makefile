@@ -8,7 +8,8 @@ db-up:
 run:
 	go run ./cmd/server
 
-# Delete archived threads past their board's archive_days, media included, once.
+# Delete archived threads past their board's archive_days, media included, and
+# spent captcha answers past their day, once.
 # In production the same binary runs this as a scheduled Cloud Run Job.
 sweep:
 	go run ./cmd/server -sweep
