@@ -2132,14 +2132,18 @@ function readBadge() {
 }
 
 async function loadVerification() {
-  let enabled = false;
+  let enabled;
   try {
     // The only thing worth asking the server: whether the feature exists here.
     // What this browser holds is a local question with a local answer.
     enabled = !!(await api("/api/verify")).enabled;
   } catch {
-    // Verification is an extra; the board works without knowing about it.
-    enabled = false;
+    // Verification is an extra; the board works without knowing about it. A
+    // failed request withdraws nothing the page knew: the feature stays as the
+    // last answer had it, off only until one has come, and the badge is read
+    // from storage as after any answer, so one confirmed just before this
+    // request is still offered.
+    enabled = state.verification.enabled;
   }
   state.verification = { enabled, badge: enabled ? readBadge() : null };
   if (el.verifyFooter) {
@@ -4626,6 +4630,9 @@ async function submitVerification(form) {
     storeCredential(issued.credential);
     // Offered from now on, on every posting form drawn, so a reader who has
     // left /verify, or leaves before it is drawn again, has it on the next one.
+    // Drawing /verify again withdraws nothing if its GET /api/verify fails
+    // (loadVerification): only the server saying the feature is off, a forget
+    // or the badge running out takes it away.
     state.verification.badge = readBadge();
     verifyStep = { step: "email", label: "" };
     if (!onScreen()) {

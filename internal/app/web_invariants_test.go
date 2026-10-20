@@ -934,6 +934,18 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 		`storeCredential(issued.credential); state.verification.badge = readBadge(); verifyStep = { step: "email", label: "" }; `+
 			"if (!onScreen()) { return; } await renderVerify(route);",
 	)
+	// And that drawing's GET /api/verify failing withdraws neither the badge
+	// nor the feature: a failed request keeps the feature as the last answer
+	// had it and reads the badge from storage as an answer would, so /verify
+	// shows the badge and every posting form drawn after it offers it. Only a
+	// page that has had no answer yet, which starts with the feature off,
+	// takes a failure to mean off.
+	load := squash(withoutComments(jsFunction(t, script, "loadVerification")))
+	if !strings.Contains(load, `{ let enabled; try { enabled = !!(await api("/api/verify")).enabled; } `+
+		"catch { enabled = state.verification.enabled; } state.verification = { enabled, badge: enabled ? readBadge() : null };") ||
+		!strings.Contains(withoutComments(script), "\n  verification: { enabled: false, badge: null },\n") {
+		t.Errorf("a GET /api/verify that fails no longer keeps what the page knew, or a first one no longer means off: %s", load)
+	}
 }
 
 // No answer is on two requests at once. The server takes an answer from only
