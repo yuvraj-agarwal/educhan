@@ -567,6 +567,13 @@ func TestPassPageCollectsAPendingPurchase(t *testing.T) {
 			t.Errorf("collectPass no longer asks again, with a growing pause, while the page is open (%s)", want)
 		}
 	}
+	// A failed attempt says the page will ask again only in the drawing whose
+	// collection that is: one overtaken by a newer drawing is about to stop,
+	// and its note would land in the newer drawing's panel.
+	if strings.Count(collect, "note.textContent = ") != 1 ||
+		!strings.Contains(collect, "if (note && visit === passVisit) {\n        note.textContent = `${passErrorText(failed)} This page will ask again shortly.`;") {
+		t.Error("collectPass writes its failed attempt into the note of a drawing that is not its own")
+	}
 	first, err := strconv.Atoi(regexp.MustCompile(`(?m)^const PASS_CLAIM_FIRST_WAIT_MS = (\d+);$`).FindStringSubmatch(script)[1])
 	if err != nil {
 		t.Fatal(err)
@@ -1027,6 +1034,13 @@ func TestPassPageDetails(t *testing.T) {
 		refresh := withoutComments(jsFunction(t, script, "refreshFailedPass"))
 		if !strings.Contains(refresh, "if (!lastPassInfo.failed) {\n    return;\n  }\n  renderPass().then((drawn) => {") {
 			t.Error("refreshFailedPass no longer asks for the Pass page again after an answer on one that could not load")
+		}
+		// The new drawing moves focus only when it dropped it to the top of the
+		// document: focus the reader took elsewhere meanwhile, to the header or
+		// the notice, stays where they put it.
+		if !strings.Contains(refresh, "if (drawn && (!document.activeElement || document.activeElement === document.body)) {\n"+
+			"      passFocus(...selectors);\n    }") {
+			t.Error("refreshFailedPass pulls focus back into the Pass page from wherever the reader moved it")
 		}
 		for name, want := range map[string]int{"submitPass": 3, "redeemPassReissue": 1, "checkHeldPass": 3} {
 			if n := strings.Count(withoutComments(jsFunction(t, script, name)), "refreshFailedPass("); n != want {

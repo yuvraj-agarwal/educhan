@@ -2130,9 +2130,9 @@ const PASS_NONCE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 // While Remove the Pass, Forget this browser or Stop collecting it here waits
 // for the server to drop the claim, the tab it was pressed in keeps a mark
 // under this key, new each time, so the browser's other tabs stop as that one
-// does (followPassForget): "code:" and a random token for the first two,
-// which empty the code box too and drop a reissue code's nonce and its answer,
-// and "claim:" for the third, which leaves a reissue code alone. A tab waits for
+// does (followPassForget): "code:" and a random token for the first two, which
+// empty the code box too and drop a reissue code's nonce and its answer, and
+// "claim:" for the third, which leaves a reissue code alone. A tab waits for
 // the mark to go for at most PASS_FORGET_WAIT_MS, in case the tab that set it
 // closes before its request is answered and never takes it off.
 const PASS_FORGET_STORAGE_KEY = "educhan:pass-forget";
@@ -5236,9 +5236,9 @@ function followPassStorage(event) {
 // passCodeForgetting), and empty the code box here, and what this tab would
 // say about a Pass found gone (passLost), so neither a reissue code typed in
 // this tab nor the last holder's news is left for the next person at the
-// computer; Stop ("claim:") leaves a reissue code alone. Once the wait ends, the Pass page,
-// if the reader is on it here, is drawn again from the server, even if the
-// mark came while it was still loading, and drew nothing.
+// computer; Stop ("claim:") leaves a reissue code alone. Once the wait ends,
+// the Pass page, if the reader is on it here, is drawn again from the server,
+// even if the mark came while it was still loading, and drew nothing.
 function followPassForget(event) {
   if (event.key !== PASS_FORGET_STORAGE_KEY) {
     return;
