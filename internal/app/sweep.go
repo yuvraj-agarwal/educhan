@@ -80,8 +80,8 @@ type SweepReport struct {
 // the batch or the file it is on and prunes them all the same, so its error is
 // the stop alone, and no failure the stop would have caused. A stop that comes
 // later, while the spent answers go, finds nothing left to stop: the prune
-// runs past it, and the sweep returns what its pass found, as one that was not
-// stopped would, with no error of the stop's.
+// runs past it, and the stop adds no error of its own, so the sweep ends as
+// one that was not stopped would, failing only if its pass failed.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
