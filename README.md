@@ -875,28 +875,29 @@ going as Update does: the page is drawn around the held form, and the thread is
 posted from there or, if that page will not load, from the page still on screen.
 
 An address that asks for challenges faster than people post gets harder ones: up
-to 60 a minute at the base work, then double for every further 60, up to eight
-times, and past 300 in a minute `GET /api/captcha` answers `429`, which the page
-reports as too many checks started from the reader's network, with the wait,
-rather than as a post's cooldown. The count is kept per client address, an IPv6
-address counted by its `/64` (the block one connection is usually given), in
-one-minute windows, in each instance's memory like flood control, and swept with
-the cooldowns (see [Flood control](#flood-control)); behind several instances an
-address can ask each of them for that many. A challenge is not tied to the
-address that fetched it, which would fail a phone moving between networks, so
-the harder puzzles slow a script that asks from one address, not one that
-fetches from many. Spent challenges are kept in `captcha_spent`, shared by every
-instance so they agree on what was used, as a hash of the challenge's signature
-and its expiry rounded up to the next UTC midnight, as a credential's is, so the
-only date a row stores is the day. Each spend deletes a batch of the rows past
-their day, and the daily [sweep](#the-archive-sweeper) the rest, so a row is
-gone a day or so after its puzzle was solved. Nothing stored in the table names
-the post or code request an answer let through, or who solved it. Where a row
-sits is another matter: until it is deleted, its place in the table and the
-transaction that wrote it, which Postgres keeps with every row, lie beside the
-post's or the code request's, so whoever reads the database files can pair the
-two and date the row by the post. That shows only that the post carried an
-answer, which every post without a badge does while the captcha is on.
+to 60 a minute at the base work, then twice the work for each further 60, to at
+most eight times the base, and past 300 in a minute `GET /api/captcha` answers
+`429`, which the page reports as too many checks started from the reader's
+network, with the wait, rather than as a post's cooldown. The count is kept per
+client address, an IPv6 address counted by its `/64` (the block one connection
+is usually given), in one-minute windows, in each instance's memory like flood
+control, and swept with the cooldowns (see [Flood control](#flood-control));
+behind several instances an address can ask each of them for that many. A
+challenge is not tied to the address that fetched it, which would fail a phone
+moving between networks, so the harder puzzles slow a script that asks from one
+address, not one that fetches from many. Spent challenges are kept in
+`captcha_spent`, shared by every instance so they agree on what was used, as a
+hash of the challenge's signature and its expiry rounded up to the next UTC
+midnight, as a credential's is, so the only date a row stores is the day. Each
+spend deletes a batch of the rows past their day, and the daily
+[sweep](#the-archive-sweeper) the rest, so a row is gone a day or so after its
+puzzle was solved. Nothing stored in the table names the post or code request an
+answer let through, or who solved it. Where a row sits is another matter: until
+it is deleted, its place in the table and the transaction that wrote it, which
+Postgres keeps with every row, lie beside the post's or the code request's, so
+whoever reads the database files can pair the two and date the row by the post.
+That shows only that the post carried an answer, which every post without a
+badge does while the captcha is on.
 
 Proof of work slows a script down; it does not tell a person from one. It
 makes each post cost the poster's processor a moment and a bulk poster's a
