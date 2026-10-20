@@ -52,12 +52,17 @@ func run(args []string, logs io.Writer) error {
 	log := newLogger(os.Getenv("EDUCHAN_LOG_FORMAT"), logs)
 	slog.SetDefault(log)
 
+	// The flag set writes nothing of its own: a flag it does not know is
+	// written once, as the fatal line, not also as text with the usage after
+	// it, and the usage goes to logs only when asked for, with -h.
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
-	flags.SetOutput(logs)
+	flags.SetOutput(io.Discard)
 	sweep := flags.Bool("sweep", false,
 		"delete archived threads past their board's archive_days, with their media, and spent captcha answers past their day, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
+			flags.SetOutput(logs)
+			flags.Usage()
 			return nil
 		}
 		return fatal(err)
@@ -77,7 +82,8 @@ func run(args []string, logs io.Writer) error {
 	slog.SetDefault(log)
 
 	// A sweep listens for SIGTERM from before it connects, so a stop while it
-	// is still starting up (connecting, or waiting for or running migrations)
+	// is still starting up (connecting, waiting for or running migrations, or
+	// checking the media store's bucket, all of which end with startupCtx)
 	// ends New with the stop as its error, which is written, and the process
 	// exits 1 with nothing deleted, the spent answers included. Without this,
 	// the signal would kill it there at once, without a word. The error is

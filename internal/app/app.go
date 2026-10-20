@@ -195,11 +195,13 @@ func checkMailer(cfg Config) error {
 func newMediaStore(ctx context.Context, cfg Config) (media.Store, error) {
 	switch cfg.MediaBackend {
 	case MediaBackendGCS:
-		// The client outlives startup, so it must not hold a context that is
-		// cancelled once startup is over: cmd/server bounds app.New with a
-		// timeout, and a client whose credentials could not refresh past it
-		// would fail its first upload half a minute in.
-		return media.NewGCSStore(context.WithoutCancel(ctx), cfg.GCSBucket, cfg.GCSPrefix)
+		// ctx bounds the check that the bucket answers, as it does the rest of
+		// startup, so a sweep's stop or cmd/server's startup bound ends New
+		// there too. The client, which outlives startup, is built on a context
+		// that is not cancelled with it (NewGCSStore): one whose credentials
+		// could not refresh past the bound would fail its first upload half a
+		// minute in.
+		return media.NewGCSStore(ctx, cfg.GCSBucket, cfg.GCSPrefix)
 	case MediaBackendLocal, "":
 		// Empty means local as well, so a Config built in code — the tests do —
 		// needs no backend field to behave as it always has.

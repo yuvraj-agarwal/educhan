@@ -875,23 +875,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   store or the database stops answering, since the file in hand waits on both
   (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind a proxy
   that stops forwarding). In sweep mode `run` takes the signal context before `New`, so
-  a stop while the sweep is still starting up (connecting, or waiting for or running
-  migrations) ends `New` with the stop as its error, which is written, and the process
-  exits 1 with nothing deleted, the spent answers included
-  (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting to a proxy that answers
-  nothing and waiting on the migrations' lock): at once, unless the database stops
-  answering while the sweep is connected to it, when `New` first gives up the
-  connection, which pgx allows fifteen seconds. Every error `run` ends on, a flag or a
-  setting it cannot read included, is written once, as `msg=fatal`
-  (`TestRunRefusesWhatItDoesNotUnderstand`, `TestSweepModeFailsWithoutADatabase`,
-  `TestServingFailsWhenTheAddressIsTaken`). It builds its App with `New` like the
-  server, and runs without the salt, the moderation key, the verification secret and the
-  captcha secret on purpose, so `New` warns about none of them: those warnings are
-  `WarnServingSettings`, which only `serve` in `cmd/server` calls
-  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
-  warning about a server-only setting goes there, not in `New`. **Legal holds (build
-  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
-  its comment says so.
+  a stop while the sweep is still starting up (connecting, waiting for or running
+  migrations, or checking a Cloud Storage bucket, which `NewGCSStore` does on the
+  context it is given while its client is built on one that outlives it) ends `New` with
+  the stop as its error, which is written, and the process exits 1 with nothing deleted,
+  the spent answers included (`TestSweepStoppedWhileStartingUpWritesItsError`,
+  connecting to a proxy that answers nothing, waiting on the migrations' lock, and
+  checking a bucket that never answers): at once, unless the database stops answering
+  while the sweep is connected to it, when `New` first gives up the connection, which
+  pgx allows fifteen seconds. Every error `run` ends on, a flag or a setting it cannot
+  read included, is written once, as `msg=fatal`, and is the only line written: the flag
+  set writes nothing of its own, and the usage only for `-h`
+  (`TestRunRefusesWhatItDoesNotUnderstand`, `TestRunWritesTheUsageWhenAsked`,
+  `TestSweepModeFailsWithoutADatabase`, `TestServingFailsWhenTheAddressIsTaken`). It
+  builds its App with `New` like the server, and runs without the salt, the moderation
+  key, the verification secret and the captcha secret on purpose, so `New` warns about
+  none of them: those warnings are `WarnServingSettings`, which only `serve` in
+  `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
+  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
+  goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
+  are, `SweepArchived` must skip held threads, and its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random

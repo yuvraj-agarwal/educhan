@@ -1195,7 +1195,8 @@ educhan -sweep          # or, from a checkout: make sweep
 ```
 
 It loads the usual configuration, connects, applies any pending migrations,
-deletes every archived thread whose board's `archive_days` have passed — posts,
+checks that the bucket answers when the media store is Cloud Storage, deletes
+every archived thread whose board's `archive_days` have passed — posts,
 attachment rows, and then the images and thumbnails in the media store — and
 exits. It works in batches of 100 threads, one transaction each. Each batch
 records the storage keys of its threads' files in the `media_deletions` table in
@@ -1219,13 +1220,13 @@ being removed when the media store or the database stops answering: the file in
 hand is finished whatever the stop, and that waits on both. A stop that comes
 once the files are done, while the spent answers go, finds nothing left to stop:
 the sweep finishes, and exits as one that was not stopped. A stop while the
-sweep is still starting up (connecting, or waiting for or running migrations)
-ends it before it is under way: it writes the stop as its error and exits
-non-zero with nothing deleted, the spent answers included, and a migration it
-was in the middle of is not applied. That is at once, unless the database stops
-answering while the sweep is connected to it: then the error waits until the
-connection is given up, fifteen seconds later, which is longer than Cloud Run
-waits.
+sweep is still starting up (connecting, waiting for or running migrations, or
+checking the bucket) ends it before it is under way: it writes the stop as its
+error and exits non-zero with nothing deleted, the spent answers included, and a
+migration it was in the middle of is not applied. That is at once, unless the
+database stops answering while the sweep is connected to it: then the error
+waits until the connection is given up, fifteen seconds later, which is longer
+than Cloud Run waits.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost

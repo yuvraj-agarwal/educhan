@@ -211,7 +211,9 @@ func TestServingFailsWhenTheAddressIsTaken(t *testing.T) {
 // A mistyped flag must not fall through to serving: a Job that started a
 // server instead of sweeping would never finish. Neither may a setting the
 // process cannot read. Either is refused before anything connects, and said
-// in the log, once.
+// in the log, once, as the fatal line and nothing else: not as well in the
+// flag package's own words with the usage after them, which would sit in
+// plain text among a JSON log's lines.
 func TestRunRefusesWhatItDoesNotUnderstand(t *testing.T) {
 	for _, tc := range []struct {
 		name       string
@@ -234,8 +236,26 @@ func TestRunRefusesWhatItDoesNotUnderstand(t *testing.T) {
 			if err := run(tc.args, &logs); err == nil {
 				t.Fatalf("run(%q) succeeded, want an error", tc.args)
 			}
-			wantOneFatalLine(t, logs.String(), tc.want)
+			out := logs.String()
+			wantOneFatalLine(t, out, tc.want)
+			if lines := strings.Split(strings.TrimRight(out, "\n"), "\n"); len(lines) != 1 {
+				t.Errorf("run(%q) wrote %d lines, want the fatal line alone; the log:\n%s", tc.args, len(lines), out)
+			}
 		})
+	}
+}
+
+// -h is no failure: the usage is written to the process's log, and nothing
+// else is.
+func TestRunWritesTheUsageWhenAsked(t *testing.T) {
+	t.Setenv("EDUCHAN_LOG_FORMAT", "text")
+	var logs strings.Builder
+	if err := run([]string{"-h"}, &logs); err != nil {
+		t.Fatalf("run(-h) = %v, want no error", err)
+	}
+	if out := logs.String(); !strings.HasPrefix(out, "Usage of educhan:\n") || !strings.Contains(out, "-sweep") ||
+		strings.Contains(out, "level=") {
+		t.Errorf("run(-h) wrote %q, want the usage alone", out)
 	}
 }
 
@@ -254,15 +274,18 @@ func wantOneFatalLine(t *testing.T, out, want string) {
 	}
 }
 
-// A sweep stopped while it is still starting up, connecting to a database
-// that does not answer or waiting for the migrations' lock, which a server
-// starting from a new release holds while it migrates, says why it ended: it
-// listens for SIGTERM from before it connects, so the stop ends its startup,
-// it writes the stop as its error, and it exits with status 1 at once, with
-// nothing deleted. Before, SIGTERM killed it there without a word. (A
-// database that stops answering once the sweep is connected to it holds the
-// error back until pgx gives up the connection, fifteen seconds later, which
-// this does not wait for.)
+// A sweep stopped while it is still starting up, connecting to a database that
+// does not answer, waiting for the migrations' lock, which a server starting
+// from a new release holds while it migrates, or checking a Cloud Storage
+// bucket that does not answer, says why it ended: it listens for SIGTERM from
+// before it connects, and every step of its startup ends with the stop, so it
+// writes the stop as its error, and it exits with status 1 at once, with
+// nothing deleted. Before, SIGTERM killed it there without a word; and with
+// SIGTERM caught, a bucket check made on a context the stop does not reach
+// would hold the stop until the process was killed. (A database that stops
+// answering once the sweep is connected to it holds the error back until pgx
+// gives up the connection, fifteen seconds later, which this does not wait
+// for.)
 func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 	// Nothing is left to wait for once the stop has ended the startup.
 	const quickly = 3 * time.Second
@@ -316,6 +339,16 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 				return waiting
 			}
 		}, "acquire migration lock"},
+		{"checking the media store's bucket", func(t *testing.T, _ *pgxpool.Pool, databaseURL string) (string, func() bool) {
+			// Frozen from the start, it stands in for a Cloud Storage that
+			// takes the bucket check's request and never answers it.
+			storage := startStallingProxy(t, databaseURL)
+			storage.freeze()
+			t.Setenv("EDUCHAN_MEDIA_BACKEND", "gcs")
+			t.Setenv("EDUCHAN_GCS_BUCKET", "educhan-test")
+			t.Setenv("STORAGE_EMULATOR_HOST", "http://"+storage.addr)
+			return databaseURL, func() bool { return storage.accepted.Load() > 0 }
+		}, "prepare media store"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := sweepEnv(t)
