@@ -51,9 +51,10 @@ import (
 // about 40 MiB, and the server's content filter keeps about 65 MiB of planned
 // searches (internal/app). Eighty 8 MiB uploads sent at once to a server run
 // with a GOMEMLIMIT of 400 MiB and one core peaked at 416–424 MiB resident
-// with the filter planned (330 MiB before it), and at 502–507 MiB with no
-// limit, which fits an instance of 512 MiB only with that limit; the limit is
-// the deployment's to set.
+// with the filter planned (330 MiB before it), and at about 470–540 MiB with
+// no limit (469–540 MiB over two separate measurements on a shared machine of
+// four vCPUs), which fits an instance of 512 MiB only with that limit; the
+// limit is the deployment's to set.
 const processingBudget int64 = 256 << 20
 
 // processingSlack is what each estimate adds for what it does not itemise:

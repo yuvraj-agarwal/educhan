@@ -788,7 +788,9 @@ server that would refuse what it sends.
   prepared at start (about 65 MiB): eighty 8 MiB uploads sent at once to a server run
   with `GOMEMLIMIT=400MiB` and one core peaked at 416–424 MiB resident, whether they came
   while the rules were being prepared or after, so an instance of 512 MiB has room with
-  that limit set; without it the same burst reached 502–507 MiB, which is no room at all.
+  that limit set; without it the same burst reached anywhere from about 470 to 540 MiB
+  (469–540 MiB over the runs of two separate measurements, on a shared machine of four
+  vCPUs), which is no room at all.
   A post waits for room in either budget for about ten seconds at most. Once there is
   room to read it, its body has 30 seconds to arrive, and once it has arrived its image
   has 25 seconds to be processed and stored. A post that cannot be taken in time — no

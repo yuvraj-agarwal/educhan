@@ -703,7 +703,10 @@ Planning takes about 3.5 s of one core, once per process, and keeps about 65 MiB
 while it runs the heap reaches 270–300 MiB with four cores and 330–370 MiB with one
 (`runtime.MemStats.HeapSys`, three and five runs on a shared machine), and the runtime
 gives the difference back to the system slowly: a server left idle after it started stayed
-at 350–367 MiB resident for two minutes and was at 160–185 MiB after four. The server's
+at about 350–400 MiB resident for its first two to four minutes and then fell to about
+160–205 MiB (350–396 and 160–204 MiB over two separate measurements on a shared machine of
+four vCPUs, with `GOMEMLIMIT=400MiB` and without; in the later one the drop came at four
+minutes). The server's
 512 MiB has to hold that beside everything else (see the upload budgets below). `Routes`
 starts it in the background, and a post that comes first waits for it. The plain view is
 skipped when the loose one is only it with `l` read as `i` (`looseOnly`). What holds the
@@ -1209,7 +1212,8 @@ posting form (see **The content rules' answers** under Front end conventions).
   Eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB` and one core
   peaked at 416–424 MiB resident, whether they came while the filter was being planned or
   after it (three runs each; 330 MiB before the filter, 786 MiB before the upload
-  budget), and at 502–507 MiB with no limit, so a 512 MiB instance needs that limit,
+  budget), and at about 470–540 MiB with no limit (469–540 MiB over two separate
+  measurements on a shared machine of four vCPUs), so a 512 MiB instance needs that limit,
   which this code does not set. The limit is passed rather than kept, since what the
   budgets and the filter hold is live. **Every wait is bounded, and a slow
   client is told apart from a busy server.** A post waits for room in the upload budget
