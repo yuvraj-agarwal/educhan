@@ -244,6 +244,10 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 	if _, err := lock.Exec(ctx, `LOCK TABLE threads IN ACCESS EXCLUSIVE MODE`); err != nil {
 		t.Fatalf("lock threads: %v", err)
 	}
+	var lockPID int32
+	if err := lock.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&lockPID); err != nil {
+		t.Fatalf("find the lock's backend: %v", err)
+	}
 
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), mainArgsEnv+"=-sweep", "DATABASE_URL="+sweepURL.String())
@@ -275,10 +279,14 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 		exited <- cmd.Wait()
 	}()
 
+	// Waiting on this lock, not on any: before it sweeps, the process waits
+	// for the migrations' advisory lock, which every schema in the database
+	// shares and the app package's tests take as they run, and a SIGTERM
+	// then, before the sweep listens for it, ends the process at once.
 	waiting := false
 	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
 		if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
-			WHERE application_name = $1 AND wait_event_type = 'Lock')`, appName).Scan(&waiting); err != nil {
+			WHERE application_name = $1 AND $2 = ANY (pg_blocking_pids(pid)))`, appName, lockPID).Scan(&waiting); err != nil {
 			t.Fatalf("look for the sweep's query: %v", err)
 		}
 		if waiting {
