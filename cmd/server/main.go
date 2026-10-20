@@ -79,7 +79,8 @@ func run(args []string, logs io.Writer) error {
 // receives when it overruns its task timeout, stops it at the next batch or
 // the next file. A batch commits or rolls back whole, and its files' keys are
 // queued in the same transaction, so a file the run did not get to is removed
-// by the next one.
+// by the next one. A stopped run still deletes the spent captcha answers, in
+// a few seconds at most, before it exits.
 func runSweep(application *app.App) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

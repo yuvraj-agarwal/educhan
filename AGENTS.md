@@ -766,16 +766,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`TestSweepAgainstAnotherMediaStoreFails`) or a queue it could not read once the
   threads were done (`TestSweepPrunesSpentCaptchasWhenTheMediaQueueFails`) too, and a
   failure there never keeps deleted threads' images up
-  (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). It logs one record of counts and
-  nothing that names a board or thread, failures included, and the error it returns has
-  the key taken out (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit —
-  on a database failure, a file it could not remove or did not find, or a database a
-  newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its
-  App with `New` like the server, and runs without the salt, the moderation key, the
-  verification secret and the captcha secret on purpose, so `New` warns about none of
-  them: those warnings are `WarnServingSettings`, which only `serve` in `cmd/server`
-  calls (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A
-  new warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). A stop is no exception: the prune
+  runs on `context.WithoutCancel` within `spentPruneTimeout` (five seconds, inside the
+  ten Cloud Run allows between SIGTERM and SIGKILL), as the file in hand does, so a sweep
+  cancelled before its batches (`TestSweepStopsWhenCancelled`) or among its files
+  (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`) prunes all the same, and
+  its error is the stop, with no prune failed on the stopped context beside it. It logs
+  one record of counts and nothing that names a board or thread, failures included, and
+  the error it returns has the key taken out (`TestSweepLogsOnlyCounts`); it returns an
+  error — a non-zero exit — on a stop, a database failure, a file it could not remove or
+  did not find, or a database a newer release migrated
+  (`TestSchemaFromANewerReleaseStopsTheSweeper`). It builds its App with `New` like the
+  server, and runs without the salt, the moderation key, the verification secret and the
+  captcha secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
   plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
   its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in

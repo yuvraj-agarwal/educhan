@@ -31,6 +31,17 @@ import (
 // how long it holds their row locks.
 const sweepBatchSize = 100
 
+// spentPruneTimeout bounds the sweep's last step, the one DELETE of the spent
+// captcha answers past their day, which runs even on a sweep that was stopped.
+// Every spend prunes the table as it goes, so it holds a day or two of answers
+// and the DELETE, by an index, takes a fraction of a second; one that overran
+// the bound would roll back and fail the sweep, leaving the rows to the next.
+// The bound is for a stop: SIGTERM, which a Cloud Run Job gets at its task
+// timeout, is followed ten seconds later by SIGKILL, and a stopped sweep
+// finishes the file in hand and then this step, so five seconds leaves room
+// for both, and the process exits on its own, with its record of counts logged.
+const spentPruneTimeout = 5 * time.Second
+
 // SweepReport is what a sweep did, in counts and nothing else: which boards or
 // threads went is not worth keeping in a log.
 type SweepReport struct {
@@ -55,7 +66,10 @@ type SweepReport struct {
 // archive_days, in batches of sweepBatchSize, then removes the files those
 // threads had, along with any an earlier sweep could not, and last deletes the
 // spent captcha answers past their day. A batch that fails leaves the files to
-// the next sweep, and the spent answers go whatever failed before them.
+// the next sweep. The spent answers go whatever failed before them, a stop
+// included: a sweep whose ctx is cancelled stops at the batch or the file it
+// is on and prunes them all the same, so its error reports the stop and no
+// failure the stop would have caused.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -107,8 +121,13 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 
 	// Spent captcha answers go last, whatever happened to the threads and the
 	// files: they have nothing to do with either, so no failure there holds
-	// them up, and a failure here never keeps deleted threads' images up.
-	spent, err := a.store.PruneSpentCaptchas(ctx, asOf)
+	// them up, and a failure here never keeps deleted threads' images up. A
+	// stop is no exception. The DELETE runs past ctx, as the file in hand
+	// does, within spentPruneTimeout: on the stopped context it would fail at
+	// once, prune nothing, and add a failure of its own to the stop's.
+	pruneCtx, cancelPrune := context.WithTimeout(context.WithoutCancel(ctx), spentPruneTimeout)
+	spent, err := a.store.PruneSpentCaptchas(pruneCtx, asOf)
+	cancelPrune()
 	var pruneErr error
 	if err != nil {
 		pruneErr = fmt.Errorf("sweep spent captchas: %w", err)

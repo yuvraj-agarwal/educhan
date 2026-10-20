@@ -340,21 +340,84 @@ func TestSweepPrunesSpentCaptchasWhenDeletingThreadsFails(t *testing.T) {
 }
 
 // A cancelled sweep stops and says so, rather than reporting a pass it did
-// not make.
+// not make. It prunes the spent captcha answers past their day all the same,
+// stopped before its first batch as here or among its files (below), and its
+// error is the stop alone: a prune tried on the stopped context would prune
+// nothing and add a failure of its own.
 func TestSweepStopsWhenCancelled(t *testing.T) {
-	h := testServer(t, nil)
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
 	h.addBoard("halted")
 	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'halted'`)
 	thread := h.createThread("halted", "", "", "archived and due")
 	h.archiveThread("halted", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before the sweep was stopped"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := h.app.Sweep(ctx); err == nil {
-		t.Error("a cancelled sweep reported success")
+	before := len(logs.String())
+	report, err := h.app.Sweep(ctx)
+	if err == nil {
+		t.Fatal("a cancelled sweep reported success")
 	}
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep archived threads: context canceled" {
+		t.Errorf("a sweep cancelled before it began returned %q, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{SpentCaptchas: 1})
 	if status := h.threadStatus("halted", thread.ThreadNo); status != http.StatusOK {
 		t.Errorf("a cancelled sweep deleted the thread anyway: GET answers %d", status)
+	}
+}
+
+// Stopped among its files, as SIGTERM at a Job's task timeout stops one
+// working through a long queue, the sweep finishes the file in hand, keeps the
+// rest queued, and prunes the spent answers before it returns the stop.
+func TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.addBoard("cutshort")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'cutshort'`)
+	thread := h.imageThread("cutshort", "an image thread swept as the job was stopped")
+	h.archiveThread("cutshort", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before the job ran out of time"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := h.app.media
+	h.app.media = cancellingDeletes{store, cancel}
+	before := len(logs.String())
+	report, err := h.app.Sweep(ctx)
+	h.app.media = store
+	if err == nil {
+		t.Fatal("a sweep stopped among its files reported success")
+	}
+	if !errors.Is(err, context.Canceled) || err.Error() != "sweep media: context canceled" {
+		t.Errorf("a sweep stopped among its files returned %q, want the stop and nothing else", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report,
+		SweepReport{Threads: 1, Posts: 1, Attachments: 1, BlobsRemoved: 1, SpentCaptchas: 1})
+	if queued := h.countRows("media_deletions"); queued != 1 {
+		t.Errorf("%d files queued after the stop, want the one it did not get to", queued)
+	}
+}
+
+// stoppedSweepPruned checks what a stopped sweep did: the report, the spent
+// answer gone, and one record of counts logged since before, counting it.
+func stoppedSweepPruned(t *testing.T, h *harness, logs *syncBuffer, before int, report, want SweepReport) {
+	t.Helper()
+	if report != want {
+		t.Errorf("sweep report = %+v, want %+v", report, want)
+	}
+	if n := h.countRows("captcha_spent"); n != 0 {
+		t.Errorf("%d spent captcha answers kept past their day by a stopped sweep, want none", n)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":1`) {
+		t.Errorf("the stopped sweep logged %q, want one sweep record counting the spent answer", lines)
 	}
 }
 
@@ -426,6 +489,18 @@ func TestSweepLogsOnlyCounts(t *testing.T) {
 	if !strings.Contains(err.Error(), "delete refused") {
 		t.Errorf("error %q does not say why the files were not removed", err)
 	}
+}
+
+// cancellingDeletes is a media store that cancels the sweep once it has
+// deleted a file, standing in for SIGTERM arriving while the files go.
+type cancellingDeletes struct {
+	media.Store
+	cancel context.CancelFunc
+}
+
+func (s cancellingDeletes) Delete(ctx context.Context, key string) error {
+	defer s.cancel()
+	return s.Store.Delete(ctx, key)
 }
 
 // refusingDeletes is a media store whose deletes always fail, standing in for
