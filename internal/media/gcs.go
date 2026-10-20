@@ -47,6 +47,11 @@ var _ Store = (*GCSStore)(nil)
 // points the client at a local emulator and switches authentication off, which
 // is how the tests run without any cloud access.
 //
+// ctx bounds the check that the bucket answers, and nothing after it: the
+// client outlives the call, so it is built on a context that is not cancelled
+// with ctx, since credentials that refresh on a cancelled context would fail
+// the first request made once ctx is done.
+//
 // The caller owns the returned store and must Close it.
 func NewGCSStore(ctx context.Context, bucket, prefix string, opts ...option.ClientOption) (*GCSStore, error) {
 	bucket = strings.TrimSpace(bucket)
@@ -57,7 +62,7 @@ func NewGCSStore(ctx context.Context, bucket, prefix string, opts ...option.Clie
 	if err != nil {
 		return nil, err
 	}
-	client, err := storage.NewClient(ctx, opts...)
+	client, err := storage.NewClient(context.WithoutCancel(ctx), opts...)
 	if err != nil {
 		return nil, fmt.Errorf("media: connect to cloud storage: %w", err)
 	}

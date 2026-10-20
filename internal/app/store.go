@@ -980,36 +980,44 @@ func (s *Store) SweepArchived(ctx context.Context, asOf time.Time, limit int) (S
 // afterID that no other sweep is working on, hands it to remove, and forgets
 // it when remove reports the file gone. It returns the key's id, so the caller
 // can carry on past a key it could not remove, and found false once nothing is
-// left after afterID.
+// left after afterID, or when ctx ended the lookup before a key was found.
 //
 // One key per transaction keeps the gap between a file going and its key
 // going as short as it can be: a sweep killed in between leaves a key whose
 // file is already gone, which the next sweep reports as missing.
+//
+// ctx stops the lookup, which has nothing in hand yet, and nothing after it:
+// a key once found has its file removed and is forgotten whatever ctx says,
+// since stopping between the two would leave a key whose file is gone.
 func (s *Store) NextMediaDeletion(ctx context.Context, afterID int64, remove func(key string) bool) (id int64, found bool, err error) {
-	err = s.inTx(ctx, func(tx pgx.Tx) error {
-		var key string
-		err := tx.QueryRow(ctx, `
-			SELECT id, key FROM media_deletions
-			WHERE id > $1
-			ORDER BY id
-			LIMIT 1
-			FOR UPDATE SKIP LOCKED`, afterID).Scan(&id, &key)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		if err != nil {
-			return fmt.Errorf("next media deletion: %w", err)
-		}
-		found = true
-		if !remove(key) {
-			return nil
-		}
-		if _, err := tx.Exec(ctx, `DELETE FROM media_deletions WHERE id = $1`, id); err != nil {
-			return fmt.Errorf("forget media deletion: %w", err)
-		}
-		return nil
-	})
-	return id, found, err
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return 0, false, fmt.Errorf("next media deletion: %w", err)
+	}
+	// The transaction ends on the context of the step it ended in.
+	end := ctx
+	defer func() { _ = tx.Rollback(end) }()
+	var key string
+	err = tx.QueryRow(ctx, `
+		SELECT id, key FROM media_deletions
+		WHERE id > $1
+		ORDER BY id
+		LIMIT 1
+		FOR UPDATE SKIP LOCKED`, afterID).Scan(&id, &key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return 0, false, nil
+	}
+	if err != nil {
+		return 0, false, fmt.Errorf("next media deletion: %w", err)
+	}
+	end = context.WithoutCancel(ctx)
+	if !remove(key) {
+		return id, true, nil
+	}
+	if _, err := tx.Exec(end, `DELETE FROM media_deletions WHERE id = $1`, id); err != nil {
+		return id, true, fmt.Errorf("forget media deletion: %w", err)
+	}
+	return id, true, tx.Commit(end)
 }
 
 /* Verification ------------------------------------------------------------- */
@@ -1442,4 +1450,81 @@ func insertAttachment(ctx context.Context, tx pgx.Tx, postID int64, in *newAttac
 		ThumbHeight: img.ThumbHeight,
 		Spoiler:     in.Spoiler,
 	}, nil
+}
+
+/* Captcha ------------------------------------------------------------------ */
+
+const (
+	// captchaPruneMargin is how long after its stored expiry a spent answer
+	// is still kept. An instance refuses a challenge once its own clock passes
+	// the expiry; an instance whose clock ran ahead must not delete the row
+	// while another, behind it, would still accept that answer as fresh. The
+	// stored expiry is rounded up to the next midnight, which adds anything
+	// from a second to a day, so for a challenge that runs out just before
+	// midnight this margin is all the slack there is: it tolerates instance
+	// clocks up to a minute apart, far more than servers kept in time drift.
+	captchaPruneMargin = time.Minute
+	// captchaPruneBatch caps the spent answers one spend deletes. Each spend
+	// adds one, so a batch of more than one keeps up: the day's rows, which
+	// all expire at the same midnight, are gone after about one spend in
+	// sixty-four of the next day's.
+	captchaPruneBatch = 64
+)
+
+// CaptchaSpent reports whether a captcha challenge has been used. It is the
+// read that turns a replayed answer away before flood control, so a replay is
+// told "used" at once, even while a cooldown runs, rather than told to wait for
+// an answer that can never work. The insert in SpendCaptcha is what keeps a
+// replay from starting a cooldown, and what settles two requests racing with
+// one answer.
+func (s *Store) CaptchaSpent(ctx context.Context, key []byte) (bool, error) {
+	var spent bool
+	if err := s.pool.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM captcha_spent WHERE signature_hash = $1)`, key).Scan(&spent); err != nil {
+		return false, fmt.Errorf("look up spent captcha: %w", err)
+	}
+	return spent, nil
+}
+
+// SpendCaptcha records a captcha challenge as used, reporting false when it
+// already was. The insert and the uniqueness check are one statement, so of two
+// requests racing with the same answer exactly one gets true.
+//
+// The row's expiry is the challenge's rounded up to the next UTC midnight, as a
+// credential's is (nextDayBoundary), so the only date a row stores is the day,
+// and the table holds a day or two of answers. The row's xmin and ctid are
+// another matter: they lie beside those of the post or code request written
+// just after it, so whoever reads the database can pair the two and date the
+// row by the post, which says only that the post carried an answer. Each spend
+// first deletes a batch of the rows past their expiry, and the daily sweep the
+// rest (PruneSpentCaptchas). The cut-off is by the server's clock, the one that
+// decided the challenge was still good. SKIP LOCKED leaves rows another spend
+// is already deleting to it, so posts arriving together never queue behind each
+// other's pruning.
+func (s *Store) SpendCaptcha(ctx context.Context, key []byte, expires, now time.Time) (bool, error) {
+	if _, err := s.pool.Exec(ctx, `
+		DELETE FROM captcha_spent WHERE signature_hash IN (
+			SELECT signature_hash FROM captcha_spent WHERE expires_at < $1
+			LIMIT $2 FOR UPDATE SKIP LOCKED)`,
+		now.Add(-captchaPruneMargin), captchaPruneBatch); err != nil {
+		return false, fmt.Errorf("prune spent captchas: %w", err)
+	}
+	tag, err := s.pool.Exec(ctx, `
+		INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)
+		ON CONFLICT (signature_hash) DO NOTHING`, key, nextDayBoundary(expires))
+	if err != nil {
+		return false, fmt.Errorf("spend captcha: %w", err)
+	}
+	return tag.RowsAffected() == 1, nil
+}
+
+// PruneSpentCaptchas deletes every spent answer past its expiry, reporting how
+// many it deleted. Spends prune as they go; this is the daily sweep's pass,
+// which on a quiet server is the one that clears the day before.
+func (s *Store) PruneSpentCaptchas(ctx context.Context, now time.Time) (int, error) {
+	tag, err := s.pool.Exec(ctx, `DELETE FROM captcha_spent WHERE expires_at < $1`, now.Add(-captchaPruneMargin))
+	if err != nil {
+		return 0, fmt.Errorf("prune spent captchas: %w", err)
+	}
+	return int(tag.RowsAffected()), nil
 }
