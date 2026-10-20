@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
@@ -982,6 +983,98 @@ func TestABodyAheadOfItsPaceMayPause(t *testing.T) {
 	if n := h.countRows("posts"); n != 1 {
 		t.Errorf("%d posts stored, want the paused upload made", n)
 	}
+}
+
+// A post turned away as busy still has its body read past, at the pace it
+// would have been read at, so that its poster gets the answer rather than a
+// connection closed under the upload. A body that fell behind on the way
+// ended in a read deadline, for which net/http cancels the request's context,
+// and the busy refusal, then mapped as a failure, took that for a client gone
+// and answered nothing: net/http sent 200 with an empty body, and the web
+// client took the post as made and cleared its form. Such a body is answered
+// 408 now, as it is with room to read it, whatever the post was turned away
+// for, and one whose client stops sending is answered 503 for the busy
+// server, not 200, though the context ended with it too.
+func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
+	busy := func(t *testing.T) *harness {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 300 * time.Millisecond
+		h.app.uploadReadTimeout = 10 * time.Second
+		// Shorter than the time a wait leaves for the work, so a wait for
+		// room gives up at once.
+		h.app.postDeadline = time.Second
+		drainShares(t, h, "127.0.0.1")
+		full, err := media.ReserveUpload(context.Background(), math.MaxInt64)
+		if err != nil {
+			t.Fatalf("fill the upload budget: %v", err)
+		}
+		t.Cleanup(full)
+		return h
+	}
+	body := boundForm(t, 1<<20, "turned away", pngBytes(t, 32, 32))
+	const sent = 64 << 10 // of the body, before it stops
+
+	t.Run("one that falls behind its pace is answered 408", func(t *testing.T) {
+		h := busy(t)
+		// Told to go on once the post has been turned away and its body is
+		// being read past.
+		b := idleUpload(t, h.base, "", int64(len(body)))
+		if !b.trickle(body[:sent], sent, 0) {
+			t.Fatal("the start of the body was not taken")
+		}
+		status, text := b.answer(t, 10*time.Second)
+		var out busyPost
+		if err := json.Unmarshal([]byte(text), &out); err != nil || status != http.StatusRequestTimeout || out.Error != uploadTooSlow {
+			t.Fatalf("a turned-away body that fell behind its pace: status %d (%q), want 408 %q", status, text, uploadTooSlow)
+		}
+		if n := storedFiles(t, h.app.cfg.UploadDir); n != 0 {
+			t.Errorf("%d files stored, want none", n)
+		}
+	})
+
+	// A post over its client's share is answered 429 at its body's end; one
+	// whose body fell behind on the way is answered for that instead, as the
+	// thing the poster has to change.
+	t.Run("one over its client's share that falls behind is answered 408", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 300 * time.Millisecond
+		h.app.uploadReadTimeout = 10 * time.Second
+		drainShares(t, h, "127.0.0.1")
+		share, ok := h.app.uploadShares.take("127.0.0.1", clientUploadShare)
+		if !ok {
+			t.Fatal("hold the client's share")
+		}
+		t.Cleanup(share)
+
+		b := idleUpload(t, h.base, "", int64(len(body)))
+		if !b.trickle(body[:sent], sent, 0) {
+			t.Fatal("the start of the body was not taken")
+		}
+		status, text := b.answer(t, 10*time.Second)
+		if status != http.StatusRequestTimeout || !strings.Contains(text, uploadTooSlow) {
+			t.Fatalf("a body over its client's share that fell behind its pace: status %d (%q), want 408 %q", status, text, uploadTooSlow)
+		}
+	})
+
+	t.Run("one whose client stops sending is answered 503", func(t *testing.T) {
+		h := busy(t)
+		b := idleUpload(t, h.base, "", int64(len(body)))
+		if !b.trickle(body[:sent], sent, 0) {
+			t.Fatal("the start of the body was not taken")
+		}
+		// The client sends nothing more, and says so, but still reads.
+		if err := b.conn.(*net.TCPConn).CloseWrite(); err != nil {
+			t.Fatalf("close the sending side: %v", err)
+		}
+		status, text := b.answer(t, 10*time.Second)
+		var out busyPost
+		if err := json.Unmarshal([]byte(text), &out); err != nil || status != http.StatusServiceUnavailable ||
+			out.RetryAfter != int(busyRetryAfter/time.Second) {
+			t.Fatalf("a turned-away body its client stopped sending: status %d (%q), want 503 with a wait", status, text)
+		}
+	})
 }
 
 // A part's header line cut short reached the form's reader as a malformed

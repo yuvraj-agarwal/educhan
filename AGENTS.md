@@ -366,16 +366,18 @@ needs a browser check before the test changes.
   summary line is redrawn from `state.thread`. `imageLimitReason` and `badgesHTML` treat
   `image_limit` 0 as a board whose replies never carry images, not a full thread. A
   network failure (`err.unreachable`, set by `api()`) gets its own wording, never the
-  browser's "Failed to fetch". A `429` is worded for what was refused: `/verify` passes
-  `errorMessage` `{ action: "code" }`, so a code request is told to wait and request a
-  code again, never to post again. A `503` with `retry_after` is a post the server was too
-  busy to take, worded as that and not as flood control; the form keeps the post, image
-  included, and nothing was charged for it. A not-found page names and links a board only
-  when it is in `state.boards`: the slug comes from the address, and echoing any slug
-  would let a crafted link write the page's copy. A history change that keeps the rendered
-  path (a same-thread quote link) only calls `focusHash()`, so revealed spoilers stay
-  revealed. A disabled file input is left out of `FormData`, and `submit` posts as JSON
-  when it is.
+  browser's "Failed to fetch". So does an answer to a post that is not the post it made
+  (`isCreatedPost`, `err.unconfirmed`): it is checked before the form is reset, so an
+  empty `200` never clears a draft (`TestThePostFormIsClearedOnlyForAPostMade`). A `429`
+  is worded for what was refused: `/verify` passes `errorMessage` `{ action: "code" }`, so
+  a code request is told to wait and request a code again, never to post again. A `503`
+  with `retry_after` is a post the server was too busy to take, worded as that and not as
+  flood control; the form keeps the post, image included, and nothing was charged for it.
+  A not-found page names and links a board only when it is in `state.boards`: the slug
+  comes from the address, and echoing any slug would let a crafted link write the page's
+  copy. A history change that keeps the rendered path (a same-thread quote link) only
+  calls `focusHash()`, so revealed spoilers stay revealed. A disabled file input is left
+  out of `FormData`, and `submit` posts as JSON when it is.
 - **A server that takes no images.** `loadSite` reads `GET /api/site`
   (`{"uploads","max_upload_bytes"}`) into `state.site`. With `uploads` false, `formHTML`
   draws no image field at all — no picker, no drop hint, no Spoiler image box — a file
@@ -904,17 +906,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   host can usually take any address in its /64 and counted per address the share would
   bound nothing, while flood control stays per address, its cooldowns being a wait a whole
   network would feel), and a post past it is read to its end unkept and answered `429`
-  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting; and
-  `pacedBody` holds the body to an even pace through its read window, moving the read
-  deadline before every read to `uploadPaceGrace` (5 s) past when what has arrived would
-  have at the pace that brings it all in by the window's end, so a body that sends nothing
-  or a trickle is answered `408` and gives its room back after the grace, not at the
-  window's end (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a
-  `Content-Length` (chunked) would have to reserve the most a body may be, and could then
-  be held only to the pace of that, which cut a small one sent slowly off, or to none,
-  which let seven trickles from three addresses hold the whole budget for the window; so,
-  with uploads on, such a post is answered `411` on its headers (`refuseUnsized`), before
-  anything is reserved for it or read of it, charged nothing, its connection closed
+  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting, or `408`
+  if its body falls behind on the way (`turnAway`); and `pacedBody` holds the body to an
+  even pace through its read window, moving the read deadline before every read to
+  `uploadPaceGrace` (5 s) past when what has arrived would have at the pace that brings it
+  all in by the window's end, so a body that sends nothing or a trickle is answered `408`
+  and gives its room back after the grace, not at the window's end
+  (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a `Content-Length`
+  (chunked) would have to reserve the most a body may be, and could then be held only to
+  the pace of that, which cut a small one sent slowly off, or to none, which let seven
+  trickles from three addresses hold the whole budget for the window; so, with uploads on,
+  such a post is answered `411` on its headers (`refuseUnsized`), before anything is
+  reserved for it or read of it, charged nothing, its connection closed
   (`TestPostsWithoutALengthAreRefused`), and every body that holds room is held to its own
   pace. Browsers send a `Content-Length` with every form. Between them the two budgets
   hold 320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process
@@ -944,10 +947,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   underneath); a body slower than that is the client's doing, answered `408` (`upload too
   slow`, `isReadTimeout`), as is one that falls behind its pace (`pacedBody`), not the
   `503` a server with no room gives, and a body that waited for room is not answered `408`
-  for the server's load. Once the body is read, the image has a fresh `postDeadline` (25
-  s, `processContext`) to be processed and both renditions stored — measured from after
-  the body, not from the start of the handler, so a slow body no longer spends the time
-  the image has and is no longer mistaken for a busy server
+  for the server's load. A turned-away post's body is read past at the same pace, and
+  `turnAway` answers it from how that read ended, never from the request's context, which
+  net/http cancels for a read deadline as for a client gone: mapped through `fail`, a busy
+  refusal whose body fell behind answered nothing, which net/http sent as an empty `200`
+  that the web client took for a post made
+  (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once the body is read, the image has a
+  fresh `postDeadline` (25 s, `processContext`) to be processed and both renditions stored
+  — measured from after the body, not from the start of the handler, so a slow body no
+  longer spends the time the image has and is no longer mistaken for a busy server
   (`TestSlowUploadBodyIsNotMistakenForABusyServer`); `processContext` also resets the
   response's write deadline to cover that processing and the answer, the body read having
   possibly used more than one `WriteTimeout` (30 s, `app.WriteTimeout`, which `cmd/server`

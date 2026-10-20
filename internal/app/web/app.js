@@ -109,6 +109,12 @@ const el = {
 // when attempting to fetch resource") and says nothing a reader can use.
 const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
 
+// What a poster is told when the answer to their post is not the post it
+// made (isCreatedPost): it may or may not have been made, so they are asked
+// to look before they send it again.
+const UNCONFIRMED_POST =
+  "educhan's answer didn't confirm your post, so it may not have gone through. Check whether it appeared before posting again: what you wrote is still in the box.";
+
 // The server's own words for the two refusals of a post's image that the form
 // recovers from by taking the image off. web_invariants_test.go checks them
 // against what the server answers.
@@ -156,6 +162,9 @@ async function api(path, options = {}) {
 function errorMessage(err, { hasText = true, action = "post" } = {}) {
   if (err.unreachable) {
     return `${UNREACHABLE} What you wrote is still in the box.`;
+  }
+  if (err.unconfirmed) {
+    return UNCONFIRMED_POST;
   }
   if (err.status === 413) {
     return imageTooLargeMessage();
@@ -3368,6 +3377,20 @@ function posterKey() {
 
 /* Submitting --------------------------------------------------------------- */
 
+// isCreatedPost reports whether a posting request's answer is the post it
+// made: where it lives, which the page goes to next. Anything else, though it
+// came with a success status, is not taken for one.
+function isCreatedPost(answer) {
+  return (
+    answer !== null &&
+    typeof answer === "object" &&
+    typeof answer.board === "string" &&
+    answer.board !== "" &&
+    Number.isInteger(answer.no) &&
+    Number.isInteger(answer.thread_no)
+  );
+}
+
 el.main.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
@@ -3424,6 +3447,14 @@ el.main.addEventListener("submit", async (event) => {
   clearNotice();
   try {
     const created = await api(path, { method: "POST", body: requestBody, headers });
+    // A post that was made is answered with where it lives. An answer without
+    // that — an empty one above all — does not say the post was made, so
+    // nothing below runs for it: the form keeps the draft and its file.
+    if (!isCreatedPost(created)) {
+      const err = new Error(UNCONFIRMED_POST);
+      err.unconfirmed = true;
+      throw err;
+    }
     // The remembered name is the one for unbadged posts; a badged post's name
     // is never offered on the next form, where the badge starts unticked.
     if (!held) {

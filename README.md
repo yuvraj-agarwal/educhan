@@ -663,12 +663,15 @@ server that would refuse what it sends.
   body that takes longer than its 30 seconds, or falls behind its pace, is the
   connection's doing, not the server's, and answers `408` with `{"error":"upload too
   slow"}`, with nothing stored and no cooldown started; the time a post spent waiting for
-  room is not counted against its body. A form has to say how long its body is, as
-  browsers' forms do: one sent without a `Content-Length` (chunked), whose length the
-  server would learn only at its end, answers `411` at once, before any room is taken for
-  it or any of it read, with nothing stored and no cooldown started: the room it took
-  would have to be the most a body may be, and a few such bodies trickling a few bytes a
-  second could hold the whole budget for their 30 seconds.
+  room is not counted against its body. A post turned away, busy or over its client's
+  share, still has its body read, unkept and at the same pace, so that the answer reaches
+  the poster rather than a connection closed under the upload; if the body falls behind on
+  the way, the answer is `408` too, rather than `503` or `429`. A form has to say how long
+  its body is, as browsers' forms do: one sent without a `Content-Length` (chunked), whose
+  length the server would learn only at its end, answers `411` at once, before any room is
+  taken for it or any of it read, with nothing stored and no cooldown started: the room it
+  took would have to be the most a body may be, and a few such bodies trickling a few
+  bytes a second could hold the whole budget for their 30 seconds.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -1021,18 +1024,19 @@ room for upload bodies answers `429` the same way, at once, with a `Retry-After`
 30 seconds to arrive, counted from when there was room to read it, or falls more than 5
 seconds behind the even pace that would bring it in by then, answers `408` with
 `{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
-connection faster, and, with uploads on, a form sent without a `Content-Length` answers
-`411` at once (see **Memory**); both are refused before flood control, so they start no
-cooldown. A request rejected for any other reason — an empty body, an oversized image, a
-file that is not an accepted image or whose header shows it unusable (see **Formats**), a
-reply to a missing, locked or archived thread or an image past a thread's cap — does not
-start a cooldown, so a typo never costs a wait. Three refusals come only after the
-cooldowns have started: an image whose header reads but whose pixels do not decode, or
-whose rewritten file would be too large to store, which only decoding and encoding it can
-find; a GIF refused while it is played (`image too large to process`, see **Formats**
-under [Image attachments](#image-attachments)), which only playing it can find, and those
-two are the cost the upload cooldown is there for; and the loser of two replies racing for
-a thread's last image slot (see the HTTP API).
+connection faster — one turned away as busy or over its share included, whose body is
+still read past at that pace — and, with uploads on, a form sent without a
+`Content-Length` answers `411` at once (see **Memory**); both are refused before flood
+control, so they start no cooldown. A request rejected for any other reason — an empty
+body, an oversized image, a file that is not an accepted image or whose header shows it
+unusable (see **Formats**), a reply to a missing, locked or archived thread or an image
+past a thread's cap — does not start a cooldown, so a typo never costs a wait. Three
+refusals come only after the cooldowns have started: an image whose header reads but whose
+pixels do not decode, or whose rewritten file would be too large to store, which only
+decoding and encoding it can find; a GIF refused while it is played (`image too large to
+process`, see **Formats** under [Image attachments](#image-attachments)), which only
+playing it can find, and those two are the cost the upload cooldown is there for; and the
+loser of two replies racing for a thread's last image slot (see the HTTP API).
 
 The cooldowns are keyed on client addresses, and so are the upload shares (see **Memory**
 under [Image attachments](#image-attachments)), by the address or, for IPv6, by its /64

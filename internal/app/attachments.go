@@ -159,6 +159,10 @@ const uploadsSwitchedOff = "image uploads are switched off on this server"
 // Content-Length while uploads are on (refuseUnsized).
 const lengthRequired = "a post with a file needs a Content-Length"
 
+// uploadTooSlow is the refusal, 408, of a multipart post whose body fell
+// behind its pace (pacedBody), whether it was being read or read past.
+const uploadTooSlow = "upload too slow"
+
 // refuseUnsized answers a multipart post that came without a Content-Length,
 // with uploads on: 411, before anything is reserved for its body or read of
 // it (parseSubmission). Its body is not read past either, because only the
@@ -262,7 +266,9 @@ type submissionForm interface {
 // waited has its whole uploadReadTimeout for its body — the wait was the
 // server's, and taken out of the body's time it would turn a busy server into
 // a slow upload — and a post turned away has that long for the rest of its
-// body to be read past and the answer written.
+// body to be read past, at the same pace, and the answer written: 408 if it
+// fell behind on the way, as with room, and otherwise why it was turned away
+// (turnAway).
 func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *http.Request, form submissionForm) (*submission, bool) {
 	if !strings.HasPrefix(r.Header.Get("Content-Type"), "multipart/form-data") {
 		if !decodeJSON(w, r, form) {
@@ -308,8 +314,8 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 		// finished, a connection closed under it can reach the poster as a
 		// network failure instead of this answer, so the body is read, and
 		// nothing of it kept.
-		_, _ = io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, bodyLimit))
-		a.rejectUpload(w, r, err)
+		_, drained := io.Copy(io.Discard, http.MaxBytesReader(w, r.Body, bodyLimit))
+		a.turnAway(w, r, err, drained)
 		return nil, false
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, bodyLimit)
@@ -374,7 +380,7 @@ func (a *App) readMultipart(r *http.Request, size int64) (*submission, int, stri
 		case isReadTimeout(err):
 			// The body did not arrive inside uploadReadTimeout: the client's
 			// doing, not the server's load, so 408 rather than the 503 busy.
-			return nil, http.StatusRequestTimeout, "upload too slow"
+			return nil, http.StatusRequestTimeout, uploadTooSlow
 		case tooLarge(err) && !a.cfg.UploadsEnabled:
 			return nil, http.StatusForbidden, uploadsSwitchedOff
 		case tooLarge(err), errors.Is(err, errPartTooLarge):
@@ -567,11 +573,34 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 		writeError(w, http.StatusBadRequest, err.Error())
 	case tooBusy(err) && r.Context().Err() == nil:
 		answerBusy(w)
+	default:
+		a.fail(w, r, err, "could not store attachment")
+	}
+}
+
+// turnAway answers a multipart post that reserveUpload turned away with err,
+// once its body has been read past, the read having ended with drained. A
+// body that fell behind its pace on the way is answered 408, whatever the post
+// was turned away for, as it would have been with room to read it: the
+// connection is what the poster has to change. Any other is answered for why
+// it was turned away. The answer is decided from those two errors alone,
+// never from the request's context: net/http cancels that for any failed read
+// of the body, a read deadline's included, so a busy refusal mapped through
+// fail took the slow body for a client gone and answered nothing, which
+// net/http sent as 200 with an empty body, and a client read as its post made.
+func (a *App) turnAway(w http.ResponseWriter, r *http.Request, err, drained error) {
+	switch {
+	case isReadTimeout(drained):
+		writeError(w, http.StatusRequestTimeout, uploadTooSlow)
 	case errors.Is(err, errUploadShare):
 		// The client's own doing, like flood control: 429, with as long to
 		// wait as a busy server asks, and no cooldown started.
 		tooQuickly(w, "uploading images", busyRetryAfter)
+	case tooBusy(err):
+		answerBusy(w)
 	default:
+		// The wait for room ended with the request's context, the
+		// client having gone away while its post waited.
 		a.fail(w, r, err, "could not store attachment")
 	}
 }
