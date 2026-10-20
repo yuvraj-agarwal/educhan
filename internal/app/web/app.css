@@ -386,7 +386,9 @@ main[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s ease 0.15s; }
   font-size: 13px;
 }
 
-.btn.subtle:hover { color: var(--text); border-color: var(--border-strong); }
+.btn.subtle:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+/* Waiting on an answer, as the Verify page's step buttons do beside its submit button. */
+.btn.subtle:disabled { opacity: 0.6; cursor: progress; }
 
 .btn.danger {
   background: var(--panel-3);

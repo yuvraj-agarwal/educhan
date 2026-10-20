@@ -1784,7 +1784,10 @@ async function renderArchive(route) {
 // ("Verify another address"), where the page would otherwise show that badge.
 // While a code is pending the code box shows whatever is held. ended is for
 // the address step too: why the code box it replaced has gone, when the server
-// dropped the code being typed (CODE_ENDED_NOTES).
+// dropped the code being typed (CODE_ENDED_NOTES). A change of step puts a new
+// object here and never edits the one in place: submitVerification tells an
+// answer that is still wanted from one the reader has moved on from by
+// whether verifyStep is the object it was sent from.
 let verifyStep = { step: "email", label: "" };
 
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
@@ -1956,7 +1959,8 @@ const CODE_ENDED_NOTES = {
 // onVerifyPage says whether the Verify page is still the one on screen. Its
 // requests can outlast it: a reader who presses Send code or Verify and then
 // follows a link is on another page by the time the answer comes, and the
-// answer must not draw the Verify page over that one.
+// answer must not draw the Verify page over that one. A reader who stays on
+// the page but moves it to another step is submitVerification's sentFrom.
 function onVerifyPage() {
   return state.route.view === "verify";
 }
@@ -3212,6 +3216,9 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  // Forgetting the browser also moves the page to a new step, so a badge
+  // still on its way from Verify is dropped when it lands (submitVerification)
+  // rather than stored after the browser was forgotten.
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
     forgetBrowser();
@@ -3576,11 +3583,24 @@ el.main.addEventListener("submit", async (event) => {
 // remembered between them but the badge on offer: the code is confirmed against
 // a short-lived cookie the server set, so the address is typed once and never
 // travels again.
+//
+// An answer belongs to the step it was sent from (sentFrom), and is dropped
+// when the reader has moved the page to another step while it was on its way:
+// no badge stored, no step set, nothing drawn or said. Forget this browser is
+// the button that can do that, and has to win: a badge stored after it would
+// stay for whoever uses the computer next, under a notice saying there is
+// none. The form's own other buttons — Keep my badge, Use a different
+// address — wait for the answer with the submit button, so a reader does not
+// give up a step whose badge the server may be issuing; a dropped badge is
+// one nobody holds, and verifying the same address again retires the old one.
+// Leaving the page is not a change of step: the answer is kept for when the
+// reader comes back (onVerifyPage).
 async function submitVerification(form) {
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
   const data = new FormData(form);
   const requesting = form.dataset.verify === "request";
+  const sentFrom = verifyStep;
 
   // The badge is for students aged 18 and over. Without the box ticked the
   // page refuses on its own and sends nothing, the address included.
@@ -3591,7 +3611,8 @@ async function submitVerification(form) {
     return;
   }
 
-  button.disabled = true;
+  const buttons = [...form.querySelectorAll("button")];
+  for (const b of buttons) b.disabled = true;
   button.textContent = requesting ? "Sending…" : "Verifying…";
   clearNotice();
   try {
@@ -3601,6 +3622,7 @@ async function submitVerification(form) {
         // adult is true here, because an unticked box stopped above.
         body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),
       });
+      if (verifyStep !== sentFrom) return;
       verifyStep = { step: "code", label: sent.label || "" };
       // A reader who has gone on to another page finds the code box when
       // they come back; this one is not drawn over the page they are on.
@@ -3616,15 +3638,16 @@ async function submitVerification(form) {
       method: "POST",
       body: JSON.stringify({ code: String(data.get("code") || "") }),
     });
+    if (verifyStep !== sentFrom) return;
     storeCredential(issued.credential);
+    // Read locally at once, so whatever is drawn next — this page, or the next
+    // posting form for a reader who has gone on — shows the badge now held.
+    state.verification.badge = readBadge();
     verifyStep = { step: "email", label: "" };
-    if (!onVerifyPage()) {
-      // Read locally, so the next posting form drawn offers the new badge.
-      state.verification.badge = readBadge();
-      return;
-    }
+    if (!onVerifyPage()) return;
     await renderVerify();
   } catch (err) {
+    if (verifyStep !== sentFrom) return;
     // Nothing is pending any more, so the code box goes: back to the address
     // step, still over a badge held here, which is kept until a new one is
     // confirmed, and saying in that step why the box went.
@@ -3650,7 +3673,7 @@ async function submitVerification(form) {
     // as the page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
     showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }));
-    button.disabled = false;
+    for (const b of buttons) b.disabled = false;
     button.textContent = label;
   }
 }

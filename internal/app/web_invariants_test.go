@@ -784,3 +784,92 @@ func TestVerifyStepButtonsClearTheNotice(t *testing.T) {
 		}
 	}
 }
+
+// verifyClickHandler returns the body of the click handler that opens with
+// opener, a line indented once in the page's click listener.
+func verifyClickHandler(t *testing.T, script, opener string) string {
+	t.Helper()
+	m := regexp.MustCompile(`(?s)\n  ` + regexp.QuoteMeta(opener) + `(.*?)\n  \}\n`).FindStringSubmatch(withoutComments(script))
+	if m == nil {
+		t.Fatalf("app.js has no click handler opening %q", opener)
+	}
+	return m[1]
+}
+
+// A Verify answer belongs to the step it was sent from. The reader can move
+// the page to another step while one is on its way — Forget this browser sits
+// outside the form and stays live — and an answer that then acted on the step
+// it left undid the reader's choice: a badge stored after the browser was
+// forgotten, under the confirmation that it held none, for whoever used the
+// computer next; the code box back over a badge the reader had chosen to keep;
+// that badge replaced by the new one. So submitVerification notes verifyStep
+// before it sends, and each answer is dropped, before it stores, sets or draws
+// anything, once verifyStep is no longer that object. That only works while
+// every change of step is a new object, never an edit of the old one. The
+// form's own other buttons wait on the answer with its submit button.
+func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+
+	noted := strings.Index(submit, "const sentFrom = verifyStep;")
+	first := strings.Index(submit, "await api(")
+	if noted < 0 || first < 0 || noted > first {
+		t.Fatal("submitVerification does not note the step it is sent from before its first request")
+	}
+	resumes := regexp.MustCompile(`await api\(|\} catch \(err\) \{`).FindAllStringIndex(submit, -1)
+	if len(resumes) != 3 {
+		t.Fatalf("submitVerification resumes after an answer in %d places; this test knows three "+
+			"(the code sent, the badge issued, the catch)", len(resumes))
+	}
+	acts := regexp.MustCompile(`storeCredential\(|state\.verification|verifyStep\s*=[^=]|el\.main\.innerHTML\s*=|` +
+		`renderVerify\(|showNotice\(|refuseVerification\(|\.focus\(|scrollIntoView\(|\.disabled\s*=|\.textContent\s*=`)
+	const check = "if (verifyStep !== sentFrom) return;"
+	for i, r := range resumes {
+		end := len(submit)
+		if i+1 < len(resumes) {
+			end = resumes[i+1][0]
+		}
+		stretch := submit[r[0]:end]
+		act := acts.FindStringIndex(stretch)
+		if act == nil {
+			t.Errorf("stretch %d of submitVerification does nothing with its answer; this test expects each to:\n%s", i+1, stretch)
+			continue
+		}
+		if at := strings.Index(stretch, check); at < 0 || at > act[0] {
+			t.Errorf("stretch %d of submitVerification acts on its answer (%q) without first checking that the page is "+
+				"still on the step it was sent from:\n%s", i+1, stretch[act[0]:act[1]], stretch)
+		}
+	}
+
+	if m := regexp.MustCompile(`\bverifyStep(\.\w+|\[[^\]]*\])\s*=[^=]|Object\.assign\(\s*verifyStep\b`).FindString(code); m != "" {
+		t.Errorf("app.js edits verifyStep in place (%q); a change of step has to be a new object, or an answer "+
+			"from the step that was left is taken for the new one", m)
+	}
+	assigned := regexp.MustCompile(`\bverifyStep\s*=[^=][^;]*;`).FindAllString(code, -1)
+	if len(assigned) == 0 {
+		t.Fatal("app.js never sets verifyStep; this test reads the assignments")
+	}
+	for _, a := range assigned {
+		if !regexp.MustCompile(`^verifyStep\s*=\s*\{`).MatchString(a) {
+			t.Errorf("verifyStep is set as %q; every step is a new object literal", a)
+		}
+	}
+	for _, opener := range []string{
+		`if (event.target.closest('[data-action="forget-browser"]')) {`,
+		`if (event.target.closest('[data-action="forget-verification"]')) {`,
+		`if (event.target.closest('[data-action="verify-keep"]')) {`,
+		`if (restart) {`,
+	} {
+		if !strings.Contains(verifyClickHandler(t, script, opener), "verifyStep = {") {
+			t.Errorf("the handler opening %q does not move the page to a new step, so an answer on its way "+
+				"would still be taken for this one", opener)
+		}
+	}
+
+	// Keep my badge and Use a different address are in the form, and wait.
+	disabled := strings.Index(submit, "const buttons = [...form.querySelectorAll(\"button\")];\n  for (const b of buttons) b.disabled = true;")
+	if disabled < 0 || disabled > first {
+		t.Error("submitVerification does not hold the form's other buttons while its request is on its way")
+	}
+}
