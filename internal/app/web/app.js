@@ -2128,13 +2128,16 @@ const PASS_REISSUE_NONCE_STORAGE_KEY = "educhan:pass-reissue-nonce";
 const PASS_REISSUE_UNANSWERED_STORAGE_KEY = "educhan:pass-reissue-unanswered";
 const PASS_NONCE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 // While Remove the Pass, Forget this browser or Stop collecting it here waits
-// for the server to drop the claim, the tab it was pressed in keeps a mark
-// under this key, new each time, so the browser's other tabs stop as that one
-// does (followPassForget): "code:" and a random token for the first two, which
-// empty the code box too and drop a reissue code's nonce and its answer, and
-// "claim:" for the third, which leaves a reissue code alone. A tab waits for
-// the mark to go for at most PASS_FORGET_WAIT_MS, in case the tab that set it
-// closes before its request is answered and never takes it off.
+// for the server to drop the claim, the tab it was pressed in keeps a mark of
+// its own under this key, a colon and a random token, so the browser's other
+// tabs stop as that one does (followPassForget), and a tab opened meanwhile
+// waits as well (heedPassForgetsUnderWay). Its value is "code:" for the first
+// two, which empty the code box too and drop a reissue code's nonce and its
+// answer, or "claim:" for the third, which leaves a reissue code alone, and
+// the time it was set. Marks never take each other's place, so a tab waits
+// until every one it knows of has gone, each for at most PASS_FORGET_WAIT_MS
+// from when it was set, in case the tab that set it closes before its request
+// is answered and never takes it off; one found older than that is taken off.
 const PASS_FORGET_STORAGE_KEY = "educhan:pass-forget";
 const PASS_FORGET_WAIT_MS = 30000;
 // A reissue code is what the owner sends a buyer who lost their code: the word
@@ -2180,7 +2183,10 @@ const PASS_REISSUE_SPENT = "this reissue code has been used, has run out or was 
 // Said instead of sending what was asked for while a forget was on its way,
 // once Remove the Pass or Forget this browser has been pressed since
 // (passForgetsSettled): whoever pressed it meant this browser to keep no Pass.
+// The second is said once only Stop collecting it here has been, which can
+// come meanwhile only from a tab that has waited out PASS_FORGET_WAIT_MS.
 const PASS_FORGOTTEN_MEANWHILE = "Nothing was sent: the Pass was removed, or this browser forgotten, before it could go.";
+const PASS_STOPPED_MEANWHILE = "Nothing was sent: this browser stopped collecting a Pass before it could go.";
 // Said when the browser will not keep a Pass: its storage for the site is
 // blocked or full, so the Pass cannot ride on the next post.
 const PASS_NOT_KEPT =
@@ -2212,34 +2218,33 @@ let passForgets = 0;
 
 // passCodeForgets counts the forgets that take the Pass with them, Remove the
 // Pass and Forget this browser, here or in another tab (a "code:" mark), and
-// passCodeForgetting is the latest of them while it is on its way. An answer
-// about a Pass, to a code checked or a reissue code spent, whose request went
-// before one of them is dropped unstored, and so is one that arrives while one
-// is on its way (passForgotten). Stop collecting it here is not one of them:
-// it drops only what is being collected, and leaves a reissue code, its nonce
-// and its answer alone.
+// passCodeForgetting settles once all of them this tab knows to be on their
+// way have, or is null while none is. An answer about a Pass, to a code
+// checked or a reissue code spent, whose request went before one of them is
+// dropped unstored, and so is one that arrives while one is on its way
+// (passForgotten). Stop collecting it here is not one of them: it drops only
+// what is being collected, and leaves a reissue code, its nonce and its answer
+// alone.
 let passCodeForgets = 0;
 let passCodeForgetting = null;
 
-// passForgetting is the request that drops this browser's claim
-// (forgetPassClaim) while it is on its way, or, when another tab sent it, the
-// wait for that tab's mark to go (followPassForget), either of them with any
-// this tab sent before that is still on its way (passForgetSent). Until the
-// server has the request, the claim is still this browser's, and GET
-// /api/pass still says there is something to collect, so nothing starts
-// collecting meanwhile: the Pass page waits for it before asking
-// (renderPass), and so does a collection before each claim (collectPass).
+// passForgetting settles once every request to drop this browser's claim that
+// this tab knows to be on its way has: its own (forgetPassClaim), and another
+// tab's, by that tab's mark going (followPassForget, heedPassForgetsUnderWay).
+// It is null while there is none. Until the server has them, the claim is
+// still this browser's, and GET /api/pass still says there is something to
+// collect, so nothing starts collecting meanwhile: the Pass page waits for
+// them before asking (renderPass), and so does a collection before each claim
+// (collectPass). Waiting on every one, a checkout started once Remove's was
+// answered cannot have its claim dropped by a Stop pressed before it and
+// answered after it, in this tab or another.
 let passForgetting = null;
 
-// passForgetSent is this tab's own request to drop the claim while it is on
-// its way, with any it sent before that is still unanswered (forgetPassClaim).
-// What a forget leaves the page to wait on waits for it too: Remove the Pass
-// pressed before Stop's request is answered is settled only once both are,
-// whichever answer comes first, or a checkout started once Remove's was
-// answered could have its claim dropped by Stop's, arriving after it. Another
-// tab's forget is not waited on here: this tab's mark takes the place of that
-// tab's, so its going would never be heard.
-let passForgetSent = null;
+// passForgetWaits holds each of those forgets, by its mark's key, as { code,
+// done }: whether it takes the Pass too, and the wait that settles once it is
+// over, from which passForgetting and passCodeForgetting are made
+// (waitOnPassForget).
+const passForgetWaits = new Map();
 
 // passStartedAgain is set when the visitor leaves Stripe without paying, or
 // says so while a purchase is being collected, or when a checkout opened that
@@ -2268,9 +2273,9 @@ let passCodeTyped = "";
 // because another tab removed or replaced it (followPassStorage).
 let passCodeCopied = "";
 
-// passForgetHeard ends the wait on a forget another tab of this browser has
-// sent (followPassForget), once its mark goes.
-let passForgetHeard = null;
+// passForgetHeard ends the wait on each forget another tab of this browser has
+// on its way, by its mark's key, once the mark goes (followPassForget).
+const passForgetHeard = new Map();
 
 // passJustIssued is the code a claim or a reissue code has just handed over,
 // as { code, expires, kept, replaced, reissued, shown }: replaced is the code
@@ -2385,15 +2390,17 @@ function dropPassNonce(key) {
 // it arrives (passForgets). Then the server drops the claim, which only it can
 // do, since the claim is a cookie the page cannot see; the purchase stays the
 // buyer's, for a reissue code from the receipt. Until the server has the
-// request, nothing starts collecting again (passForgetting), and a mark under
-// PASS_FORGET_STORAGE_KEY has the browser's other tabs do the same
-// (followPassForget). For Remove the Pass and Forget this browser (emptyBoxes),
-// which take the Pass too, the reissue code's nonce goes as well, an answer
-// about a Pass already on its way is dropped (passCodeForgets), and the other
-// tabs empty their code boxes; Stop collecting it here leaves a reissue code
-// being spent alone. It resolves to whether nothing is left to collect here:
-// true once the server has answered, or when it sells no Pass, and false when
-// it could not be reached, since the claim is then still this browser's.
+// request, nothing starts collecting again (passForgetting), and a mark of its
+// own under PASS_FORGET_STORAGE_KEY has the browser's other tabs do the same
+// (followPassForget), and one opened meanwhile wait (heedPassForgetsUnderWay).
+// For Remove the Pass and Forget this browser (emptyBoxes), which take the
+// Pass too, the reissue code's nonce goes as well, an answer about a Pass
+// already on its way is dropped (passCodeForgets), and the other tabs empty
+// their code boxes; Stop collecting it here leaves a reissue code being spent
+// alone. It resolves, once every forget this tab knows to be on its way is
+// over, to whether nothing is left to collect here: true once the server has
+// answered, or when it sells no Pass, and false when it could not be reached,
+// since the claim is then still this browser's.
 function forgetPassClaim(emptyBoxes = false) {
   passVisit += 1;
   passForgets += 1;
@@ -2403,8 +2410,8 @@ function forgetPassClaim(emptyBoxes = false) {
     dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);
     dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);
   }
-  const mark = `${emptyBoxes ? "code" : "claim"}:${newPassNonce()}`;
-  storageSet(PASS_FORGET_STORAGE_KEY, mark);
+  const mark = `${PASS_FORGET_STORAGE_KEY}:${newPassNonce()}`;
+  storageSet(mark, `${emptyBoxes ? "code" : "claim"}:${Date.now()}`);
   const request = (async () => {
     try {
       await api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true }) });
@@ -2413,34 +2420,113 @@ function forgetPassClaim(emptyBoxes = false) {
       return err.status === 403;
     }
   })();
-  const forgetting = passForgetSent ? Promise.all([request, passForgetSent]).then(() => request) : request;
-  passForgetSent = forgetting;
-  passForgetting = forgetting;
-  if (emptyBoxes) {
-    passCodeForgetting = forgetting;
-  }
-  // Cleared before anything that waits on it goes on, since this was
-  // attached first, and the mark taken off unless a later forget has put its
-  // own there.
-  forgetting.then(() => {
-    if (passForgetSent === forgetting) {
-      passForgetSent = null;
-    }
-    if (passForgetting === forgetting) {
-      passForgetting = null;
-    }
-    if (passCodeForgetting === forgetting) {
-      passCodeForgetting = null;
-    }
-    if (storageGet(PASS_FORGET_STORAGE_KEY) === mark) {
+  // Its mark comes off once it is answered, and until then the page waits on
+  // it, with every other forget on its way.
+  waitOnPassForget(
+    mark,
+    emptyBoxes,
+    request.then(() => {
       try {
-        localStorage.removeItem(PASS_FORGET_STORAGE_KEY);
+        localStorage.removeItem(mark);
+      } catch {
+        // Nothing was stored, so nothing needs removing.
+      }
+    })
+  );
+  return passForgetting.then(() => request);
+}
+
+// waitOnPassForget notes a forget on its way under its mark's key, one that
+// takes the Pass too when code is set, until over settles, and keeps
+// passForgetting and passCodeForgetting to the forgets still on their way.
+// Each is taken off them before anything that waits on them goes on.
+function waitOnPassForget(key, code, over) {
+  const wait = { code };
+  wait.done = over.then(() => {
+    if (passForgetWaits.get(key) === wait) {
+      passForgetWaits.delete(key);
+      settlePassForgetting();
+    }
+  });
+  passForgetWaits.set(key, wait);
+  settlePassForgetting();
+  return wait.done;
+}
+
+// settlePassForgetting makes passForgetting and passCodeForgetting again from
+// the forgets still on their way (passForgetWaits), or null when none is.
+function settlePassForgetting() {
+  const all = [];
+  const codes = [];
+  for (const wait of passForgetWaits.values()) {
+    all.push(wait.done);
+    if (wait.code) {
+      codes.push(wait.done);
+    }
+  }
+  passForgetting = all.length ? Promise.all(all) : null;
+  passCodeForgetting = codes.length ? Promise.all(codes) : null;
+}
+
+// passForgetLeft is how much longer a tab waits on another tab's forget, by its
+// mark: until PASS_FORGET_WAIT_MS after it was set, and never longer than that.
+function passForgetLeft(mark) {
+  const left = Number(mark.slice(mark.indexOf(":") + 1)) + PASS_FORGET_WAIT_MS - Date.now();
+  return left > 0 ? Math.min(left, PASS_FORGET_WAIT_MS) : 0;
+}
+
+// heedPassForget waits on a forget another tab has on its way under key, until
+// its mark goes (followPassForget) or passForgetLeft runs out, and returns the
+// wait.
+function heedPassForget(key, mark) {
+  const over = new Promise((resolve) => {
+    passForgetHeard.set(key, resolve);
+    setTimeout(resolve, passForgetLeft(mark));
+  }).then(() => {
+    passForgetHeard.delete(key);
+  });
+  return waitOnPassForget(key, mark.startsWith("code:"), over);
+}
+
+// heedPassForgetsUnderWay waits on every forget another tab has on its way that
+// this page has not heard of, which no storage event will tell it of: one sent
+// before it was loaded, or while it was in the back-forward cache, when a mark
+// that went meanwhile ends its wait too. Nothing collects here until it is
+// over (renderPass, collectPass), and Check now and Stop are drawn off
+// meanwhile (drawPass). Nothing here was asked for before it was sent, so
+// there is nothing more to stop. A mark set more than PASS_FORGET_WAIT_MS ago
+// is one a tab closed before its answer left, and is taken off.
+function heedPassForgetsUnderWay() {
+  const marks = new Map();
+  try {
+    for (let at = 0; at < localStorage.length; at += 1) {
+      const key = localStorage.key(at);
+      if (key && key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {
+        marks.set(key, localStorage.getItem(key) || "");
+      }
+    }
+  } catch {
+    return;
+  }
+  for (const [key, heard] of passForgetHeard) {
+    if (!marks.has(key)) {
+      heard();
+    }
+  }
+  for (const [key, mark] of marks) {
+    if (passForgetWaits.has(key)) {
+      continue;
+    }
+    if (passForgetLeft(mark) > 0) {
+      heedPassForget(key, mark);
+    } else {
+      try {
+        localStorage.removeItem(key);
       } catch {
         // Nothing was stored, so nothing needs removing.
       }
     }
-  });
-  return forgetting;
+  }
 }
 
 // passForgotten says whether an answer about a Pass, to a request sent when
@@ -2456,18 +2542,28 @@ function passForgotten(forgets) {
 // a code typed in once Remove the Pass was pressed is then not dropped for
 // being sent before Remove's own request was done (passForgotten), and a
 // checkout's claim is not dropped by a forget sent before it. It resolves to
-// whether another forget came while it waited (Remove the Pass or Forget this
-// browser, here or in another tab, since Check now and Stop are off until the
-// one on its way is settled): the forgets are noted when it is called, which
-// is when the button was pressed, so a press made before that forget sends
-// nothing (PASS_FORGOTTEN_MEANWHILE), and one made after it goes.
+// what to say if another forget came while it waited, or "": the forgets are
+// noted when it is called, which is when the button was pressed, so a press
+// made before that forget sends nothing, and one made after it goes. Remove
+// the Pass or Forget this browser, here or in another tab, is
+// PASS_FORGOTTEN_MEANWHILE. A Stop alone is PASS_STOPPED_MEANWHILE, and can
+// come only from a tab that has waited the forget on its way out
+// (PASS_FORGET_WAIT_MS), since Check now and Stop are off until then in every
+// tab that knows of it, and every tab does, opened meanwhile included. Each
+// wait ends a turn after the forgets have, so what a forget does with its own
+// answer (Stop's word that this browser has stopped collecting, say) comes
+// first, and what the press says is not drawn over.
 async function passForgetsSettled() {
   const codes = passCodeForgets;
   const claims = passForgets;
-  while (passForgetting || passCodeForgetting) {
-    await (passCodeForgetting || passForgetting);
+  while (passForgetting) {
+    await passForgetting;
+    await new Promise((resolve) => setTimeout(resolve));
   }
-  return codes !== passCodeForgets || claims !== passForgets;
+  if (codes !== passCodeForgets) {
+    return PASS_FORGOTTEN_MEANWHILE;
+  }
+  return claims !== passForgets ? PASS_STOPPED_MEANWHILE : "";
 }
 
 // passPageShown says whether the reader is still on the Pass page, which
@@ -2517,22 +2613,32 @@ function emptyCopiedPassCode() {
 // nothing, and leaves the clipboard as it was, code and all, so one that may
 // have put nothing there does not count, and the two err toward emptying the
 // clipboard of the code. A copy takes what is selected: in a text box whose
-// selection can be read, the box's own has to hold something, and anywhere
-// else the document's does, for a box that does not say (an email box, which
-// Chromium counts in the document's and Firefox does not), a checkbox, the
-// file picker, a button, a link or the page. A cut takes something only from
-// a box that can be typed in, neither read-only nor disabled, or from editable
-// content, with something selected there. Copy the code sets off neither
-// event, since the clipboard API's own write does not, and nor does a copy
-// from the browser's own menus (Copy link address, say), which the page never
-// hears of.
+// selection can be read, the box's own has to hold something; in one that does
+// not say (an email box, which Chromium counts in the document's selection and
+// Firefox does not), the document's selection does; and anywhere else (a
+// checkbox, the file picker, a button, a link or the page) the document's
+// selection has to hold text of the page's own. Chromium goes on reporting a
+// text box's selection as the document's once the focus has left the box, as
+// a collapsed range beside it that says the box's text, though a copy then
+// takes nothing. A cut takes something only from a box that can be typed in,
+// neither read-only nor disabled, or from editable content, with something
+// selected there. Copy the code sets off neither event, since the clipboard
+// API's own write does not, and nor does a copy from the browser's own menus
+// (Copy link address, say), which the page never hears of.
 function forgetCopiedPassCode(event) {
   const target = event.target;
   const box = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : null;
   const readable = box !== null && box.selectionStart !== null;
-  const selected = readable ? box.selectionStart !== box.selectionEnd : String(document.getSelection() || "") !== "";
+  const typed = readable || (box !== null && (box.type === "email" || box.type === "number"));
+  const selection = document.getSelection();
+  const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null;
+  const selected = readable
+    ? box.selectionStart !== box.selectionEnd
+    : typed
+      ? String(selection || "") !== ""
+      : String(range || "") !== "";
   const editable = box
-    ? (readable || box.type === "email" || box.type === "number") && !box.readOnly && !box.disabled
+    ? typed && !box.readOnly && !box.disabled
     : target instanceof HTMLElement && target.isContentEditable;
   if (selected && (event.type === "copy" || editable)) {
     passCodeCopied = "";
@@ -3437,28 +3543,30 @@ function canonicalCode(typed) {
 // redeemPassReissue spends a reissue code typed in the code box (typed, as
 // canonicalCode writes it), which goes to the server in the body of a claim,
 // with a nonce of its own. Pressing the button is the reader's say-so, so a
-// Pass this browser holds is replaced at once, and its code is shown beside
-// the new one (passIssuedHTML). Once an answer arrives the code leaves the
-// box; without one it stays, so pressing again asks again with the same nonce
-// and is handed the same code. The nonce goes only once an answer says the
-// code issued or renewed a Pass: kept after a refusal too, it lets the right
-// code, typed after a lost answer and then a mistyped retry, still ask with
-// the nonce of the try whose answer was lost. Whether a try may have gone
-// unanswered is marked beside it (PASS_REISSUE_UNANSWERED_STORAGE_KEY), and
-// only then is a refusal taken for what may follow a code spent here. A
-// renewal, which hands over no code, is refused when asked again, so the Pass
-// held is checked then (passAfterLostAnswer). Asked for while a forget is on
-// its way, it is sent once that is done (passForgetsSettled), and not at all
-// if Remove the Pass or Forget this browser was pressed meanwhile; an answer
-// that arrives after one of them, here or in another tab, is dropped unstored
-// (passForgotten). Stop collecting it here leaves it alone, but for what it
-// says about the claim Stop dropped (passForgets).
+// Pass this browser holds is replaced at once, and its code is shown beside the
+// new one (passIssuedHTML). Once an answer arrives the code leaves the box;
+// without one it stays, so pressing again asks again with the same nonce and is
+// handed the same code. The nonce goes only once an answer says the code issued
+// or renewed a Pass: kept after a refusal too, it lets the right code, typed
+// after a lost answer and then a mistyped retry, still ask with the nonce of
+// the try whose answer was lost. Whether a try may have gone unanswered is
+// marked beside it (PASS_REISSUE_UNANSWERED_STORAGE_KEY), and only then is a
+// refusal taken for what may follow a code spent here. A renewal, which hands
+// over no code, is refused when asked again, so the Pass held is checked then
+// (passAfterLostAnswer). Asked for while a forget is on its way, it is sent
+// once that is done (passForgetsSettled), and not at all if Remove the Pass or
+// Forget this browser was pressed meanwhile, or Stop in a tab that had given up
+// waiting for it; an answer that arrives after Remove or Forget, here or in
+// another tab, is dropped unstored (passForgotten). Stop collecting it here
+// leaves it alone otherwise, but for what it says about the claim Stop dropped
+// (passForgets).
 async function redeemPassReissue(typed) {
   let res = null;
   let failed = null;
-  if (await passForgetsSettled()) {
+  const meanwhile = await passForgetsSettled();
+  if (meanwhile) {
     if (passPageShown()) {
-      showNotice(PASS_FORGOTTEN_MEANWHILE);
+      showNotice(meanwhile);
     }
     return;
   }
@@ -3558,25 +3666,26 @@ function passStillHeld(before) {
   return (now ? now.code : "") === (before ? before.code : "");
 }
 
-// checkHeldPass asks the server about the Pass this browser holds, for one
-// that looks expired here but may have been renewed on another device. Like a
-// code typed in, the code goes in the body of /api/pass/activate, once no
-// forget is on its way (passForgetsSettled), and not at all if Remove the
-// Pass or Forget this browser was pressed meanwhile. What the answer says is
-// stored only while this browser still holds that Pass and nothing has
-// forgotten it (passForgotten), and drawn only while the reader is on the
-// Pass page.
+// checkHeldPass asks the server about the Pass this browser holds, for one that
+// looks expired here but may have been renewed on another device. Like a code
+// typed in, the code goes in the body of /api/pass/activate, once no forget is
+// on its way (passForgetsSettled), and not at all if Remove the Pass or Forget
+// this browser was pressed meanwhile, or Stop in a tab that had given up
+// waiting for it. What the answer says is stored only while this browser still
+// holds that Pass and nothing has forgotten it (passForgotten), and drawn only
+// while the reader is on the Pass page.
 async function checkHeldPass(button) {
   const held = storedPass();
   if (!held) {
     return;
   }
   button.disabled = true;
-  if (await passForgetsSettled()) {
+  const meanwhile = await passForgetsSettled();
+  if (meanwhile) {
     button.disabled = false;
     if (passPageShown()) {
       refocus(button);
-      showNotice(PASS_FORGOTTEN_MEANWHILE);
+      showNotice(meanwhile);
     }
     return;
   }
@@ -3637,13 +3746,14 @@ async function checkHeldPass(button) {
 // Stripe's page by an ordinary navigation, so nothing of Stripe's ever loads
 // here. A request asked for while a forget is on its way is sent once that is
 // done (passForgetsSettled), and not at all if Remove the Pass or Forget this
-// browser was pressed meanwhile. An answer about a Pass that left this browser
-// while it was awaited (removed, or replaced, here or in another tab) is
-// dropped (passStillHeld), and so is any answer once Remove the Pass or Forget
-// this browser has been pressed (passForgotten), and neither starts a
-// checkout: one it opened is left behind (passStartedAgain). One that arrives
-// after the reader left the Pass page stores what it is still right to store,
-// and draws nothing, and starts no checkout either.
+// browser was pressed meanwhile, or Stop in a tab that had given up waiting for
+// it. An answer about a Pass that left this browser while it was awaited
+// (removed, or replaced, here or in another tab) is dropped (passStillHeld),
+// and so is any answer once Remove the Pass or Forget this browser has been
+// pressed (passForgotten), and neither starts a checkout: one it opened is left
+// behind (passStartedAgain). One that arrives after the reader left the Pass
+// page stores what it is still right to store, and draws nothing, and starts no
+// checkout either.
 async function submitPass(form) {
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
@@ -3708,12 +3818,13 @@ async function submitPass(form) {
   button.disabled = true;
   button.textContent = kind === "activate" ? "Checking…" : "Opening Stripe…";
   clearNotice();
-  if (await passForgetsSettled()) {
+  const meanwhile = await passForgetsSettled();
+  if (meanwhile) {
     button.disabled = false;
     button.textContent = label;
     if (passPageShown()) {
       refocus(button);
-      showNotice(PASS_FORGOTTEN_MEANWHILE);
+      showNotice(meanwhile);
     }
     return;
   }
@@ -5179,11 +5290,16 @@ window.addEventListener("popstate", () => {
 });
 
 // A page brought back from the back-forward cache is shown as it was left,
-// without running anything. The Pass page left for Stripe with its button
-// disabled and its state from before the checkout, so it is drawn again, by
-// render, which asks the age screen first: a page left on the screen, or on
-// its refusal, comes back to the same, and nothing is fetched behind it.
+// without running anything, and heard no storage event meanwhile, so it looks
+// for forgets sent or settled while it was away (heedPassForgetsUnderWay). The
+// Pass page left for Stripe with its button disabled and its state from before
+// the checkout, so it is drawn again, by render, which asks the age screen
+// first: a page left on the screen, or on its refusal, comes back to the same,
+// and nothing is fetched behind it.
 window.addEventListener("pageshow", (event) => {
+  if (event.persisted) {
+    heedPassForgetsUnderWay();
+  }
   if (event.persisted && state.route.view === "pass") {
     render();
   }
@@ -5229,8 +5345,9 @@ function followPassStorage(event) {
 // tab keeps under PASS_FORGET_STORAGE_KEY while its request is on the way
 // (forgetPassClaim). This tab stops as that one did: what it is collecting
 // ends, an answer to a claim already on its way is dropped unstored
-// (passForgets), and nothing collects here until the mark goes
-// (passForgetting), or for at most PASS_FORGET_WAIT_MS. Remove and Forget
+// (passForgets), and nothing collects here until the mark goes, or for at most
+// PASS_FORGET_WAIT_MS from when it was set (heedPassForget), and until every
+// other forget on its way is over too (passForgetting). Remove and Forget
 // ("code:") also drop a reissue code's nonce, and any answer about a Pass on
 // its way or arriving while the mark is there (passCodeForgets,
 // passCodeForgetting), and empty the code box here, and what this tab would
@@ -5238,18 +5355,23 @@ function followPassStorage(event) {
 // this tab nor the last holder's news is left for the next person at the
 // computer; Stop ("claim:") leaves a reissue code alone. Once the wait ends,
 // the Pass page, if the reader is on it here, is drawn again from the server,
-// even if the mark came while it was still loading, and drew nothing.
+// even if the mark came while it was still loading, and drew nothing, and
+// focus the drawing dropped to the top of the document, from a button or a
+// press given back meanwhile, goes to what took its place.
 function followPassForget(event) {
-  if (event.key !== PASS_FORGET_STORAGE_KEY) {
+  const key = event.key;
+  if (!key || !key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {
     return;
-  }
-  const heard = passForgetHeard;
-  passForgetHeard = null;
-  if (heard) {
-    heard();
   }
   const mark = event.newValue;
   if (!mark) {
+    const heard = passForgetHeard.get(key);
+    if (heard) {
+      heard();
+    }
+    return;
+  }
+  if (passForgetWaits.has(key)) {
     return;
   }
   const code = mark.startsWith("code:");
@@ -5263,37 +5385,30 @@ function followPassForget(event) {
     forgetTypedCode();
     passLost = "";
   }
-  const heardOut = new Promise((resolve) => {
-    passForgetHeard = resolve;
-    setTimeout(resolve, PASS_FORGET_WAIT_MS);
-  });
-  const waited = passForgetSent ? Promise.all([heardOut, passForgetSent]).then(() => {}) : heardOut;
-  passForgetting = waited;
-  if (code) {
-    passCodeForgetting = waited;
-  }
+  const waited = heedPassForget(key, mark);
   // Check now and Stop go off here as in the tab Stop was pressed in, until
   // the page is drawn again once the wait is over.
   for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {
     button.disabled = true;
   }
   waited.then(() => {
-    if (passForgetting === waited) {
-      passForgetting = null;
-    }
-    if (passCodeForgetting === waited) {
-      passCodeForgetting = null;
-    }
     // Not over the age screen: until it is answered, render shows that in
     // the Pass page's place.
     if (passPageShown() && ageStatus() === "ok") {
-      renderPass();
+      renderPass().then((drawn) => {
+        if (drawn) {
+          if (!document.activeElement || document.activeElement === document.body) {
+            passFocus('form[data-pass] button[type="submit"]', "#pass-held", "form[data-pass] input");
+          }
+        }
+      });
     }
   });
 }
 
 window.addEventListener("storage", followPassStorage);
 window.addEventListener("storage", followPassForget);
+heedPassForgetsUnderWay();
 
 document.addEventListener("keydown", (event) => {
   if (event.key !== "Escape") {

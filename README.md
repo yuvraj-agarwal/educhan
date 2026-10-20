@@ -411,9 +411,12 @@ here all send it. The page stops any collection under way and drops its nonce
 before it does, and starts none until the server has the request, so a claim
 cannot collect what is being dropped. The browser's other tabs do the same:
 while the request is on its way the page keeps a mark in `localStorage`
-(`educhan:pass-forget`, a random token), and a tab that sees it appear stops,
-and starts nothing until it goes, or for 30 seconds at most, in case the tab
-that set it was closed first, and draws the Pass page then if it is open. An
+(`educhan:pass-forget:` and a random token, a mark for each forget, holding the
+time it was set), and a tab that sees one appear, or finds one when it is
+opened or brought back from the back-forward cache, stops, and starts nothing
+until each such mark goes, or for 30 seconds at most, in case the tab that set
+it was closed first, counted from the time the mark holds; it then draws the
+Pass page if it is open, and a tab opened on an older mark removes it. An
 answer to a claim already on its way, in any tab, when one of them is pressed is
 dropped without being stored or shown; a Pass it brought is still the buyer's,
 and a reissue code from its payment gives it a new code. Remove the Pass and
@@ -982,22 +985,24 @@ not-found view.
   draws it then, and a Stop that cannot reach educhan says so, turns the buttons back on
   and goes on collecting. **Use this code here** (a Pass code or a reissue code), **Check
   it again**, **Buy on Stripe** and **Renew on Stripe** pressed meanwhile wait, and go
-  once the request is settled, with any sent before it from the same tab, whichever is
-  answered first; but if Remove or Forget is pressed while they wait, in this tab or
-  another, they send nothing, give the button back and say why, and only a press made
-  after the Remove goes. Remove and Forget also empty the clipboard, whatever is on it by
-  then, when the code was copied with **Copy the code** in the same tab since educhan was
-  last opened there and no copy or cut in that tab has certainly put something there
-  since, unless another tab has removed or replaced the Pass meanwhile. A copy counts when
-  what is selected holds something (a text box's own selection where the box says, and
-  otherwise the page's), and a cut only that way and in a box that can be typed in, or in
-  editable text; one the page cannot be sure of, such as a copy from an email box in some
-  browsers, does not count, so the clipboard is emptied after it too. A code copied any
-  other way, by hand included, stays until something else is copied. Removing the Pass, or
-  forgetting the browser, in another tab takes a code just handed over off this tab's
-  screen. A post whose Pass was no good goes out like any other, and its answer says so:
-  the page forgets an unknown Pass, keeps one that ran out to renew, and says the post was
-  sent.
+  once every such request the tab knows of is settled, from this tab or another; but if
+  Remove or Forget is pressed while they wait, in this tab or another, they send nothing,
+  give the button back and say why, and only a press made after the Remove goes. They do
+  the same, saying that the browser stopped collecting a Pass first, when Stop is pressed
+  meanwhile in another tab, whose Stop is on only once that tab has given up waiting on
+  the request. Remove and Forget also empty the clipboard, whatever is on it by then, when
+  the code was copied with **Copy the code** in the same tab since educhan was last opened
+  there and no copy or cut in that tab has certainly put something there since, unless
+  another tab has removed or replaced the Pass meanwhile. A copy counts when what is
+  selected holds something (a text box's own selection where the box says, the document's
+  for an email or number box, and otherwise text the page itself has selected), and a cut
+  only that way and in a box that can be typed in, or in editable text; one the page
+  cannot be sure of, such as a copy from an email box in some browsers, does not count, so
+  the clipboard is emptied after it too. A code copied any other way, by hand included,
+  stays until something else is copied. Removing the Pass, or forgetting the browser, in
+  another tab takes a code just handed over off this tab's screen. A post whose Pass was
+  no good goes out like any other, and its answer says so: the page forgets an unknown
+  Pass, keeps one that ran out to renew, and says the post was sent.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

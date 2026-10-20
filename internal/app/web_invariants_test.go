@@ -778,27 +778,31 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 		}
 	}
 	// A code typed in, a reissue code, Check it again or a checkout asked for
-	// while a forget is on its way, here or in another tab, waits for it before
-	// the forgets are noted and the request goes, so its answer is not dropped
-	// for a forget pressed before it was asked for. But the forgets are noted
-	// first when the button is pressed, and one that comes while it waits,
-	// Remove the Pass or Forget this browser pressed after it, here or in
-	// another tab, means it sends nothing: the button comes back, and the
+	// while a forget is on its way, here or in another tab, waits for every one
+	// before the forgets are noted and the request goes, so its answer is not
+	// dropped for a forget pressed before it was asked for. But the forgets are
+	// noted first when the button is pressed, and one that comes while it
+	// waits, Remove the Pass or Forget this browser pressed after it, here or
+	// in another tab, means it sends nothing: the button comes back, and the
 	// notice says why. Noted only after the wait, a renewal would send the code
 	// Remove took away, and a reissue code be spent and its Pass stored after
-	// Forget.
+	// Forget. A Stop alone, which only a tab that has given up waiting can
+	// send, is said apart, since nothing was removed or forgotten. Each wait
+	// ends a turn after the forgets, so what Stop says once it is answered
+	// does not take the place of what the press says.
 	settled := withoutComments(jsFunction(t, script, "passForgetsSettled"))
 	if !strings.Contains(settled, "const codes = passCodeForgets;\n  const claims = passForgets;\n"+
-		"  while (passForgetting || passCodeForgetting) {\n    await (passCodeForgetting || passForgetting);\n  }\n"+
-		"  return codes !== passCodeForgets || claims !== passForgets;\n}") {
-		t.Error("passForgetsSettled no longer waits for every forget on its way, and says whether another came meanwhile")
+		"  while (passForgetting) {\n    await passForgetting;\n    await new Promise((resolve) => setTimeout(resolve));\n  }\n"+
+		"  if (codes !== passCodeForgets) {\n    return PASS_FORGOTTEN_MEANWHILE;\n  }\n"+
+		"  return claims !== passForgets ? PASS_STOPPED_MEANWHILE : \"\";\n}") {
+		t.Error("passForgetsSettled no longer waits for every forget on its way, and says what came meanwhile")
 	}
 	for name, dropped := range map[string]string{
-		"submitPass": "if (await passForgetsSettled()) {\n    button.disabled = false;\n    button.textContent = label;\n" +
-			"    if (passPageShown()) {\n      refocus(button);\n      showNotice(PASS_FORGOTTEN_MEANWHILE);\n    }\n    return;\n  }",
-		"redeemPassReissue": "if (await passForgetsSettled()) {\n    if (passPageShown()) {\n      showNotice(PASS_FORGOTTEN_MEANWHILE);\n    }\n    return;\n  }",
-		"checkHeldPass": "if (await passForgetsSettled()) {\n    button.disabled = false;\n" +
-			"    if (passPageShown()) {\n      refocus(button);\n      showNotice(PASS_FORGOTTEN_MEANWHILE);\n    }\n    return;\n  }",
+		"submitPass": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n    button.disabled = false;\n    button.textContent = label;\n" +
+			"    if (passPageShown()) {\n      refocus(button);\n      showNotice(meanwhile);\n    }\n    return;\n  }",
+		"redeemPassReissue": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n    if (passPageShown()) {\n      showNotice(meanwhile);\n    }\n    return;\n  }",
+		"checkHeldPass": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n    button.disabled = false;\n" +
+			"    if (passPageShown()) {\n      refocus(button);\n      showNotice(meanwhile);\n    }\n    return;\n  }",
 	} {
 		body := withoutComments(jsFunction(t, script, name))
 		waited, noted := strings.Index(body, dropped), strings.Index(body, "const forgets = passCodeForgets;")
@@ -816,9 +820,10 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 		}
 	}
 	if n := strings.Count(withoutComments(script), "passForgetsSettled()"); n != 4 ||
-		!strings.Contains(script, "\nconst PASS_FORGOTTEN_MEANWHILE = \"Nothing was sent: ") {
+		!strings.Contains(script, "\nconst PASS_FORGOTTEN_MEANWHILE = \"Nothing was sent: the Pass was removed, or this browser forgotten") ||
+		!strings.Contains(script, "\nconst PASS_STOPPED_MEANWHILE = \"Nothing was sent: this browser stopped collecting") {
 		t.Errorf("passForgetsSettled() appears %d times; want its definition and the three presses that wait on it, "+
-			"which say nothing was sent when a forget came meanwhile", n)
+			"which say nothing was sent, and why, when a forget came meanwhile", n)
 	}
 	// Each is called straight from the press: the click, or the submit
 	// handler, which hands a Pass form over before it awaits anything.
@@ -1659,31 +1664,37 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	}
 	// Until then nothing collects again: renderPass waits on the request
 	// before it asks about the claim, as collectPass does before each claim,
-	// and Stop collecting it here takes Check now off with it.
-	if !strings.Contains(forget, "passForgetting = forgetting;") ||
-		!strings.Contains(forget, "if (passForgetting === forgetting) {\n      passForgetting = null;") {
+	// and Stop collecting it here takes Check now off with it. The mark comes
+	// off once the request is answered, and what the click goes on with
+	// waits for every other forget on its way too.
+	if !strings.Contains(forget, "waitOnPassForget(\n    mark,\n    emptyBoxes,\n    request.then(() => {\n      try {\n"+
+		"        localStorage.removeItem(mark);") ||
+		!strings.Contains(forget, "return passForgetting.then(() => request);\n}") {
 		t.Error("forgetPassClaim no longer leaves the request it sent for the page to wait on")
 	}
-	// Sent while this tab's earlier forget is still on its way (Remove the
-	// Pass pressed before Stop's is answered), what the page waits on is
-	// settled only once that one is too, whichever answer comes first:
-	// otherwise a checkout started once Remove's was answered could have its
-	// claim dropped by Stop's, arriving after it. Another tab's is not waited
-	// on, since this tab's mark takes the place of that tab's and its going
-	// would never be heard.
-	if !strings.Contains(forget, "const forgetting = passForgetSent ? Promise.all([request, passForgetSent]).then(() => request) : request;\n"+
-		"  passForgetSent = forgetting;\n  passForgetting = forgetting;") ||
-		!strings.Contains(forget, "forgetting.then(() => {\n    if (passForgetSent === forgetting) {\n      passForgetSent = null;\n    }") ||
-		strings.Count(forget, "passForgetting = ") != 2 || strings.Count(forget, "passForgetSent = ") != 2 {
-		t.Error("forgetPassClaim leaves the page waiting on its own request alone, while an earlier one from this tab is still on its way")
+	// The page waits on every forget on its way, this tab's and other tabs',
+	// each under its own mark, so none takes another's place: a forget sent
+	// while an earlier one is still on its way (Remove the Pass pressed before
+	// Stop's is answered, here or in another tab) leaves the page waiting on
+	// both, whichever answer comes first, or a checkout started once Remove's
+	// was answered could have its claim dropped by Stop's, arriving after it.
+	// Each is taken off before anything that waits on it goes on, so a wait
+	// that ends sees only the forgets still on their way.
+	wait := withoutComments(jsFunction(t, script, "waitOnPassForget"))
+	if !strings.Contains(wait, "const wait = { code };\n  wait.done = over.then(() => {\n    if (passForgetWaits.get(key) === wait) {\n"+
+		"      passForgetWaits.delete(key);\n      settlePassForgetting();\n    }\n  });\n  passForgetWaits.set(key, wait);\n  settlePassForgetting();") {
+		t.Error("waitOnPassForget no longer keeps every forget on its way for the page to wait on, or lets a wait go on before it is taken off")
 	}
-	for name, uses := range map[string]int{"forgetPassClaim": 5, "followPassForget": 2} {
-		if got := strings.Count(withoutComments(jsFunction(t, script, name)), "passForgetSent"); got != uses {
-			t.Errorf("%s names passForgetSent %d times, not %d", name, got, uses)
+	made := withoutComments(jsFunction(t, script, "settlePassForgetting"))
+	if !strings.Contains(made, "for (const wait of passForgetWaits.values()) {\n    all.push(wait.done);\n    if (wait.code) {\n      codes.push(wait.done);") ||
+		!strings.Contains(made, "passForgetting = all.length ? Promise.all(all) : null;\n  passCodeForgetting = codes.length ? Promise.all(codes) : null;") {
+		t.Error("passForgetting no longer waits for every forget on its way, or passCodeForgetting for every one that takes the Pass")
+	}
+	for name, n := range map[string]int{"passForgetting = ": 2, "passCodeForgetting = ": 2, "passForgetWaits.set(": 1, "waitOnPassForget(": 3} {
+		if got := strings.Count(code, name); got != n {
+			t.Errorf("app.js does %q %d times; want %d: declared, then set only by settlePassForgetting, "+
+				"for waitOnPassForget, which forgetPassClaim and heedPassForget call", name, got, n)
 		}
-	}
-	if got := strings.Count(withoutComments(script), "passForgetSent"); got != 8 {
-		t.Errorf("passForgetSent is named %d times; only forgetPassClaim and followPassForget use it", got)
 	}
 	render := withoutComments(jsFunction(t, script, "renderPass"))
 	waited := strings.Index(render, "if (passForgetting) {\n    await passForgetting;\n  }")
@@ -1727,7 +1738,7 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	for counter, users := range map[string][]string{
 		"passForgets":        {"forgetPassClaim", "collectPass", "followPassForget", "redeemPassReissue", "passForgetsSettled"},
 		"passCodeForgets":    {"forgetPassClaim", "followPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
-		"passCodeForgetting": {"forgetPassClaim", "followPassForget", "passForgotten", "passForgetsSettled"},
+		"passCodeForgetting": {"settlePassForgetting", "passForgotten"},
 	} {
 		uses := 1
 		for _, name := range users {
@@ -1945,16 +1956,24 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	// leaves the clipboard as it was, the code included, and one that may have
 	// is left uncounted, so Remove and Forget err toward emptying it. A copy
 	// counts when the selection holds something: a text box's own, where it
-	// can be read, and otherwise the document's, for an email box, which does
-	// not say, a checkbox, the file picker, a button or the page. A cut counts
+	// can be read; the document's, for an email or number box, which does not
+	// say; and anywhere else (a checkbox, the file picker, a button or the
+	// page) the document's selection's own text. Chromium goes on reporting a
+	// text box's text as the document's selection once the focus has left the
+	// box, in a collapsed range that holds none, so a Ctrl+C on a button after
+	// a click in the code box copies nothing and must not count. A cut counts
 	// only in a box that can be typed in, neither read-only nor disabled, or in
 	// editable content.
 	taken := words(withoutComments(jsFunction(t, script, "forgetCopiedPassCode")))
 	if !strings.Contains(taken, "function forgetCopiedPassCode(event) { const target = event.target; "+
 		"const box = target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement ? target : null; "+
 		"const readable = box !== null && box.selectionStart !== null; "+
-		`const selected = readable ? box.selectionStart !== box.selectionEnd : String(document.getSelection() || "") !== ""; `+
-		`const editable = box ? (readable || box.type === "email" || box.type === "number") && !box.readOnly && !box.disabled `+
+		`const typed = readable || (box !== null && (box.type === "email" || box.type === "number")); `+
+		"const selection = document.getSelection(); "+
+		"const range = selection && selection.rangeCount ? selection.getRangeAt(0) : null; "+
+		"const selected = readable ? box.selectionStart !== box.selectionEnd "+
+		`: typed ? String(selection || "") !== "" : String(range || "") !== ""; `+
+		"const editable = box ? typed && !box.readOnly && !box.disabled "+
 		": target instanceof HTMLElement && target.isContentEditable; "+
 		`if (selected && (event.type === "copy" || editable)) {`) {
 		t.Error("a copy or a cut that may have put nothing on the clipboard counts as one that took the code's place there")
@@ -2057,14 +2076,16 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	if n := strings.Count(code, `"educhan:pass-forget"`); n != 1 || !strings.Contains(code, `const PASS_FORGET_STORAGE_KEY = "educhan:pass-forget";`) {
 		t.Errorf("app.js spells out the forget mark's key %d times; want once, as PASS_FORGET_STORAGE_KEY", n)
 	}
-	// The mark is set before the request is sent, carries whether to empty
-	// the code box and a random token, and is taken off once the request is
-	// answered unless a later forget has put its own there.
+	// The mark is set before the request is sent, under a key of its own (the
+	// prefix and a random token), carries whether to empty the code box and
+	// when it was set, and is taken off once the request is answered: marks
+	// never take each other's place, so every tab hears each one go.
 	forget := withoutComments(jsFunction(t, script, "forgetPassClaim"))
-	marked := strings.Index(forget, "storageSet(PASS_FORGET_STORAGE_KEY, mark);")
+	marked := strings.Index(forget, "storageSet(mark, `${emptyBoxes ? \"code\" : \"claim\"}:${Date.now()}`);")
 	asked := strings.Index(forget, `await api("/api/pass/claim"`)
-	if !strings.Contains(forget, "const mark = `${emptyBoxes ? \"code\" : \"claim\"}:${newPassNonce()}`;") || marked < 0 || marked > asked ||
-		!strings.Contains(forget, "if (storageGet(PASS_FORGET_STORAGE_KEY) === mark) {\n      try {\n        localStorage.removeItem(PASS_FORGET_STORAGE_KEY);") {
+	if !strings.Contains(forget, "const mark = `${PASS_FORGET_STORAGE_KEY}:${newPassNonce()}`;") || marked < 0 || marked > asked ||
+		!strings.Contains(forget, "request.then(() => {\n      try {\n        localStorage.removeItem(mark);") ||
+		strings.Count(forget, "removeItem(") != 1 {
 		t.Error("forgetPassClaim no longer tells the browser's other tabs, before it asks the server, that it is forgetting")
 	}
 	if !strings.Contains(code, "\nfunction forgetPassClaim(emptyBoxes = false) {") || strings.Count(code, "forgetPassClaim(true)") != 2 ||
@@ -2072,29 +2093,34 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		t.Error("only Remove the Pass and Forget this browser have other tabs empty their code boxes")
 	}
 	follow := withoutComments(jsFunction(t, script, "followPassForget"))
-	gate := strings.Index(follow, "if (event.key !== PASS_FORGET_STORAGE_KEY) {\n    return;\n  }")
+	gate := strings.Index(follow, "const key = event.key;\n  if (!key || !key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {\n    return;\n  }")
 	read := strings.Index(follow, "const mark = event.newValue;")
 	if gate != strings.Index(follow, "{")+4 || read < gate || strings.Count(follow, "event.") != 2 {
-		t.Error("followPassForget reads a storage event other than the forget mark's")
+		t.Error("followPassForget reads a storage event other than a forget mark's")
 	}
-	stop := strings.Index(follow, "if (!mark) {\n    return;\n  }")
+	// A mark that goes ends the wait on it, and one this tab already waits on
+	// (found when it was loaded) is not stopped for twice.
+	stop := strings.Index(follow, "if (!mark) {\n    const heard = passForgetHeard.get(key);\n    if (heard) {\n      heard();\n    }\n    return;\n  }\n"+
+		"  if (passForgetWaits.has(key)) {\n    return;\n  }")
 	for _, step := range []string{"const code = mark.startsWith(\"code:\");", "passVisit += 1;", "passForgets += 1;",
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
 			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n  }",
-		"passForgetting = waited;", "if (code) {\n    passCodeForgetting = waited;\n  }"} {
+		"const waited = heedPassForget(key, mark);"} {
 		if at := strings.Index(follow, step); stop < 0 || stop < read || at < stop {
 			t.Errorf("followPassForget no longer does %q when another tab forgets", step)
 		}
 	}
 	// Stop ("claim:") leaves a reissue code alone, here and in other tabs: its
 	// nonce, the code typed, and an answer on its way, which redeemPassReissue
-	// drops only for Remove and Forget (passCodeForgets, not passForgets).
+	// drops only for Remove and Forget (passCodeForgets, not passForgets), and
+	// which waits on Stop without taking it for one of them (passCodeForgetting
+	// is made only of the forgets that take the Pass).
 	for name, steps := range map[string][]string{
 		"forgetPassClaim": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
-			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "passCodeForgetting = forgetting;"},
+			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);"},
 		"followPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
-			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "passCodeForgetting = waited;", "forgetTypedCode();", "passLost = \"\";"},
+			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "forgetTypedCode();", "passLost = \"\";"},
 	} {
 		body := withoutComments(jsFunction(t, script, name))
 		for _, only := range steps {
@@ -2104,25 +2130,52 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 			}
 		}
 	}
+	if !strings.Contains(forget, "waitOnPassForget(\n    mark,\n    emptyBoxes,") ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "heedPassForget")), `return waitOnPassForget(key, mark.startsWith("code:"), over);`) {
+		t.Error("a Stop's mark is waited on as one that takes the Pass, and drops a reissue answer")
+	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "redeemPassReissue")), "const forgets = passCodeForgets;") {
 		t.Error("redeemPassReissue drops its answer for Stop collecting it here, leaving a spent reissue code and a dead Pass")
 	}
-	// It waits for the mark to go, or a while for a tab closed before its
-	// answer, and draws the Pass page again from the server only then: if the
-	// reader is on it, past the age screen, even when the mark arrived while
-	// it was still loading and drew nothing (a skeleton is no Pass page yet).
-	// And, like forgetPassClaim, for a forget this tab sent that is still on
-	// its way.
-	if !strings.Contains(follow, "const waited = passForgetSent ? Promise.all([heardOut, passForgetSent]).then(() => {}) : heardOut;\n  passForgetting = waited;") {
-		t.Error("followPassForget waits on the other tab's mark alone, while this tab's own forget is still on its way")
+	// It waits for the mark to go, or until a while after it was set, for a
+	// tab closed before its answer, and draws the Pass page again from the
+	// server only then: if the reader is on it, past the age screen, even when
+	// the mark arrived while it was still loading and drew nothing (a skeleton
+	// is no Pass page yet), with focus the drawing dropped put back on the page.
+	heed := withoutComments(jsFunction(t, script, "heedPassForget"))
+	left := withoutComments(jsFunction(t, script, "passForgetLeft"))
+	if !strings.Contains(heed, "passForgetHeard.set(key, resolve);\n    setTimeout(resolve, passForgetLeft(mark));") ||
+		!strings.Contains(heed, "}).then(() => {\n    passForgetHeard.delete(key);\n  });") ||
+		!strings.Contains(left, `const left = Number(mark.slice(mark.indexOf(":") + 1)) + PASS_FORGET_WAIT_MS - Date.now();`) ||
+		!strings.Contains(left, "return left > 0 ? Math.min(left, PASS_FORGET_WAIT_MS) : 0;") {
+		t.Error("a tab no longer waits for another tab's mark to go, or no longer for at most PASS_FORGET_WAIT_MS after it was set")
 	}
-	if !strings.Contains(follow, "passForgetHeard = resolve;\n    setTimeout(resolve, PASS_FORGET_WAIT_MS);") ||
-		!regexp.MustCompile(`const heard = passForgetHeard;\s*passForgetHeard = null;\s*if \(heard\) \{\s*heard\(\);\s*\}`).MatchString(follow) ||
-		!regexp.MustCompile(`waited\.then\(\(\) => \{\s*if \(passForgetting === waited\) \{\s*passForgetting = null;\s*\}\s*`+
-			`if \(passCodeForgetting === waited\) \{\s*passCodeForgetting = null;\s*\}\s*`+
-			`if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*renderPass\(\);`).MatchString(follow) ||
+	if !regexp.MustCompile(`waited\.then\(\(\) => \{\s*if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*`+
+		`renderPass\(\)\.then\(\(drawn\) => \{\s*if \(drawn\) \{\s*`+
+		`if \(!document\.activeElement \|\| document\.activeElement === document\.body\) \{\s*passFocus\(`).MatchString(follow) ||
 		strings.Contains(follow, "data-pass-page") {
-		t.Error("followPassForget no longer draws the Pass page from the server once the other tab's request is answered")
+		t.Error("followPassForget no longer draws the Pass page from the server once the other tab's request is answered, " +
+			"with focus the drawing dropped on what took its place")
+	}
+	// A tab opened while a forget is on its way hears no storage event for it,
+	// nor does one brought back from the back-forward cache for a mark set or
+	// taken off while it was away, so each looks for the marks there before
+	// anything is drawn: one it does not know of is waited on, one whose
+	// mark has gone stops being waited on, and one set longer ago than a tab
+	// waits, left by a tab closed before its answer, is taken off.
+	under := withoutComments(jsFunction(t, script, "heedPassForgetsUnderWay"))
+	if !strings.Contains(under, "if (key && key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {\n        marks.set(key, localStorage.getItem(key) || \"\");") ||
+		!strings.Contains(under, "for (const [key, heard] of passForgetHeard) {\n    if (!marks.has(key)) {\n      heard();") ||
+		!strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      heedPassForget(key, mark);\n    } else {\n"+
+			"      try {\n        localStorage.removeItem(key);") {
+		t.Error("a tab opened while a forget is on its way no longer waits on it, or no longer takes off a mark left behind")
+	}
+	if !strings.Contains(code, "\nwindow.addEventListener(\"storage\", followPassForget);\nheedPassForgetsUnderWay();\n") ||
+		strings.Index(code, "\nheedPassForgetsUnderWay();\n") > strings.LastIndex(code, "\nrender();\n") ||
+		!strings.Contains(withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});")),
+			"if (event.persisted) {\n    heedPassForgetsUnderWay();\n  }\n  if (event.persisted && state.route.view === \"pass\") {") ||
+		strings.Count(code, "heedPassForgetsUnderWay()") != 3 {
+		t.Error("a page opened, or brought back, while a forget is on its way can draw the Pass page before it looks for one")
 	}
 	// How long at most, as the README says.
 	readme, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
