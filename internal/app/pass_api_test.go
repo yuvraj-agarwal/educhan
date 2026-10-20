@@ -3069,8 +3069,9 @@ func (p *passHarness) originOf(paymentIntent string) string {
 // from moving at all, and is counted again if it is refunded; while any
 // renewal is under way, the right that did move gives no reissue code, and one
 // made before is refused without being spent, to work again if the renewal
-// comes to nothing. An unpaid one counts until its deadline, pruned or not.
-// Collected, the renewal stays on the holder's code.
+// comes to nothing. An unpaid one counts until Stripe closes it or it is
+// pruned past its deadline, since until then it can still be paid. Collected,
+// the renewal stays on the holder's code.
 func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	refusedNoOrigin := func(paymentIntent, when string) {
@@ -3169,20 +3170,38 @@ func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 	if status, _, _ := p.reissueCode("mod-key", "pi_lapsed_onlooker"); status != http.StatusOK {
 		t.Fatalf("reissue with the one renewal left once the holder's checkout closed unpaid: status %d", status)
 	}
-	// Nor is an unpaid order past its deadline, before anything prunes it.
+	// An unpaid order past its deadline is under way until it is pruned,
+	// since Stripe can still report it paid until then. Pruned, it is gone,
+	// and a payment for it after all renews nothing.
 	late := p.buy("pi_late_bought")
-	p.otherBrowser().renew(late.Pass, "pi_late_onlooker")
-	p.checkout(late.Pass)
+	latecomer := p.otherBrowser()
+	latecomer.renew(late.Pass, "pi_late_onlooker")
+	session = p.checkout(late.Pass)
 	p.refund("pi_late_bought")
-	refusedNoOrigin("pi_late_onlooker", "while the holder's renewal checkout is open")
 	if _, err := p.app.pool.Exec(context.Background(), `
 		UPDATE pass_orders SET expires_at = now() - interval '1 day'
 		WHERE renew_pass_id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1)`,
 		p.app.passPaymentHash("pi_late_onlooker")); err != nil {
 		t.Fatal(err)
 	}
-	if status, _, _ := p.reissueCode("mod-key", "pi_late_onlooker"); status != http.StatusOK {
-		t.Fatalf("reissue with the one renewal left once the holder's unpaid checkout passed its deadline: status %d", status)
+	refusedNoOrigin("pi_late_onlooker", "while the holder's unpaid checkout is past its deadline and not pruned yet")
+	if err := p.app.store.prunePasses(context.Background(), time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	status, _, lateCode := p.reissueCode("mod-key", "pi_late_onlooker")
+	if status != http.StatusOK {
+		t.Fatalf("reissue with the one renewal left once the holder's unpaid checkout was pruned: status %d", status)
+	}
+	status, taken := latecomer.redeem(lateCode)
+	if status != http.StatusOK || taken.Status != "issued" {
+		t.Fatalf("redeem once the holder's unpaid checkout was pruned: status %d, %+v", status, taken)
+	}
+	p.paid(session, "pi_late_renewal")
+	if status, out := p.claim(); status == http.StatusOK {
+		t.Fatalf("the pruned renewal, paid after all, was collected: %+v", out)
+	}
+	if status, out := p.activate(taken.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(taken.ExpiresAt) {
+		t.Fatalf("the reissued code once the pruned renewal was paid: status %d, %+v; want good until %v", status, out, taken.ExpiresAt)
 	}
 
 	// Made with nothing under way, and used after the holder paid to renew:
@@ -3236,6 +3255,60 @@ func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
 	}
 	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
 		t.Fatalf("the reissued code: status %d", status)
+	}
+}
+
+// TestPassRenewalCheckoutRacingAReissue holds a renewal checkout to the code
+// it was started with. The holder's checkout reads the Pass without the lock
+// and then waits on Stripe for a session; a reissue code for the right that
+// moved to the onlooker's renewal, used meanwhile, finds no order under way
+// and gives the Pass another code. The order, looked up again by the holder's
+// code, is refused as a renewal of a Pass that is gone, so the year the
+// holder would pay for never lands on the Pass handed to the onlooker.
+func TestPassRenewalCheckoutRacingAReissue(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	held := p.buy("pi_raced_bought")
+	onlooker := p.otherBrowser()
+	onlooker.renew(held.Pass, "pi_raced_onlooker")
+	p.refund("pi_raced_bought")
+	if got := p.originOf("pi_raced_onlooker"); got != "moved" {
+		t.Fatalf("the onlooker's renewal once the purchase was refunded: origin %q, want moved", got)
+	}
+	_, _, code := p.reissueCode("mod-key", "pi_raced_onlooker")
+	if code == "" {
+		t.Fatal("no reissue code for the renewal the right moved to")
+	}
+	before, _ := p.claimCookie()
+
+	var redeemed passResponse
+	redeemStatus := 0
+	p.stripe.mu.Lock()
+	p.stripe.opening = func() {
+		if redeemStatus == 0 {
+			redeemStatus, redeemed = onlooker.redeem(code)
+		}
+	}
+	p.stripe.mu.Unlock()
+	var out passResponse
+	status := p.post("/api/pass/checkout", map[string]any{"adult": true, "renew": held.Pass}, &out)
+	p.stripe.mu.Lock()
+	p.stripe.opening = nil
+	p.stripe.mu.Unlock()
+
+	if redeemStatus != http.StatusOK || redeemed.Status != "issued" {
+		t.Fatalf("the reissue code used while the holder's checkout was opening: status %d, %+v", redeemStatus, redeemed)
+	}
+	if status != http.StatusConflict || out.Pass != passInvalid || !strings.Contains(out.Error, "buy a new one") {
+		t.Fatalf("the holder's renewal checkout once the code was reissued: status %d, %+v", status, out)
+	}
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("the refused renewal left %d orders", n)
+	}
+	if after, _ := p.claimCookie(); after != before || p.reportsClaim() {
+		t.Fatal("the refused renewal gave the browser a claim")
+	}
+	if status, got := p.activate(redeemed.Pass); status != http.StatusOK || !got.ExpiresAt.Equal(redeemed.ExpiresAt) {
+		t.Fatalf("the reissued code: status %d, %+v; want good until %v", status, got, redeemed.ExpiresAt)
 	}
 }
 

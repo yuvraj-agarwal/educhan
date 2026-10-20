@@ -636,16 +636,20 @@ not collected yet, that leaves one payment paying for all its time moves the
 right to that payment then; a term that simply runs out moves nothing.
 
 For the same reason the right that moved goes again as soon as the Pass is
-renewed once more, by its holder or anybody else, since that payment then
-pays for only part of its time, and a reissue code made for it is cancelled
-with it; a renewal only ever takes the right away. While a renewal of the
-Pass is under way, from its checkout until it is collected, the payment the
-right moved to gets no reissue code (the same `409`), and one made before is
-refused with `409` and not spent, since the renewal, paid for by somebody,
-would land on the Pass handed over. If the renewal goes unpaid, or is
-refunded or disputed before it is collected, the reissue code works again
-until its deadline. The purchase keeps its own right whatever renewal is
-under way.
+renewed once more, by its holder or anybody else, since that payment then pays
+for only part of its time, and a reissue code made for it is cancelled with it;
+a renewal only ever takes the right away. While a renewal of the Pass is under
+way, from its checkout until it is collected, the payment the right moved to
+gets no reissue code (the same `409`), and one made before is refused with
+`409` and not spent, since the renewal, paid for by somebody, would land on the
+Pass handed over. A checkout whose code was given to somebody else by a reissue
+while Stripe was opening it is refused with `409` instead, as a renewal of a
+Pass that is gone. If the renewal goes unpaid, or is refunded or disputed
+before it is collected, the reissue code works again until its deadline. An
+unpaid checkout goes unpaid when Stripe closes it, or once it is past its
+deadline and pruned, by the daily sweep or the next checkout, since Stripe can
+still report it paid until then. The purchase keeps its own right whatever
+renewal is under way.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass
 (`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
@@ -1224,7 +1228,7 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","automatic_tax","price":{"amount","currency"},"paused","claim"}`, or `{"enabled":false}` without it. `"automatic_tax":true` is there only when Stripe Tax adds tax to the price; `price` is left out when Stripe can't be asked and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `409` when the Pass to renew was refunded or lapsed meanwhile |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
 | `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
