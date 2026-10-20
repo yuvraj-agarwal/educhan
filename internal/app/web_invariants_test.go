@@ -922,12 +922,17 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 	// A post that went from a form since gone leaves the page the reader went
 	// to as it is, and a code request does not draw /verify over it.
 	// The form a post went from is emptied wherever it is, so a redraw that
-	// carried it while it was held does not show the post again.
+	// carried it while it was held does not show the post again. A badge
+	// confirmed is offered from then on, /verify on screen or not, so a page
+	// the reader goes to while /verify is being drawn again, which that
+	// drawing then leaves alone, has it too.
 	inOrder(t, "the submit handler", submit, "() => onScreen() && !forgotten(), );", "form.reset();",
 		"release(false); if (!onScreen()) { return; } await navigate(")
 	inOrder(t, "submitVerification", verify,
 		"onScreen, );", "if (!onScreen()) { return; }", "el.main.innerHTML = verifyViewHTML();",
-		`await api("/api/verify/confirm"`, "storeCredential(issued.credential);", "if (!onScreen()) {", "await renderVerify(route);",
+		`await api("/api/verify/confirm"`,
+		`storeCredential(issued.credential); state.verification.badge = readBadge(); verifyStep = { step: "email", label: "" }; `+
+			"if (!onScreen()) { return; } await renderVerify(route);",
 	)
 }
 

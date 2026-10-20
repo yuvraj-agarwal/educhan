@@ -4624,10 +4624,11 @@ async function submitVerification(form) {
       return;
     }
     storeCredential(issued.credential);
+    // Offered from now on, on every posting form drawn, so a reader who has
+    // left /verify, or leaves before it is drawn again, has it on the next one.
+    state.verification.badge = readBadge();
     verifyStep = { step: "email", label: "" };
     if (!onScreen()) {
-      // Kept all the same, and offered on the next posting form drawn.
-      state.verification.badge = readBadge();
       return;
     }
     await renderVerify(route);
