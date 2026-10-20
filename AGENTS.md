@@ -593,14 +593,17 @@ needs a browser check before the test changes.
   Forget the reissue code's too, its mark, `passLost` and its code box, turns Check now
   and Stop off, and waits for the mark to go, or `PASS_FORGET_WAIT_MS` (30 seconds, which
   the README states) from the time it holds at most (`heedPassForget`), then draws the
-  Pass page if it is on it, putting the focus back if the drawing left it on the page's
-  body. A tab opened, or brought back from the back-forward cache, while a mark is there
-  heard no `storage` event for it, so it looks for marks before it draws anything
-  (`heedPassForgetsUnderWay`, at load and on `pageshow`), stops for each it does not yet
-  wait on through `stopForPassForget` too, and removes one older than the wait. At load
-  that changes nothing, but a page brought back holds what it held when it was left (a
-  collection's nonce, a reissue code's, the last holder's news), and the `storage` event
-  for the mark, which comes after `pageshow`, finds it already waited on.
+  Pass page if it is on it, as `redrawPass` does: focus that was on the page just before
+  the drawing, and that the drawing dropped, goes to what took its place, and focus on
+  the body or outside the page stays where it is, so a phone's page is not scrolled to a
+  button the reader never chose; Check now or Stop, turned off with the focus on it, hands
+  it to its panel meanwhile. A tab opened, or brought back from the back-forward cache,
+  while a mark is there heard no `storage` event for it, so it looks for marks before it
+  draws anything (`heedPassForgetsUnderWay`, at load and on `pageshow`), stops for each
+  it does not yet wait on through `stopForPassForget` too, and removes one older than
+  the wait. At load that changes nothing, but a page brought back holds what it held when
+  it was left (a collection's nonce, a reissue code's, the last holder's news), and the
+  `storage` event for the mark, which comes after `pageshow`, finds it already waited on.
   An answer to a code check or a post acts only on the Pass it was about, if this browser
   still holds it (`passStillHeld`), so a Pass removed or replaced meanwhile, here or in
   another tab, is not written back. Whatever a Pass answer stores, it draws, focuses or

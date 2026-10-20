@@ -2216,7 +2216,13 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	// tab closed before its answer, and draws the Pass page again from the
 	// server only then: if the reader is on it, past the age screen, even when
 	// the mark arrived while it was still loading and drew nothing (a skeleton
-	// is no Pass page yet), with focus the drawing dropped put back on the page.
+	// is no Pass page yet). The drawing keeps a keyboard where it was, as
+	// redrawPass does: focus on the page just before it, on a button given back
+	// meanwhile say, goes to what took its place, and focus on the body or
+	// outside the page stays there, so a reader who comes back to this tab does
+	// not find it moved, or a phone's page scrolled to a button. Check now or
+	// Stop, turned off while the forget goes, gives focus it had to its panel,
+	// which is on the page, rather than dropping it to the body.
 	heed := withoutComments(jsFunction(t, script, "heedPassForget"))
 	left := withoutComments(jsFunction(t, script, "passForgetLeft"))
 	if !strings.Contains(heed, "passForgetHeard.set(key, resolve);\n    setTimeout(resolve, passForgetLeft(mark));") ||
@@ -2225,12 +2231,18 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		!strings.Contains(left, "return left > 0 ? Math.min(left, PASS_FORGET_WAIT_MS) : 0;") {
 		t.Error("a tab no longer waits for another tab's mark to go, or no longer for at most PASS_FORGET_WAIT_MS after it was set")
 	}
+	render := withoutComments(jsFunction(t, script, "renderPass"))
 	if !regexp.MustCompile(`stopForPassForget\(key, mark\)\.then\(\(\) => \{\s*if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*`+
-		`renderPass\(\)\.then\(\(drawn\) => \{\s*if \(drawn\) \{\s*`+
-		`if \(!document\.activeElement \|\| document\.activeElement === document\.body\) \{\s*passFocus\(`).MatchString(follow) ||
-		strings.Contains(follow, "data-pass-page") {
+		regexp.QuoteMeta(`renderPass('form[data-pass] button[type="submit"]', "#pass-held", "form[data-pass] input");`)+`\s*\}\s*\}\);`).MatchString(follow) ||
+		strings.Contains(follow, "data-pass-page") || strings.Contains(follow, "activeElement") || strings.Contains(follow, "passFocus(") ||
+		!strings.Contains(render, "async function renderPass(...selectors) {") ||
+		!strings.Contains(render, "if (selectors.length) {\n    redrawPass(info, ...selectors);\n  } else {\n    drawPass(info);\n  }") {
 		t.Error("followPassForget no longer draws the Pass page from the server once the other tab's request is answered, " +
-			"with focus the drawing dropped on what took its place")
+			"or moves focus that was not on the page")
+	}
+	if !strings.Contains(stopping, "const focused = document.activeElement;\n  for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n"+
+		"    button.disabled = true;\n    if (button === focused) {\n      (button.closest('[tabindex=\"-1\"]') || el.main).focus({ preventScroll: true });\n    }\n  }") {
+		t.Error("Check now or Stop, turned off for another tab's forget, drops the focus it had off the page")
 	}
 	// A tab opened while a forget is on its way hears no storage event for it,
 	// nor does one brought back from the back-forward cache for a mark set or

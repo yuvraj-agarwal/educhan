@@ -2535,7 +2535,8 @@ function heedPassForget(key, mark) {
 // neither a reissue code typed in this tab nor the last holder's news is left
 // for the next person at the computer; Stop ("claim:") leaves a reissue code
 // alone. Check now and Stop go off, as in the tab Stop was pressed in, until
-// the page is drawn again once the wait is over.
+// the page is drawn again once the wait is over, and focus on one of them
+// stays on its panel, so the drawing gives it to what took its place.
 function stopForPassForget(key, mark) {
   const code = mark.startsWith("code:");
   passVisit += 1;
@@ -2549,8 +2550,12 @@ function stopForPassForget(key, mark) {
     passLost = "";
   }
   const waited = heedPassForget(key, mark);
+  const focused = document.activeElement;
   for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {
     button.disabled = true;
+    if (button === focused) {
+      (button.closest('[tabindex="-1"]') || el.main).focus({ preventScroll: true });
+    }
   }
   return waited;
 }
@@ -3226,8 +3231,10 @@ function refocus(button) {
 
 // renderPass draws the Pass page from the server's answer, and resolves to
 // whether it did: a drawing overtaken by another, or by a forget, or by the
-// reader leaving the page, draws nothing.
-async function renderPass() {
+// reader leaving the page, draws nothing. Given selectors, for a drawing that
+// something other than the reader set off, it draws as redrawPass does,
+// keeping a keyboard where it was.
+async function renderPass(...selectors) {
   const visit = ++passVisit;
   const query = new URLSearchParams(window.location.search);
   const back = query.has("paid") ? "paid" : query.has("cancelled") ? "cancelled" : "";
@@ -3248,7 +3255,11 @@ async function renderPass() {
     return false;
   }
   const fresh = Boolean(passJustIssued && !passJustIssued.shown);
-  drawPass(info);
+  if (selectors.length) {
+    redrawPass(info, ...selectors);
+  } else {
+    drawPass(info);
+  }
   announce("educhan Pass");
   if (fresh) {
     focusPassPanel("pass-issued");
@@ -5431,8 +5442,9 @@ function followPassStorage(event) {
 // (forgetPassClaim), and stops this tab as that one did (stopForPassForget).
 // Once the wait ends, the Pass page, if the reader is on it here, is drawn
 // again from the server, even if the mark came while it was still loading, and
-// drew nothing, and focus the drawing dropped to the top of the document, from
-// a button or a press given back meanwhile, goes to what took its place.
+// drew nothing, keeping a keyboard where it was (redrawPass): focus on the page
+// just before the drawing, on a button given back meanwhile say, goes to what
+// took its place, and focus on the body or outside the page stays there.
 function followPassForget(event) {
   const key = event.key;
   if (!key || !key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {
@@ -5453,13 +5465,7 @@ function followPassForget(event) {
     // Not over the age screen: until it is answered, render shows that in
     // the Pass page's place.
     if (passPageShown() && ageStatus() === "ok") {
-      renderPass().then((drawn) => {
-        if (drawn) {
-          if (!document.activeElement || document.activeElement === document.body) {
-            passFocus('form[data-pass] button[type="submit"]', "#pass-held", "form[data-pass] input");
-          }
-        }
-      });
+      renderPass('form[data-pass] button[type="submit"]', "#pass-held", "form[data-pass] input");
     }
   });
 }
