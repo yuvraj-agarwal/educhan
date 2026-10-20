@@ -785,6 +785,13 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 			t.Errorf("%s sends its request while a forget is on its way, and then drops the answer for it", name)
 		}
 	}
+	// One asked for before the forget and dropped for it gives the button that
+	// waited its focus back, rather than leaving it on the top of the document.
+	if !strings.Contains(withoutComments(jsFunction(t, script, "submitPass")),
+		"if (passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n    button.textContent = label;\n"+
+			"    if (passPageShown()) {\n      refocus(button);\n    }\n    return;\n  }") {
+		t.Error("submitPass drops an answer for a forget and leaves focus on the top of the document")
+	}
 	submit := withoutComments(submitHandler(t, script))
 	sent := strings.Index(submit, "const sent = pass && passStillHeld(pass) ? pass : null;")
 	if sent < 0 || sent > strings.Index(submit, "forgetPass();") || sent > strings.Index(submit, "markPassExpired(") ||

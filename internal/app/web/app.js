@@ -3643,9 +3643,15 @@ async function submitPass(form) {
   if (res && kind !== "activate") {
     passStartedAgain = true;
   }
+  // The forget that dropped it draws the page again once it is settled; until
+  // then the button that waited has focus back, if nothing else took it and
+  // the reader is still on the Pass page.
   if (passForgotten(forgets) || !passStillHeld(held)) {
     button.disabled = false;
     button.textContent = label;
+    if (passPageShown()) {
+      refocus(button);
+    }
     return;
   }
   const refusal = failed && failed.payload && failed.payload.pass;
