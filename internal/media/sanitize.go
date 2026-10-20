@@ -256,7 +256,8 @@ type sanitized struct {
 //
 // ctx is the request's: the decode reads through a ctxReader and the encode
 // writes into a storedBuffer that both fail once it is done, each format
-// checks it again once its decode is done, and playGIF checks it between
+// checks it again once its decode is done, a GIF once more before the
+// thumbnail it makes of its first picture, and playGIF checks it between
 // frames, so a costly picture stops being processed soon after the post that
 // asked for it is cancelled or out of time rather than running to the end
 // first — which is what lets processHeld give the budget back. A decode is
@@ -476,14 +477,24 @@ func sanitizeGIF(ctx context.Context, data []byte, limit int64, frames gifFrames
 	if err != nil {
 		return sanitized{}, ErrCorruptImage
 	}
+	if err := ctx.Err(); err != nil {
+		return sanitized{}, err
+	}
 	heads := make([]gifFrameHead, 0, frames.count)
 	if _, err := walkGIF(data, math.MaxInt64, func(h gifFrameHead) { heads = append(heads, h) }); err != nil || len(heads) != len(g.Image) {
 		return sanitized{}, ErrCorruptImage
 	}
 	canvas := image.Rect(0, 0, frames.canvas.X, frames.canvas.Y)
 	// The thumbnail is of the first picture the GIF shows, its first frame
-	// on the canvas, made before the frames are played.
+	// on the canvas, made before the frames are played. It is made here, so
+	// processHeld's check before the thumbnail comes too late for it: the
+	// scale is one call that cannot be cut short, at the size of the canvas,
+	// ~0.6 s of CPU on a 25-megapixel one, and a context that has ended
+	// already skips it.
 	first := newFirstGIFPicture(g.Image[0], heads[0], canvas)
+	if err := ctx.Err(); err != nil {
+		return sanitized{}, err
+	}
 	thumb, err := makeThumbnail(first, FormatGIF)
 	if err != nil {
 		return sanitized{}, err

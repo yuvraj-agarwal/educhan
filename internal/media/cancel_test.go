@@ -22,11 +22,11 @@ import (
 // through a ctxReader, each format checks once its decode is done, the encode
 // writes into a storedBuffer — and the JPEG encoder stops working, not only
 // writing, once a write is refused — playGIF checks before each frame, and
-// processHeld checks before the thumbnail. These tests pin each of them on
-// its own, by ending the context at the moment that one asks (askedContext)
-// and holding the work to stopping right there. None depends on timing: where
-// the context ends is fixed by the code's own calls, not by how fast the
-// machine is.
+// processHeld checks before the thumbnail, or sanitizeGIF before a GIF's,
+// which it makes itself. These tests pin each of them on its own, by ending
+// the context at the moment that one asks (askedContext) and holding the work
+// to stopping right there. None depends on timing: where the context ends is
+// fixed by the code's own calls, not by how fast the machine is.
 
 // askedContext is a context that ends — Err returns context.Canceled and
 // Done is closed — the moment it is asked, through Err, for the after-th time
@@ -36,6 +36,13 @@ import (
 type askedContext struct {
 	endsAt string
 	after  int
+	// passes, if set, has the context end just after that ask instead, which
+	// it answers as if the context had not ended.
+	passes bool
+	// allocs, if set, has the context note in allocated how many bytes the
+	// process had allocated in all (runtime.MemStats.TotalAlloc) as it ends.
+	allocs    bool
+	allocated uint64
 
 	mu     sync.Mutex
 	asks   []contextAsk
@@ -76,6 +83,15 @@ func (c *askedContext) Err() error {
 		if c.seen++; c.seen >= c.after {
 			c.ended = true
 			close(c.done)
+			if c.allocs {
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				c.allocated = m.TotalAlloc
+			}
+			if c.passes {
+				c.asks = append(c.asks, contextAsk{fn: fn})
+				return nil
+			}
 		}
 	}
 	c.asks = append(c.asks, contextAsk{fn: fn, late: c.sawEnd})
@@ -113,8 +129,9 @@ func (c *askedContext) first() string {
 }
 
 // The functions that ask a processing context whether it is done. Each
-// format's own function (sanitizeJPEG, sanitizePNG, sanitizeWebP) asks too,
-// once its decode is done.
+// format's own function (sanitizeJPEG, sanitizePNG, sanitizeGIF,
+// sanitizeWebP) asks too, once its decode is done, and sanitizeGIF again
+// before the thumbnail it makes of a GIF's first picture.
 const (
 	askRead   = "ctxReader.Read"
 	askWrite  = "(*storedBuffer).Write"
@@ -267,6 +284,7 @@ func TestNothingMoreIsDoneOnceTheContextEndsWithTheDecode(t *testing.T) {
 	}{
 		{"JPEG", "sanitizeJPEG", photoJPEG(t)},
 		{"PNG", "sanitizePNG", photoPNG(t)},
+		{"GIF", "sanitizeGIF", flatGIF(t, 64, 64, 4)},
 		{"lossy WebP", "sanitizeWebP", readTestdata(t, "lossy.webp")},
 		{"lossless WebP", "sanitizeWebP", readTestdata(t, "sample.webp")},
 	} {
@@ -429,5 +447,79 @@ func TestProcessSkipsTheThumbnailOnceTheContextHasEnded(t *testing.T) {
 	}
 	if n := b.held(); n != 0 {
 		t.Errorf("%d bytes held after a cancelled Process, want 0", n)
+	}
+}
+
+// TestAGIFIsNotThumbnailedOnceTheContextHasEnded holds that sanitizeGIF asks
+// after its context twice, once the frames are decoded and again just before
+// it thumbnails the first picture, and that a context that has ended by
+// either ask stops it there, before the thumbnail and before any frame is
+// played: sanitizeGIF's checks, each on its own. A GIF's thumbnail is made in
+// sanitizeGIF, before its frames are played, so processHeld's check comes too
+// late for it, and the scale is one call that cannot be cut short, at the
+// size of the canvas: ~0.6 s of CPU on one of 25 megapixels. It allocates by
+// the canvas too, megabytes for this one, which is how the test sees that it
+// did not run once the context had ended.
+func TestAGIFIsNotThumbnailedOnceTheContextHasEnded(t *testing.T) {
+	const asks, size = "sanitizeGIF", 1000
+	upload := flatGIF(t, size, size, 2)
+	live := sanitizeLive(t, "GIF", upload)
+	if n, _ := live.asked(asks); n != 2 {
+		t.Fatalf("%s asked %d times in a whole run, want twice: once the frames are decoded and before the thumbnail", asks, n)
+	}
+	whole, _ := live.asked(askRead)
+
+	// The thumbnail of the first picture, on its own, allocates far more
+	// than is allowed after the context ends.
+	const allowed = 256 << 10
+	g, err := gif.DecodeAll(bytes.NewReader(upload))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	var heads []gifFrameHead
+	if _, err := walkGIF(upload, math.MaxInt64, func(h gifFrameHead) { heads = append(heads, h) }); err != nil {
+		t.Fatalf("walk: %v", err)
+	}
+	first := newFirstGIFPicture(g.Image[0], heads[0], image.Rect(0, 0, size, size))
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := makeThumbnail(first, FormatGIF); err != nil {
+		t.Fatalf("thumbnail: %v", err)
+	}
+	runtime.ReadMemStats(&after)
+	if made := after.TotalAlloc - before.TotalAlloc; made < 4*allowed {
+		t.Fatalf("the thumbnail allocates %d bytes, too few to tell from the %d allowed", made, allowed)
+	}
+
+	for _, c := range []struct {
+		when   string
+		passes bool // whether the first ask is told the context is live
+		asked  int  // how many times sanitizeGIF asks
+	}{
+		// The first ask, once the frames are decoded, sees it end.
+		{"with the decode", false, 1},
+		// The first ask is answered live and the context ends just after,
+		// while the frames are walked: the ask before the thumbnail sees it.
+		{"after the decode", true, 2},
+	} {
+		ctx := newAskedContext(asks, 1)
+		ctx.passes, ctx.allocs = c.passes, true
+		sanitizeUnder(t, "GIF ended "+c.when, ctx, upload)
+		var end runtime.MemStats
+		runtime.ReadMemStats(&end)
+		if n, late := ctx.asked(asks); n != c.asked || late != 0 {
+			t.Errorf("ended %s: %s asked %d times (%d after the context was seen to end), want %d, and none after", c.when, asks, n, late, c.asked)
+		}
+		if n, late := ctx.asked(askRead); n != whole || late != 0 {
+			t.Errorf("ended %s: the decode read %d times (%d after the context ended), want all %d of a whole decode, before it", c.when, n, late, whole)
+		}
+		for _, fn := range []string{askFrame, askWrite} {
+			if n, _ := ctx.asked(fn); n != 0 {
+				t.Errorf("ended %s: %s asked %d times; nothing should have been played", c.when, fn, n)
+			}
+		}
+		if made := end.TotalAlloc - ctx.allocated; made > allowed {
+			t.Errorf("ended %s: %d bytes allocated after the context ended, more than the %d allowed: the thumbnail was made", c.when, made, allowed)
+		}
 	}
 }
