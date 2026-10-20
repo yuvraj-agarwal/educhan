@@ -26,9 +26,13 @@ spec:
         autoscaling.knative.dev/maxScale: "4"
         run.googleapis.com/startup-cpu-boost: "true"
     spec:
-      # Migrations run at startup behind an advisory lock, so a slow first
-      # request is possible while a new revision applies them.
-      timeoutSeconds: 60
+      # Cloud Run's cap on one request, kept well above the longest the
+      # server allows itself: an image post's windows add up to over a
+      # minute (about ten seconds' wait for room, 30 for its body, 25 for
+      # its image and 5 to answer), and a lower cap would cut it off before
+      # the server could answer. 300 is Cloud Run's default, which a service
+      # made by deploy/first-deploy.sh (no --timeout) has too.
+      timeoutSeconds: 300
       containerConcurrency: 80
       serviceAccountName: educhan-run@${PROJECT_ID}.iam.gserviceaccount.com
       containers:
