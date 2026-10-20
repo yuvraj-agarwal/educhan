@@ -11805,7 +11805,12 @@ func methodCheck(v *view, m []int) bool {
 		// many to die?".
 		return namesAMedicine(v, sentenceAround(text, m[0], m[1])) || hasFirstPerson(ws)
 	case is(first, "lethal") || is(first, "fatal") || is(first, "deadly"):
-		return namesAMedicine(v, text[m[1]:min(len(text), m[1]+48)]) || hasFirstPerson(wordsIn(sentenceAround(text, m[0], m[1])))
+		sentence := sentenceAround(text, m[0], m[1])
+		sws := wordsIn(sentence)
+		if anyIn(sws, selfWords) {
+			return true
+		}
+		return namesAMedicine(v, text[m[1]:min(len(text), m[1]+48)]) && doseAsked(text, m, sentence, sws)
 	case is(first, "how") && is(ws[1], "deep"):
 		// "how deep do you have to cut", not "the dovetail joint".
 		return len(next) == 0 || deepCutTargets[next[0]]
@@ -11867,6 +11872,50 @@ func methodCheck(v *view, m []int) bool {
 	}
 	return true
 }
+
+// doseAsked reports a lethal dose of a medicine asked for, as a question
+// ("what's a lethal dose of paracetamol", "lethal dose of paracetamol?") or
+// on its own as a search is ("lethal dose of ibuprofen"), and not a fact
+// about the world: a statement with its verb ("the lethal dose of paracetamol
+// is about 150 mg/kg", "the fatal dose varies with liver health"), a figure
+// per weight, a "why" asked about it, or a pharmacology, nursing or exam
+// question named just before it ("Nursing exam: why is the lethal dose of
+// insulin so unpredictable?", "For my pharmacology viva: lethal dose of
+// morphine").
+func doseAsked(text string, m []int, sentence string, sws []string) bool {
+	if strings.Contains(sentence, "/kg") || strings.Contains(sentence, "per kg") {
+		return false
+	}
+	if anyIn(wordsIn(text[max(0, m[0]-96):m[0]]), studyFrames) || anyIn(sws, studyFrames) {
+		return false
+	}
+	if len(sws) > 0 && is(sws[0], "why") {
+		return false
+	}
+	if questionAfter(text, m[1]) || len(sws) > 0 && doseQuestions[sws[0]] {
+		return true
+	}
+	rest := text[m[1]:min(len(text), m[1]+64)]
+	if j := strings.IndexAny(rest, ".!?\n"); j >= 0 {
+		rest = rest[:j]
+	}
+	return !anyIn(wordsIn(rest), doseStatements)
+}
+
+var (
+	// selfWords are the poster as a subject or an object, not as an owner:
+	// "lethal dose for me", not "my pharm notes".
+	selfWords = canonSetOf(`i i'm im i'll i'd i've ive me myself`)
+	// studyFrames name the subject or the task a dose is studied for.
+	studyFrames = canonSetOf(`pharmacology pharmacy pharm pharma toxicology tox nursing nurse medicine medical mbbs
+		physiology biochem biochemistry exam exams viva lecture lectures module modules notes textbook syllabus
+		assignment mechanism mechanisms ld50 antidote`)
+	// doseQuestions open a question for the dose: "what's a lethal dose of".
+	doseQuestions = canonSetOf(`what what's whats wats wat how which where`)
+	// doseStatements, after the dose, make the sentence say what it is.
+	doseStatements = canonSetOf(`is are was were varies vary depends depend differs differ explains explain
+		means causes cause makes leads lead`)
+)
 
 // ailments name what pills are taken for: "how many pills for a headache?
 // asking for a friend".
