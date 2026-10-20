@@ -1287,29 +1287,42 @@ deleted from `media_deletions` by hand.
 
 Last, whatever became of the files, it deletes the verification codes that
 expired unconfirmed, rewrites the verification credentials, and runs
-`VACUUM FULL` on both verification tables, so that a credential row carries the
-sweep's transaction id rather than its own and no abandoned code keeps the time
-it was asked for ([Transaction ids, and the nightly
+`VACUUM FULL` on both verification tables and then on the `pg_statistic`
+catalog, so that a credential row carries the sweep's transaction id rather than
+its own, no abandoned code keeps the time it was asked for, and no sample
+`ANALYZE` took of the tables before migration `0015` stays in the catalog's
+files ([Transaction ids, and the nightly
 rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
-that protects). It needs no verification secret for that, but its database
-role must own the tables, or the database: `VACUUM FULL` skips any other table
-with only a warning, so the sweep checks that both tables moved to new files and
-fails at once if not (`TestSweepFailsWhenVacuumLeavesATableInItsFile`). Run it
-as the role that ran the migrations, which is the server's. The rewrite waits at
-most five seconds for its lock. That lock lets plain reads through and waits for
-everything else on the credentials table: a transaction that has written to it
-or locked rows in it, a `VACUUM`, `ANALYZE` or index build on it, a change to
-its schema, or another sweep's rewrite or vacuum. While it waits, confirmations
-queue behind it, each holding one of its server instance's few database
-connections, and once they hold them all every request on that instance waits
-too. Five seconds bounds the wait, not the queue: once the lock is granted,
-confirmations wait out the rewrite as well, which grows with the table — about
-three seconds for 220,000 credentials, measured on a development machine — so a
-confirmation can wait five seconds plus the rewrite. The vacuum never waits for
-a lock. It passes over a table another session holds, which VACUUM reports only
-as a warning; the sweep's connection asks for warnings itself, so a
-`client_min_messages` in `DATABASE_URL` or a role's default cannot make a
-moment's reader look like a role that may not vacuum the table
+that protects). It needs no verification secret for that, but its database role
+needs two things. It must own the verification tables and `vacuum_probe`, or the
+database, which the role that ran the migrations does. And it must own the
+database, belong to the role that owns it, or be a superuser, because only those
+may vacuum `pg_statistic`: owning every table is not enough. `VACUUM FULL` skips
+a table or catalog its role may not vacuum with only a warning, so the sweep
+checks that each one moved to a new file and fails at once if not, with an error
+that says which (`TestSweepFailsWhenVacuumLeavesATableInItsFile`,
+`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`) — so a role that has the
+first and not the second fails every sweep. Run it as the server's role, which
+ran the migrations, and before scheduling it check that role with the
+`pg_has_role(datdba, 'USAGE')` query at the end of step 5 above; on a database a
+superuser created, `ALTER DATABASE … OWNER TO` the role gives it what it lacks.
+The Job in the [deploy guide](deploy/README.md)'s section 2.9 connects with the
+service's `DATABASE_URL`, so it runs as the service's role.
+
+The rewrite waits at most five seconds for its lock. That lock lets plain reads
+through and waits for everything else on the credentials table: a transaction
+that has written to it or locked rows in it, a `VACUUM`, `ANALYZE` or index
+build on it, a change to its schema, or another sweep's rewrite or vacuum. While
+it waits, confirmations queue behind it, each holding one of its server
+instance's few database connections, and once they hold them all every request
+on that instance waits too. Five seconds bounds the wait, not the queue: once
+the lock is granted, confirmations wait out the rewrite as well, which grows
+with the table — about three seconds for 220,000 credentials, measured on a
+development machine — so a confirmation can wait five seconds plus the rewrite.
+The vacuum never waits for a lock. It passes over a table another session holds,
+which VACUUM reports only as a warning; the sweep's connection asks for warnings
+itself, so a `client_min_messages` in `DATABASE_URL` or a role's default cannot
+make a moment's reader look like a role that may not vacuum the table
 (`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has a
 table, though, it holds it against reads as well as writes until it has written
 the table out, and badged posts and confirmations wait for the whole run:
@@ -1330,8 +1343,9 @@ badged posts up for as long as it takes, once a night.
 It logs one line of counts (threads, posts, attachments, files removed, failed,
 and missing, and credentials rewritten) and nothing about which boards or
 threads went or what any credential says, and exits non-zero if the database
-fails, any file could not be removed or was missing, or the rewrite or the
-vacuum did not finish; the error it exits with says why without naming the file.
+fails, any file could not be removed or was missing, or the rewrite or a vacuum
+— of either verification table or of `pg_statistic` — did not finish; the error
+it exits with says why without naming the file.
 It also refuses to run on a database a newer release has migrated (see below).
 It needs none of the web server's secrets — the poster-ID salt, the moderation
 key, the verification secret — and, run without them, it does not warn about

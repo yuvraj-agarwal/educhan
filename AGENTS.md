@@ -629,8 +629,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   included; night after night it is a history of the table's size, which the
   database does not keep, and nothing finer belongs beside it. It returns an error —
   a non-zero exit — on a database failure, a file it could not remove or did not
-  find, a rewrite or vacuum of the verification tables that did not finish, or a
-  database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`).
+  find, a rewrite or vacuum of the verification tables that did not finish, a
+  vacuum of `pg_statistic` that did not finish (which a role that owns the tables
+  but not the database gets every night), or a database a newer release migrated
+  (`TestSchemaFromANewerReleaseStopsTheSweeper`).
   It builds its App with `New` like the server, and runs without the salt, the
   moderation key and the verification secret on purpose, so `New` warns about none
   of them: those warnings are
@@ -869,7 +871,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     It also skips, with a different warning, a table its role owns neither itself nor
     through owning the database: an unchanged `pg_relation_filenode` with no `55P03`
     fails the sweep at once, and the sweeper connects as the role that ran the
-    migrations, which owns `vacuum_probe` too.
+    migrations, which owns `vacuum_probe` too. Owning the tables is not enough for
+    `pg_statistic`, below, so that role must also own the database or belong to the
+    role that does.
     `0015` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
     from copying email hashes beside their expiries into `pg_statistic`, deletes what
     it had copied, and turns autovacuum off on both, since the times it last ran follow
@@ -883,10 +887,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     milliseconds, but while it runs a query whose plan needs statistics its connection
     has not cached waits, on any table, which is why it too skips a held catalog
     (a session reading `pg_stats` holds it). Only a superuser, the database's owner or
-    a member of the owner's role may vacuum that catalog, and anyone else gets it
-    skipped with a warning, which fails the sweep with its own message
-    (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`; the README's step 5 says how
-    to check the role on Cloud SQL, where it has not been tried).
+    a member of the owner's role may vacuum that catalog — a role that owns every
+    table but not the database may not — and anyone else gets it skipped with a
+    warning, which fails the sweep with its own message, every night
+    (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). The README's archive
+    sweeper section tells the operator, and its step 5 says how to check the role, on
+    Cloud SQL too, where this has not been tried.
     `TestVerificationTablesKeepNoStatistics` checks that the sweep moves the catalog and
     its TOAST table to new files with a cutoff past `0015`; no test can read an old
     version without a superuser's `pageinspect`, which is how the leak was found. A
