@@ -2443,6 +2443,10 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 			"a refund or a chargeback can take back the time that payment bought",
 			"and so that a lost code can be replaced from the payment on your receipt",
 			"Hours are counted in UTC",
+			// Stripe's events carry the payer's address too, and Stripe Tax
+			// asks for one, so neither page gives a list that leaves it out.
+			"Stripe keeps your payment details, such as your card, email, name and billing address, " +
+				"as any shop's payment company does, and educhan stores none of them",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s no longer says %q", name, want)

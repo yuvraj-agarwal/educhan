@@ -2091,7 +2091,9 @@ async function renderVerify() {
 // The code leaves the browser on an unbadged post, in submit, and in the body
 // of the requests that use it on purpose: checking a code on the Pass page
 // (one typed in, or the one held, checked again) and renewing it. "Show the
-// code" puts it on the screen. Nothing else reads it.
+// code" puts it on the screen and "Copy the code" on the clipboard, which
+// Remove the Pass and Forget this browser empty again (emptyCopiedPassCode).
+// Nothing else reads it.
 
 // The code as the server writes it: four groups of five from Crockford's
 // base32. What is typed in is checked by the server, which also reads it with
@@ -2840,12 +2842,12 @@ function passIntroHTML(info) {
     </ul>
     <p class="verify-note">
       You pay on Stripe's own page, not on educhan. Stripe keeps your payment details, such as
-      your card, email and name, as any shop's payment company does, and educhan stores none
-      of them. Whoever runs educhan can see in Stripe who bought a Pass, but never which posts
-      it was used on: educhan keeps only a scrambled reference to the payment, so that a refund
-      or a chargeback can take back the time that payment bought, and so that a lost code can
-      be replaced from the payment on your receipt. It keeps nothing that links a Pass to any
-      post.
+      your card, email, name and billing address, as any shop's payment company does, and
+      educhan stores none of them. Whoever runs educhan can see in Stripe who bought a Pass,
+      but never which posts it was used on: educhan keeps only a scrambled reference to the
+      payment, so that a refund or a chargeback can take back the time that payment bought,
+      and so that a lost code can be replaced from the payment on your receipt. It keeps
+      nothing that links a Pass to any post.
     </p>
     <p class="verify-note muted">
       Your Pass code is kept in this browser. It's sent with your posts, and from this page
@@ -4265,12 +4267,12 @@ const FAQ_SECTIONS = [
         <li>You buy it on the <a href="/pass">Pass</a> page, after ticking the box to confirm
           that you're 18 or over. educhan doesn't save your answer.</li>
         <li>You pay on Stripe's own page, which asks for your email for the receipt. Stripe
-          keeps your card, email and name, as any shop's payment company does, and educhan
-          stores none of them. Whoever runs educhan can see in Stripe who bought a Pass, but
-          never which posts it was used on: educhan keeps only a scrambled reference to the
-          payment, so that a refund or a chargeback can take back the time that payment
-          bought, and so that a lost code can be replaced from the payment on your
-          receipt.</li>
+          keeps your payment details, such as your card, email, name and billing address, as
+          any shop's payment company does, and educhan stores none of them. Whoever runs
+          educhan can see in Stripe who bought a Pass, but never which posts it was used on:
+          educhan keeps only a scrambled reference to the payment, so that a refund or a
+          chargeback can take back the time that payment bought, and so that a lost code can
+          be replaced from the payment on your receipt.</li>
         <li>You get a code, shown once, which your browser keeps. It's sent with your posts,
           and from the Pass page when you renew it or check it. Posts with the verified badge
           don't send it.</li>
