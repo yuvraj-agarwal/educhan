@@ -374,11 +374,14 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    `TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil`). It checks
    each table's new file the same way afterwards, and tries again if it still
    holds those rows.
-5. Last, `VACUUM FULL` writes `pg_statistic` out anew, under the same checks,
-   so that the samples `0015` deleted leave its files too. No query can see an
-   old row version, so the sweep cannot tell whether a database still holds
-   them, and it does this every night. The catalog is small and a run is short
-   — about six milliseconds on a new database, on a development machine — but
+5. `VACUUM FULL` writes `pg_statistic` out anew as well, under the same checks,
+   so that the samples `0015` deleted leave its files too. It does so in the
+   same passes as the verification tables, after them in each but not waiting
+   for them: a table left for the next pass does not hold the catalog back, nor
+   the catalog a table. No query can see an old row version, so the sweep
+   cannot tell whether a database still holds them, and it does this every
+   night. The catalog is small and a run is short — about six milliseconds on
+   a new database, on a development machine — but
    while it runs any request whose query needs statistics its connection has
    not cached waits, on any table, so this run too passes over the catalog while
    another session holds it — one reading `pg_stats`, say — and tries again
@@ -1313,11 +1316,11 @@ deleted from `media_deletions` by hand.
 
 Last, whatever became of the files, it deletes the verification codes that
 expired unconfirmed, rewrites the verification credentials, and runs
-`VACUUM FULL` on both verification tables and then on the `pg_statistic`
-catalog, so that every credential issued before the sweep carries the sweep's
-transaction id rather than its own, no abandoned code keeps the time it was
-asked for, and no sample `ANALYZE` took of the tables before migration `0015`
-stays in the catalog's files ([Transaction ids, and the nightly
+`VACUUM FULL` on both verification tables and, in the same passes, on the
+`pg_statistic` catalog, so that every credential issued before the sweep
+carries the sweep's transaction id rather than its own, no abandoned code keeps
+the time it was asked for, and no sample `ANALYZE` took of the tables before
+migration `0015` stays in the catalog's files ([Transaction ids, and the nightly
 rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
 that protects). It needs no verification secret for that, but its database role
 needs two things. It must own the verification tables and `vacuum_probe`, or the

@@ -1378,8 +1378,9 @@ func TestCredentialConfirmedDuringTheRewriteIsKeptOnce(t *testing.T) {
 // table and stays open stops the rewrite; one that only reads the pending
 // table, as an export does, stops the vacuum after the rewrite has committed;
 // and one that reads the statistics views, which holds pg_statistic, stops
-// the vacuum of that catalog, which comes last. Either way the next sweep
-// finishes.
+// the vacuum of that catalog. Each holds back only what it holds: the vacuum
+// takes the others in the same passes, pg_statistic after the verification
+// tables but not waiting for them. Either way the next sweep finishes.
 func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	var logs syncBuffer
 	h := testServerLogging(t, nil, &logs)
@@ -1417,7 +1418,8 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 		t.Errorf("%d credential rows, want both", n)
 	}
 
-	files := h.relationFiles("verification_credentials", "verification_pending")
+	vacuumed := []string{"verification_credentials", "verification_pending", statisticsCatalog}
+	files := h.relationFiles(vacuumed...)
 	reader := hold(`SELECT count(*) FROM verification_pending`)
 	report, err = h.app.Sweep(ctx)
 	if err == nil || !strings.Contains(err.Error(), "could not take verification_pending") {
@@ -1425,6 +1427,17 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	}
 	if report.Credentials != 2 {
 		t.Errorf("the sweep reports %d credentials rewritten, want the 2 it rewrote before the vacuum stopped", report.Credentials)
+	}
+	// The pending table held back nothing else: the credentials table, before
+	// it in the first pass, and pg_statistic, after it, went to new files then.
+	for i, file := range h.relationFiles(vacuumed...) {
+		switch held := vacuumed[i] == "verification_pending"; {
+		case held && file != files[i]:
+			t.Errorf("the pending table moved to a new file while a reader held it")
+		case !held && file == files[i]:
+			t.Errorf("%s is still in file %d after a sweep that could not take the pending table: "+
+				"want it in a new file, not held back with that table", vacuumed[i], file)
+		}
 	}
 	if err := reader.Rollback(ctx); err != nil {
 		t.Fatalf("end the reader: %v", err)

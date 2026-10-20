@@ -893,13 +893,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     them out of `pg_stats` only: their old versions stay in `pg_statistic`'s file and
     its TOAST table's (the email hashes' histogram is stored out of line), and in every
     backup of those files, until the catalog is written out anew, and no query can see
-    whether they are there. So after the verification tables the sweep runs the same
-    `VACUUM (FULL, SKIP_LOCKED)` on `pg_catalog.pg_statistic` every night, with the same
-    `relfrozenxid` check against the rewrite, which is later than `0015`. It takes
-    milliseconds, but while it runs a query whose plan needs statistics its connection
-    has not cached waits, on any table, which is why it too skips a held catalog
-    (a session reading `pg_stats` holds it), and why the lock timeout matters most
-    there: `0015` left autovacuum on for the catalog, TOAST table included. Only a
+    whether they are there. So the sweep runs the same `VACUUM (FULL, SKIP_LOCKED)` on
+    `pg_catalog.pg_statistic` every night, with the same `relfrozenxid` check against
+    the rewrite, which is later than `0015`, in the same passes as the verification
+    tables: after them in each, but not waiting for them, so a table left for the next
+    pass does not hold the catalog back, nor the catalog a table
+    (`TestSweepFailsWhenTheVerificationTablesAreHeld`). It takes milliseconds, but while
+    it runs a query whose plan needs statistics its connection has not cached waits, on
+    any table, which is why it too skips a held catalog (a session reading `pg_stats`
+    holds it), and why the lock timeout matters most there: `0015` left autovacuum on
+    for the catalog, TOAST table included. Only a
     superuser or a role with the privileges of the database's owner — the owner, or a
     member of its role that inherits them, which `pg_has_role(datdba, 'USAGE')` says —
     may vacuum that catalog; a role that owns every table but not the database may

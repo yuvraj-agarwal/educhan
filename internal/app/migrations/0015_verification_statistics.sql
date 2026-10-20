@@ -21,10 +21,11 @@
 -- histogram is, in the file of its TOAST table — where a superuser or root on
 -- the machine can read it, and in every backup that copies those files, until
 -- VACUUM FULL writes the catalog out anew; a plain vacuum, autovacuum's
--- included, leaves the bytes. The archive sweeper does that every night, after
--- the verification tables (RewriteCredentials), so a database upgraded across
--- this migration holds them until its first sweep. One that runs this
--- migration before any ANALYZE of the tables, as a new one does, has none.
+-- included, leaves the bytes. The archive sweeper does that every night, in
+-- the passes that vacuum the verification tables (RewriteCredentials), so a
+-- database upgraded across this migration holds them until its first sweep
+-- that can take the catalog. One that runs this migration before any ANALYZE
+-- of the tables, as a new one does, has none.
 --
 -- Autovacuum is off on both tables. The times it last vacuumed and analysed a
 -- table, which pg_stat_user_tables shows, follow the table's writes — a run

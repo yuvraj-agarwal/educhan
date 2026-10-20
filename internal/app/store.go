@@ -1266,8 +1266,8 @@ const sqlstateLockNotAvailable = "55P03"
 var verificationTables = [...]string{"verification_credentials", "verification_pending"}
 
 // statisticsCatalog is the catalog ANALYZE copied samples of the verification
-// tables' columns into before 0015, which RewriteCredentials vacuums after
-// them (vacuumVerificationTables says why).
+// tables' columns into before 0015, which RewriteCredentials vacuums with
+// them, after them in each pass (vacuumVerificationTables says why).
 const statisticsCatalog = "pg_catalog.pg_statistic"
 
 // vacuumProbeTable is the empty table (0016) on which RewriteCredentials runs
@@ -1503,10 +1503,13 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // not change that, so the sweep fails at once. The table's file is compared
 // before and after to see whether VACUUM FULL ran at all.
 //
-// Once both verification tables are done it takes pg_statistic the same way.
-// Before 0015, ANALYZE copied samples of every column of the verification
-// tables into that catalog — for the pending table, the email hashes of codes
-// in flight beside their expiries, to the microsecond — and 0015 deleted them;
+// It takes pg_statistic the same way, in the same passes: after the
+// verification tables in each, whether or not they are done, so a table left
+// for the next pass does not hold the catalog back, nor the catalog a table
+// (TestSweepFailsWhenTheVerificationTablesAreHeld). Before 0015, ANALYZE
+// copied samples of every column of the verification tables into that
+// catalog — for the pending table, the email hashes of codes in flight beside
+// their expiries, to the microsecond — and 0015 deleted them;
 // but a delete leaves the old versions in the catalog's file, and a sample big
 // enough to be stored out of line, as the email hashes' histogram is, in its
 // TOAST table's file, until something writes them out anew. Only VACUUM FULL
