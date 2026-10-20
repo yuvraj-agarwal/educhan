@@ -1,16 +1,40 @@
 package main
 
 import (
+	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
+
+// mainArgsEnv, when set, has this test binary run main with those arguments
+// in place of the tests: a test that needs the whole process, its signals,
+// its last log lines and its exit status, runs the binary again with it.
+const mainArgsEnv = "EDUCHAN_TEST_MAIN_ARGS"
+
+func TestMain(m *testing.M) {
+	if args, ok := os.LookupEnv(mainArgsEnv); ok {
+		os.Args = append(os.Args[:1], strings.Fields(args)...)
+		main()
+		os.Exit(0)
+	}
+	os.Exit(m.Run())
+}
 
 // sweepEnv points the process configuration at an isolated schema, the way the
 // app package's harness does, and pins every setting that would otherwise come
@@ -166,6 +190,255 @@ func TestRunRefusesWhatItDoesNotUnderstand(t *testing.T) {
 	for _, args := range [][]string{{"sweep"}, {"-sweep", "now"}, {"-swept"}} {
 		if err := run(args, io.Discard); err == nil {
 			t.Errorf("run(%q) succeeded, want an error", args)
+		}
+	}
+}
+
+// A Cloud Run Job stopped at its task timeout is killed ten seconds after its
+// SIGTERM. A sweep stopped while its database has stopped answering, behind a
+// network partition say, writes its error and exits before then: the stop
+// fails the query on its way, the spent answers' prune gives up at its five
+// seconds, the error is written, and the close, which pgx gives fifteen
+// seconds for a connection that cannot answer, is waited on for
+// sweepCloseTimeout at most.
+func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
+	// The app's spentPruneTimeout, which TestSweepsPruneIsGivenFiveSeconds
+	// pins, and what Cloud Run waits between SIGTERM and SIGKILL.
+	const pruneBound = 5 * time.Second
+	const cloudRunGrace = 10 * time.Second
+
+	db := sweepEnv(t)
+	ctx := context.Background()
+	// Migrated here, so the process below has nothing to change before it
+	// sweeps.
+	if err := run([]string{"-sweep"}, io.Discard); err != nil {
+		t.Fatalf("migrate the schema: %v", err)
+	}
+
+	databaseURL := os.Getenv("DATABASE_URL")
+	proxy := startStallingProxy(t, databaseURL)
+	// Named, to find the process's connection in pg_stat_activity.
+	appName := fmt.Sprintf("educhan_stalled_sweep_%d", time.Now().UnixNano())
+	sweepURL, err := url.Parse(databaseURL)
+	if err != nil {
+		t.Fatalf("parse DATABASE_URL: %v", err)
+	}
+	sweepURL.Host = proxy.addr
+	query := sweepURL.Query()
+	query.Del("host")
+	query.Set("application_name", appName)
+	sweepURL.RawQuery = query.Encode()
+	t.Cleanup(func() {
+		if _, err := db.Exec(ctx, `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1`, appName); err != nil {
+			t.Errorf("end the stalled sweep's connections: %v", err)
+		}
+	})
+
+	// The sweep's first query waits on this lock, so the stop finds it on its
+	// way.
+	lock, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = lock.Rollback(context.Background()) })
+	if _, err := lock.Exec(ctx, `LOCK TABLE threads IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("lock threads: %v", err)
+	}
+	var lockPID int32
+	if err := lock.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&lockPID); err != nil {
+		t.Fatalf("find the lock's backend: %v", err)
+	}
+
+	cmd := exec.Command(os.Args[0])
+	cmd.Env = append(os.Environ(), mainArgsEnv+"=-sweep", "DATABASE_URL="+sweepURL.String())
+	stderr, err := cmd.StderrPipe()
+	if err != nil {
+		t.Fatalf("stderr: %v", err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the sweep: %v", err)
+	}
+	type line struct {
+		text string
+		at   time.Time
+	}
+	lines := make(chan line, 100)
+	go func() {
+		defer close(lines)
+		scanner := bufio.NewScanner(stderr)
+		for scanner.Scan() {
+			lines <- line{scanner.Text(), time.Now()}
+		}
+	}()
+	var logged []line
+	exited := make(chan error, 1)
+	go func() {
+		for l := range lines {
+			logged = append(logged, l)
+		}
+		exited <- cmd.Wait()
+	}()
+
+	// Waiting on this lock, not on any: before it sweeps, the process waits
+	// for the migrations' advisory lock, which every schema in the database
+	// shares and the app package's tests take as they run, and a SIGTERM
+	// then, before the sweep listens for it, ends the process at once.
+	waiting := false
+	for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		if err := db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_stat_activity
+			WHERE application_name = $1 AND $2 = ANY (pg_blocking_pids(pid)))`, appName, lockPID).Scan(&waiting); err != nil {
+			t.Fatalf("look for the sweep's query: %v", err)
+		}
+		if waiting {
+			break
+		}
+	}
+	if !waiting {
+		_ = cmd.Process.Kill()
+		<-exited
+		t.Fatalf("the sweep's query never waited on the lock; its log:\n%v", logged)
+	}
+
+	proxy.freeze()
+	stopped := time.Now()
+	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
+		t.Fatalf("stop the sweep: %v", err)
+	}
+	var waitErr error
+	select {
+	case waitErr = <-exited:
+	case <-time.After(30 * time.Second):
+		_ = cmd.Process.Kill()
+		<-exited
+		t.Fatalf("the stopped sweep had not exited 30 seconds after SIGTERM")
+	}
+	took := time.Since(stopped)
+
+	var exit *exec.ExitError
+	if !errors.As(waitErr, &exit) || exit.ExitCode() != 1 {
+		t.Errorf("the stopped sweep ended with %v, want exit status 1", waitErr)
+	}
+	if took >= cloudRunGrace {
+		t.Errorf("the stopped sweep exited %v after SIGTERM, after Cloud Run's %v", took, cloudRunGrace)
+	}
+	var record, failure *line
+	failures := 0
+	for i, l := range logged {
+		switch {
+		case strings.Contains(l.text, "msg=sweep "):
+			record = &logged[i]
+		case strings.Contains(l.text, "level=ERROR"):
+			failures++
+			failure = &logged[i]
+		}
+	}
+	text := make([]string, len(logged))
+	for i, l := range logged {
+		text[i] = fmt.Sprintf("+%v %s", l.at.Sub(stopped).Round(10*time.Millisecond), l.text)
+	}
+	if record == nil {
+		t.Errorf("the stopped sweep logged no record of counts; its log:\n%s", strings.Join(text, "\n"))
+	}
+	if failures != 1 || !strings.Contains(failure.text, "msg=fatal") || !strings.Contains(failure.text, "context canceled") {
+		t.Fatalf("the stopped sweep logged %d error lines, want one fatal line with the stop; its log:\n%s",
+			failures, strings.Join(text, "\n"))
+	}
+	// Written before the close is waited on, not after.
+	if wrote := failure.at.Sub(stopped); wrote >= pruneBound+time.Second {
+		t.Errorf("the stopped sweep wrote its error %v after SIGTERM, want it once the prune gives up at %v; its log:\n%s",
+			wrote, pruneBound, strings.Join(text, "\n"))
+	}
+	if record != nil && record.at.After(failure.at) {
+		t.Errorf("the stopped sweep wrote its error before its record of counts; its log:\n%s", strings.Join(text, "\n"))
+	}
+	t.Logf("exited %v after SIGTERM; its log:\n%s", took.Round(10*time.Millisecond), strings.Join(text, "\n"))
+}
+
+// stallingProxy forwards connections to the database until it is frozen, and
+// from then on forwards nothing and answers nothing, holding every connection
+// open: a database that has stopped answering, as behind a network partition,
+// rather than one that has gone, whose refusals would come at once.
+type stallingProxy struct {
+	addr   string
+	frozen atomic.Bool
+	done   chan struct{}
+	mu     sync.Mutex
+	conns  []net.Conn
+}
+
+func startStallingProxy(t *testing.T, databaseURL string) *stallingProxy {
+	t.Helper()
+	cfg, err := pgconn.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse DATABASE_URL: %v", err)
+	}
+	network, upstream := "tcp", net.JoinHostPort(cfg.Host, fmt.Sprint(cfg.Port))
+	if strings.HasPrefix(cfg.Host, "/") {
+		network, upstream = "unix", filepath.Join(cfg.Host, fmt.Sprintf(".s.PGSQL.%d", cfg.Port))
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	p := &stallingProxy{addr: ln.Addr().String(), done: make(chan struct{})}
+	t.Cleanup(func() {
+		close(p.done)
+		ln.Close()
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		for _, c := range p.conns {
+			c.Close()
+		}
+	})
+	go func() {
+		for {
+			client, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			p.hold(client)
+			if p.frozen.Load() {
+				continue
+			}
+			server, err := net.Dial(network, upstream)
+			if err != nil {
+				client.Close()
+				continue
+			}
+			p.hold(server)
+			go p.pump(server, client)
+			go p.pump(client, server)
+		}
+	}()
+	return p
+}
+
+func (p *stallingProxy) hold(c net.Conn) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.conns = append(p.conns, c)
+}
+
+func (p *stallingProxy) freeze() { p.frozen.Store(true) }
+
+// pump copies src to dst until either ends, or until the proxy is frozen: then
+// what it reads goes nowhere, and both stay open until the test ends.
+func (p *stallingProxy) pump(dst, src net.Conn) {
+	buf := make([]byte, 32<<10)
+	for {
+		n, err := src.Read(buf)
+		if p.frozen.Load() {
+			<-p.done
+			return
+		}
+		if n > 0 {
+			if _, err := dst.Write(buf[:n]); err != nil {
+				return
+			}
+		}
+		if err != nil {
+			dst.Close()
+			return
 		}
 	}
 }

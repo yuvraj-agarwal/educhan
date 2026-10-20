@@ -207,7 +207,10 @@ func (a *App) handleVerifyRequest(w http.ResponseWriter, r *http.Request) {
 	// each copy naming another email address, cannot hold all of those
 	// addresses out of codes. Starting them checks them again, in one step, so
 	// of a burst from one client, or for one address, that all passed the
-	// check above, one goes ahead.
+	// check above, at most one goes ahead, and a request is refused there only
+	// for a cooldown one that went ahead started. It can be none: requests
+	// from one client for two addresses are both refused when other clients'
+	// requests for those addresses went ahead first.
 	if !a.spendCaptcha(w, r, ticket) {
 		return
 	}

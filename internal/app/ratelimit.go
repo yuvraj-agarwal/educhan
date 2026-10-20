@@ -9,7 +9,8 @@ import (
 
 // cooldownSweepThreshold is the number of tracked keys after which recording a
 // new one sweeps expired entries first, keeping the map bounded under a burst
-// between two periodic sweeps.
+// between two periodic sweeps. Past it, record sweeps again only once the map
+// has doubled since the last sweep (cooldownLimiter.sweepAt).
 const cooldownSweepThreshold = 4096
 
 // cooldownSweepInterval is how often a cooldownSweep drops every entry whose
@@ -41,6 +42,12 @@ type cooldownLimiter struct {
 
 	mu   sync.Mutex
 	seen map[string]time.Time
+	// sweepAt is how many keys record lets the map hold before it sweeps: twice
+	// what the last sweep left, and never fewer than cooldownSweepThreshold. A
+	// map of live cooldowns, which a sweep cannot shrink, is then swept once
+	// each time it doubles rather than on every record, so a record costs a
+	// few map operations on average, inside admission as anywhere.
+	sweepAt int
 }
 
 func newCooldownLimiter(interval time.Duration) *cooldownLimiter {
@@ -72,11 +79,16 @@ var admission sync.Mutex
 // a rejected caller cannot extend its own cooldown by retrying.
 //
 // The check and the start are one step: allowAll holds admission across both,
-// so of simultaneous requests for one key exactly one is admitted, and a
-// request is refused only by a cooldown an admitted action started. Holding
-// one lock for every admission, rather than each limiter's own lock in turn,
-// needs no order between limiters that are not always applied together; an
-// admission is a few map operations, so requests barely wait for it.
+// so of simultaneous requests for one key at most one is admitted, and a
+// request is refused only by a cooldown an admitted action started. It can be
+// none: requests that share one key may each need another that an admitted
+// request took first (two image threads to one board, refused by the upload
+// cooldown an image reply elsewhere started). Holding one lock for every
+// admission, rather than each limiter's own lock in turn, needs no order
+// between limiters that are not always applied together. An admission is a few
+// map operations, and a sweep of a limiter when record finds its map at the
+// larger of sweepAt, twice what its last sweep left, and
+// cooldownSweepThreshold, so requests barely wait for it.
 //
 // A handler that spends a captcha answer checks first with longestWait, which
 // starts nothing, so a request that has to wait keeps its answer, and calls
@@ -135,19 +147,21 @@ func (l *cooldownLimiter) record(key string) {
 	defer l.mu.Unlock()
 
 	now := l.now()
-	if len(l.seen) >= cooldownSweepThreshold {
+	if len(l.seen) >= max(l.sweepAt, cooldownSweepThreshold) {
 		l.sweep(now)
 	}
 	l.seen[key] = now
 }
 
-// sweep drops entries whose cooldown has elapsed. Callers must hold the mutex.
+// sweep drops entries whose cooldown has elapsed, and sets the size at which
+// record sweeps next. Callers must hold the mutex.
 func (l *cooldownLimiter) sweep(now time.Time) {
 	for key, last := range l.seen {
 		if now.Sub(last) >= l.interval {
 			delete(l.seen, key)
 		}
 	}
+	l.sweepAt = 2 * len(l.seen)
 }
 
 // sweepExpired drops every entry whose cooldown has elapsed by the limiter's

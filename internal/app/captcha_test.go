@@ -462,17 +462,29 @@ func TestCaptchaMeterSweepsWhenFull(t *testing.T) {
 	// Full of this window's own addresses, the meter is scanned once and not
 	// again until the window changes.
 	m.take("one more")
+	window := now.UnixNano() / int64(captchaWindow)
 	m.mu.Lock()
-	if want := now.UnixNano() / int64(captchaWindow); m.swept != want || len(m.counts) != cooldownSweepThreshold+1 {
-		t.Errorf("after filling up: swept window %d, %d addresses; want %d, %d", m.swept, len(m.counts), want, cooldownSweepThreshold+1)
+	if m.swept != window || len(m.counts) != cooldownSweepThreshold+1 {
+		t.Errorf("after filling up: swept window %d, %d addresses; want %d, %d", m.swept, len(m.counts), window, cooldownSweepThreshold+1)
+	}
+	// So an entry from an earlier window, which a scan would drop, outlives a
+	// further challenge in this one.
+	m.counts["from the window before"] = captchaCount{window: window - 1, n: 1}
+	m.mu.Unlock()
+	m.take("and another")
+	m.mu.Lock()
+	if _, kept := m.counts["from the window before"]; !kept {
+		t.Error("a challenge after the window's sweep scanned the full meter again")
 	}
 	m.mu.Unlock()
 
+	// The next window's first challenge scans it, and drops that entry with
+	// the rest.
 	now = now.Add(captchaWindow)
 	m.take("new")
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if len(m.counts) != 1 {
+	if _, kept := m.counts["from the window before"]; kept || len(m.counts) != 1 {
 		t.Errorf("meter holds %d addresses after filling up, want only this window's one", len(m.counts))
 	}
 }
@@ -553,10 +565,10 @@ func TestCaptchaConfig(t *testing.T) {
 func TestCaptchaRefusesAShortSecret(t *testing.T) {
 	short := strings.Repeat("s", minCaptchaSecretLen-1)
 	if err := checkCaptchaSecret(Config{CaptchaSecret: short}); err == nil {
-		t.Error("a secret one character short was accepted")
+		t.Error("a secret one byte short was accepted")
 	}
 	if err := checkCaptchaSecret(Config{CaptchaSecret: short + "s"}); err != nil {
-		t.Errorf("a secret of exactly %d characters: %v", minCaptchaSecretLen, err)
+		t.Errorf("a secret of exactly %d bytes: %v", minCaptchaSecretLen, err)
 	}
 	if err := checkCaptchaSecret(Config{}); err != nil {
 		t.Errorf("no secret (captcha off): %v", err)
@@ -564,6 +576,42 @@ func TestCaptchaRefusesAShortSecret(t *testing.T) {
 	_, err := New(context.Background(), Config{CaptchaSecret: short}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err == nil || !strings.Contains(err.Error(), "EDUCHAN_CAPTCHA_SECRET") {
 		t.Errorf("New with a short secret: %v, want it refused naming EDUCHAN_CAPTCHA_SECRET", err)
+	}
+}
+
+// The README, AGENTS.md, .env.example and app.js's comments quote these
+// numbers as figures, not by the names of the constants behind them, and the
+// tests above read the names, so a change to one would leave those pages
+// saying the old figure with every test still passing. Here they are the
+// figures, so a change fails until the pages and this table change with it.
+func TestTheCaptchaNumbersTheDocsQuote(t *testing.T) {
+	t.Setenv("EDUCHAN_CAPTCHA_SECRET", "")
+	t.Setenv("EDUCHAN_CAPTCHA_WORK", "")
+	cfg, err := ConfigFromEnv()
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	for _, tc := range []struct {
+		quoted    string
+		got, want any
+	}{
+		{"GET /api/captcha answers 429 past 300 a minute from one address", captchaChallengeLimit, 300},
+		{"a challenge's expiry is half an hour away", captchaTTL, 30 * time.Minute},
+		{"EDUCHAN_CAPTCHA_WORK is 1500 when unset", cfg.CaptchaWork, 1500},
+		{"an EDUCHAN_CAPTCHA_SECRET of 31 bytes is refused",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("s", 31)}) != nil, true},
+		{"an EDUCHAN_CAPTCHA_SECRET of 32 bytes is taken",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("s", 32)}) == nil, true},
+		// Bytes and not characters: sixteen two-byte characters are enough,
+		// and 31 bytes are not, however few characters spell them.
+		{"an EDUCHAN_CAPTCHA_SECRET of 32 bytes in 16 characters is taken",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("é", 16)}) == nil, true},
+		{"an EDUCHAN_CAPTCHA_SECRET of 31 bytes in 16 characters is refused",
+			checkCaptchaSecret(Config{CaptchaSecret: strings.Repeat("é", 15) + "s"}) != nil, true},
+	} {
+		if tc.got != tc.want {
+			t.Errorf("the docs say %s, which no longer holds: got %v, want %v", tc.quoted, tc.got, tc.want)
+		}
 	}
 }
 

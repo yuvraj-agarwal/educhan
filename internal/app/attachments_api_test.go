@@ -84,6 +84,17 @@ func (c *client) upload(path string, fields map[string]string, filename string, 
 // and the credential a browser sends alongside a multipart post.
 func (c *client) uploadWithHeaders(header http.Header, path string, fields map[string]string, filename string, file []byte, out any) int {
 	c.t.Helper()
+	req := c.uploadRequest(path, fields, filename, file)
+	for k, values := range header {
+		req.Header[k] = values
+	}
+	return c.send(req, out)
+}
+
+// uploadRequest builds upload's request without sending it, for a test that
+// sends several at once.
+func (c *client) uploadRequest(path string, fields map[string]string, filename string, file []byte) *http.Request {
+	c.t.Helper()
 
 	var body bytes.Buffer
 	form := multipart.NewWriter(&body)
@@ -109,11 +120,8 @@ func (c *client) uploadWithHeaders(header http.Header, path string, fields map[s
 	if err != nil {
 		c.t.Fatalf("build request: %v", err)
 	}
-	for k, values := range header {
-		req.Header[k] = values
-	}
 	req.Header.Set("Content-Type", form.FormDataContentType())
-	return c.send(req, out)
+	return req
 }
 
 // fetch performs a GET and returns the raw response, which media tests need for
@@ -578,9 +586,9 @@ func TestUploadsSwitchedOffRefusesALargeFileUnread(t *testing.T) {
 }
 
 // GET /api/site tells a client what the posting form can offer before anyone
-// fills one in: whether images are taken at all, and the size limit behind the
-// 413. It is configuration, so it carries those two fields and nothing about
-// the caller.
+// fills one in: whether images are taken at all, the size limit behind the 413,
+// and whether posting needs the captcha. It is configuration, so it carries
+// those three fields and nothing about the caller.
 func TestSiteReportsTheUploadSettings(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
