@@ -611,6 +611,12 @@ button.link:hover { text-decoration: underline; }
   color: var(--text);
 }
 
+/* Why the form was refused, under its fields and above its buttons, where a
+   phone shows it: the notice at the top of the page is a screen above. */
+.verify-panel .verify-refused { color: var(--danger); }
+.verify-panel .verify-refused[hidden] { display: none; }
+.verify-panel .field input[aria-invalid="true"] { border-color: var(--danger); }
+
 /* The 18+ attestation: a sentence the visitor confirms, so it reads at body
    size, and the whole label is the hit area. */
 .attest {
@@ -653,6 +659,10 @@ button.link:hover { text-decoration: underline; }
 
 .verify-forget p { margin: 0; line-height: 1.6; }
 .verify-forget .muted { font-size: 13px; }
+
+/* Forget this browser's confirmation, under the button that did it. */
+.verify-forget .verify-done { color: var(--green); font-weight: 600; }
+.verify-forget .verify-done[hidden] { display: none; }
 
 /* Forgetting the browser is on the Verify page in every state, outside the
    verification panel, since the poster key and the name belong to everyone. */

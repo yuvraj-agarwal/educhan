@@ -1843,7 +1843,9 @@ function forgetBrowser() {
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
 // whatever state verification is in, since the key and the name are there
-// for every poster.
+// for every poster. Its confirmation is said under the button
+// (confirmBrowserForgotten), where the reader is looking: on a phone the
+// notice at the top of the page is a screen or more above it.
 function forgetBrowserHTML() {
   return `
     <div class="verify-forget forget-browser" id="forget-browser">
@@ -1855,7 +1857,24 @@ function forgetBrowserHTML() {
         next post starts a new key, and with it new IDs. Posts you have made stay as they
         are.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
+      <p class="verify-done" id="forget-browser-done" role="status" tabindex="-1" hidden></p>
     </div>`;
+}
+
+const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
+
+// confirmBrowserForgotten says that Forget this browser did its work, in the
+// block the button is in, once the Verify page has been drawn again without
+// what was forgotten. The redrawn page took the button, and with it the
+// focus, so the confirmation takes both: it is brought into view and focused,
+// for a screen reader to read and a keyboard to go on from.
+function confirmBrowserForgotten() {
+  const done = document.getElementById("forget-browser-done");
+  if (!done) return;
+  done.textContent = BROWSER_FORGOTTEN;
+  done.hidden = false;
+  done.scrollIntoView({ block: "nearest" });
+  done.focus({ preventScroll: true });
 }
 
 // readBadge decodes the claims out of the credential this browser holds. The
@@ -1956,6 +1975,38 @@ const CODE_ENDED_NOTES = {
   [CODE_GUESSES_SPENT]: "Too many wrong codes were tried, so that code no longer works.",
 };
 
+// Where a step's form says why it was refused: a wrong code, the 18+ box left
+// unticked, an address the allowlist does not know, a cooldown, no answer. It
+// sits under the form's fields, above its buttons, so it is next to the field
+// it is about and in view of the button just pressed, and the fields are
+// described by it. The notice at the top of the page was a screen above the
+// form on a phone: a wrong code changed nothing in view but the button's
+// label, and focus fell to the page.
+const VERIFY_REFUSED_HTML = `<p class="verify-refused" id="f-verify-refused" role="alert" hidden></p>`;
+
+// refuseVerification says why the form was refused, in the form, and puts the
+// reader back in the field it is about. invalid marks that field as what was
+// refused, rather than the moment (a cooldown, a dropped connection); select
+// selects what was typed there, for a code to be typed again whole.
+function refuseVerification(form, message, target, { invalid = false, select = false } = {}) {
+  const why = form.querySelector(".verify-refused");
+  why.textContent = message;
+  why.hidden = false;
+  why.scrollIntoView({ block: "nearest" });
+  if (!target) return;
+  if (invalid) target.setAttribute("aria-invalid", "true");
+  target.focus({ preventScroll: true });
+  if (select) target.select();
+}
+
+// clearVerifyRefusal takes a refusal back down when the form is sent again.
+function clearVerifyRefusal(form) {
+  const why = form.querySelector(".verify-refused");
+  why.hidden = true;
+  why.textContent = "";
+  for (const input of form.querySelectorAll('[aria-invalid="true"]')) input.removeAttribute("aria-invalid");
+}
+
 // onVerifyPage says whether the Verify page is still the one on screen. Its
 // requests can outlast it: a reader who presses Send code or Verify and then
 // follows a link is on another page by the time the answer comes, and the
@@ -2022,8 +2073,9 @@ function verifyViewHTML() {
         <div class="field">
           <label class="label" for="f-code">Code from the email</label>
           <input type="text" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code"
-                 maxlength="12" placeholder="6 digits" required />
+                 maxlength="12" placeholder="6 digits" required aria-describedby="f-verify-refused" />
         </div>
+        ${VERIFY_REFUSED_HTML}
         <div class="actions">
           <button class="btn primary" type="submit">Verify</button>
           <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
@@ -2069,11 +2121,12 @@ function verifyViewHTML() {
     ? `<p class="verify-note">${esc(badgeLost)} Verify again to get a new one.</p>`
     : "";
   // The code box this step replaced, and why it went, said at the top of the
-  // form, where the box was, and read out with the address field.
+  // form, where the box was, and read out with the address field, as is the
+  // form's refusal once there is one.
   const ended = verifyStep.ended
     ? `<p class="verify-ended" id="f-email-ended">${esc(verifyStep.ended)} Send a new code to carry on.</p>`
     : "";
-  const endedRef = verifyStep.ended ? ' aria-describedby="f-email-ended"' : "";
+  const endedRef = verifyStep.ended ? "f-email-ended f-verify-refused" : "f-verify-refused";
 
   return `
     <div class="board-head"><h1>Institutional verification</h1></div>
@@ -2084,13 +2137,14 @@ function verifyViewHTML() {
       <div class="field">
         <label class="label" for="f-email">Institutional email</label>
         <input type="email" id="f-email" name="email" maxlength="254" autocomplete="email"
-               placeholder="you@institution.edu" required${endedRef} />
+               placeholder="you@institution.edu" required aria-describedby="${endedRef}" />
         <span class="hint">Academic domains only &mdash; .edu, .ac.in, .ac.uk, .edu.au and others.</span>
       </div>
       <label class="attest" for="f-adult">
-        <input type="checkbox" id="f-adult" name="adult" autocomplete="off" />
+        <input type="checkbox" id="f-adult" name="adult" autocomplete="off" aria-describedby="f-verify-refused" />
         <span>I confirm I am 18 or over</span>
       </label>
+      ${VERIFY_REFUSED_HTML}
       <div class="actions">
         <button class="btn primary" type="submit">Send code</button>
         ${keep}
@@ -3221,10 +3275,11 @@ document.addEventListener("click", (event) => {
   // rather than stored after the browser was forgotten.
   if (event.target.closest('[data-action="forget-browser"]')) {
     event.preventDefault();
+    clearNotice();
     forgetBrowser();
     verifyStep = { step: "email", label: "" };
     renderVerify().then((drawn) => {
-      if (drawn) showNotice("This browser no longer holds your post key, your name or a badge.");
+      if (drawn) confirmBrowserForgotten();
     });
     return;
   }
@@ -3243,8 +3298,8 @@ document.addEventListener("click", (event) => {
 
   // Verifying again from here means starting at the address field, with the
   // badge already held staying valid until the new one replaces it. Whatever
-  // the notice said was about the step being left, a wrong code say, so it
-  // goes with it.
+  // was said was about the step being left, so it goes with it: a refusal in
+  // that step's form goes with the form, and the notice is put away.
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
   if (restart) {
     event.preventDefault();
@@ -3588,8 +3643,8 @@ el.main.addEventListener("submit", async (event) => {
 // when the reader has moved the page to another step while it was on its way:
 // no badge stored, no step set, nothing drawn or said. Forget this browser is
 // the button that can do that, and has to win: a badge stored after it would
-// stay for whoever uses the computer next, under a notice saying there is
-// none. The form's own other buttons — Keep my badge, Use a different
+// stay for whoever uses the computer next, under a confirmation saying there
+// is none. The form's own other buttons — Keep my badge, Use a different
 // address — wait for the answer with the submit button, so a reader does not
 // give up a step whose badge the server may be issuing; a dropped badge is
 // one nobody holds, and verifying the same address again retires the old one.
@@ -3601,13 +3656,14 @@ async function submitVerification(form) {
   const data = new FormData(form);
   const requesting = form.dataset.verify === "request";
   const sentFrom = verifyStep;
+  clearVerifyRefusal(form);
 
   // The badge is for students aged 18 and over. Without the box ticked the
-  // page refuses on its own and sends nothing, the address included.
+  // page refuses on its own and sends nothing, the address included. It says
+  // so under the box.
   const adult = requesting ? field(form, "adult") : null;
   if (requesting && !(adult && adult.checked)) {
-    showNotice(BADGE_AGE_REFUSAL);
-    if (adult) adult.focus();
+    refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });
     return;
   }
 
@@ -3669,12 +3725,24 @@ async function submitVerification(form) {
       if (input) input.focus({ preventScroll: true });
       return;
     }
+    for (const b of buttons) b.disabled = false;
+    button.textContent = label;
+    // Any other refusal leaves the step as it is, and is said in its form,
+    // under the field it is about (refuseVerification): a wrong code puts the
+    // reader back in the code box with the code selected, to be typed again.
+    // The form on screen is this one, or, for a reader who went to another
+    // page and came back while the answer was on its way, the same step drawn
+    // again.
+    const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
+    if (!shown) return;
     // The server's refusal of a request without the attestation reads the same
     // as the page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
-    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }));
-    for (const b of buttons) b.disabled = false;
-    button.textContent = label;
+    const about = field(shown, refusedForAge ? "adult" : requesting ? "email" : "code");
+    refuseVerification(shown, refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }), about, {
+      invalid: err.status === 400,
+      select: !requesting && err.status === 400,
+    });
   }
 }
 

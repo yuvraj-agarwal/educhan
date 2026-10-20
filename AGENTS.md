@@ -461,11 +461,17 @@ needs a browser check before the test changes.
   has dropped it by then, and that note leads with expiry
   (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that spends
   the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up takes the
-  right code until it expires. An answer belongs to the step it was sent from:
-  `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
+  right code until it expires. Every other refusal — a wrong code, the 18+ box unticked,
+  an address the allowlist does not know, a cooldown, no answer — leaves the step as it
+  is and is said in its form, under the fields and above the buttons
+  (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back in the field
+  it is about, a wrong code selected; Forget this browser's confirmation is said under
+  its button (`confirmBrowserForgotten`). `submitVerification` puts nothing in the
+  notice (`TestVerifyRefusalsAreSaidInTheForm`). An answer belongs to the step it was sent
+  from: `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
   answer, storing, setting and drawing nothing, once the page has moved to another step.
-  Forget this browser is the button that can do that while a request is out, and it has
-  to win over a badge on its way, which would otherwise be stored after the browser was
+  Forget this browser is the button that can do that while a request is out, and it has to
+  win over a badge on its way, which would otherwise be stored after the browser was
   forgotten; the form's own other buttons wait on the answer. So every change of step
   assigns a new object and nothing edits one in place
   (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that arrives after the
@@ -473,9 +479,9 @@ needs a browser check before the test changes.
   the page they went to, and coming back shows the step it left
   (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `replacing` puts the badge panel away for
   "Verify another address", and both steps then offer "Keep my badge" back to it
-  (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
-  at the address step. A reload drops a pending code too, since nothing about it is
-  stored: the page shows the badge held here, or the address step when there is none.
+  (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over at
+  the address step. A reload drops a pending code too, since nothing about it is stored:
+  the page shows the badge held here, or the address step when there is none.
 
 ### Child safety
 

@@ -669,7 +669,7 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 		t.Fatalf("submitVerification resumes after an answer in %d places; this test knows three "+
 			"(the code sent, the badge issued, the catch)", len(resumes))
 	}
-	draws := regexp.MustCompile(`el\.main\.innerHTML\s*=|renderVerify\(|showNotice\(|\.focus\(|scrollIntoView\(`)
+	draws := regexp.MustCompile(`el\.main\.innerHTML\s*=|renderVerify\(|showNotice\(|refuseVerification\(|\.focus\(|scrollIntoView\(`)
 	for i, r := range resumes {
 		end := len(submit)
 		if i+1 < len(resumes) {
@@ -691,7 +691,7 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 	// An issued badge is drawn through renderVerify, which asks the server
 	// whether verification is on before it draws: one more request the reader
 	// can leave during, so it asks onVerifyPage again once that is in, and
-	// the notice after forgetting the browser waits on what it says.
+	// the confirmation after forgetting the browser waits on what it says.
 	render := withoutComments(jsFunction(t, script, "renderVerify"))
 	asked := strings.Index(render, "await loadVerification();")
 	guarded := strings.Index(render, "if (!onVerifyPage()) return false;")
@@ -700,8 +700,8 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 		t.Errorf("renderVerify draws the Verify page without checking, once its request is in, that the page is "+
 			"still on screen:\n%s", render)
 	}
-	if !strings.Contains(withoutComments(script), "renderVerify().then((drawn) => {\n      if (drawn) showNotice(") {
-		t.Error("forgetting the browser shows its notice whether or not the Verify page was drawn")
+	if !strings.Contains(withoutComments(script), "renderVerify().then((drawn) => {\n      if (drawn) confirmBrowserForgotten();") {
+		t.Error("forgetting the browser confirms it whether or not the Verify page was drawn")
 	}
 }
 
@@ -726,7 +726,7 @@ func TestEndedCodeSaysWhyWhereTheBoxWas(t *testing.T) {
 	if !strings.Contains(view, `<p class="verify-ended" id="f-email-ended">${esc(verifyStep.ended)}`) {
 		t.Error("verifyViewHTML no longer draws verifyStep.ended, escaped, as the f-email-ended note")
 	}
-	if !strings.Contains(view, `const endedRef = verifyStep.ended ? ' aria-describedby="f-email-ended"' : "";`) {
+	if !strings.Contains(view, `const endedRef = verifyStep.ended ? "f-email-ended f-verify-refused" : "f-verify-refused";`) {
 		t.Error("the address field is no longer described by the note, so a screen reader would not hear why")
 	}
 	address := strings.Index(view, `data-verify="request"`)
@@ -741,7 +741,7 @@ func TestEndedCodeSaysWhyWhereTheBoxWas(t *testing.T) {
 	if note < 0 || field < 0 || note > field {
 		t.Error("the address step does not say why the code box went at the top of its form, above the address field")
 	}
-	if !strings.Contains(form, `required${endedRef} />`) {
+	if !strings.Contains(form, `required aria-describedby="${endedRef}" />`) {
 		t.Error("the address field does not carry endedRef")
 	}
 
@@ -871,5 +871,90 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 	disabled := strings.Index(submit, "const buttons = [...form.querySelectorAll(\"button\")];\n  for (const b of buttons) b.disabled = true;")
 	if disabled < 0 || disabled > first {
 		t.Error("submitVerification does not hold the form's other buttons while its request is on its way")
+	}
+}
+
+// On a phone the notice at the top of the page is a screen above the Verify
+// form, so what was said only there changed nothing in view: after a wrong
+// code the box still held it, focus had fallen to the page and only the
+// button's label had flickered; the 18+ refusal and Forget this browser's
+// confirmation were out of sight too. Each is said where the reader is
+// looking instead. A refusal goes in the form, under its fields and above its
+// buttons, describes the fields, and puts the reader back in the field it is
+// about, a wrong code selected to be typed again. The confirmation goes under
+// the button that did it.
+func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
+	script := appScript(t)
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+
+	if !strings.Contains(script, "\nconst VERIFY_REFUSED_HTML = `<p class=\"verify-refused\" id=\"f-verify-refused\" role=\"alert\" hidden></p>`;\n") {
+		t.Fatal("app.js has no VERIFY_REFUSED_HTML for the Verify forms' refusals")
+	}
+	for _, step := range []string{`data-verify="confirm"`, `data-verify="request"`} {
+		at := strings.Index(view, step)
+		if at < 0 {
+			t.Fatalf("verifyViewHTML has no form %s", step)
+		}
+		form := view[at:]
+		form = form[:strings.Index(form, "</form>")]
+		refused := strings.Index(form, "${VERIFY_REFUSED_HTML}")
+		actions := strings.Index(form, `<div class="actions">`)
+		if n := strings.Count(form, "${VERIFY_REFUSED_HTML}"); n != 1 || actions < refused ||
+			strings.Contains(form[refused:], "<input") {
+			t.Errorf("the form %s does not say its refusal once, under its fields and above its buttons:\n%s", step, form)
+		}
+		for _, input := range regexp.MustCompile(`<input[^>]*>`).FindAllString(form, -1) {
+			if !strings.Contains(input, `aria-describedby="f-verify-refused"`) && !strings.Contains(input, `aria-describedby="${endedRef}"`) {
+				t.Errorf("in the form %s, %s is not described by the form's refusal", step, input)
+			}
+		}
+	}
+	if !strings.Contains(view, `const endedRef = verifyStep.ended ? "f-email-ended f-verify-refused" : "f-verify-refused";`) {
+		t.Error("the address field is not described by the form's refusal")
+	}
+
+	if strings.Contains(submit, "showNotice(") {
+		t.Errorf("submitVerification says something in the notice, a screen above the form on a phone:\n%s", submit)
+	}
+	if !strings.Contains(submit, "refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });") {
+		t.Error("the page's own 18+ refusal is not said under the box")
+	}
+	caught := submit[strings.Index(submit, "} catch (err) {"):]
+	for _, want := range []string{
+		`const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");`,
+		`const about = field(shown, refusedForAge ? "adult" : requesting ? "email" : "code");`,
+		`refuseVerification(shown, refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }), about, {`,
+		`select: !requesting && err.status === 400,`,
+	} {
+		if !strings.Contains(caught, want) {
+			t.Errorf("a refusal from the server is not said in the form, about its field (no %s)", want)
+		}
+	}
+	if clear, sent := strings.Index(submit, "clearVerifyRefusal(form);"), strings.Index(submit, "await api("); clear < 0 || clear > sent {
+		t.Error("a refusal stays up while the form is sent again")
+	}
+	refuse := withoutComments(jsFunction(t, script, "refuseVerification"))
+	for _, want := range []string{"why.textContent = message;", "why.hidden = false;", "scrollIntoView(",
+		`target.setAttribute("aria-invalid", "true");`, "target.focus(", "target.select();"} {
+		if !strings.Contains(refuse, want) {
+			t.Errorf("refuseVerification does not %s:\n%s", want, refuse)
+		}
+	}
+
+	forget := withoutComments(jsFunction(t, script, "forgetBrowserHTML"))
+	button, done := strings.Index(forget, `data-action="forget-browser"`), strings.Index(forget, `id="forget-browser-done"`)
+	if button < 0 || done < button {
+		t.Error("Forget this browser has nowhere under its button to say it is done")
+	}
+	confirm := withoutComments(jsFunction(t, script, "confirmBrowserForgotten"))
+	for _, want := range []string{"done.textContent = BROWSER_FORGOTTEN;", "done.hidden = false;", "scrollIntoView(", "done.focus("} {
+		if !strings.Contains(confirm, want) {
+			t.Errorf("confirmBrowserForgotten does not %s:\n%s", want, confirm)
+		}
+	}
+	handler := verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-browser"]')) {`)
+	if strings.Contains(handler, "showNotice(") || !strings.Contains(handler, "confirmBrowserForgotten();") {
+		t.Errorf("Forget this browser is not confirmed under its button:%s", handler)
 	}
 }
