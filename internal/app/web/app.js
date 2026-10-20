@@ -3009,8 +3009,10 @@ async function render({ draft = captureDraft() } = {}) {
   if (/^\/u-[^/]/.test(pathname)) {
     window.history.replaceState(null, "", pathname.replace(/^\/u-/, "/u/") + search + hash);
   }
-  const requested = window.location.href;
-  renderedPath = window.location.pathname + window.location.search;
+  // The address asked for, less its fragment, which a jump within the page
+  // moves without going anywhere else.
+  const requested = window.location.pathname + window.location.search;
+  renderedPath = requested;
   const route = parseRoute();
   state.route = route;
   // The loading state is this render's from here: whatever an older one left
@@ -3144,8 +3146,11 @@ async function render({ draft = captureDraft() } = {}) {
   if (resolved !== null) {
     // The history entry is replaced rather than added: /post/N is an address,
     // not a page, and Back should not land on it only to bounce forward again.
-    // Skipped if the reader went somewhere else while the number was looked up.
-    if (!overtaken(route) && window.location.href === requested) {
+    // Skipped if the reader went somewhere else while the number was looked up,
+    // but not for a jump within the page meanwhile, the skip link or a quote
+    // of a post that is not on it, say: that moves only the fragment, and the
+    // thread is drawn at the post as if nothing had been pressed.
+    if (!overtaken(route) && window.location.pathname + window.location.search === requested) {
       window.history.replaceState(null, "", resolved);
       await render({ draft });
     }

@@ -1416,11 +1416,16 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// as a notice, never in place of the page: after two redraws that fail, the
 	// page is still the one drawn, not the first redraw's half-begun one. Every
 	// render begun, the age screen's and the rules' included, ends the loading
-	// state of any before it (below).
+	// state of any before it (below). A post link's lookup goes on to the
+	// thread unless the reader went somewhere else meanwhile, which a jump
+	// within the page, moving only the fragment, is not: the address is
+	// compared less its fragment, or a skip link pressed during the lookup
+	// would leave the skeleton on screen for good.
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,
 		"async function render({ draft = captureDraft() } = {}) {",
-		"renderedPath = window.location.pathname + window.location.search; const route = parseRoute(); state.route = route; "+
+		"const requested = window.location.pathname + window.location.search; renderedPath = requested; "+
+			"const route = parseRoute(); state.route = route; "+
 			"rendersBegun += 1; endLoading(); "+
 			"const keepPage = Boolean(draft && draft.held && draft.key === routeKey(route)); "+
 			"if (!keepPage) { state.thread = null; expandedLink = null; }",
@@ -1434,10 +1439,15 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 			"showNotice(said ? `${said} ${message}` : message); return; }",
 		"expandedLink = null; el.main.innerHTML = emptyStateHTML(message, board);",
 		"} finally {",
-		"if (!overtaken(route) && window.location.href === requested) {",
+		"if (!overtaken(route) && window.location.pathname + window.location.search === requested) { "+
+			`window.history.replaceState(null, "", resolved); await render({ draft }); } return; }`,
 		"if (overtaken(route)) { return; } drawnFor = { path: renderedPath, route, thread: state.thread }; "+
 			"expandedLink = null; enhancePosts(el.main); restoreDraft(draft);",
 	)
+	if n := strings.Count(render, "requested"); n != 3 || strings.Contains(render, "location.href") {
+		t.Errorf("requested appears %d times in render; want it taken, less the fragment, noted as renderedPath "+
+			"and compared once", n)
+	}
 	if n := strings.Count(render, "keepPage"); n != 4 {
 		t.Errorf("keepPage appears %d times in render; want its declaration, the resets, the skeleton and the failed load", n)
 	}
