@@ -379,13 +379,13 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	}
 }
 
-// A post's form is cleared, its file with it, only once the answer is the
-// post it made. An answer with a success status and no post in it — the
-// empty 200 net/http sends for a handler that wrote nothing — was taken for
-// one: the form was reset and only then did reading the post's place from it
-// fail, so the draft was gone and the post had not been made. The check comes
-// between the request and the reset, and it asks for the fields a made post
-// is answered with, which are checked against what the server answers.
+// A post's form is cleared, its file with it, only once the answer is the post
+// it made. An answer with a success status and no post in it — the empty 200
+// net/http sends for a handler that wrote nothing — was taken for one: the form
+// was reset and only then did reading the post's place from it fail, so the
+// draft was gone and the post had not been made. The check comes between the
+// request and the reset, and it asks for the fields a made post is answered
+// with, which are checked against what the server answers.
 func TestThePostFormIsClearedOnlyForAPostMade(t *testing.T) {
 	script := appScript(t)
 	submit := withoutComments(submitHandler(t, script))

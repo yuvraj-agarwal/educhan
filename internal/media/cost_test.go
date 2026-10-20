@@ -844,15 +844,15 @@ func TestThumbScratchCoversTheScaler(t *testing.T) {
 }
 
 // image/png's encoder writes a picture through six rows of it, the row under
-// each of its five filters and the row before it, each as wide as the
-// picture; in a strip a million pixels wide they are more than
-// processingSlack, so they are charged (pngEncoderRows), and what the encoder
-// holds is no more than that and the slack. That is so for every kind of PNG
-// as sanitizePNG hands it to the encoder, and for the NRGBA picture a lossless
-// WebP or a lossy one with an alpha plane is stored as. They are measured
-// here, in the encoder alone, because measured over the whole of Process
-// they would not show left out: the scaler's scratch for a strip's
-// thumbnail, made once the encoder is done with them, is larger.
+// each of its five filters and the row before it, each as wide as the picture;
+// in a strip a million pixels wide they are more than processingSlack, so they
+// are charged (pngEncoderRows), and what the encoder holds is no more than that
+// and the slack. That is so for every kind of PNG as sanitizePNG hands it to
+// the encoder, and for the NRGBA picture a lossless WebP or a lossy one with an
+// alpha plane is stored as. They are measured here, in the encoder alone,
+// because measured over the whole of Process they would not show left out: the
+// scaler's scratch for a strip's thumbnail, made once the encoder is done with
+// them, is larger.
 func TestPNGEncoderRowsAreCharged(t *testing.T) {
 	const w = 1 << 20
 	type strip struct {

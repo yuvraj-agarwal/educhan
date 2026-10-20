@@ -159,8 +159,8 @@ const uploadsSwitchedOff = "image uploads are switched off on this server"
 // Content-Length while uploads are on (refuseUnsized).
 const lengthRequired = "a post with a file needs a Content-Length"
 
-// uploadTooSlow is the refusal, 408, of a multipart post whose body fell
-// behind its pace (pacedBody), whether it was being read or read past.
+// uploadTooSlow is the refusal, 408, of a multipart post whose body fell behind
+// its pace (pacedBody), whether it was being read or read past.
 const uploadTooSlow = "upload too slow"
 
 // refuseUnsized answers a multipart post that came without a Content-Length,
@@ -579,15 +579,15 @@ func (a *App) rejectUpload(w http.ResponseWriter, r *http.Request, err error) {
 }
 
 // turnAway answers a multipart post that reserveUpload turned away with err,
-// once its body has been read past, the read having ended with drained. A
-// body that fell behind its pace on the way is answered 408, whatever the post
-// was turned away for, as it would have been with room to read it: the
-// connection is what the poster has to change. Any other is answered for why
-// it was turned away. The answer is decided from those two errors alone,
-// never from the request's context: net/http cancels that for any failed read
-// of the body, a read deadline's included, so a busy refusal mapped through
-// fail took the slow body for a client gone and answered nothing, which
-// net/http sent as 200 with an empty body, and a client read as its post made.
+// once its body has been read past, the read having ended with drained. A body
+// that fell behind its pace on the way is answered 408, whatever the post was
+// turned away for, as it would have been with room to read it: the connection
+// is what the poster has to change. Any other is answered for why it was turned
+// away. The answer is decided from those two errors alone, never from the
+// request's context: net/http cancels that for any failed read of the body, a
+// read deadline's included, so a busy refusal mapped through fail took the slow
+// body for a client gone and answered nothing, which net/http sent as 200 with
+// an empty body, and a client read as its post made.
 func (a *App) turnAway(w http.ResponseWriter, r *http.Request, err, drained error) {
 	switch {
 	case isReadTimeout(drained):
@@ -599,8 +599,8 @@ func (a *App) turnAway(w http.ResponseWriter, r *http.Request, err, drained erro
 	case tooBusy(err):
 		answerBusy(w)
 	default:
-		// The wait for room ended with the request's context, the
-		// client having gone away while its post waited.
+		// The wait for room ended with the request's context, the client having
+		// gone away while its post waited.
 		a.fail(w, r, err, "could not store attachment")
 	}
 }

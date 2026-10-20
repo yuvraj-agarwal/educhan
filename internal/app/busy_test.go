@@ -985,24 +985,24 @@ func TestABodyAheadOfItsPaceMayPause(t *testing.T) {
 	}
 }
 
-// A post turned away as busy still has its body read past, at the pace it
-// would have been read at, so that its poster gets the answer rather than a
-// connection closed under the upload. A body that fell behind on the way
-// ended in a read deadline, for which net/http cancels the request's context,
-// and the busy refusal, then mapped as a failure, took that for a client gone
-// and answered nothing: net/http sent 200 with an empty body, and the web
-// client took the post as made and cleared its form. Such a body is answered
-// 408 now, as it is with room to read it, whatever the post was turned away
-// for, and one whose client stops sending is answered 503 for the busy
-// server, not 200, though the context ended with it too.
+// A post turned away as busy still has its body read past, at the pace it would
+// have been read at, so that its poster gets the answer rather than a
+// connection closed under the upload. A body that fell behind on the way ended
+// in a read deadline, for which net/http cancels the request's context, and the
+// busy refusal, then mapped as a failure, took that for a client gone and
+// answered nothing: net/http sent 200 with an empty body, and the web client
+// took the post as made and cleared its form. Such a body is answered 408 now,
+// as it is with room to read it, whatever the post was turned away for, and one
+// whose client stops sending is answered 503 for the busy server, not 200,
+// though the context ended with it too.
 func TestATurnedAwayBodyIsAnsweredWhateverItsPace(t *testing.T) {
 	busy := func(t *testing.T) *harness {
 		h := testServer(t, nil)
 		h.addBoard("general")
 		h.app.uploadPaceGrace = 300 * time.Millisecond
 		h.app.uploadReadTimeout = 10 * time.Second
-		// Shorter than the time a wait leaves for the work, so a wait for
-		// room gives up at once.
+		// Shorter than the time a wait leaves for the work, so a wait for room
+		// gives up at once.
 		h.app.postDeadline = time.Second
 		drainShares(t, h, "127.0.0.1")
 		full, err := media.ReserveUpload(context.Background(), math.MaxInt64)

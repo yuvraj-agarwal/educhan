@@ -931,7 +931,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   kinds are bounded from the header and a PNG is written at deflate's fastest level
   (`storedPNG`, `TestStoredPNGsAreDeflatedAtBestSpeed`; at the default level what its rows
   held decided how long deflate searched them, and crafted rows took a 16-bit picture of
-  1.4 MB about 17 s) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
+  1.4 MB about 17 s; the price is size, 16-bit synthetic pictures stored 1.6 to 3.3 times
+  larger, so a PNG the default level stored near `storedLimit` can now be refused
+  `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
   8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
   each with a table of its own and a pixel to clear), and a JPEG is held to
   `maxJPEGScanRevisits` passes' work over its blocks (`jpegScanBlockVisits`, which weighs

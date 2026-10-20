@@ -438,12 +438,14 @@ server that would refuse what it sends.
   animation, since browsers show the picture alone, and it is stored as a still. An image
   whose rewritten file would come to more than four times the upload plus half a byte a
   pixel is refused with `400` after flood control, once it is encoded (`image would be too
-  large once re-encoded for storage`), which only a file made to compress in a way Go's
-  encoders cannot follow reaches, and so, once it is played, is a GIF that cannot be
-  stored one frame to a picture (`image too large to process`; see the GIF bullet below).
-  A lossy WebP with transparency is held instead to what a PNG of its size can come to,
-  because stored losslessly it is meant to be many times the size it came in at; it is
-  refused from its header when that is too large to process.
+  large once re-encoded for storage`), which a file made to compress in a way Go's
+  encoders cannot follow reaches, as can a PNG that another encoder compressed far smaller
+  than the fastest level it is stored at (see the PNG bullet below), and so, once it is
+  played, is a GIF that cannot be stored one frame to a picture (`image too large to
+  process`; see the GIF bullet below). A lossy WebP with transparency is held instead to
+  what a PNG of its size can come to, because stored losslessly it is meant to be many
+  times the size it came in at; it is refused from its header when that is too large to
+  process.
 
   A lossless WebP, and a lossy one's transparency when it is compressed (as libwebp
   compresses it by default), are the one case refused by the *size* of what is
@@ -503,9 +505,12 @@ server that would refuse what it sends.
     deflate's fastest level, as every stored PNG is, so that how long writing it takes
     depends on the picture's size rather than on what its pixels are: at the default
     level, rows crafted to make deflate search took a 16-bit picture of 25 megapixels,
-    from an upload of 1.4 MB, about 17 seconds of CPU. Stored PNGs are larger for it,
-    about a tenth for most of the photos and screenshots tried and up to three times for
-    smooth synthetic pictures.
+    from an upload of 1.4 MB, about 17 seconds of CPU. Stored PNGs are larger for it:
+    about a tenth for most of the photos and screenshots tried, and 1.6 to 3.3 times for
+    smooth 16-bit synthetic pictures. So a picture that the default level stored close to
+    its limit (four times the upload plus half a byte a pixel, see above) can come out
+    past it, and is then refused as too large once re-encoded where an earlier release
+    stored it, as a 16-bit gradient of 25 megapixels sent as a 1.7 MB file was.
   - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
     shows one after another, each for as long as it shows, and the loop count (from either
     of the two extensions browsers read it from), and nothing else. It is read as Chromium

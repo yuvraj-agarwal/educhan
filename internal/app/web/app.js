@@ -109,9 +109,9 @@ const el = {
 // when attempting to fetch resource") and says nothing a reader can use.
 const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
 
-// What a poster is told when the answer to their post is not the post it
-// made (isCreatedPost): it may or may not have been made, so they are asked
-// to look before they send it again.
+// What a poster is told when the answer to their post is not the post it made
+// (isCreatedPost): it may or may not have been made, so they are asked to look
+// before they send it again.
 const UNCONFIRMED_POST =
   "educhan's answer didn't confirm your post, so it may not have gone through. Check whether it appeared before posting again: what you wrote is still in the box.";
 
@@ -3377,9 +3377,9 @@ function posterKey() {
 
 /* Submitting --------------------------------------------------------------- */
 
-// isCreatedPost reports whether a posting request's answer is the post it
-// made: where it lives, which the page goes to next. Anything else, though it
-// came with a success status, is not taken for one.
+// isCreatedPost reports whether a posting request's answer is the post it made:
+// where it lives, which the page goes to next. Anything else, though it came
+// with a success status, is not taken for one.
 function isCreatedPost(answer) {
   return (
     answer !== null &&

@@ -82,10 +82,10 @@ const cheapestRest int64 = 1 << 20
 // decoders' tables and row buffers, compressors' windows, a PNG's gamma tables
 // (applyPNGGamma, 128 KiB at most), the thumbnail's own pixels and encoding,
 // and what a phase allocates while a collection runs. Rows as wide as the
-// picture are not in it, because a strip as wide as Inspect admits makes
-// them tens of megabytes: image/png's decoder reads through two rows of the
-// file (pngRowBytes) and its encoder writes through six of the stored
-// picture (pngEncoderRows), and each is charged to its phase.
+// picture are not in it, because a strip as wide as Inspect admits makes them
+// tens of megabytes: image/png's decoder reads through two rows of the file
+// (pngRowBytes) and its encoder writes through six of the stored picture
+// (pngEncoderRows), and each is charged to its phase.
 const processingSlack int64 = 4 << 20
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides
@@ -297,12 +297,14 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 // storedLimit is the most a stored original may take: four times the upload,
 // plus half a byte a pixel. Re-encoding a JPEG at its own quality and
 // subsampling (jpegQuality), a lossy WebP as a JPEG at storedJPEGQuality, or a
-// PNG or a GIF in its own format, comes to well inside that. What reaches it
-// is a file that compresses in a way Go's encoders cannot follow — a lossless
-// WebP of a pattern repeated further apart than deflate's 32 KiB window,
-// say, which as a PNG is raw pixels — and storing that would turn a small
-// upload into a file many times its size. Such a file is refused
-// (ErrStoredTooLarge) rather than stored.
+// PNG or a GIF in its own format, comes to well inside that. What reaches it is
+// a file that compresses in a way Go's encoders cannot follow: a lossless WebP
+// of a pattern repeated further apart than deflate's 32 KiB window, say, which
+// as a PNG is raw pixels, or a smooth 16-bit PNG of tens of megapixels that
+// another encoder deflated to a small fraction of what deflate's fastest level,
+// at which every PNG is stored (storedPNG), makes of it. Storing that would
+// turn a small upload into a file many times its size, so such a file is
+// refused (ErrStoredTooLarge) rather than stored.
 //
 // A lossy WebP with transparency is the exception: it is stored as a PNG of
 // its decoded pixels, because nothing else Go writes keeps the transparency,
