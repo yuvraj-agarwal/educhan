@@ -850,11 +850,11 @@ that had already gone is not reported on the page they went to. Update, pressed
 meanwhile, redraws the thread around the same form, still held, and the post
 goes ahead and is answered there: the form is cleared and the thread shows the
 post when it went, and the form is switched back on with the reason when it was
-refused, its image picker switched off, as the redrawn thread drew it, if the
-thread takes no more images. Every page of a board's index carries the same
-new-thread form, so going to another page of the index keeps a new thread going
-as Update does: the page is drawn around the held form, and the thread is posted
-from there.
+refused, its image picker as the redrawn thread drew it: switched off if the
+thread takes no more images, and back on if it takes them again. Every page of a
+board's index carries the same new-thread form, so going to another page of the
+index keeps a new thread going as Update does: the page is drawn around the held
+form, and the thread is posted from there.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then double for every further 60, up to eight

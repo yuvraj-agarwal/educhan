@@ -1308,10 +1308,13 @@ func TestAPendingFormIsHeld(t *testing.T) {
 // post went is drawn empty. Its page is told by routeKey, which leaves out the
 // index page, so another page of the same board's index carries a held
 // new-thread form as Update does. And its picker ends up as the new page drew
-// one: a redraw that drew it switched off, the thread having reached its image
-// limit meanwhile, has the held form's switched off with the same reason when
-// the hold ends, whatever the answer, rather than offering an image to a
-// thread that takes no more.
+// one when the hold ends, whatever the answer: a redraw that drew it switched
+// off, the thread having reached its image limit meanwhile, has the held
+// form's switched off with the same reason, rather than offering an image to a
+// thread that takes no more; one that drew it live, the limit raised
+// meanwhile, has it switched on, though it was switched off at the press; and
+// one that drew none, on a site that takes no images, has it switched off with
+// the site's reason.
 func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	script := appScript(t)
 	if !strings.Contains(withoutComments(script), "\nconst heldForms = new WeakSet();\n") {
@@ -1335,22 +1338,32 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 			"form.dataset.kind === held.dataset.kind && form.dataset.thread === held.dataset.thread ) { "+
 			`const drawn = form.querySelector("[data-file-field]"); const reason = !drawn ? UPLOADS_OFF_REASON : `+
 			`drawn.classList.contains("blocked") ? drawn.querySelector(".file-blocked").textContent : ""; `+
-			`if (reason && held.querySelector("[data-file-field]")) { blockedWhileHeld.set(held, reason); } `+
-			"else { blockedWhileHeld.delete(held); } form.replaceWith(held);",
+			`if (held.querySelector("[data-file-field]")) { redrawnPickers.set(held, reason); } form.replaceWith(held);`,
 		"return; } draft = { key: draft.key, ...formDraft(held) }; }",
 		"if (!form) { keepUnsentDraft(draft); return; }",
 	)
-	// The reason is applied when the hold ends, after the controls the hold
-	// switched off are switched back on, and by release, which both the
-	// success and the refusal call (TestAPendingFormIsHeld).
+	// What the redraw drew is applied when the hold ends, after the controls
+	// the hold switched off are switched back on, and by release, which both
+	// the success and the refusal call (TestAPendingFormIsHeld): a picker
+	// switched off at the press is not among those controls, so a picker drawn
+	// live is switched on here, and left as a live one is drawn.
 	inOrder(t, "holdForm", squash(withoutComments(jsFunction(t, script, "holdForm"))),
 		"return (refocus) => { heldForms.delete(form); for (const control of controls) { control.disabled = false; }",
-		`const blocked = blockedWhileHeld.get(form); if (blocked) { blockedWhileHeld.delete(form); `+
-			`blockFileField(form.querySelector("[data-file-field]"), blocked); }`,
+		`if (redrawnPickers.has(form)) { const reason = redrawnPickers.get(form); `+
+			`const picker = form.querySelector("[data-file-field]"); redrawnPickers.delete(form); `+
+			"if (reason) { blockFileField(picker, reason); } else { unblockFileField(picker); } }",
 	)
-	if n := strings.Count(withoutComments(script), "blockedWhileHeld"); !strings.Contains(withoutComments(script),
-		"\nconst blockedWhileHeld = new WeakMap();\n") || n != 5 {
-		t.Errorf("blockedWhileHeld appears %d times in app.js; want its declaration, restoreDraft's set and delete, and release's get and delete", n)
+	if n := strings.Count(withoutComments(script), "redrawnPickers"); !strings.Contains(withoutComments(script),
+		"\nconst redrawnPickers = new WeakMap();\n") || n != 5 {
+		t.Errorf("redrawnPickers appears %d times in app.js; want its declaration, restoreDraft's set, and release's has, get and delete", n)
+	}
+	if unblock := squash(withoutComments(jsFunction(t, script, "unblockFileField"))); unblock != "function unblockFileField(field) { "+
+		`const input = field.querySelector(".file-input"); const note = field.querySelector(".file-blocked"); `+
+		`input.disabled = false; note.textContent = ""; note.hidden = true; field.classList.remove("blocked"); }` {
+		t.Errorf("unblockFileField no longer leaves a picker as a live one is drawn, holding what it held: %s", unblock)
+	}
+	if n := strings.Count(withoutComments(script), "unblockFileField("); n != 2 {
+		t.Errorf("unblockFileField is called %d times in app.js; want once, in release", n-1)
 	}
 	render := squash(withoutComments(jsFunction(t, script, "render")))
 	inOrder(t, "render", render,

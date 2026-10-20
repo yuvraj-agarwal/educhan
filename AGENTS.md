@@ -446,17 +446,17 @@ check before the test changes.
   `routeKey`: the view, the board and the thread, never the index page) keeps the page,
   dimmed, in place of the skeleton, and puts the held form itself into the new page in
   place of the one drawn there (`heldForms`, `captureDraft`, `restoreDraft`), so the post
-  goes ahead and is answered on the form on screen; a picker the new page drew switched
-  off, or left out, is switched off on the held form with the same reason when the hold
-  ends, whatever the answer (`blockedWhileHeld`); a form answered by then is read for its
-  values like any draft, emptied after a success. A request that succeeds keeps the
-  answer it took; a refusal carrying `"captcha"` drops it and, while the form is on
-  screen, sends once more with a fresh one, and `"required"` also turns
-  `state.site.captcha` on for a page drawn without knowing. Any other refusal, or no
-  response at all, puts the answer back, unless it carries `Educhan-Captcha: spent`
+  goes ahead and is answered on the form on screen; when the hold ends, whatever the
+  answer, the held form's picker goes as the new page drew it, switched off with that
+  page's reason (or the site's, where it drew none) or switched on (`redrawnPickers`); a
+  form answered by then is read for its values like any draft, emptied after a success. A
+  request that succeeds keeps the answer it took; a refusal carrying `"captcha"` drops it
+  and, while the form is on screen, sends once more with a fresh one, and `"required"`
+  also turns `state.site.captcha` on for a page drawn without knowing. Any other refusal,
+  or no response at all, puts the answer back, unless it carries `Educhan-Captcha: spent`
   (`CAPTCHA_SPENT_HEADER`, set by `spendCaptcha`, a `429` from the second flood-control
   check included), which drops it and starts the next puzzle at once if the form is on
-  screen. A badged post never waits for or sends an answer
+  screen. A post that carries the badge never waits for or sends an answer
   (`() => state.site.captcha && !held`), and a code request always does.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,

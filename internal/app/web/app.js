@@ -1506,6 +1506,18 @@ function blockFileField(field, reason) {
   field.classList.add("blocked");
 }
 
+// unblockFileField switches a picker back on, as fileFieldHTML draws a live
+// one, for a held form whose page was redrawn with the picker live while it
+// was held (holdForm). It leaves whatever image the picker holds.
+function unblockFileField(field) {
+  const input = field.querySelector(".file-input");
+  const note = field.querySelector(".file-blocked");
+  input.disabled = false;
+  note.textContent = "";
+  note.hidden = true;
+  field.classList.remove("blocked");
+}
+
 function clearFileField(field) {
   const input = field.querySelector(".file-input");
   if (input) {
@@ -3108,20 +3120,20 @@ function restoreDraft(draft) {
       form.dataset.kind === held.dataset.kind &&
       form.dataset.thread === held.dataset.thread
     ) {
-      // Its picker goes as the new page drew one: switched off, the thread
-      // having reached its image limit since the press say, or left out, the
-      // site taking no images. Until the hold ends it shows what is being
-      // sent, so it is switched off then (holdForm).
+      // Its picker goes as the new page drew one: switched off with that
+      // page's reason, the thread having reached its image limit since the
+      // press say, or with the site's where it drew none, the site taking no
+      // images; or live, the limit raised since a press on a full thread say.
+      // Until the hold ends it shows what is being sent, so that waits until
+      // then (holdForm).
       const drawn = form.querySelector("[data-file-field]");
       const reason = !drawn
         ? UPLOADS_OFF_REASON
         : drawn.classList.contains("blocked")
           ? drawn.querySelector(".file-blocked").textContent
           : "";
-      if (reason && held.querySelector("[data-file-field]")) {
-        blockedWhileHeld.set(held, reason);
-      } else {
-        blockedWhileHeld.delete(held);
+      if (held.querySelector("[data-file-field]")) {
+        redrawnPickers.set(held, reason);
       }
       form.replaceWith(held);
       const details = held.closest("details");
@@ -4051,29 +4063,30 @@ function formOnScreen(form, route) {
 // The forms holdForm holds.
 const heldForms = new WeakSet();
 
-// Why the picker of a held form is no use now, by form: a redraw of its page
-// while it was held drew the picker there switched off, with this reason, or
-// drew none, on a site that takes no images (restoreDraft). The held picker
-// shows the image of the post on its way until the hold ends, and is switched
-// off then (holdForm).
-const blockedWhileHeld = new WeakMap();
+// How the last redraw of a held form's page drew the picker there, by form:
+// the reason it was drawn switched off with, or "" for one drawn live, or the
+// site's reason where it drew none, on a site that takes no images
+// (restoreDraft). The held picker shows the image of the post on its way until
+// the hold ends, and goes as the redraw drew it then (holdForm).
+const redrawnPickers = new WeakMap();
 
 // holdForm switches off a form's controls while its request is pending, from
 // the press until the answer, with whatever the reader wrote left where it is.
 // What is sent was read from the form at the press, so a change made in the
-// meantime would be left out of it, and wiped by the reset after a success.
-// It returns release, which switches back on the controls it switched off, and
-// no others: a picker switched off for its own reason stays off, and one a
-// redraw meanwhile drew switched off is switched off now, whatever the answer
-// (blockedWhileHeld), so the form is what a fresh drawing of the page would
-// show. With refocus, a form that had the focus at the press, which disabling
-// the focused control took away, gets it back on its button, ready to press
-// again; put back in a box to write in, it would start another puzzle. That is
-// only while the focus is still lost, on the page itself or nowhere: a reader
-// who moved it during the wait, to read a post say, keeps it where they put it.
-// And it does not scroll the page: a reader who scrolled away during the wait
-// stays where they are. The notice saying what happened is at the top of the
-// page, in view only of a reader who is there.
+// meantime would be left out of it, and wiped by the reset after a success. It
+// returns release, which switches back on the controls it switched off, and no
+// others: a picker switched off for its own reason stays off. A redraw of the
+// page meanwhile has the last word on the picker, whatever the answer
+// (redrawnPickers): it goes as the redraw drew it, switched off with that
+// drawing's reason or switched on, and is switched off with the site's reason
+// where the redraw drew none. With refocus, a form that had the focus at the
+// press, which disabling the focused control took away, gets it back on its
+// button, ready to press again; put back in a box to write in, it would start
+// another puzzle. That is only while the focus is still lost, on the page
+// itself or nowhere: a reader who moved it during the wait, to read a post say,
+// keeps it where they put it. And it does not scroll the page: a reader who
+// scrolled away during the wait stays where they are. The notice saying what
+// happened is at the top of the page, in view only of a reader who is there.
 // Until release, the form is in heldForms, and a redraw of its page carries it
 // across as it is (captureDraft, restoreDraft).
 function holdForm(form) {
@@ -4088,10 +4101,15 @@ function holdForm(form) {
     for (const control of controls) {
       control.disabled = false;
     }
-    const blocked = blockedWhileHeld.get(form);
-    if (blocked) {
-      blockedWhileHeld.delete(form);
-      blockFileField(form.querySelector("[data-file-field]"), blocked);
+    if (redrawnPickers.has(form)) {
+      const reason = redrawnPickers.get(form);
+      const picker = form.querySelector("[data-file-field]");
+      redrawnPickers.delete(form);
+      if (reason) {
+        blockFileField(picker, reason);
+      } else {
+        unblockFileField(picker);
+      }
     }
     const lost = !document.activeElement || document.activeElement === document.body;
     if (refocus && focused && lost) {
