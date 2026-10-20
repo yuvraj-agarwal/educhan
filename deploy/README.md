@@ -330,7 +330,8 @@ an older commit rather than a rebuild. **Never roll back across migration
 threads as live, and its pruning deletes them with their images left in the
 bucket. A binary that finds migrations it does not know logs an error saying so
 and still serves, so read the log after any rollback. `-sweep` refuses to run at
-all in that state.
+all in that state. While the Pass is on, a rollback to an image from before it
+retires it (section 2.10).
 
 ```bash
 export IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -539,20 +540,26 @@ email receipts for successful payments, and set up no custom domain for
 Checkout: the server sends buyers only to `https://checkout.stripe.com` and
 refuses any other address Stripe hands back.
 
-In Cloud Shell, keep the key out of your shell history:
+In Cloud Shell (the `read`s keep the keys out of your shell history):
 
 ```bash
+export REGION=asia-south1   # the region the service runs in
+export RUN_SA="educhan-run@$(gcloud config get-value project).iam.gserviceaccount.com"
+# The one address readers use, as a bare origin (any path is refused): the
+# service's own, unless readers come in through a domain of yours (below).
+export PUBLIC_URL="$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')"
+
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
-read -rsp 'Stripe secret key (for the two setup calls only): ' STRIPE_ADMIN; echo
-export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin: any path is refused
+read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
 
 # The product and its one-time price: USD 20.00, a year of the Pass. The amount
-# is in the currency's smallest unit (2000 = USD 20.00). A new price later is a
-# new Price and a new EDUCHAN_STRIPE_PRICE_ID, not a code change.
+# is in the currency's smallest unit (2000 = USD 20.00), and any tax is added on
+# top of it (below). A new price later is a new Price and a new
+# EDUCHAN_STRIPE_PRICE_ID, not a code change.
 PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
   -d name="educhan Pass" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
-  -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 \
+  -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 -d tax_behavior=exclusive \
   | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
 
 # The webhook endpoint, pinned to the API version the server is written
@@ -588,11 +595,29 @@ gcloud run services update educhan --region "$REGION" \
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price. To have Stripe Tax add sales tax, VAT or GST, switch Stripe Tax on in the
 account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars; the page then
-says "plus any tax" beside the price. Three more settings have working defaults
-and need no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
-`EDUCHAN_PASS_COOLDOWN` (section 4).
+says "plus any tax" beside the price, so the Price has to be tax-exclusive, as
+the one made above is (a Price made without `tax_behavior` can still be given it
+once). Three more settings have working defaults and need no change:
+`EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and `EDUCHAN_PASS_COOLDOWN`
+(section 4).
 
-Re-running `first-deploy.sh` keeps these settings.
+`PUBLIC_URL` is where Stripe sends a buyer back, and it has to be the one
+address readers use: the cookie that lets a browser collect its code belongs to
+the address the checkout began on, so a checkout begun anywhere else cannot be
+collected where Stripe returns the buyer. If readers come in through a domain
+of your own, set `PUBLIC_URL` to it and turn the `run.app` address off
+(`gcloud run services update educhan --region "$REGION" --no-default-url`);
+`first-deploy.sh` then checks, and prints, an address that no longer answers,
+so check your domain's `/healthz` yourself.
+
+Re-running `first-deploy.sh` keeps these settings. Applying `service.yaml` with
+`services replace`, or running the long form in section 2.6 again, does not:
+each sets the whole configuration, so it takes every Pass setting off and
+retires the Pass without the pause (below). If you manage the service that way,
+uncomment the Pass entries in `service.yaml` with your Price ID and
+`PUBLIC_URL`, and `EDUCHAN_STRIPE_AUTOMATIC_TAX` if you set it, or add them to
+the long form, before you run it again, and keep `EDUCHAN_PASS_SALES=paused`
+there while sales are paused, or the next run opens them.
 
 **To stop selling, pause.** This leaves everything already sold working:
 
@@ -628,10 +653,20 @@ event after about three days, so an event sent meanwhile is lost unless the
 settings are back before then: a payment among them never becomes a Pass, and a
 refund or dispute takes nothing back. So pause first, and retire only once
 nothing is in flight: no checkout still open (Stripe keeps one open for up to a
-day) and no refund or dispute pending. The tables stay and the sweep keeps
+day), no payment still processing (a bank debit can take a couple of weeks,
+and the server waits 30 days for one; the Dashboard's *Payments* lists any
+still pending), and no refund or dispute pending. Waiting 31 days after the
+pause covers the first two. The tables stay and the sweep keeps
 pruning them; setting the same `educhan-pass-secret` again brings back every
 Pass not yet pruned. Before that, check in the Stripe Dashboard that the
 webhook endpoint is still enabled: Stripe can disable one that keeps failing.
+
+**A rollback can retire it too.** While the Pass is on, on sale or paused,
+rolling the service back to an image from before the Pass (before migration
+`0012`) does what retiring does, without the pause: that code answers `404` at
+the webhook. Roll back no further than the first release with the Pass, or
+retire it first as above. If it has happened, roll forward within three days
+and Stripe's retries land; then check the endpoint is still enabled.
 
 **Reissuing a lost code needs the moderation key.** The owner makes a reissue
 code with `POST /api/pass/reissue`, which sits behind `EDUCHAN_MOD_KEY`
@@ -727,8 +762,8 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_MAIL_DEV` | `1` when testing verification | **unset** | Allows the development sender. Never on Cloud Run, where stdout is Cloud Logging |
 | `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off, and any other Pass setting given without it refuses to start. Set together with the four below (section 2.10). Never on the sweeper Job, nor is any Pass setting (section 2.9) |
 | `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
-| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the site's `https://` origin | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start) |
-| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe adds the tax at checkout and the page says "plus any tax" |
+| `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id / the `https://` origin readers use | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start), and the only one a checkout can be collected on (section 2.10) |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe adds the tax at checkout and the page says "plus any tax", so the Price must be tax-exclusive |
 | `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts, from `1` to `36500`. Each order keeps the term it was sold with, so a change applies only to checkouts started after it |
 | `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |
@@ -772,6 +807,10 @@ instances a client gets up to N times the intended allowance. Moving it to share
 storage — Memorystore, or a table — means replacing that one type, which nothing
 else depends on. The verification code cooldown rides on the same limiter, so it
 is per instance too.
+
+**So is the Pass's hourly budget.** `passBudget` in `internal/app/pass.go` counts
+in process memory too, so with N instances a Pass can skip the captcha up to N
+times `EDUCHAN_PASS_HOURLY_POSTS` in an hour.
 
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay

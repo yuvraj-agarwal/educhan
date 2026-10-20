@@ -68,9 +68,11 @@ spec:
             #     secretKeyRef:
             #       name: educhan-verify-secret
             #       key: latest
-            # The educhan Pass is off too until it goes on sale. Its five
-            # settings go on together or not at all, or the server refuses to
-            # start; deploy/README.md section 2.10.
+            # The educhan Pass is off too until it goes on sale. The five it
+            # needs go on together or not at all, or the server refuses to
+            # start; deploy/README.md section 2.10. Once it is on, keep them
+            # here: applying this file without them takes them off the service,
+            # which retires the Pass.
             # - name: EDUCHAN_PASS_SECRET
             #   valueFrom: {secretKeyRef: {name: educhan-pass-secret, key: latest}}
             # - name: EDUCHAN_STRIPE_SECRET_KEY
@@ -80,9 +82,14 @@ spec:
             # - name: EDUCHAN_STRIPE_PRICE_ID
             #   value: price_...
             # - name: EDUCHAN_PUBLIC_URL
-            #   value: https://YOUR-DOMAIN
+            #   value: https://YOUR-ADDRESS
+            # Only with Stripe Tax switched on in the Stripe account:
+            # - name: EDUCHAN_STRIPE_AUTOMATIC_TAX
+            #   value: "1"
             # To stop selling and keep what was sold working, add this one
-            # later; retiring the Pass is a different step (section 2.10).
+            # later, and keep it while sales are paused: applying this file
+            # without it opens them again. Retiring the Pass is a different
+            # step (section 2.10).
             # - name: EDUCHAN_PASS_SALES
             #   value: paused
 
