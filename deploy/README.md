@@ -491,7 +491,9 @@ open "$URL"                # the UI
 # Media round-trips through the bucket. Post an image, read its URL back, and
 # fetch it — then confirm the object is really in Cloud Storage. With
 # EDUCHAN_UPLOADS_ENABLED off, as service.yaml sets it, the post answers 403
-# instead; that is the check to run until uploads are switched on.
+# instead; that is the check to run until uploads are switched on. Once they
+# are, the captcha refuses this post from curl (403, "captcha":"required"), so
+# post the image from the site in a browser and run the three lines after it.
 curl -s -X POST "$URL/api/boards/meta/threads" \
   -F subject="storage check" -F body="does this survive" -F image=@photo.jpg
 curl -s "$URL/api/boards/meta/catalog"     # threads[].attachment.url
@@ -731,6 +733,11 @@ instances a client gets up to N times the intended allowance. Moving it to share
 storage — Memorystore, or a table — means replacing that one type, which nothing
 else depends on. The verification code cooldown rides on the same limiter, so it
 is per instance too.
+
+**So is the captcha's challenge count.** `captchaMeter` in
+`internal/app/captcha.go` counts each address's challenges in process memory, so
+behind N instances an address gets N times the challenges before they grow harder
+or are refused. Spent answers are not per instance: they are in `captcha_spent`.
 
 **Institutional verification has no mail sender yet.** `EDUCHAN_VERIFY_SECRET` is
 left unset in `service.yaml`, which switches the feature off, and it should stay
