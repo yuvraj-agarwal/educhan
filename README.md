@@ -158,22 +158,25 @@ credential** its own block on the page rather than a quiet button in a row of
 actions, and says what forgetting costs — the server cannot show the credential
 again, so it means verifying from the start. Pressed in one educhan tab, it
 takes the badge out of every other tab open in the browser too: each sees it go
-from storage, and any posting form it shows loses the option to post with it.
-Beside it, in every state of the page, **Forget this browser** removes the badge
-together with the poster key and the remembered name (see below), which are what
-would otherwise let the next person at a shared computer post under the same IDs
-and tripcode. A verification or a post still on its way when it is pressed
-brings none of them back, whichever educhan tab in the browser sent it: one
-still waiting on its anti-spam check is not sent, a post whose answer the server
-refused is not sent again, and one answered afterwards keeps nothing. Every open
-educhan tab also drops the badge and the poster key it holds; any posting form
-it shows, or is drawing at that moment, loses its Name and the option to post
-with the badge. The other tabs hear of it through `BroadcastChannel`, which
-every current browser has; in one without it, the other tabs drop only the
-badge, as they do for Forget this credential. A tab that stored one of the three
-again before it heard, for a post or a confirmation it handled meanwhile,
-removes it when it hears, but only while storage still holds what that tab
-stored: a badge confirmed or a key made in another tab since the press stays.
+from storage, and any posting form it shows loses the option to post with it;
+one that had it ticked says so when next pressed, rather than posting without
+it, and the press after that posts without it. Beside it, in every state of the
+page, **Forget this browser** removes the badge together with the poster key and
+the remembered name (see below), which are what would otherwise let the next
+person at a shared computer post under the same IDs and tripcode. A verification
+or a post still on its way when it is pressed brings none of them back,
+whichever educhan tab in the browser sent it: one still waiting on its anti-spam
+check is not sent, a post whose answer the server refused is not sent again, and
+one answered afterwards keeps nothing. Every open educhan tab also drops the
+badge and the poster key it holds; any posting form it shows, or is drawing at
+that moment, loses its Name and the option to post with the badge, and one that
+had the badge ticked says so when next pressed. The other tabs hear of it
+through `BroadcastChannel`, which every current browser has; in one without it,
+the other tabs drop only the badge, as they do for Forget this credential. A tab
+that stored one of the three again before it heard, for a post or a confirmation
+it handled meanwhile, removes it when it hears, but only while storage still
+holds what that tab stored: a badge confirmed or a key made in another tab since
+the press stays.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the

@@ -572,14 +572,25 @@ check before the test changes.
   attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
-  every badged post, so a forged local claim buys a 403 and nothing else. Every open tab
-  offers the one badge storage holds: a tab that sees the credential change in another
-  (Forget this credential or Forget this browser pressed there, the badge refused there
-  as expired or revoked, another address verified there) reads it again and, when it is
-  not the badge that tab offered, takes the option out of every posting form on screen
-  (`dropBadgeOption`) and draws `/verify` again if it shows that badge, leaving an
-  address form there as it is (`followCredentialStorage`, by the `storage` event,
-  `TestForgettingTheBadgeReachesEveryTab`).
+  every badged post, so a forged local claim buys a 403 and nothing else. No open tab
+  goes on offering a badge storage no longer holds, and the next form a tab draws offers
+  the one it holds: a tab that sees the credential change in another (Forget this
+  credential or Forget this browser pressed there, the badge refused there as expired or
+  revoked, another address verified there) reads it again and, when it is not the badge
+  that tab offered, takes the option out of every posting form on screen
+  (`dropBadgeOption`, which moves focus on the box to the form's button) and draws
+  `/verify` again only if it shows the badge panel; the address and code steps are left
+  as they are, and a code step stays the code step whatever badge is read in meanwhile
+  (`followCredentialStorage`, by the `storage` event,
+  `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
+  with its badged post on its way, refuses its next press once, saying the badge has
+  gone and that pressing again posts without it, under the same ID as the reader's
+  unbadged posts in a reply's thread while the poster key is the one it had
+  (`withdrawBadgeOption`, `badgeWithdrawn`, carried across a redraw by the draft,
+  `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
+  out tied to those posts, which the badge's own ID is there to keep apart. A badged
+  post refused as expired or revoked forgets the credential it sent only while storage
+  still holds it, so a badge verified in another tab meanwhile stays.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -613,7 +624,8 @@ check before the test changes.
   pressing tab (what is on its way, a redraw's draft included, the badge and the poster
   key the page holds, the code step, the note, and the Name and the badge option of every
   posting form on screen, whose note on the anti-spam check then says what a form without
-  the option says: `dropBadgeOption`) and draws `/verify` again if it is showing. The
+  the option says: `dropBadgeOption`, and which says so at its next press if it had the
+  badge ticked: `withdrawBadgeOption`) and draws `/verify` again if it is showing. The
   message is one constant that says nothing about anyone. The pressing tab clears storage
   before it posts the message, so another tab can store the credential, the poster key or
   the name again, for a post or a confirmation it handles before it hears; each tab notes
