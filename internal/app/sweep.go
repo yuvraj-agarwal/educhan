@@ -42,6 +42,15 @@ const sweepBatchSize = 100
 // for both, and the process exits on its own, with its record of counts logged.
 const spentPruneTimeout = 5 * time.Second
 
+// spentPruneBound is how long the sweep's prune may take: spentPruneTimeout,
+// unless a test has set a bound of its own.
+func (c Config) spentPruneBound() time.Duration {
+	if c.spentPruneWithin > 0 {
+		return c.spentPruneWithin
+	}
+	return spentPruneTimeout
+}
+
 // SweepReport is what a sweep did, in counts and nothing else: which boards or
 // threads went is not worth keeping in a log.
 type SweepReport struct {
@@ -71,7 +80,8 @@ type SweepReport struct {
 // the batch or the file it is on and prunes them all the same, so its error is
 // the stop alone, and no failure the stop would have caused. A stop that comes
 // later, while the spent answers go, finds nothing left to stop: the prune
-// runs past it, and the sweep reports the pass it made, with no error.
+// runs past it, and the sweep returns what its pass found, as one that was not
+// stopped would, with no error of the stop's.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -127,7 +137,7 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	// stop is no exception. The DELETE runs past ctx, as the file in hand
 	// does, within spentPruneTimeout: on the stopped context it would fail at
 	// once, prune nothing, and add a failure of its own to the stop's.
-	pruneCtx, cancelPrune := context.WithTimeout(context.WithoutCancel(ctx), spentPruneTimeout)
+	pruneCtx, cancelPrune := context.WithTimeout(context.WithoutCancel(ctx), a.cfg.spentPruneBound())
 	spent, err := a.store.PruneSpentCaptchas(pruneCtx, asOf)
 	cancelPrune()
 	var pruneErr error

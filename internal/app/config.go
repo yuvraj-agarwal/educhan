@@ -108,6 +108,11 @@ type Config struct {
 	// run without waiting a minute. No setting reads it; zero means the
 	// interval.
 	cooldownSweepEvery time.Duration
+
+	// spentPruneWithin replaces spentPruneTimeout, the bound on the sweep's
+	// prune of the spent captcha answers, so a test can run past it without
+	// waiting five seconds. No setting reads it; zero means the timeout.
+	spentPruneWithin time.Duration
 }
 
 // defaultDBMaxConns keeps one instance's pool small. The smallest Cloud SQL

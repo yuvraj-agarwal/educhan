@@ -405,6 +405,139 @@ func TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas(t *testing.T) {
 	}
 }
 
+// A stop that comes once the files are done, while the spent answers go, finds
+// nothing left to stop: the prune runs past it, and the sweep ends as one that
+// was not stopped would, here with no error, the spent answer counted in its
+// one record.
+func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
+	var logs syncBuffer
+	h := testServerLogging(t, nil, &logs)
+	h.addBoard("latestop")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'latestop'`)
+	thread := h.createThread("latestop", "", "", "archived and due")
+	h.archiveThread("latestop", thread.ThreadNo, time.Minute)
+	spentKey := sha256.Sum256([]byte("an answer spent before the stop came late"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	pid, release := h.holdThePrune()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := len(logs.String())
+	done := sweepInBackground(h, ctx)
+	// The prune waits on the table as a spend does.
+	h.waitForSpends(pid, 1)
+	cancel()
+	time.Sleep(100 * time.Millisecond)
+	release()
+	report, err := sweepEnded(t, done, 10*time.Second)
+	if err != nil {
+		t.Errorf("a sweep stopped while it pruned returned %q, want no error, as one not stopped", err)
+	}
+	stoppedSweepPruned(t, h, &logs, before, report, SweepReport{Threads: 1, Posts: 1, SpentCaptchas: 1})
+}
+
+// The prune is bounded, stopped or not: one held up past its bound, by a lock
+// here, gives up within about the bound with an error saying so and leaves the
+// rows to the next sweep, and the sweep still logs its record of counts, so a
+// stopped Job exits on its own before Cloud Run kills it.
+func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
+	var logs syncBuffer
+	const bound = 500 * time.Millisecond
+	h := testServerLogging(t, func(cfg *Config) { cfg.spentPruneWithin = bound }, &logs)
+	spentKey := sha256.Sum256([]byte("an answer spent behind a lock that outlasts the prune"))
+	h.exec(`INSERT INTO captcha_spent (signature_hash, expires_at) VALUES ($1, $2)`,
+		spentKey[:], time.Now().UTC().Add(-48*time.Hour).Truncate(24*time.Hour))
+
+	pid, release := h.holdThePrune()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	before := len(logs.String())
+	started := time.Now()
+	done := sweepInBackground(h, ctx)
+	h.waitForSpends(pid, 1)
+	cancel()
+	report, err := sweepEnded(t, done, bound+5*time.Second)
+	took := time.Since(started)
+	release()
+	if !errors.Is(err, context.DeadlineExceeded) || !strings.HasPrefix(err.Error(), "sweep spent captchas: ") {
+		t.Errorf("a prune held past its bound returned %v, want the prune running out of time", err)
+	}
+	if took < bound || took > bound+2*time.Second {
+		t.Errorf("the prune gave up after %v, want about its bound of %v", took, bound)
+	}
+	if report != (SweepReport{}) {
+		t.Errorf("sweep report = %+v, want nothing done", report)
+	}
+	lines := strings.Split(strings.TrimSpace(logs.String()[before:]), "\n")
+	if len(lines) != 1 || !strings.Contains(lines[0], `"msg":"sweep"`) || !strings.Contains(lines[0], `"spent_captchas":0`) {
+		t.Errorf("the sweep whose prune ran out of time logged %q, want its one record of counts", lines)
+	}
+	if n := h.countRows("captcha_spent"); n != 1 {
+		t.Errorf("%d spent answers left by a prune that gave up, want the one, for the next sweep", n)
+	}
+}
+
+// The bound the prune is given is five seconds, which the README promises,
+// inside the ten Cloud Run allows between SIGTERM and SIGKILL; only a test sets
+// another.
+func TestSweepsPruneIsGivenFiveSeconds(t *testing.T) {
+	if bound := (Config{}).spentPruneBound(); spentPruneTimeout != 5*time.Second || bound != spentPruneTimeout {
+		t.Errorf("the sweep's prune is given %v (spentPruneTimeout %v), want five seconds", bound, spentPruneTimeout)
+	}
+	if bound := (Config{spentPruneWithin: time.Second}).spentPruneBound(); bound != time.Second {
+		t.Errorf("a test's bound of a second gives the prune %v", bound)
+	}
+}
+
+// holdThePrune locks the table spent answers are kept in against everything,
+// the sweep's prune included, in a transaction it leaves open until release
+// ends it. pid is the open transaction's backend, which the prune waits on.
+func (h *harness) holdThePrune() (pid uint32, release func()) {
+	h.t.Helper()
+	ctx := context.Background()
+	tx, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	h.t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	if err := tx.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&pid); err != nil {
+		h.t.Fatalf("backend pid: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `LOCK TABLE captcha_spent IN ACCESS EXCLUSIVE MODE`); err != nil {
+		h.t.Fatalf("hold the prune: %v", err)
+	}
+	return pid, func() { _ = tx.Rollback(context.Background()) }
+}
+
+type sweepOutcome struct {
+	report SweepReport
+	err    error
+}
+
+// sweepInBackground starts a sweep on ctx, whose outcome sweepEnded waits for.
+func sweepInBackground(h *harness, ctx context.Context) <-chan sweepOutcome {
+	done := make(chan sweepOutcome, 1)
+	go func() {
+		report, err := h.app.Sweep(ctx)
+		done <- sweepOutcome{report, err}
+	}()
+	return done
+}
+
+// sweepEnded is the outcome of a sweep sweepInBackground started, or fails the
+// test if the sweep is still running after limit.
+func sweepEnded(t *testing.T, done <-chan sweepOutcome, limit time.Duration) (SweepReport, error) {
+	t.Helper()
+	select {
+	case outcome := <-done:
+		return outcome.report, outcome.err
+	case <-time.After(limit):
+		t.Fatalf("the sweep was still running after %v", limit)
+		return SweepReport{}, nil
+	}
+}
+
 // stoppedSweepPruned checks what a stopped sweep did: the report, the spent
 // answer gone, and one record of counts logged since before, counting it.
 func stoppedSweepPruned(t *testing.T, h *harness, logs *syncBuffer, before int, report, want SweepReport) {

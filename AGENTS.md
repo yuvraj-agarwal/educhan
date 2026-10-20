@@ -786,16 +786,19 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   failure there never keeps deleted threads' images up
   (`TestSweepRemovesFilesWhenTheCaptchaCleanupFails`). A stop is no exception: the prune
   runs on `context.WithoutCancel` within `spentPruneTimeout` (five seconds, inside the
-  ten Cloud Run allows between SIGTERM and SIGKILL), as the file in hand does, so a
-  sweep cancelled before its batches (`TestSweepStopsWhenCancelled`) or among its files
-  (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`) prunes all the same, and its
-  error is the stop, with no prune failed on the stopped context beside it. It logs one
-  record of counts and nothing that names a board or thread, failures included, and the
-  error it returns has the key taken out (`TestSweepLogsOnlyCounts`); it returns an
-  error — a non-zero exit — on a stop before its files are done, a database failure, a
-  file it could not remove or did not find, or a database a newer release migrated
-  (`TestSchemaFromANewerReleaseStopsTheSweeper`); a stop that comes later, while the
-  spent answers go, finds nothing left to stop, and the sweep succeeds. It builds its
+  ten Cloud Run allows between SIGTERM and SIGKILL: `TestSweepsPruneIsGivenFiveSeconds`,
+  and `TestSweepsPruneGivesUpAtItsBound` through `Config.spentPruneWithin`), as the file
+  in hand does, so a sweep cancelled before its batches (`TestSweepStopsWhenCancelled`)
+  or among its files (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`)
+  prunes all the same, and its error is the stop, with no prune failed on the
+  stopped context beside it. It logs one record of counts and nothing that names a
+  board or thread, failures included, and the error it returns has the key taken out
+  (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a stop before
+  its files are done, a database failure, a file it could not remove or did not find, or
+  a database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`); a
+  stop that comes later, while the spent answers go, finds nothing left to stop and adds
+  no error of its own: the sweep ends as one that was not stopped would, failing only
+  if its pass failed (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`). It builds its
   App with `New` like the server, and runs without the salt, the moderation key, the
   verification secret and the captcha secret on purpose, so `New` warns about none of
   them: those warnings are `WarnServingSettings`, which only `serve` in `cmd/server`
