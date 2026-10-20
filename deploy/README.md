@@ -642,7 +642,7 @@ when the Pass is retired.
 
 **Set `EDUCHAN_PASS_SECRET` once and leave it alone.** Every stored Pass code and
 payment record is a hash under it, so rotating it cancels every Pass that was
-sold, and leaves no record a refund could find.
+sold, and leaves no record a refund or a reissue could find.
 
 **Keep the webhook reachable.** Stripe calls `POST /api/pass/stripe-webhook` from
 its own addresses, and a buyer who has paid gets nothing until that call lands.
