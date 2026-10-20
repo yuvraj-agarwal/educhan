@@ -502,11 +502,13 @@ needs a browser check before the test changes.
   redrawing regardless, the badge's late redraw wiped Forget this browser's
   confirmation. The skeleton stands in only for the view it dims (`beginLoading`), and
   the page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). What runs
-  once each answer is in is held statement for statement
-  (`TestVerifyCodeBoxShowsWhileACodeIsPending`, `TestVerifyRefusalsAreSaidInTheForm`): a
-  gate on a held badge, there or in `renderVerify`, has hidden a pending code's box with
-  every other check passing. `replacing` puts the badge panel away for "Verify another
-  address", and both steps then offer "Keep my badge" back to it
+  once each answer is in is held statement for statement, and so are `onVerifyPage`,
+  `verifyViewHTML` up to its code step, and `loadVerification`, the one place that sets
+  whether verification is on (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
+  `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
+  gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
+  with every other check passing. `replacing` puts the badge panel away for "Verify
+  another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
   at the address step. A reload drops a pending code too, since nothing about it is
   stored: the page shows the badge held here, or the address step when there is none.

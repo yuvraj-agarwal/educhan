@@ -532,6 +532,67 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		t.Error("verifyViewHTML sets verifyStep; it draws the step it is given and decides nothing about it")
 	}
 
+	// Nor can what the view reads before the code step stand in for a held
+	// badge, so everything up to the step is held line for line: v is the
+	// state as loaded, the one page drawn before the step is the
+	// not-configured one, and busy, wait and keep say only whether a request
+	// is out and whether to offer Keep my badge. A v worked out from the held
+	// badge, saying verification was off while a code was pending, once put
+	// "not configured" in place of the box with every check above passing.
+	// And v.enabled is the server's answer and nothing else: loadVerification,
+	// which sets it, is held whole, nothing else in app.js sets
+	// state.verification, and enabled is named nowhere but there, here and in
+	// the state the page starts with.
+	holdLines(t, "verifyViewHTML before the code step", jsLines(view), "function verifyViewHTML() {", "if ("+codeStep+") {",
+		[]string{
+			"const v = state.verification;",
+			"if (!v.enabled) {",
+			"return `",
+			`<div class="board-head"><h1>Institutional verification</h1></div>`,
+			"${VERIFY_INTRO}",
+			`<p class="empty">Verification is not configured on this server.</p>`,
+			"${forgetBrowserHTML()}`;",
+			"}",
+			"const busy = verifyBusy === verifyStep;",
+			`const wait = busy ? " disabled" : "";`,
+			"const keep = v.badge",
+			"? `<button class=\"btn subtle\" type=\"button\" data-action=\"verify-keep\"${wait}>Keep my badge</button>`",
+			`: "";`,
+		})
+	load := jsFunction(t, script, "loadVerification")
+	if got, want := jsLines(load), []string{
+		"async function loadVerification() {",
+		"let enabled = false;",
+		"try {",
+		`enabled = !!(await api("/api/verify")).enabled;`,
+		"} catch {",
+		"enabled = false;",
+		"}",
+		"state.verification = { enabled, badge: enabled ? readBadge() : null };",
+		"if (el.verifyFooter) {",
+		"el.verifyFooter.hidden = !enabled;",
+		"}",
+		"return state.verification;",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("loadVerification runs\n\t%s\nwant it to take whether verification is on from the server alone:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	code := withoutComments(script)
+	if n := len(regexp.MustCompile(`\bstate\.verification\s*=[^=]`).FindAllString(code, -1)); n != 1 {
+		t.Errorf("app.js sets state.verification %d times; want once, in loadVerification", n)
+	}
+	const initial = "\n  verification: { enabled: false, badge: null },\n"
+	if !strings.Contains(code, initial) {
+		t.Errorf("the state the page starts with no longer holds %q", strings.TrimSpace(initial))
+	}
+	enabled := regexp.MustCompile(`\benabled\b`)
+	held := withoutComments(load) + view[:start] + initial
+	if extra := len(enabled.FindAllString(code, -1)) - len(enabled.FindAllString(held, -1)); extra != 0 {
+		t.Errorf("app.js names enabled %d times outside loadVerification, verifyViewHTML before the code step, and "+
+			"the state the page starts with; whether verification is on is the server's answer, and nothing else may set it", extra)
+	}
+
 	// And the code step is what a sent code leads to, and what is drawn, and
 	// the badge an issued code leads to is drawn the same way, through
 	// renderVerify. A gate on a held badge in either place once passed every
@@ -770,11 +831,20 @@ func TestReplacingABadgeCanGoBackToIt(t *testing.T) {
 // coming back shows the step it left. Drawing regardless once put the Verify
 // address form over the board list a reader had gone to, under that page's
 // address and title.
+//
+// onVerifyPage asks that and nothing else, and is held whole: every answer
+// and renderVerify draw only when it says yes, so a held badge weighed in it
+// would keep a pending code's box off the page with every drawing pinned in
+// place. Checked only for the route test it contains, it passed with one.
 func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 	script := appScript(t)
-	guard := withoutComments(jsFunction(t, script, "onVerifyPage"))
-	if !strings.Contains(guard, `state.route.view === "verify"`) {
-		t.Fatalf("onVerifyPage no longer asks whether the page on screen is the Verify page:\n%s", guard)
+	if got, want := jsLines(jsFunction(t, script, "onVerifyPage")), []string{
+		"function onVerifyPage() {",
+		`return state.route.view === "verify";`,
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("onVerifyPage runs\n\t%s\nwant it to ask whether the page on screen is the Verify page, and nothing else:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 
 	submit := withoutComments(jsFunction(t, script, "submitVerification"))
