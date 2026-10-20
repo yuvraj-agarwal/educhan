@@ -423,14 +423,15 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 // to 80% larger than at the default level, most of them about a tenth; of the
 // 573 PNGs stored from a mixed corpus of 14,015 uploads, PNG uploads a median
 // of 5% larger and at most 2.2 times, and WebPs stored as PNGs a median of 11%.
-// Synthetic pictures grow more: 16-bit ones of 25 megapixels, of gradients and
-// flat colour, 1.6 to 3.3 times, and rows crafted for it 11 times. So a picture
-// the default level stored close to storedLimit can come out past it here, and
-// is refused (ErrStoredTooLarge) where it was stored before: a 10000×2500
-// 16-bit gradient of 1.7 MB, its rows filtered Up and deflated at zlib's
-// highest level, came to 97% of its limit at the default level, in 12 s of CPU,
-// and comes to 159% of it here. A thumbnail's rows are a few hundred kilobytes
-// at most, and it keeps the default level.
+// Synthetic pictures grow more: grey 16-bit ones of 25 megapixels 1.3 times
+// when flat or graded along one axis, 1.6 times graded radially and 3.8 to 4.6
+// times graded diagonally, and rows crafted for it 11 times. So a picture the
+// default level stored close to storedLimit can come out past it here, and is
+// refused (ErrStoredTooLarge) where it was stored before: a 10000×2500 16-bit
+// gradient of 1.7 MB, its rows filtered Up and deflated at zlib's highest
+// level, came to 97% of its limit at the default level, in 12 s of CPU, and
+// comes to 159% of it here. A thumbnail's rows are a few hundred kilobytes at
+// most, and it keeps the default level.
 var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 
 // sanitizeGIF decodes every frame of a GIF and stores what they show, and

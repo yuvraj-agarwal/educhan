@@ -936,29 +936,30 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   kinds are bounded from the header and a PNG is written at deflate's fastest level
   (`storedPNG`, `TestStoredPNGsAreDeflatedAtBestSpeed`; at the default level what its rows
   held decided how long deflate searched them, and crafted rows took a 16-bit picture of
-  1.4 MB about 17 s; the price is size, 16-bit synthetic pictures stored 1.6 to 3.3 times
-  larger, so a PNG the default level stored near `storedLimit` can now be refused
-  `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
-  8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
-  each with a table of its own and a pixel to clear), and a JPEG is held to
+  1.4 MB about 17 s; the price is size, the 16-bit synthetic pictures tried stored 1.3 to
+  4.6 times larger, so a PNG the default level stored near `storedLimit` can now be
+  refused `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one
+  core, an 8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000
+  canvas each with a table of its own and a pixel to clear), and a JPEG is held to
   `maxJPEGScanRevisits` passes' work over its blocks (`jpegScanBlockVisits`, which weighs
   a baseline scan's visit at six first-pass visits and an AC refinement scan's at two, for
-  what the decoder does on each), so the worst admitted one is about 3 to 4 s to decode
-  and 4 to 6 s to process rather than the thousands of seconds a repeated cheap scan would
-  take) before that deadline, with `media.ErrBusy`, and room that is there is taken
-  however near the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive,
-  counted from when the wait ends, so time spent waiting for room is not taken out of the
-  body's: a read deadline set on the connection through an `http.ResponseController` once
-  `ReserveUpload` has returned, whatever it returned (the logging middleware's
-  `statusRecorder` carries an `Unwrap` so the controller reaches the connection
-  underneath); a body slower than that is the client's doing, answered `408` (`upload too
-  slow`, `isReadTimeout`), as is one that falls behind its pace (`pacedBody`), not the
-  `503` a server with no room gives, and a body that waited for room is not answered `408`
-  for the server's load. A turned-away post's body is read past at the same pace, and
-  `turnAway` answers it from how that read ended, never from the request's context, which
-  net/http cancels for a read deadline as for a client gone: mapped through `fail`, a busy
-  refusal whose body fell behind answered nothing, which net/http sent as an empty `200`
-  that the web client took for a post made
+  what the decoder does on each), so the worst admitted one, a 25-megapixel baseline file
+  of four full-resolution components, is about 5 to 6 s to decode and 5.5 to 7.5 s to
+  process, and a progressive one, which the memory estimate holds to fewer blocks, about 3
+  to 4 s to decode, rather than the thousands of seconds a repeated cheap scan would take)
+  before that deadline, with `media.ErrBusy`, and room that is there is taken however near
+  the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive, counted from when
+  the wait ends, so time spent waiting for room is not taken out of the body's: a read
+  deadline set on the connection through an `http.ResponseController` once `ReserveUpload`
+  has returned, whatever it returned (the logging middleware's `statusRecorder` carries an
+  `Unwrap` so the controller reaches the connection underneath); a body slower than that
+  is the client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one
+  that falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and
+  a body that waited for room is not answered `408` for the server's load. A turned-away
+  post's body is read past at the same pace, and `turnAway` answers it from how that read
+  ended, never from the request's context, which net/http cancels for a read deadline as
+  for a client gone: mapped through `fail`, a busy refusal whose body fell behind answered
+  nothing, which net/http sent as an empty `200` that the web client took for a post made
   (`TestATurnedAwayBodyIsAnsweredWhateverItsPace`). Once the body is read, the image has a
   fresh `postDeadline` (25 s, `processContext`) to be processed and both renditions stored
   — measured from after the body, not from the start of the handler, so a slow body no

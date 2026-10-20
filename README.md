@@ -425,8 +425,10 @@ server that would refuse what it sends.
   progressive files encoders write six to eight — but a crafted file can repeat a scan of
   a few dozen bytes thousands of times, holding no more memory than one picture, so caught
   by neither the pixel cap nor the memory estimate, to decode for far longer than its size
-  or resolution suggests; the cap holds the worst admitted file to about 3 to 4 s of CPU
-  to decode and 4 to 6 s to process.
+  or resolution suggests; the cap holds the worst admitted file, a 25-megapixel baseline
+  one with four components at full resolution (an Adobe CMYK file), to about 5 to 6 s of
+  CPU to decode and 5.5 to 7.5 s to process, and a progressive one, which the memory
+  estimate holds to fewer blocks, to about 3 to 4 s to decode.
 
   At a quarter of the size, every kind is accepted at any shape up to a thousand to one,
   and a PNG of any size is refused once its longer side passes 2.2 to 3.7 million pixels,
@@ -506,11 +508,12 @@ server that would refuse what it sends.
     depends on the picture's size rather than on what its pixels are: at the default
     level, rows crafted to make deflate search took a 16-bit picture of 25 megapixels,
     from an upload of 1.4 MB, about 17 seconds of CPU. Stored PNGs are larger for it:
-    about a tenth for most of the photos and screenshots tried, and 1.6 to 3.3 times for
-    smooth 16-bit synthetic pictures. So a picture that the default level stored close to
-    its limit (four times the upload plus half a byte a pixel, see above) can come out
-    past it, and is then refused as too large once re-encoded where an earlier release
-    stored it, as a 16-bit gradient of 25 megapixels sent as a 1.7 MB file was.
+    about a tenth for most of the photos and screenshots tried, and 1.3 to 4.6 times for
+    smooth 16-bit synthetic pictures (flat colour the least, a diagonal gradient the
+    most). So a picture that the default level stored close to its limit (four times the
+    upload plus half a byte a pixel, see above) can come out past it, and is then refused
+    as too large once re-encoded where an earlier release stored it, as a 16-bit gradient
+    of 25 megapixels sent as a 1.7 MB file was.
   - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
     shows one after another, each for as long as it shows, and the loop count (from either
     of the two extensions browsers read it from), and nothing else. It is read as Chromium
