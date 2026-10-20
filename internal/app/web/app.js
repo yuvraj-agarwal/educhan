@@ -1819,6 +1819,16 @@ let verifyRequest = Promise.resolve();
 // screen from one that was drawn and then drawn over.
 let verifyShown = { step: null, node: null };
 
+// A refusal of the request sent from a step, as its form says it: what it
+// says, the field it is about, and how (refuseVerification). It is kept with
+// the step so that the step drawn again says it again. The page can be drawn
+// again while an answer is on its way — the reader presses Verify in the
+// header, or leaves and comes back — and then the form that sent the request
+// has gone, and the step may not be drawn yet, when the refusal comes in. Like
+// the notice it belongs to one visit to the page: render() puts it away, and
+// sending the form again does too (clearVerifyRefusal).
+let verifyRefusal = null;
+
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
 // the server refused it. Shown once on the verification page, which is the only
 // page that can do anything about it.
@@ -2064,8 +2074,10 @@ function refuseVerification(form, message, target, { invalid = false, select = f
   if (select) target.select();
 }
 
-// clearVerifyRefusal takes a refusal back down when the form is sent again.
+// clearVerifyRefusal takes a refusal back down when the form is sent again,
+// and forgets it, so the step drawn again does not say it.
 function clearVerifyRefusal(form) {
+  verifyRefusal = null;
   const why = form.querySelector(".verify-refused");
   why.hidden = true;
   why.textContent = "";
@@ -2241,6 +2253,14 @@ function verifyStepOnScreen() {
   return verifyShown.step === verifyStep && el.main.contains(verifyShown.node);
 }
 
+// sayVerifyRefusal says the refusal kept with the step (verifyRefusal) in the
+// step's form, when there is one for the step the page is on.
+function sayVerifyRefusal(form) {
+  const refused = verifyRefusal;
+  if (!refused || refused.step !== verifyStep) return;
+  refuseVerification(form, refused.message, field(form, refused.about), refused);
+}
+
 // renderVerify draws the Verify page once it has asked the server whether
 // verification is on here, and says whether it did. render() comes here for a
 // reader arriving at the page, and the page's own buttons and answers come
@@ -2270,6 +2290,8 @@ async function renderVerify() {
   drawVerifyStep();
   // Explained once, on the page that can do something about it.
   badgeLost = "";
+  const form = el.main.querySelector("form[data-verify]");
+  if (form) sayVerifyRefusal(form);
   return true;
 }
 
@@ -2972,6 +2994,9 @@ async function render({ draft = captureDraft() } = {}) {
   state.thread = null;
   renderNav(route);
   clearNotice();
+  // A refusal said in a Verify form goes with the notice: the page arrived at
+  // is a new visit, and a step drawn there starts without it.
+  verifyRefusal = null;
   hideQuotePreview();
   // Whatever was expanded belongs to the view being replaced.
   expandedLink = null;
@@ -3890,21 +3915,27 @@ async function submitVerification(form) {
     // Any other refusal leaves the step as it is, and is said in its form,
     // under the field it is about (refuseVerification): a wrong code puts the
     // reader back in the code box with the code selected, to be typed again.
+    // It is kept with the step (verifyRefusal), so the step drawn again says
+    // it too. The server's refusal of a request without the attestation reads
+    // the same as the page's own.
+    const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
+    verifyRefusal = {
+      step: sentFrom,
+      message: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }),
+      about: refusedForAge ? "adult" : requesting ? "email" : "code",
+      invalid: err.status === 400,
+      select: !requesting && err.status === 400,
+    };
     // The form on screen is this one, or, for a reader who went to another
     // page and came back while the answer was on its way, the same step drawn
     // again, waiting as this one was. Its buttons are live again either way.
+    // With neither on screen the step is still to be drawn for that reader:
+    // renderVerify draws it, its buttons live by then, and says the refusal.
     const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
     if (!shown) return;
     for (const b of shown.querySelectorAll("button")) b.disabled = false;
     shown.querySelector('button[type="submit"]').textContent = label;
-    // The server's refusal of a request without the attestation reads the same
-    // as the page's own.
-    const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
-    const about = field(shown, refusedForAge ? "adult" : requesting ? "email" : "code");
-    refuseVerification(shown, refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }), about, {
-      invalid: err.status === 400,
-      select: !requesting && err.status === 400,
-    });
+    sayVerifyRefusal(shown);
   } finally {
     // The answer is in, kept or dropped. A request sent since from another
     // step — after Forget this browser — is still out, and keeps its wait;

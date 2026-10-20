@@ -775,7 +775,7 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 			"(the code sent, the badge issued, the catch)", len(resumes))
 	}
 	draws := regexp.MustCompile(`el\.main\.innerHTML\s*=|drawVerifyStep\(|renderVerify\(|showNotice\(|refuseVerification\(|` +
-		`\.focus\(|scrollIntoView\(`)
+		`sayVerifyRefusal\(|\.focus\(|scrollIntoView\(`)
 	for i, r := range resumes {
 		end := len(submit)
 		if i+1 < len(resumes) {
@@ -841,6 +841,8 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 		"if (verifyStep !== step && verifyStepOnScreen()) return false;",
 		"drawVerifyStep();",
 		`badgeLost = "";`,
+		`const form = el.main.querySelector("form[data-verify]");`,
+		"if (form) sayVerifyRefusal(form);",
 		"return true;",
 		"}",
 	}; !slices.Equal(got, want) {
@@ -1015,8 +1017,8 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 		t.Fatalf("submitVerification resumes after an answer in %d places; this test knows three "+
 			"(the code sent, the badge issued, the catch)", len(resumes))
 	}
-	acts := regexp.MustCompile(`storeCredential\(|state\.verification|verifyStep\s*=[^=]|` +
-		`el\.main\.innerHTML\s*=|drawVerifyStep\(|renderVerify\(|showNotice\(|refuseVerification\(|` +
+	acts := regexp.MustCompile(`storeCredential\(|state\.verification|verifyStep\s*=[^=]|verifyRefusal\s*=[^=]|` +
+		`el\.main\.innerHTML\s*=|drawVerifyStep\(|renderVerify\(|showNotice\(|refuseVerification\(|sayVerifyRefusal\(|` +
 		`\.focus\(|scrollIntoView\(|\.disabled\s*=|\.textContent\s*=`)
 	const check = "if (verifyStep !== sentFrom) return;"
 	for i, r := range resumes {
@@ -1247,16 +1249,64 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 	if !strings.Contains(submit, "refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });") {
 		t.Error("the page's own 18+ refusal is not said under the box")
 	}
+	// A refusal from the server other than one that ends the pending code is
+	// kept with the step it refused (verifyRefusal) and said in the form on
+	// screen, about its field. The form on screen can be the step drawn again
+	// for a reader who came back while the answer was on its way; it can also
+	// be none yet, while render() is still asking the server before it draws
+	// the step, and then the refusal, said nowhere, was lost: the code box came
+	// back with live buttons and nothing to say the code typed was wrong. So
+	// renderVerify says the refusal kept with the step once it draws it, and
+	// does so again if the step is drawn again on the same visit, which Verify
+	// in the header does while the form is on screen.
 	caught := submit[strings.Index(submit, "} catch (err) {"):]
 	for _, want := range []string{
 		`const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");`,
-		`const about = field(shown, refusedForAge ? "adult" : requesting ? "email" : "code");`,
-		`refuseVerification(shown, refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }), about, {`,
+		`message: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }),`,
+		`about: refusedForAge ? "adult" : requesting ? "email" : "code",`,
 		`select: !requesting && err.status === 400,`,
+		"sayVerifyRefusal(shown);",
 	} {
 		if !strings.Contains(caught, want) {
 			t.Errorf("a refusal from the server is not said in the form, about its field (no %s)", want)
 		}
+	}
+	if kept, shown := strings.Index(caught, "verifyRefusal = {\n      step: sentFrom,"),
+		strings.Index(caught, "const shown = "); kept < 0 || kept > shown {
+		t.Error("a refusal from the server is not kept with its step before the form to say it in is looked for, " +
+			"so with no form on screen yet it is said nowhere")
+	}
+	if got, want := jsLines(jsFunction(t, script, "sayVerifyRefusal")), []string{
+		"function sayVerifyRefusal(form) {",
+		"const refused = verifyRefusal;",
+		"if (!refused || refused.step !== verifyStep) return;",
+		"refuseVerification(form, refused.message, field(form, refused.about), refused);",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("sayVerifyRefusal runs\n\t%s\nwant it to say the refusal kept with the step the page is on, and "+
+			"only that one:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	render := withoutComments(jsFunction(t, script, "renderVerify"))
+	drawn, said := strings.Index(render, "drawVerifyStep();"),
+		strings.Index(render, "const form = el.main.querySelector(\"form[data-verify]\");\n  if (form) sayVerifyRefusal(form);")
+	if drawn < 0 || said < drawn {
+		t.Errorf("renderVerify does not say the refusal kept with the step once it has drawn it:\n%s", render)
+	}
+	// The refusal is kept for one visit to the page, as the notice is, and
+	// not past the form being sent again.
+	if !strings.Contains(script, "\nlet verifyRefusal = null;\n") {
+		t.Error("app.js does not keep verifyRefusal, the refusal said in the step's form")
+	}
+	if n := len(regexp.MustCompile(`\bverifyRefusal\s*=[^=]`).FindAllString(withoutComments(script), -1)); n != 4 {
+		t.Errorf("app.js sets verifyRefusal %d times; want four: its declaration, in submitVerification, "+
+			"in clearVerifyRefusal and in render()", n)
+	}
+	if !strings.HasPrefix(withoutComments(jsFunction(t, script, "clearVerifyRefusal")),
+		"function clearVerifyRefusal(form) {\n  verifyRefusal = null;\n") {
+		t.Error("sending the form again does not forget the refusal it had, so the step drawn again would say it")
+	}
+	if !regexp.MustCompile(`\n  clearNotice\(\);\n\s*verifyRefusal = null;\n`).MatchString(withoutComments(jsFunction(t, script, "render"))) {
+		t.Error("render() does not put away a refusal said in a Verify form with the notice, so a later visit says it again")
 	}
 	if clear, sent := strings.Index(submit, "clearVerifyRefusal(form);"), strings.Index(submit, "await api("); clear < 0 || clear > sent {
 		t.Error("a refusal stays up while the form is sent again")

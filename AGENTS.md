@@ -465,8 +465,11 @@ needs a browser check before the test changes.
   an address the allowlist does not know, a cooldown, no answer — leaves the step as it
   is and is said in its form, under the fields and above the buttons
   (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back in the field
-  it is about, a wrong code selected; Forget this browser's confirmation is said under
-  its button (`confirmBrowserForgotten`). `submitVerification` puts nothing in the
+  it is about, a wrong code selected. A refusal is kept with its step for the rest of the
+  visit (`verifyRefusal`, put away by `render()` and by sending again), so the step drawn
+  again says it: one that came in while `render()` was still asking before it drew the
+  step had no form to be said in, and was lost. Forget this browser's confirmation is said
+  under its button (`confirmBrowserForgotten`). `submitVerification` puts nothing in the
   notice (`TestVerifyRefusalsAreSaidInTheForm`). An answer belongs to the step it was sent
   from: `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
   answer, storing, setting and drawing nothing, once the page has moved to another step.
