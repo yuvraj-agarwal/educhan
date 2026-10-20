@@ -432,10 +432,12 @@ func TestHostileEXIF(t *testing.T) {
 // first Orientation entry that is a single SHORT from 1 to 8 counts, and one
 // that is not is passed over rather than read as upright. An IFD that claims
 // more entries than it holds is read for the ones it holds, IFD0 is read at
-// any offset, overlapping the header too, and nothing else is followed: not a
-// sub-IFD named by a SHORT or by the sub-IFD, nor the next IFD. Each want is
-// what Chromium 141 did with both files, loaded as images: turned them by it,
-// or, for 1, left them as they were.
+// any offset, overlapping the header too, every Exif sub-IFD IFD0 names is
+// followed, in turn, and nothing else is: not a sub-IFD named by a SHORT or by
+// the sub-IFD, nor the next IFD. Each want is what Chromium 141 did with both
+// files, loaded as images: turned them by it, or, for 1, left them as they
+// were. Past maxEXIFEntries entries the reader stops where Chromium does not
+// (TestEXIFReadIsBounded).
 func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 	le := binary.LittleEndian
 	o := func(v uint16) tiffEntry { return shortEntry(le, 0x0112, v) }
@@ -465,6 +467,8 @@ func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 		return uint32(at)
 	}
 	exif := func(at uint32) tiffEntry { return longEntry(le, 0x8769, at) }
+	// other is an entry of no interest to the reader: the image width.
+	other := shortEntry(le, 0x0100, 64)
 	// nextIFD is IFD0 holding the camera's make, followed by IFD1 holding
 	// the orientation, as the next IFD in the chain.
 	nextIFD := appendIFD(appendIFD(tiffHeader(le), le, []tiffEntry{asciiEntry(0x010F, "A")}, after(1)), le, []tiffEntry{o(6)}, 0)
@@ -501,6 +505,13 @@ func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 		{"an Exif sub-IFD named by the sub-IFD", ifds([]tiffEntry{exif(after(1))}, []tiffEntry{exif(after(1, 1))}, []tiffEntry{o(6)}), 1},
 		{"orientation in the next IFD", nextIFD, 1},
 		{"an Exif sub-IFD that is IFD0, then IFD0's orientation", ifd0(exif(8), o(6)), 6},
+		{"two Exif sub-IFDs, the second's orientation", ifds([]tiffEntry{exif(after(2)), exif(after(2, 1))}, []tiffEntry{other}, []tiffEntry{o(6)}), 6},
+		{"two Exif sub-IFDs, the first's orientation 9, the second's 6", ifds([]tiffEntry{exif(after(2)), exif(after(2, 1))}, []tiffEntry{o(9)}, []tiffEntry{o(6)}), 6},
+		{"an empty Exif sub-IFD, then one with an orientation", ifds([]tiffEntry{exif(after(2)), exif(after(2, 0))}, []tiffEntry{}, []tiffEntry{o(6)}), 6},
+		{"an Exif sub-IFD past the segment, then one inside it", ifds([]tiffEntry{exif(0xFFFFFFF0), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"an Exif sub-IFD that is IFD0, then another", ifds([]tiffEntry{exif(8), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"an Exif sub-IFD named by a SHORT, then by a LONG", ifds([]tiffEntry{shortEntry(le, 0x8769, uint16(after(2))), exif(after(2))}, []tiffEntry{o(6)}), 6},
+		{"three Exif sub-IFDs, the third's orientation", ifds([]tiffEntry{exif(after(3)), exif(after(3, 1)), exif(after(3, 1, 1))}, []tiffEntry{other}, []tiffEntry{other}, []tiffEntry{o(6)}), 6},
 	}
 	pic := quadrants(64, 32)
 	jpg, pngFile := encodeJPEGImage(t, pic), pngOf(t, pic)
@@ -521,6 +532,87 @@ func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 			if got := process(t, upload); got.Width != wantW || got.Height != wantH {
 				t.Errorf("%s: the %s is stored %dx%d, want %dx%d", c.name, format, got.Width, got.Height, wantW, wantH)
 			}
+		}
+	}
+}
+
+// Chromium follows every Exif sub-IFD entry in IFD0, each into a scan of
+// the sub-IFD it names, so an IFD0 of 65535 entries that each name IFD0 is
+// 4.3 billion entries to read: a PNG of 768 KB that took ~26-27 s of CPU
+// before the reader was bounded, and Inspect reads its orientation more than
+// once, all before any cooldown. The reader stops after maxEXIFEntries
+// entries in all, the 131070th read and the 131071st not, which leaves the
+// last three files here upright where Chromium 141 turned each of them; and
+// it still reads every entry of IFD0 and of one sub-IFD however many each
+// holds.
+func TestEXIFReadIsBounded(t *testing.T) {
+	le := binary.LittleEndian
+	o6 := shortEntry(le, 0x0112, 6)
+	other := shortEntry(le, 0x0100, 64)
+	exif := func(at uint32) tiffEntry { return longEntry(le, 0x8769, at) }
+	repeat := func(e tiffEntry, n int) []tiffEntry {
+		out := make([]tiffEntry, n)
+		for i := range out {
+			out[i] = e
+		}
+		return out
+	}
+	// subIFDTwice is IFD0 holding lead entries of no interest, then two
+	// entries naming one Exif sub-IFD of n such entries, then orientation 6:
+	// lead + n + 1 + n + 1 entries to read to reach the orientation.
+	subIFDTwice := func(lead, n int) []byte {
+		sub := uint32(8 + 2 + 12*(lead+3) + 4)
+		entries := append(repeat(other, lead), exif(sub), exif(sub), o6)
+		b := appendIFD(tiffHeader(le), le, entries, 0)
+		return appendIFD(b, le, repeat(other, n), 0)
+	}
+	// selfNaming is IFD0 of n entries naming IFD0 as the Exif sub-IFD, then,
+	// if tail, one naming a sub-IFD that holds orientation 6.
+	selfNaming := func(n int, tail bool) []byte {
+		entries := repeat(exif(8), n)
+		if !tail {
+			return appendIFD(tiffHeader(le), le, entries, 0)
+		}
+		entries = append(entries, exif(uint32(8+2+12*(n+1)+4)))
+		return appendIFD(appendIFD(tiffHeader(le), le, entries, 0), le, []tiffEntry{o6}, 0)
+	}
+	if maxEXIFEntries != 131070 {
+		t.Fatalf("maxEXIFEntries = %d; the cases below are laid out for 131070", maxEXIFEntries)
+	}
+	pngFile := pngOf(t, quadrants(64, 32))
+	cases := []struct {
+		name string
+		tiff []byte
+		want int
+	}{
+		// The bound is checked first, so that a reader without it fails here
+		// rather than spending minutes on the files below.
+		{"the orientation as the 131070th entry read", subIFDTwice(1, 65533), 6},
+		{"the orientation as the 131071st entry read", subIFDTwice(2, 65533), 1},
+		{"IFD0 of 65535 entries naming IFD0", selfNaming(65535, false), 1},
+		{"IFD0 of 65534 entries naming IFD0, then one naming an orientation", selfNaming(65534, true), 1},
+	}
+	for _, c := range cases {
+		upload := withPNGChunks(pngFile, pngChunk("eXIf", c.tiff))
+		done := make(chan int, 1)
+		go func() { done <- pngOrientation(upload) }()
+		select {
+		case got := <-done:
+			if got != c.want {
+				t.Fatalf("%s: pngOrientation = %d, want %d", c.name, got, c.want)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatalf("%s: pngOrientation still reading after 10 s", c.name)
+		}
+		if allocs := testing.AllocsPerRun(3, func() { pngOrientation(upload) }); allocs != 0 {
+			t.Errorf("%s: pngOrientation allocated %v times, want none", c.name, allocs)
+		}
+		wantW, wantH := 64, 32
+		if c.want >= 5 {
+			wantW, wantH = 32, 64
+		}
+		if got := process(t, upload); got.Width != wantW || got.Height != wantH {
+			t.Errorf("%s: stored %dx%d, want %dx%d", c.name, got.Width, got.Height, wantW, wantH)
 		}
 	}
 }

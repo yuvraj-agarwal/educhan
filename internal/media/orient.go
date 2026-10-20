@@ -33,6 +33,19 @@ const (
 	tiffTypeLong       = 4
 )
 
+// maxEXIFEntries is how many IFD entries tiffOrientation reads of one file
+// at most, across IFD0 and the sub-IFDs it follows from there: every entry of
+// IFD0 and of one Exif sub-IFD, however many each holds (an IFD's count is 16
+// bits), about a millisecond of CPU. Chromium follows every Exif sub-IFD
+// entry in IFD0, each into a scan of the sub-IFD it names, so the reader
+// follows them too; but then an IFD0 of 65535 such entries, each naming IFD0
+// itself, is 65535 scans of 65535 entries, 4.3 billion in all, which a PNG's
+// eXIf chunk of 768 KB holds and which took ~26-27 s of CPU on one core to
+// read. Past this many the reader stops, and reads the file as upright where
+// Chromium, reading on, may turn it; no file a camera writes comes near
+// (TestEXIFReadIsBounded).
+const maxEXIFEntries = 2 * 0xFFFF
+
 // jpegOrientation reads the Orientation tag from the first Exif APP1 segment
 // of a JPEG, and returns 1, upright, when no Orientation entry there holds a
 // value from 1 to 8 (an entry outside that range is passed over for a later
@@ -49,11 +62,12 @@ const (
 //
 // The upload is hostile until proven otherwise, so the reader works on the
 // bytes in place: every offset is checked against the segment before it is
-// used, nothing is allocated, and the only offsets followed are the two to
-// where Chromium looks for the tag: IFD0's, and from IFD0 alone, its Exif
-// sub-IFD's (tiffOrientation). Nothing is followed from the sub-IFD, so with
-// no chain of IFDs walked there is no loop to be caught in, however the
-// offsets point.
+// used, nothing is allocated, and the only offsets followed are the two kinds
+// to where Chromium looks for the tag: IFD0's, and from IFD0 alone, its Exif
+// sub-IFD's (tiffOrientation). Nothing is followed from a sub-IFD, so with no
+// chain of IFDs walked there is no loop to be caught in, however the offsets
+// point, and the reader stops after maxEXIFEntries entries in all, however
+// many sub-IFDs IFD0 names.
 func jpegOrientation(data []byte) int {
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return 1
@@ -104,8 +118,9 @@ func pngOrientation(data []byte) int {
 // for it stands, and the first Orientation entry that is a single SHORT from 1
 // to 8 counts: one that is not (of another type or count, or 0, or 9) is
 // passed over rather than read as upright. An IFD that claims more entries
-// than the segment holds is read for the entries it does hold, and IFD0 is
-// read wherever the header puts it, overlapping the header too.
+// than the segment holds is read for the entries it does hold, IFD0 is read
+// wherever the header puts it, overlapping the header too, and every Exif
+// sub-IFD entry in IFD0 is followed, until maxEXIFEntries have been read.
 func tiffOrientation(tiff []byte) int {
 	if len(tiff) < 8 {
 		return 1
@@ -122,7 +137,8 @@ func tiffOrientation(tiff []byte) int {
 	if order.Uint16(tiff[2:4]) != 42 {
 		return 1
 	}
-	if o, ok := ifdOrientation(tiff, order, order.Uint32(tiff[4:8]), true); ok {
+	left := maxEXIFEntries
+	if o, ok := ifdOrientation(tiff, order, order.Uint32(tiff[4:8]), true, &left); ok {
 		return o
 	}
 	return 1
@@ -131,8 +147,9 @@ func tiffOrientation(tiff []byte) int {
 // ifdOrientation reads the IFD at offset in tiff for tiffOrientation, and
 // reports whether it found an Orientation entry that counts. In IFD0 (ifd0)
 // an Exif sub-IFD entry, a single LONG, is followed where it stands, and the
-// sub-IFD read the same way but for that: nothing is followed from it.
-func ifdOrientation(tiff []byte, order binary.ByteOrder, offset uint32, ifd0 bool) (int, bool) {
+// sub-IFD read the same way but for that: nothing is followed from it. Each
+// entry read takes one from *left, and none is read once it is 0.
+func ifdOrientation(tiff []byte, order binary.ByteOrder, offset uint32, ifd0 bool, left *int) (int, bool) {
 	// Compared as 64-bit so an offset near 4 GiB cannot wrap on a 32-bit build.
 	if uint64(offset)+2 > uint64(len(tiff)) {
 		return 0, false
@@ -140,6 +157,10 @@ func ifdOrientation(tiff []byte, order binary.ByteOrder, offset uint32, ifd0 boo
 	entries := tiff[offset+2:]
 	count := min(int(order.Uint16(tiff[offset:offset+2])), len(entries)/12)
 	for k := 0; k < count; k++ {
+		if *left == 0 {
+			return 0, false
+		}
+		*left--
 		entry := entries[12*k : 12*k+12]
 		typ, n := order.Uint16(entry[2:4]), order.Uint32(entry[4:8])
 		switch order.Uint16(entry[0:2]) {
@@ -149,7 +170,7 @@ func ifdOrientation(tiff []byte, order binary.ByteOrder, offset uint32, ifd0 boo
 			}
 		case exifIFDTag:
 			if ifd0 && typ == tiffTypeLong && n == 1 {
-				if v, ok := ifdOrientation(tiff, order, order.Uint32(entry[8:12]), false); ok {
+				if v, ok := ifdOrientation(tiff, order, order.Uint32(entry[8:12]), false, left); ok {
 					return v, true
 				}
 			}

@@ -786,15 +786,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   it cannot read — orientation 1, the dearest cost, `storedJPEGQuality`, not animated
   (which leaves the file to the RIFF rewrite) — except the GIF walk and the RIFF rewrite,
   which refuse the file. The EXIF reader follows no offset but IFD0's and, from IFD0
-  alone, its Exif sub-IFD's, which are where Chromium reads the orientation from, and it
+  alone, its Exif sub-IFDs', which are where Chromium reads the orientation from, and it
   reads the entries as Chromium does (`TestOrientationIsReadAsChromiumReadsIt`); no IFD
-  chain is walked, so there is no loop. Whether the file is an image is the decoder's call
-  alone (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`,
-  `FuzzJPEGQuality`, `FuzzGIFFramePixels`; `FuzzInspect` runs every walk `Inspect` makes
-  over files of every format, and checks that what it admits is estimated at no less than
-  a byte a pixel and no more than the budget; `FuzzStripWebP` runs the RIFF rewrite over
-  lossless and lossy WebPs and checks it is idempotent). No EXIF library is needed and
-  none should be added.
+  chain is walked, so there is no loop. Chromium follows every Exif sub-IFD entry in
+  IFD0, though, and 65535 of them naming IFD0 is 4.3 billion entries to read, so the
+  reader stops after `maxEXIFEntries` in all, every entry of IFD0 and of one sub-IFD
+  (`TestEXIFReadIsBounded`). Whether the file is an image is the decoder's call alone
+  (`TestHostileEXIF`, `FuzzJPEGOrientation`, `FuzzPNGOrientation`, `FuzzJPEGQuality`,
+  `FuzzGIFFramePixels`; `FuzzInspect` runs every walk `Inspect` makes over files of every
+  format, and checks that what it admits is estimated at no less than a byte a pixel and
+  no more than the budget; `FuzzStripWebP` runs the RIFF rewrite over lossless and lossy
+  WebPs and checks it is idempotent). No EXIF library is needed and none should be added.
 - **No filename is kept.** A camera's or a phone's filename can name a date and a person,
   so `parseSubmission` reads only the file's bytes, and an attachment's name is
   `attachmentName(stored path)`: `image` plus the stored format's extension (`image.jpg`),
