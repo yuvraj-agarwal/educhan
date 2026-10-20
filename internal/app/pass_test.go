@@ -14,21 +14,37 @@ import (
 
 func TestPassCodes(t *testing.T) {
 	a := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret}}}
+	other := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret + "-rotated"}}}
 	seen := map[string]bool{}
 	for range 200 {
-		nonce, err := randomToken()
-		if err != nil {
-			t.Fatal(err)
+		var tokens [3]string
+		for i := range tokens {
+			var err error
+			if tokens[i], err = randomToken(); err != nil {
+				t.Fatal(err)
+			}
 		}
-		code := a.passNonceCode(nonce)
-		// The same nonce gives the same code, which is what makes asking
-		// again safe; another secret gives another.
-		if again := a.passNonceCode(nonce); again != code {
-			t.Fatalf("nonce %q gave %q, then %q", nonce, code, again)
+		token, nonce, another := tokens[0], tokens[1], tokens[2]
+		code := a.passClaimCode(token, nonce)
+		// The same claim and nonce give the same code, which is what makes
+		// asking again safe. Either half alone gives another, and so do a
+		// reissue code with the same token and another secret.
+		if again := a.passClaimCode(token, nonce); again != code {
+			t.Fatalf("claim %q and nonce %q gave %q, then %q", token, nonce, code, again)
 		}
-		other := &App{cfg: Config{Pass: PassConfig{Secret: testPassSecret + "-rotated"}}}
-		if other.passNonceCode(nonce) == code {
-			t.Fatalf("two secrets gave nonce %q the same code", nonce)
+		if a.passReissuedCode(token, nonce) != a.passReissuedCode(token, nonce) {
+			t.Fatalf("reissue code %q and nonce %q gave two codes", token, nonce)
+		}
+		for name, c := range map[string]string{
+			"another nonce":  a.passClaimCode(token, another),
+			"another claim":  a.passClaimCode(another, nonce),
+			"the two halves": a.passClaimCode(nonce, token),
+			"a reissue code": a.passReissuedCode(token, nonce),
+			"another secret": other.passClaimCode(token, nonce),
+		} {
+			if c == code {
+				t.Fatalf("%s gave claim %q and nonce %q's code", name, token, nonce)
+			}
 		}
 		if len(code) != passCodeLen || strings.Trim(code, passAlphabet) != "" {
 			t.Fatalf("code %q is not %d characters of the alphabet", code, passCodeLen)
@@ -64,6 +80,76 @@ func TestPassCodes(t *testing.T) {
 		"ABCDE-FGHJK-MNPQR-STVW!", "ABCDE-FGHJK-MNPQR-STVWé", "ABCDE_FGHJK_MNPQR_STVWX",
 	} {
 		if got, ok := parsePassCode(raw); ok {
+			t.Errorf("parse(%q) accepted as %q", raw, got)
+		}
+	}
+}
+
+// TestReissueCodes holds a reissue code to a form a person can read out and
+// type back, which the page and the server can tell from a Pass code: the word
+// REISSUE and 28 characters of the alphabet, at least the 128 random bits a
+// link's token had, read back in any case, with or without the dashes and the
+// word.
+func TestReissueCodes(t *testing.T) {
+	seen := map[string]bool{}
+	for range 200 {
+		code, err := newReissueCode()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(code) != reissueCodeLen || reissueCodeLen*5 < 128 || strings.Trim(code, passAlphabet) != "" {
+			t.Fatalf("reissue code %q is not %d characters of the alphabet", code, reissueCodeLen)
+		}
+		if seen[code] {
+			t.Fatalf("reissue code %q drawn twice", code)
+		}
+		seen[code] = true
+		written := formatReissueCode(code)
+		if !reissueCodeShape(written) {
+			t.Fatalf("formatted %q", written)
+		}
+		bare := strings.ReplaceAll(strings.TrimPrefix(written, reissueCodePrefix+"-"), "-", "")
+		for _, typed := range []string{
+			written,
+			strings.ToLower(written),
+			strings.ReplaceAll(written, "-", " "),
+			"\t" + bare + " ",
+			bare,
+			reissueCodePrefix + bare,
+			"reissue " + strings.ToLower(bare),
+		} {
+			if back, ok := parseReissueCode(typed); !ok || back != code {
+				t.Fatalf("parse(%q) = %q, %v; want %q", typed, back, ok, code)
+			}
+		}
+		// Neither kind of code is ever read as the other.
+		if _, ok := parsePassCode(written); ok {
+			t.Fatalf("reissue code %q reads as a Pass code", written)
+		}
+		if _, ok := parsePassCode(bare); ok {
+			t.Fatalf("reissue code %q without the word reads as a Pass code", bare)
+		}
+	}
+	for raw, want := range map[string]string{
+		"REISSUE-0O0O-1IiL-2345-6789-ABCD-EFGH-JKMN": "0000111123456789ABCDEFGHJKMN",
+	} {
+		if got, ok := parseReissueCode(raw); !ok || got != want {
+			t.Errorf("parse(%q) = %q, %v; want %q", raw, got, ok, want)
+		}
+	}
+	for _, raw := range []string{
+		"", "REISSUE", "REISSUE-ABCD",
+		"ABCDE-FGHJK-MNPQR-STVWX",                     // a Pass code
+		"REISSUE-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-234",   // 27 characters
+		"REISSUE-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-23456", // 29
+		"REISSUE-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-234U",  // U is not in the alphabet
+		"REISSUED-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345", // another word
+		"REISSUE:ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-2345",  // a colon
+		"REISSUE_ABCD_EFGH_JKMN_PQRS_TVWX_YZ01_2345",  // underscores
+		"REISSUE-ABCD-EFGH-JKMN-PQRS-TVWX-YZ01-234é",  // past ASCII
+		"AAAAAAAAAAAAAAAAAAAAAA",                      // a link's token
+	} {
+		if got, ok := parseReissueCode(raw); ok {
 			t.Errorf("parse(%q) accepted as %q", raw, got)
 		}
 	}
@@ -132,8 +218,8 @@ func TestPassConfigFromEnv(t *testing.T) {
 	set(t, full)
 	cfg, err = passConfigFromEnv()
 	if err != nil || !cfg.Enabled() || cfg.PublicURL != "https://educhan.example" || cfg.Days != 365 ||
-		cfg.HourlyPosts != 30 || cfg.CheckoutCooldown != defaultPassCheckoutCooldown || cfg.StripeAutomaticTax {
-		t.Fatalf("full: %+v, %v", cfg, err)
+		cfg.HourlyPosts != 30 || cfg.CheckoutCooldown != 30*time.Second || cfg.StripeAutomaticTax {
+		t.Fatalf("full: %+v, %v; want, among the rest, the documented 30-second checkout cooldown", cfg, err)
 	}
 
 	bad := map[string]map[string]string{
@@ -149,6 +235,8 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"public url with a path":         {"EDUCHAN_PUBLIC_URL": "https://educhan.example/board"},
 		"public url with a query":        {"EDUCHAN_PUBLIC_URL": "https://educhan.example?x=1"},
 		"public url with a user":         {"EDUCHAN_PUBLIC_URL": "https://me@educhan.example"},
+		"public url with an empty hash":  {"EDUCHAN_PUBLIC_URL": "https://educhan.example#"},
+		"public url with a fragment":     {"EDUCHAN_PUBLIC_URL": "https://educhan.example#x"},
 		"not a url":                      {"EDUCHAN_PUBLIC_URL": "educhan"},
 		"zero days":                      {"EDUCHAN_PASS_DAYS": "0"},
 		"days past a hundred years":      {"EDUCHAN_PASS_DAYS": "36501"},
@@ -247,6 +335,7 @@ func TestPassConfigInCodeIsValidated(t *testing.T) {
 		names  string
 	}{
 		"trailing slash":      {func(c *PassConfig) { c.PublicURL = testPublicURL + "/" }, "EDUCHAN_PUBLIC_URL"},
+		"trailing hash":       {func(c *PassConfig) { c.PublicURL = testPublicURL + "#" }, "EDUCHAN_PUBLIC_URL"},
 		"publishable key":     {func(c *PassConfig) { c.StripeSecretKey = "pk_test_key" }, "EDUCHAN_STRIPE_SECRET_KEY"},
 		"a century and a day": {func(c *PassConfig) { c.Days = maxPassDays + 1 }, "EDUCHAN_PASS_DAYS"},
 		"paused without the secret": {func(c *PassConfig) { *c = PassConfig{SalesPaused: true} },

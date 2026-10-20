@@ -16,10 +16,11 @@ import (
 // Stripe settings beside it is refused at startup rather than at the first
 // checkout.
 type PassConfig struct {
-	// Secret keys every hash the Pass tables hold: of each Pass code, and of
-	// the processor's session and payment ids. Rotating it cancels every Pass,
-	// since no stored code hash matches any more, and orphans the payment
-	// records a refund would look for.
+	// Secret keys the hashes the Pass tables hold of each Pass code and of the
+	// processor's session and payment ids. A claim token and a reissue code
+	// are random, and stored as plain SHA-256 (hashToken). Rotating it cancels
+	// every Pass, since no stored code hash matches any more, and orphans the
+	// payment records a refund or a reissue would look for.
 	Secret string
 	// StripeSecretKey is the restricted or secret API key checkout sessions are
 	// created with.
@@ -39,9 +40,11 @@ type PassConfig struct {
 	// read from the request's Host, so a forged Host header cannot point the
 	// return trip somewhere else.
 	PublicURL string
-	// Days is how long a Pass lasts from the day it is bought. Each order
-	// keeps the term it was sold with (pass_orders.days), so changing this
-	// changes what is sold from then on and nothing already paid for.
+	// Days is the term each order is sold with, stored on the order at
+	// checkout (pass_orders.days), so changing this changes what is sold from
+	// then on and nothing already paid for. A new Pass's term counts from when
+	// it is collected, and a renewal adds its term to the Pass's expiry, or to
+	// now for a Pass that has run out.
 	Days int
 	// HourlyPosts is a Pass's hourly budget: how many posts in one hour,
 	// counted in UTC, it lets skip the captcha. Past that, posts with it
@@ -223,13 +226,14 @@ func validatePassConfig(c PassConfig) error {
 }
 
 // checkPublicURL wants a bare origin: Stripe appends nothing to it, and the
-// return paths and the reissue link are added here, so a trailing slash would
-// make them "//pass". The environment's value has its slash trimmed already;
-// one set in code is refused. Plain http is accepted only for a local
-// checkout, where Stripe's test mode allows it.
+// return paths are added here, so a trailing slash would make them "//pass".
+// The environment's value has its slash trimmed already; one set in code is
+// refused. Plain http is accepted only for a local checkout, where Stripe's
+// test mode allows it.
 func checkPublicURL(raw string) error {
 	u, err := url.Parse(raw)
-	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" {
+	// An empty fragment parses to nothing, so the raw value is checked too.
+	if err != nil || u.Host == "" || u.User != nil || u.Path != "" || strings.ContainsAny(raw, "?#") {
 		return fmt.Errorf("EDUCHAN_PUBLIC_URL: want the site's origin with no path or trailing slash, like https://educhan.example, got %q", raw)
 	}
 	switch u.Scheme {

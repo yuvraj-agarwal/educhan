@@ -1,4 +1,5 @@
--- The educhan Pass: a year of skipping the captcha, bought for a fee.
+-- The educhan Pass: a term (a year by default) of skipping the captcha,
+-- bought for a fee.
 --
 -- The privacy property these tables hold up is that a Pass can never be traced
 -- to a post, and a payment can be traced to a Pass only by someone holding the
@@ -9,8 +10,9 @@
 --     here. Using a Pass writes nothing, so there is no "last used" to line up
 --     against a post either.
 --   * No email, name, card or address. The processor keeps those; educhan keeps
---     HMAC(EDUCHAN_PASS_SECRET, payment id), which exists only so a refund or a
---     chargeback can take back the time that payment bought.
+--     HMAC(EDUCHAN_PASS_SECRET, payment id), which exists so a refund or a
+--     chargeback can take back the time that payment bought, and so the owner
+--     can reissue a lost code from the payment on the buyer's receipt.
 --   * No created_at. Every timestamp (expires_at in each table, and the day a
 --     payment's term ends) is rounded up to a UTC day boundary, so it dates a
 --     purchase to the day and not the minute.
@@ -45,13 +47,19 @@ CREATE TABLE IF NOT EXISTS pass_payments (
     days         INTEGER NOT NULL,
     -- The day that term ends: the Pass's expiry just after the payment was
     -- applied, moved back with it when an earlier term is refunded. A refund
-    -- takes off only the part of the term still to come, and the earliest
-    -- term left is the one that becomes the origin.
+    -- takes off only the part of the term still to come, and which terms are
+    -- still running or to come decides whether another payment can become
+    -- the origin.
     ends_at      TIMESTAMPTZ NOT NULL,
-    -- True for the payment that created the Pass, false for a renewal. When
-    -- the origin is refunded and the Pass goes on, the earliest payment left
-    -- becomes its origin, so the Pass can always be reissued.
-    origin       BOOLEAN NOT NULL
+    -- Whether a lost code can be reissued from this payment: 'bought' for the
+    -- one that created the Pass, and NULL for a renewal. When the purchase is
+    -- refunded or disputed and the Pass goes on, a renewal left becomes its
+    -- origin, 'moved', only if its term is the only one still running or to
+    -- come, so that it paid for all the time the Pass has left, and stops
+    -- being one when the Pass is renewed again, since then it no longer has.
+    -- Otherwise no one payment did, and the Pass has no origin and can no
+    -- longer be reissued.
+    origin       TEXT CHECK (origin IN ('bought', 'moved'))
 );
 
 CREATE INDEX IF NOT EXISTS pass_payments_pass_idx ON pass_payments (pass_id);
@@ -63,15 +71,15 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- The buyer's browser holds the claim token in a cookie scoped to
     -- /api/pass; this is its hash. Collecting the Pass needs it, so a Pass is
     -- handed to the browser that paid for it and to nobody else. Every
-    -- checkout gives the browser a new token and moves the orders under its
-    -- old one to it, so one claim can have several orders, all collected
-    -- together, and a token copied before a checkout collects none of them.
+    -- checkout gives the browser a new token with only its own order under
+    -- it, so a claim collects one order, and a token copied before a checkout
+    -- collects nothing that checkout buys.
     claim_hash    BYTEA NOT NULL,
     -- Set when the processor reports the payment complete. NULL means the
     -- buyer has not paid yet, or the webhook has not arrived.
     payment_hash  BYTEA UNIQUE,
-    -- The Pass this purchase renews, when the buyer renewed one from a browser
-    -- holding it. NULL buys a new Pass.
+    -- The Pass this purchase renews, when the checkout was sent its code. NULL
+    -- buys a new Pass, and so does a renewal whose Pass has gone since.
     renew_pass_id BIGINT REFERENCES passes (id) ON DELETE SET NULL,
     -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
     -- started. Collecting, renewing and pruning the order all use this, so a
@@ -81,7 +89,7 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     expires_at    TIMESTAMPTZ NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS pass_orders_claim_idx ON pass_orders (claim_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS pass_orders_claim_idx ON pass_orders (claim_hash);
 CREATE INDEX IF NOT EXISTS pass_orders_expires_idx ON pass_orders (expires_at);
 
 -- Payments refunded or disputed: the processor can deliver a refund ahead of
@@ -93,16 +101,20 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
     expires_at   TIMESTAMPTZ NOT NULL
 );
 
--- One-time links that hand a lost Pass back to its buyer: the owner makes one
--- for a payment (POST /api/pass/reissue) and sends it to the address the buyer
--- wrote in from, and whoever opens it is given a new code. The owner never sees
--- a code. A row lives until its link is used, refunded or past its deadline,
--- rounded up to a UTC midnight like an order's.
+-- One-time reissue codes that hand a lost Pass back to its buyer: the owner
+-- makes one for a payment (POST /api/pass/reissue) and sends it to the address
+-- the buyer wrote in from, and whoever types it on the Pass page is given a new
+-- code. The owner never sees a Pass code. A row lives until its reissue code is
+-- used, refunded or past its deadline, rounded up to a UTC midnight like an
+-- order's.
 CREATE TABLE IF NOT EXISTS pass_reissues (
-    -- SHA-256 of the link's random token, which is only ever in the link.
+    -- SHA-256 of the reissue code's random characters, which only the
+    -- owner's answer, the message to the buyer and the claim that redeems it
+    -- carry.
     token_hash   BYTEA PRIMARY KEY,
     -- The payment it reissues: the one that made a Pass, or a paid order not
-    -- collected yet. A newer link for the same payment replaces this one.
+    -- collected yet. A newer reissue code for the same payment replaces this
+    -- one.
     payment_hash BYTEA NOT NULL UNIQUE,
     expires_at   TIMESTAMPTZ NOT NULL
 );

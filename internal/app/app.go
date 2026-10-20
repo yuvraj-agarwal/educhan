@@ -129,7 +129,12 @@ func (a *App) WarnServingSettings() {
 	if a.cfg.PosterIDSaltEphemeral {
 		a.log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
 	}
-	if a.cfg.ModKey == "" {
+	switch {
+	case a.cfg.ModKey == "" && a.passEnabled():
+		// The Pass is on, and a lost code is reissued behind the same key.
+		a.log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request, " +
+			"and no lost Pass code can be reissued")
+	case a.cfg.ModKey == "":
 		a.log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request")
 	}
 	switch {
