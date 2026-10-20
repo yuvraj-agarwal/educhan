@@ -770,6 +770,21 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 			}
 		}
 	}
+	// A code typed in, a reissue code or a checkout asked for while a forget
+	// is on its way, here or in another tab, waits for it before the forgets
+	// are noted and the request goes, so its answer is not dropped for a
+	// forget pressed before it was asked for.
+	settled := withoutComments(jsFunction(t, script, "passForgetsSettled"))
+	if !strings.Contains(settled, "while (passForgetting || passCodeForgetting) {\n    await (passCodeForgetting || passForgetting);\n  }") {
+		t.Error("passForgetsSettled no longer waits for every forget on its way")
+	}
+	for _, name := range []string{"submitPass", "redeemPassReissue"} {
+		body := withoutComments(jsFunction(t, script, name))
+		waited, noted := strings.Index(body, "await passForgetsSettled();"), strings.Index(body, "const forgets = passCodeForgets;")
+		if waited < 0 || noted < waited || strings.Count(body, "await passForgetsSettled();") != 1 {
+			t.Errorf("%s sends its request while a forget is on its way, and then drops the answer for it", name)
+		}
+	}
 	submit := withoutComments(submitHandler(t, script))
 	sent := strings.Index(submit, "const sent = pass && passStillHeld(pass) ? pass : null;")
 	if sent < 0 || sent > strings.Index(submit, "forgetPass();") || sent > strings.Index(submit, "markPassExpired(") ||
@@ -871,6 +886,15 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 			t.Errorf("%s no longer asks, at its own level and after its last wait, whether the reader is still on the Pass page", name)
 		}
 	}
+	// A checkout opened that the reader is not then sent to, because they
+	// left the page or a forget came first, is one left behind, as if they had
+	// left Stripe without paying: the forms come back over it, and it is not
+	// drawn as a payment Stripe has yet to confirm.
+	left := strings.Index(submit, "if (res && kind !== \"activate\") {\n    passStartedAgain = true;\n  }")
+	if guarded := strings.Index(submit, "if (passForgotten(forgets) || !passStillHeld(held)) {"); left < 0 || guarded < left ||
+		!strings.Contains(submit, "passStartedAgain = false;\n    window.location.assign(res.url);") {
+		t.Error("a checkout answered after the reader left the Pass page, or after a forget, is drawn as one to collect")
+	}
 	// Check now moves focus only if its own drawing happened, which renderPass
 	// says; the claim's answer is shown through showClaimed, which asks first.
 	if !strings.Contains(bodies["Check now"], "renderPass().then((drawn) => {\n      if (drawn) {\n        passFocus(") ||
@@ -953,6 +977,22 @@ func TestPassPageDetails(t *testing.T) {
 			!strings.Contains(block, "return parts.join(\"\");") {
 			t.Error("a Pass page that could not load hides the Pass held here, or offers it for sale")
 		}
+		// An answer from educhan on such a page, to a code typed in, a reissue
+		// code or Check it again, has the page asked for again, which would
+		// otherwise go on saying educhan couldn't be reached under what educhan
+		// has just answered.
+		refresh := withoutComments(jsFunction(t, script, "refreshFailedPass"))
+		if !strings.Contains(refresh, "if (!lastPassInfo.failed) {\n    return;\n  }\n  renderPass().then((drawn) => {") {
+			t.Error("refreshFailedPass no longer asks for the Pass page again after an answer on one that could not load")
+		}
+		for name, want := range map[string]int{"submitPass": 3, "redeemPassReissue": 1, "checkHeldPass": 3} {
+			if n := strings.Count(withoutComments(jsFunction(t, script, name)), "refreshFailedPass("); n != want {
+				t.Errorf("%s asks for a Pass page that could not load again after %d of its answers; want %d", name, n, want)
+			}
+		}
+		if !strings.Contains(withoutComments(jsFunction(t, script, "redeemPassReissue")), "if (answered) {\n    refreshFailedPass(") {
+			t.Error("redeemPassReissue asks for a Pass page that could not load again without an answer from educhan")
+		}
 	})
 	t.Run("the server's words are sentences", func(t *testing.T) {
 		// The page goes on after them ("This page will ask again shortly."),
@@ -968,13 +1008,17 @@ func TestPassPageDetails(t *testing.T) {
 	t.Run("what was said about a Pass gone goes with Forget and Remove", func(t *testing.T) {
 		// The note is the last holder's news; the next person at a shared
 		// computer is not told about a Pass that was never theirs. It is set
-		// empty in its declaration, on leaving the page, and by these two.
+		// empty in its declaration, on leaving the page, and by these two,
+		// pressed here or in another tab (followPassForget, for a "code:"
+		// mark).
 		code := withoutComments(script)
 		remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 		remove = remove[:strings.Index(remove, "\n  }\n")]
+		follow := withoutComments(jsFunction(t, script, "followPassForget"))
 		if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "passLost = \"\";") ||
-			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 4 {
-			t.Error("Forget this browser or Remove the Pass leaves what the page said about a Pass that has gone")
+			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 5 ||
+			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(follow) {
+			t.Error("Forget this browser or Remove the Pass, here or in another tab, leaves what the page said about a Pass that has gone")
 		}
 	})
 	t.Run("a panel drawn already filled is focused", func(t *testing.T) {
@@ -1114,7 +1158,8 @@ func TestPassReissueCodeIsTypedAndNeverKept(t *testing.T) {
 	// It goes once an answer arrives (none when educhan could not be reached
 	// or failed), and with Remove the Pass, Forget this browser and leaving
 	// the page.
-	if !strings.Contains(redeem, "if (res || (!failed.unreachable && failed.status < 500)) {\n    forgetTypedCode();\n  }") {
+	if !strings.Contains(redeem, "const answered = Boolean(res) || (!failed.unreachable && failed.status < 500);") ||
+		!strings.Contains(redeem, "if (answered) {\n    forgetTypedCode();\n  }") || strings.Count(redeem, "forgetTypedCode();") != 1 {
 		t.Error("redeemPassReissue keeps the code, or drops it, other than when an answer arrives")
 	}
 	// Emptying the box empties both what is kept of it and the box itself; a
@@ -1427,19 +1472,39 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	// with the nonce of a try whose answer was lost: dropped only once an
 	// answer says the code issued or renewed a Pass.
 	if strings.Count(reissue, "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);") != 1 ||
-		!strings.Contains(reissue, "if (res && (res.status === \"issued\" || res.status === \"renewed\")) {\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n  }") {
+		!strings.Contains(reissue, "if (res && (res.status === \"issued\" || res.status === \"renewed\")) {\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n") {
 		t.Error("redeemPassReissue drops its nonce on a refusal, or on a failure that brought no answer, or keeps it once a Pass is issued or renewed")
 	}
-	if n := len(regexp.MustCompile(`\bpassNonce\(`).FindAllString(code, -1)); n != 3 {
-		t.Errorf("passNonce( appears %d times; want its definition and the bodies of a claim and a reissue", n)
+	// Whether a try with that nonce may have gone unanswered is marked beside
+	// it: read before each try, so it says only what earlier tries left, and
+	// put there before the claim is sent, so a closed page leaves it too. An
+	// answer takes off only the mark its own try put there, and the mark goes
+	// with the nonce: a lost answer, a mistyped retry and then the right code
+	// are still a retry after a lost answer, and two refusals with nothing
+	// lost between them are only refusals.
+	againAt := strings.Index(reissue, "const again = passNoncePending(PASS_REISSUE_UNANSWERED_STORAGE_KEY);")
+	markAt := strings.Index(reissue, "\n  passNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);")
+	askAt := strings.Index(reissue, `await api("/api/pass/claim"`)
+	if againAt < 0 || markAt < againAt || askAt < markAt ||
+		!strings.Contains(reissue, "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n"+
+			"  } else if (answered && !again) {\n    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n  }") ||
+		strings.Count(reissue, "dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);") != 2 || strings.Count(reissue, "passNoncePending(") != 1 {
+		t.Error("redeemPassReissue no longer takes a refusal for a retry after a lost answer only when a try went unanswered")
+	}
+	if !strings.Contains(code, `const PASS_REISSUE_UNANSWERED_STORAGE_KEY = "educhan:pass-reissue-unanswered";`) {
+		t.Error("the mark of an unanswered reissue try is no longer kept under its own key")
+	}
+	if n := len(regexp.MustCompile(`\bpassNonce\(`).FindAllString(code, -1)); n != 4 {
+		t.Errorf("passNonce( appears %d times; want its definition, the bodies of a claim and a reissue, and the reissue's mark of a try unanswered", n)
 	}
 	// The keys are spelled out once, and used only by the two requests that
 	// send a nonce, renderPass's look for one kept from an unanswered claim,
 	// and forgetting, here or in another tab; passNonces only by the helpers.
 	nonceUsers := map[string][]string{
-		"PASS_NONCE_STORAGE_KEY":         {"renderPass", "collectPass", "forgetPassClaim", "followPassForget"},
-		"PASS_REISSUE_NONCE_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
-		"passNonces":                     {"passNonce", "passNoncePending", "dropPassNonce"},
+		"PASS_NONCE_STORAGE_KEY":              {"renderPass", "collectPass", "forgetPassClaim", "followPassForget"},
+		"PASS_REISSUE_NONCE_STORAGE_KEY":      {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
+		"PASS_REISSUE_UNANSWERED_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
+		"passNonces":                          {"passNonce", "passNoncePending", "dropPassNonce"},
 	}
 	for name, users := range nonceUsers {
 		want := 1
@@ -1478,7 +1543,8 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		t.Error("forgetPassClaim no longer asks the server to drop the claim")
 	}
 	for _, first := range []string{"passVisit += 1;", "passForgets += 1;", "dropPassNonce(PASS_NONCE_STORAGE_KEY);",
-		"if (emptyBoxes) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n  }"} {
+		"if (emptyBoxes) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
+			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n  }"} {
 		if at := strings.Index(forget, first); at < 0 || at > asked {
 			t.Errorf("forgetPassClaim no longer does %q before it asks the server", first)
 		}
@@ -1540,7 +1606,7 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	for counter, users := range map[string][]string{
 		"passForgets":        {"forgetPassClaim", "collectPass", "followPassForget", "redeemPassReissue"},
 		"passCodeForgets":    {"forgetPassClaim", "followPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass"},
-		"passCodeForgetting": {"forgetPassClaim", "followPassForget", "passForgotten"},
+		"passCodeForgetting": {"forgetPassClaim", "followPassForget", "passForgotten", "passForgetsSettled"},
 	} {
 		uses := 1
 		for _, name := range users {
@@ -1597,6 +1663,20 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	if disabled < 0 || dropped < disabled {
 		t.Error("Stop collecting it here leaves Check now to collect what it is dropping")
 	}
+	// A drawing made while the claim is being dropped, here or in another
+	// tab, by a reissue answer say, keeps Check now and Stop off as Stop's own
+	// click left them, and the other tab takes off those already drawn; Stop's
+	// answer gives back those drawn meanwhile with its own.
+	collectButtons := `const PASS_COLLECT_BUTTONS = '[data-action="collect-pass"], [data-action="stop-pass-claim"]';`
+	offWhileStopping := "if (passForgetting) {\n    for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n      button.disabled = true;\n    }\n  }"
+	draw := withoutComments(jsFunction(t, script, "drawPass"))
+	followStop := withoutComments(jsFunction(t, script, "followPassForget"))
+	if !strings.Contains(code, collectButtons) || strings.Index(draw, offWhileStopping) < strings.Index(draw, "el.main.innerHTML = passViewHTML(info);") ||
+		!strings.Contains(followStop, "for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;\n  }") ||
+		strings.Index(followStop, "button.disabled = true;") < strings.Index(followStop, "passForgetting = waited;") ||
+		!strings.Contains(stop, "for (const button of [...waiting, ...el.main.querySelectorAll(PASS_COLLECT_BUTTONS)]) {\n        button.disabled = false;") {
+		t.Error("a Pass page drawn while this browser is stopping collecting offers Check now and Stop again")
+	}
 	// Turned away, the claim is still this browser's, and the page goes on
 	// collecting it, as the notice and the panel say. The collection it goes
 	// on with is the one forgetPassClaim has just begun by ending the last, so
@@ -1639,7 +1719,7 @@ func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 		again := strings.Index(body, "const again = passNoncePending(")
 		asked := strings.Index(body, `await api("/api/pass/claim"`)
 		at := strings.Index(body, refused)
-		checked := strings.Index(body, "await passAfterLostAnswer()")
+		checked := strings.Index(body, "await passAfterLostAnswer(")
 		if again < 0 || asked < again || at < asked || checked < at {
 			t.Errorf("%s no longer checks the Pass held when a retry with a kept nonce is refused", name)
 		}
@@ -1681,6 +1761,17 @@ func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 		t.Error("a reissue code refused when asked again is said to need replacing, though it may have renewed the Pass, " +
 			"or to have been used, though it may be mistyped")
 	}
+	// A Pass held that no longer works, once the retry is refused, is what an
+	// earlier try that gave it a new code leaves, and the right reissue code
+	// asked again with the kept nonce hands that code over: the reader is told
+	// to enter it again, not only that the Pass has gone.
+	removed := `notice = await passAfterLostAnswer( "The Pass that was in this browser no longer works, so it has been removed. ` +
+		`An earlier try may have reached educhan and given it a new code: enter the reissue code again, checked against the one you were sent, ` +
+		`to get that code. Otherwise the reissue code may be mistyped, used, run out or cancelled." );`
+	if !strings.Contains(reissue, removed) || !strings.Contains(after, "if (found.state === \"invalid\") {\n    return gone;\n  }") ||
+		!strings.Contains(script, "\nasync function passAfterLostAnswer(gone = \"The Pass that was in this browser is no longer valid, so it has been removed.\") {") {
+		t.Error("a reissue code refused when asked again, with the Pass held found gone, no longer says to enter the code again")
+	}
 	recheck := withoutComments(jsFunction(t, script, "recheckPass"))
 	if !strings.Contains(recheck, "for (let attempt = 0; attempt < 2 && !res; attempt += 1) {") ||
 		!strings.Contains(recheck, "const seconds = err.status === 429 && err.payload && err.payload.retry_after;") ||
@@ -1715,7 +1806,7 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	if n := len(regexp.MustCompile(`\bpassCodeCopied = `).FindAllString(code, -1)); n != 5 ||
 		!strings.Contains(code, "\nlet passCodeCopied = \"\";\n") ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "followPassStorage")), "if (!now || now.code !== passCodeCopied) {\n    passCodeCopied = \"\";\n  }") ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "forgetCopiedPassCode")), "function forgetCopiedPassCode() {\n  passCodeCopied = \"\";\n}") {
+		!strings.Contains(withoutComments(jsFunction(t, script, "forgetCopiedPassCode")), "if (taken) {\n    passCodeCopied = \"\";\n  }") {
 		t.Errorf("passCodeCopied is set in %d places; want its declaration, Copy the code, emptying the clipboard, "+
 			"a copy or cut in this tab, and another tab's removal or replacement of the code copied", n)
 	}
@@ -1726,6 +1817,17 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 		if !strings.Contains(code, "\ndocument.addEventListener(\""+kind+"\", forgetCopiedPassCode);\n") {
 			t.Errorf("a %s in this tab no longer stops Remove and Forget emptying what it put on the clipboard", kind)
 		}
+	}
+	// But only one that takes something: a copy or a cut with nothing
+	// selected sets the event off and leaves the clipboard as it was, the code
+	// included. In a text box its own selection decides (one it cannot read,
+	// an email box's, is taken at its word), and elsewhere the document's.
+	taken := words(withoutComments(jsFunction(t, script, "forgetCopiedPassCode")))
+	if !strings.Contains(taken, "function forgetCopiedPassCode(event) { const box = event.target; const taken = "+
+		"box instanceof HTMLInputElement || box instanceof HTMLTextAreaElement "+
+		"? box.selectionStart === null || box.selectionStart !== box.selectionEnd "+
+		`: String(document.getSelection() || "") !== ""; if (taken) {`) {
+		t.Error("a copy or a cut with nothing selected counts as one that took the code's place on the clipboard")
 	}
 	empty := withoutComments(jsFunction(t, script, "emptyCopiedPassCode"))
 	if !strings.Contains(empty, "if (!passCodeCopied) {\n    return;\n  }\n  passCodeCopied = \"\";") ||
@@ -1846,7 +1948,8 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	stop := strings.Index(follow, "if (!mark) {\n    return;\n  }")
 	for _, step := range []string{"const code = mark.startsWith(\"code:\");", "passVisit += 1;", "passForgets += 1;",
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
-		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n    forgetTypedCode();\n  }",
+		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
+			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n  }",
 		"passForgetting = waited;", "if (code) {\n    passCodeForgetting = waited;\n  }"} {
 		if at := strings.Index(follow, step); stop < 0 || stop < read || at < stop {
 			t.Errorf("followPassForget no longer does %q when another tab forgets", step)
@@ -1856,8 +1959,10 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	// nonce, the code typed, and an answer on its way, which redeemPassReissue
 	// drops only for Remove and Forget (passCodeForgets, not passForgets).
 	for name, steps := range map[string][]string{
-		"forgetPassClaim":  {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);", "passCodeForgetting = forgetting;"},
-		"followPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);", "passCodeForgetting = waited;", "forgetTypedCode();"},
+		"forgetPassClaim": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
+			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "passCodeForgetting = forgetting;"},
+		"followPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
+			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "passCodeForgetting = waited;", "forgetTypedCode();", "passLost = \"\";"},
 	} {
 		body := withoutComments(jsFunction(t, script, name))
 		for _, only := range steps {
