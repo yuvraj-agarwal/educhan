@@ -1888,7 +1888,7 @@ let verifyRefusal = null;
 // Why the badge that was here has gone, when it is worth saying: it ran out,
 // the server refused it, or the reader forgot it (CREDENTIAL_FORGOTTEN). Shown
 // once on the verification page, which is the only page that can do anything
-// about it.
+// about it: in the first step drawn there after it went (drawVerifyStep).
 let badgeLost = "";
 
 const CREDENTIAL_FORGOTTEN = "This browser no longer holds a badge.";
@@ -2190,6 +2190,15 @@ const VERIFY_INTRO = `
     on the posts you tick it for &mdash; never on the ones you don't.
   </p>`;
 
+// badgeLostHTML says why the badge that was here has gone (badgeLost), at the
+// top of the step drawn without it, then what the reader can do there. The
+// code step says it as well as the address step: a badge can run out while a
+// code for another is on its way, and the code step drawn again then lost its
+// Keep my badge button with nothing to say why.
+function badgeLostHTML(then) {
+  return badgeLost ? `<p class="verify-note" id="badge-lost" tabindex="-1">${esc(badgeLost)} ${esc(then)}</p>` : "";
+}
+
 function verifyViewHTML() {
   const v = state.verification;
 
@@ -2226,6 +2235,7 @@ function verifyViewHTML() {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
+      ${badgeLostHTML("The code on its way earns you a new one.")}
       <form class="verify-panel fields" data-verify="confirm">
         <p>A code is on its way. It earns you ${verifiedBadgeHTML(verifyStep.label)} and expires shortly.</p>
         <div class="field">
@@ -2275,9 +2285,6 @@ function verifyViewHTML() {
       ${forgetBrowserHTML()}`;
   }
 
-  const lost = badgeLost
-    ? `<p class="verify-note" id="badge-lost" tabindex="-1">${esc(badgeLost)} Verify again to get a new one.</p>`
-    : "";
   // The code box this step replaced, and why it went, said at the top of the
   // form, where the box was, and read out with the address field, as is the
   // form's refusal once there is one.
@@ -2289,7 +2296,7 @@ function verifyViewHTML() {
   return `
     <div class="board-head"><h1>Institutional verification</h1></div>
     ${VERIFY_INTRO}
-    ${lost}
+    ${badgeLostHTML("Verify again to get a new one.")}
     <form class="verify-panel fields" data-verify="request">
       ${ended}
       <div class="field">
@@ -2313,10 +2320,15 @@ function verifyViewHTML() {
 
 // drawVerifyStep draws the Verify page for the step it is on, in place of
 // whatever the page shows, and notes what it drew (verifyShown). Every drawing
-// of a Verify step goes through here.
+// of a Verify step goes through here, so this is where why a badge went
+// (badgeLost) is said once and then put away: the address step and the code
+// step say it, and a badge panel drawn instead is for a badge held since.
+// Said and put away only in renderVerify, it was lost to the code step, which
+// did not say it, and never said by Keep my badge, which draws in place.
 function drawVerifyStep() {
   el.main.innerHTML = verifyViewHTML();
   verifyShown = { step: verifyStep, node: el.main.firstElementChild };
+  badgeLost = "";
 }
 
 // verifyStepOnScreen says whether the page still shows the drawing made for
@@ -2360,8 +2372,6 @@ async function renderVerify() {
   announce("Institutional verification");
   if (verifyStep !== step && verifyStepOnScreen()) return false;
   drawVerifyStep();
-  // Explained once, on the page that can do something about it.
-  badgeLost = "";
   const form = el.main.querySelector("form[data-verify]");
   if (form) sayVerifyRefusal(form);
   return true;
@@ -2384,9 +2394,12 @@ function showVerifyField(id) {
 // changed: the rest of the panel reads the same whichever badge is held, so
 // with the line out of sight a replaced badge looked like nothing had happened.
 // On a phone the panel runs past the foot of the screen, so a control further
-// down would be focused out of sight.
+// down would be focused out of sight. The badge can have gone by the time the
+// panel would be drawn — run out while the page was on another step — and the
+// address step drawn in its place opens by saying so (badgeLost): that is
+// what is shown and focused then.
 function showHeldBadge() {
-  const held = document.getElementById("verify-badge");
+  const held = document.getElementById("verify-badge") || document.getElementById("badge-lost");
   if (!held) return;
   revealClearOfHeader(held);
   held.focus({ preventScroll: true });
@@ -3537,10 +3550,18 @@ document.addEventListener("click", (event) => {
   }
 
   // Keeping the badge gives up replacing it: the page goes back to the badge
-  // held here, and a code already sent is left to expire unused.
+  // held here, and a code already sent is left to expire unused. The badge is
+  // read again first, since it can run out, or be forgotten in another tab,
+  // while the page is on another step. Drawn from what was read before, a
+  // badge that had expired came back as if it were live, "good until" a time
+  // gone by, and went on being offered on posting forms for the server to
+  // refuse. A badge that has gone leaves the address step, which opens by
+  // saying why (badgeLost), and showHeldBadge shows and focuses that instead.
   if (event.target.closest('[data-action="verify-keep"]')) {
     event.preventDefault();
     clearNotice();
+    state.verification.badge = readBadge();
+    if (!state.verification.badge && !badgeLost) badgeLost = CREDENTIAL_FORGOTTEN;
     verifyStep = { step: "email", label: "" };
     drawVerifyStep();
     showHeldBadge();

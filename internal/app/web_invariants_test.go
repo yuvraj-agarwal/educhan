@@ -487,12 +487,15 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		// reads no "v.badge", and with the form's markup still in the template
 		// it passed every check above while the box was not drawn. So what the
 		// template interpolates is a list this test knows — fixed markup, the
-		// badge the code would earn, the wait while a request is out, and
-		// keep, which adds the Keep my badge button to the form's actions and
-		// nothing else (TestReplacingABadgeCanGoBackToIt) — and it is one
-		// template, not pieces joined around a condition.
+		// badge the code would earn, the wait while a request is out, keep,
+		// which adds the Keep my badge button to the form's actions and nothing
+		// else (TestReplacingABadgeCanGoBackToIt), and the note saying why a
+		// badge held here went, which reads badgeLost alone and is held whole
+		// by TestAGoneBadgeIsSaidToHaveGone — and it is one template, not
+		// pieces joined around a condition.
 		allowed := []string{
 			"${VERIFY_INTRO}",
+			`${badgeLostHTML("The code on its way earns you a new one.")}`,
 			"${verifiedBadgeHTML(verifyStep.label)}",
 			"${VERIFY_REFUSED_HTML}",
 			"${wait}",
@@ -931,7 +934,6 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 		`announce("Institutional verification");`,
 		"if (verifyStep !== step && verifyStepOnScreen()) return false;",
 		"drawVerifyStep();",
-		`badgeLost = "";`,
 		`const form = el.main.querySelector("form[data-verify]");`,
 		"if (form) sayVerifyRefusal(form);",
 		"return true;",
@@ -942,14 +944,18 @@ func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
 			"gate on a held badge here once hid a pending code's box",
 			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
+	// Why a badge went (badgeLost) is said in the step drawn, so it is put
+	// away once a step is drawn, wherever that was done from
+	// (TestAGoneBadgeIsSaidToHaveGone); it changes nothing in what was drawn.
 	if got, want := jsLines(jsFunction(t, script, "drawVerifyStep")), []string{
 		"function drawVerifyStep() {",
 		"el.main.innerHTML = verifyViewHTML();",
 		"verifyShown = { step: verifyStep, node: el.main.firstElementChild };",
+		`badgeLost = "";`,
 		"}",
 	}; !slices.Equal(got, want) {
-		t.Errorf("drawVerifyStep runs\n\t%s\nwant it to draw the step and note the step and the drawing:\n\t%s",
-			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+		t.Errorf("drawVerifyStep runs\n\t%s\nwant it to draw the step, note the step and the drawing, and put away "+
+			"what the step said about a badge gone:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	if got, want := jsLines(jsFunction(t, script, "verifyStepOnScreen")), []string{
 		"function verifyStepOnScreen() {",
@@ -1688,9 +1694,15 @@ func TestForgettingTheCredentialSaysSo(t *testing.T) {
 	if said := jsString(t, script, "CREDENTIAL_FORGOTTEN"); !regexp.MustCompile(`^[A-Z][^"]*badge\.$`).MatchString(said) {
 		t.Errorf("CREDENTIAL_FORGOTTEN is %q; want a sentence saying the badge has gone", said)
 	}
+	// The note, focusable from script, is badgeLostHTML's, held whole by
+	// TestAGoneBadgeIsSaidToHaveGone.
 	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
-	if !strings.Contains(view, "`<p class=\"verify-note\" id=\"badge-lost\" tabindex=\"-1\">${esc(badgeLost)} Verify again to get a new one.</p>`") {
-		t.Errorf("the note saying why the badge went cannot be focused from script:\n%s", view)
+	address, opened := strings.Index(view, `data-verify="request"`), -1
+	if address >= 0 {
+		opened = strings.LastIndex(view[:address], "return `")
+	}
+	if opened < 0 || !strings.Contains(view[opened:address], `${badgeLostHTML("Verify again to get a new one.")}`) {
+		t.Errorf("the address step does not open by saying why the badge went:\n%s", view)
 	}
 	handler := verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-verification"]')) {`)
 	lost, drawn := strings.Index(handler, "badgeLost = CREDENTIAL_FORGOTTEN;"), strings.Index(handler, "renderVerify()")
@@ -1705,5 +1717,82 @@ func TestForgettingTheCredentialSaysSo(t *testing.T) {
 		"      }\n"+
 		"    });") {
 		t.Errorf("Forget this credential does not bring what it said into view clear of the header and focus it:%s", handler)
+	}
+}
+
+// A badge can go while the Verify page is on another step: it runs out while
+// a code for another address is on its way, or another tab forgets it. Keep my
+// badge drew the badge panel from the badge read before, so one that had
+// expired came back as if it were live, "good until" a time gone by, and went
+// on being offered on posting forms for the server to refuse. And the code
+// step, drawn again once the expiry was noticed, never said it, while
+// renderVerify put away what it would have said: the Keep my badge button went
+// with no word why. So Keep my badge reads the badge again before it draws,
+// and a badge gone leaves the address step, which says why, shown and focused
+// in the panel's place; both steps that can be drawn without the badge say why
+// it went (badgeLostHTML); and that is put away only by drawing a step
+// (drawVerifyStep), so it is said once, whichever way the step was drawn.
+func TestAGoneBadgeIsSaidToHaveGone(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	keep := verifyClickHandler(t, script, `if (event.target.closest('[data-action="verify-keep"]')) {`)
+	holdLines(t, "Keep my badge", jsLines(keep), "clearNotice();", "return;", []string{
+		"state.verification.badge = readBadge();",
+		"if (!state.verification.badge && !badgeLost) badgeLost = CREDENTIAL_FORGOTTEN;",
+		stepToAddress,
+		"drawVerifyStep();",
+		"showHeldBadge();",
+	})
+	if got, want := jsLines(jsFunction(t, script, "showHeldBadge")), []string{
+		"function showHeldBadge() {",
+		`const held = document.getElementById("verify-badge") || document.getElementById("badge-lost");`,
+		"if (!held) return;",
+		"revealClearOfHeader(held);",
+		"held.focus({ preventScroll: true });",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("showHeldBadge runs\n\t%s\nwant it to show and focus the badge held, or why there is none:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+
+	// What says why, held whole: it reads badgeLost and nothing else, so it can
+	// sit in the code step's template without deciding anything there
+	// (TestVerifyCodeBoxShowsWhileACodeIsPending), and it can be focused.
+	if got, want := jsLines(jsFunction(t, script, "badgeLostHTML")), []string{
+		"function badgeLostHTML(then) {",
+		"return badgeLost ? `<p class=\"verify-note\" id=\"badge-lost\" tabindex=\"-1\">${esc(badgeLost)} ${esc(then)}</p>` : \"\";",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("badgeLostHTML runs\n\t%s\nwant it to say why the badge went, focusable, and nothing else:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	codeStep := strings.Index(view, `if (verifyStep.step === "code") {`)
+	panel := strings.Index(view, "if (v.badge && !verifyStep.replacing) {")
+	address, opened := strings.Index(view, `data-verify="request"`), -1
+	if address >= 0 {
+		opened = strings.LastIndex(view[:address], "return `")
+	}
+	if codeStep < 0 || panel < codeStep || opened < panel {
+		t.Fatal("verifyViewHTML no longer draws the code step, the badge panel and the address step in that order")
+	}
+	if n := strings.Count(view, "${badgeLostHTML("); n != 2 {
+		t.Errorf("verifyViewHTML says why a badge went %d times; want twice, in the code step and the address step", n)
+	}
+	if !strings.Contains(view[codeStep:panel], `${badgeLostHTML("The code on its way earns you a new one.")}`) {
+		t.Errorf("the code step does not say why a badge held here went:\n%s", view[codeStep:panel])
+	}
+	if !strings.Contains(view[opened:address], `${badgeLostHTML("Verify again to get a new one.")}`) {
+		t.Errorf("the address step does not open by saying why a badge held here went:\n%s", view[opened:address])
+	}
+
+	// Put away by drawing a step and nowhere else: drawVerifyStep, held whole
+	// by TestVerifyStepIsDrawnForAReaderArriving, and its declaration.
+	if n := len(regexp.MustCompile(`\bbadgeLost\s*=\s*""`).FindAllString(code, -1)); n != 2 {
+		t.Errorf("app.js puts badgeLost away %d times; want two: its declaration, and in drawVerifyStep", n)
+	}
+	if !strings.Contains(code, "\nlet badgeLost = \"\";\n") {
+		t.Error("badgeLost does not start empty")
 	}
 }

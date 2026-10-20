@@ -518,9 +518,16 @@ needs a browser check before the test changes.
   gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
   with every other check passing. `replacing` puts the badge panel away for "Verify
   another address", and both steps then offer "Keep my badge" back to it
-  (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
-  at the address step; Forget this credential says so at the top of it (`badgeLost`,
-  `CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
+  (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
+  draws, so one that ran out, or was forgotten in another tab, while the page was on
+  another step does not come back as if live: the address step is drawn instead, saying
+  why at its top, shown and focused in the panel's place (`showHeldBadge`). Why a badge
+  went (`badgeLost`, `badgeLostHTML`) is said at the top of the code step as well as the
+  address step, and put away by `drawVerifyStep`, so it is said once whichever way the
+  step is drawn; put away by `renderVerify` alone, an expiry noticed on the code step
+  went unsaid (`TestAGoneBadgeIsSaidToHaveGone`). Forgetting the badge or the browser
+  starts over at the address step; Forget this credential says so at the top of it
+  (`CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
   (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since nothing
   about it is stored: the page shows the badge held here, or the address step when there
   is none.
