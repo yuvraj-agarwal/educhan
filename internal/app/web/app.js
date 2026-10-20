@@ -1812,6 +1812,13 @@ let verifyBusy = null;
 // spending its attempts, while the server checked it against the other address.
 let verifyRequest = Promise.resolve();
 
+// The step the Verify page was last drawn for, and the first element of that
+// drawing (drawVerifyStep). Anything drawn into the page since — the loading
+// skeleton, or a page the reader left whose answer came in late — takes that
+// element out of it, which is how verifyStepOnScreen tells a step still on
+// screen from one that was drawn and then drawn over.
+let verifyShown = { step: null, node: null };
+
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
 // the server refused it. Shown once on the verification page, which is the only
 // page that can do anything about it.
@@ -2220,22 +2227,49 @@ function verifyViewHTML() {
     ${forgetBrowserHTML()}`;
 }
 
+// drawVerifyStep draws the Verify page for the step it is on, in place of
+// whatever the page shows, and notes what it drew (verifyShown). Every drawing
+// of a Verify step goes through here.
+function drawVerifyStep() {
+  el.main.innerHTML = verifyViewHTML();
+  verifyShown = { step: verifyStep, node: el.main.firstElementChild };
+}
+
+// verifyStepOnScreen says whether the page still shows the drawing made for
+// the step it is on: drawn for that step, and not drawn over since.
+function verifyStepOnScreen() {
+  return verifyShown.step === verifyStep && el.main.contains(verifyShown.node);
+}
+
 // renderVerify draws the Verify page once it has asked the server whether
-// verification is on here, and says whether it did. The reader can leave while
-// it asks — after pressing Verify, say, since an issued badge is drawn through
-// here — and then nothing is drawn over the page they went to. Nor is anything
-// drawn when the page has moved to another step meanwhile: whatever moved it
-// drew that step, and drawing it again would take away what was said there.
-// Forget this browser pressed while an issued badge was being drawn had its
-// confirmation wiped, and the focus with it, by the badge's late redraw.
+// verification is on here, and says whether it did. render() comes here for a
+// reader arriving at the page, and the page's own buttons and answers come
+// here to draw a step after that request. The reader can leave while it asks —
+// after pressing Verify, say, since an issued badge is drawn through here — and
+// then nothing is drawn over the page they went to.
+//
+// The page can also move to another step while it asks, and be drawn for that
+// step in place, by an answer or a button. That drawing, while it is on
+// screen, is left alone: drawing the step again would take away what was said
+// there and where the reader was put. Forget this browser pressed while an
+// issued badge was being drawn had its confirmation wiped, and the focus with
+// it, by the badge's late redraw. But a drawing that has itself been drawn
+// over is drawn again. A code box drawn while render() was still asking was
+// replaced by the page the reader had just left, whose answer came in late,
+// or by the loading skeleton; left out, it was nowhere, and that page stayed
+// under the Verify address until the reader went somewhere else.
+//
+// The page is titled whether or not it is drawn here: render() titles each
+// page as it draws it, and the drawing left alone is one it did not make.
 async function renderVerify() {
   const step = verifyStep;
   await loadVerification();
-  if (!onVerifyPage() || verifyStep !== step) return false;
-  el.main.innerHTML = verifyViewHTML();
+  if (!onVerifyPage()) return false;
+  announce("Institutional verification");
+  if (verifyStep !== step && verifyStepOnScreen()) return false;
+  drawVerifyStep();
   // Explained once, on the page that can do something about it.
   badgeLost = "";
-  announce("Institutional verification");
   return true;
 }
 
@@ -2898,9 +2932,15 @@ function emptyStateHTML(message, slug = null) {
 
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
+// The skeleton stands in for the view it dims, and for nothing drawn since: a
+// Verify step that an answer drew in place while the page was loading stays
+// as it was drawn, with the field it put the reader in, rather than going
+// under a skeleton to be drawn again without it (renderVerify).
 function beginLoading() {
   el.main.setAttribute("aria-busy", "true");
+  const dimmed = el.main.firstChild;
   const timer = setTimeout(() => {
+    if (el.main.firstChild !== dimmed) return;
     el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
   }, 250);
   return () => {
@@ -3391,7 +3431,7 @@ document.addEventListener("click", (event) => {
     event.preventDefault();
     clearNotice();
     verifyStep = { step: "email", label: "" };
-    el.main.innerHTML = verifyViewHTML();
+    drawVerifyStep();
     showHeldBadge();
     return;
   }
@@ -3407,7 +3447,7 @@ document.addEventListener("click", (event) => {
     // replacing shows the address form over a badge that is still held and
     // still usable — it is retired by the new one, not by asking for one.
     verifyStep = { step: "email", label: "", replacing: true };
-    el.main.innerHTML = verifyViewHTML();
+    drawVerifyStep();
     showVerifyField("f-email");
     return;
   }
@@ -3806,7 +3846,7 @@ async function submitVerification(form) {
       // A reader who has gone on to another page finds the code box when
       // they come back; this one is not drawn over the page they are on.
       if (!onVerifyPage()) return;
-      el.main.innerHTML = verifyViewHTML();
+      drawVerifyStep();
       showVerifyField("f-code");
       return;
     }
@@ -3838,7 +3878,7 @@ async function submitVerification(form) {
     // when they come back.
     if (!onVerifyPage()) return;
     if (ended) {
-      el.main.innerHTML = verifyViewHTML();
+      drawVerifyStep();
       // The reason, not the notice at the top, is brought into view: on a
       // phone that is a screen above the form.
       const why = document.getElementById("f-email-ended");

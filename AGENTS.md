@@ -488,11 +488,19 @@ needs a browser check before the test changes.
   list the test holds (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer
   that arrives after the reader has left the page (`onVerifyPage`) only sets
   `verifyStep`: nothing is drawn over the page they went to, and coming back shows the
-  step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). Nor does `renderVerify`,
-  through which an issued badge is drawn after one more request, draw once the page has
-  moved to another step meanwhile: whatever moved it drew that step, and the badge's late
-  redraw once wiped Forget this browser's confirmation. `replacing` puts the badge panel
-  away for "Verify another address", and both steps then offer "Keep my badge" back to it
+  step it left (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
+  `render()` draws the page for a reader arriving at it, and how an issued badge is drawn,
+  each after one more request; when the page has been drawn in place for another step
+  meanwhile, it leaves that drawing alone only while it is still on the page. Every step
+  is drawn through `drawVerifyStep`, which notes the step and the drawing, and
+  `verifyStepOnScreen` asks whether that drawing is still there. Skipping regardless, a
+  code box drawn while `render()` was still asking was drawn over by the loading skeleton
+  or by the page just left, its answer landing late, and nothing drew it again;
+  redrawing regardless, the badge's late redraw wiped Forget this browser's
+  confirmation. The skeleton stands in only for the view it dims (`beginLoading`), and
+  the page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). `replacing`
+  puts the badge panel away for "Verify another address", and both steps then offer "Keep
+  my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
   at the address step. A reload drops a pending code too, since nothing about it is
   stored: the page shows the badge held here, or the address step when there is none.

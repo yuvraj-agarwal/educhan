@@ -63,6 +63,39 @@ func withoutComments(src string) string {
 	return regexp.MustCompile(`(?m)^\s*//.*$`).ReplaceAllString(src, "")
 }
 
+// jsLines is src without its comments, line by line, each trimmed and the
+// blank ones dropped: what a test holds a stretch of code to when every
+// statement in it matters, so that one added anywhere in it fails the test.
+func jsLines(src string) []string {
+	var lines []string
+	for _, line := range strings.Split(withoutComments(src), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
+// holdLines fails the test unless the lines of got that follow the one line
+// equal to after, up to the first line equal to until, are exactly want.
+func holdLines(t *testing.T, what string, got []string, after, until string, want []string) {
+	t.Helper()
+	start := slices.Index(got, after)
+	if start < 0 || slices.Index(got[start+1:], after) >= 0 {
+		t.Errorf("%s: want exactly one line %q to start from", what, after)
+		return
+	}
+	rest := got[start+1:]
+	end := slices.Index(rest, until)
+	if end < 0 {
+		t.Errorf("%s: no line %q after %q", what, until, after)
+		return
+	}
+	if stretch := rest[:end]; !slices.Equal(stretch, want) {
+		t.Errorf("%s runs\n\t%s\nwant exactly\n\t%s", what, strings.Join(stretch, "\n\t"), strings.Join(want, "\n\t"))
+	}
+}
+
 // submitHandler is the listener that sends posts.
 func submitHandler(t *testing.T, script string) string {
 	t.Helper()
@@ -503,10 +536,11 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// the stretch that takes the request's answer it is the one step set, and
 	// it is set before the draw, so nothing after it puts another step in its
 	// place. renderVerify, which draws the page again for a reader who comes
-	// back, sets no step and draws only the view. A gate on a held badge in
-	// either place — after the code step is set, or in renderVerify's redraw —
-	// once passed every check above; TestVerifyAnswersBelongToTheStepTheyWereSentFrom
-	// holds every place that sets verifyStep to the list it knows.
+	// back, is held whole by TestVerifyStepIsDrawnForAReaderArriving. A gate on
+	// a held badge in either place — after the code step is set, or in
+	// renderVerify's redraw — once passed every check above;
+	// TestVerifyAnswersBelongToTheStepTheyWereSentFrom holds every place that
+	// sets verifyStep to the list it knows.
 	submit := withoutComments(jsFunction(t, script, "submitVerification"))
 	requests := regexp.MustCompile(`await api\(`).FindAllStringIndex(submit, -1)
 	if len(requests) != 2 {
@@ -514,17 +548,10 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	}
 	sent := submit[requests[0][0]:requests[1][0]]
 	steps := verifyStepSet.FindAllString(sent, -1)
-	set, drawn := strings.Index(sent, stepToCode), strings.Index(sent, "el.main.innerHTML = verifyViewHTML();")
+	set, drawn := strings.Index(sent, stepToCode), strings.Index(sent, "drawVerifyStep();")
 	if len(steps) != 1 || steps[0] != stepToCode || drawn < 0 || set > drawn {
 		t.Errorf("once a code is sent, submitVerification sets %q; want %q alone, set before the step is drawn:\n%s",
 			steps, stepToCode, sent)
-	}
-	render := withoutComments(jsFunction(t, script, "renderVerify"))
-	if verifyStepSet.MatchString(render) {
-		t.Errorf("renderVerify sets verifyStep; it draws the step it finds and decides nothing about it:\n%s", render)
-	}
-	if n := strings.Count(render, "innerHTML"); n != 1 || !strings.Contains(render, "el.main.innerHTML = verifyViewHTML();") {
-		t.Errorf("renderVerify draws something besides verifyViewHTML():\n%s", render)
 	}
 }
 
@@ -747,7 +774,8 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 		t.Fatalf("submitVerification resumes after an answer in %d places; this test knows three "+
 			"(the code sent, the badge issued, the catch)", len(resumes))
 	}
-	draws := regexp.MustCompile(`el\.main\.innerHTML\s*=|renderVerify\(|showNotice\(|refuseVerification\(|\.focus\(|scrollIntoView\(`)
+	draws := regexp.MustCompile(`el\.main\.innerHTML\s*=|drawVerifyStep\(|renderVerify\(|showNotice\(|refuseVerification\(|` +
+		`\.focus\(|scrollIntoView\(`)
 	for i, r := range resumes {
 		end := len(submit)
 		if i+1 < len(resumes) {
@@ -768,28 +796,102 @@ func TestVerifyAnswersDrawOnlyOnTheVerifyPage(t *testing.T) {
 
 	// An issued badge is drawn through renderVerify, which asks the server
 	// whether verification is on before it draws: one more request the reader
-	// can leave during, so it asks onVerifyPage again once that is in, and
-	// the confirmation after forgetting the browser waits on what it says.
-	// The reader can also move the page to another step during it, and then
-	// whatever moved it has drawn that step: renderVerify notes the step it
-	// draws for before it asks, and draws nothing once that is no longer the
-	// step. Without that, Forget this browser pressed while an issued badge
-	// was being drawn had its confirmation, and the focus on it, wiped by the
-	// badge's late redraw.
-	render := withoutComments(jsFunction(t, script, "renderVerify"))
-	noted := strings.Index(render, "const step = verifyStep;")
-	asked := strings.Index(render, "await loadVerification();")
-	guarded := strings.Index(render, "if (!onVerifyPage() || verifyStep !== step) return false;")
-	drawn := strings.Index(render, "el.main.innerHTML = verifyViewHTML();")
-	if noted < 0 || asked < noted || drawn < 0 || guarded < asked || guarded > drawn {
-		t.Errorf("renderVerify draws the Verify page without checking, once its request is in, that the page is "+
-			"still on screen and on the step it was asked to draw:\n%s", render)
-	}
-	if n := strings.Count(render, "await "); n != 1 {
-		t.Errorf("renderVerify waits %d times; this test knows the one, for loadVerification:\n%s", n, render)
-	}
+	// can leave during, so it asks onVerifyPage again once that is in
+	// (TestVerifyStepIsDrawnForAReaderArriving holds it whole), and the
+	// confirmation after forgetting the browser waits on what it says.
 	if !strings.Contains(withoutComments(script), "renderVerify().then((drawn) => {\n      if (drawn) confirmBrowserForgotten();") {
 		t.Error("forgetting the browser confirms it whether or not the Verify page was drawn")
+	}
+}
+
+// render() draws the Verify page for a reader arriving at it — from another
+// page, by Back, or by Verify in the header while already there — through
+// renderVerify, which asks the server one thing before it draws. An answer can
+// land while it asks and draw its step in place: the code box once a code is
+// sent, the address step once the server drops the code being typed, the badge
+// once it is issued; so can a step button on the page being redrawn. That
+// drawing was then drawn over, by the loading skeleton that render() puts up
+// when a page is slow, or by the page the reader had just left, its own answer
+// landing late. renderVerify, which drew nothing once the step had moved while
+// it asked, then left the skeleton or that page under the Verify address, and
+// a pending code had nowhere to be typed until the reader went somewhere else.
+//
+// So every drawing of a Verify step goes through drawVerifyStep, which notes
+// the step and the drawing; renderVerify leaves a step it did not draw alone
+// only while that drawing is still on the page (verifyStepOnScreen), and draws
+// it again otherwise; render() calls it with no condition of its own; and the
+// skeleton stands in only for the view it dims, never for one drawn since.
+// What renderVerify leaves alone is what it once wiped: Forget this browser's
+// confirmation, said while an issued badge's late redraw was on its way. And
+// the page is titled whichever way it goes, since render() has drawn nothing
+// else for it.
+func TestVerifyStepIsDrawnForAReaderArriving(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	holdLines(t, "render()'s Verify page", jsLines(jsFunction(t, script, "render")), `case "verify":`, "break;",
+		[]string{"await renderVerify();"})
+
+	if got, want := jsLines(jsFunction(t, script, "renderVerify")), []string{
+		"async function renderVerify() {",
+		"const step = verifyStep;",
+		"await loadVerification();",
+		"if (!onVerifyPage()) return false;",
+		`announce("Institutional verification");`,
+		"if (verifyStep !== step && verifyStepOnScreen()) return false;",
+		"drawVerifyStep();",
+		`badgeLost = "";`,
+		"return true;",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("renderVerify runs\n\t%s\nwant exactly\n\t%s\nIt draws the step the page is on unless the reader has left, "+
+			"or that step was drawn in place since it asked and is still on screen, and it decides nothing else: a "+
+			"gate on a held badge here once hid a pending code's box",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if got, want := jsLines(jsFunction(t, script, "drawVerifyStep")), []string{
+		"function drawVerifyStep() {",
+		"el.main.innerHTML = verifyViewHTML();",
+		"verifyShown = { step: verifyStep, node: el.main.firstElementChild };",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("drawVerifyStep runs\n\t%s\nwant it to draw the step and note the step and the drawing:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	if got, want := jsLines(jsFunction(t, script, "verifyStepOnScreen")), []string{
+		"function verifyStepOnScreen() {",
+		"return verifyShown.step === verifyStep && el.main.contains(verifyShown.node);",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("verifyStepOnScreen runs\n\t%s\nwant it to ask whether the drawing made for the step the page is on "+
+			"is still in the page:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	// Every drawing of a step goes through drawVerifyStep, so that what it
+	// notes is what is on the page.
+	if !strings.Contains(code, "\nlet verifyShown = { step: null, node: null };\n") {
+		t.Error("verifyShown does not start with no step drawn")
+	}
+	if n := len(regexp.MustCompile(`\bverifyShown\s*=[^=]`).FindAllString(code, -1)); n != 2 {
+		t.Errorf("app.js sets verifyShown %d times; want two: its declaration, and in drawVerifyStep", n)
+	}
+	if n := len(regexp.MustCompile(`\bverifyViewHTML\(\)`).FindAllString(code, -1)); n != 2 {
+		t.Errorf("app.js names verifyViewHTML() %d times; want two: its definition, and the one draw, in drawVerifyStep", n)
+	}
+
+	// The skeleton replaces the view it was put up for, and nothing drawn
+	// since: a step drawn in place while the page loaded keeps the field it
+	// put the reader in.
+	loading := jsLines(jsFunction(t, script, "beginLoading"))
+	dimmed := slices.Index(loading, "const dimmed = el.main.firstChild;")
+	timer := slices.Index(loading, "const timer = setTimeout(() => {")
+	if dimmed < 0 || timer != dimmed+1 || len(loading) < timer+3 ||
+		loading[timer+1] != "if (el.main.firstChild !== dimmed) return;" ||
+		!strings.HasPrefix(loading[timer+2], `el.main.innerHTML = '<div class="skeleton">`) {
+		t.Errorf("beginLoading's skeleton does not first check that the page still shows the view it dims:\n\t%s",
+			strings.Join(loading, "\n\t"))
+	}
+	if n := strings.Count(code, `class="skeleton"`); n != 1 {
+		t.Errorf("app.js draws the skeleton in %d places; this test knows beginLoading's", n)
 	}
 }
 
@@ -913,8 +1015,9 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 		t.Fatalf("submitVerification resumes after an answer in %d places; this test knows three "+
 			"(the code sent, the badge issued, the catch)", len(resumes))
 	}
-	acts := regexp.MustCompile(`storeCredential\(|state\.verification|verifyStep\s*=[^=]|el\.main\.innerHTML\s*=|` +
-		`renderVerify\(|showNotice\(|refuseVerification\(|\.focus\(|scrollIntoView\(|\.disabled\s*=|\.textContent\s*=`)
+	acts := regexp.MustCompile(`storeCredential\(|state\.verification|verifyStep\s*=[^=]|` +
+		`el\.main\.innerHTML\s*=|drawVerifyStep\(|renderVerify\(|showNotice\(|refuseVerification\(|` +
+		`\.focus\(|scrollIntoView\(|\.disabled\s*=|\.textContent\s*=`)
 	const check = "if (verifyStep !== sentFrom) return;"
 	for i, r := range resumes {
 		end := len(submit)
@@ -1246,7 +1349,7 @@ func TestVerifyStepsAreShownClearOfTheHeader(t *testing.T) {
 		`const why = document.getElementById("f-email-ended");`}
 	drawn := 0
 	for _, p := range places {
-		for _, at := range regexp.MustCompile(`el\.main\.innerHTML = verifyViewHTML\(\);\n`).FindAllStringIndex(p.body, -1) {
+		for _, at := range regexp.MustCompile(`drawVerifyStep\(\);\n`).FindAllStringIndex(p.body, -1) {
 			drawn++
 			next := strings.TrimLeft(p.body[at[1]:], " \t\n")
 			if !slices.ContainsFunc(shows, func(s string) bool { return strings.HasPrefix(next, s) }) {
