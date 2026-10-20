@@ -253,8 +253,8 @@ set `localStorage["educhan:age-ok-v1"] = "1"` before the page loads (Playwright'
 `addInitScript`). Playwright's headless Chromium hides scrollbars unless launched with
 `ignoreDefaultArgs: ["--hide-scrollbars"]`; a check on the board row's scrollbar needs it.
 
-The Pass is off unless `EDUCHAN_PASS_SECRET` and the four Stripe settings are set
-(`pass_config.go`); any other Pass setting given without the secret refuses to start.
+Without `EDUCHAN_PASS_SECRET` the Pass is off, and the server will not start if any other
+Pass setting is set; with it, not unless all four Stripe settings are (`pass_config.go`).
 A whole purchase needs Stripe to call the webhook, so its end-to-end checks live in
 `pass_api_test.go` against a fake Stripe (`fakeStripe`) rather than in curl, and they
 cover `EDUCHAN_PASS_SALES=paused` beside the default `open` (`TestPassSalesPaused`).
