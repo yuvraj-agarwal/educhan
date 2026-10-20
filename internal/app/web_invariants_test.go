@@ -732,6 +732,13 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		t.Errorf("a worker gives up after %s, but the hardest base puzzle can take a slow phone %s, more than half of that",
 			timeout, hardest)
 	}
+	// The README and captcha.go give the timeout as a figure, two minutes, and
+	// app.js and captcha.go give the hardest base puzzle as half of it, so it
+	// is held to that figure as well as to the margin: a longer timeout passes
+	// the check above and leaves all three wrong.
+	if timeout != 2*time.Minute {
+		t.Errorf("CAPTCHA_TIMEOUT_MS is %s, but the README, captcha.go and app.js say two minutes", timeout)
+	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "runCaptchaWorkers")), "timeout: CAPTCHA_TIMEOUT_MS,") {
 		t.Error("runCaptchaWorkers no longer gives the worker CAPTCHA_TIMEOUT_MS")
 	}

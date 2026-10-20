@@ -492,8 +492,8 @@ check before the test changes.
   `CAPTCHA_LIFETIME_MS` must be no more than the server's `captchaTTL` less a minute.
   `TestCaptchaAnswerStaysInMemory`, `TestCaptchaIsAskedForOnlyWhenSomeoneWrites`,
   `TestCaptchaIsSkippedOnlyByABadgedPost`, `TestClientAndServerAgreeOnTheCaptcha` (which
-  also holds the hardest base puzzle at 4 ms an attempt to half of `CAPTCHA_TIMEOUT_MS`,
-  and `CAPTCHA_MAX_WORKERS` to the four copies the README names),
+  also holds `CAPTCHA_TIMEOUT_MS` to the two minutes, the hardest base puzzle at 4 ms an
+  attempt to half of it, and `CAPTCHA_MAX_WORKERS` to the four copies the README names),
   `TestCaptchaWorkersAreAlwaysStopped`, `TestARequestGoesOnlyFromAFormOnScreen`,
   `TestAPendingFormIsHeld`, `TestAHeldFormSurvivesARedrawOfItsPage`,
   `TestCaptchaRefusalSaysWhatTheFormStillHolds`, `TestTheCaptchaFAQSaysWhatThePageDoes`,
