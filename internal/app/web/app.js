@@ -1885,17 +1885,45 @@ function forgetBrowserHTML() {
 
 const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
 
+// revealClearOfHeader scrolls the page just far enough to bring el into view
+// clear of the sticky header. focus() and scrollIntoView() do not know about
+// the header: both take an element under it for one in view and leave it
+// there. The Verify page draws each step at the scroll position the last one
+// left, and on a phone, where the header wraps to three rows, a badge holder
+// who had scrolled down to "Verify another address" got the address field,
+// then the code box and its sentence, then the new badge, all drawn under the
+// header, with only the buttons below them in sight. The page moves only when
+// part of el is hidden, and by as little as it can; an el taller than the room
+// under the header is shown from its top. The header is measured rather than
+// assumed, since its height changes with the width and with the reader's text
+// size. Whatever is then focused is focused with preventScroll, so that
+// focus() does not move the page again.
+function revealClearOfHeader(el) {
+  const gap = 12;
+  const header = document.querySelector(".site-header");
+  const top = Math.max(0, header ? header.getBoundingClientRect().bottom : 0) + gap;
+  const bottom = window.innerHeight - gap;
+  const box = el.getBoundingClientRect();
+  if (box.top < top || box.height > bottom - top) {
+    window.scrollBy(0, box.top - top);
+  } else if (box.bottom > bottom) {
+    window.scrollBy(0, box.bottom - bottom);
+  }
+}
+
 // confirmBrowserForgotten says that Forget this browser did its work, in the
 // block the button is in, once the Verify page has been drawn again without
 // what was forgotten. The redrawn page took the button, and with it the
 // focus, so the confirmation takes both: it is brought into view and focused,
-// for a screen reader to read and a keyboard to go on from.
+// for a screen reader to read and a keyboard to go on from. What was drawn
+// above it may be shorter than what was there, and the block moves up with
+// it, so it is brought into view clear of the header.
 function confirmBrowserForgotten() {
   const done = document.getElementById("forget-browser-done");
   if (!done) return;
   done.textContent = BROWSER_FORGOTTEN;
   done.hidden = false;
-  done.scrollIntoView({ block: "nearest" });
+  revealClearOfHeader(done);
   done.focus({ preventScroll: true });
 }
 
@@ -2015,12 +2043,14 @@ const VERIFY_CHECKING = "Verifying…";
 // refuseVerification says why the form was refused, in the form, and puts the
 // reader back in the field it is about. invalid marks that field as what was
 // refused, rather than the moment (a cooldown, a dropped connection); select
-// selects what was typed there, for a code to be typed again whole.
+// selects what was typed there, for a code to be typed again whole. The form
+// is brought into view clear of the header, and with it the field, the
+// refusal under it and the button that was pressed.
 function refuseVerification(form, message, target, { invalid = false, select = false } = {}) {
   const why = form.querySelector(".verify-refused");
   why.textContent = message;
   why.hidden = false;
-  why.scrollIntoView({ block: "nearest" });
+  revealClearOfHeader(form);
   if (!target) return;
   if (invalid) target.setAttribute("aria-invalid", "true");
   target.focus({ preventScroll: true });
@@ -2127,7 +2157,7 @@ function verifyViewHTML() {
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
       <div class="verify-panel">
-        <p>Your badge in this browser is ${verifiedBadgeHTML(v.badge.label)}, good until
+        <p id="verify-badge" tabindex="-1">Your badge in this browser is ${verifiedBadgeHTML(v.badge.label)}, good until
           ${timeHTML(v.badge.expires.toISOString())}.</p>
         <p class="muted">
           Tick &ldquo;post with&rdquo; on the posting form to use it. It is kept
@@ -2207,6 +2237,31 @@ async function renderVerify() {
   badgeLost = "";
   announce("Institutional verification");
   return true;
+}
+
+// showVerifyField brings a step's form, freshly drawn in place of another,
+// into view clear of the header, from what it opens with to its buttons, and
+// puts the reader in its field: the code box once a code is sent, the address
+// field when another address is asked for.
+function showVerifyField(id) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  revealClearOfHeader(input.form);
+  input.focus({ preventScroll: true });
+}
+
+// showHeldBadge brings the badge panel's first line, the badge this browser
+// holds, into view clear of the header and focuses it, once the panel is drawn
+// for a badge just issued, or kept rather than replaced. That line is what
+// changed: the rest of the panel reads the same whichever badge is held, so
+// with the line out of sight a replaced badge looked like nothing had happened.
+// On a phone the panel runs past the foot of the screen, so a control further
+// down would be focused out of sight.
+function showHeldBadge() {
+  const held = document.getElementById("verify-badge");
+  if (!held) return;
+  revealClearOfHeader(held);
+  held.focus({ preventScroll: true });
 }
 
 /* Rules and FAQ ------------------------------------------------------------ */
@@ -3303,12 +3358,16 @@ document.addEventListener("click", (event) => {
   }
 
   // Forgetting a badge is entirely local: the server was never told which
-  // browser held it, so there is nothing there to tell.
+  // browser held it, so there is nothing there to tell. The address step that
+  // takes the badge panel's place is brought into view clear of the header.
   if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
     forgetCredential();
     verifyStep = { step: "email", label: "" };
-    renderVerify();
+    renderVerify().then((drawn) => {
+      const form = drawn && el.main.querySelector("form[data-verify]");
+      if (form) revealClearOfHeader(form);
+    });
     return;
   }
 
@@ -3333,8 +3392,7 @@ document.addEventListener("click", (event) => {
     clearNotice();
     verifyStep = { step: "email", label: "" };
     el.main.innerHTML = verifyViewHTML();
-    const again = el.main.querySelector('[data-action="verify-again"]');
-    if (again) again.focus();
+    showHeldBadge();
     return;
   }
 
@@ -3350,8 +3408,7 @@ document.addEventListener("click", (event) => {
     // still usable — it is retired by the new one, not by asking for one.
     verifyStep = { step: "email", label: "", replacing: true };
     el.main.innerHTML = verifyViewHTML();
-    const input = document.getElementById("f-email");
-    if (input) input.focus();
+    showVerifyField("f-email");
     return;
   }
 
@@ -3701,6 +3758,10 @@ el.main.addEventListener("submit", async (event) => {
 // they were asked for and the newest one's is the cookie the browser keeps; if
 // the reader moves the page to yet another step while it waits, it is never
 // sent.
+//
+// What an answer draws is brought into view clear of the sticky header — the
+// code box with the sentence above it, the badge now held
+// (revealClearOfHeader) — and focused without scrolling the page again.
 async function submitVerification(form) {
   if (verifyBusy === verifyStep) return;
   const button = form.querySelector('button[type="submit"]');
@@ -3746,8 +3807,7 @@ async function submitVerification(form) {
       // they come back; this one is not drawn over the page they are on.
       if (!onVerifyPage()) return;
       el.main.innerHTML = verifyViewHTML();
-      const input = document.getElementById("f-code");
-      if (input) input.focus();
+      showVerifyField("f-code");
       return;
     }
     // The one time the credential is ever handed out. It is kept here rather
@@ -3763,7 +3823,7 @@ async function submitVerification(form) {
     state.verification.badge = readBadge();
     verifyStep = { step: "email", label: "" };
     if (!onVerifyPage()) return;
-    await renderVerify();
+    if (await renderVerify()) showHeldBadge();
   } catch (err) {
     if (verifyStep !== sentFrom) return;
     // Nothing is pending any more, so the code box goes: back to the address

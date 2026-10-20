@@ -1159,7 +1159,7 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		t.Error("a refusal stays up while the form is sent again")
 	}
 	refuse := withoutComments(jsFunction(t, script, "refuseVerification"))
-	for _, want := range []string{"why.textContent = message;", "why.hidden = false;", "scrollIntoView(",
+	for _, want := range []string{"why.textContent = message;", "why.hidden = false;", "revealClearOfHeader(form);",
 		`target.setAttribute("aria-invalid", "true");`, "target.focus(", "target.select();"} {
 		if !strings.Contains(refuse, want) {
 			t.Errorf("refuseVerification does not %s:\n%s", want, refuse)
@@ -1172,7 +1172,7 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		t.Error("Forget this browser has nowhere under its button to say it is done")
 	}
 	confirm := withoutComments(jsFunction(t, script, "confirmBrowserForgotten"))
-	for _, want := range []string{"done.textContent = BROWSER_FORGOTTEN;", "done.hidden = false;", "scrollIntoView(", "done.focus("} {
+	for _, want := range []string{"done.textContent = BROWSER_FORGOTTEN;", "done.hidden = false;", "revealClearOfHeader(done);", "done.focus("} {
 		if !strings.Contains(confirm, want) {
 			t.Errorf("confirmBrowserForgotten does not %s:\n%s", want, confirm)
 		}
@@ -1180,5 +1180,120 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 	handler := verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-browser"]')) {`)
 	if strings.Contains(handler, "showNotice(") || !strings.Contains(handler, "confirmBrowserForgotten();") {
 		t.Errorf("Forget this browser is not confirmed under its button:%s", handler)
+	}
+}
+
+// On a phone the header wraps to three rows and stays at the top of the
+// screen, and the Verify page draws each step at the scroll position the last
+// one left. focus() and scrollIntoView() take an element under the header for
+// one in view, so a badge holder who had scrolled down to "Verify another
+// address" got the address field, then the code box with the sentence above
+// it, then the new badge, all drawn under the header, with only the buttons
+// below them in sight. So everything a Verify step draws in place, or says, is
+// brought into view by revealClearOfHeader, which measures the header, and
+// nothing on the page is focused in a way that scrolls by itself.
+func TestVerifyStepsAreShownClearOfTheHeader(t *testing.T) {
+	script := appScript(t)
+
+	reveal := withoutComments(jsFunction(t, script, "revealClearOfHeader"))
+	for _, want := range []string{`document.querySelector(".site-header")`, ".getBoundingClientRect().bottom",
+		"window.innerHeight", "window.scrollBy("} {
+		if !strings.Contains(reveal, want) {
+			t.Errorf("revealClearOfHeader does not measure the header and scroll clear of it (no %s):\n%s", want, reveal)
+		}
+	}
+	if strings.Contains(reveal, "scrollIntoView(") || strings.Contains(reveal, "focus(") {
+		t.Errorf("revealClearOfHeader leans on scrollIntoView or focus, which do not know about the header:\n%s", reveal)
+	}
+
+	field := withoutComments(jsFunction(t, script, "showVerifyField"))
+	if !regexp.MustCompile(`revealClearOfHeader\(input\.form\);\n\s*input\.focus\(\{ preventScroll: true \}\);`).MatchString(field) {
+		t.Errorf("showVerifyField does not bring the step's form into view clear of the header before it focuses "+
+			"the field:\n%s", field)
+	}
+	held := withoutComments(jsFunction(t, script, "showHeldBadge"))
+	if !strings.Contains(held, `document.getElementById("verify-badge")`) ||
+		!regexp.MustCompile(`revealClearOfHeader\(held\);\n\s*held\.focus\(\{ preventScroll: true \}\);`).MatchString(held) {
+		t.Errorf("showHeldBadge does not bring the badge held into view clear of the header and focus it:\n%s", held)
+	}
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	if !strings.Contains(view, `<p id="verify-badge" tabindex="-1">Your badge in this browser is ${verifiedBadgeHTML(v.badge.label)}`) {
+		t.Error("the badge panel's first line, the badge held, is not #verify-badge, focusable from script")
+	}
+	confirm := withoutComments(jsFunction(t, script, "confirmBrowserForgotten"))
+	if !strings.Contains(confirm, "revealClearOfHeader(done);\n  done.focus({ preventScroll: true });") {
+		t.Errorf("Forget this browser's confirmation is not brought into view clear of the header:\n%s", confirm)
+	}
+	refuse := withoutComments(jsFunction(t, script, "refuseVerification"))
+	shown, focused := strings.Index(refuse, "revealClearOfHeader(form);"), strings.Index(refuse, "target.focus(")
+	if shown < 0 || focused < shown {
+		t.Errorf("a refusal's form is not brought into view clear of the header before its field is focused:\n%s", refuse)
+	}
+
+	// Every place a step is drawn in place of another, and what shows it:
+	// the code box, the address field, or the badge held, each clear of the
+	// header. The address step that takes a code box's place when the server
+	// has dropped the code centres the note saying why, which puts it clear of
+	// the header on any screen (TestEndedCodeSaysWhyWhereTheBoxWas).
+	places := []struct{ name, body string }{
+		{"submitVerification", withoutComments(jsFunction(t, script, "submitVerification"))},
+		{"Forget this credential", verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-verification"]')) {`)},
+		{"Forget this browser", verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-browser"]')) {`)},
+		{"Keep my badge", verifyClickHandler(t, script, `if (event.target.closest('[data-action="verify-keep"]')) {`)},
+		{"Verify another address and Use a different address", verifyClickHandler(t, script, `if (restart) {`)},
+	}
+	shows := []string{`showVerifyField("f-code");`, `showVerifyField("f-email");`, "showHeldBadge();",
+		`const why = document.getElementById("f-email-ended");`}
+	drawn := 0
+	for _, p := range places {
+		for _, at := range regexp.MustCompile(`el\.main\.innerHTML = verifyViewHTML\(\);\n`).FindAllStringIndex(p.body, -1) {
+			drawn++
+			next := strings.TrimLeft(p.body[at[1]:], " \t\n")
+			if !slices.ContainsFunc(shows, func(s string) bool { return strings.HasPrefix(next, s) }) {
+				line, _, _ := strings.Cut(next, "\n")
+				t.Errorf("%s draws a Verify step and goes on with %q, without bringing it into view clear of the header",
+					p.name, line)
+			}
+		}
+		for _, at := range regexp.MustCompile(`renderVerify\(\)`).FindAllStringIndex(p.body, -1) {
+			drawn++
+			before, rest := p.body[:at[0]], p.body[at[0]:]
+			switch {
+			case strings.HasSuffix(before, "if (await ") && strings.HasPrefix(rest, "renderVerify()) showHeldBadge();"):
+			case strings.HasPrefix(rest, "renderVerify().then((drawn) => {"):
+				then, _, _ := strings.Cut(rest, "\n    });")
+				if !strings.Contains(then, "revealClearOfHeader(") && !strings.Contains(then, "confirmBrowserForgotten();") {
+					t.Errorf("%s draws the Verify page without bringing what it drew into view clear of the header:\n%s",
+						p.name, then)
+				}
+			default:
+				line, _, _ := strings.Cut(rest, "\n")
+				t.Errorf("%s draws the Verify page as %q, without bringing what it drew into view clear of the header",
+					p.name, line)
+			}
+		}
+	}
+	if drawn != 7 {
+		t.Errorf("the Verify page is drawn in place %d times; this test knows seven", drawn)
+	}
+
+	// Nor does anything there scroll the page another way: every focus is
+	// without scrolling, and the one scrollIntoView left is the centred note.
+	all := []string{field, held, confirm, refuse}
+	for _, p := range places {
+		all = append(all, p.body)
+	}
+	for _, body := range all {
+		for _, at := range regexp.MustCompile(`\.focus\(`).FindAllStringIndex(body, -1) {
+			if !strings.HasPrefix(body[at[0]:], ".focus({ preventScroll: true })") {
+				line, _, _ := strings.Cut(body[at[0]:], "\n")
+				t.Errorf("the Verify page focuses with %q, which scrolls without knowing about the header", line)
+			}
+		}
+	}
+	scrolls := regexp.MustCompile(`\w+\.scrollIntoView\([^)]*\)`).FindAllString(strings.Join(all, "\n"), -1)
+	if !slices.Equal(scrolls, []string{`why.scrollIntoView({ block: "center" })`}) {
+		t.Errorf("the Verify page scrolls with %q; want only the ended code's centred note, and revealClearOfHeader "+
+			"otherwise", scrolls)
 	}
 }

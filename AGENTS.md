@@ -496,6 +496,12 @@ needs a browser check before the test changes.
   (`TestReplacingABadgeCanGoBackToIt`). Forgetting the badge or the browser starts over
   at the address step. A reload drops a pending code too, since nothing about it is
   stored: the page shows the badge held here, or the address step when there is none.
+  Whatever a step draws in place of another, or says, is brought into view clear of the
+  sticky header (`revealClearOfHeader`, which measures it) and focused without scrolling
+  (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element
+  under the header for one in view, and on a phone, where the header wraps to three rows,
+  a badge holder who had scrolled down got the address field, the code box and then the
+  new badge all drawn under it (`TestVerifyStepsAreShownClearOfTheHeader`).
 
 ### Child safety
 
