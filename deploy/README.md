@@ -334,9 +334,11 @@ every post and thread the content rules held back for a moderator (threats,
 self-harm encouragement, grooming cues) would show in its thread, the index and
 the catalog for anyone to read and reply to, and nothing of `expired_at`, so
 every archived thread a held reply kept past its time would be back in the
-archive. On a full board whose least recently bumped thread is held, every new
-thread would fail too, because the old pruning tries to archive it and the
-schema forbids that. A binary that finds migrations it does not know
+archive. On any board where the old pruning reaches a held thread, every new
+thread would fail too: that code counts held threads against `thread_limit` and
+archives whatever falls past it, and the schema forbids archiving a held thread.
+A held thread nobody replies to sinks with every new thread until it gets there.
+A binary that finds migrations it does not know
 logs an error saying so and still serves, so read the log after any rollback.
 `-sweep` refuses to run at all in that state.
 
@@ -457,8 +459,8 @@ A thread that falls off the end of its board is archived, and the sweeper
 deletes it, with its images, once its board's `archive_days` (7 by default)
 have passed. An archived thread with a held reply is the exception: the sweep
 that would have deleted it takes it out of public view instead (`expired_at`),
-and the first sweep after the reply is approved or deleted removes it. A held
-thread is never archived.
+and the first sweep after its last held reply is approved or deleted removes
+it. A held thread is never archived.
 
 The sweeper is the same image run as `educhan -sweep`: one pass, then it
 exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
