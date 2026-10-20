@@ -225,3 +225,17 @@
 {"id": "acad-225", "body": "In the poem the speaker is thinking about suicide, how do I analyse the imagery", "subject": "", "name": "", "expect": "publish", "why": "a poem's speaker, not the poster"}
 {"id": "acad-226", "body": "[code]n <- 9876543210  # number of rows[/code]", "subject": "", "name": "", "expect": "publish", "why": "R code: a comment saying what the value is, not a phone cue"}
 {"id": "acad-227", "body": "seed <- 9876543210 # call set.seed with this", "subject": "", "name": "", "expect": "publish", "why": "an R comment naming a function to call"}
+{"id": "acad-228", "body": "is life worth living? philosophy essay due friday", "subject": "", "name": "", "expect": "publish", "why": "a philosophy question for an essay"}
+{"id": "acad-229", "body": "i attempted the paper last month", "subject": "", "name": "", "expect": "publish", "why": "attempting a paper"}
+{"id": "acad-230", "body": "the teacher made us analyse the suicide note in the play", "subject": "", "name": "", "expect": "publish", "why": "a suicide note in a play, read for class"}
+{"id": "acad-231", "body": "i'm ending it here, the essay is long enough", "subject": "", "name": "", "expect": "publish", "why": "ending an essay"}
+{"id": "acad-232", "body": "physics ka fanda samajh aa gaya finally", "subject": "", "name": "", "expect": "publish", "why": "\"fanda\" is also a trick or a concept"}
+{"id": "acad-233", "body": "ye fanda laga ke dekh, question solve ho jayega", "subject": "", "name": "", "expect": "publish", "why": "\"fanda laga\" is applying a trick"}
+{"id": "acad-234", "body": "how to cut a mango properly", "subject": "", "name": "", "expect": "publish", "why": "cutting fruit"}
+{"id": "acad-235", "body": "how deep do you have to cut the dovetail joint for woodwork", "subject": "", "name": "", "expect": "publish", "why": "woodwork"}
+{"id": "acad-236", "body": "what household chemicals should never be mixed? chem homework", "subject": "", "name": "", "expect": "publish", "why": "lab safety"}
+{"id": "acad-237", "body": "which vein do they use for blood tests? biology doubt", "subject": "", "name": "", "expect": "publish", "why": "biology question"}
+{"id": "acad-238", "body": "which veins do you cut in the frog dissection", "subject": "", "name": "", "expect": "publish", "why": "a dissection"}
+{"id": "acad-239", "body": "which floor is fatal for an egg drop? physics project", "subject": "", "name": "", "expect": "publish", "why": "an egg drop"}
+{"id": "acad-240", "body": "you should end it there, the essay is long enough", "subject": "", "name": "", "expect": "publish", "why": "ending an essay"}
+{"id": "acad-241", "body": "you should end it with a question, examiners love that", "subject": "", "name": "", "expect": "publish", "why": "ending an answer"}

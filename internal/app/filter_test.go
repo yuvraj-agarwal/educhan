@@ -3226,6 +3226,15 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"on the roof":      rep("i'm on the roof "),
 		"sab khatam":       rep("sab khatam kar dunga "),
 		"disclaimed pills": rep("how many pills asking for a friend "),
+		// The newer phrasings read with what is round them: a relapse
+		// looked for in the post, a height question's sentence read for a
+		// death, a calorie count read after "eat less", and "ja mar" read
+		// for "gaya".
+		"clean from sh":   rep("clean from sh "),
+		"height question": rep("how high is the "),
+		"eat less":        rep("eat less junk "),
+		"ja mar gaya":     rep("ja mar gaya "),
+		"end it with him": rep("you should end it with him "),
 		// Grooming cues read with the sentence round them: "alone" said
 		// last, a secret kept "between us", and "tell no one".
 		"alone said last": rep("come here, alone. "),
