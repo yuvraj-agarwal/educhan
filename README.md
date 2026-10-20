@@ -654,7 +654,11 @@ server that would refuse what it sends.
   longer than its 30 seconds, or falls behind its pace, is the connection's doing, not the
   server's, and answers `408` with `{"error":"upload too slow"}`, with nothing stored and
   no cooldown started; the time a post spent waiting for room is not counted against its
-  body.
+  body. A body sent without a `Content-Length` (chunked), whose length the server learns
+  only at its end, is held to the pace of the largest body a post may have, and when it is
+  slower than that it is cut off only once it has sent nothing for 5 seconds: a small
+  image sent slowly still arrives, but such a body that trickles keeps its room for the 30
+  seconds, and only its client's share of the upload budget limits how many do.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering
@@ -1005,9 +1009,11 @@ is over. A post with an image from a client whose other image posts already hold
 room for upload bodies answers `429` the same way, at once, with a `Retry-After` and
 `retry_after` of 10 seconds and no cooldown started. A post whose body takes longer than
 30 seconds to arrive, counted from when there was room to read it, or falls more than 5
-seconds behind the even pace that would bring it in by then, answers `408` with
-`{"error":"upload too slow"}` and no `Retry-After`, since waiting does not make a
-connection faster; it is refused before flood control, so it starts no cooldown. A request
+seconds behind the even pace that would bring it in by then (a body sent without a
+`Content-Length`: behind the pace for the largest body a post may have, and sending
+nothing for 5 seconds), answers `408` with `{"error":"upload too slow"}` and no
+`Retry-After`, since waiting does not make a connection faster; it is refused before
+flood control, so it starts no cooldown. A request
 rejected for any other reason — an empty body, an oversized image, a file that is not an
 accepted image or whose header shows it unusable (see **Formats**), a reply to a missing,
 locked or archived thread or an image past a thread's cap — does not start a cooldown, so

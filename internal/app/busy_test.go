@@ -542,8 +542,10 @@ type idleBody struct {
 }
 
 // idleUpload opens an idleBody for an image thread on /general/ from client
-// (sent as X-Forwarded-For; none when empty), declaring size bytes of body.
-// The test's cleanup closes it.
+// (sent as X-Forwarded-For; none when empty), declaring size bytes of body;
+// or, when size is negative, declaring no length, its body to be sent chunked
+// (idleBody.trickle), so that the server learns its length only at its end. The
+// test's cleanup closes it.
 func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
 	t.Helper()
 	addr := strings.TrimPrefix(base, "http://")
@@ -552,10 +554,14 @@ func idleUpload(t *testing.T, base, client string, size int64) *idleBody {
 		t.Fatalf("dial: %v", err)
 	}
 	t.Cleanup(func() { conn.Close() })
+	length := "Content-Length: " + strconv.FormatInt(size, 10) + "\r\n"
+	if size < 0 {
+		length = "Transfer-Encoding: chunked\r\n"
+	}
 	req := "POST /api/boards/general/threads HTTP/1.1\r\n" +
 		"Host: " + addr + "\r\n" +
 		"Content-Type: multipart/form-data; boundary=BOUND\r\n" +
-		"Content-Length: " + strconv.FormatInt(size, 10) + "\r\n" +
+		length +
 		"Expect: 100-continue\r\n" +
 		"Connection: close\r\n"
 	if client != "" {
@@ -722,6 +728,159 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		}
 		if took := time.Since(start); took > 5*time.Second {
 			t.Errorf("trickling body answered after %v, want soon after the %v grace, not at the %v window's end",
+				took, h.app.uploadPaceGrace, h.app.uploadReadTimeout)
+		}
+	})
+}
+
+// trickle sends body as chunks of at most size bytes with pause after each,
+// leaving the body open, and reports whether all of it went. It stops early
+// once the server has answered or the connection refuses a chunk, so that the
+// test can read an early answer, which sending on past it could lose to the
+// connection's reset.
+func (b *idleBody) trickle(body []byte, size int, pause time.Duration) bool {
+	for len(body) > 0 {
+		_ = b.conn.SetReadDeadline(time.Now().Add(time.Millisecond))
+		if _, err := b.read.Peek(1); err == nil {
+			return false // answered
+		}
+		n := min(size, len(body))
+		frame := fmt.Sprintf("%x\r\n%s\r\n", n, body[:n])
+		if _, err := io.WriteString(b.conn, frame); err != nil {
+			return false
+		}
+		body = body[n:]
+		time.Sleep(pause)
+	}
+	return true
+}
+
+// end sends the last chunk, ending the body.
+func (b *idleBody) end() {
+	_, _ = io.WriteString(b.conn, "0\r\n\r\n")
+}
+
+// unsizedForm is an image post's multipart body under the boundary idleUpload
+// declares, led by a part of filler bytes that the server reads past.
+func unsizedForm(t *testing.T, filler int, body string, image []byte) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	form := multipart.NewWriter(&buf)
+	if err := form.SetBoundary("BOUND"); err != nil {
+		t.Fatal(err)
+	}
+	if filler > 0 {
+		part, err := form.CreateFormField("filler")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := part.Write(bytes.Repeat([]byte("x"), filler)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := form.WriteField("body", body); err != nil {
+		t.Fatal(err)
+	}
+	part, err := form.CreateFormFile(uploadFieldName, "photo.png")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := part.Write(image); err != nil {
+		t.Fatal(err)
+	}
+	if err := form.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// A body sent without a Content-Length, chunked, has room reserved for the
+// most a post's body may be, and paced against that (pacedBody) it had to
+// arrive at about 300 KiB/s whatever its real length: a small image post sent
+// slowly, well inside its read window, was cut off 408 once the grace was
+// over. Its length unknown, such a body is now cut off only when it is behind
+// the pace for the largest body by more than the grace and has also sent
+// nothing for the grace: a slow small body posts, one ahead of that pace may
+// pause as a body with a length may, and one that stops is still cut off
+// after the grace, giving its room back.
+func TestUnsizedUploadsAreCutOffOnlyWhenTheyStop(t *testing.T) {
+	t.Run("a slow small body posts", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 2 * time.Second
+		h.app.uploadReadTimeout = time.Minute
+		drainShares(t, h, "127.0.0.1")
+		body := unsizedForm(t, 0, "slow, small and chunked", pngBytes(t, 32, 32))
+		const chunks = 12
+		pause := h.app.uploadPaceGrace / 5 // between chunks, the whole body taking twice the grace and more
+
+		b := idleUpload(t, h.base, "", -1)
+		start := time.Now()
+		if b.trickle(body, len(body)/chunks+1, pause) {
+			b.end()
+		}
+		status, text := b.answer(t, 30*time.Second)
+		took := time.Since(start)
+		if status != http.StatusCreated {
+			t.Fatalf("a %d-byte chunked image post sent over %v: status %d (%s) after %v, want 201",
+				len(body), chunks*pause, status, text, took)
+		}
+		if took < 2*h.app.uploadPaceGrace {
+			t.Fatalf("the body arrived in %v, inside twice the %v grace; the test proves nothing", took, h.app.uploadPaceGrace)
+		}
+		if n := h.countRows("posts"); n != 1 {
+			t.Errorf("%d posts stored, want the slow upload made", n)
+		}
+	})
+
+	t.Run("a body ahead of the pace for the largest body may pause", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadPaceGrace = time.Second
+		h.app.uploadReadTimeout = time.Minute
+		drainShares(t, h, "127.0.0.1")
+		// 2 MiB of a body that may be 9 is a fifth of the way there at once,
+		// twelve seconds ahead of the pace that brings 9 MiB in in a minute.
+		const filler = 2 << 20
+		body := unsizedForm(t, filler, "fast, then a pause", pngBytes(t, 32, 32))
+		pause := 3 * h.app.uploadPaceGrace
+
+		b := idleUpload(t, h.base, "", -1)
+		if !b.trickle(body[:filler], 64<<10, 0) {
+			t.Fatal("the body's first 2 MiB were not taken")
+		}
+		time.Sleep(pause)
+		if b.trickle(body[filler:], 64<<10, 0) {
+			b.end()
+		}
+		if status, text := b.answer(t, 30*time.Second); status != http.StatusCreated {
+			t.Fatalf("a chunked image post that paused %v, ahead of its pace: status %d (%s), want 201", pause, status, text)
+		}
+		if n := h.countRows("posts"); n != 1 {
+			t.Errorf("%d posts stored, want the paused upload made", n)
+		}
+	})
+
+	t.Run("a body that stops is cut off", func(t *testing.T) {
+		h := testServer(t, nil)
+		h.addBoard("general")
+		h.app.uploadPaceGrace = 300 * time.Millisecond
+		h.app.uploadReadTimeout = time.Minute
+		drainShares(t, h, "127.0.0.1")
+		body := unsizedForm(t, 0, "and then nothing", pngBytes(t, 32, 32))
+		cut := bytes.Index(body, []byte("\x89PNG")) + 8 // the image's signature and nothing more
+
+		b := idleUpload(t, h.base, "", -1)
+		start := time.Now()
+		if !b.trickle(body[:cut], len(body), 0) {
+			t.Fatal("the start of the body was not taken")
+		}
+		status, text := b.answer(t, 20*time.Second)
+		if status != http.StatusRequestTimeout {
+			t.Fatalf("a chunked body that stopped: status %d (%s), want 408", status, text)
+		}
+		if took := time.Since(start); took > 5*time.Second {
+			t.Errorf("a chunked body that stopped was answered after %v, want soon after the %v grace, not at the %v window's end",
 				took, h.app.uploadPaceGrace, h.app.uploadReadTimeout)
 		}
 	})

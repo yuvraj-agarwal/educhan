@@ -93,12 +93,24 @@ const uploadPaceGrace = 5 * time.Second
 // while a body on course to arrive inside the window, as every body the window
 // admits must be on average, has the grace to fall behind by on the way. A
 // body cut off is answered 408 (upload too slow), as one past the window is.
+//
+// A body sent without a Content-Length (unsized: chunked) has room reserved
+// for the most a body may be, and the pace for that would hold a small one to
+// the rate of the largest, about 300 KiB/s by default, whatever its own
+// length: a small image sent slowly, on course to arrive well inside the
+// window, would be cut off once the grace was over. Its length unknown until
+// it ends, such a body also has the grace from each read, so that it is cut
+// off only once it is behind that pace and has sent nothing for the grace.
+// That gives up some of what the pace is for: a body without a length that
+// trickles keeps its room to the window's end, and only its client's share of
+// the budget (clientUploadShare) bounds what such bodies hold.
 type pacedBody struct {
 	io.ReadCloser
 	setDeadline   func(time.Time) error
 	start         time.Time
 	window, grace time.Duration
 	size, n       int64
+	unsized       bool
 }
 
 func (p *pacedBody) Read(b []byte) (int, error) {
@@ -106,6 +118,9 @@ func (p *pacedBody) Read(b []byte) (int, error) {
 	due := end
 	if p.size > 0 {
 		due = p.start.Add(p.grace + time.Duration(float64(p.window)*float64(p.n)/float64(p.size)))
+	}
+	if wait := time.Now().Add(p.grace); p.unsized && wait.After(due) {
+		due = wait
 	}
 	if due.After(end) {
 		due = end
@@ -246,7 +261,8 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 	_ = rc.SetReadDeadline(now.Add(a.uploadReadTimeout))
 	_ = rc.SetWriteDeadline(now.Add(a.uploadReadTimeout + answerAllowance))
 	r.Body = &pacedBody{ReadCloser: r.Body, setDeadline: rc.SetReadDeadline,
-		start: now, window: a.uploadReadTimeout, grace: a.uploadPaceGrace, size: size}
+		start: now, window: a.uploadReadTimeout, grace: a.uploadPaceGrace,
+		size: size, unsized: r.ContentLength < 0}
 	if err != nil {
 		// The browser is still sending the body. Answered before it has
 		// finished, a connection closed under it can reach the poster as a
