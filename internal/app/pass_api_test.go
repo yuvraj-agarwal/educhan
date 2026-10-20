@@ -656,7 +656,7 @@ func TestPassCollectsOnlyThroughItsOwnClaim(t *testing.T) {
 	var origin bool
 	var payments int
 	if err := p.app.pool.QueryRow(context.Background(), `
-		SELECT bool_and(origin AND payment_hash = $2), count(*) FROM pass_payments
+		SELECT bool_and(origin = 'bought' AND payment_hash = $2), count(*) FROM pass_payments
 		WHERE pass_id = (SELECT id FROM passes WHERE token_hash = $1)`,
 		p.app.passTokenHash(strings.ReplaceAll(buyer.Pass, "-", "")), p.app.passPaymentHash("pi_buyer")).Scan(&origin, &payments); err != nil ||
 		!origin || payments != 1 {
@@ -1243,8 +1243,16 @@ func TestPassReissue(t *testing.T) {
 	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
 		t.Fatalf("the reissued code: status %d", status)
 	}
-	if status, out := buyer.redeem(code); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+	if status, out := buyer.redeem(code); status != http.StatusForbidden || refusalState(t, out) != passInvalid || out.Error != passReissueSpent {
 		t.Fatalf("a reissue code used twice: status %d, %+v", status, out)
+	}
+	unknown, err := newReissueCode()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status, out := buyer.redeem(formatReissueCode(unknown)); status != http.StatusForbidden || refusalState(t, out) != passInvalid ||
+		out.Error != passReissueSpent {
+		t.Fatalf("a well-formed reissue code nobody was sent: status %d, %+v", status, out)
 	}
 	for _, malformed := range []string{"not a code", issued.Pass, fresh.Pass, code + "A"} {
 		if status, out := buyer.redeem(malformed); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
@@ -1726,6 +1734,13 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		t.Fatalf("thread with the reissued Pass: status %d (%s)", status, out.Error)
 	}
 	newCode, _ := parsePassCode(reissued.Pass)
+	// Another is asked for and left unused, so the scan has one in
+	// pass_reissues to look for.
+	_, _, unspent := p.reissueCode("mod-key", "pi_scan_payment")
+	canonicalUnspent, ok := parseReissueCode(unspent)
+	if !ok {
+		t.Fatalf("the second reissue code %q does not parse", unspent)
+	}
 
 	stored := p.app.passTokenHash(newCode)
 	// Positive controls: the scan finds the post body in posts, and the stored
@@ -1735,6 +1750,11 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	}
 	if n := p.rowsContaining("passes", stored); n != 1 {
 		t.Fatalf("the scan found the stored hash in %d passes rows, want 1; it misses bytea columns", n)
+	}
+	// The reissue code waiting to be used is kept as the SHA-256 hash of its
+	// characters, and only as that.
+	if n := p.rowsContaining("pass_reissues", hashToken(canonicalUnspent)); n != 1 {
+		t.Fatalf("the unused reissue code's hash is in %d pass_reissues rows, want 1", n)
 	}
 	// The hourly budget is kept in memory under a hash of the code that
 	// matches nothing in the database: not the stored hash, and not any
@@ -1751,25 +1771,27 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		}
 	}
 	for name, needle := range map[string][]byte{
-		"the code":                 []byte(issued.Pass),
-		"the canonical code":       []byte(code),
-		"the replaced code's hash": p.app.passTokenHash(code),
-		"the reissued code":        []byte(reissued.Pass),
-		"the canonical new code":   []byte(newCode),
-		"the reissue code":         []byte(reissueCode),
-		"its characters":           []byte(canonicalReissue),
-		"the claim token":          []byte(claimToken),
-		"the claim's nonce":        []byte(nonce),
-		"the reissue's nonce":      []byte(reissueNonce),
-		"the stored hash":          stored,
-		"the budget key":           []byte(budgetKey),
-		"the budget key's bytes":   budgetBytes,
-		"the unknown code":         []byte("ZZZZZZZZZZZZZZZZZZZZ"),
-		"SHA-256 of the code":      sha(code),
-		"the payment intent":       []byte("pi_scan_payment"),
-		"the buyer's email":        []byte("buyer@example.com"),
-		"the buyer's name":         []byte("Bea Buyer"),
-		"the checkout session id":  []byte("cs_test_1"),
+		"the code":                    []byte(issued.Pass),
+		"the canonical code":          []byte(code),
+		"the replaced code's hash":    p.app.passTokenHash(code),
+		"the reissued code":           []byte(reissued.Pass),
+		"the canonical new code":      []byte(newCode),
+		"the reissue code":            []byte(reissueCode),
+		"its characters":              []byte(canonicalReissue),
+		"the unused reissue code":     []byte(unspent),
+		"the unused one's characters": []byte(canonicalUnspent),
+		"the claim token":             []byte(claimToken),
+		"the claim's nonce":           []byte(nonce),
+		"the reissue's nonce":         []byte(reissueNonce),
+		"the stored hash":             stored,
+		"the budget key":              []byte(budgetKey),
+		"the budget key's bytes":      budgetBytes,
+		"the unknown code":            []byte("ZZZZZZZZZZZZZZZZZZZZ"),
+		"SHA-256 of the code":         sha(code),
+		"the payment intent":          []byte("pi_scan_payment"),
+		"the buyer's email":           []byte("buyer@example.com"),
+		"the buyer's name":            []byte("Bea Buyer"),
+		"the checkout session id":     []byte("cs_test_1"),
 	} {
 		for _, table := range p.tables() {
 			if table == "passes" && name == "the stored hash" {
@@ -1786,22 +1808,24 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		t.Fatalf("expected the webhook and the posts in the log, got:\n%s", out)
 	}
 	for name, needle := range map[string]string{
-		"the code":           issued.Pass,
-		"the canonical code": code,
-		"the reissued code":  reissued.Pass,
-		"the new code":       newCode,
-		"the reissue code":   reissueCode,
-		"its characters":     canonicalReissue,
-		"the claim token":    claimToken,
-		"the claim's nonce":  nonce,
-		"the reissue nonce":  reissueNonce,
-		"the stored hash":    hex.EncodeToString(stored),
-		"the budget key":     budgetKey,
-		"its hex":            budgetHex,
-		"the payment intent": "pi_scan_payment",
-		"the buyer's email":  "buyer@example.com",
-		"the buyer's name":   "Bea Buyer",
-		"the session id":     "cs_test_1",
+		"the code":                    issued.Pass,
+		"the canonical code":          code,
+		"the reissued code":           reissued.Pass,
+		"the new code":                newCode,
+		"the reissue code":            reissueCode,
+		"its characters":              canonicalReissue,
+		"the unused reissue code":     unspent,
+		"the unused one's characters": canonicalUnspent,
+		"the claim token":             claimToken,
+		"the claim's nonce":           nonce,
+		"the reissue nonce":           reissueNonce,
+		"the stored hash":             hex.EncodeToString(stored),
+		"the budget key":              budgetKey,
+		"its hex":                     budgetHex,
+		"the payment intent":          "pi_scan_payment",
+		"the buyer's email":           "buyer@example.com",
+		"the buyer's name":            "Bea Buyer",
+		"the session id":              "cs_test_1",
 	} {
 		if strings.Contains(out, needle) {
 			t.Errorf("the log contains %s:\n%s", name, out)
@@ -2418,6 +2442,17 @@ func TestPassClaimCanBeAskedAgain(t *testing.T) {
 	_, _, token := p.reissueCode("mod-key", "pi_lost_answer")
 	buyer := p.otherBrowser()
 	reissueNonce := buyer.collectNonce()
+	// Without a nonce, or with one the page could not have drawn, the reissue
+	// code is refused before it is looked at, and is not spent.
+	for name, body := range map[string]map[string]any{
+		"no nonce":          {"reissue": token},
+		"a malformed nonce": {"reissue": token, "nonce": "not-a-nonce"},
+	} {
+		var out passResponse
+		if status := buyer.post("/api/pass/claim", body, &out); status != http.StatusBadRequest || out.Pass != "" {
+			t.Fatalf("a reissue code with %s: status %d, %+v", name, status, out)
+		}
+	}
 	status, fresh := buyer.redeemWith(token, reissueNonce)
 	if status != http.StatusOK || fresh.Status != "issued" || fresh.Pass == first.Pass {
 		t.Fatalf("redeem: status %d, %+v", status, fresh)
@@ -2425,6 +2460,13 @@ func TestPassClaimCanBeAskedAgain(t *testing.T) {
 	status, refetched := buyer.redeemWith(token, reissueNonce)
 	if status != http.StatusOK || refetched.Status != "issued" || refetched.Pass != fresh.Pass || !refetched.ExpiresAt.Equal(fresh.ExpiresAt) {
 		t.Fatalf("the same redeem asked again: status %d, %+v; want %s again", status, refetched, fresh.Pass)
+	}
+	// Pasted the other way the second time, in lower case, without the word
+	// and with spaces for dashes, it is the same reissue code, and gives the
+	// same Pass code.
+	retyped := strings.ToLower(strings.ReplaceAll(strings.TrimPrefix(token, reissueCodePrefix+"-"), "-", " "))
+	if status, out := buyer.redeemWith(retyped, reissueNonce); status != http.StatusOK || out.Status != "issued" || out.Pass != fresh.Pass {
+		t.Fatalf("the same redeem asked again, typed differently: status %d, %+v; want %s again", status, out, fresh.Pass)
 	}
 	if status, out := buyer.redeemWith(token, other); status != http.StatusForbidden || out.Pass != passInvalid {
 		t.Fatalf("the spent reissue code with another nonce: status %d, %+v", status, out)
@@ -2698,7 +2740,8 @@ func TestPassRefundTakesOffOnlyWhatIsLeft(t *testing.T) {
 // the code once and one by the holder both still to come, neither payment
 // reissues the Pass, and the holder keeps it; the one renewal left with time
 // to come takes the purchase's place, whether the others were refunded or had
-// run their terms.
+// run their terms, until the Pass is renewed again. While the purchase is the
+// origin, no renewal becomes a second one.
 func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
 	origins := func(code string) int {
@@ -2706,7 +2749,7 @@ func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 		canonical, _ := parsePassCode(code)
 		var n int
 		if err := p.app.pool.QueryRow(context.Background(), `
-			SELECT count(*) FILTER (WHERE origin) FROM pass_payments
+			SELECT count(*) FILTER (WHERE origin IS NOT NULL) FROM pass_payments
 			WHERE pass_id = (SELECT id FROM passes WHERE token_hash = $1)`, p.app.passTokenHash(canonical)).Scan(&n); err != nil {
 			t.Fatal(err)
 		}
@@ -2760,6 +2803,67 @@ func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 	p.refund("pi_single")
 	if status, _, _ := p.reissueCode("mod-key", "pi_single_renewal"); status != http.StatusOK {
 		t.Fatalf("reissue with the only renewal: status %d", status)
+	}
+
+	// The renewal the right moved to loses it once the Pass is renewed again,
+	// by its holder say: it no longer pays for all the time the Pass has left,
+	// and reissuing the Pass to its payer would hand over the year renewed
+	// after it. A reissue code made for it before goes with the right.
+	kept := p.buy("pi_kept")
+	onlooker := p.otherBrowser()
+	onlooker.renew(kept.Pass, "pi_kept_onlooker")
+	p.refund("pi_kept")
+	if n := origins(kept.Pass); n != 1 {
+		t.Fatalf("the onlooker's renewal left alone with time to come: %d origins, want 1", n)
+	}
+	status, _, early := p.reissueCode("mod-key", "pi_kept_onlooker")
+	if status != http.StatusOK {
+		t.Fatalf("reissue with the renewal the right moved to: status %d", status)
+	}
+	onlookersPayment := p.app.passPaymentHash("pi_kept_onlooker")
+	if n := p.rowsContaining("pass_reissues", onlookersPayment); n != 1 {
+		t.Fatalf("the reissue code made is in %d pass_reissues rows, want 1", n)
+	}
+	renewedAfter := p.renew(kept.Pass, "pi_kept_renewed_after")
+	if n := origins(kept.Pass); n != 0 {
+		t.Fatalf("a Pass renewed after its right to reissue moved has %d origins, want none", n)
+	}
+	if n := p.rowsContaining("pass_reissues", onlookersPayment); n != 0 {
+		t.Fatalf("the renewal's reissue code is kept after it lost the right: %d rows", n)
+	}
+	for _, pi := range []string{"pi_kept_onlooker", "pi_kept_renewed_after"} {
+		if status, out, code := p.reissueCode("mod-key", pi); status != http.StatusConflict || out.Error != passReissueNoOrigin || code != "" {
+			t.Fatalf("reissue with %s after the holder renewed: status %d, %+v", pi, status, out)
+		}
+	}
+	if status, out := onlooker.redeem(early); status != http.StatusForbidden || out.Error != passReissueSpent || out.Pass != passInvalid {
+		t.Fatalf("a reissue code made before the holder renewed, used after: status %d, %+v", status, out)
+	}
+	if status, out := p.activate(kept.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(renewedAfter.ExpiresAt) {
+		t.Fatalf("the holder lost their Pass: status %d, %+v", status, out)
+	}
+
+	// While the purchase is the origin, a refund that leaves one renewal with
+	// time to come makes it no second origin. With the purchase's own year
+	// run, and a renewal by somebody who saw the code running, the holder's
+	// later renewal refunded leaves the purchase the Pass's one origin.
+	guarded := p.buy("pi_guarded")
+	p.otherBrowser().renew(guarded.Pass, "pi_guarded_onlooker")
+	p.renew(guarded.Pass, "pi_guarded_holder")
+	guardedCode, _ := parsePassCode(guarded.Pass)
+	guardedHash := p.app.passTokenHash(guardedCode)
+	p.exec(`UPDATE passes SET expires_at = expires_at - make_interval(hours => 24 * 366) WHERE token_hash = $1`, guardedHash)
+	p.exec(`UPDATE pass_payments SET ends_at = ends_at - make_interval(hours => 24 * 366)
+		WHERE pass_id = (SELECT id FROM passes WHERE token_hash = $1)`, guardedHash)
+	p.refund("pi_guarded_holder")
+	if status, out, _ := p.reissueCode("mod-key", "pi_guarded_onlooker"); status != http.StatusConflict || out.Error != passReissueRenewal {
+		t.Fatalf("reissue with a renewal left alone with time to come beside the purchase: status %d, %+v", status, out)
+	}
+	if n := origins(guarded.Pass); n != 1 {
+		t.Fatalf("the purchase and a renewal left alone with time to come: %d origins, want the purchase alone", n)
+	}
+	if status, _, _ := p.reissueCode("mod-key", "pi_guarded"); status != http.StatusOK {
+		t.Fatalf("reissue with the purchase whose year has run: status %d", status)
 	}
 
 	// A renewal whose term has run does not stand in the way: with the
@@ -3063,7 +3167,8 @@ func TestPassLostRenewalAnswer(t *testing.T) {
 	if status != http.StatusOK || renewed.Status != "renewed" || !renewed.ExpiresAt.After(lost.ExpiresAt) {
 		t.Fatalf("a reissue code for a renewal: status %d, %+v", status, renewed)
 	}
-	if status, again := elsewhere.redeemWith(code, reissueNonce); status != http.StatusForbidden || refusalState(t, again) != passInvalid {
+	if status, again := elsewhere.redeemWith(code, reissueNonce); status != http.StatusForbidden || refusalState(t, again) != passInvalid ||
+		again.Error != passReissueSpent {
 		t.Fatalf("the reissue code asked again: status %d, %+v; want it refused as spent", status, again)
 	}
 	if status, out := p.activate(issued.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(renewed.ExpiresAt) {

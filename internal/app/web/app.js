@@ -2129,7 +2129,7 @@ const PASS_PAUSED = "The Pass is not on sale right now.";
 // The server's words for a reissue code it will not take again, recognised so
 // the page can say what that means for the reader: asked for afresh, or, when
 // an earlier try's answer was lost, already used for them.
-const PASS_REISSUE_SPENT = "this reissue code has been used, has run out or was cancelled by a refund";
+const PASS_REISSUE_SPENT = "this reissue code has been used, has run out or was cancelled";
 // Said when the browser will not keep a Pass: its storage for the site is
 // blocked or full, so the Pass cannot ride on the next post.
 const PASS_NOT_KEPT =
@@ -3212,7 +3212,7 @@ async function redeemPassReissue(typed) {
     // The server cannot tell a code mistyped into another well-formed one
     // from one used up, so the reader is asked to check it first.
     showNotice(
-      "This reissue code didn't work. Check it against the one you were sent and enter it again. If it's right, it has been used, has run out, or was cancelled by a refund: write to the support address on your Stripe receipt again if you still need one."
+      "This reissue code didn't work. Check it against the one you were sent and enter it again. If it's right, it has been used, has run out or was cancelled: write to the support address on your Stripe receipt again if you still need one."
     );
   } else if (failed.unreachable || failed.status >= 500) {
     showNotice(`${passErrorText(failed)} The code is still in the box.`);

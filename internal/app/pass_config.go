@@ -43,7 +43,8 @@ type PassConfig struct {
 	// Days is the term each order is sold with, stored on the order at
 	// checkout (pass_orders.days), so changing this changes what is sold from
 	// then on and nothing already paid for. A new Pass's term counts from when
-	// it is collected, and a renewal adds its term to the expiry it renews.
+	// it is collected, and a renewal adds its term to the Pass's expiry, or to
+	// now for a Pass that has run out.
 	Days int
 	// HourlyPosts is a Pass's hourly budget: how many posts in one hour,
 	// counted in UTC, it lets skip the captcha. Past that, posts with it

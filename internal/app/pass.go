@@ -231,8 +231,8 @@ func (a *App) passTokenHash(code string) []byte {
 // hard to guess as a random one: 256 is a multiple of 32, so masking a byte of
 // the HMAC to five bits picks every character with equal probability. A claim
 // token and a nonce are base64url and a reissue code is written in
-// passAlphabet, none of which has a colon, so the two halves cannot be
-// shifted into each other.
+// passAlphabet, none of which has a colon, so the two halves cannot be shifted
+// into each other.
 func (a *App) passClaimCode(claim, nonce string) string {
 	return a.passCollectedCode("pass-claim-code:" + claim + ":" + nonce)
 }
@@ -1006,7 +1006,7 @@ const (
 		"or, if that one was refunded, with the one renewal that then paid for all the time it had left"
 	passReissueNoOrigin = "this Pass can no longer be reissued: the payment that bought it was refunded or disputed, " +
 		"and no one payment left on it paid for all the time it had left"
-	passReissueSpent = "this reissue code has been used, has run out or was cancelled by a refund"
+	passReissueSpent = "this reissue code has been used, has run out or was cancelled"
 )
 
 type passReissueBody struct {
@@ -1029,9 +1029,10 @@ type passReissueBody struct {
 // somebody who renewed another person's Pass, and then asks for a reissue
 // with their own payment, would otherwise be handed that person's Pass. A
 // reissue hands over the whole Pass, so when the origin is refunded and the
-// Pass goes on, the right moves to another payment only if that one paid for
-// all the time the Pass has left (revokeTerm); otherwise the Pass can no
-// longer be reissued, since the server cannot tell one payer from another.
+// Pass goes on, the right moves to another payment only while that one pays
+// for all the time the Pass has left (revokeTerm, renewPass); otherwise the
+// Pass can no longer be reissued, since the server cannot tell one payer from
+// another.
 func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 	if !a.authorizeMod(w, r) {
 		return
@@ -1523,7 +1524,7 @@ func issuePass(ctx context.Context, tx pgx.Tx, payment, tokenHash []byte, days i
 		return 0, time.Time{}, err
 	}
 	_, err := tx.Exec(ctx, `
-		INSERT INTO pass_payments (payment_hash, pass_id, days, ends_at, origin) VALUES ($1, $2, $3, $4, true)`,
+		INSERT INTO pass_payments (payment_hash, pass_id, days, ends_at, origin) VALUES ($1, $2, $3, $4, 'bought')`,
 		payment, id, termDays(now, expires), expires)
 	return id, expires, err
 }
@@ -1546,9 +1547,19 @@ func renewPass(ctx context.Context, tx pgx.Tx, passID int64, payment []byte, day
 	if _, err := tx.Exec(ctx, `UPDATE passes SET expires_at = $2 WHERE id = $1`, passID, expires); err != nil {
 		return time.Time{}, false, err
 	}
+	if _, err := tx.Exec(ctx, `
+		INSERT INTO pass_payments (payment_hash, pass_id, days, ends_at) VALUES ($1, $2, $3, $4)`,
+		payment, passID, termDays(base, expires), expires); err != nil {
+		return time.Time{}, false, err
+	}
+	// A renewal that the right to reissue the Pass moved to when its purchase
+	// was refunded (revokeTerm) loses it now: it no longer pays for all the
+	// time the Pass has left. Its unused reissue codes go with the right.
 	_, err = tx.Exec(ctx, `
-		INSERT INTO pass_payments (payment_hash, pass_id, days, ends_at, origin) VALUES ($1, $2, $3, $4, false)`,
-		payment, passID, termDays(base, expires), expires)
+		WITH moved AS (
+		       UPDATE pass_payments SET origin = NULL WHERE pass_id = $1 AND origin = 'moved'
+		       RETURNING payment_hash)
+		DELETE FROM pass_reissues WHERE payment_hash IN (SELECT payment_hash FROM moved)`, passID)
 	return expires, true, err
 }
 
@@ -1558,7 +1569,7 @@ type reissueState int
 const (
 	reissueMissing  reissueState = iota // no Pass or paid order for the payment, or it was refunded
 	reissueRenewal                      // the payment renewed a Pass; only its origin reissues it
-	reissueNoOrigin                     // the payment is on a Pass that has no origin any more (revokeTerm)
+	reissueNoOrigin                     // the payment is on a Pass that has no origin any more (revokeTerm, renewPass)
 	reissueReady                        // a reissue code was made
 )
 
@@ -1580,7 +1591,8 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 		if !uncollected {
 			var origin, orphaned bool
 			err := tx.QueryRow(ctx, `
-				SELECT p.origin, NOT EXISTS (SELECT 1 FROM pass_payments o WHERE o.pass_id = p.pass_id AND o.origin)
+				SELECT p.origin IS NOT NULL,
+				       NOT EXISTS (SELECT 1 FROM pass_payments o WHERE o.pass_id = p.pass_id AND o.origin IS NOT NULL)
 				FROM pass_payments p WHERE p.payment_hash = $1`, paymentHash).Scan(&origin, &orphaned)
 			switch {
 			case errors.Is(err, pgx.ErrNoRows):
@@ -1656,7 +1668,7 @@ func (s *Store) redeemPassReissue(ctx context.Context, tokenHash []byte, c passC
 		}
 		err = tx.QueryRow(ctx, `
 			UPDATE passes SET token_hash = $2
-			WHERE id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1 AND origin)
+			WHERE id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1 AND origin IS NOT NULL)
 			RETURNING expires_at`, payment, c.TokenHash).Scan(&res.IssuedExpiresAt)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
@@ -1709,8 +1721,8 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 		}
 		var p revokedPayment
 		err = tx.QueryRow(ctx, `
-			DELETE FROM pass_payments WHERE payment_hash = $1 RETURNING pass_id, days, ends_at, origin`,
-			paymentHash).Scan(&p.passID, &p.days, &p.ends, &p.origin)
+			DELETE FROM pass_payments WHERE payment_hash = $1 RETURNING pass_id, days, ends_at`,
+			paymentHash).Scan(&p.passID, &p.days, &p.ends)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):
 		case err != nil:
@@ -1734,7 +1746,6 @@ type revokedPayment struct {
 	passID int64
 	days   int
 	ends   time.Time
-	origin bool
 }
 
 // revokeTerm takes what is left of a revoked payment's term off its Pass, in
@@ -1752,13 +1763,14 @@ type revokedPayment struct {
 // A Pass that goes on without its origin, the refunded payment having been
 // it, could no longer be reissued. Reissuing hands over the whole Pass, and
 // the server cannot tell one payer from another, so the right moves to a
-// payment left on it only when that payment paid for all the time the Pass
-// has left: it is the one payment whose term is still running or to come,
-// every other's having ended. Otherwise the Pass has no origin, and no
-// payment of it can be reissued (createPassReissue), so somebody who renewed
-// a code they saw once is never handed the time its holder paid for after
-// them. The rule is applied again whenever a payment of such a Pass is
-// revoked, which can leave one such payment.
+// payment left on it only while that payment pays for all the time the Pass
+// has left: from when it is the one payment whose term is still running or
+// to come, every other's having ended, until the Pass is renewed again
+// (renewPass). Otherwise the Pass has no origin, and no payment of it can be
+// reissued (createPassReissue), so somebody who renewed a code they saw once
+// is never handed time its holder paid for after them. The rule is applied
+// again whenever a payment of such a Pass is revoked, which can leave one
+// such payment; a term that simply runs out changes nothing.
 func revokeTerm(ctx context.Context, tx pgx.Tx, p revokedPayment, now time.Time) (revocation, error) {
 	// later is whether a term was paid after this one, and paid whether any
 	// payment left has time to come; the terms after this one stay after now
@@ -1795,9 +1807,9 @@ func revokeTerm(ctx context.Context, tx pgx.Tx, p revokedPayment, now time.Time)
 		}
 	}
 	if _, err := tx.Exec(ctx, `
-		UPDATE pass_payments SET origin = true
+		UPDATE pass_payments SET origin = 'moved'
 		WHERE pass_id = $1 AND ends_at > $2
-		  AND NOT EXISTS (SELECT 1 FROM pass_payments WHERE pass_id = $1 AND origin)
+		  AND NOT EXISTS (SELECT 1 FROM pass_payments WHERE pass_id = $1 AND origin IS NOT NULL)
 		  AND (SELECT count(*) FROM pass_payments WHERE pass_id = $1 AND ends_at > $2) = 1`,
 		p.passID, now); err != nil {
 		return revokedNothing, err

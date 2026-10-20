@@ -51,13 +51,15 @@ CREATE TABLE IF NOT EXISTS pass_payments (
     -- still running or to come decides whether another payment can become
     -- the origin.
     ends_at      TIMESTAMPTZ NOT NULL,
-    -- True for the payment a lost code can be reissued from, the one that
-    -- created the Pass, and false for a renewal. When the origin is refunded
-    -- or disputed and the Pass goes on, a payment left becomes its origin
-    -- only if its term is the only one still running or to come, so that it
-    -- paid for all the time the Pass has left. With two or more, no one
-    -- payment did, and the Pass has no origin and can no longer be reissued.
-    origin       BOOLEAN NOT NULL
+    -- Whether a lost code can be reissued from this payment: 'bought' for the
+    -- one that created the Pass, and NULL for a renewal. When the purchase is
+    -- refunded or disputed and the Pass goes on, a renewal left becomes its
+    -- origin, 'moved', only if its term is the only one still running or to
+    -- come, so that it paid for all the time the Pass has left, and stops
+    -- being one when the Pass is renewed again, since then it no longer has.
+    -- Otherwise no one payment did, and the Pass has no origin and can no
+    -- longer be reissued.
+    origin       TEXT CHECK (origin IN ('bought', 'moved'))
 );
 
 CREATE INDEX IF NOT EXISTS pass_payments_pass_idx ON pass_payments (pass_id);
@@ -107,7 +109,8 @@ CREATE TABLE IF NOT EXISTS pass_revocations (
 -- order's.
 CREATE TABLE IF NOT EXISTS pass_reissues (
     -- SHA-256 of the reissue code's random characters, which only the
-    -- owner's answer and the message to the buyer carry.
+    -- owner's answer, the message to the buyer and the claim that redeems it
+    -- carry.
     token_hash   BYTEA PRIMARY KEY,
     -- The payment it reissues: the one that made a Pass, or a paid order not
     -- collected yet. A newer reissue code for the same payment replaces this
