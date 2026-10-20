@@ -848,10 +848,10 @@ spent, so the next press can be told it was used and solve a fresh one.
 While a post or a code request waits for its puzzle and its answer, its form
 is held: its boxes and buttons are switched off, and look it, so what is sent
 is what the form shows. A reader who goes to another page before the answer is
-ready sends nothing, and what they wrote goes with the page they left, never
-into a form on the page they went to, even after a double click; the answer
-is put back for the next press, and a request that had already gone is not
-reported on that page either. Update, pressed meanwhile, redraws the thread
+ready sends nothing, and what they wrote is dropped with the page they left,
+never put into a form on the page they went to, even after a double click; the
+answer is put back for the next press, and a request that had already gone is
+not reported on that page either. Update, pressed meanwhile, redraws the thread
 around the same form, still held, and the post goes ahead and is answered there:
 the form is cleared and the thread shows the post when it went, and the form
 is switched back on with the reason when it was refused. If the thread will
