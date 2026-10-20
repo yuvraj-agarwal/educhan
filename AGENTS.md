@@ -530,29 +530,32 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   decoder read them so too (`gifReader`): one that ends after its last block without the
   trailer, which gets one, and one with a frame after the first reaching past the canvas,
   for which the decoder is told the screen takes in every frame, and of which `playGIF`
-  plays only the part on the canvas, so that a frame wholly off it changes nothing and
-  folds away, as any frame that changes nothing does (`TestGIFIsStoredAsBrowsersShowIt`).
-  A first frame past the canvas is refused: Chromium widens the canvas, Firefox moves the
-  frame to the corner. `TestGIFFramePixelsReadsWhatTheDecoderReads` and
-  `FuzzGIFFramePixels` hold the walk to the decoder: whatever `gif.DecodeAll` decodes from
-  what `gifReader` makes of a file, the walk must have read exactly its frames, their
-  area, the largest of them (charged again for an interlaced frame's reordering, as the
-  canvas was) and, short of an ANIMEXTS1.0 extension, its loop count; and whatever it
-  decodes of a file the walk refused is a disagreement, but for a file refused at an
-  extension Chromium ends elsewhere. Change the two together. Where the decoder reads a
-  frame's fields otherwise than Chromium, the frames are played from the walk's record of
-  each (`gifFrameHead`, from `walkGIF`, its colours through `gifFrameHead.keys`) and take
-  only their pixels from the decoder: a frame with no graphic control extension has
-  disposal 0, where `image/gif` carries over the last one's; its transparent index is the
-  last extension's alone, where `image/gif` keeps one an earlier extension before the same
-  frame named; and an index past the end of its colour table is opaque black but for the
-  transparent one, where `image/gif` makes all of them up to a transparent index past the
-  table transparent. `image/gif` takes such an index only up to a transparent index that
-  is itself past the table: a frame whose pixels index past their table otherwise is
-  refused by the decoder, in `Process` and so after flood control (`image could not be
-  decoded`), though Chromium shows those pixels black. `TestGIFIsReadAsChromiumReadsIt`
-  holds files to the pictures Chromium was seen to show of them, and `chromiumReads` in
-  the tests is that reading.
+  plays only the part on the canvas. A frame wholly off it draws nothing, so what shows
+  for its delay is what the frame before it left once disposed of: after a kept frame
+  (disposal 0 or 1), that frame's picture, into whose delay it folds, as any frame that
+  changes nothing does; after one restored to the background (2), the canvas with that
+  frame's area cleared; and after one restored to the previous picture (3), the canvas as
+  it was before that frame (`TestGIFIsStoredAsBrowsersShowIt`). A first frame past the
+  canvas is refused: Chromium widens the canvas, Firefox moves the frame to the corner.
+  `TestGIFFramePixelsReadsWhatTheDecoderReads` and `FuzzGIFFramePixels` hold the walk to
+  the decoder: whatever `gif.DecodeAll` decodes from what `gifReader` makes of a file, the
+  walk must have read exactly its frames, their area, the largest of them (charged again
+  for an interlaced frame's reordering, as the canvas was) and, short of an ANIMEXTS1.0
+  extension, its loop count; and whatever it decodes of a file the walk refused is a
+  disagreement, but for a file refused at an extension Chromium ends elsewhere. Change the
+  two together. Where the decoder reads a frame's fields otherwise than Chromium, the
+  frames are played from the walk's record of each (`gifFrameHead`, from `walkGIF`, its
+  colours through `gifFrameHead.keys`) and take only their pixels from the decoder: a
+  frame with no graphic control extension has disposal 0, where `image/gif` carries over
+  the last one's; its transparent index is the last extension's alone, where `image/gif`
+  keeps one an earlier extension before the same frame named; and an index past the end of
+  its colour table is opaque black but for the transparent one, where `image/gif` makes
+  all of them up to a transparent index past the table transparent. `image/gif` takes such
+  an index only up to a transparent index that is itself past the table: a frame whose
+  pixels index past their table otherwise is refused by the decoder, in `Process` and so
+  after flood control (`image could not be decoded`), though Chromium shows those pixels
+  black. `TestGIFIsReadAsChromiumReadsIt` holds files to the pictures Chromium was seen to
+  show of them, and `chromiumReads` in the tests is that reading.
 - **What is stored is never the upload.** `media.Process` rewrites every image without its
   metadata before `Save` hands it to a backend, so both backends store the same file
   (`internal/media/sanitize.go`). Files stored before this release are the exception: they

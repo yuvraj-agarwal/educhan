@@ -1257,12 +1257,18 @@ func withFrameAt(t *testing.T, data []byte, k, left, top int) []byte {
 // A file that ends after its last frame without the trailer plays in a
 // browser, and is stored as if it had one. A frame after the first that
 // reaches past the canvas is drawn by a browser only where it is on the
-// canvas, and is stored as the same GIF with that frame cut to it would be;
-// one wholly off the canvas shows nothing for its delay, so the frame before
-// it shows on for that time, and it is stored as the GIF without it would be
-// with the frame before it shown for both delays. A first frame past the
-// canvas is refused before any cooldown: Chromium widens the canvas to show
-// it, Firefox moves it to the corner, and there is no one picture to store.
+// canvas, and is stored as the same GIF with that frame cut to it would be.
+// One wholly off the canvas draws nothing, so what shows for its delay is
+// what the frame before it left once disposed of: after a frame that is kept
+// (disposal 0 or 1), that frame's picture, which shows on for both delays,
+// as the GIF without the frame off the canvas would show it; after one
+// restored to the background (2), the canvas with that frame's area cleared;
+// after one restored to the previous picture (3), the canvas as it was before
+// that frame. Either of the last two is stored as the GIF whose frame off the
+// canvas is replaced by one drawing nothing on it would be. A first frame
+// past the canvas is refused before any cooldown: Chromium widens the canvas
+// to show it, Firefox moves it to the corner, and there is no one picture to
+// store.
 func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 	src := animatedGIF(t, 0) // 60×40; frame 1 is 20×20 at (10,5)
 	encode := func(t *testing.T, g *gif.GIF) []byte {
@@ -1328,6 +1334,17 @@ func TestGIFIsStoredAsBrowsersShowIt(t *testing.T) {
 
 	t.Run("a later frame wholly off the canvas", func(t *testing.T) {
 		requireStoredAs(t, withFrameAt(t, whole, 1, 61, 41), without(1, nil))
+	})
+
+	// Frame 1 is restored to the background and frame 2 to the previous
+	// picture. A frame that draws nothing on the canvas is a pixel of the
+	// one transparent colour of its own palette.
+	nothing := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.RGBA{}})
+	t.Run("a frame wholly off the canvas after one restored to the background", func(t *testing.T) {
+		requireStoredAs(t, withFrameAt(t, whole, 2, 61, 41), without(2, nothing))
+	})
+	t.Run("a frame wholly off the canvas after one restored to the previous picture", func(t *testing.T) {
+		requireStoredAs(t, withFrameAt(t, whole, 3, 61, 41), without(3, nothing))
 	})
 
 	t.Run("a first frame past the canvas", func(t *testing.T) {
