@@ -806,16 +806,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
     the database's default can hide the `55P03` below), and a handler that collects
     notices. It locks `verification_credentials` `IN EXCLUSIVE MODE` in a
-    read-committed transaction (writers wait, `CredentialLabel` reads on), deletes
-    every row and inserts the returned copy back `ORDER BY random()` in one statement,
-    and notes the transaction's id. `restampScans` then reads each
+    read-committed transaction (`CredentialLabel` reads on; everything else on the
+    table waits, and holds the lock up: writers and row lockers, `VACUUM`, `ANALYZE`,
+    index builds, schema changes, another sweep), deletes every row and inserts the
+    returned copy back `ORDER BY random()` in one statement, and notes the
+    transaction's id. `lock_timeout` bounds the wait, not the hold: confirmations queue
+    for the rewrite's statement too, which grows with the table (about three seconds
+    for 220,000 credentials on a development machine). `restampScans` then reads each
     verification table whole and through each of its indexes, which it finds in the
     catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
     show for them is the sweep's rather than the last confirmation's. Last,
     `VACUUM (FULL, SKIP_LOCKED)` on each table, outside the transaction, takes the dead
     versions — and deleted pending rows, with their email hash and an expiry to the
-    second — off disk. `SKIP_LOCKED` passes over a table another session holds, with a
-    `55P03` warning, rather than queueing every badged post behind the vacuum.
+    microsecond — off disk. `SKIP_LOCKED` passes over a table another session holds,
+    with a `55P03` warning, rather than queueing every badged post behind the vacuum.
     `VACUUM FULL` keeps any deleted row an older snapshot could read: any statement or
     transaction in the database that began before the rewrite committed and is still
     running, the server's own requests included, or a transaction anywhere on the

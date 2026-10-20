@@ -1180,15 +1180,23 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 
 // verificationLockTimeout bounds every wait RewriteCredentials makes for a
 // lock. The one it can wait on in practice is the rewrite's lock on the
-// credentials table, which a transaction that has written to the table, or
-// locked rows in it, holds up. While the rewrite waits, confirmations queue
-// behind it, each holding one of its instance's few database connections,
-// and once they hold them all every request on that instance waits too; so a
-// transaction left open on the table — a psql session that wrote to it, say —
-// fails the sweep within seconds rather than stalling the site until it ends.
-// Reads do not queue behind the rewrite, and nothing queues behind the
-// vacuum, which takes a table only when nobody else holds it
-// (vacuumVerificationTables).
+// credentials table, which lets plain reads through and waits for everything
+// else on the table: a transaction that has written to it or locked rows in
+// it, a VACUUM, ANALYZE or index build on it, a change to its schema, or
+// another sweep's rewrite or vacuum. While the rewrite waits, confirmations
+// queue behind it, each holding one of its instance's few database
+// connections, and once they hold them all every request on that instance
+// waits too; so a transaction left open on the table — a psql session that
+// wrote to it, say — fails the sweep within seconds rather than stalling the
+// site until it ends.
+//
+// It bounds only the wait. Once the lock is granted, confirmations queue for
+// as long as the rewrite's statement runs as well, and that grows with the
+// table: about three seconds for 220,000 credentials, as measured on a
+// development machine. So a confirmation that arrives as the rewrite starts
+// can wait five seconds plus the rewrite. Reads do not queue behind the
+// rewrite, and nothing queues behind the vacuum, which takes a table only
+// when nobody else holds it (vacuumVerificationTables).
 const verificationLockTimeout = "5s"
 
 // How long RewriteCredentials keeps trying VACUUM FULL on a verification
@@ -1236,10 +1244,10 @@ var verificationTables = [...]string{"verification_credentials", "verification_p
 //
 // The old versions are still in the table's file with their xmin, as are the
 // pending rows confirmations deleted, each with an email hash and an expiry to
-// the second, and vacuumVerificationTables writes both tables to new files
-// without them. The times PostgreSQL's statistics keep of the last scan of
-// each table and index would date the last confirmation before the sweep, so
-// restampScans makes them the sweep's.
+// the microsecond, and vacuumVerificationTables writes both tables to new
+// files without them. The times PostgreSQL's statistics keep of the last scan
+// of each table and index would date the last confirmation before the sweep,
+// so restampScans makes them the sweep's.
 //
 // None of this reaches the posts. Requesting a code and confirming one are
 // writes, and each takes a transaction id from the counter posts take theirs

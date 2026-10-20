@@ -274,7 +274,7 @@ written. And a row that is deleted or replaced stays in the table's file, `xmin`
 and all, until `VACUUM FULL` writes the table out anew: a plain vacuum, which
 is what autovacuum runs, marks the space free for reuse but does not erase
 what was in it. That covers every pending row a confirmation deleted, with its
-email hash and an expiry to the second, and every credential a second
+email hash and an expiry to the microsecond, and every credential a second
 verification replaced.
 
 The same ids date a verification from the posts' side, and that no rewrite of
@@ -1220,15 +1220,20 @@ role must own the tables, or the database: `VACUUM FULL` skips any other table
 with only a warning, so the sweep checks that both tables moved to new files and
 fails at once if not (`TestSweepFailsWhenVacuumLeavesATableInItsFile`). Run it
 as the role that ran the migrations, which is the server's. The rewrite waits at
-most five seconds for its lock, which only a transaction that has written to the
-credentials table, or locked rows in it, holds up. While it waits, confirmations
+most five seconds for its lock. That lock lets plain reads through and waits for
+everything else on the credentials table: a transaction that has written to it
+or locked rows in it, a `VACUUM`, `ANALYZE` or index build on it, a change to
+its schema, or another sweep's rewrite or vacuum. While it waits, confirmations
 queue behind it, each holding one of its server instance's few database
 connections, and once they hold them all every request on that instance waits
-too; five seconds bounds that. The vacuum never waits for a lock. It passes over
-a table another session holds, which VACUUM reports only as a warning; the
-sweep's connection asks for warnings itself, so a `client_min_messages` in
-`DATABASE_URL` or a role's default cannot make a moment's reader look like a
-role that may not vacuum the table
+too. Five seconds bounds the wait, not the queue: once the lock is granted,
+confirmations wait out the rewrite as well, which grows with the table — about
+three seconds for 220,000 credentials, measured on a development machine — so a
+confirmation can wait five seconds plus the rewrite. The vacuum never waits for
+a lock. It passes over a table another session holds, which VACUUM reports only
+as a warning; the sweep's connection asks for warnings itself, so a
+`client_min_messages` in `DATABASE_URL` or a role's default cannot make a
+moment's reader look like a role that may not vacuum the table
 (`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). It runs again
 until each table's new file holds none of the old rows, which lasts as long as
 the oldest transaction that began before the rewrite. It keeps at that for a
