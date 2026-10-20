@@ -1034,20 +1034,25 @@ under [Image attachments](#image-attachments)), which only playing it can find, 
 two are the cost the upload cooldown is there for; and the loser of two replies racing for
 a thread's last image slot (see the HTTP API).
 
-The cooldowns are keyed on client addresses, and they are the only place the
-server holds one. A sweep runs once a minute and drops every entry whose
-cooldown has run out, so **an address is held in memory no longer than the
-longest cooldown that applies to it plus one minute**, counted from its last
-post (or code request, for verification's cooldown), whether or not anyone
-else posts in the meantime, **as long as the process has CPU between
-requests**. A host that gives it CPU only while it answers a request, which is
-Cloud Run's default (request-based billing), holds the sweep's timer back while
-an instance is idle. The first request to arrive after a sweep fell due runs
-it before it is handled, but until one arrives, or the instance is shut down,
-an idle instance's memory still holds the addresses it last saw. On Cloud Run
-the one-minute bound needs CPU allocated for the instance's whole life, which
-is also how it is then billed: `run.googleapis.com/cpu-throttling: "false"` on
-the revision, or `--no-cpu-throttling` on `gcloud run deploy`.
+The cooldowns are keyed on client addresses, and so are the upload shares (see **Memory**
+under [Image attachments](#image-attachments)), by the address or, for IPv6, by its /64
+network; those are the only places the server holds one. A client's share is held only
+while its image posts hold room for their bodies, from when their headers arrive until
+they are answered, and it is dropped as soon as the last of them is, with no sweep to wait
+for: the post's deadlines bound that to about a minute (some ten seconds' wait for room,
+30 seconds for the body and 25 for the image) besides the time the database takes to store
+the post. A sweep runs once a minute and drops every cooldown that has run out, so **an
+address is held in memory no longer than the longest cooldown that applies to it plus one
+minute**, counted from its last post (or code request, for verification's cooldown),
+whether or not anyone else posts in the meantime, **as long as the process has CPU between
+requests**. A host that gives it CPU only while it answers a request, which is Cloud Run's
+default (request-based billing), holds the sweep's timer back while an instance is idle.
+The first request to arrive after a sweep fell due runs it before it is handled, but until
+one arrives, or the instance is shut down, an idle instance's memory still holds the
+addresses it last saw. On Cloud Run the one-minute bound needs CPU allocated for the
+instance's whole life, which is also how it is then billed:
+`run.googleapis.com/cpu-throttling: "false"` on the revision, or `--no-cpu-throttling` on
+`gcloud run deploy`.
 
 The address itself is never written to the database or the logs. A post from a
 client that sends no poster key does store a poster ID derived from it (see

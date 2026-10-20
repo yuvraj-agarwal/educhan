@@ -1272,7 +1272,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `TestFloodControlForgetsAddressesOnAQuietServer` and
   `TestFloodControlForgetsAddressesBeforeTheNextRequest`, which shorten the period through
   `Config.cooldownSweepEvery`). The record-time sweep past `cooldownSweepThreshold` only
-  bounds a burst between two ticks.
+  bounds a burst between two ticks. The upload shares (`uploadShares`) are keyed on client
+  addresses too, by `shareKey` (the address, or an IPv6 address's /64), and need no sweep:
+  a client's entry is taken by `reserveUpload` once a multipart post's headers have
+  arrived, given back by `submission.release` when the post is answered, and deleted once
+  it holds nothing (`TestUploadSharesForgetAClientOnceItHoldsNothing`), so it is held for
+  about a minute at most, the wait for room, `uploadReadTimeout` and `processContext`
+  together, besides the time the database takes to store the post. The README's Flood
+  control section says so; a share kept past its post, or keyed on anything that outlives
+  it, would hold an address beyond that.
 - `EDUCHAN_TRUST_PROXY` is a hop count, not a boolean (`true` still means 1). `clientIP`
   in `middleware.go` reads the Nth `X-Forwarded-For` entry **from the right**, because each
   proxy appends and everything to the left is client-supplied; a chain shorter than the

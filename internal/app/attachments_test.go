@@ -40,3 +40,32 @@ func TestShareKey(t *testing.T) {
 		}
 	}
 }
+
+// The upload shares are keyed on client addresses (shareKey), so they hold
+// one only while that client's image posts hold room: an entry goes the
+// moment the last of them gives its share back, with no sweep to wait for,
+// and a share given back twice gives back nothing more.
+func TestUploadSharesForgetAClientOnceItHoldsNothing(t *testing.T) {
+	var s uploadShares
+	const client = "203.0.113.7"
+	first, ok := s.take(client, 3<<20)
+	if !ok {
+		t.Fatal("the first share was refused")
+	}
+	second, ok := s.take(client, 2<<20)
+	if !ok {
+		t.Fatal("the second share was refused")
+	}
+	if _, ok := s.take(client, clientUploadShare); ok {
+		t.Fatal("a share past clientUploadShare was taken")
+	}
+	first()
+	first()
+	if got := s.of(client); got != 2<<20 {
+		t.Errorf("after one of two shares was given back (twice), the client holds %d bytes, want %d", got, 2<<20)
+	}
+	second()
+	if n := len(s.held); n != 0 {
+		t.Errorf("the shares hold %d clients once every share is given back, want none: %v", n, s.held)
+	}
+}
