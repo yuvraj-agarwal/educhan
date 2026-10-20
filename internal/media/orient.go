@@ -37,6 +37,12 @@ const (
 // picture turned the way it was stored; whether the file is an image at all is
 // for the decoder to say, so this never fails.
 //
+// It walks the segments before the first scan as image/jpeg's decoder reads
+// them (jpegNextSegment), which is also how libjpeg, and so Chromium, reads
+// them: bytes between segments that are not a marker, an 0xFF00 pair among
+// them, are skipped rather than ending the walk, so an Exif segment after them
+// turns the stored picture as it turned the one the poster's browser showed.
+//
 // The upload is hostile until proven otherwise, so the reader works on the
 // bytes in place: every offset is checked against the segment before it is
 // used, nothing is allocated, and the only offset followed is the one to IFD0,
@@ -46,36 +52,18 @@ func jpegOrientation(data []byte) int {
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return 1
 	}
-	i := 2
-	for i+4 <= len(data) {
-		if data[i] != 0xFF {
+	for i := 2; ; {
+		marker, segment, next, ok := jpegNextSegment(data, i)
+		if !ok || marker == 0xDA {
+			// The end of what the decoder reads, or the start of the first
+			// scan: the metadata segments are behind us.
 			return 1
 		}
-		marker := data[i+1]
-		switch {
-		case marker == 0xFF:
-			// A fill byte before the marker proper.
-			i++
-			continue
-		case marker == 0x01 || (marker >= 0xD0 && marker <= 0xD8):
-			// TEM, RSTn and SOI stand alone, with no length.
-			i += 2
-			continue
-		case marker == 0xDA || marker == 0xD9:
-			// Start of scan or end of image: the metadata segments are behind us.
-			return 1
-		}
-		length := int(data[i+2])<<8 | int(data[i+3])
-		if length < 2 || length > len(data)-i-2 {
-			return 1
-		}
-		segment := data[i+4 : i+2+length]
 		if marker == 0xE1 && len(segment) >= 6 && string(segment[:5]) == "Exif\x00" {
 			return tiffOrientation(segment[6:])
 		}
-		i += 2 + length
+		i = next
 	}
-	return 1
 }
 
 // pngOrientation reads the Orientation tag from a PNG's eXIf chunk, under the

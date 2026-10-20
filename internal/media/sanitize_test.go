@@ -163,7 +163,10 @@ func TestJPEGIsStoredWithoutMetadata(t *testing.T) {
 // Every orientation, read from EXIF in either byte order, turns the stored
 // pixels upright. The table is the TIFF definition, not this package's code:
 // where the stored picture's first pixel, the end of its first row, and the
-// start of its last row appear once it is viewed correctly.
+// start of its last row appear once it is viewed correctly. The Exif segment
+// is read wherever the decoder and a browser find it: straight after the SOI
+// marker, and after bytes between segments that both skip — an extraneous
+// byte, or an 0xFF00 pair — where a browser turns the picture as well.
 func TestEveryOrientationIsApplied(t *testing.T) {
 	const w, h = 64, 32
 	visual := map[int][3]string{
@@ -184,34 +187,50 @@ func TestEveryOrientationIsApplied(t *testing.T) {
 		}
 	}
 	pictures := map[string]image.Image{"colour": colour, "grayscale": gray}
+	// What comes before the Exif segment. A comment segment first keeps the
+	// file starting as a JPEG does (DetectFormat), so the skipped bytes sit
+	// between two segments.
+	comment := jpegSegment(0xFE, []byte("before"))
+	placements := []struct {
+		name   string
+		before [][]byte
+	}{
+		{"after SOI", nil},
+		{"after an extraneous byte", [][]byte{comment, {0x00}}},
+		{"after an 0xFF00 pair", [][]byte{comment, {0xFF, 0x00}}},
+	}
 
-	for name, stored := range pictures {
-		for o := 1; o <= 8; o++ {
-			order := tiffOrder(binary.LittleEndian)
-			if o%2 == 0 {
-				order = binary.BigEndian
-			}
-			upload := withSegments(encodeJPEGImage(t, stored), exifSegment(orientationTIFF(order, uint16(o))))
-			if got := jpegOrientation(upload); got != o {
-				t.Fatalf("%s: jpegOrientation = %d, want %d", name, got, o)
-			}
-			got := process(t, upload)
-			wantW, wantH := w, h
-			if o >= 5 {
-				wantW, wantH = h, w
-			}
-			if got.Width != wantW || got.Height != wantH {
-				t.Errorf("%s orientation %d: dimensions = %dx%d, want %dx%d", name, o, got.Width, got.Height, wantW, wantH)
-			}
-			out := decodeStored(t, got.Data)
-			if b := out.Bounds(); b.Dx() != wantW || b.Dy() != wantH {
-				t.Fatalf("%s orientation %d: stored file is %dx%d, want %dx%d", name, o, b.Dx(), b.Dy(), wantW, wantH)
-			}
-			for i, want := range []color.Color{
-				stored.At(0, 0), stored.At(w-1, 0), stored.At(0, h-1),
-			} {
-				if c := cornerColour(out, visual[o][i]); !near(c, want) {
-					t.Errorf("%s orientation %d: %s corner = %v, want %v", name, o, visual[o][i], c, want)
+	for _, place := range placements {
+		for name, stored := range pictures {
+			name := name + " " + place.name
+			for o := 1; o <= 8; o++ {
+				order := tiffOrder(binary.LittleEndian)
+				if o%2 == 0 {
+					order = binary.BigEndian
+				}
+				segments := append(append([][]byte(nil), place.before...), exifSegment(orientationTIFF(order, uint16(o))))
+				upload := withSegments(encodeJPEGImage(t, stored), segments...)
+				if got := jpegOrientation(upload); got != o {
+					t.Fatalf("%s: jpegOrientation = %d, want %d", name, got, o)
+				}
+				got := process(t, upload)
+				wantW, wantH := w, h
+				if o >= 5 {
+					wantW, wantH = h, w
+				}
+				if got.Width != wantW || got.Height != wantH {
+					t.Errorf("%s orientation %d: dimensions = %dx%d, want %dx%d", name, o, got.Width, got.Height, wantW, wantH)
+				}
+				out := decodeStored(t, got.Data)
+				if b := out.Bounds(); b.Dx() != wantW || b.Dy() != wantH {
+					t.Fatalf("%s orientation %d: stored file is %dx%d, want %dx%d", name, o, b.Dx(), b.Dy(), wantW, wantH)
+				}
+				for i, want := range []color.Color{
+					stored.At(0, 0), stored.At(w-1, 0), stored.At(0, h-1),
+				} {
+					if c := cornerColour(out, visual[o][i]); !near(c, want) {
+						t.Errorf("%s orientation %d: %s corner = %v, want %v", name, o, visual[o][i], c, want)
+					}
 				}
 			}
 		}
@@ -403,6 +422,10 @@ func FuzzJPEGOrientation(f *testing.F) {
 	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, exifSegment(gpsTIFF(binary.BigEndian, 6))))
 	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, exifSegment(orientationTIFF(binary.LittleEndian, 8))))
 	f.Add([]byte{0xFF, 0xD8, 0xFF, 0xE1, 0x00, 0x08, 'E', 'x', 'i', 'f', 0, 0})
+	// Exif after bytes the decoder skips between segments.
+	comment := jpegSegment(0xFE, []byte("before"))
+	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, comment, []byte{0x00}, exifSegment(orientationTIFF(binary.BigEndian, 6))))
+	f.Add(withSegments([]byte{0xFF, 0xD8, 0xFF, 0xD9}, comment, []byte{0xFF, 0x00}, exifSegment(orientationTIFF(binary.LittleEndian, 5))))
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if o := jpegOrientation(data); o < 1 || o > 8 {
 			t.Fatalf("jpegOrientation = %d, outside 1–8", o)
