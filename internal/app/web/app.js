@@ -1484,18 +1484,41 @@ function dropBadgeOption(form) {
 
 // The posting forms whose ticked badge went from under them: their option to
 // post with it taken out because another tab forgot, refused or replaced it
-// (followCredentialStorage), whether the form was idle or its badged post was
-// on its way, or drawn again by a redraw that offers another badge or none
-// (restoreDraft). Said nothing, the form's next press would post without the
-// badge, under the ID the reader's other posts in the thread without one
-// share, which is what a badged post's own ID is there to keep apart. So that
-// press is refused, once, saying so (submit), and the one after it posts. Each
-// is kept with the badge that went, by its token, and the poster key storage
-// held then, for the notice to name that ID only while the key is the same
-// (badgeWithdrawnNotice). It lives with the form, and a draft carries it
-// across a re-render (formDraft, restoreDraft). Forget this browser drops
-// it: the key goes too, so the next post has an ID of its own.
+// (followCredentialStorage), or this tab replaced it, refused it on a post from
+// another page or heard it was switched off or had run out, whether the form
+// was idle or its badged post was on its way, or by a press that found the page
+// holding a badge other than the one the box was drawn for (badgeOffered), or
+// drawn again by a redraw that offers another badge or none (restoreDraft).
+// Said nothing, the form's next press would post without the badge, under the
+// ID the reader's other posts in the thread without one share, which is what a
+// badged post's own ID is there to keep apart. So that press is refused, once,
+// saying so (submit), and the one after it posts. Each is kept with the badge
+// that went, by its token, and the poster key storage held then, for the notice
+// to name that ID only while the key is the same (badgeWithdrawnNotice). It
+// lives with the form, and a draft carries it across a re-render (formDraft,
+// restoreDraft). Forget this browser drops it: the key goes too, so the next
+// post has an ID of its own.
 const badgeWithdrawn = new WeakMap();
+
+// badgeOffered is the badge each posting form's box was drawn for, by its
+// token: the one the page held when formHTML drew the form. A press sends the
+// credential only while the page still holds that badge, and treats any other
+// as a badge taken out from under the form (badgeWithdrawn): one stored since,
+// in this tab or another, is not the one the box names, though the box still
+// says "post with" it.
+const badgeOffered = new WeakMap();
+
+// noteBadgeOffered notes the badge each posting form on screen with a badge
+// box was drawn for. The views call it as they put the forms on screen, in
+// the same task as formHTML drew them, so that badge is the one the page holds.
+function noteBadgeOffered() {
+  const held = state.verification.badge;
+  for (const form of el.main.querySelectorAll("form[data-kind]")) {
+    if (held && field(form, "badge")) {
+      badgeOffered.set(form, held.token);
+    }
+  }
+}
 
 // withdrawBadgeOption is dropBadgeOption for a badge that has gone from under
 // the form, offered, the one the page held and the box was drawn for, noting
@@ -1804,6 +1827,7 @@ async function renderIndex(route) {
     ${formHTML({ kind: "thread", slug: board.slug, open: index.threads.length === 0 })}
     ${threads || '<p class="empty">No threads yet — start the first one.</p>'}
     ${pagerHTML(board.slug, index.page, index.pages)}`;
+  noteBadgeOffered();
   announce(`${boardLabel(board.slug)}${index.pages > 1 ? ` page ${index.page}` : ""}`);
 }
 
@@ -1887,6 +1911,7 @@ async function renderThread(route) {
     ${archiveNote}
     <section class="thread detail">${posts}</section>
     ${formHTML({ kind: "reply", slug: board.slug, thread: detail, open: true })}`;
+  noteBadgeOffered();
   announce(`${detail.subject || `Thread No. ${detail.no}`} — ${boardLabel(board.slug)}`);
 }
 
@@ -2194,7 +2219,9 @@ function followCredentialStorage(event) {
 window.addEventListener("storage", followCredentialStorage);
 
 // What /verify says when the code step it showed is put away after another tab
-// verified an address. It says the two things that are so whenever it is
+// verified an address, and what the step's form says of a code refused after
+// that while another confirmation of the step is on its way
+// (submitVerification). It says the two things that are so whenever it is
 // shown, and not that the one caused the other: a confirmation from here that
 // reached the server first and lost its answer spent the code itself.
 const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, and the code asked for here no longer works.";
@@ -2213,9 +2240,11 @@ const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, and the co
 // A success stores the badge it earned and draws the panel for it wherever
 // /verify shows a code step or the panel; a refusal of any kind comes back
 // here, and the step goes as above once no other confirmation of it is on its
-// way. A code request from this tab still on its way is not a code step yet,
-// and draws its own when answered: the cookie that answer sets holds the
-// browser's verification from then on, and its code is the one asked for.
+// way; while one is, the refused form, still on screen, says why its code was
+// refused (CODE_SPENT_ELSEWHERE). A code request from this tab still on its way
+// is not a code step yet, and draws its own when answered: the cookie that
+// answer sets holds the browser's verification from then on, and its code is
+// the one asked for.
 function codeSpentElsewhere() {
   if (verifyStep.step !== "code") {
     return;
@@ -2304,7 +2333,18 @@ async function loadVerification() {
     // request is still offered.
     enabled = state.verification.enabled;
   }
+  const offered = state.verification.badge;
   state.verification = { enabled, badge: enabled ? readBadge() : null };
+  // A posting form still on screen, the page before /verify while it is
+  // drawn, offers the badge it was drawn for: switched off on the server, or
+  // run out, that badge goes from it as for one gone in another tab
+  // (followCredentialStorage).
+  const held = state.verification.badge;
+  if (offered && !(held && held.token === offered.token)) {
+    for (const form of el.main.querySelectorAll("form[data-kind]")) {
+      withdrawBadgeOption(form, offered, false);
+    }
+  }
   if (el.verifyFooter) {
     el.verifyFooter.hidden = !enabled;
   }
@@ -3398,9 +3438,10 @@ function captureDraft() {
 
 // formDraft reads what a posting form holds, noting browserForgets as it was,
 // so that restoreDraft can tell a Name read before a forget. A ticked badge is
-// read as the badge it was ticked for, the one the page holds, and a form
-// whose ticked badge went from under it (badgeWithdrawn) as ticked for the
-// badge that went, with the key it was noted with.
+// read as the badge it was ticked for, the one the box was drawn for
+// (badgeOffered), and a form whose ticked badge went from under it
+// (badgeWithdrawn) as ticked for the badge that went, with the key it was
+// noted with.
 function formDraft(form) {
   const image = field(form, "image");
   const details = form.closest("details");
@@ -3411,7 +3452,7 @@ function formDraft(form) {
   const sage = field(form, "sage");
   const badge = field(form, "badge");
   const spoiler = field(form, "spoiler");
-  const ticked = badgeWithdrawn.get(form) || (badge && badge.checked ? { token: state.verification.badge?.token } : null);
+  const ticked = badgeWithdrawn.get(form) || (badge && badge.checked ? { token: badgeOffered.get(form) } : null);
   return {
     forgets: browserForgets,
     open: details ? details.open : true,
@@ -4020,12 +4061,14 @@ function posterKey() {
 // or dropped on it (not one a re-render puts back); unticking the badge on a
 // form whose tick stopped a puzzle, or that already has something written or
 // attached, and the page taking a ticked badge out of a form with something
-// written or attached, the badge having gone from the browser in another tab,
-// by anything but Forget this browser, or been refused as expired or revoked; a
-// refusal that spent the answer, while the form is on screen; and a press with
-// no good answer held and none being solved. By the time a post is written its
-// puzzle is usually solved. The answer is kept in memory only, never in storage
-// or a draft, and is good for one request.
+// written or attached, the badge having gone from the browser or given way to
+// another, in another tab or in this one, by anything but Forget this browser,
+// or been refused as expired or revoked, and the press then refused once to say
+// so, of a form with something written or attached; a refusal that spent the
+// answer, while the form is on screen; and a press with no good answer held and
+// none being solved. By the time a post is written its puzzle is usually
+// solved. The answer is kept in memory only, never in storage or a draft, and
+// is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on any response to a request whose
 // answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
@@ -4552,24 +4595,39 @@ el.main.addEventListener("submit", async (event) => {
     return;
   }
 
+  // A box ticked for a badge the page no longer holds is a badge taken out
+  // from under the form, now: the credential goes only as the badge the box
+  // was drawn for (badgeOffered), so one stored since, verified in this tab or
+  // another, never goes out under a box that named another, and none goes once
+  // the page holds none.
+  const badgeBox = field(form, "badge");
+  const offered = state.verification.badge;
+  if (badgeBox && badgeBox.checked && !(offered && badgeOffered.get(form) === offered.token)) {
+    withdrawBadgeOption(form, { token: badgeOffered.get(form) }, false);
+  }
+
   // A form whose ticked badge was taken out from under it says so before its
   // post goes without one, once; the press after it posts (badgeWithdrawn).
+  // That post needs the puzzle the badge would have skipped, which starts now
+  // if it has not: the page taking the badge out starts it only for a form on
+  // screen as it goes (withdrawBadgeOption), and a redraw that carries the
+  // note (restoreDraft) starts none, since drawing a page never does.
   if (badgeWithdrawn.has(form)) {
     const withdrawn = badgeWithdrawn.get(form);
     badgeWithdrawn.delete(form);
     showNotice(badgeWithdrawnNotice(form, withdrawn));
+    if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+      prepareCaptcha();
+    }
     return;
   }
 
   // The one request in the application that carries the credential. It goes
-  // out only because this box is ticked, so an anonymous post is anonymous at
-  // the request layer too, not merely in what it displays.
+  // out only because this box is ticked, and only as the badge it was drawn
+  // for (above), so an anonymous post is anonymous at the request layer too,
+  // not merely in what it displays.
   const wantsBadge = data.get("badge") === "on";
   const held = wantsBadge ? state.verification.badge : null;
-  if (wantsBadge && !held) {
-    showNotice(BADGE_GONE);
-    return;
-  }
   // A badged post carries the credential and not the poster key. The server
   // derives a badged post's ID from the credential, so the key would do
   // nothing there, and sending the two together would put this browser's key
@@ -4688,11 +4746,22 @@ el.main.addEventListener("submit", async (event) => {
     const reason = err.payload && err.payload.credential;
     if (held && (reason === "expired" || reason === "revoked")) {
       if (forgets === browserForgets && storedCredential() === held.token) {
+        const pageBadge = state.verification.badge;
         forgetCredential();
         badgeLost =
           reason === "expired"
             ? "Your badge has expired."
             : "That badge was replaced by a newer verification.";
+        // A posting form on the page the reader went to while this was on its
+        // way was drawn for the badge that has just gone: it loses the option
+        // as for a badge forgotten in another tab (followCredentialStorage).
+        if (pageBadge) {
+          for (const posting of el.main.querySelectorAll("form[data-kind]")) {
+            if (posting !== form) {
+              withdrawBadgeOption(posting, pageBadge, false);
+            }
+          }
+        }
       }
       dropBadgeOption(form);
       if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
@@ -4856,6 +4925,7 @@ async function submitVerification(form) {
     if (forgotten()) {
       return;
     }
+    const offered = state.verification.badge;
     storeCredential(issued.credential);
     // Offered from now on, on every posting form drawn, so a reader who has
     // left /verify, or leaves before it is drawn again, has it on the next one.
@@ -4864,6 +4934,17 @@ async function submitVerification(form) {
     // is off, when it runs out, and when it is refused on a post, forgotten or
     // replaced, in this tab or in another (followCredentialStorage).
     state.verification.badge = readBadge();
+    // A posting form on screen, the reader having left /verify while this was
+    // on its way, was drawn for the badge this one replaces: it loses the
+    // option, which names that badge, as for a badge replaced in another tab
+    // (followCredentialStorage), and one that had it ticked says so at its
+    // next press (withdrawBadgeOption).
+    const held = state.verification.badge;
+    if (offered && !(held && held.token === offered.token)) {
+      for (const posting of el.main.querySelectorAll("form[data-kind]")) {
+        withdrawBadgeOption(posting, offered, false);
+      }
+    }
     verifyStep = { step: "email", label: "" };
     if (onScreen()) {
       await renderVerify(route);
@@ -4878,9 +4959,14 @@ async function submitVerification(form) {
       // verification in progress ended when this answer, coming after that
       // request's, cleared the cookie; or the panel, for a badge this one
       // replaces. It is drawn again for the badge just earned, as this form
-      // would have been. The address step, which the reader may be filling
-      // in, is left as it is.
-      renderVerify(state.route);
+      // would have been, and what the page said about the step it overtook,
+      // a later confirmation of it refused say, goes with the step. The
+      // address step, which the reader may be filling in, is left as it is.
+      renderVerify(state.route).then((drawn) => {
+        if (drawn) {
+          clearNotice();
+        }
+      });
     }
   } catch (err) {
     const shown = onScreen();
@@ -4889,9 +4975,14 @@ async function submitVerification(form) {
     // A confirmation another tab's verification found on its way: refused,
     // whatever the refusal said, its step goes now as it would have then
     // (codeSpentElsewhere), on screen or not, once no other confirmation of it
-    // is on its way.
+    // is on its way. While one is, the step stays for that one's answer, and
+    // this form, on screen, says why its code was refused, as the step drawn
+    // again would.
     if (verifyStep.spentElsewhere) {
       codeSpentElsewhere();
+      if (shown && verifyStep.spentElsewhere) {
+        showNotice(CODE_SPENT_ELSEWHERE);
+      }
       return;
     }
     // Nothing is said on a page the reader went to instead.

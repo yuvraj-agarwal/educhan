@@ -272,11 +272,11 @@ that read `app.js` (`web_invariants_test.go`): the poster key and the credential
 `submit`, the age screen storing its outcome alone and sending nothing, the badge's 18+
 box never ticked in advance or kept, `/api/site` fetched only past the age screen,
 KaTeX's options, the highlighting cap, and the captcha's (its answer in memory only, its
-puzzle started only by something a reader does in a form that needs it and never on
-render, each answer handed to one request, its request sent only from a form still on
-screen and held while it waits, and skipped only by a badged post). They are a floor, not
-a proof; a change that trips one has changed one of those properties and needs a browser
-check before the test changes.
+puzzle started only by something done in or to a form that needs it and never on render,
+each answer handed to one request, its request sent only from a form still on screen and
+held while it waits, and skipped only by a badged post). They are a floor, not a proof;
+a change that trips one has changed one of those properties and needs a browser check
+before the test changes.
 
 ### Front end conventions
 
@@ -413,10 +413,12 @@ check before the test changes.
   badge on a form whose tick stopped a puzzle or that already has something written or
   attached (`captchaBadgeToggled`, `captchaFormHasWriting`), the page taking a ticked
   badge out of a form with something written or attached (`withdrawBadgeOption`, for
-  another tab's change, and a refusal of the badge as expired or revoked on a form still
-  on screen; never Forget this browser, which sends nothing), an image picked or dropped
-  on it (`captchaImageAttached`; not one a re-render puts back), a refusal that spent
-  the answer while its form is on screen, and a press with no good answer held. Ticking
+  the badge changed in another tab or in this one, and a refusal of the badge as
+  expired or revoked on a form still on screen; never Forget this browser, which sends
+  nothing), the press that is then refused once to say so, on a form with something
+  written or attached (`submit`), an image picked or dropped on it
+  (`captchaImageAttached`; not one a re-render puts back), a refusal that spent the
+  answer while its form is on screen, and a press with no good answer held. Ticking
   the badge stops it unless a request is waiting for it (`stopCaptcha`, which says
   whether it stopped one). It runs ALTCHA's vendored worker in up to
   `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
@@ -594,30 +596,42 @@ check before the test changes.
   over it, may have reached the server first and verified this tab's address, so it is
   left to its answer, the step only marked (`spentElsewhere`): a success draws the panel
   for the badge it earned, over its own form or over the code step or panel that
-  `/verify` drawn again meanwhile shows, never over an address step, which may be half
-  filled in; and a refusal of any kind puts the step away then, with the notice wherever
-  a code step is on screen. A code request still on its way draws its code step when
-  answered, the cookie its answer sets holding the browser's verification from then on
-  (`followCredentialStorage`, by the `storage` event,
-  `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
-  with its badged post on its way, refuses its next press once, saying the badge has
-  gone and that pressing again posts without it, under the same ID as the reader's
+  `/verify` drawn again meanwhile shows, taking off any notice about the step it
+  overtook, never over an address step, which may be half filled in; and a refusal of
+  any kind puts the step away then, with the notice wherever a code step is on screen,
+  once no other confirmation of it is on its way. While one is, the step stays for that
+  one's answer, and the refused form, on screen, shows the notice. A code request still
+  on its way draws its code step when answered, the cookie its answer sets holding the
+  browser's verification from then on (`followCredentialStorage`, by the `storage`
+  event, `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked,
+  idle or with its badged post on its way, refuses its next press once, saying the badge
+  has gone and that pressing again posts without it, under the same ID as the reader's
   unbadged posts in a reply's thread while the poster key is the one it had
   (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
   out tied to those posts, which the badge's own ID is there to keep apart. With
   something written or attached, that form also starts the puzzle the post then needs,
   as the reader's own untick would, so the press after the refused one usually finds it
-  solved. A redraw's draft carries a ticked badge as the badge it was ticked for, and
-  ticks the new form's box only if the form offers that one: a form offering none, or
-  another verified meanwhile, is noted instead, so no badge goes out that the reader did
-  not tick, and the reader ticking or unticking the box takes the note off. Forget this
-  browser takes the option out without a word and drops the note: a word would tell
-  whoever presses next that the browser held a badge, and with the poster key gone the
-  post shares an ID with none made before. A badged post refused as expired or revoked
-  forgets the credential it sent only while storage still holds it, so a badge verified
-  in another tab meanwhile stays, and its form, still on screen with something written
-  or attached, starts the puzzle the post it goes on to needs.
+  solved; a form noted by a redraw (`restoreDraft`), since drawing a page starts
+  nothing, starts it at the refused press. A redraw's draft carries a ticked badge as
+  the badge it was ticked for, and ticks the new form's box only if the form offers that
+  one: a form offering none, or another verified meanwhile, is noted instead, so no
+  badge goes out that the reader did not tick, and the reader ticking or unticking the
+  box takes the note off. A form's box is drawn for the badge the page holds then
+  (`badgeOffered`, noted by `noteBadgeOffered`), and a press sends the credential only
+  while the page still holds that badge: one that finds another, or none, is a badge
+  taken from under the form, refused once with the note. Wherever the page's badge
+  changes while a posting form may be on screen, the option goes from the forms there as
+  for another tab's change: a confirmation answered after the reader left `/verify`, the
+  feature switched off or the badge run out as `/verify` loads (`loadVerification`), and
+  a badged post refused as expired or revoked, for a form on the page the reader went to
+  meanwhile (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). Forget this browser takes the
+  option out without a word and drops the note: a word would tell whoever presses next
+  that the browser held a badge, and with the poster key gone the post shares an ID with
+  none made before. A badged post refused as expired or revoked forgets the credential
+  it sent only while storage still holds it, so a badge verified in another tab
+  meanwhile stays, and its form, still on screen with something written or attached,
+  starts the puzzle the post it goes on to needs.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
