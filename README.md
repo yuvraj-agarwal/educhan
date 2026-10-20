@@ -962,18 +962,12 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
 ```
 
 The first deploy is longer, because it is what establishes the configuration that
-later deploys inherit — the runtime service account, the Cloud SQL instance, and
-the secrets. `bash deploy/first-deploy.sh PROJECT_ID`, run in Cloud Shell, does
-all of it, the archive sweeper Job included; by hand it is:
-
-```bash
-gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
-  --service-account "$RUN_SA" \
-  --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false" \
-  --allow-unauthenticated
-```
+later deploys inherit — the runtime service account, the Cloud SQL instance, the
+secrets, and the settings the service runs with. `bash deploy/first-deploy.sh
+PROJECT_ID`, run in Cloud Shell, does all of it, the archive sweeper Job
+included. By hand, the `gcloud run deploy` it runs, with the same secrets and
+settings, is in [`deploy/README.md` section 2.6](deploy/README.md#26-deploy);
+only the warm instance the script keeps for a demo is left out.
 
 One-time setup — enabling the Cloud Build and Artifact Registry APIs, creating
 the repository, and the roles the build service account needs to push — is in

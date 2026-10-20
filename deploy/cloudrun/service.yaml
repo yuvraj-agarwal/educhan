@@ -26,9 +26,13 @@ spec:
         autoscaling.knative.dev/maxScale: "4"
         run.googleapis.com/startup-cpu-boost: "true"
     spec:
-      # Migrations run at startup behind an advisory lock, so a slow first
-      # request is possible while a new revision applies them.
-      timeoutSeconds: 60
+      # Cloud Run's cap on one request, kept well above the longest the
+      # server allows itself: an image post's windows add up to over a
+      # minute (about ten seconds' wait for room, 30 for its body, 25 for
+      # its image and 5 to answer), and a lower cap would cut it off before
+      # the server could answer. 300 is Cloud Run's default, which a service
+      # made by deploy/first-deploy.sh (no --timeout) has too.
+      timeoutSeconds: 300
       containerConcurrency: 80
       serviceAccountName: educhan-run@${PROJECT_ID}.iam.gserviceaccount.com
       containers:
@@ -98,16 +102,23 @@ spec:
               value: "5"
             - name: EDUCHAN_UPLOAD_COOLDOWN
               value: "15"
+            # At most 32505856 (31 MiB): the server refuses to start above it.
             - name: EDUCHAN_MAX_UPLOAD_BYTES
               value: "8388608"
-            # Image posts are refused until originals are stripped of metadata
-            # and scanned before storage. Off is the default; it is spelled out
-            # so turning it on is a visible change.
+            # Image posts are refused until uploads are scanned before storage
+            # (they are already stripped of metadata). Off is the default; it
+            # is spelled out so turning it on is a visible change.
             - name: EDUCHAN_UPLOADS_ENABLED
               value: "false"
             # Per-instance pool cap; see the maxScale note above.
             - name: EDUCHAN_DB_MAX_CONNS
               value: "3"
+            # The Go runtime's soft memory limit, about 80% of the memory limit
+            # above. The server budgets its image work to fit 512Mi, and this
+            # makes the collector hand memory back before the instance is
+            # killed. Raise it with the memory (800MiB at 1Gi).
+            - name: GOMEMLIMIT
+              value: 400MiB
           startupProbe:
             httpGet:
               path: /healthz
