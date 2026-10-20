@@ -825,13 +825,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   a stop that comes later, while the spent answers go, finds nothing left to stop
   and adds no error of its own: the sweep ends as one that was not stopped would,
   failing only if its pass failed (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`).
-  It builds its App with `New` like the server, and runs without the salt, the
-  moderation key, the verification secret and the captcha secret on purpose,
-  so `New` warns about none of them: those warnings are `WarnServingSettings`,
+  `runSweep` in `cmd/server` writes the sweep's error before it closes the App, and
+  waits on the close for `sweepCloseTimeout` (two seconds) at most, since pgx gives a
+  connection that has stopped answering fifteen: so with the database not answering, a
+  stopped sweep writes its error and exits within the prune's five seconds and the
+  close's two, inside Cloud Run's ten, as long as no file deletion is in hand when the
+  media store or the database stops answering, since the file in hand waits on both
+  (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind a proxy
+  that stops forwarding). It builds its App with `New` like the server, and runs without
+  the salt, the moderation key, the verification secret and the captcha secret on
+  purpose, so `New` warns about none of them: those warnings are `WarnServingSettings`,
   which only `serve` in `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
-  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only
-  setting goes there, not in `New`. **Legal holds (build plan 2.10) are not built**;
-  when they are, `SweepArchived` must skip held threads, and its comment says so.
+  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
+  goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
+  are, `SweepArchived` must skip held threads, and its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random

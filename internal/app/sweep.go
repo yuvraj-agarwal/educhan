@@ -37,9 +37,14 @@ const sweepBatchSize = 100
 // and the DELETE, by an index, takes a fraction of a second; one that overran
 // the bound would roll back and fail the sweep, leaving the rows to the next.
 // The bound is for a stop: SIGTERM, which a Cloud Run Job gets at its task
-// timeout, is followed ten seconds later by SIGKILL, and a stopped sweep
-// finishes the file in hand and then this step, so five seconds leaves room
-// for both, and the process exits on its own, with its record of counts logged.
+// timeout, is followed ten seconds later by SIGKILL. A stopped sweep finishes
+// the file in hand and then this step, logs its record of counts, and returns;
+// the process writes its error and waits on its connections' close for two
+// seconds at most (runSweep in cmd/server). So even with the database not
+// answering, the process writes its error and exits on its own inside the
+// ten, as long as no file deletion is in hand when the media store or the
+// database stops answering: the file in hand is finished whatever the stop,
+// and that waits on both.
 const spentPruneTimeout = 5 * time.Second
 
 // spentPruneBound is how long the sweep's prune may take: spentPruneTimeout,

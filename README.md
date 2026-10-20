@@ -1202,11 +1202,15 @@ whatever happened to the threads and the files, it deletes the spent
 request came along to prune. A sweep that is stopped, say by the SIGTERM a Cloud
 Run Job gets at its task timeout, deletes them too: the batch it is on commits
 or rolls back whole, the file it is removing is finished, and then the spent
-answers go, given at most five seconds, well inside the ten Cloud Run waits
-before it kills the process. It exits non-zero with the stop as its error, not
-with a failure the stop caused. A stop that comes once the files are done, while
-the spent answers go, finds nothing left to stop: the sweep finishes, and exits
-as one that was not stopped.
+answers go, given at most five seconds. It then writes its error, the stop and
+not a failure the stop caused, and exits non-zero, waiting at most two seconds
+for its connections to close. So even with the database not answering, the error
+is written and the process exits inside the ten seconds Cloud Run waits before
+it kills it, as long as no file is being removed when the media store or the
+database stops answering: the file in hand is finished whatever the stop, and
+that waits on both. A stop that comes once the files are done, while the spent
+answers go, finds nothing left to stop: the sweep finishes, and exits as one
+that was not stopped.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost

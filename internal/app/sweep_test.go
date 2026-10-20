@@ -439,8 +439,10 @@ func TestSweepStoppedWhileItPrunesEndsAsIfNotStopped(t *testing.T) {
 
 // The prune is bounded, stopped or not: one held up past its bound, by a lock
 // here, gives up within about the bound with an error saying so and leaves the
-// rows to the next sweep, and the sweep still logs its record of counts, so a
-// stopped Job exits on its own before Cloud Run kills it.
+// rows to the next sweep, and the sweep still logs its record of counts. That
+// is the sweep's part in a stopped Job writing its error and exiting before
+// Cloud Run kills it; the process's part, the close, is cmd/server's
+// (TestStoppedSweepExitsWhenTheDatabaseStopsAnswering).
 func TestSweepsPruneGivesUpAtItsBound(t *testing.T) {
 	var logs syncBuffer
 	const bound = 500 * time.Millisecond
