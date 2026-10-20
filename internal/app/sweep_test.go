@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -255,57 +256,72 @@ func TestSweepStopsWhenCancelled(t *testing.T) {
 	}
 }
 
-// A sweep cancelled while a statement of RewriteCredentials runs has stopped
-// that statement on the server by the time it returns. The process exits as
-// soon as it does, and PostgreSQL does not notice a closed socket until the
-// statement ends, so a cancel left to be sent afterwards never comes: a VACUUM
-// FULL runs on, holding its table against every read, and commits, and a
-// rewrite holds its lock to its end. Here the rewrite's statement is held at
-// the gate with the table locked. The test stands in for the exit: once the
-// rewrite has returned, its dials fail, and a dial started before then is held
-// back for longer than the return takes, so that what pgx's default does — a
-// cancel request sent from a goroutine after the statement has given up —
-// never reaches the server.
-func TestCancelledSweepStopsItsStatementOnTheServer(t *testing.T) {
-	h := testServer(t, nil)
-	h.issueDirectly(3)
-	gate := newRewriteGate(h)
+// cancelledRewrite runs RewriteCredentials on a store of its own, as a sweeper
+// process would, holds its rewrite at the gate with the credentials table
+// locked, and cancels it there, as SIGTERM does. Every connection the store
+// makes, cancel requests included, goes through dialFunc, which stands in for
+// the sweeper's network. The process exits as soon as the sweep returns, so a
+// dial that gets through its hold only once the rewrite has returned fails:
+// what pgx has not sent by then never reaches the server.
+type cancelledRewrite struct {
+	h         *harness
+	cancelled atomic.Bool // the sweep has been cancelled
+	exited    atomic.Bool // the rewrite has returned, and the process with it
+	err       error       // what the rewrite returned
+}
 
-	const sweeper = "cancelled-sweep"
-	var slow, exited atomic.Bool
-	config := h.app.pool.Config()
-	config.ConnConfig.RuntimeParams["application_name"] = sweeper
+const cancelledSweeper = "cancelled-sweep"
+
+// sqlstateQueryCanceled is the code of PostgreSQL's "canceling statement due
+// to user request", its answer to a cancel request.
+const sqlstateQueryCanceled = "57014"
+
+// dialFunc is a stand-in for the sweeper's network: hold says what a dial
+// made after the cancel, given its context, does before it goes out.
+func (c *cancelledRewrite) dialFunc(hold func(ctx context.Context) error) pgconn.DialFunc {
 	var dialer net.Dialer
-	config.ConnConfig.DialFunc = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		if slow.Load() {
-			timer := time.NewTimer(500 * time.Millisecond)
-			select {
-			case <-timer.C:
-			case <-ctx.Done():
-				timer.Stop()
-				return nil, ctx.Err()
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if c.cancelled.Load() {
+			if err := hold(ctx); err != nil {
+				return nil, err
 			}
 		}
-		if exited.Load() {
+		if c.exited.Load() {
 			return nil, errors.New("the sweeper has exited")
 		}
 		return dialer.DialContext(ctx, network, addr)
 	}
+}
+
+// waitFor is a hold of d, or less if the dial's context ends first.
+func waitFor(ctx context.Context, d time.Duration) error {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+}
+
+// run starts the rewrite on a store whose dials go through hold and whose
+// cancel grace is grace, cancels it at the gate, and returns once it has
+// returned, with its error in c.err.
+func (c *cancelledRewrite) run(grace time.Duration, hold func(ctx context.Context) error) {
+	h := c.h
+	h.t.Helper()
+	gate := newRewriteGate(h)
+	config := h.app.pool.Config()
+	config.ConnConfig.RuntimeParams["application_name"] = cancelledSweeper
+	config.ConnConfig.DialFunc = c.dialFunc(hold)
 	pool, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
-		t.Fatalf("sweeper's pool: %v", err)
+		h.t.Fatalf("sweeper's pool: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	h.t.Cleanup(pool.Close)
 	store := NewStore(pool)
-
-	backends := func() int {
-		var n int
-		if err := h.app.pool.QueryRow(context.Background(),
-			`SELECT count(*) FROM pg_stat_activity WHERE application_name = $1`, sweeper).Scan(&n); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
-		}
-		return n
-	}
+	store.cancelGrace = grace
 
 	gate.set(false)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -315,51 +331,126 @@ func TestCancelledSweepStopsItsStatementOnTheServer(t *testing.T) {
 		_, err := store.RewriteCredentials(ctx)
 		done <- err
 	}()
-	waitUntil(t, "the rewrite holds the credentials table", gate.lock("ExclusiveLock", true))
-	waitUntil(t, "the rewrite's statement is at the gate", func() bool {
+	waitUntil(h.t, "the rewrite holds the credentials table", gate.lock("ExclusiveLock", true))
+	waitUntil(h.t, "the rewrite's statement is at the gate", func() bool {
 		var n int
 		if err := h.app.pool.QueryRow(context.Background(), `
 			SELECT count(*) FROM pg_stat_activity
 			WHERE application_name = $1 AND state = 'active' AND query LIKE '%WITH copy%'`,
-			sweeper).Scan(&n); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
+			cancelledSweeper).Scan(&n); err != nil {
+			h.t.Fatalf("read pg_stat_activity: %v", err)
 		}
 		return n > 0
 	})
 
-	slow.Store(true)
+	c.cancelled.Store(true)
 	cancel()
-	err = await(t, "the cancelled rewrite", done)
-	exited.Store(true)
-	if err == nil {
-		t.Fatal("a cancelled rewrite reported success")
+	c.err = await(h.t, "the cancelled rewrite", done)
+	c.exited.Store(true)
+	if c.err == nil {
+		h.t.Fatal("a cancelled rewrite reported success")
 	}
-	if !errors.Is(err, context.Canceled) {
-		t.Errorf("a cancelled rewrite says %q, which does not say it was cancelled", err)
+	if !errors.Is(c.err, context.Canceled) {
+		h.t.Errorf("a cancelled rewrite says %q, which does not say it was cancelled", c.err)
 	}
+}
 
-	// The backend ends once it reads what the sweeper sent last, which it
-	// can only do once the statement has stopped. The gate stays shut, so
-	// nothing else would stop it.
+// assertStopped fails the test unless the rewrite's statement has stopped on
+// the server and rolled back whole. The backend ends once it reads what the
+// sweeper sent last, which it can only do once the statement has stopped; the
+// gate stays shut, so nothing else would stop it.
+func (c *cancelledRewrite) assertStopped(issued int) {
+	h := c.h
+	h.t.Helper()
+	backends := func() int {
+		var n int
+		if err := h.app.pool.QueryRow(context.Background(),
+			`SELECT count(*) FROM pg_stat_activity WHERE application_name = $1`, cancelledSweeper).Scan(&n); err != nil {
+			h.t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return n
+	}
+	locked := rewriteGate{h}.lock("ExclusiveLock", true)
 	deadline := time.Now().Add(3 * time.Second)
 	for backends() > 0 {
 		if time.Now().After(deadline) {
-			t.Fatalf("the cancelled rewrite's statement is still running on the server after the sweep "+
-				"returned (%v), holding the credentials table: %t", err, gate.lock("ExclusiveLock", true)())
+			h.t.Fatalf("the cancelled rewrite's statement is still running on the server after the sweep "+
+				"returned (%v), holding the credentials table: %t", c.err, locked())
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if gate.lock("ExclusiveLock", true)() {
-		t.Error("the credentials table is still locked after the cancelled rewrite ended")
+	if locked() {
+		h.t.Error("the credentials table is still locked after the cancelled rewrite ended")
 	}
 	// And it rolled back whole: the rows are those issued, each still under
 	// its own transaction id, for the next sweep to rewrite.
-	if n := h.countRows("verification_credentials"); n != 3 {
-		t.Errorf("%d credential rows after a cancelled rewrite, want the 3 issued", n)
+	if n := h.countRows("verification_credentials"); n != issued {
+		h.t.Errorf("%d credential rows after a cancelled rewrite, want the %d issued", n, issued)
 	}
-	if n := h.credentialXmins(nil); n != 3 {
-		t.Errorf("the credentials carry %d transaction ids after a cancelled rewrite, want their own 3", n)
+	if n := h.credentialXmins(nil); n != issued {
+		h.t.Errorf("the credentials carry %d transaction ids after a cancelled rewrite, want their own %d",
+			n, issued)
 	}
+}
+
+// A sweep cancelled while a statement of RewriteCredentials runs has had
+// PostgreSQL stop that statement by the time it returns. The process exits as
+// soon as it does, and PostgreSQL does not notice a closed socket until the
+// statement ends, so a cancel request not yet sent then never comes: a VACUUM
+// FULL runs on, holding its table against every read, and commits, and a
+// rewrite holds its lock to its end. Here every dial after the cancel takes
+// half a second, the cancel request's included, and PostgreSQL answers it
+// well within the grace.
+//
+// Either of two things gets the cancel request out in time, so the statement
+// stopping fails only without both: the handler sweepConnection sets, which
+// sends it at once and waits for PostgreSQL's answer before the statement
+// returns, and closeSweepConnection's wait for the cancel request pgx's
+// default sends from a goroutine. What tells the handler from the wait is the
+// error: only with the handler is it PostgreSQL's, the statement cancelled
+// before the rewrite returned. TestCancelledSweepWaitsForPgxsOwnCancelRequest
+// covers the wait, where PostgreSQL does not answer in time.
+func TestCancelledSweepStopsItsStatementOnTheServer(t *testing.T) {
+	h := testServer(t, nil)
+	h.issueDirectly(3)
+	c := &cancelledRewrite{h: h}
+	c.run(cancelGrace, func(ctx context.Context) error { return waitFor(ctx, 500*time.Millisecond) })
+
+	var pgErr *pgconn.PgError
+	if !errors.As(c.err, &pgErr) || pgErr.Code != sqlstateQueryCanceled {
+		t.Errorf("a cancelled rewrite returned %q, not PostgreSQL's answer to the cancel request: "+
+			"the statement may still have been running when the sweep returned", c.err)
+	}
+	c.assertStopped(3)
+}
+
+// When PostgreSQL does not answer the cancel request within the grace — here
+// it never arrives, its dial held until it gives up — pgx gives up on the
+// connection and sends a cancel request of its own from a goroutine as it
+// closes it, which is all pgx's default does. The sweep waits for that one to
+// go out before it returns; otherwise the process would exit first, and the
+// statement would run on. The handler's cancel request is the one whose dial
+// must end within the grace; pgx's own has longer.
+func TestCancelledSweepWaitsForPgxsOwnCancelRequest(t *testing.T) {
+	h := testServer(t, nil)
+	h.issueDirectly(3)
+	c := &cancelledRewrite{h: h}
+	const grace = 1500 * time.Millisecond
+	c.run(grace, func(ctx context.Context) error {
+		if deadline, ok := ctx.Deadline(); ok && time.Until(deadline) <= grace {
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		// pgx's own waits a third of the grace before it goes out, by when
+		// a sweep that did not wait for it would have returned.
+		return waitFor(ctx, grace/3)
+	})
+	var pgErr *pgconn.PgError
+	if errors.As(c.err, &pgErr) {
+		t.Fatalf("the rewrite returned PostgreSQL's %q, so the handler's cancel request got through "+
+			"and this test does not test the wait", pgErr.Message)
+	}
+	c.assertStopped(3)
 }
 
 // The sweep's log is one record of counts, never which boards or threads

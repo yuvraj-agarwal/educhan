@@ -64,12 +64,15 @@ type Store struct {
 	vacuumCommand           string
 	statisticsVacuumCommand string
 	vacuumPatience          time.Duration
+	// How long RewriteCredentials's connection waits on a cancel request
+	// (cancelGrace), which a test shortens to see PostgreSQL not answer one.
+	cancelGrace time.Duration
 }
 
 // NewStore wraps an existing pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, vacuumCommand: vacuumCommand, statisticsVacuumCommand: vacuumCommand,
-		vacuumPatience: vacuumPatience}
+		vacuumPatience: vacuumPatience, cancelGrace: cancelGrace}
 }
 
 // Ping reports whether the database is reachable.
@@ -1322,7 +1325,7 @@ func (s *Store) RewriteCredentials(ctx context.Context) (rewritten int, err erro
 	if err != nil {
 		return 0, fmt.Errorf("connect: %w", err)
 	}
-	defer closeSweepConnection(ctx, conn)
+	defer closeSweepConnection(ctx, conn, s.cancelGrace)
 
 	if _, err := conn.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
 		return 0, fmt.Errorf("delete expired codes: %w", err)
@@ -1364,8 +1367,8 @@ func (s *Store) RewriteCredentials(ctx context.Context) (rewritten int, err erro
 
 // cancelGrace is how long a statement on RewriteCredentials's connection
 // waits, once the sweep is cancelled, for PostgreSQL to answer the cancel
-// request, and then how long the sweep waits for pgx to finish with the
-// connection if it did not.
+// request, and then how long the sweep waits for pgx to send its own if it
+// did not.
 const cancelGrace = 3 * time.Second
 
 // sweepConnection opens the connection RewriteCredentials works on, set up as
@@ -1374,16 +1377,28 @@ const cancelGrace = 3 * time.Second
 //
 // A sweep is cancelled by SIGTERM, which a Job past its task timeout gets, or
 // by Ctrl-C on make sweep, and the process exits as soon as the sweep returns.
-// pgx's default answer to a cancelled context is to give up on the socket at
-// once and send PostgreSQL's cancel request from a goroutine, which the exit
-// usually comes before; and PostgreSQL does not notice a closed socket until
-// the statement on it ends. So a VACUUM FULL in flight would run on, holding
-// its table against every read, and commit, and a rewrite would hold its lock
-// to the end of its statement. Here the cancel request goes first, and the
-// statement waits up to cancelGrace for PostgreSQL's answer, which is the
-// statement stopping. (The pool's connections still give up at once, but
-// closing the pool waits for their cancel requests to go out, and the sweeper
-// closes it before it exits.)
+// PostgreSQL does not notice a closed socket until the statement on it ends,
+// so a statement nobody has asked it to cancel by then runs on: a VACUUM FULL
+// in flight holds its table against every read to its end, and commits, and a
+// rewrite holds its lock to the end of its statement. Two things see that the
+// cancel request has gone out before the sweep returns, and while PostgreSQL
+// answers promptly either would on its own.
+//
+// Here the context's cancellation sends the cancel request first, and the
+// statement waits up to the store's cancelGrace for PostgreSQL's answer,
+// which is the statement stopping: it fails with PostgreSQL's "canceling
+// statement due to user request". That is pgx's
+// CancelRequestContextWatcherHandler. pgx's default, which the pool's
+// connections keep, gives up on the socket at once instead, and sends the
+// cancel request from a goroutine as it closes the connection; that is also
+// what this connection falls back to when no answer comes within the grace,
+// and closeSweepConnection waits for that goroutine. (Closing the pool waits
+// for its connections' goroutines the same way, and the sweeper closes it
+// before it exits.)
+//
+// TestCancelledSweepStopsItsStatementOnTheServer fails only without both; its
+// check that the error is PostgreSQL's fails without the handler, and
+// TestCancelledSweepWaitsForPgxsOwnCancelRequest fails without the wait.
 func (s *Store) sweepConnection(ctx context.Context, notices *noticeLog) (*pgx.Conn, error) {
 	config := s.pool.Config().ConnConfig
 	if config.RuntimeParams == nil {
@@ -1392,20 +1407,21 @@ func (s *Store) sweepConnection(ctx context.Context, notices *noticeLog) (*pgx.C
 	config.RuntimeParams["lock_timeout"] = verificationLockTimeout
 	config.RuntimeParams["client_min_messages"] = "warning"
 	config.OnNotice = notices.add
+	grace := s.cancelGrace
 	config.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
-		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: cancelGrace}
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: grace}
 	}
 	return pgx.ConnectConfig(ctx, config)
 }
 
 // closeSweepConnection closes RewriteCredentials's connection. When
-// PostgreSQL did not answer a cancel request within cancelGrace, pgx gave up
-// on the connection and is sending another, and then closing it, from a
-// goroutine, so this waits up to cancelGrace for that to finish before the
-// sweep returns and the process exits.
-func closeSweepConnection(ctx context.Context, conn *pgx.Conn) {
+// PostgreSQL did not answer a cancel request within the grace, pgx gave up on
+// the connection and is sending a cancel request of its own, and then closing
+// it, from a goroutine, so this waits up to grace for that to finish before
+// the sweep returns and the process exits.
+func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Duration) {
 	_ = conn.Close(context.WithoutCancel(ctx))
-	timer := time.NewTimer(cancelGrace)
+	timer := time.NewTimer(grace)
 	defer timer.Stop()
 	select {
 	case <-conn.PgConn().CleanupDone():

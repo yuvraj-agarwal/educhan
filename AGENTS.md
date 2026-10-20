@@ -806,12 +806,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     step, works on a connection of its own, with `lock_timeout` at five seconds,
     `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
     the database's default can hide the `55P03` below), a handler that collects
-    notices, and pgx's `CancelRequestContextWatcherHandler`, so that a cancelled
-    sweep (SIGTERM, Ctrl-C) has PostgreSQL stop the statement in flight before it
-    returns and the process exits: with pgx's default the cancel request goes out
-    from a goroutine the exit usually beats, and PostgreSQL does not notice a closed
-    socket until the statement ends, so a `VACUUM FULL` ran on, holding its table,
-    and committed (`sweepConnection`, `TestCancelledSweepStopsItsStatementOnTheServer`).
+    notices, and pgx's `CancelRequestContextWatcherHandler`. A cancelled sweep
+    (SIGTERM, Ctrl-C) must have asked PostgreSQL to stop the statement in flight by
+    the time it returns and the process exits: PostgreSQL does not notice a closed
+    socket until the statement ends, so a `VACUUM FULL` nobody cancelled runs on,
+    holding its table, and commits. Two things see to it, and either alone does
+    while PostgreSQL answers promptly. The handler sends the cancel request at once
+    and has the statement wait up to `cancelGrace` (three seconds) for PostgreSQL's
+    answer, so the statement has stopped, with PostgreSQL's `57014`, before the
+    rewrite returns. pgx's default, the fallback when no answer comes in time, gives
+    up on the socket and sends the cancel request from a goroutine, and
+    `closeSweepConnection` waits up to `cancelGrace` for that goroutine
+    (`sweepConnection`). `TestCancelledSweepStopsItsStatementOnTheServer` fails only
+    without both, and its check that the error is PostgreSQL's fails without the
+    handler; `TestCancelledSweepWaitsForPgxsOwnCancelRequest`, where the handler's
+    cancel request never arrives, fails without the wait.
     First it deletes the codes that expired unconfirmed, which a request prunes too,
     but nothing says when one will come: an abandoned code's row keeps the time it
     was asked for, to the microsecond, under the address's email hash, which for an
