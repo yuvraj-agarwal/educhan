@@ -11,7 +11,10 @@
 -- query on either table finds its rows by a unique key or by expiry. So no
 -- column of either table is sampled any more, and the samples already taken
 -- are deleted from pg_statistic: changing a column's type deletes its
--- statistics, and changing it to the type it already has changes nothing else.
+-- statistics, and changing it to the type it already has does not rewrite the
+-- table. It does recreate every index on those columns, which is every index
+-- on both tables, over the same files under new OIDs, and so starts their
+-- scan statistics (idx_scan, last_idx_scan) over.
 --
 -- Deleted, not erased. Like any deleted row, a sample stays in pg_statistic's
 -- file — and one big enough to be stored out of line, as the email hashes'
