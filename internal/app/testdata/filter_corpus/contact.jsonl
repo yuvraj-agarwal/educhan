@@ -292,6 +292,25 @@
 {"id": "contact-292", "body": "got a new number 8247301956 text me", "subject": "", "name": "", "expect": "block", "why": "a call cue near the number (R2P-10DIGIT-MATHS control)"}
 {"id": "contact-293", "body": "it's 8589934592 text me", "subject": "", "name": "", "expect": "block", "why": "a call cue after the number (R2P-10DIGIT-MATHS control)"}
 {"id": "contact-294", "body": "largest coaching in kota, 9814072356", "subject": "", "name": "", "expect": "block", "why": "\"largest\" alone names no maths result (R2P-10DIGIT-MATHS control)"}
+{"id": "contact-295", "body": "lets move this to discord, i mean this thread is dying anyway", "subject": "", "name": "", "expect": "block", "why": "\"i mean\" then a complaint about the thread, the reason for leaving, not a take-back (R2D-2)"}
+{"id": "contact-296", "body": "add me on snap, i mean this thread is full of randoms", "subject": "", "name": "", "expect": "block", "why": "\"i mean\" then a complaint about the thread (R2D-2)"}
+{"id": "contact-297", "body": "lets move to telegram, i mean posting here is so slow", "subject": "", "name": "", "expect": "block", "why": "posting here is the subject of a complaint (R2D-2)"}
+{"id": "contact-298", "body": "whatsapp me, i mean replying here takes forever", "subject": "", "name": "", "expect": "block", "why": "replying here is the subject of a complaint (R2D-2)"}
+{"id": "contact-299", "body": "whatsapp me actually, easier than posting here", "subject": "", "name": "", "expect": "block", "why": "\"actually\" is a filler, not a take-back (R2D-2)"}
+{"id": "contact-300", "body": "add me on discord actually, this thread is a mess", "subject": "", "name": "", "expect": "block", "why": "\"actually\" is a filler, not a take-back (R2D-2)"}
+{"id": "contact-301", "body": "lets move this to discord actually, too many randoms here", "subject": "", "name": "", "expect": "block", "why": "\"actually\" is a filler, not a take-back (R2D-2)"}
+{"id": "contact-302", "body": "dm me on insta, actually easier than replying here", "subject": "", "name": "", "expect": "block", "why": "\"actually\" is a filler, not a take-back (R2D-2)"}
+{"id": "contact-303", "body": "add me on snap nvm this thread is dead", "subject": "", "name": "", "expect": "block", "why": "\"nvm\" then a complaint about the thread (R2D-2)"}
+{"id": "contact-304", "body": "add me on snap jk this board is dead lol", "subject": "", "name": "", "expect": "block", "why": "\"jk\" then a complaint about the board (R2D-2)"}
+{"id": "contact-305", "body": "add me on snap is a weird thing to ask but pls do", "subject": "", "name": "", "expect": "block", "why": "named as a kind of thing to ask and then made all the same (R2D-2)"}
+{"id": "contact-306", "body": "add me on snap actually, this board is too public", "subject": "", "name": "", "expect": "block", "why": "the board is too public: the reason for leaving (C2-1)"}
+{"id": "contact-307", "body": "add me on snap actually, this thread is dead anyway", "subject": "", "name": "", "expect": "block", "why": "the thread is dead: the reason for leaving (C2-1)"}
+{"id": "contact-308", "body": "dm me on insta, i mean it. i'm always here for you", "subject": "", "name": "", "expect": "block", "why": "\"i mean it\" ends its sentence; \"here for you\" is no place on the board (C2-1)"}
+{"id": "contact-309", "body": "whatsapp me actually, i'm new here", "subject": "", "name": "", "expect": "block", "why": "\"new here\" is no take-back (C2-1)"}
+{"id": "contact-310", "body": "message me on whatsapp, i'm actually online more there than here", "subject": "", "name": "", "expect": "block", "why": "the app preferred over the board (C2-1)"}
+{"id": "contact-311", "body": "add me on discord, i mean nobody reads this board anyway", "subject": "", "name": "", "expect": "block", "why": "nobody reads the board: the reason for leaving (C2-1)"}
+{"id": "contact-312", "body": "dm me on insta? jk, just reply in this thread", "subject": "", "name": "", "expect": "publish", "why": "taken back for a reply in the thread (R2D-2 control)"}
+{"id": "contact-313", "body": "can we move to snap? nvm, keep it on the board for everyone", "subject": "", "name": "", "expect": "publish", "why": "taken back to the board (R2D-2 control)"}
 {"id": "contact-314", "body": "results out, drop your numbers i'll add u", "subject": "", "name": "", "expect": "block", "why": "a person added after a result (R2D-3 control)"}
 {"id": "contact-315", "body": "results are out drop your numbers, i'll call you", "subject": "", "name": "", "expect": "block", "why": "a person called after a result (R2D-3 control)"}
 {"id": "contact-316", "body": "jee result is out, drop your numbers and i'll add everyone to the gc", "subject": "", "name": "", "expect": "block", "why": "everyone added to a group chat (R2D-3 control)"}

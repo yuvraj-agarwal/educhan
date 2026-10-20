@@ -12119,25 +12119,64 @@ func askNotMade(v *view, m []int) bool {
 		}
 		for i := 0; i+2 < len(rest); i++ {
 			if (is(rest[i], "thing") || is(rest[i], "things")) && is(rest[i+1], "to") && askingVerbs[rest[i+2]] {
-				return true
+				// "... is a weird thing to ask but pls do" makes it after
+				// all.
+				return !askedAnyway(ws[k+1+i+3:])
 			}
 		}
 	}
-	all := wordsIn(after)
-	for k, w := range all {
-		taken := takeBacks[w] || k+1 < len(all) && is(w, "i") && (is(all[k+1], "mean") || is(all[k+1], "meant"))
-		if !taken {
-			continue
+	spans := wordSpans(after)
+	word := func(j int) string { return after[spans[j][0]:spans[j][1]] }
+	for k := range spans {
+		from := k + 1
+		if w := word(k); !takeBacks[w] {
+			if !is(w, "i") || k+1 == len(spans) || !is(word(k+1), "mean") && !is(word(k+1), "meant") {
+				continue
+			}
+			from = k + 2
 		}
-		for _, x := range all[k+1 : min(len(all), k+10)] {
+		// What the take-back sends the talk to, in the rest of its
+		// sentence: a place on the board after a verb of posting or a
+		// preposition ("jk, just post it here", "i mean in a separate
+		// thread here"), not a place complained about ("i mean this
+		// thread is dying", "jk posting here is so slow", "i mean nobody
+		// reads this board").
+		for j := from; j < min(len(spans), from+10); j++ {
+			if j > from && strings.ContainsAny(after[spans[j-1][1]:spans[j][0]], ".!?\n") {
+				break
+			}
+			x := word(j)
 			if negators[x] {
 				return false
 			}
-			if boardPlaces[x] {
-				return true
+			if !boardPlaces[x] {
+				continue
+			}
+			if j+1 < len(spans) && placeComplaints[word(j+1)] {
+				break
+			}
+			for i := max(from, j-3); i < j; i++ {
+				if postingHere[word(i)] {
+					return true
+				}
 			}
 		}
 		return false
+	}
+	return false
+}
+
+// askedAnyway reports an ask named as a kind of thing to ask and then made
+// all the same: "but pls do", "but do it".
+func askedAnyway(ws []string) bool {
+	for k, w := range ws {
+		if is(w, "but") {
+			for _, x := range ws[k+1 : min(len(ws), k+3)] {
+				if askAnyway[x] {
+					return true
+				}
+			}
+		}
 	}
 	return false
 }
@@ -12150,12 +12189,24 @@ var (
 	// askingVerbs, after "is a ... thing to", make an ask a kind of thing to
 	// ask.
 	askingVerbs = canonSetOf(`ask say send text type write message dm`)
-	// takeBacks take an ask back: "jk", "nvm", "scratch that".
-	takeBacks = canonSetOf(`jk jkjk kidding nvm nevermind scratch actually`)
+	// takeBacks take an ask back: "jk", "nvm", "scratch that". "Actually"
+	// is said in passing as often: "whatsapp me actually, i'm new here".
+	takeBacks = canonSetOf(`jk jkjk kidding nvm nevermind scratch`)
 	// negators between a take-back and a place keep the ask: "jk not here".
 	negators = canonSetOf(`not no dont don't off outside never nahi mat`)
 	// boardPlaces are places on the board an ask can be moved back to.
 	boardPlaces = canonSetOf(`here thread threads board boards`)
+	// postingHere, a word or three before a place on the board, send the
+	// talk there: "post it here", "reply in this thread", "in a separate
+	// thread here", "on the board".
+	postingHere = canonSetOf(`post posting reply replying answer comment share put drop write keep stay continue
+		discuss talk chat ask asking in on to into`)
+	// placeComplaints after a place make it the subject of a reason for
+	// leaving: "this thread is dead", "replying here takes forever".
+	placeComplaints = canonSetOf(`is isn't was wasn't are were 's s takes take took sucks gets got feels seems looks
+		has hasn't moves keeps`)
+	// askAnyway, after "but", make a named ask anyway: "but pls do".
+	askAnyway = canonSetOf(`pls plz please do just still dm text add snap message`)
 )
 
 // niLabelled reports a National Insurance number named just before it,
