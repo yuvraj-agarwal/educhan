@@ -1187,7 +1187,8 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 }
 
 // verificationLockTimeout bounds every wait RewriteCredentials makes for a
-// lock. The one it can wait on in practice is the rewrite's lock on the
+// lock before the vacuum, which has a bound of its own (vacuumLockTimeout).
+// The one it can wait on in practice is the rewrite's lock on the
 // credentials table, which lets plain reads through and waits for everything
 // else on the table: a transaction that has written to it or locked rows in
 // it, a VACUUM, ANALYZE or index build on it, a change to its schema, or
@@ -1205,10 +1206,11 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 // can wait five seconds plus the rewrite. Reads do not queue behind the
 // rewrite.
 //
-// The vacuum after it waits for no lock, since it passes over a table another
-// session holds, but VACUUM FULL holds a table it has taken against every
-// read and write, CredentialLabel's included, until it has written the table
-// out. Every badged post and confirmation that reaches the table meanwhile
+// The vacuum after it does not wait for a table another session holds, since
+// it passes over one, and waits at most vacuumLockTimeout for any other lock;
+// but VACUUM FULL holds a table it has taken against every read and write,
+// CredentialLabel's included, until it has written the table out, or given
+// it up. Every badged post and confirmation that reaches the table meanwhile
 // waits, each holding a pooled connection, and three of them hold all an
 // instance has by default (EDUCHAN_DB_MAX_CONNS), so for the length of the run
 // every request on that instance can wait. That too grows with the table:
@@ -1219,11 +1221,32 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 // it.
 const verificationLockTimeout = "5s"
 
+// vacuumLockTimeout bounds every wait for a lock in vacuumVerificationTables.
+// SKIP_LOCKED makes VACUUM FULL pass over a table another session holds
+// rather than wait for it, but only the table it is given. Once it has that
+// table it takes other locks, and waits for each while it holds the table
+// against every read. One is its TOAST table's, which autovacuum vacuums on
+// its own, with no lock on the table — as it does pg_statistic's, for which
+// 0015 left autovacuum on — and which a VACUUM of the TOAST table by name
+// holds too. Another is its row in pg_class, which it updates, and so waits
+// for any transaction that has updated the row and not ended: a GRANT on the
+// table, say, which takes no lock on the table itself. Meanwhile
+// CredentialLabel waits on the credentials table, and every query whose plan
+// needs statistics its connection has not cached waits on pg_statistic, on
+// any table. So the vacuum waits that long at most for such a lock and gives
+// the table up (vacuumBlocked), and the sweep tries again a moment later, as
+// for a table another session holds. An uncontended lock is granted at once,
+// so the bound need be no longer than a request should wait; and it is below
+// PostgreSQL's deadlock_timeout, so the sweep gives way to an autovacuum
+// rather than having it cancelled.
+const vacuumLockTimeout = "100ms"
+
 // How long RewriteCredentials keeps trying VACUUM FULL on the verification
 // tables — while a transaction older than the rewrite is open, while another
-// session holds a table, or while a table's new file still holds rows deleted
-// before the rewrite — before the sweep fails; and how long it waits between
-// tries: vacuumFirstWait at first, doubling each time up to vacuumMaxWait.
+// session holds a table or a lock VACUUM FULL needs with it, or while a
+// table's new file still holds rows deleted before the rewrite — before the
+// sweep fails; and how long it waits between tries: vacuumFirstWait at first,
+// doubling each time up to vacuumMaxWait.
 const (
 	vacuumPatience  = time.Minute
 	vacuumFirstWait = 100 * time.Millisecond
@@ -1235,7 +1258,8 @@ const (
 const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED)"
 
 // sqlstateLockNotAvailable is the code of the warning VACUUM gives when
-// SKIP_LOCKED makes it pass over a table another session holds.
+// SKIP_LOCKED makes it pass over a table another session holds, and of the
+// error it fails with when lock_timeout ends a wait for any other lock.
 const sqlstateLockNotAvailable = "55P03"
 
 // verificationTables are the tables RewriteCredentials rewrites and vacuums.
@@ -1442,7 +1466,11 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // Another session can hold the table. VACUUM FULL waiting for it would queue
 // every badged post and confirmation behind its wait as well as its run, so it
 // runs with SKIP_LOCKED: it passes over a table it cannot take at once, with a
-// warning, and this tries again a moment later.
+// warning, and this tries again a moment later. SKIP_LOCKED does not cover the
+// locks VACUUM FULL takes once it has the table, its TOAST table's above all,
+// and it holds the table while it waits for one; so this sets the
+// connection's lock_timeout to vacuumLockTimeout first, and a run that times
+// out has given the table up, and is tried again the same way.
 //
 // It copies, rather than drops, a deleted row that some snapshot could still
 // read: one deleted by a transaction no older than its cutoff. The cutoff is
@@ -1484,12 +1512,17 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // the catalog every night. The catalog is small, so a run is short; but while
 // it runs, a query whose plan needs statistics its connection has not cached
 // waits, on any table, so here too the sweep passes over the catalog while
-// anybody holds it rather than queue them all behind its wait. Only a
-// superuser, the database's owner, or a role that belongs to the owner may
-// vacuum it — owning the tables is not enough — and a logical replication
-// slot holds its cutoff back as an older transaction does.
+// anybody holds it rather than queue them all behind its wait, and gives it up
+// after vacuumLockTimeout while anybody holds its TOAST table, which
+// autovacuum still vacuums on its own. Only a superuser, the database's owner,
+// or a role that belongs to the owner may vacuum it — owning the tables is not
+// enough — and a logical replication slot holds its cutoff back as an older
+// transaction does.
 func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
 	rewrite uint32) error {
+	if _, err := conn.Exec(ctx, `SELECT set_config('lock_timeout', $1, false)`, vacuumLockTimeout); err != nil {
+		return fmt.Errorf("set the vacuum's lock timeout: %w", err)
+	}
 	deadline := time.Now().Add(s.vacuumPatience)
 	wait := vacuumFirstWait
 	left := slices.Concat(verificationTables[:], []string{statisticsCatalog})
@@ -1498,9 +1531,8 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 		switch probe, err := s.vacuumFull(ctx, conn, notices, vacuumProbeTable, rewrite); {
 		case err != nil:
 			return err
-		case probe == vacuumHeld:
-			why = append(why, fmt.Sprintf("VACUUM FULL could not take %s, which another session held",
-				vacuumProbeTable))
+		case probe == vacuumHeld || probe == vacuumBlocked:
+			why = append(why, lockedOut(probe, vacuumProbeTable))
 		case probe == vacuumTooSoon:
 			why = append(why, "VACUUM FULL would keep the rows the rewrite deleted, which a transaction "+
 				"older than the rewrite could still read: a statement or transaction in this database, "+
@@ -1513,9 +1545,8 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 					return err
 				}
 				switch outcome {
-				case vacuumHeld:
-					why = append(why, fmt.Sprintf("VACUUM FULL could not take %s, which another session held",
-						table))
+				case vacuumHeld, vacuumBlocked:
+					why = append(why, lockedOut(outcome, table))
 				case vacuumTooSoon:
 					reader := "a transaction older than the rewrite"
 					if table == statisticsCatalog {
@@ -1558,11 +1589,25 @@ const (
 	vacuumDone vacuumOutcome = iota
 	// Another session held the table, and VACUUM FULL passed over it.
 	vacuumHeld
+	// VACUUM FULL took the table, but another session held a lock it needs
+	// with it, its TOAST table's say, for longer than vacuumLockTimeout, and
+	// it gave the table up in its old file.
+	vacuumBlocked
 	// The table is in a new file, but a transaction older than the rewrite
 	// held VACUUM FULL's cutoff back, so the file holds what the rewrite
 	// deleted from it.
 	vacuumTooSoon
 )
+
+// lockedOut says why VACUUM FULL left table in its old file, for the two
+// outcomes another session's lock decides.
+func lockedOut(outcome vacuumOutcome, table string) string {
+	if outcome == vacuumBlocked {
+		return fmt.Sprintf("VACUUM FULL took %s, then gave it up after waiting %s for a lock another "+
+			"session held on its TOAST table or its row in pg_class", table, vacuumLockTimeout)
+	}
+	return fmt.Sprintf("VACUUM FULL could not take %s, which another session held", table)
+}
 
 // vacuumFull runs VACUUM FULL on table once and says what it came to, or
 // returns an error for what waiting cannot change.
@@ -1579,6 +1624,12 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 	notices.take()
 	if _, err := conn.Exec(ctx,
 		command+" "+pgx.Identifier(strings.Split(table, ".")).Sanitize()); err != nil {
+		// lock_timeout ended a wait for a lock other than the table's, which
+		// SKIP_LOCKED would have passed over; the run rolled back.
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == sqlstateLockNotAvailable {
+			return vacuumBlocked, nil
+		}
 		return 0, fmt.Errorf("vacuum %s: %w", table, err)
 	}
 	warnings := notices.take()

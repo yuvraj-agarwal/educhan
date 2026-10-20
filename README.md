@@ -340,13 +340,19 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    old files; with autovacuum off, it is the vacuum both tables get. It does not
    wait for a table another session holds, so requests do not queue behind a
    vacuum waiting to start: it passes over the table and tries again later
-   (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`). But once it has a table
-   it holds it against every read and write until it has written the table out,
-   so badged posts and confirmations wait for the whole run — between about half
-   a second and two and a half seconds for 220,000 credentials, measured on
-   development machines — each holding one of its server instance's few database
-   connections, and once they hold them all (three by default) every request on
-   that instance waits too. And it copies, rather than drops, any old row a
+   (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`). Once it has a table it
+   can still have to wait for another lock it needs — the table's TOAST table,
+   say, while a `VACUUM` runs on that — and requests queue behind that wait, so
+   it waits a tenth of a second at most and then gives the table up and tries
+   again later as well
+   (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). But a run that has
+   its locks holds the table against every read and write until it has written
+   the table out, so badged posts and confirmations wait for the whole run —
+   between about half a second and two and a half seconds for 220,000
+   credentials, measured on development machines — each holding one of its
+   server instance's few database connections, and once they hold them all
+   (three by default) every request on that instance waits too. And it copies,
+   rather than drops, any old row a
    snapshot from before the rewrite could still read: any statement or
    transaction in the database that started before the rewrite committed and is
    still running — the server's own requests included — or any transaction
@@ -369,18 +375,22 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    while it runs any request whose query needs statistics its connection has
    not cached waits, on any table, so this run too passes over the catalog while
    another session holds it — one reading `pg_stats`, say — and tries again
-   (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Only a superuser, the
-   database's owner, or a role that belongs to the owner's role may vacuum the
-   catalog — owning the tables is not enough — and a sweeper whose role may not
-   fails (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). On Cloud SQL,
-   where no role is a superuser, that means the role that owns the database, or
+   (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Autovacuum is still on
+   for the catalog and vacuums its TOAST table on its own; when the run finds
+   that table held, it waits for it a tenth of a second at most, those requests
+   waiting with it, and then gives the catalog up and tries again too. Only a
+   superuser, the database's owner, or a role that belongs to the owner's role
+   may vacuum the catalog — owning the tables is not enough — and a sweeper
+   whose role may not fails
+   (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). On Cloud SQL, where
+   no role is a superuser, that means the role that owns the database, or
    membership of it; `SELECT pg_has_role(datdba, 'USAGE') FROM pg_database WHERE
-   datname = current_database()`, run as the sweeper's role, says whether it
-   has that, and this has not been tried there yet.
+   datname = current_database()`, run as the sweeper's role, says whether it has
+   that, and this has not been tried there yet.
 
-The sweep keeps at this for up to a minute. A session that holds a table, or an
-old snapshot, for longer than that — an export, a `psql` left in a transaction
-— fails the sweep, which exits non-zero
+The sweep keeps at this for up to a minute. A session that holds a table, a
+lock its vacuum needs, or an old snapshot for longer than that — an export, a
+`psql` left in a transaction — fails the sweep, which exits non-zero
 (`TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
 `TestSweepFailsWhenTheVerificationTablesAreHeld`). It does not report success
 with the old rows still in the tables' files, or the old samples in
@@ -1327,13 +1337,19 @@ on that instance waits too. Five seconds bounds the wait, not the queue: once
 the lock is granted, confirmations wait out the rewrite as well, which grows
 with the table — about three seconds for 220,000 credentials, measured on a
 development machine — so a confirmation can wait five seconds plus the rewrite.
-The vacuum never waits for a lock. It passes over a table another session holds,
-which VACUUM reports only as a warning; the sweep's connection asks for warnings
-itself, so a `client_min_messages` in `DATABASE_URL` or a role's default cannot
-make a moment's reader look like a role that may not vacuum the table
-(`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has a
-table, though, it holds it against reads as well as writes until it has written
-the table out, and badged posts and confirmations wait for the whole run:
+The vacuum does not wait for a table another session holds. It passes over the
+table, which VACUUM reports only as a warning; the sweep's connection asks for
+warnings itself, so a `client_min_messages` in `DATABASE_URL` or a role's
+default cannot make a moment's reader look like a role that may not vacuum the
+table (`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has
+a table it can still wait for another lock it needs — the table's TOAST table,
+which autovacuum vacuums on its own, as it still does `pg_statistic`'s, or the
+table's row in `pg_class`, which a `GRANT` on the table holds until its
+transaction ends — but for a tenth of a second at most, with the requests that
+need the table waiting behind it; then it gives the table up and tries again
+later (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). And a run that
+has its locks holds the table against reads as well as writes until it has
+written the table out, so badged posts and confirmations wait for the whole run:
 between about half a second and two and a half seconds for 220,000 credentials,
 measured on development machines, and once they hold all of a server instance's
 database connections (three by default) every request on that instance waits

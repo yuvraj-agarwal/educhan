@@ -851,7 +851,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     are not wiped (the README's "Transaction ids, and the nightly rewrite" ends on what
     that leaves). `SKIP_LOCKED` passes over a table another session holds, with a
     `55P03` warning, rather than queueing every badged post behind the vacuum's wait.
-    It does nothing about the run: once `VACUUM FULL` has a table it holds it against
+    It covers only the table it names: once `VACUUM FULL` has the table it waits,
+    holding the table, for the other locks it needs — its TOAST table's, which
+    autovacuum takes on its own, and its row in `pg_class`, which an open `GRANT`
+    on the table holds — so `vacuumVerificationTables` first sets `lock_timeout` to
+    `vacuumLockTimeout` (100 ms), and a run that times out, with `55P03` as an
+    error, has given the table up and is tried again like a skipped one
+    (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`, where a `GRANT` stands
+    in for the TOAST table, which a test's role cannot hold). Neither does anything
+    about the run: once `VACUUM FULL` has a table and its locks it holds it against
     reads as well as writes until it has written it out (between about half a second
     and two and a half seconds at 220,000 credentials on development machines), every
     badged post and confirmation waits for it, and three waiting on one instance hold
@@ -886,13 +894,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `relfrozenxid` check against the rewrite, which is later than `0015`. It takes
     milliseconds, but while it runs a query whose plan needs statistics its connection
     has not cached waits, on any table, which is why it too skips a held catalog
-    (a session reading `pg_stats` holds it). Only a superuser, the database's owner or
-    a member of the owner's role may vacuum that catalog — a role that owns every
-    table but not the database may not — and anyone else gets it skipped with a
-    warning, which fails the sweep with its own message, every night
-    (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). The README's archive
-    sweeper section tells the operator, and its step 5 says how to check the role, on
-    Cloud SQL too, where this has not been tried.
+    (a session reading `pg_stats` holds it), and why the lock timeout matters most
+    there: `0015` left autovacuum on for the catalog, TOAST table included. Only a
+    superuser, the database's owner or a member of the owner's role may vacuum that
+    catalog — a role that owns every table but not the database may not — and anyone
+    else gets it skipped with a warning, which fails the sweep with its own message,
+    every night (`TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`). The README's
+    archive sweeper section tells the operator, and its step 5 says how to check the
+    role, on Cloud SQL too, where this has not been tried.
     `TestVerificationTablesKeepNoStatistics` checks that the sweep moves the catalog and
     its TOAST table to new files with a cutoff past `0015`; no test can read an old
     version without a superuser's `pageinspect`, which is how the leak was found. A
@@ -938,6 +947,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`,
     `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
     `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
+    `TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
     `TestSweepLeavesNoScanTimeFromBeforeIt` and
     `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is

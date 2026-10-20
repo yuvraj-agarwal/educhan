@@ -1837,6 +1837,89 @@ func TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor(t *testing.T) {
 	}
 }
 
+// SKIP_LOCKED covers only the table VACUUM FULL is given. Once it has that
+// table it takes other locks, waiting for each while it holds the table
+// against every read: its TOAST table's, which autovacuum vacuums on its own,
+// without the table — as it does pg_statistic's, where every query whose plan
+// needs statistics its connection has not cached would wait with it — and its
+// row in pg_class, which a GRANT on the table updates without taking the
+// table. So the vacuum gives the table up after vacuumLockTimeout and the
+// sweep tries again, as for a table another session holds, rather than hold
+// it for the connection's lock_timeout and then fail. A test's role cannot
+// hold a TOAST table, so a GRANT left open stands in.
+func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
+	h := testServer(t, nil)
+	ctx := context.Background()
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		VALUES ('\x01', '\x02', 'Granted College', date_trunc('day', now()) + interval '181 days')`)
+	hold := func(statement string) pgx.Tx {
+		tx, err := h.app.pool.Begin(ctx)
+		if err != nil {
+			t.Fatalf("begin: %v", err)
+		}
+		t.Cleanup(func() { _ = tx.Rollback(ctx) })
+		if _, err := tx.Exec(ctx, statement); err != nil {
+			t.Fatalf("hold: %v", err)
+		}
+		return tx
+	}
+
+	// A transaction that began before the rewrite keeps the vacuum off the
+	// tables altogether, so the GRANT has to come after it: a reader holds
+	// the credentials table until the vacuum has passed over it once, which
+	// it does after the rewrite has committed.
+	reader := hold(`SELECT count(*) FROM verification_credentials`)
+	files := h.relationFiles("verification_credentials", "verification_pending")
+	swept := h.sweepLater()
+	waitUntil(t, "the sweep has vacuumed the pending table", func() bool {
+		return h.relationFiles("verification_pending")[0] != files[1]
+	})
+	granter := hold(`GRANT SELECT ON verification_credentials TO PUBLIC`)
+	var grantPID int32
+	if err := granter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&grantPID); err != nil {
+		t.Fatalf("read the GRANT's backend: %v", err)
+	}
+	if err := reader.Rollback(ctx); err != nil {
+		t.Fatalf("end the reader: %v", err)
+	}
+
+	waiting := func() bool {
+		var n int
+		if err := h.app.pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY (pg_blocking_pids(pid))`,
+			grantPID).Scan(&n); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return n > 0
+	}
+	waitUntil(t, "the vacuum waits for the GRANT", waiting)
+	start := time.Now()
+	for waiting() {
+		if took := time.Since(start); took > 2*time.Second {
+			t.Fatalf("VACUUM FULL has held the credentials table for %s waiting for a GRANT to end", took)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	select {
+	case sweep := <-swept:
+		t.Fatalf("the sweep ended (%v) when its vacuum let go of the credentials table; "+
+			"want it to try again", sweep.err)
+	default:
+	}
+	waitUntil(t, "the vacuum tries the credentials table again", waiting)
+	if err := granter.Rollback(ctx); err != nil {
+		t.Fatalf("end the GRANT: %v", err)
+	}
+
+	sweep := await(t, "the sweep", swept)
+	if sweep.err != nil {
+		t.Fatalf("a sweep whose GRANT ended while it waited: %v", sweep.err)
+	}
+	if after := h.relationFiles("verification_credentials")[0]; after == files[0] {
+		t.Errorf("the credentials table is still in file %d after a sweep that finished", after)
+	}
+}
+
 // PostgreSQL's statistics keep the time of the last scan of every table and
 // index (last_seq_scan, last_idx_scan), and a confirmation checking the
 // credentials' primary key is such a scan: on a day with a single issuance it
