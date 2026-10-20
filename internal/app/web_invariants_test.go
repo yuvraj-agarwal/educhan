@@ -1141,6 +1141,49 @@ func TestPassPageDetails(t *testing.T) {
 			!strings.Contains(jsFunction(t, script, "passIssuedHTML"), `id="pass-issued" tabindex="-1"`) {
 			t.Error("a code just handed over is drawn without moving focus to it")
 		}
+		// A code handed over while the reader was elsewhere (a claim or reissue
+		// answer that arrived after they left) is focused when they come back,
+		// once: the drawing that first shows it marks it shown, so no later
+		// drawing or poll moves focus to it again.
+		render := withoutComments(jsFunction(t, script, "renderPass"))
+		fresh := strings.Index(render, "const fresh = Boolean(passJustIssued && !passJustIssued.shown);")
+		drawn := strings.Index(render, "drawPass(info);")
+		focused := strings.Index(render, "if (fresh) {\n    focusPassPanel(\"pass-issued\");\n  }")
+		if fresh < 0 || drawn < fresh || focused < drawn {
+			t.Error("a code handed over while the reader was away is drawn without moving focus to it when they come back")
+		}
+		if !strings.Contains(withoutComments(jsFunction(t, script, "passViewHTML")), "parts.push(passIssuedHTML(issued));\n    issued.shown = true;\n") {
+			t.Error("a code just handed over is not marked shown once drawn, so every drawing and poll moves focus back to it")
+		}
+	})
+	t.Run("a poll that changes nothing draws nothing", func(t *testing.T) {
+		// Every 202 pending would otherwise draw the page again, hiding a code
+		// shown with Show the code and unticking the 18+ box on Renew while a
+		// renewal's checkout is open. Only the note of a failed attempt goes.
+		claimed := withoutComments(jsFunction(t, script, "showClaimed"))
+		same := strings.Index(claimed, "if (!news && !unseen && claim === (lastPassInfo.claim === true)) {\n"+
+			"    const note = document.getElementById(\"pass-collect-note\");\n    if (note) {\n      note.textContent = \"\";\n    }\n    return;\n  }")
+		if unseen := strings.Index(claimed, "const unseen = Boolean(passJustIssued && !passJustIssued.shown);"); same < 0 || unseen > same ||
+			strings.Index(claimed, "redrawPass(") < same {
+			t.Error("a claim's answer that changes nothing draws the Pass page again")
+		}
+	})
+	t.Run("the page says where the reader is", func(t *testing.T) {
+		render := withoutComments(jsFunction(t, script, "renderPass"))
+		if said := strings.Index(render, "announce(\"educhan Pass\");"); said < 0 || said < strings.Index(render, "drawPass(info);") ||
+			said > strings.Index(render, "if (back === \"cancelled\") {") {
+			t.Error("the Pass page is drawn without its title, or without saying so to a screen reader")
+		}
+	})
+	t.Run("back from Stripe, nothing is said to be missing while a lost answer is asked again", func(t *testing.T) {
+		// A nonce kept from a claim whose answer was lost is asked for again
+		// (collectPass) even with nothing left under the claim, and may bring
+		// the code, so "nothing waiting" is not said meanwhile.
+		render := withoutComments(jsFunction(t, script, "renderPass"))
+		if !strings.Contains(render, "} else if (back === \"paid\" && info.enabled && !info.claim && !passNoncePending(PASS_NONCE_STORAGE_KEY)) {\n"+
+			"    showNotice(\n      \"There's nothing waiting to be collected in this browser.") {
+			t.Error("back from Stripe, the Pass page says nothing is waiting while it asks again for a claim whose answer was lost")
+		}
 	})
 	t.Run("drawn again when brought back from the back-forward cache, behind the age screen", func(t *testing.T) {
 		show := withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});"))
