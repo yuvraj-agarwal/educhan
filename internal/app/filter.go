@@ -453,6 +453,10 @@ type view struct {
 	// cache lineStart: the line holding offset lineAt starts at line.
 	link         int
 	lineAt, line int
+	// runLine and runFirst cache greentextRun: the run of greentext lines
+	// holding the line that starts at runLine starts at runFirst (both 0
+	// when not yet asked, which is the answer for the first line).
+	runLine, runFirst int
 	// loose is set for the loose view, which a window search is read on in
 	// the loose form of its pattern.
 	loose bool
@@ -6704,12 +6708,23 @@ func (r *wordReading) postHas(name string, set map[string]bool) bool {
 func (f *scannedField) wordReading() *wordReading {
 	if f.words == nil {
 		f.plain.work += len(f.plain.text)
-		f.words = newWordReading(f.plain.text)
+		v := &f.plain
+		f.words = newWordReading(v.text, func(i int) bool {
+			r, _ := utf8.DecodeRuneInString(f.src[v.start[i]:v.end[i]])
+			return clauseDashes[r]
+		})
 	}
 	return f.words
 }
 
-func newWordReading(text string) *wordReading {
+// clauseDashes are the dashes that set off a clause, which the plain view
+// reads as "-" like a hyphen: "you know who you are—don't come tomorrow".
+var clauseDashes = map[rune]bool{'—': true, '–': true, '―': true, '⸺': true, '⸻': true}
+
+// newWordReading reads the words of text, a plain view, with their sentences
+// and clauses. clauseDash reports that the "-" at text[i] was written as a
+// dash that sets off a clause, which a hyphen is not.
+func newWordReading(text string, clauseDash func(i int) bool) *wordReading {
 	r := &wordReading{text: text}
 	for _, s := range wordSpans(text) {
 		for s[0] < s[1] && text[s[0]] == '\'' {
@@ -6731,10 +6746,12 @@ func newWordReading(text string) *wordReading {
 		if k == 0 {
 			continue
 		}
-		gap := text[r.sp[k-1][1]:r.sp[k][0]]
+		from := r.sp[k-1][1]
+		gap := text[from:r.sp[k][0]]
 		if !strings.ContainsAny(gap, ".!?\n") {
 			r.sentence[k] = r.sentence[k-1]
-			if !strings.ContainsAny(gap, ",;:—–") && !strings.Contains(gap, " - ") {
+			if !strings.ContainsAny(gap, ",;:") && !strings.Contains(gap, " - ") && !strings.Contains(gap, "--") &&
+				!dashIn(gap, from, clauseDash) {
 				r.clauseStart[k] = r.clauseStart[k-1]
 			}
 		}
@@ -6755,6 +6772,17 @@ func newWordReading(text string) *wordReading {
 		}
 	}
 	return r
+}
+
+// dashIn reports a "-" in gap, which starts at from in the text, that
+// clauseDash says sets off a clause.
+func dashIn(gap string, from int, clauseDash func(i int) bool) bool {
+	for j := 0; j < len(gap); j++ {
+		if gap[j] == '-' && clauseDash != nil && clauseDash(from+j) {
+			return true
+		}
+	}
+	return false
 }
 
 // endsSentence reports that nothing but fillers follows word i in its
@@ -9321,18 +9349,20 @@ func quotedNotSaid(v *view, m []int, next []string) bool {
 // post being answered: the line opens with one ">", a reply link (">>123")
 // comes before it in the post, and the poster's own words round the quote do
 // not take it up as theirs ("same", "me too", "mood"). Without a reply link,
-// or with "be me", "tfw" or "mfw" opening it, a greentext line is the
-// poster's own story.
+// or with "be me", "tfw" or "mfw" opening the run of greentext lines it is
+// in, a greentext line is the poster's own story: ">>123 >be me >bullied
+// every day >bringing my dad's glock tomorrow" is the poster's.
 func (v *view) quotesTheReply(i int) bool {
 	text := v.text
 	start := v.lineStart(i)
-	if !strings.HasPrefix(text[start:], ">") || strings.HasPrefix(text[start:], ">>") {
+	if !greentext(text[start:]) {
 		return false
 	}
 	if link := v.firstReplyLink(); link < 0 || link >= start {
 		return false
 	}
-	opening := nextWords(text[start+1:min(len(text), start+24)], 2)
+	first := v.greentextRun(start)
+	opening := nextWords(text[first+1:min(len(text), first+24)], 2)
 	if len(opening) > 0 && narration[opening[0]] || len(opening) == 2 && is(opening[0], "be") && is(opening[1], "me") {
 		return false
 	}
@@ -9362,6 +9392,34 @@ func (v *view) quotesTheReply(i int) bool {
 	}
 	v.work += read
 	return !agrees(wordsIn(before)) && !agrees(wordsIn(after))
+}
+
+// greentext reports a line that opens with one ">": a quote, not a reply
+// link (">>123").
+func greentext(line string) bool {
+	return strings.HasPrefix(line, ">") && !strings.HasPrefix(line, ">>")
+}
+
+// greentextRun is where the run of greentext lines holding the line that
+// starts at start begins. The view keeps the last answer, so the lines of
+// a run are read back over once, not once for every match in them.
+func (v *view) greentextRun(start int) int {
+	text := v.text
+	first := start
+	for first > 0 {
+		if first == v.runLine {
+			first = v.runFirst
+			break
+		}
+		prev := strings.LastIndexByte(text[:first-1], '\n') + 1
+		v.work += first - prev
+		if !greentext(text[prev:first]) {
+			break
+		}
+		first = prev
+	}
+	v.runLine, v.runFirst = start, first
+	return first
 }
 
 // lineStart is where the line holding offset i starts. Matches are read in
@@ -9432,10 +9490,14 @@ var (
 // The poster's own words stay theirs however they are wrapped. A quotation
 // no one is named as saying is read as written ("'I'm bringing a gun
 // tomorrow' lol"), and so is one the poster gives themselves: "I said '…'",
-// "me: '…'", "'…' - me", an instruction ("just tell him '…'", "you should
-// say '…'") and a verb with no subject, which leaves out an "I". A source
-// that is not a person — "news: '…'", "'…' - police", "'…' reportedly" —
-// names no speaker, so a threat dressed as a headline is still a threat.
+// "me: '…'", "'…' - me", "you heard me", a label naming only who it is said
+// to ("note to my bully: '…'", "to OP: '…'"), an instruction ("just tell him
+// '…'", "you should say '…'") and a verb with no subject, or only an adverb
+// before it ("already told everyone '…'"), which leaves out an "I"; and so
+// is a greentext story the poster opens with "be me", after a reply link or
+// not. A source that is not a person — "news: '…'", "'…' - police", "'…'
+// reportedly" — names no speaker, so a threat dressed as a headline is still
+// a threat.
 //
 // So a poster reporting a threat, a grooming attempt or being told to kill
 // themselves is not held for it, and one who quotes their own threat is: the
@@ -9502,9 +9564,28 @@ func quoteSpeaker(text string, open, end int) speaker {
 	lead := text[max(0, open-64):open]
 	lead = lead[quotationBreak(lead)+1:]
 	if t := strings.TrimRight(lead, " "); strings.HasSuffix(t, ":") {
+		// A label names who speaks, and whoever comes after "to" or "dear"
+		// in it is spoken to: "me to him:", "my bully to me:", "note to my
+		// bully:", "dear class 10B:" (the last two the poster's, named by no
+		// one). A verb of saying makes it a clause, which the verbs below
+		// read: "he messaged me:", "she said to me:".
 		ws := wordsIn(t)
-		if who := labelSpeaker(ws[max(0, len(ws)-4):], true); who != noSpeaker {
-			return who
+		if !hasSayingVerb(ws) {
+			ws = ws[max(0, len(ws)-4):]
+			addressed := false
+			for k, w := range ws {
+				if is(bare(w), "to") || is(bare(w), "dear") {
+					ws, addressed = ws[:k], true
+					break
+				}
+			}
+			who := labelSpeaker(ws, true)
+			if addressed && who == otherSpeaks && !namesSomeoneElse(ws) {
+				who = noSpeaker // "note to my bully:", a note no one else is said to have sent
+			}
+			if who != noSpeaker {
+				return who
+			}
 		}
 	}
 	var after []string
@@ -9514,8 +9595,7 @@ func quoteSpeaker(text string, open, end int) speaker {
 			tail = tail[:j]
 		}
 		if t := strings.TrimLeft(tail, " "); strings.HasPrefix(t, "-") || strings.HasPrefix(t, "~") {
-			ws := wordsIn(t)
-			if who := labelSpeaker(ws[:min(len(ws), 3)], false); who != noSpeaker {
+			if who := attributionSpeaker(wordsIn(t)); who != noSpeaker {
 				return who
 			}
 		}
@@ -9568,7 +9648,7 @@ func quotationBreak(s string) int {
 		case '\'':
 			prev, _ := utf8.DecodeLastRuneInString(s[:j])
 			next, _ := utf8.DecodeRuneInString(s[j+size:])
-			if !alnum(prev) || !alnum(next) {
+			if (!alnum(prev) || !alnum(next)) && !elided(s, j) && !(j > 0 && unicode.IsDigit(prev)) {
 				return j
 			}
 		}
@@ -9604,6 +9684,56 @@ func labelSpeaker(ws []string, last bool) speaker {
 	return noSpeaker
 }
 
+// hasSayingVerb reports a verb of saying, hearing or receiving among ws, as
+// a verb rather than a noun ("his reply" is a noun).
+func hasSayingVerb(ws []string) bool {
+	for k, w := range ws {
+		if w = bare(w); (sayingVerbs[w] || heardVerbs[w] || receivedVerbs[w]) && !sayingNoun(ws, k) {
+			return true
+		}
+	}
+	return false
+}
+
+// namesSomeoneElse reports a person among ws, or something sent that is
+// said to be someone's: "my bully", "his message", "kabir's note".
+func namesSomeoneElse(ws []string) bool {
+	for k, w := range ws {
+		w = bare(w)
+		if otherSpeakers[w] || messageNouns[w] && k > 0 && (otherSpeakers[bare(ws[k-1])] ||
+			strings.HasSuffix(bare(ws[k-1]), "'s") || nounLeads[bare(ws[k-1])] && !articles[bare(ws[k-1])]) {
+			return true
+		}
+	}
+	return false
+}
+
+// articles say only that what follows is a thing, not whose it is.
+var articles = canonSetOf(`a an the this that`)
+
+// attributionSpeaker reads who an attribution after a dash names, from the
+// words after the dash: the poster ("- me", "— me, deadly serious", a lone
+// "- I") or someone else ("— my mum", "- some guy in my class"), named
+// first, after at most a word or two that only say which ("my", "some",
+// "a random"). Anything else after a dash is the poster going on, not an
+// attribution: "— should I tell someone?", "- I reported it", "— am I
+// overreacting?".
+func attributionSpeaker(ws []string) speaker {
+	for k, w := range ws[:min(len(ws), 3)] {
+		w = bare(w)
+		switch {
+		case posterLabels[w] && (!is(w, "i") || len(ws) == 1):
+			return posterSpeaks
+		case otherSpeakers[w] || messageNouns[w]:
+			return otherSpeaks
+		case k < 2 && (nounLeads[w] || posterOwners[w] || attributionLeads[w]):
+			continue
+		}
+		break
+	}
+	return noSpeaker
+}
+
 // speakerOf says who the verb of saying (or of coming across) verb is said
 // of, from the words before it in its sentence, nearest first, and rest, the
 // words after it. Said to the poster ("was told", "got asked") or come
@@ -9614,6 +9744,11 @@ func labelSpeaker(ws []string, last bool) speaker {
 // "told me".
 func speakerOf(before []string, verb string, rest []string) speaker {
 	n := len(before)
+	// "you heard me": the poster standing by their own words.
+	if heardVerbs[verb] && len(rest) > 0 && is(bare(rest[0]), "me") &&
+		(n == 0 || secondPerson[bare(before[n-1])] || is(bare(before[n-1]), "you")) {
+		return posterSpeaks
+	}
 	if heardVerbs[verb] || receivedVerbs[verb] || n > 0 && passiveLeads[bare(before[n-1])] && participles[verb] {
 		return otherSpeaks
 	}
@@ -9773,7 +9908,9 @@ var (
 		tbh fr so ok okay yeah honestly basically should shud must gotta could can might may once twice never ever randomly suddenly straight right back
 		used to my our your his their its the a an this these those in on at of from with under next by about
 		after before for me us mujhe mere mera meri roz hamesha bhi ne ko phir fir aur ki ke ka hai tha thi the
-		haha hahaha omg oh yo hey well like legit lowkey highkey deadass fucking even why how what`)
+		haha hahaha omg oh yo hey well like legit lowkey highkey deadass fucking even why how what
+		already seriously totally definitely def finally recently today yesterday earlier apparently openly
+		publicly clearly officially proudly casually calmly quietly loudly simply`)
 	// reportedLinks are the words a report puts between a verb of saying and
 	// what was said: "told me to go", "said that you should all", "said
 	// he'll", "bolta hai ki tu".
@@ -9782,6 +9919,9 @@ var (
 		he'd she'd they'd he'll she'll they'll he's she's me him her them us everyone everybody all someone people
 		ppl a an the kid kids guy girl person should've shouldve please pls plz literally hai ki ke tu tum aap
 		mujhe usko unko ko jaa ja i've ive if whether`)
+	// attributionLeads say which person an attribution after a dash names
+	// before it names them: "— some random guy", "- one of the teachers".
+	attributionLeads = canonSetOf(`some random one certain other another of`)
 	// quoteLeads, before a quotation, and quoteKinds, after it, make it the
 	// name of a kind of post.
 	quoteLeads = canonSetOf(`the a those these every all like`)
@@ -9792,12 +9932,15 @@ var (
 // quotationAround finds the quotation offset i is in, within 120 bytes
 // either side on its line: where its opening mark starts and where its
 // closing mark ends, or -1. Every kind of quotation mark opens one: straight
-// and curly double and single quotes, guillemets, low-9 quotes and corner
+// and curly double quotes, straight single quotes (which curly ones are
+// read as, since the view folds them), guillemets, low-9 quotes and corner
 // brackets. A straight double quote opens one only when an even number of
 // them come before it on the line, since the same mark closes it. An
 // apostrophe opens a quotation only after something that is not a letter or
 // a digit, and closes one only before such a thing, so the ones inside
-// "what's" and "ma'am" are neither.
+// "what's" and "ma'am" are neither; nor is one that stands for letters or
+// digits left out ("'cause", "'til", "'n", "the class of '09"), nor a mark
+// of feet and inches ("5'10\"").
 func quotationAround(text string, i int) (int, int) {
 	lo := max(0, i-120)
 	for j := i; j > lo; {
@@ -9807,18 +9950,23 @@ func quotationAround(text string, i int) (int, int) {
 		case '\n':
 			return -1, -1
 		case '"':
-			line := text[max(0, j-240):j]
-			if strings.Count(line[strings.LastIndexByte(line, '\n')+1:], `"`)%2 == 1 {
+			if inchMark(text, j) {
+				continue
+			}
+			if doubleQuotesBefore(text, j)%2 == 1 {
 				return -1, -1 // it closes one
 			}
 			return j, closingMark(text, i, r)
-		case '“', '«', '‘', '„', '‚', '「', '『', '‹':
+		case '“', '«', '„', '‚', '「', '『', '‹':
 			return j, closingMark(text, i, r)
-		case '”', '»', '’', '」', '』', '›':
+		case '”', '»', '」', '』', '›':
 			return -1, -1
 		case '\'':
 			prev, _ := utf8.DecodeLastRuneInString(text[:j])
 			next, _ := utf8.DecodeRuneInString(text[j+size:])
+			if j > 0 && unicode.IsDigit(prev) || elided(text, j) {
+				continue
+			}
 			if j == 0 || !alnum(prev) {
 				return j, closingMark(text, i, r)
 			}
@@ -9830,10 +9978,55 @@ func quotationAround(text string, i int) (int, int) {
 	return -1, -1
 }
 
+// doubleQuotesBefore counts the straight double quotes before offset j on
+// its line, within 240 bytes, leaving out marks of inches.
+func doubleQuotesBefore(text string, j int) int {
+	from := max(0, j-240)
+	from += strings.LastIndexByte(text[from:j], '\n') + 1
+	n := 0
+	for k := from; k < j; k++ {
+		if text[k] == '"' && !inchMark(text, k) {
+			n++
+		}
+	}
+	return n
+}
+
+// inchMark reports that the straight double quote at text[j] marks inches
+// after feet, "5'10\"", not a quotation.
+func inchMark(text string, j int) bool {
+	k := j
+	for k > 0 && k > j-2 && text[k-1] >= '0' && text[k-1] <= '9' {
+		k--
+	}
+	return k < j && k >= 2 && text[k-1] == '\'' && text[k-2] >= '0' && text[k-2] <= '9'
+}
+
+// elided reports that the apostrophe at text[j] stands for what was left
+// out of the start of a word or a year: "'cause", "'til", "'em", "'n",
+// "'09", "the '90s".
+func elided(text string, j int) bool {
+	k := j + 1
+	for k < len(text) && k < j+8 && (text[k] >= 'a' && text[k] <= 'z' || text[k] >= '0' && text[k] <= '9') {
+		k++
+	}
+	if k < len(text) && (text[k] >= 'a' && text[k] <= 'z' || text[k] >= '0' && text[k] <= '9' || text[k] == '\'') {
+		return false // a longer word, or one closed at once: "'cause'"
+	}
+	w := text[j+1 : k]
+	if len(w) >= 2 && w[0] >= '0' && w[0] <= '9' && w[1] >= '0' && w[1] <= '9' {
+		return len(w) == 2 || w[2:] == "s"
+	}
+	return elisions[w]
+}
+
+// elisions are words that begin with an apostrophe, for what was left out.
+var elisions = canonSetOf(`cause cos coz cuz til till n em bout round nother kay sup tis twas ere ave ello`)
+
 // closingMark is where the mark closing a quotation opened with open ends,
 // searching from offset i, or -1.
 func closingMark(text string, i int, open rune) int {
-	closes := map[rune]string{'"': `"`, '“': `”"`, '«': `»`, '‘': `’'`, '\'': `'`, '„': `“”"`, '‚': `‘’'`,
+	closes := map[rune]string{'"': `"`, '“': `”"`, '«': `»`, '\'': `'`, '„': `“”"`, '‚': `'`,
 		'「': `」`, '『': `』`, '‹': `›`}[open]
 	hi := min(len(text), i+120)
 	for j := i; j < hi; {
@@ -9841,7 +10034,7 @@ func closingMark(text string, i int, open rune) int {
 		if r == '\n' {
 			return -1
 		}
-		if strings.ContainsRune(closes, r) {
+		if strings.ContainsRune(closes, r) && !(r == '"' && inchMark(text, j)) {
 			next, _ := utf8.DecodeRuneInString(text[j+size:])
 			if r != '\'' || j+size >= len(text) || !alnum(next) {
 				return j + size

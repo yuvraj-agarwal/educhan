@@ -2750,10 +2750,20 @@ func TestFilterReadsReportedSpeechAsSomeoneElses(t *testing.T) {
 		{"a 'b' c 'add me on snap", contact},
 		{"'ve been thinking about killing myself all evening and I'm not joking", support},
 		{"'s continue this on telegram, too many lurkers here", contact},
+		// Curly single quotes are read as the straight apostrophe the view
+		// folds them to, which quotationAround reads as above: a quotation
+		// opens after a space, not inside "I’m".
+		{"she said ‘kys’ to me in class", publish},
+		{"she said ‘I’m bringing a gun to school tomorrow’ and walked off", publish},
+		{"‘kys’", selfHarm},
+		{"‘I’m bringing a gun to school tomorrow’ – me", threat},
 	} {
 		if got := verdictName(bodyVerdict(c.body)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
 		}
+	}
+	if got := plainView("‘’ʼ′", nil).text; got != "''''" {
+		t.Errorf("curly single quotes read as %q, want straight apostrophes", got)
 	}
 }
 

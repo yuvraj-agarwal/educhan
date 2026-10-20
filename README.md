@@ -401,8 +401,10 @@ desk", "I was told to kys"), or names as a kind of post ("the 'add me on snap'
 guys") are someone else's, so a student reporting a threat, a grooming attempt
 or being told to kill themselves is not held for it. Words the poster gives
 themselves are theirs however they are wrapped ("'I'm bringing a gun tomorrow'
-- me", "I told him 'kys'", "me: '…'"), and so is a quotation that no one, or
-only a source such as "news" or "police", is named as saying. A report that
+- me", "I told him 'kys'", "me: '…'", "note to my bully: '…'", "you heard me"), and
+so is a quotation that no one, or only a source such as "news" or "police", is
+named as saying, and a greentext story the poster opens with "be me", reply link
+or not. A report that
 makes the poster the subject of crisis language ("my therapist says I'm
 suicidal"), or gives the words to the poster's own mind ("my head keeps telling
 me to kill myself"), is still the poster's. Contact details are blocked whoever

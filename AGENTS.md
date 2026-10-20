@@ -628,10 +628,17 @@ asking may be the one at risk (`TestFilterAsksAboutAMethodBeforeHoldingIt`).
 (`cueCheck`, `cueBesideAnAge`, `ageCheck`, `aslCheck`), method questions (`methodCheck`)
 and asks to talk elsewhere (`askCheck`, `appFrame`) all turn down words the post passes
 on rather than says: a greentext line quoting the post being answered
-(`quotesTheReply`); a quotation, in any kind of quotation mark (`quotationAround`, which
-counts straight double quotes on the line to tell an opening one from a closing one),
-whose speaker `quoteSpeaker` finds to be someone else — a label ("teacher:", "his dm:"),
-an attribution after a dash ("— some guy in my class"), or a verb of saying, writing,
+(`quotesTheReply`, unless the run of greentext lines it is in opens with "be me", "tfw"
+or "mfw", `greentextRun`); a quotation, in any kind of quotation mark (`quotationAround`,
+which counts straight double quotes on the line to tell an opening one from a closing
+one, and reads curly single quotes as the apostrophes the view folds them to; an
+apostrophe for letters left out, "'cause", "'til", "'09" (`elided`), and the marks of
+feet and inches, "5'10\"" (`inchMark`), open nothing), whose speaker `quoteSpeaker`
+finds to be someone else — a label ("teacher:", "his dm:", "my bully to me:"; whoever
+comes after "to" or "dear" in a label is spoken to, so "note to my bully:" is the
+poster's, and a label with a verb of saying in it, "he messaged me:", is read for its
+verb), an attribution after a dash that names a person (`attributionSpeaker`: "— some
+guy in my class", not "— should I tell someone?"), or a verb of saying, writing,
 asking, sending or coming across within four words before it or six after it, whose
 subject `speakerOf` reads back to (`otherSpeakers`, `messageNouns`, any word not in
 `subjectSkips`), or that was said to the poster ("told me '…'", "was told",
@@ -644,8 +651,8 @@ noun after `nounLeads` or a possessive (`sayingNoun`: "my post", "his message").
 poster's own words stay theirs however they are wrapped: a label, a dash or a subject
 that is the poster (`posterLabels`, `posterSubjects`, the poster's own mind,
 `mindWords`: "my head keeps telling me to"), an instruction (`instructionModals`: "you
-should tell him to kys"), a verb with no subject, and a quotation no one is named as
-saying. A source that is not a person names no one, so "news: '…'" and "'…' - police"
+should tell him to kys"), a verb with no subject or only an adverb before it ("already
+told everyone '…'"), "you heard me", and a quotation no one is named as saying. A source that is not a person names no one, so "news: '…'" and "'…' - police"
 still hold. This is the rule the owner set: a student reporting a threat, a grooming
 attempt or being told to kill themselves is not held for it, and a poster who wraps
 their own threat in quotation marks ("'I'm bringing a gun tomorrow' - me") is. The cost
