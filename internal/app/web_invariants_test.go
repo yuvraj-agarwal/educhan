@@ -1340,6 +1340,11 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		t.Error("the address field is not described by the form's refusal")
 	}
 
+	// submitVerification says nothing in the notice itself. The one notice its
+	// answers raise is offerHeldBadge's, for a reader who went on to a page with
+	// a posting form whose ticked badge box the new badge unticked; it is held
+	// whole by TestPostingFormSendsOnlyTheBadgeItNames, and on the Verify page,
+	// which has no posting form, it says nothing.
 	if strings.Contains(submit, "showNotice(") {
 		t.Errorf("submitVerification says something in the notice, a screen above the form on a phone:\n%s", submit)
 	}
