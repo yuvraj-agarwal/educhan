@@ -2481,8 +2481,12 @@ func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool
 		}
 		at := strings.HasPrefix(handle, "@")
 		word := strings.ToLower(strings.TrimPrefix(handle, "@"))
+		label, _, dotted := strings.Cut(word, ".")
 		switch {
 		case at && notHandles[word]:
+		case at && mail && (dotted || mailProviders[label]):
+			// A domain named with its "@", not a mailbox: "if your email
+			// is @hotmail.com".
 		case plausibleHandle(strings.TrimPrefix(handle, "@"), at) &&
 			(labelled || at || !toolNames.MatchString(word) && !dottedAbbreviation(word)):
 			if h.quoted && h.to < len(text) && strings.IndexByte(quoteMarks, text[h.to]) >= 0 {
@@ -11908,7 +11912,8 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		local, domain, dot, tld := text[m[2]:m[3]], text[m[4]:m[5]], text[m[6]:m[7]], text[m[8]:m[9]]
 		// A dot with a space beside it and no brackets round it.
 		spaced := dot != "." && strings.TrimSpace(dot) == "."
-		return emailAddress(local, bracketedDots(domain), readTLD(tld), spaced)
+		return emailAddress(local, bracketedDots(domain), readTLD(tld), spaced) &&
+			!domainNamed(text, m[2], m[1], local, text[m[3]:m[4]], bracketedDots(domain))
 	})
 	consider(from, to, ok, kindEmail)
 	from, to, ok = f.first(providerEmailRule, func(v *view, m []int) bool {
@@ -11919,7 +11924,8 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		text := v.text
 		local, at, domain, dot, tld := text[m[2]:m[3]], text[m[4]:m[5]], text[m[6]:m[7]], text[m[8]:m[9]], text[m[10]:m[11]]
 		plainDots := dot == "." && !spelledDotPattern.MatchString(domain)
-		return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[11]:])
+		return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[11]:]) &&
+			!domainNamed(text, m[2], m[1], local, text[m[3]:m[6]], spelledDomain(domain))
 	})
 	consider(from, to, ok, kindEmail)
 	if from, to, ok := f.firstSpacedEmail(); ok {
@@ -12304,9 +12310,51 @@ func nameLike(local string) bool {
 
 var versionShape = regexp.MustCompile(`^v?\d+(?:\.\d+)*[a-z]?$`)
 
-// notALocalPart are the words that come before "at gmail.com" in a sentence.
+// notALocalPart are the words that come before "at gmail.com" in a sentence,
+// or before a domain named with its "@" ("signed up with my @iitb.ac.in
+// address", "is a @yahoo.com address okay", "spam from @madeup.com").
 var notALocalPart = setOf(`in it me us up on out log sign login signin logged signed account accounts email
-	emails mail mails inbox them him her you there here is are available also now check find visit go look`)
+	emails mail mails inbox them him her you there here is are available also now check find visit go look
+	a an the my your ur our their his its this that these those with from to for of at by via into onto
+	and or nor but vs than like as if only not no just even all any every each both some most new old
+	was were be been being am have has had having do does did get gets got use uses used using end ends
+	ending ended start starts starting want wants need needs accept accepts accepted take takes allow
+	allows give gives make makes send sends sent what which who whose where when why how same own one ones`)
+
+// domainNamed reports a domain named with its "@", "@iitb.ac.in" or
+// "@gmail.com", after a word of the sentence and not a mailbox's name: an
+// "@" with a space before it and none after, glued to the domain, reads as
+// an address only after a name-like word ("madeup12 @gmail.com"), a name at a
+// mail provider ("madeup @gmail.com"), or a name with an email word a few
+// words either side ("my email is riya @madeup.com", "riya @madeup.com is my
+// email"). Whatever the spacing, a function word before the "@" is the
+// sentence's own ("ending in @ gmail.com").
+func domainNamed(text string, start, end int, local, gap, domain string) bool {
+	trimmed := strings.TrimSpace(gap)
+	if trimmed == "" || strings.Trim(trimmed, "@") != "" || strings.TrimLeft(gap, " \t\n") == gap {
+		return false
+	}
+	if notALocalPart[local] {
+		return true
+	}
+	if strings.TrimRight(gap, " \t\n") != gap {
+		return false
+	}
+	label, _, _ := strings.Cut(domain, ".")
+	if nameLike(local) || mailProviders[label] {
+		return false
+	}
+	for _, w := range append(wordsBefore(text, start, 4), nextWords(text[end:], 3)...) {
+		if addressCues[w] {
+			return false
+		}
+	}
+	return true
+}
+
+// addressCues, a few words before a name and a domain, say the two are an
+// address: "my email is riya @madeup.com".
+var addressCues = setOf(`email emails mail gmail id address contact reach write`)
 
 var mailProviders = setOf(`gmail googlemail yahoo ymail rocketmail outlook hotmail live msn icloud mac aol
 	proton protonmail pm tutanota tuta zoho rediffmail rediff yandex mail gmx qq 163 126 fastmail`)
