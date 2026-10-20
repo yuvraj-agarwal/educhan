@@ -1790,6 +1790,16 @@ async function renderArchive(route) {
 // whether verifyStep is the object it was sent from.
 let verifyStep = { step: "email", label: "" };
 
+// The step a Verify request is out from, while it is out, and null otherwise
+// (submitVerification). The wait is kept here as well as on the buttons of the
+// form that sent it, because a reader who leaves the page and comes back before
+// the answer gets the step drawn afresh, and verifyViewHTML draws it waiting
+// from this. Drawn with live buttons, it let the reader give the step up while
+// the server was issuing its badge — for the same address, retiring the badge
+// held here — or send a second code while the page went on to show the first
+// one's box.
+let verifyBusy = null;
+
 // Why the badge that was here has gone, when it is worth saying: it ran out, or
 // the server refused it. Shown once on the verification page, which is the only
 // page that can do anything about it.
@@ -1984,6 +1994,12 @@ const CODE_ENDED_NOTES = {
 // label, and focus fell to the page.
 const VERIFY_REFUSED_HTML = `<p class="verify-refused" id="f-verify-refused" role="alert" hidden></p>`;
 
+// What a step's submit button says while its request is out: in the form that
+// sent it (submitVerification), and in the step drawn again for a reader who
+// came back to the page before the answer (verifyViewHTML).
+const VERIFY_SENDING = "Sending…";
+const VERIFY_CHECKING = "Verifying…";
+
 // refuseVerification says why the form was refused, in the form, and puts the
 // reader back in the field it is about. invalid marks that field as what was
 // refused, rather than the moment (a cooldown, a dropped connection); select
@@ -2052,10 +2068,19 @@ function verifyViewHTML() {
       ${forgetBrowserHTML()}`;
   }
 
+  // A request from this step is still out, and the step is being drawn again
+  // for a reader who left the page and came back before the answer. Its form
+  // is drawn as the one that sent it is: every button in it waiting, and the
+  // submit button saying what it waits for, so nothing in the form can give
+  // the step up, or send from it again, while the server acts on the request.
+  // Forget this browser is outside the form and stays live.
+  const busy = verifyBusy === verifyStep;
+  const wait = busy ? " disabled" : "";
+
   // While a badge held here is being replaced, either step can go back to it:
   // asking for a new badge retires nothing until the new one is confirmed.
   const keep = v.badge
-    ? `<button class="btn subtle" type="button" data-action="verify-keep">Keep my badge</button>`
+    ? `<button class="btn subtle" type="button" data-action="verify-keep"${wait}>Keep my badge</button>`
     : "";
 
   // A code is pending: the box to type it in is the page until the code is
@@ -2077,8 +2102,8 @@ function verifyViewHTML() {
         </div>
         ${VERIFY_REFUSED_HTML}
         <div class="actions">
-          <button class="btn primary" type="submit">Verify</button>
-          <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
+          <button class="btn primary" type="submit"${wait}>${busy ? VERIFY_CHECKING : "Verify"}</button>
+          <button class="btn subtle" type="button" data-action="verify-restart"${wait}>Use a different address</button>
           ${keep}
         </div>
       </form>
@@ -2146,7 +2171,7 @@ function verifyViewHTML() {
       </label>
       ${VERIFY_REFUSED_HTML}
       <div class="actions">
-        <button class="btn primary" type="submit">Send code</button>
+        <button class="btn primary" type="submit"${wait}>${busy ? VERIFY_SENDING : "Send code"}</button>
         ${keep}
       </div>
     </form>
@@ -3649,8 +3674,13 @@ el.main.addEventListener("submit", async (event) => {
 // give up a step whose badge the server may be issuing; a dropped badge is
 // one nobody holds, and verifying the same address again retires the old one.
 // Leaving the page is not a change of step: the answer is kept for when the
-// reader comes back (onVerifyPage).
+// reader comes back (onVerifyPage). Coming back draws the step afresh, so the
+// wait is kept in verifyBusy as well as on the form's buttons, and the step is
+// drawn again waiting (verifyViewHTML); a second request from a step whose
+// first is out is never sent, since the page could then show the first one's
+// answer while the server acts on the second.
 async function submitVerification(form) {
+  if (verifyBusy === verifyStep) return;
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
   const data = new FormData(form);
@@ -3669,7 +3699,8 @@ async function submitVerification(form) {
 
   const buttons = [...form.querySelectorAll("button")];
   for (const b of buttons) b.disabled = true;
-  button.textContent = requesting ? "Sending…" : "Verifying…";
+  button.textContent = requesting ? VERIFY_SENDING : VERIFY_CHECKING;
+  verifyBusy = sentFrom;
   clearNotice();
   try {
     if (requesting) {
@@ -3725,16 +3756,16 @@ async function submitVerification(form) {
       if (input) input.focus({ preventScroll: true });
       return;
     }
-    for (const b of buttons) b.disabled = false;
-    button.textContent = label;
     // Any other refusal leaves the step as it is, and is said in its form,
     // under the field it is about (refuseVerification): a wrong code puts the
     // reader back in the code box with the code selected, to be typed again.
     // The form on screen is this one, or, for a reader who went to another
     // page and came back while the answer was on its way, the same step drawn
-    // again.
+    // again, waiting as this one was. Its buttons are live again either way.
     const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
     if (!shown) return;
+    for (const b of shown.querySelectorAll("button")) b.disabled = false;
+    shown.querySelector('button[type="submit"]').textContent = label;
     // The server's refusal of a request without the attestation reads the same
     // as the page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
@@ -3743,6 +3774,10 @@ async function submitVerification(form) {
       invalid: err.status === 400,
       select: !requesting && err.status === 400,
     });
+  } finally {
+    // The answer is in, kept or dropped. A request sent since from another
+    // step — after Forget this browser — is still out, and keeps its wait.
+    if (verifyBusy === sentFrom) verifyBusy = null;
   }
 }
 

@@ -472,8 +472,14 @@ needs a browser check before the test changes.
   answer, storing, setting and drawing nothing, once the page has moved to another step.
   Forget this browser is the button that can do that while a request is out, and it has to
   win over a badge on its way, which would otherwise be stored after the browser was
-  forgotten; the form's own other buttons wait on the answer. So every change of step
-  assigns a new object and nothing edits one in place
+  forgotten; the form's own other buttons wait on the answer. They wait in the step drawn
+  again for a reader who leaves the page and comes back before the answer, too: the wait
+  is kept in `verifyBusy`, not only on the buttons of the form that sent the request, and
+  `verifyViewHTML` draws that step waiting, so nothing can give up a step whose badge the
+  server is issuing (for the same address, retiring the one held here) or send a second
+  code while the page goes on to show the first one's box. No second request goes out
+  from a step whose first is out. So every change of step assigns a new object, nothing
+  edits one in place, and the places that make one are a list the test holds
   (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that arrives after the
   reader has left the page (`onVerifyPage`) only sets `verifyStep`: nothing is drawn over
   the page they went to, and coming back shows the step it left

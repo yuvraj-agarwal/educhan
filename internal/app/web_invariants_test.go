@@ -844,7 +844,9 @@ func verifyClickHandler(t *testing.T, script, opener string) string {
 // anything, once verifyStep is no longer that object. That only works while
 // every change of step is a new object, never an edit of the old one, and the
 // places that make one are the ones this test lists. The form's own other
-// buttons wait on the answer with its submit button.
+// buttons wait on the answer with its submit button — in the form that sent
+// it, and in the step drawn again for a reader who leaves the page and comes
+// back before the answer.
 func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -932,6 +934,81 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 	disabled := strings.Index(submit, "const buttons = [...form.querySelectorAll(\"button\")];\n  for (const b of buttons) b.disabled = true;")
 	if disabled < 0 || disabled > first {
 		t.Error("submitVerification does not hold the form's other buttons while its request is on its way")
+	}
+	// They wait in the step drawn again too. A reader who leaves the page and
+	// comes back while the request is out gets the step drawn afresh, so the
+	// wait is kept outside the form, in verifyBusy, from before the request
+	// until its answer is in, and verifyViewHTML draws the step waiting from
+	// it. Drawn live, Keep my badge or Use a different address there dropped
+	// the badge the server was issuing — on the same address, the badge held
+	// here was retired with it — and a second Send code left the first code's
+	// box up over the second's. No second request goes out from a step whose
+	// first is out, and Forget this browser, outside the form, never waits:
+	// it has to win.
+	if !strings.Contains(code, "\nlet verifyBusy = null;\n") {
+		t.Fatal("app.js does not keep verifyBusy, the step a Verify request is out from")
+	}
+	if !strings.HasPrefix(submit, "async function submitVerification(form) {\n  if (verifyBusy === verifyStep) return;\n") {
+		t.Error("submitVerification does not first refuse to send from a step whose request is still out")
+	}
+	ageRefused := strings.Index(submit, "refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });\n    return;")
+	busy := strings.Index(submit, "\n  verifyBusy = sentFrom;\n")
+	tried := strings.Index(submit, "\n  try {\n")
+	if ageRefused < 0 || busy < ageRefused || tried < busy || first < tried {
+		t.Error("submitVerification does not set verifyBusy once it is sure to send, before the try that clears it")
+	}
+	if !regexp.MustCompile(`\n  \} finally \{\s*if \(verifyBusy === sentFrom\) verifyBusy = null;\n  \}\n\}$`).MatchString(submit) {
+		t.Error("submitVerification does not end by clearing verifyBusy once its answer is in, and only its own wait")
+	}
+	if n := len(regexp.MustCompile(`\bverifyBusy\s*=[^=]`).FindAllString(code, -1)); n != 3 {
+		t.Errorf("app.js sets verifyBusy %d times; want three: its declaration, and in submitVerification", n)
+	}
+	if !strings.Contains(submit, "button.textContent = requesting ? VERIFY_SENDING : VERIFY_CHECKING;") {
+		t.Error("submitVerification's waiting labels are not VERIFY_SENDING and VERIFY_CHECKING, which the redrawn step shows")
+	}
+	caught := submit[strings.Index(submit, "} catch (err) {"):]
+	shown := strings.Index(caught, `const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");`)
+	live := strings.Index(caught, `for (const b of shown.querySelectorAll("button")) b.disabled = false;`)
+	if shown < 0 || live < shown || !strings.Contains(caught, `shown.querySelector('button[type="submit"]').textContent = label;`) {
+		t.Error("a refusal that leaves the step does not bring back the buttons of the form on screen, " +
+			"which is the step drawn again, waiting, for a reader who came back")
+	}
+
+	view := withoutComments(jsFunction(t, script, "verifyViewHTML"))
+	for _, want := range []string{
+		"const busy = verifyBusy === verifyStep;",
+		`const wait = busy ? " disabled" : "";`,
+		`<button class="btn primary" type="submit"${wait}>${busy ? VERIFY_CHECKING : "Verify"}</button>`,
+		`<button class="btn primary" type="submit"${wait}>${busy ? VERIFY_SENDING : "Send code"}</button>`,
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("verifyViewHTML does not draw a step whose request is out as waiting (no %s)", want)
+		}
+	}
+	buttons := regexp.MustCompile(`<button[^>]*>`)
+	for _, step := range []string{`data-verify="confirm"`, `data-verify="request"`} {
+		at := strings.Index(view, step)
+		if at < 0 {
+			t.Fatalf("verifyViewHTML has no form %s", step)
+		}
+		form := view[at:]
+		form = form[:strings.Index(form, "</form>")]
+		if !strings.Contains(form, "${keep}") {
+			t.Errorf("the form %s no longer offers Keep my badge, which this test expects to wait with it", step)
+		}
+		for _, b := range buttons.FindAllString(form, -1) {
+			if !strings.Contains(b, "${wait}") {
+				t.Errorf("in the form %s, %s does not wait while the step's request is out", step, b)
+			}
+		}
+	}
+	keep := buttons.FindString(view[strings.Index(view, "const keep = v.badge\n"):])
+	if !strings.Contains(keep, `data-action="verify-keep"`) || !strings.Contains(keep, "${wait}") {
+		t.Errorf("Keep my badge does not wait while the step's request is out: %s", keep)
+	}
+	if forget := withoutComments(jsFunction(t, script, "forgetBrowserHTML")); strings.Contains(forget, "disabled") ||
+		strings.Contains(forget, "${wait}") {
+		t.Error("Forget this browser waits on a Verify request; it has to win over one")
 	}
 }
 
