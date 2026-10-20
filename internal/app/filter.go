@@ -1124,10 +1124,56 @@ func numbersCheck(v *view, m []int) bool {
 	if lo > 0 && len(around) > 0 {
 		around = around[1:]
 	}
-	if anyIn(wordsIn(text[m[0]:m[1]]), numbersReach) || anyIn(around, gatheringWords) {
+	if anyIn(wordsIn(text[m[0]:m[1]]), numbersReach) {
 		return true
 	}
-	return allIn(after, numbersTails) && !aboutResults(around)
+	if aboutResults(around) {
+		// After a result, adding them to a sheet, a close call or the text
+		// section are about the scores: only a way to reach people decides
+		// it.
+		return reachNamed(around)
+	}
+	return anyIn(around, gatheringWords) || allIn(after, numbersTails)
+}
+
+// reachNamed reports a way to reach people named round an ask for
+// everyone's numbers in a post about results: an app, someone added, called
+// or texted ("i'll add you", "add everyone to the gc", "call me", "on a
+// call"), or a group set up ("so we can make a group"); not the scores added
+// to a sheet, a close call, the text section or a study group.
+func reachNamed(ws []string) bool {
+	person := func(k int) bool { return k < len(ws) && reachedPeople[ws[k]] }
+	for k, w := range ws {
+		switch {
+		case reachApps[w] || is(w, "contact") || is(w, "contacts"):
+			return true
+		case addWords[w]:
+			for j := k + 1; j < min(len(ws), k+6); j++ {
+				if sheetWords[ws[j]] {
+					break
+				}
+				if numbersGroups[ws[j]] || j == k+1 && (is(ws[j], "you") || is(ws[j], "u") || is(ws[j], "ya")) {
+					return true
+				}
+			}
+		case callWords[w]:
+			if person(k+1) || k > 0 && (is(ws[k-1], "on") || numbersCallKinds[ws[k-1]]) ||
+				k > 1 && is(ws[k-2], "on") && is(ws[k-1], "a") {
+				return true
+			}
+		case is(w, "text") || is(w, "texting") || is(w, "txt"):
+			if person(k + 1) {
+				return true
+			}
+		case numbersGroups[w]:
+			for _, x := range ws[max(0, k-3):k] {
+				if groupMakers[x] {
+					return true
+				}
+			}
+		}
+	}
+	return false
 }
 
 // aboutResults reports that the words round an ask for everyone's numbers
@@ -1177,6 +1223,17 @@ var (
 	// resultVerbs after "did" or "do" ask what everyone got: "what did
 	// everyone get?", "how did u score".
 	resultVerbs = canonSetOf(`get got score scored`)
+	// The words reachNamed reads round an ask for numbers after a result.
+	reachApps        = canonSetOf(`whatsapp telegram signal discord insta instagram snap snapchat`)
+	reachedPeople    = canonSetOf(`you u ya me us everyone everybody yall`)
+	addWords         = canonSetOf(`add adding added`)
+	callWords        = canonSetOf(`call calls calling`)
+	numbersCallKinds = canonSetOf(`group video voice conference`)
+	numbersGroups    = canonSetOf(`group groups gc grp chat`)
+	groupMakers      = canonSetOf(`make making made create creating created start starting started form forming join
+		joining new`)
+	sheetWords = canonSetOf(`sheet sheets spreadsheet spreadsheets leaderboard graph graphs list table doc excel
+		average averages tally up predictor poll`)
 )
 
 // atAskRule asks for a handle by its "@" alone: "drop ur @", "what's your @".

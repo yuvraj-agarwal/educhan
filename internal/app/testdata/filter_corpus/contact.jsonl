@@ -292,3 +292,8 @@
 {"id": "contact-292", "body": "got a new number 8247301956 text me", "subject": "", "name": "", "expect": "block", "why": "a call cue near the number (R2P-10DIGIT-MATHS control)"}
 {"id": "contact-293", "body": "it's 8589934592 text me", "subject": "", "name": "", "expect": "block", "why": "a call cue after the number (R2P-10DIGIT-MATHS control)"}
 {"id": "contact-294", "body": "largest coaching in kota, 9814072356", "subject": "", "name": "", "expect": "block", "why": "\"largest\" alone names no maths result (R2P-10DIGIT-MATHS control)"}
+{"id": "contact-314", "body": "results out, drop your numbers i'll add u", "subject": "", "name": "", "expect": "block", "why": "a person added after a result (R2D-3 control)"}
+{"id": "contact-315", "body": "results are out drop your numbers, i'll call you", "subject": "", "name": "", "expect": "block", "why": "a person called after a result (R2D-3 control)"}
+{"id": "contact-316", "body": "jee result is out, drop your numbers and i'll add everyone to the gc", "subject": "", "name": "", "expect": "block", "why": "everyone added to a group chat (R2D-3 control)"}
+{"id": "contact-317", "body": "mock results out, drop your numbers, we'll do a group call tonight", "subject": "", "name": "", "expect": "block", "why": "a group call after a result (R2D-3 control)"}
+{"id": "contact-318", "body": "results are out, drop your numbers so we can make a group", "subject": "", "name": "", "expect": "block", "why": "a group set up after a result (R2D-3 control)"}
