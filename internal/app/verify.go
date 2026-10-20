@@ -277,7 +277,9 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 		CodeHash:         a.codeHash(pending.Value, code),
 		CredentialIDHash: hashToken(id),
 		// Rounded up so the stored row dates the issuance to the day rather
-		// than the second, and still outlives the credential it revokes.
+		// than the second, and still outlives the credential it revokes. The
+		// row's transaction id dates it more closely until the nightly sweep
+		// rewrites the table (Store.RewriteCredentials).
 		ExpiresAt: nextDayBoundary(expires),
 	})
 	switch {
@@ -308,11 +310,12 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	clearCookie(w, pendingCookieName, pendingCookiePath)
 	// That a credential was issued, and nothing about whose or where. The
-	// stored row dates an issuance only to the day; a line naming the
-	// institution, stamped to the second, would date that row exactly on any
-	// day it was the institution's only one, and line it up with the badged
-	// posts that follow. The request log's line for this endpoint already
-	// carries the time, so this line carries no more than that does.
+	// stored row, once the nightly sweep has rewritten it, dates an issuance
+	// only to the day; a line naming the institution, stamped to the second,
+	// would date that row exactly on any day it was the institution's only
+	// one, and line it up with the badged posts that follow. The request
+	// log's line for this endpoint already carries the time, so this line
+	// carries no more than that does.
 	a.log.Info("verification issued")
 
 	// The credential is handed back in the body rather than set as a cookie, so
@@ -517,9 +520,17 @@ func verificationCode() (string, error) {
 }
 
 // nextDayBoundary rounds a time up to the next UTC midnight. Credential rows
-// are stored with this rather than the exact expiry, which leaves an operator
-// able to tell what day an address was verified and not what minute — the
-// resolution that would let issuance be lined up against a post.
+// are stored with this rather than the exact expiry, so that a row's expiry
+// tells what day an address was verified and not what minute — the resolution
+// that would let issuance be lined up against a post. That is half of what
+// keeps the credential's own row to the day: the other half is the nightly
+// rewrite of the table, which takes away the transaction id PostgreSQL keeps
+// on every row (Store.RewriteCredentials). It is not all an operator can see.
+// The code request and the confirmation each took a transaction id from the
+// counter the posts take theirs from, and the gaps they leave among the posts'
+// ids still place the issuance between two posts as closely as the row's own
+// id did, which can be to the minute: the README's "What that protects,
+// exactly" and TestIssuanceLeavesGapsAmongThePostsTransactionIDs.
 func nextDayBoundary(t time.Time) time.Time {
 	utc := t.UTC()
 	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
