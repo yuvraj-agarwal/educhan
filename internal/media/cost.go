@@ -1,6 +1,7 @@
 package media
 
 import (
+	"bytes"
 	"encoding/binary"
 	"image"
 )
@@ -373,8 +374,8 @@ type jpegComp struct {
 	h, v int64
 }
 
-// jpegFrame is what jpegPhases needs of a JPEG's frame header and the
-// application segments around it, and what jpegQuality needs of its
+// jpegFrame is what jpegPhases needs of a JPEG's frame header and its
+// application segments, wherever they are, and what jpegQuality needs of its
 // quantisation tables.
 type jpegFrame struct {
 	progressive bool
@@ -391,9 +392,13 @@ type jpegFrame struct {
 	// chroma sample: the first component's sampling factors over the
 	// second's, as image/jpeg works them out.
 	hRatio, vRatio int64
-	jfif           bool
-	adobe          bool // an Adobe APP14 segment with a transform
-	transform      byte
+	// jfif, adobe and transform are what image/jpeg makes of the APP0 and
+	// Adobe APP14 segments of the whole file, the last of each kind
+	// counting (rgb): whether the last APP0 of five bytes or more is JFIF,
+	// and whether there is an Adobe segment, with its transform.
+	jfif      bool
+	adobe     bool
+	transform byte
 	// tq is the quantisation table each component names.
 	tq [4]byte
 	// quant is the quantisation tables, in zig-zag order, as they stand
@@ -425,7 +430,10 @@ func (f jpegFrame) subsampling() image.YCbCrSubsampleRatio {
 }
 
 // rgb reports whether image/jpeg reads a three-component file as RGB rather
-// than YCbCr, by the same rule it uses (decoder.isRGB).
+// than YCbCr, by the same rule it uses (decoder.isRGB), from the application
+// segments as the decoder holds them once it has read the whole file
+// (readJPEGFrame): it decides only after the last scan, so a segment after
+// the scans counts as much as one before them.
 func (f jpegFrame) rgb() bool {
 	if f.jfif {
 		return false
@@ -436,43 +444,66 @@ func (f jpegFrame) rgb() bool {
 	return f.ids == [3]byte{'R', 'G', 'B'}
 }
 
-// readJPEGFrame walks a JPEG's segments up to its first scan as image/jpeg's
-// decoder does (jpegNextSegment): in place, every length checked before it is
-// used, nothing allocated. It reports whether it found a frame header before
-// anything stopped it. It counts the blocks image/jpeg will allocate: whole
-// MCUs of the first component's sampling, each holding h×v blocks of every
-// component, and a single component's samples counted 1×1 whatever it
-// claims, as the decoder does. It reads the quantisation tables defined
-// before the first scan; a file that redefines one between its scans is the
-// uploader's own oddity, and costs only the quality its picture is stored at.
+// readJPEGFrame walks a JPEG's segments as image/jpeg's decoder does
+// (jpegNextSegment): in place, every length checked before it is used,
+// nothing allocated. It reports whether it found a frame header before the
+// first scan, or before anything stopped it. It counts the blocks image/jpeg
+// will allocate: whole MCUs of the first component's sampling, each holding
+// h×v blocks of every component, and a single component's samples counted
+// 1×1 whatever it claims, as the decoder does. It reads the quantisation
+// tables defined before the first scan; a file that redefines one between its
+// scans is the uploader's own oddity, and costs only the quality its picture
+// is stored at.
+//
+// The application segments that decide whether a three-component picture is
+// RGB (rgb) are read to the end of the walk, past the scans, because that is
+// how the decoder reads them: it sets jfif again on every APP0 of five bytes
+// or more, true only for one that starts "JFIF\x00", takes the transform of
+// the last Adobe APP14, and looks at both only once it has read every scan.
+// Stopping at the first scan, as this walk once did, left an Adobe segment
+// after the scans, or a JFIF APP0 followed by another, unseen, and with them
+// the four-byte copy of every pixel the conversion to RGB makes while the
+// coded picture is still held.
 func readJPEGFrame(data []byte) (jpegFrame, bool) {
 	var f jpegFrame
 	if len(data) < 2 || data[0] != 0xFF || data[1] != 0xD8 {
 		return f, false
 	}
-	framed := false
+	framed, scanned := false, false
 	for i := 2; ; {
 		marker, segment, next, ok := jpegNextSegment(data, i)
 		if !ok {
 			return f, framed
 		}
-		switch marker {
-		case 0xDA:
-			f.tables = framed
-			return f, framed
-		case 0xE0:
-			if len(segment) >= 5 && string(segment[:5]) == "JFIF\x00" {
-				f.jfif = true
+		i = next
+		switch {
+		case marker == 0xE0:
+			if len(segment) >= 5 {
+				f.jfif = string(segment[:5]) == "JFIF\x00"
 			}
-		case 0xEE:
+		case marker == 0xEE:
 			if len(segment) >= 12 && string(segment[:5]) == "Adobe" {
 				f.adobe, f.transform = true, segment[11]
 			}
-		case 0xDB:
+		case scanned:
+			// Past the first scan only the application segments above are
+			// read: the frame and its tables are as the first scan found
+			// them. A second frame header, which image/jpeg refuses, ends
+			// the walk where it ends the decode.
+			if marker == 0xC0 || marker == 0xC1 || marker == 0xC2 {
+				return f, framed
+			}
+		case marker == 0xDA:
+			if !framed {
+				// A scan before any frame header, which image/jpeg refuses.
+				return f, false
+			}
+			f.tables, scanned = true, true
+		case marker == 0xDB:
 			if !f.readDQT(segment) {
 				return f, framed
 			}
-		case 0xC0, 0xC1, 0xC2:
+		case marker == 0xC0, marker == 0xC1, marker == 0xC2:
 			if framed {
 				// A second frame header, which image/jpeg refuses.
 				return f, framed
@@ -482,7 +513,6 @@ func readJPEGFrame(data []byte) (jpegFrame, bool) {
 			}
 			framed = true
 		}
-		i = next
 	}
 }
 
@@ -507,7 +537,14 @@ func jpegNextSegment(data []byte, i int) (marker byte, body []byte, next int, ok
 	for i+1 < len(data) {
 		switch {
 		case data[i] != 0xFF:
-			i++
+			// Skipped a byte at a time, as the decoder skips them, but
+			// found at the speed of IndexByte: a scan's data is mostly
+			// such bytes, and the walk goes through every scan.
+			k := bytes.IndexByte(data[i:], 0xFF)
+			if k < 0 {
+				return 0, nil, len(data), false
+			}
+			i += k
 			continue
 		case data[i+1] == 0x00:
 			i += 2

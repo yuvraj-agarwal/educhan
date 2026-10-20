@@ -820,8 +820,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   depends on how it is encoded as much as on its size. `Inspect` estimates it from the
   header (`processingCost`, `cost.go`): the decoder's buffers (a progressive JPEG keeps
   256 bytes of coefficients for every 8×8 block until its last scan; CMYK and RGB JPEGs
-  decode to 4 bytes a pixel, and a 16-bit PNG to 8, or to 2 when it is grey with no
-  transparency, as `pngBytesPerPixel` reads its header; `image/gif` keeps
+  decode to 4 bytes a pixel, and which are RGB is read as `image/jpeg` reads it, from the
+  APP0 and Adobe segments of the whole file, after its scans too (`readJPEGFrame`,
+  `TestJPEGColourModelIsReadAsTheDecoderReadsIt`); a 16-bit PNG to 8, or to 2 when it is
+  grey with no transparency, as `pngBytesPerPixel` reads its header; `image/gif` keeps
   `gifFrameOverhead` for every frame besides its pixels, so a GIF of thousands of empty
   frames is not free, and `playGIF` four bytes and two bits a pixel of the canvas, and
   four bytes more for an animation whose tables give more than 255 colours,

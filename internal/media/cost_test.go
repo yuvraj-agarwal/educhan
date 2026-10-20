@@ -340,9 +340,15 @@ func greyQuadrants(w, h int) *image.Gray {
 // scaler holds tables of weights of 64 bytes for each of them (thumbScratch);
 // turned on its side, it is stored four pixels wide, so its thumbnail is a
 // pixel wide and the scaler's buffer is 32 bytes for every one of its rows as
-// well, which only reading the orientation charges. Those marked "o6" carry an
-// EXIF orientation of 6, so they are turned on their side too, and "o3"
-// one of 3, turned around.
+// well, which only reading the orientation charges. Two more JPEGs of YCbCr
+// samples, both turned on their side, are converted to RGB, a copy of 4 bytes
+// a pixel that the turn copies again whole, by segments image/jpeg reads where
+// a walk that stopped at the first scan would not see them: the progressive
+// 4:2:0 file, without its JFIF APP0, with an Adobe segment of transform 0
+// after its last scan, and a baseline 4:2:0 one whose JFIF APP0 is followed by
+// another APP0, which clears what the first said, so that the Adobe segment
+// after it counts. Those marked "o6" carry an EXIF orientation of 6, so they
+// are turned on their side too, and "o3" one of 3, turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -352,6 +358,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 	const w, h = 2400, 1800
 	const large, tall = 3200, 2400
 	const small, short = 1200, 900
+	notJFIF := jpegSegment(0xE0, []byte("AVI1\x00\x00\x00\x00"))
 	return map[string][]byte{
 		"baseline 4:2:0 o6":          sideways(encodeJPEGImage(t, quadrants(w, h))),
 		"baseline 4:2:0 odd o3":      turned(encodeJPEGImage(t, quadrants(w+1, h+1)), 3),
@@ -363,6 +370,8 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"progressive CMYK o6":        readTestdata(t, "cost-progcmyk.jpg"),
 		"baseline CMYK":              readTestdata(t, "cost-cmyk.jpg"),
 		"RGB":                        readTestdata(t, "cost-rgb.jpg"),
+		"RGB, Adobe after the scans": beforeEOI(withoutJFIF(t, readTestdata(t, "cost-prog420.jpg")), adobeSegment(0)),
+		"RGB, JFIF undone by APP0":   sideways(withSegments(encodeJPEGImage(t, quadrants(w, h)), jfifSegment(), notJFIF, adobeSegment(0))),
 		"PNG palette":                rawPNG(t, large, tall, 3, 8, false, false),
 		"PNG RGB":                    rawPNG(t, w, h, 2, 8, false, false),
 		"PNG grey with transparency": rawPNG(t, w, h, 0, 8, false, true),
@@ -385,6 +394,17 @@ func costFixtures(t *testing.T) map[string][]byte {
 		"WebP lossless, unpacked":      unpackedWebP(10000, 2500),
 		"WebP of many chunks":          manyChunkWebP(t, readTestdata(t, "webp-swatches.webp"), 200000),
 	}
+}
+
+// withoutJFIF is a JPEG without the JFIF APP0 segment it starts with, as
+// Pillow and libjpeg write one.
+func withoutJFIF(t *testing.T, jpg []byte) []byte {
+	t.Helper()
+	jfif := jfifSegment()
+	if len(jpg) < 2+len(jfif) || !bytes.Equal(jpg[2:6], jfif[:4]) || string(jpg[6:11]) != "JFIF\x00" {
+		t.Fatal("withoutJFIF: the JPEG does not start with a JFIF APP0 of the usual length")
+	}
+	return append([]byte{0xFF, 0xD8}, jpg[2+len(jfif):]...)
 }
 
 /* Measurement -------------------------------------------------------------- */
@@ -898,7 +918,7 @@ func pngHeader(w, h int, colour, depth byte, interlaced bool) []byte {
 // headerUpload is a header from jpegHeader, pngHeader or webpHeader turned
 // by EXIF orientation o (none for 1) and made up to an upload of size bytes,
 // which is what the stored file's limit, and so the cost, grows with. Nothing
-// past the header is read before decoding.
+// it is made up with is a picture's data.
 func headerUpload(head []byte, o uint16, size int) []byte {
 	png := head[0] == 0x89
 	switch {
@@ -918,10 +938,34 @@ func headerUpload(head []byte, o uint16, size int) []byte {
 		out = append(out, pngChunk("zzzz", make([]byte, max(size-len(out)-24, 0)))...)
 		return append(out, pngChunk("IDAT", nil)...)
 	}
-	if head[0] == 0xFF { // the start of a scan, where image/jpeg stops reading a header
+	if head[0] == 0xFF {
+		// Comments make a JPEG up to size, then the start of a scan, where
+		// image/jpeg stops reading a header.
+		out = append(out, jpegComments(size-len(out)-4)...)
 		out = append(out, 0xFF, 0xDA, 0x00, 0x02)
 	}
 	return append(out, make([]byte, max(size-len(out), 0))...)
+}
+
+// jpegComments is n bytes of JPEG comment segments, or none for an n under
+// the four bytes of the shortest. The walks that read a JPEG to its end
+// (readJPEGFrame, jpegScanBlockVisits) step over a comment whole, so a file
+// made up to a size with them is read at the cost of its header and a hop a
+// comment, which is what lets TestEncodingsAreJudgedAtEveryShape judge
+// millions of shapes of an 8 MiB upload.
+func jpegComments(n int) []byte {
+	var out []byte
+	for pad := n; pad >= 4; {
+		// Each comment is 0xFFFE and a length counting itself, at most
+		// 0xFFFF, and leaves either nothing or room for another.
+		k := min(pad, 2+0xFFFF)
+		if rest := pad - k; rest > 0 && rest < 4 {
+			k -= 4 - rest
+		}
+		out = append(out, jpegSegment(0xFE, make([]byte, k-4))...)
+		pad -= k
+	}
+	return out
 }
 
 // gifHeaderUpload is a GIF of the given number of frames, each as wide as
@@ -1433,9 +1477,12 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 	judge := func(data []byte, k shapeClaim, o uint16, area int64, ratio float64) []string {
 		// data is the upload, of the default 8 MiB. Its header is the
 		// file's, ending in its last chunk or the start of its scan, and
-		// the rest is nothing, as headerUpload makes it, but for a PNG's
-		// filler chunk: what the estimate reads of a file is its header and
-		// its length.
+		// the rest is nothing a picture is made of: zeros to 4 KiB and
+		// comments after them (jpegComments), as headerUpload makes it up
+		// with comments and zeros, but for a PNG's filler chunk. What the
+		// estimate reads of a file is its header and its length, and of a
+		// JPEG the application segments after its scans as well, of which
+		// comments are none.
 		head := headerUpload(k.head(1000, 1000), o, 0)
 		if len(head) > 4<<10 {
 			return []string{"a header over 4 KiB"}
@@ -1560,6 +1607,7 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			data := make([]byte, upload)
+			copy(data[4<<10:], jpegComments(upload-4<<10))
 			for j := range work {
 				size := "full size"
 				if j.ratio > 0 {
@@ -2125,6 +2173,49 @@ func TestJPEGScanCountReadsPastExtraneousBytes(t *testing.T) {
 			if _, err := Inspect(data); !errors.Is(err, ErrImageTooCostly) {
 				t.Errorf("%s: Inspect = %v, want ErrImageTooCostly", name, err)
 			}
+		}
+	}
+}
+
+// Whether a three-component JPEG is read as RGB, and so converted to a
+// picture of four bytes a pixel, is decided the way image/jpeg decides it:
+// from its APP0 and Adobe APP14 segments wherever they come before the end
+// of the image, after the scans too, the last of each kind counting, and an
+// APP0 of five bytes or more that is not JFIF clearing what a JFIF one said.
+// Each file here is decoded and the picture it decodes to is the answer.
+func TestJPEGColourModelIsReadAsTheDecoderReadsIt(t *testing.T) {
+	plain := encodeJPEGImage(t, quadrants(16, 16))
+	app0 := func(body string) []byte { return jpegSegment(0xE0, []byte(body)) }
+	notJFIF := app0("AVI1\x00\x00\x00\x00")
+	cases := []struct {
+		name string
+		data []byte
+	}{
+		{"no segments", plain},
+		{"Adobe RGB", withSegments(plain, adobeSegment(0))},
+		{"Adobe YCbCr", withSegments(plain, adobeSegment(1))},
+		{"Adobe RGB after the scans", beforeEOI(plain, adobeSegment(0))},
+		{"Adobe RGB, then YCbCr after the scans", beforeEOI(withSegments(plain, adobeSegment(0)), adobeSegment(1))},
+		{"Adobe YCbCr, then RGB after the scans", beforeEOI(withSegments(plain, adobeSegment(1)), adobeSegment(0))},
+		{"JFIF and Adobe RGB", withSegments(plain, jfifSegment(), adobeSegment(0))},
+		{"JFIF, another APP0 and Adobe RGB", withSegments(plain, jfifSegment(), notJFIF, adobeSegment(0))},
+		{"JFIF, a short APP0 and Adobe RGB", withSegments(plain, jfifSegment(), app0("AV"), adobeSegment(0))},
+		{"another APP0 and Adobe RGB, JFIF after the scans", beforeEOI(withSegments(plain, notJFIF, adobeSegment(0)), jfifSegment())},
+		{"JFIF and Adobe RGB, another APP0 after the scans", beforeEOI(withSegments(plain, jfifSegment(), adobeSegment(0)), notJFIF)},
+		{"Adobe RGB past the end of the image", append(append([]byte(nil), plain...), adobeSegment(0)...)},
+	}
+	for _, c := range cases {
+		pic, err := jpeg.Decode(bytes.NewReader(c.data))
+		if err != nil {
+			t.Fatalf("%s: image/jpeg refuses the file: %v", c.name, err)
+		}
+		_, decodedRGB := pic.(*image.RGBA)
+		f, framed := readJPEGFrame(c.data)
+		if !framed || f.comps != 3 {
+			t.Fatalf("%s: readJPEGFrame = %d components, framed %v", c.name, f.comps, framed)
+		}
+		if f.rgb() != decodedRGB {
+			t.Errorf("%s: read as RGB %v, but image/jpeg decodes it to %T", c.name, f.rgb(), pic)
 		}
 	}
 }

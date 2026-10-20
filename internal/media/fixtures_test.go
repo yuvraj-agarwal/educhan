@@ -88,6 +88,30 @@ func withSegments(jpg []byte, segments ...[]byte) []byte {
 	return append(out, jpg[2:]...)
 }
 
+// beforeEOI splices segments in just before a JPEG's closing EOI marker,
+// after all its scans, where image/jpeg still reads them.
+func beforeEOI(jpg []byte, segments ...[]byte) []byte {
+	if !bytes.HasSuffix(jpg, []byte{0xFF, 0xD9}) {
+		panic("beforeEOI: the JPEG does not end with EOI")
+	}
+	out := append([]byte(nil), jpg[:len(jpg)-2]...)
+	for _, s := range segments {
+		out = append(out, s...)
+	}
+	return append(out, 0xFF, 0xD9)
+}
+
+// adobeSegment is an Adobe APP14 segment with the colour transform given: 0
+// for RGB (or CMYK), 1 for YCbCr.
+func adobeSegment(transform byte) []byte {
+	return jpegSegment(0xEE, []byte{'A', 'd', 'o', 'b', 'e', 0, 100, 0, 0, 0, 0, transform})
+}
+
+// jfifSegment is a JFIF APP0 segment, as most encoders write first.
+func jfifSegment() []byte {
+	return jpegSegment(0xE0, []byte("JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"))
+}
+
 func exifSegment(tiff []byte) []byte {
 	return jpegSegment(0xE1, append([]byte("Exif\x00\x00"), tiff...))
 }
