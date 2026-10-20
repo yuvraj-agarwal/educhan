@@ -1398,6 +1398,37 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 	}
 }
 
+// Forget this browser takes the poster key, the name, the badge and the Pass
+// out of storage, but only the Pass, and what goes with it, is followed in
+// the browser's other tabs (followPassStorage, followPassForget): a tab
+// already open keeps the key it posted with (pagePosterKey), the badge
+// (state.verification) and the name in a form it drew, until it is reloaded.
+// The Verify page and the FAQ's shared-computer advice say so, and to close
+// those tabs first. A tab that followed the rest as well would make that
+// advice say less than the page does, so this fails then too, for the
+// wording to change with it.
+func TestForgetThisBrowserSaysWhatOtherTabsKeep(t *testing.T) {
+	script := appScript(t)
+	listeners := regexp.MustCompile(`addEventListener\("storage", (\w+)\)`).FindAllStringSubmatch(withoutComments(script), -1)
+	if len(listeners) != 2 || listeners[0][1] != "followPassStorage" || listeners[1][1] != "followPassForget" {
+		t.Errorf("the page follows other tabs' storage with %v; the Verify page and the FAQ say only the Pass is followed", listeners)
+	}
+	for name, text := range map[string]string{
+		"Forget this browser":  words(jsFunction(t, script, "forgetBrowserHTML")),
+		"the FAQ on anonymity": words(faqAnswer(t, script, "faq-anonymity")),
+		"the FAQ on badges":    words(faqAnswer(t, script, "faq-badge")),
+	} {
+		want := "close educhan's other tabs"
+		if name == "Forget this browser" {
+			want = "Other educhan tabs open in this browser let go of the Pass too, but keep the key, the name and any badge " +
+				"they already have until they're reloaded, so close them first."
+		}
+		if !strings.Contains(text, want) {
+			t.Errorf("%s no longer says what a tab left open keeps after Forget this browser (%q)", name, want)
+		}
+	}
+}
+
 // A code just handed over is drawn on every drawing of the Pass page until the
 // reader leaves it, so no redraw, poll, Back or button loses a code the server
 // will not show again, even one the browser could not store; and the page

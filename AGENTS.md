@@ -610,12 +610,19 @@ needs a browser check before the test changes.
   values; `submit` sets the field after `form.reset()`).
 - "Forget this browser" on `/verify` (`forgetBrowser`), shown in every state — the
   code-entry step included (`TestEveryVerifyStateOffersToForgetTheBrowser`) — removes the
-  credential, the Pass, the poster key and the remembered name, drops any Pass purchase
-  still being collected and any note that a Pass was found gone (`passLost`), in every
-  tab, empties the Pass page's code box and a Pass code this tab copied, and leaves the
-  age answer. It is what the FAQ's shared-computer advice points to: the key left behind
-  would give the next person at the computer the same IDs in the same threads, and a
-  claim left behind would hand them the buyer's Pass.
+  credential, the Pass, the poster key and the remembered name from storage, drops any
+  Pass purchase still being collected and any note that a Pass was found gone
+  (`passLost`), empties the Pass page's code box and a Pass code this tab copied, and
+  leaves the age answer. It is what the FAQ's shared-computer advice points to: the key
+  left behind would give the next person at the computer the same IDs in the same
+  threads, and a claim left behind would hand them the buyer's Pass. The browser's other
+  tabs follow the Pass and what goes with it (`followPassStorage`, `followPassForget`:
+  the claim, the code box, a code they copied, which stops being theirs to empty, and
+  `passLost`), but not the rest: a tab already open keeps the poster key it posted with
+  (`pagePosterKey`, which `posterKey` writes back to an empty store), the badge
+  (`state.verification`) and the name in a form it drew until it is reloaded, though a
+  page loaded afterwards has none of them. The Verify page and the FAQ say so, and to
+  close those tabs first (`TestForgetThisBrowserSaysWhatOtherTabsKeep`).
 
 ### Child safety
 

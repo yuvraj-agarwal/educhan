@@ -909,8 +909,12 @@ not-found view.
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
   `/verify` drops the key, the name, any badge and any Pass, any Pass purchase still
-  being collected and any note that a Pass was found gone, in every tab, for a shared
-  computer.
+  being collected and any note that a Pass was found gone, for a shared computer. The
+  browser's other tabs follow it for the Pass and what goes with it (the purchase being
+  collected, the code box and that note, though a code copied in one of them stays on
+  the clipboard), but a tab already open keeps the key, the name and the badge it has
+  until it is reloaded, so the Verify page and the FAQ say to close those tabs first; a
+  page loaded afterwards starts without them.
 - **educhan Pass**: the header links to `/pass` only once `GET /api/site` says the server
   has the Pass, on sale or paused, or while this browser holds one, so a holder can still
   show or remove it. `/pass` says what a Pass does and what it costs (with "plus any tax"
