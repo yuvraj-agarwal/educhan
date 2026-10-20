@@ -249,11 +249,11 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 // pg_stats shows them, and autovacuum runs it by itself after enough writes:
 // for the pending table, email hashes of codes in flight beside expiries to
 // the microsecond, kept after the rows are gone and through every rewrite and
-// vacuum. 0008 drops what had been gathered before it, stops anything being
+// vacuum. 0015 drops what had been gathered before it, stops anything being
 // gathered again, and turns autovacuum off on both tables, since the times it
 // last ran follow the writes that set it off.
 func TestVerificationTablesKeepNoStatistics(t *testing.T) {
-	pool, url := databaseAt(t, 7)
+	pool, url := databaseAt(t, 14)
 	ctx := context.Background()
 	exec := func(query string, args ...any) {
 		t.Helper()
@@ -292,20 +292,20 @@ func TestVerificationTablesKeepNoStatistics(t *testing.T) {
 		return columns
 	}
 
-	// Positive control: before 0008, ANALYZE keeps a sample of every column,
+	// Positive control: before 0015, ANALYZE keeps a sample of every column,
 	// the email hashes of codes in flight among them.
 	fill(0)
 	if columns := sampled(); !slices.Contains(columns, "verification_pending.email_hash") {
-		t.Fatalf("before 0008, pg_stats holds %v and no email hashes; the check cannot be trusted", columns)
+		t.Fatalf("before 0015, pg_stats holds %v and no email hashes; the check cannot be trusted", columns)
 	}
 
 	h := serverOn(t, url)
 	if columns := sampled(); len(columns) != 0 {
-		t.Errorf("after 0008, pg_stats still holds statistics for %v", columns)
+		t.Errorf("after 0015, pg_stats still holds statistics for %v", columns)
 	}
 	fill(100)
 	if columns := sampled(); len(columns) != 0 {
-		t.Errorf("ANALYZE after 0008 gathered statistics for %v", columns)
+		t.Errorf("ANALYZE after 0015 gathered statistics for %v", columns)
 	}
 
 	var autovacuumed []string

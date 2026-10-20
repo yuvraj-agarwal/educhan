@@ -1234,7 +1234,7 @@ const sqlstateLockNotAvailable = "55P03"
 // verificationTables are the tables RewriteCredentials vacuums.
 var verificationTables = [...]string{"verification_credentials", "verification_pending"}
 
-// vacuumProbeTable is the empty table (0009) on which RewriteCredentials runs
+// vacuumProbeTable is the empty table (0016) on which RewriteCredentials runs
 // VACUUM FULL to learn whether a run on a verification table would drop what
 // the rewrite deleted, before it takes one (vacuumVerificationTables).
 const vacuumProbeTable = "vacuum_probe"

@@ -791,7 +791,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (only `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` is, as a uniqueness key); the
   credential carries only a label, an expiry, and a random id; and nothing links a
   credential to a post. Practical consequences when editing `verify.go`, `store.go`,
-  `0004_verification.sql`, or `0008_verification_statistics.sql`:
+  `0004_verification.sql`, `0015_verification_statistics.sql`, or
+  `0016_vacuum_probe.sql`:
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
@@ -831,7 +832,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     read: any statement or transaction in the database that began before the rewrite
     committed and is still running, the server's own requests included, or a
     transaction anywhere on the instance that had written something by then. So before
-    each attempt the sweep runs `VACUUM FULL` on `vacuum_probe` (`0009`), an empty table
+    each attempt the sweep runs `VACUUM FULL` on `vacuum_probe` (`0016`), an empty table
     nothing else touches, which computes the same cutoff in milliseconds and holds up
     nobody, and takes the verification tables only once the probe's `relfrozenxid` is
     newer than the rewrite's transaction id, which `VACUUM FULL` makes true exactly
@@ -843,7 +844,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     through owning the database: an unchanged `pg_relation_filenode` with no `55P03`
     fails the sweep at once, and the sweeper connects as the role that ran the
     migrations, which owns `vacuum_probe` too.
-    `0008` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
+    `0015` sets `STATISTICS 0` on every column of both tables, which keeps `ANALYZE`
     from copying email hashes beside their expiries into `pg_statistic`, drops what it
     had copied, and turns autovacuum off on both, since the times it last ran follow
     the writes; the nightly `VACUUM FULL` is their vacuum. A new write path into the
@@ -862,7 +863,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     pins this as a known limit, and only verification tables on a PostgreSQL instance
     of their own would close it). Nor does it cover a credential issued since the
     last sweep, backups (taken from 05:00 UTC, up to 09:00, seven kept), a night the
-    sweep failed, autovacuum times recorded before `0008`, or the write-ahead log the
+    sweep failed, autovacuum times recorded before `0015`, or the write-ahead log the
     server keeps for crash recovery, which dates a credential until PostgreSQL
     deletes or reuses the newest segment holding its row. With full-page writes on,
     the log since the checkpoint before the sweep holds every credentials page as it

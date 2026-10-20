@@ -293,7 +293,7 @@ expiries, kept after the rows are gone. And the statistics views keep the time
 of the last scan of each table and index, and of autovacuum's last run on each
 table, which follow the requests that read and wrote it.
 
-So migration `0008` stops PostgreSQL sampling either table, drops the samples
+So migration `0015` stops PostgreSQL sampling either table, drops the samples
 it already had, and turns autovacuum off on both
 (`TestVerificationTablesKeepNoStatistics`), and the archive sweeper ends every
 run on the verification tables (`RewriteCredentials` in `store.go`):
@@ -328,7 +328,7 @@ run on the verification tables (`RewriteCredentials` in `store.go`):
    anywhere on the instance that had written something by then. A run then would
    hold the site up and leave the old rows in the new file. So before each
    attempt the sweep runs `VACUUM FULL` on `vacuum_probe`, an empty table of its
-   own (migration `0009`), which works out the same cutoff in milliseconds and
+   own (migration `0016`), which works out the same cutoff in milliseconds and
    holds up nobody, and it takes the verification tables only once the probe's
    `relfrozenxid` is newer than the rewrite — once the older transactions have
    ended — which makes one run on each table a night
@@ -358,7 +358,7 @@ What that protects, exactly:
   03:17 UTC.** Nothing in either table dates a credential more closely than its
   expiry, rounded to the day: no row version in either table's file, no sample
   in `pg_statistic`, and no last-scan time says more. Times autovacuum recorded
-  before migration `0008` stay in the statistics views until the statistics are
+  before migration `0015` stay in the statistics views until the statistics are
   reset, which takes a superuser. That is the tables, not the database: see the
   next point.
 - **Not the posts' own transaction ids**, which no sweep touches. Every code
