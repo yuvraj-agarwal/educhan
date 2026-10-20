@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/cookiejar"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -453,15 +454,51 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	if n := len(regexp.MustCompile(`\breturn\b`).FindAllString(view[:start], -1)); n != 1 {
 		t.Errorf("verifyViewHTML returns %d times before the code step; want once, for the not-configured page", n)
 	}
-	if regexp.MustCompile(`\bverifyStep\s*=[^=]`).MatchString(view) {
+	if verifyStepSet.MatchString(view) {
 		t.Error("verifyViewHTML sets verifyStep; it draws the step it is given and decides nothing about it")
 	}
-	// And the code step is what a sent code leads to.
+
+	// And the code step is what a sent code leads to, and what is drawn. In
+	// the stretch that takes the request's answer it is the one step set, and
+	// it is set before the draw, so nothing after it puts another step in its
+	// place. renderVerify, which draws the page again for a reader who comes
+	// back, sets no step and draws only the view. A gate on a held badge in
+	// either place — after the code step is set, or in renderVerify's redraw —
+	// once passed every check above; TestVerifyAnswersBelongToTheStepTheyWereSentFrom
+	// holds every place that sets verifyStep to the list it knows.
 	submit := withoutComments(jsFunction(t, script, "submitVerification"))
-	if !strings.Contains(submit, `verifyStep = { step: "code", label: sent.label || "" };`) {
-		t.Error("submitVerification no longer moves to the code step once the code is sent")
+	requests := regexp.MustCompile(`await api\(`).FindAllStringIndex(submit, -1)
+	if len(requests) != 2 {
+		t.Fatalf("submitVerification makes %d requests; this test knows two (the code sent, the badge issued)", len(requests))
+	}
+	sent := submit[requests[0][0]:requests[1][0]]
+	steps := verifyStepSet.FindAllString(sent, -1)
+	set, drawn := strings.Index(sent, stepToCode), strings.Index(sent, "el.main.innerHTML = verifyViewHTML();")
+	if len(steps) != 1 || steps[0] != stepToCode || drawn < 0 || set > drawn {
+		t.Errorf("once a code is sent, submitVerification sets %q; want %q alone, set before the step is drawn:\n%s",
+			steps, stepToCode, sent)
+	}
+	render := withoutComments(jsFunction(t, script, "renderVerify"))
+	if verifyStepSet.MatchString(render) {
+		t.Errorf("renderVerify sets verifyStep; it draws the step it finds and decides nothing about it:\n%s", render)
+	}
+	if n := strings.Count(render, "innerHTML"); n != 1 || !strings.Contains(render, "el.main.innerHTML = verifyViewHTML();") {
+		t.Errorf("renderVerify draws something besides verifyViewHTML():\n%s", render)
 	}
 }
+
+// verifyStepSet finds each place app.js moves the Verify page to a step, and
+// the steps below are the ones it moves to: the address step it starts on, the
+// code step a sent code leads to, the address step asked for over a held badge,
+// and that step again after the server has dropped the code being typed.
+var verifyStepSet = regexp.MustCompile(`\bverifyStep\s*=[^=][^;]*;`)
+
+const (
+	stepToAddress   = `verifyStep = { step: "email", label: "" };`
+	stepToCode      = `verifyStep = { step: "code", label: sent.label || "" };`
+	stepToReplacing = `verifyStep = { step: "email", label: "", replacing: true };`
+	stepToEnded     = `verifyStep = { step: "email", label: "", replacing: true, ended: CODE_ENDED_NOTES[err.message] };`
+)
 
 // When the server answers a code with a refusal that drops the verification —
 // nothing in progress, the code expired, too many wrong guesses — the page
@@ -805,8 +842,9 @@ func verifyClickHandler(t *testing.T, script, opener string) string {
 // that badge replaced by the new one. So submitVerification notes verifyStep
 // before it sends, and each answer is dropped, before it stores, sets or draws
 // anything, once verifyStep is no longer that object. That only works while
-// every change of step is a new object, never an edit of the old one. The
-// form's own other buttons wait on the answer with its submit button.
+// every change of step is a new object, never an edit of the old one, and the
+// places that make one are the ones this test lists. The form's own other
+// buttons wait on the answer with its submit button.
 func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -846,7 +884,7 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 		t.Errorf("app.js edits verifyStep in place (%q); a change of step has to be a new object, or an answer "+
 			"from the step that was left is taken for the new one", m)
 	}
-	assigned := regexp.MustCompile(`\bverifyStep\s*=[^=][^;]*;`).FindAllString(code, -1)
+	assigned := verifyStepSet.FindAllString(code, -1)
 	if len(assigned) == 0 {
 		t.Fatal("app.js never sets verifyStep; this test reads the assignments")
 	}
@@ -855,16 +893,39 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 			t.Errorf("verifyStep is set as %q; every step is a new object literal", a)
 		}
 	}
-	for _, opener := range []string{
-		`if (event.target.closest('[data-action="forget-browser"]')) {`,
-		`if (event.target.closest('[data-action="forget-verification"]')) {`,
-		`if (event.target.closest('[data-action="verify-keep"]')) {`,
-		`if (restart) {`,
-	} {
-		if !strings.Contains(verifyClickHandler(t, script, opener), "verifyStep = {") {
-			t.Errorf("the handler opening %q does not move the page to a new step, so an answer on its way "+
-				"would still be taken for this one", opener)
+	// Every place that moves the page to a step, and the step it moves to: the
+	// step the page starts on, the three answers, and the four buttons that
+	// move the page while an answer may be on its way. A new place has to be
+	// added here, with its reason: a gate on a held badge that set the address
+	// step after a code was sent, or in renderVerify's redraw, once took a
+	// badge holder's code box away with every other check passing.
+	if !strings.Contains(code, "\nlet "+stepToAddress+"\n") {
+		t.Errorf("verifyStep does not start as %q", stepToAddress)
+	}
+	places := []struct {
+		name, body string
+		want       []string
+	}{
+		{"submitVerification", submit, []string{stepToCode, stepToAddress, stepToEnded}},
+		{"Forget this browser", verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-browser"]')) {`),
+			[]string{stepToAddress}},
+		{"Forget this credential", verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-verification"]')) {`),
+			[]string{stepToAddress}},
+		{"Keep my badge", verifyClickHandler(t, script, `if (event.target.closest('[data-action="verify-keep"]')) {`),
+			[]string{stepToAddress}},
+		{"Verify another address and Use a different address", verifyClickHandler(t, script, `if (restart) {`),
+			[]string{stepToReplacing}},
+	}
+	known := 1
+	for _, p := range places {
+		known += len(p.want)
+		if got := verifyStepSet.FindAllString(p.body, -1); !slices.Equal(got, p.want) {
+			t.Errorf("%s sets verifyStep as %q; want %q, so an answer on its way is not taken for the step "+
+				"the page moved to, and the page moves nowhere else", p.name, got, p.want)
 		}
+	}
+	if len(assigned) != known {
+		t.Errorf("app.js sets verifyStep in %d places; this test knows %d: %q", len(assigned), known, assigned)
 	}
 
 	// Keep my badge and Use a different address are in the form, and wait.
