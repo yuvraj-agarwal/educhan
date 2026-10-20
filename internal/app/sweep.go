@@ -67,9 +67,11 @@ type SweepReport struct {
 // threads had, along with any an earlier sweep could not, and last deletes the
 // spent captcha answers past their day. A batch that fails leaves the files to
 // the next sweep. The spent answers go whatever failed before them, a stop
-// included: a sweep whose ctx is cancelled stops at the batch or the file it
-// is on and prunes them all the same, so its error reports the stop and no
-// failure the stop would have caused.
+// included: a sweep whose ctx is cancelled before its files are done stops at
+// the batch or the file it is on and prunes them all the same, so its error is
+// the stop alone, and no failure the stop would have caused. A stop that comes
+// later, while the spent answers go, finds nothing left to stop: the prune
+// runs past it, and the sweep reports the pass it made, with no error.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }

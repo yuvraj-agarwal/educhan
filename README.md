@@ -1195,7 +1195,9 @@ Run Job gets at its task timeout, deletes them too: the batch it is on commits
 or rolls back whole, the file it is removing is finished, and then the spent
 answers go, given at most five seconds, well inside the ten Cloud Run waits
 before it kills the process. It exits non-zero with the stop as its error, not
-with a failure the stop caused.
+with a failure the stop caused. A stop that comes once the files are done, while
+the spent answers go, finds nothing left to stop: the sweep finishes, and exits
+as one that was not stopped.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
