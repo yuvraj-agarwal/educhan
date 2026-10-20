@@ -181,15 +181,18 @@ can and cannot work out.
 - That an address at some institution is verified, as
   `HMAC(EDUCHAN_VERIFY_SECRET, normalised address)` and a badge label.
 - When a credential was issued: to the interval between two posts, for as long
-  as those posts exist, whatever the nightly sweep does. The verification
-  tables themselves, once the sweep has run, say only the *day*: the stored
-  expiry is rounded up to a UTC day boundary, nothing else in the tables is
-  timestamped, PostgreSQL keeps no sample of their values, and the sweep
-  rewrites the credentials so that the transaction id PostgreSQL keeps on every
-  row is the sweep's rather than the issuance's. But requesting a code and
-  confirming one are writes, and each takes a transaction id from the counter
-  posts take theirs from. Posts keep theirs beside their `created_at`, and
-  nothing rewrites them, so the ids a request and a confirmation took stay
+  as those posts exist, whatever the nightly sweep does. The verification tables
+  themselves, once the sweep has run, say only the *day*: the stored expiry is
+  rounded up to a UTC day boundary, the sweep deletes the codes that expired
+  unconfirmed, whose expiries are the only other times in the tables, PostgreSQL
+  keeps no sample of their values, and the sweep rewrites the credentials so
+  that the transaction id PostgreSQL keeps on every row is the sweep's rather
+  than the issuance's. A code still in flight as the sweep ran is the exception,
+  which [Transaction ids, and the nightly
+  rewrite](#transaction-ids-and-the-nightly-rewrite) spells out. But requesting
+  a code and confirming one are writes, and each takes a transaction id from the
+  counter posts take theirs from. Posts keep theirs beside their `created_at`,
+  and nothing rewrites them, so the ids a request and a confirmation took stay
   missing from the posts' sequence, between the two posts written around each.
   One plain query on `posts`, which needs no superuser and no secret, finds
   those gaps, in the live database and in every backup
@@ -201,8 +204,8 @@ can and cannot work out.
   and the nightly rewrite](#transaction-ids-and-the-nightly-rewrite) says
   exactly when. In the application's log, for as long as it is kept, to the
   second, because the request line for `POST /api/verify/confirm` and a bare
-  `verification issued` line each carry a time. Neither the gaps nor those
-  lines say which institution or address the credential was for
+  `verification issued` line each carry a time. Neither the gaps nor those lines
+  say which institution or address the credential was for
   (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
   after an issuance does name the institution, and its time is kept to the
   second too. So an issuance followed by a badged post ties that post to its
@@ -298,7 +301,18 @@ it already had, and turns autovacuum off on both
 (`TestVerificationTablesKeepNoStatistics`), and the archive sweeper ends every
 run on the verification tables (`RewriteCredentials` in `store.go`):
 
-1. In one transaction, holding a lock that makes writers wait and lets readers
+1. It deletes the codes that expired unconfirmed. A request for a code deletes
+   them too, but requests are few at the hour the sweep runs, and until one
+   comes an abandoned code's row keeps the time it was asked for, to the
+   microsecond (its expiry less the code's lifetime), under the address's email
+   hash. When the address already holds a credential — a second browser asking
+   for a code it never confirms, say — that is the credential's email hash too,
+   and the row says the credential was issued before then, on the day its
+   expiry gives, which points at the confirmations just before then among the
+   gaps in the posts' transaction ids (below). It does this in a transaction of
+   its own, before the rewrite, so that the vacuum in step 4 takes the rows out
+   of the table's file as well (`TestSweepDeletesCodesThatExpiredUnconfirmed`).
+2. In one transaction, holding a lock that makes writers wait and lets readers
    through, it deletes every credential row and inserts the copy back in random
    order. Every row then carries the sweep's transaction id, and where a row
    sits says nothing about when it was issued. Badged posts read the table
@@ -307,10 +321,10 @@ run on the verification tables (`RewriteCredentials` in `store.go`):
    and is then written as usual — once either way
    (`TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`).
-2. It reads each table once whole and once through each of its indexes, so
+3. It reads each table once whole and once through each of its indexes, so
    that every last-scan time the statistics show for them is the sweep's
    (`TestSweepLeavesNoScanTimeFromBeforeIt`).
-3. Then `VACUUM FULL` writes `verification_credentials` and
+4. Then `VACUUM FULL` writes `verification_credentials` and
    `verification_pending` to new files without their dead rows, and drops the
    old files; with autovacuum off, it is the vacuum both tables get. It does not
    wait for a table another session holds, so requests do not queue behind a
@@ -356,8 +370,9 @@ What that protects, exactly:
 
 - **The verification tables of the live database, after the nightly sweep at
   03:17 UTC.** Nothing in either table dates a credential more closely than its
-  expiry, rounded to the day: no row version in either table's file, no sample
-  in `pg_statistic`, and no last-scan time says more. Times autovacuum recorded
+  expiry, rounded to the day: no live row and no row version in either table's
+  file, no sample in `pg_statistic`, and no last-scan time says more — but for
+  a code still in flight as the sweep ran (below). Times autovacuum recorded
   before migration `0015` stay in the statistics views until the statistics are
   reset, which takes a superuser. That is the tables, not the database: see the
   next point.
@@ -385,6 +400,17 @@ What that protects, exactly:
   Until then, too, the pending row its confirmation deleted can still be in the
   table's file, where anyone who can read the file would find the time its code
   was requested, and the last-scan times can date the latest confirmation.
+- **A code in flight as the sweep ran**, which the sweep cannot delete without
+  making it fail. Its row keeps the time it was asked for, to the microsecond,
+  and the id of the transaction that last wrote it (the request, or a wrong
+  guess at the code), until it is confirmed or, once it has expired, until the
+  next request or the next sweep deletes it — and in a
+  backup taken meanwhile, for as long as the backup is kept. If its address
+  already holds a credential, as when a second browser asks for a code, the
+  row's email hash joins it to that credential, which it says was issued before
+  then; if it is confirmed, a backup that holds it dates the credential it
+  becomes to within the code's lifetime. Requests are few at 03:17 UTC, so
+  this is seldom, but no sweep can rule it out.
 - **Backups** hold rows as they stood when they were taken. The instance keeps a
   daily backup, the last seven — about a week — each started in a window that
   opens at 05:00 UTC ([deploy guide](deploy/README.md) section 2.2). A
@@ -1223,11 +1249,13 @@ fixed, the next sweep removes them. A file that really is gone for good (lost
 with a container's disk, or removed by hand) fails every sweep until its row is
 deleted from `media_deletions` by hand.
 
-Last, whatever became of the files, it rewrites the verification credentials and
-runs `VACUUM FULL` on both verification tables, so that a credential row carries
-the sweep's transaction id rather than its own ([Transaction ids, and the
-nightly rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly
-what that protects). It needs no verification secret for that, but its database
+Last, whatever became of the files, it deletes the verification codes that
+expired unconfirmed, rewrites the verification credentials, and runs
+`VACUUM FULL` on both verification tables, so that a credential row carries the
+sweep's transaction id rather than its own and no abandoned code keeps the time
+it was asked for ([Transaction ids, and the nightly
+rewrite](#transaction-ids-and-the-nightly-rewrite) says why, and exactly what
+that protects). It needs no verification secret for that, but its database
 role must own the tables, or the database: `VACUUM FULL` skips any other table
 with only a warning, so the sweep checks that both tables moved to new files and
 fails at once if not (`TestSweepFailsWhenVacuumLeavesATableInItsFile`). Run it

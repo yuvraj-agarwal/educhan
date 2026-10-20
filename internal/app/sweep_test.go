@@ -588,6 +588,83 @@ func TestSweepTakesIssuanceTimeOutOfCredentials(t *testing.T) {
 	}
 }
 
+// expiredCodesHeldByCredentials counts the pending rows of expired codes, and
+// of those the ones whose email hash is a credential's: each says when the
+// address holding that credential asked for a code it never confirmed, which
+// was after the credential was issued.
+func (h *harness) expiredCodesHeldByCredentials() (expired, joined int) {
+	h.t.Helper()
+	if err := h.app.pool.QueryRow(context.Background(), `
+		SELECT count(*), count(c.email_hash)
+		FROM verification_pending p LEFT JOIN verification_credentials c USING (email_hash)
+		WHERE p.expires_at <= now()`).Scan(&expired, &joined); err != nil {
+		h.t.Fatalf("count expired codes: %v", err)
+	}
+	return expired, joined
+}
+
+// A code that expires unconfirmed keeps its pending row until the next
+// request prunes it, and requests are few at the hour the sweep runs. The
+// row's expiry, less the code's lifetime, is the time the code was asked for,
+// to the microsecond, and its email hash is the address's: for an address
+// that already holds a credential — a second browser asking for a code it
+// never confirms, say — it joins that credential and says it was issued
+// before then. So the sweep deletes those rows, before its rewrite, and
+// VACUUM FULL leaves them out of the table's new file with the rest. A code
+// still in flight stays, and still confirms.
+func TestSweepDeletesCodesThatExpiredUnconfirmed(t *testing.T) {
+	h := verifyServer(t, nil)
+	h.verify("holder@iitb.ac.in")
+	// The holder asks for a code again and never confirms it. Then another
+	// address asks for one, which is still in flight when the sweep runs;
+	// asking prunes expired codes, so it comes before they expire.
+	for _, email := range []string{"holder@iitb.ac.in", "inflight@iitb.ac.in"} {
+		if status, out := h.requestCode(email); status != http.StatusAccepted {
+			t.Fatalf("request a code for %s: status %d (%s)", email, status, out.Error)
+		}
+	}
+	inflight := h.mail.last(t).Code
+	// The holder's code expires, as it would by the night. Beside it, enough
+	// codes that expired unconfirmed that a file still holding their rows is
+	// plainly bigger than one holding the code in flight alone.
+	h.exec(`UPDATE verification_pending SET expires_at = now() - interval '1 second'
+		WHERE email_hash IN (SELECT email_hash FROM verification_credentials)`)
+	const abandoned = 300
+	h.exec(`INSERT INTO verification_pending (email_hash, token_hash, code_hash, label, expires_at)
+		SELECT sha256(int4send(i)), sha256(int4send(-i)), sha256(int4send(i) || int4send(i)), 'Somewhere',
+		       now() - interval '1 minute'
+		FROM generate_series(1, $1::int) AS i`, abandoned)
+
+	// Positive control: before the sweep the holder's code joins the
+	// credential, so the check below can see what it is looking for.
+	if expired, joined := h.expiredCodesHeldByCredentials(); expired != abandoned+1 || joined != 1 {
+		t.Fatalf("before the sweep %d expired codes, %d of them an address with a credential; want %d and 1",
+			expired, joined, abandoned+1)
+	}
+	before := h.tableSize("verification_pending")
+
+	if _, err := h.app.Sweep(context.Background()); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	if expired, joined := h.expiredCodesHeldByCredentials(); expired != 0 || joined != 0 {
+		t.Errorf("after the sweep %d expired codes are left, %d of them dating a credential", expired, joined)
+	}
+	if n := h.countRows("verification_pending"); n != 1 {
+		t.Errorf("after the sweep the pending table holds %d codes, want the one in flight", n)
+	}
+	// Deleted after the vacuum, the rows would be gone from the table but
+	// not from its file.
+	if after := h.tableSize("verification_pending"); after >= before {
+		t.Errorf("the pending table took %d bytes before the sweep and %d after: "+
+			"the expired codes' rows are still in its file", before, after)
+	}
+	h.assertNothingButLiveRows("verification_pending")
+
+	if status, out := h.confirmCode(inflight); status != http.StatusOK {
+		t.Fatalf("confirm the code in flight across the sweep: status %d (%s)", status, out.Error)
+	}
+}
+
 // postsGap counts the transaction ids handed out after one post on a board was
 // written and before another, and used by neither: what a plain query on
 // posts, which the application's own role can run, finds missing between
@@ -1041,14 +1118,14 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	}
 }
 
-// credentialsTableSize is the size of the credentials table's file, which
-// holds every row version VACUUM FULL kept, live or not.
-func (h *harness) credentialsTableSize() int64 {
+// tableSize is the size of a table's file, which holds every row version
+// VACUUM FULL kept, live or not.
+func (h *harness) tableSize(table string) int64 {
 	h.t.Helper()
 	var size int64
 	if err := h.app.pool.QueryRow(context.Background(),
-		`SELECT pg_relation_size('verification_credentials')`).Scan(&size); err != nil {
-		h.t.Fatalf("size of the credentials table: %v", err)
+		`SELECT pg_relation_size($1::text::regclass)`, table).Scan(&size); err != nil {
+		h.t.Fatalf("size of %s: %v", table, err)
 	}
 	return size
 }
@@ -1066,16 +1143,16 @@ func (h *harness) issueDirectly(n int) {
 	}
 }
 
-// assertNothingButLiveRows fails the test unless the credentials table's file
-// holds only its rows: a VACUUM FULL run now, with nothing written since the
-// sweep, has nothing left to take out.
-func (h *harness) assertNothingButLiveRows() {
+// assertNothingButLiveRows fails the test unless a table's file holds only its
+// rows: a VACUUM FULL run now, with nothing written since the sweep, has
+// nothing left to take out.
+func (h *harness) assertNothingButLiveRows(table string) {
 	h.t.Helper()
-	swept := h.credentialsTableSize()
-	h.exec(`VACUUM FULL verification_credentials`)
-	if again := h.credentialsTableSize(); again != swept {
-		h.t.Errorf("the credentials table took %d bytes after the sweep and %d after one more VACUUM FULL: "+
-			"the sweep left old row versions in it", swept, again)
+	swept := h.tableSize(table)
+	h.exec(`VACUUM FULL ` + pgx.Identifier{table}.Sanitize())
+	if again := h.tableSize(table); again != swept {
+		h.t.Errorf("%s took %d bytes after the sweep and %d after one more VACUUM FULL: "+
+			"the sweep left deleted row versions in it", table, swept, again)
 	}
 }
 
@@ -1145,7 +1222,7 @@ func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 			// Positive controls: the file the failed sweep left is the bigger
 			// for the old versions, and a snapshot from before the rewrite
 			// still reads them out of it, each with its issuance xmin.
-			kept := h.credentialsTableSize()
+			kept := h.tableSize("verification_credentials")
 			if holder.isolation == pgx.RepeatableRead {
 				var xmins int
 				if err := held.QueryRow(ctx,
@@ -1164,11 +1241,11 @@ func TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows(t *testing.T) {
 			if _, err := h.app.Sweep(ctx); err != nil {
 				t.Fatalf("sweep once the older transaction has ended: %v", err)
 			}
-			if size := h.credentialsTableSize(); size >= kept {
+			if size := h.tableSize("verification_credentials"); size >= kept {
 				t.Errorf("the credentials table takes %d bytes after a sweep that finished and took %d after "+
 					"one that kept the old rows; the size cannot tell them apart", size, kept)
 			}
-			h.assertNothingButLiveRows()
+			h.assertNothingButLiveRows("verification_credentials")
 			if n := h.credentialXmins(nil); n != 1 {
 				t.Errorf("the credentials carry %d transaction ids, want the last sweep's alone", n)
 			}
@@ -1205,7 +1282,7 @@ func TestSweepWaitsForAnOlderTransactionToEnd(t *testing.T) {
 		return watch.runs(vacuumProbeTable) >= 4 || watch.runs("verification_credentials") > 0
 	})
 	// The rewrite has committed: the file holds its rows and the old versions.
-	kept := h.credentialsTableSize()
+	kept := h.tableSize("verification_credentials")
 	for _, table := range verificationTables {
 		if n := watch.runs(table); n != 0 {
 			t.Errorf("the sweep ran VACUUM FULL on %s %d times while a transaction older than the rewrite "+
@@ -1239,11 +1316,11 @@ func TestSweepWaitsForAnOlderTransactionToEnd(t *testing.T) {
 				table, n)
 		}
 	}
-	if size := h.credentialsTableSize(); size >= kept {
+	if size := h.tableSize("verification_credentials"); size >= kept {
 		t.Errorf("the credentials table takes %d bytes after the sweep, as many as the %d it took "+
 			"with the old versions in it", size, kept)
 	}
-	h.assertNothingButLiveRows()
+	h.assertNothingButLiveRows("verification_credentials")
 }
 
 // VACUUM FULL skips, with nothing worse than a warning, a table its role may

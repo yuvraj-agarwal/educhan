@@ -26,11 +26,15 @@ import (
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
 //
-// Last, it rewrites the verification tables (Store.RewriteCredentials), so
-// that by the time the morning's backup runs the credential rows carry the
-// sweep's transaction id rather than each its own, which would date its
-// issuance against the posts written around it, and the tables' files hold
-// nothing else.
+// Last, it deletes the codes that expired unconfirmed and rewrites the
+// verification tables (Store.RewriteCredentials), so that when it ends every
+// credential row carries the sweep's transaction id rather than its own, which
+// would date its issuance against the posts written around it, and the
+// tables' files hold no other version of any row. A code still in flight as it
+// ran keeps its row, with the time it was asked for; rows written after it —
+// a confirmation, a code requested — keep their own transaction ids until the
+// next sweep; and a backup taken meanwhile holds both (the README's
+// "Transaction ids, and the nightly rewrite").
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.

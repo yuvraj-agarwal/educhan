@@ -1048,9 +1048,10 @@ type pendingVerification struct {
 // the one that arrived, or not the one being used.
 func (s *Store) StartVerification(ctx context.Context, in pendingVerification) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
-		// Pending rows are swept here rather than on a timer: they are the one
-		// part of this feature that carries a fresh timestamp, so the sooner
-		// spent ones go the better.
+		// Pending rows are swept here, and by the nightly sweep
+		// (RewriteCredentials), rather than on a timer: they are the one part
+		// of this feature that carries a fresh timestamp, so the sooner spent
+		// ones go the better.
 		if _, err := tx.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
 			return fmt.Errorf("prune pending verifications: %w", err)
 		}
@@ -1269,6 +1270,20 @@ const vacuumProbeTable = "vacuum_probe"
 // of each table and index would date the last confirmation before the sweep,
 // so restampScans makes them the sweep's.
 //
+// A code that expired unconfirmed leaves its pending row live until the next
+// request prunes it (StartVerification), and requests are few at night. Its
+// expiry, less the code's lifetime, is the time it was asked for, to the
+// microsecond, and its email hash is the address's: an address that already
+// holds a credential — a second browser asking for a code it never confirms,
+// say — joins it to that credential, which it then says was issued before
+// that time. So before the rewrite those rows are deleted, in a transaction of
+// their own: one older than the rewrite, so that the vacuum, which is
+// measured against the rewrite, drops them from the file too, and one that
+// holds no lock on the credentials table while it waits for a pending row a
+// confirmation has locked, since that confirmation may be waiting for the
+// credentials table. A code still in flight stays, and still confirms; the
+// README says what its row keeps.
+//
 // None of this reaches the posts. Requesting a code and confirming one are
 // writes, and each takes a transaction id from the counter posts take theirs
 // from, so the ids they took are missing from the posts' xmins, between the
@@ -1297,6 +1312,10 @@ func (s *Store) RewriteCredentials(ctx context.Context) (int, error) {
 		return 0, fmt.Errorf("connect: %w", err)
 	}
 	defer conn.Close(context.WithoutCancel(ctx))
+
+	if _, err := conn.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
+		return 0, fmt.Errorf("delete expired codes: %w", err)
+	}
 
 	var (
 		rewritten int

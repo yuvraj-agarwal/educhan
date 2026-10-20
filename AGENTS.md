@@ -806,10 +806,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     step, works on a connection of its own, with `lock_timeout` at five seconds,
     `client_min_messages` at `warning` (so that neither `DATABASE_URL` nor a role's or
     the database's default can hide the `55P03` below), and a handler that collects
-    notices. It locks `verification_credentials` `IN EXCLUSIVE MODE` in a
-    read-committed transaction (`CredentialLabel` reads on; everything else on the
-    table waits, and holds the lock up: writers and row lockers, `VACUUM`, `ANALYZE`,
-    index builds, schema changes, another sweep), deletes every row and inserts the
+    notices. First it deletes the codes that expired unconfirmed, which a request
+    prunes too, but requests are few at night: an abandoned code's row keeps the time
+    it was asked for, to the microsecond, under the address's email hash, which for
+    an address that already holds a credential (a second browser's request, say) is
+    the credential's, and says it was issued before then. It does so in a statement
+    of its own, before the rewrite's transaction: deleted by an older transaction
+    than the rewrite, the rows leave the file with the vacuum below, which is
+    measured against the rewrite; and inside that transaction the delete would wait,
+    holding the credentials table, for a row locked by a confirmation that may be
+    waiting for that table (`TestSweepDeletesCodesThatExpiredUnconfirmed`). A code
+    still in flight stays, and still confirms. Then it locks
+    `verification_credentials` `IN EXCLUSIVE MODE` in a read-committed transaction
+    (`CredentialLabel` reads on; everything else on the table waits, and holds the
+    lock up: writers and row lockers, `VACUUM`, `ANALYZE`, index builds, schema
+    changes, another sweep), deletes every row and inserts the
     returned copy back `ORDER BY random()` in one statement, and notes the
     transaction's id. `lock_timeout` bounds the wait, not the hold: confirmations queue
     for the rewrite's statement too, which grows with the table (about three seconds
@@ -862,9 +873,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     credential row's own issuance id (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs`
     pins this as a known limit, and only verification tables on a PostgreSQL instance
     of their own would close it). Nor does it cover a credential issued since the
-    last sweep, backups (taken from 05:00 UTC, up to 09:00, seven kept), a night the
-    sweep failed, autovacuum times recorded before `0015`, or the write-ahead log the
-    server keeps for crash recovery, which dates a credential until PostgreSQL
+    last sweep, a code in flight as the sweep ran (its row keeps the time it was
+    asked for until it is confirmed, or deleted once expired, and its email hash
+    joins its address's credential if there is one), backups (taken from 05:00 UTC,
+    up to 09:00, seven kept), a night the sweep failed, autovacuum times recorded
+    before `0015`, or the write-ahead log the server keeps for crash recovery,
+    which dates a credential until PostgreSQL
     deletes or reuses the newest segment holding its row. With full-page writes on,
     the log since the checkpoint before the sweep holds every credentials page as it
     stood before the rewrite, issuance ids and all — the sweep's own delete logs the
@@ -873,6 +887,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     off and `track_commit_timestamp` stays off (`deploy/README.md` section 2.2);
     changing either means changing that README section in the same commit.
     `TestSweepTakesIssuanceTimeOutOfCredentials`,
+    `TestSweepDeletesCodesThatExpiredUnconfirmed`,
     `TestSweepStoresCredentialsOutOfIssuanceOrder`,
     `TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
     `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`,
