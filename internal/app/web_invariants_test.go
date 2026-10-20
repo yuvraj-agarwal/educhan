@@ -1124,15 +1124,15 @@ func TestPassPageDetails(t *testing.T) {
 		// The note is the last holder's news; the next person at a shared
 		// computer is not told about a Pass that was never theirs. It is set
 		// empty in its declaration, on leaving the page, and by these two,
-		// pressed here or in another tab (followPassForget, for a "code:"
+		// pressed here or in another tab (stopForPassForget, for a "code:"
 		// mark).
 		code := withoutComments(script)
 		remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 		remove = remove[:strings.Index(remove, "\n  }\n")]
-		follow := withoutComments(jsFunction(t, script, "followPassForget"))
+		stop := withoutComments(jsFunction(t, script, "stopForPassForget"))
 		if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "passLost = \"\";") ||
 			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 5 ||
-			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(follow) {
+			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(stop) {
 			t.Error("Forget this browser or Remove the Pass, here or in another tab, leaves what the page said about a Pass that has gone")
 		}
 	})
@@ -1659,9 +1659,9 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	// send a nonce, renderPass's look for one kept from an unanswered claim,
 	// and forgetting, here or in another tab; passNonces only by the helpers.
 	nonceUsers := map[string][]string{
-		"PASS_NONCE_STORAGE_KEY":              {"renderPass", "collectPass", "forgetPassClaim", "followPassForget"},
-		"PASS_REISSUE_NONCE_STORAGE_KEY":      {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
-		"PASS_REISSUE_UNANSWERED_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
+		"PASS_NONCE_STORAGE_KEY":              {"renderPass", "collectPass", "forgetPassClaim", "stopForPassForget"},
+		"PASS_REISSUE_NONCE_STORAGE_KEY":      {"redeemPassReissue", "forgetPassClaim", "stopForPassForget"},
+		"PASS_REISSUE_UNANSWERED_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "stopForPassForget"},
 		"passNonces":                          {"passNonce", "passNoncePending", "dropPassNonce"},
 	}
 	for name, users := range nonceUsers {
@@ -1789,8 +1789,8 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		}
 	}
 	for counter, users := range map[string][]string{
-		"passForgets":        {"forgetPassClaim", "collectPass", "followPassForget", "redeemPassReissue", "submitPass", "passForgetsSettled"},
-		"passCodeForgets":    {"forgetPassClaim", "followPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
+		"passForgets":        {"forgetPassClaim", "collectPass", "stopForPassForget", "redeemPassReissue", "submitPass", "passForgetsSettled"},
+		"passCodeForgets":    {"forgetPassClaim", "stopForPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
 		"passCodeForgetting": {"settlePassForgetting", "passForgotten"},
 	} {
 		uses := 1
@@ -1855,10 +1855,10 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	collectButtons := `const PASS_COLLECT_BUTTONS = '[data-action="collect-pass"], [data-action="stop-pass-claim"]';`
 	offWhileStopping := "if (passForgetting) {\n    for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n      button.disabled = true;\n    }\n  }"
 	draw := withoutComments(jsFunction(t, script, "drawPass"))
-	followStop := withoutComments(jsFunction(t, script, "followPassForget"))
+	followStop := withoutComments(jsFunction(t, script, "stopForPassForget"))
 	if !strings.Contains(code, collectButtons) || strings.Index(draw, offWhileStopping) < strings.Index(draw, "el.main.innerHTML = passViewHTML(info);") ||
-		!strings.Contains(followStop, "for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;\n  }") ||
-		strings.Index(followStop, "button.disabled = true;") < strings.Index(followStop, "passForgetting = waited;") ||
+		!strings.Contains(followStop, "for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;\n") ||
+		strings.Index(followStop, "button.disabled = true;") < strings.Index(followStop, "const waited = heedPassForget(key, mark);") ||
 		!strings.Contains(stop, "for (const button of [...waiting, ...el.main.querySelectorAll(PASS_COLLECT_BUTTONS)]) {\n        button.disabled = false;") {
 		t.Error("a Pass page drawn while this browser is stopping collecting offers Check now and Stop again")
 	}
@@ -2152,17 +2152,39 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		t.Error("followPassForget reads a storage event other than a forget mark's")
 	}
 	// A mark that goes ends the wait on it, and one this tab already waits on
-	// (found when it was loaded) is not stopped for twice.
+	// (found when it was loaded, or brought back) is not stopped for twice.
+	// Every other one is stopped for in one place, whether this tab hears of it
+	// by its storage event or finds it there when it is loaded or brought back
+	// from the back-forward cache (heedPassForgetsUnderWay): a page brought
+	// back holds what it held when it was left, a collection's nonce, a reissue
+	// code's, the last holder's news or a code typed in, and the storage event
+	// for a mark it found, which comes after the pageshow event, finds it
+	// already waited on, so it is not stopped for a second time, and only
+	// stopping for it there drops what the forget drops.
 	stop := strings.Index(follow, "if (!mark) {\n    const heard = passForgetHeard.get(key);\n    if (heard) {\n      heard();\n    }\n    return;\n  }\n"+
-		"  if (passForgetWaits.has(key)) {\n    return;\n  }")
-	for _, step := range []string{"const code = mark.startsWith(\"code:\");", "passVisit += 1;", "passForgets += 1;",
+		"  if (passForgetWaits.has(key)) {\n    return;\n  }\n  stopForPassForget(key, mark).then(() => {")
+	if stop < 0 || stop < read {
+		t.Error("followPassForget no longer stops this tab for a forget it hears of, once and only once")
+	}
+	stopping := withoutComments(jsFunction(t, script, "stopForPassForget"))
+	steps := []string{"const code = mark.startsWith(\"code:\");", "passVisit += 1;", "passForgets += 1;",
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
 			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n  }",
-		"const waited = heedPassForget(key, mark);"} {
-		if at := strings.Index(follow, step); stop < 0 || stop < read || at < stop {
-			t.Errorf("followPassForget no longer does %q when another tab forgets", step)
+		"const waited = heedPassForget(key, mark);",
+		"for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;", "return waited;\n}"}
+	for at, step := 0, 0; step < len(steps); step++ {
+		next := strings.Index(stopping[at:], steps[step])
+		if next < 0 {
+			t.Errorf("stopForPassForget no longer does %q, in its order, when another tab forgets", steps[step])
+			break
 		}
+		at += next
+	}
+	under := withoutComments(jsFunction(t, script, "heedPassForgetsUnderWay"))
+	if !strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      stopForPassForget(key, mark);\n    } else {") ||
+		strings.Count(code, "stopForPassForget(") != 3 || strings.Count(code, "heedPassForget(") != 2 {
+		t.Error("a tab brought back from the back-forward cache while a forget is on its way waits on it without dropping what it drops")
 	}
 	// Stop ("claim:") leaves a reissue code alone, here and in other tabs: its
 	// nonce, the code typed, and an answer on its way, which redeemPassReissue
@@ -2172,7 +2194,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	for name, steps := range map[string][]string{
 		"forgetPassClaim": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
 			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);"},
-		"followPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
+		"stopForPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
 			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "forgetTypedCode();", "passLost = \"\";"},
 	} {
 		body := withoutComments(jsFunction(t, script, name))
@@ -2203,7 +2225,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		!strings.Contains(left, "return left > 0 ? Math.min(left, PASS_FORGET_WAIT_MS) : 0;") {
 		t.Error("a tab no longer waits for another tab's mark to go, or no longer for at most PASS_FORGET_WAIT_MS after it was set")
 	}
-	if !regexp.MustCompile(`waited\.then\(\(\) => \{\s*if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*`+
+	if !regexp.MustCompile(`stopForPassForget\(key, mark\)\.then\(\(\) => \{\s*if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*`+
 		`renderPass\(\)\.then\(\(drawn\) => \{\s*if \(drawn\) \{\s*`+
 		`if \(!document\.activeElement \|\| document\.activeElement === document\.body\) \{\s*passFocus\(`).MatchString(follow) ||
 		strings.Contains(follow, "data-pass-page") {
@@ -2216,10 +2238,9 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	// anything is drawn: one it does not know of is waited on, one whose
 	// mark has gone stops being waited on, and one set longer ago than a tab
 	// waits, left by a tab closed before its answer, is taken off.
-	under := withoutComments(jsFunction(t, script, "heedPassForgetsUnderWay"))
 	if !strings.Contains(under, "if (key && key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {\n        marks.set(key, localStorage.getItem(key) || \"\");") ||
 		!strings.Contains(under, "for (const [key, heard] of passForgetHeard) {\n    if (!marks.has(key)) {\n      heard();") ||
-		!strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      heedPassForget(key, mark);\n    } else {\n"+
+		!strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      stopForPassForget(key, mark);\n    } else {\n"+
 			"      try {\n        localStorage.removeItem(key);") {
 		t.Error("a tab opened while a forget is on its way no longer waits on it, or no longer takes off a mark left behind")
 	}

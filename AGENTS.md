@@ -581,21 +581,26 @@ needs a browser check before the test changes.
   server has that request (`passForgetting`), nothing collects: `renderPass` and
   `collectPass` wait on it, and Check now and Stop collecting it here stay off meanwhile,
   in every tab and in anything drawn meanwhile (`PASS_COLLECT_BUTTONS`, which `drawPass`
-  and `followPassForget` turn off); turned away, Stop turns them back on, says so and goes
-  on collecting. The browser's other tabs do all of this too: each forget keeps a mark of
-  its own while its request is on its way, under `educhan:pass-forget:` and a random
-  token, holding `code:` for Remove and Forget or `claim:` for Stop and the time it was
-  set, so two forgets at once never share one. Every forget a tab knows of, its own and
-  those it has heard of, is a wait in `passForgetWaits`, from which `settlePassForgetting`
-  makes `passForgetting` and `passCodeForgetting`. A tab that sees a mark appear
-  (`followPassForget`, by the `storage` event) stops, drops the collection's nonce, for
-  Remove and Forget the reissue code's too, its mark, `passLost` and its code box, and
-  waits for the mark to go, or `PASS_FORGET_WAIT_MS` (30 seconds, which the README states)
-  from the time it holds at most (`heedPassForget`), then draws the Pass page if it is on
-  it, putting the focus back if the drawing left it on the page's body. A tab opened, or
-  brought back from the back-forward cache, while a mark is there heard no `storage` event
-  for it, so it looks for marks before it draws anything (`heedPassForgetsUnderWay`, at
-  load and on `pageshow`), waits on each the same way and removes one older than the wait.
+  and `stopForPassForget` turn off); turned away, Stop turns them back on, says so and
+  goes on collecting. The browser's other tabs do all of this too: each forget keeps
+  a mark of its own while its request is on its way, under `educhan:pass-forget:` and
+  a random token, holding `code:` for Remove and Forget or `claim:` for Stop and the
+  time it was set, so two forgets at once never share one. Every forget a tab knows
+  of, its own and those it has heard of, is a wait in `passForgetWaits`, from which
+  `settlePassForgetting` makes `passForgetting` and `passCodeForgetting`. A tab that
+  sees a mark appear (`followPassForget`, by the `storage` event) stops as the tab it was
+  pressed in did (`stopForPassForget`): it drops the collection's nonce, for Remove and
+  Forget the reissue code's too, its mark, `passLost` and its code box, turns Check now
+  and Stop off, and waits for the mark to go, or `PASS_FORGET_WAIT_MS` (30 seconds, which
+  the README states) from the time it holds at most (`heedPassForget`), then draws the
+  Pass page if it is on it, putting the focus back if the drawing left it on the page's
+  body. A tab opened, or brought back from the back-forward cache, while a mark is there
+  heard no `storage` event for it, so it looks for marks before it draws anything
+  (`heedPassForgetsUnderWay`, at load and on `pageshow`), stops for each it does not yet
+  wait on through `stopForPassForget` too, and removes one older than the wait. At load
+  that changes nothing, but a page brought back holds what it held when it was left (a
+  collection's nonce, a reissue code's, the last holder's news), and the `storage` event
+  for the mark, which comes after `pageshow`, finds it already waited on.
   An answer to a code check or a post acts only on the Pass it was about, if this browser
   still holds it (`passStillHeld`), so a Pass removed or replaced meanwhile, here or in
   another tab, is not written back. Whatever a Pass answer stores, it draws, focuses or

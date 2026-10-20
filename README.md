@@ -412,19 +412,21 @@ cannot collect what is being dropped. The browser's other tabs do the same:
 while the request is on its way the page keeps a mark in `localStorage`
 (`educhan:pass-forget:` and a random token, a mark for each forget, holding the
 time it was set), and a tab that sees one appear, or finds one when it is
-opened or brought back from the back-forward cache, stops, and starts nothing
-until each such mark goes, or for 30 seconds at most, in case the tab that
-set it was closed first, counted from the time the mark holds; it then draws
-the Pass page if it is open, and a tab opened on an older mark removes it. An
-answer to a claim already on its way, in any tab, when one of them is pressed is
-dropped without being stored or shown; a Pass it brought is still the buyer's,
-and a reissue code from its payment gives it a new code. A checkout still on
-its way then is not followed to Stripe once it answers, and the claim it set
-is dropped (below). Remove the Pass and Forget this browser go further, in
-every tab: they also drop a reissue code's nonce, and an answer on its way to
-a reissue code or to a check of a Pass code, until the server has the request.
-Stop collecting it here leaves those alone, since it is about a checkout, and a
-reissue it dropped would be spent with nothing to show for it.
+opened or brought back from the back-forward cache, stops as the tab it was
+pressed in did, one brought back dropping what it held when it was left,
+and starts nothing until each such mark goes, or for 30 seconds at most, in
+case the tab that set it was closed first, counted from the time the mark
+holds; it then draws the Pass page if it is open, and a tab opened on an
+older mark removes it. An answer to a claim already on its way, in any tab,
+when one of them is pressed is dropped without being stored or shown; a Pass
+it brought is still the buyer's, and a reissue code from its payment gives
+it a new code. A checkout still on its way then is not followed to Stripe
+once it answers, and the claim it set is dropped (below). Remove the Pass and
+Forget this browser go further, in every tab: they also drop a reissue code's
+nonce, and an answer on its way to a reissue code or to a check of a Pass code,
+until the server has the request. Stop collecting it here leaves those alone,
+since it is about a checkout, and a reissue it dropped would be spent with
+nothing to show for it.
 
 A page on another subdomain of the same site can set a cookie of the same name
 for the whole site, at a path the browser sends ahead of the server's own, to
@@ -997,16 +999,17 @@ not-found view.
   by leaving the page. Those two and **Stop collecting it here** stop any collection
   under way, drop its nonce and then the browser's claim, and drop unstored an answer
   to a claim that was already on its way, in every tab of the browser (the `storage`
-  event), so the next person at a shared computer collects nothing. A checkout still
-  opening when one of them is pressed, in any tab, is not followed to Stripe once it
-  answers, and the claim it set is dropped then. Remove and Forget also drop the reissue
-  code's nonce and its note, any note that a Pass was found gone, and an answer on
-  its way to a reissue code or to a check of a code; Stop leaves those alone, since a
-  reissue it dropped would be spent for nothing. Nothing collects again until the server
-  has that request: **Check now** and **Stop collecting it here** stay off meanwhile, in
-  every tab and in whatever is drawn meanwhile, a tab that opens the Pass page meanwhile
-  draws it then, and a Stop that cannot reach educhan says so, turns the buttons back on
-  and goes on collecting. **Use this code here** (a Pass code or a reissue code), **Check
+  event), a tab brought back from the back-forward cache included, so the next person
+  at a shared computer collects nothing. A checkout still opening when one of them
+  is pressed, in any tab, is not followed to Stripe once it answers, and the claim it
+  set is dropped then. Remove and Forget also drop the reissue code's nonce and its
+  note, any note that a Pass was found gone, and an answer on its way to a reissue
+  code or to a check of a code; Stop leaves those alone, since a reissue it dropped
+  would be spent for nothing. Nothing collects again until the server has that request:
+  **Check now** and **Stop collecting it here** stay off meanwhile, in every tab and
+  in whatever is drawn meanwhile, a tab that opens the Pass page meanwhile draws it
+  then, and a Stop that cannot reach educhan says so, turns the buttons back on and
+  goes on collecting. **Use this code here** (a Pass code or a reissue code), **Check
   it again**, **Buy on Stripe** and **Renew on Stripe** pressed meanwhile wait, and go
   once every such request the tab knows of is settled, from this tab or another; but if
   Remove or Forget is pressed while they wait, in this tab or another, they send nothing,
