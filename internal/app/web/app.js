@@ -2174,9 +2174,9 @@ function renderRules() {
         <li><strong>No pushing drugs or other harmful substances.</strong> Don't encourage
           anyone to take anything that could harm them.</li>
         <li><strong>No contact details, and no moving to other apps.</strong> Never post a
-          phone number, an email address, a home or school address, or a Discord, Snapchat,
-          Instagram, Telegram or WhatsApp name or link, yours or anyone else's. Don't ask
-          anyone to talk to you somewhere else.</li>
+          phone number, an email address, a home or school address, a link to a video call,
+          or a Discord, Snapchat, Instagram, Telegram or WhatsApp name or link, yours or
+          anyone else's. Don't ask anyone to talk to you somewhere else.</li>
         <li><strong>Don't name or point out real people you know.</strong> Never name a
           classmate, teacher or anyone else from your own life, or describe them so they could
           be recognised. You can ask for advice about a friend or teacher, as long as nobody
@@ -2200,13 +2200,15 @@ function renderRules() {
       <p>Every post is checked automatically for a few things before it goes up:</p>
       <ul>
         <li>A post with contact details (a phone number, an email address, or a username or
-          link for another app), a request to talk on another app, or an ID number such as an
-          Aadhaar number is sent back to you, showing the part to take out. Take it out and
-          post again.</li>
+          link for another app), a video call's link or meeting ID, a request to talk on
+          another app, or an ID number such as an Aadhaar number is sent back to you, showing
+          the part to take out. Take it out and post again.</li>
         <li>A post that might be a threat, that might hurt someone who is struggling (by
           telling them to hurt or kill themselves, say, or by talking about ways to do it), or
           that asks someone's age or where they live and also asks to talk privately, waits
-          until a moderator has checked it. It only appears if they approve it.</li>
+          until a moderator has checked it, and so does one that asks their age or where they
+          live and has contact details in it, instead of being sent back. It only appears if
+          they approve it.</li>
         <li>If your post talks about wanting to hurt yourself or to die, you'll see
           <a href="#help">where to get help</a> first. You can still post it.</li>
       </ul>
@@ -2292,21 +2294,26 @@ const FAQ_SECTIONS = [
         before anyone else can see it:</p>
       <ul>
         <li><strong>Contact details and ID numbers.</strong> A post with a phone number, an
-          email address, a username or link for another app, a request to talk on another
-          app, or an ID number such as an Aadhaar number is sent back to you, showing the
-          part to take out. Take it out and post again.</li>
+          email address, a username or link for another app, a video call's link or meeting
+          ID, a request to talk on another app, or an ID number such as an Aadhaar number is
+          sent back to you, showing the part to take out. Take it out and post again.</li>
         <li><strong>Posts that wait for a moderator.</strong> A post that might be a threat,
           that might hurt someone who is struggling (by telling them to hurt or kill
           themselves, say, or by talking about ways to do it), or that asks someone's age or
           where they live, or looks for someone of a certain age, and also asks to talk
-          privately or meet, is kept back until a moderator has checked it. It only appears if they approve it.</li>
+          privately or meet, is kept back until a moderator has checked it. So is one that asks
+          someone's age or where they live and has contact details in it, instead of being
+          sent back to you. It only appears if they approve it. Words you say someone else
+          said or sent you, like a threat you were sent or being told to hurt yourself, aren't
+          read as yours, so you can ask for advice about them.</li>
         <li><strong>If you're having a hard time.</strong> If your post talks about wanting to
           hurt yourself or to die, you'll see <a href="#faq-help">where to get help</a> before
           it goes up. You can still post it.</li>
       </ul>
       <p>These checks are simple: they only look for certain words and number patterns, in
-        English and some Hinglish (Hindi typed in English letters). They don't read Hindi
-        in Devanagari or any other language. They miss plenty, and they sometimes stop a
+        English (with a little Nigerian Pidgin) and some Hinglish (Hindi typed in English
+        letters). They don't read Hindi in Devanagari or any other language. They miss
+        plenty, and they sometimes stop a
         post that was fine. So the
         <a href="/rules">rules</a> apply to everything, whether a check catches it or not, and
         moderators can still delete posts that break them. The checks don't keep a copy of
@@ -3503,12 +3510,14 @@ function posterKey() {
 // The server reads every post before it keeps it (filter.go), and answers in
 // one of three ways besides publishing it. A post with contact details or an
 // ID number is sent back with the text to take out (422, "block"), and the
-// form says what and selects it. A post with crisis language in the poster's
-// own voice is sent back once (422, "support") so the poster sees where to get
-// help; "Post anyway" sends it again and it goes on. A post a moderator has to
-// read first is kept but not shown (202, held), and the form says so. None of
-// it is a feature to sell: the checks are word patterns that miss plenty, and
-// the copy here and on the rules and FAQ says no more than that.
+// form says what and selects it; contact details beside a question about the
+// reader's age or whereabouts are held instead. A post with crisis language in
+// the poster's own voice is sent back once (422, "support") so the poster sees
+// where to get help; "Post anyway" sends it again and it goes on. A post a
+// moderator has to read first is kept but not shown (202, held), and the form
+// says so. None of it is a feature to sell: the checks are word patterns that
+// miss plenty, and the copy here and on the rules and FAQ says no more than
+// that.
 
 // showFormNotice puts a message in the form's notice, above its buttons. html
 // is markup the caller has built with esc(); info is for news that is not a

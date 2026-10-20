@@ -3,6 +3,7 @@ package app
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -10,8 +11,10 @@ import (
 	"regexp"
 	"regexp/syntax"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -89,9 +92,9 @@ func TestFilterBlocks(t *testing.T) {
 		{"full-width digits", "９８７６５４３２１０", ruleContact, "９８７６５４３２１０"},
 		{"devanagari digits", "मेरा नंबर ९८७६५४३२१० है", ruleContact, "९८७६५४३२१०"},
 		{"zero-width characters", "98765​43210", ruleContact, "98765​43210"},
-		{"us number", "text (415) 867-5309 tonight", ruleContact, "(415) 867-5309"},
-		{"us number dashed", "415-867-5309", ruleContact, "415-867-5309"},
-		{"us international", "+1 415 867 5309", ruleContact, "+1 415 867 5309"},
+		{"us number", "text (495) 867-5309 tonight", ruleContact, "(495) 867-5309"},
+		{"us number dashed", "495-867-5309", ruleContact, "495-867-5309"},
+		{"us international", "+1 495 867 5309", ruleContact, "+1 495 867 5309"},
 		{"uk mobile", "07911 123456", ruleContact, "07911 123456"},
 		// Grouped so that the Indian reading leaves a group of one after the
 		// trunk zero, which only the UK rule reads.
@@ -118,14 +121,14 @@ func TestFilterBlocks(t *testing.T) {
 			"98765[/spoiler] [spoiler]43210"},
 		{"number after a word in a spoiler", "call me[spoiler]9876543210[/spoiler]", ruleContact, "9876543210"},
 		{"app split by a spoiler", "add me on sn[spoiler]ap[/spoiler]", ruleContact, "add me on sn[spoiler]ap"},
-		{"handle split by a spoiler", "my snap is cool[spoiler]kid_12[/spoiler]", ruleContact,
-			"my snap is cool[spoiler]kid_12"},
-		{"email split by a spoiler", "coolkid12@g[spoiler]mail.com[/spoiler]", ruleContact,
-			"coolkid12@g[spoiler]mail.com"},
+		{"handle split by a spoiler", "my snap is madeup[spoiler]kid_12[/spoiler]", ruleContact,
+			"my snap is madeup[spoiler]kid_12"},
+		{"email split by a spoiler", "madeupkid12@g[spoiler]mail.com[/spoiler]", ruleContact,
+			"madeupkid12@g[spoiler]mail.com"},
 		{"link split by a spoiler", "disc[spoiler]ord.gg/abc123[/spoiler]", ruleContact, "disc[spoiler]ord.gg/abc123"},
 		{"app in a code block", "add me on [code]snap[/code]", ruleContact, "add me on [code]snap"},
-		{"handle in a code block", "my snap is [code]coolkid_12[/code]", ruleContact, "my snap is [code]coolkid_12"},
-		{"handle's digits in a spoiler", "ig: coolkid[spoiler]2009[/spoiler]", ruleContact, "ig: coolkid[spoiler]2009"},
+		{"handle in a code block", "my snap is [code]madeupkid_12[/code]", ruleContact, "my snap is [code]madeupkid_12"},
+		{"handle's digits in a spoiler", "ig: madeupkid[spoiler]2009[/spoiler]", ruleContact, "ig: madeupkid[spoiler]2009"},
 		{"leet app split by a spoiler", "whats ur sn[spoiler]4[/spoiler]p", ruleContact,
 			"whats ur sn[spoiler]4[/spoiler]p"},
 		{"app's first letter in a spoiler", "add me on 1[spoiler]nsta[/spoiler]", ruleContact,
@@ -134,28 +137,28 @@ func TestFilterBlocks(t *testing.T) {
 		{"number after an invisible character", "call me\u200b9876543210", ruleContact, "9876543210"},
 
 		// Email addresses.
-		{"email", "mail priya.sharma@gmail.com for notes", ruleContact, "priya.sharma@gmail.com"},
-		{"email spaced", "priya @ gmail . com", ruleContact, "priya @ gmail . com"},
-		{"email spelled out", "priya.sharma at gmail dot com", ruleContact, "priya.sharma at gmail dot com"},
-		{"email bracketed", "priya [at] outlook [dot] com", ruleContact, "priya [at] outlook [dot] com"},
-		{"email at an institution", "priya at iitb dot ac dot in", ruleContact, "priya at iitb dot ac dot in"},
-		{"email in code", "[code]ADMIN = \"rahul.k@yahoo.co.in\"[/code]", ruleContact, "rahul.k@yahoo.co.in"},
-		{"email bracketed dot", "coolkid12@gmail[.]com", ruleContact, "coolkid12@gmail[.]com"},
-		{"email bracketed at", "coolkid12[@]gmail.com", ruleContact, "coolkid12[@]gmail.com"},
-		{"email with no tld", "coolkid12@gmail", ruleContact, "coolkid12@gmail"},
-		{"email with at and dot spelled", "coolkid@gmail dot com", ruleContact, "coolkid@gmail dot com"},
-		{"email spaced at and spelled dot", "mail coolkid12 @ gmail dot com", ruleContact, "coolkid12 @ gmail dot com"},
-		{"email digit in tld", "coolkid12@gmail.c0m", ruleContact, "coolkid12@gmail.c0m"},
+		{"email", "mail madeup.priya@gmail.com for notes", ruleContact, "madeup.priya@gmail.com"},
+		{"email spaced", "madeup.priya @ gmail . com", ruleContact, "madeup.priya @ gmail . com"},
+		{"email spelled out", "madeup.priya at gmail dot com", ruleContact, "madeup.priya at gmail dot com"},
+		{"email bracketed", "madeuppriya [at] outlook [dot] com", ruleContact, "madeuppriya [at] outlook [dot] com"},
+		{"email at an institution", "madeuppriya at iitb dot ac dot in", ruleContact, "madeuppriya at iitb dot ac dot in"},
+		{"email in code", "[code]ADMIN = \"madeup.rahul@yahoo.co.in\"[/code]", ruleContact, "madeup.rahul@yahoo.co.in"},
+		{"email bracketed dot", "madeupkid12@gmail[.]com", ruleContact, "madeupkid12@gmail[.]com"},
+		{"email bracketed at", "madeupkid12[@]gmail.com", ruleContact, "madeupkid12[@]gmail.com"},
+		{"email with no tld", "madeupkid12@gmail", ruleContact, "madeupkid12@gmail"},
+		{"email with at and dot spelled", "madeupkid@gmail dot com", ruleContact, "madeupkid@gmail dot com"},
+		{"email spaced at and spelled dot", "mail madeupkid12 @ gmail dot com", ruleContact, "madeupkid12 @ gmail dot com"},
+		{"email digit in tld", "madeupkid12@gmail.c0m", ruleContact, "madeupkid12@gmail.c0m"},
 
 		// Links to profiles and invites.
 		{"discord invite", "join discord.gg/abc123", ruleContact, "discord.gg/abc123"},
 		{"discord invite spelled", "discord dot gg/abc123", ruleContact, "discord dot gg/abc123"},
-		{"instagram profile", "https://www.instagram.com/some_user", ruleContact, "https://www.instagram.com/some_user"},
-		{"telegram", "t.me/someone", ruleContact, "t.me/someone"},
+		{"instagram profile", "https://www.instagram.com/madeup_user", ruleContact, "https://www.instagram.com/madeup_user"},
+		{"telegram", "t.me/madeup_someone", ruleContact, "t.me/madeup_someone"},
 		{"whatsapp link", "wa.me/919876543210", ruleContact, "wa.me/919876543210"},
-		{"snapchat add", "snapchat.com/add/cool_guy", ruleContact, "snapchat.com/add/cool_guy"},
+		{"snapchat add", "snapchat.com/add/madeup_guy", ruleContact, "snapchat.com/add/madeup_guy"},
 		{"bracketed dot in a link", "discord(.)gg/abc123", ruleContact, "discord(.)gg/abc123"},
-		{"spaced short host", "t . me/coolkid", ruleContact, "t . me/coolkid"},
+		{"spaced short host", "t . me/madeupkid", ruleContact, "t . me/madeupkid"},
 		{"host spelled letter by letter", "d i s c o r d . g g / abc123", ruleContact, "d i s c o r d . g g / abc123"},
 		{"whatsapp short link", "https://wa.link/abc123", ruleContact, "https://wa.link/abc123"},
 		{"whatsapp web", "https://web.whatsapp.com/send?phone=919876543210", ruleContact,
@@ -175,16 +178,16 @@ func TestFilterBlocks(t *testing.T) {
 		{"whats your number", "whats ur number", ruleContact, "whats ur number"},
 		{"join my discord", "join my discord for jee prep", ruleContact, "join my discord"},
 		{"lets move", "lets talk on telegram", ruleContact, "lets talk on telegram"},
-		{"insta colon handle", "insta: x_y_z", ruleContact, "insta: x_y_z"},
-		{"snap at handle", "snap @cool.guy", ruleContact, "snap @cool.guy"},
-		{"my snap is", "my snap is ana_23", ruleContact, "my snap is ana_23"},
+		{"insta colon handle", "insta: madeup_x_y_z", ruleContact, "insta: madeup_x_y_z"},
+		{"snap at handle", "snap @madeup.guy", ruleContact, "snap @madeup.guy"},
+		{"my snap is", "my snap is madeup_ana23", ruleContact, "my snap is madeup_ana23"},
 		{"whatsapp me", "whatsapp me", ruleContact, "whatsapp me"},
 		{"steam", "add me on steam", ruleContact, "add me on steam"},
-		{"dotted app and handle", "s.n.a.p: coolkid_12", ruleContact, "s.n.a.p: coolkid_12"},
-		{"leetspeak app and handle", "sn4pch4t: coolkid_12", ruleContact, "sn4pch4t: coolkid_12"},
-		{"discord discriminator", "discord: coolkid#1234", ruleContact, "discord: coolkid#1234"},
-		{"app id without a colon", "insta id coolkid_12", ruleContact, "insta id coolkid_12"},
-		{"snap me handle", "snap me coolkid_12", ruleContact, "snap me coolkid_12"},
+		{"dotted app and handle", "s.n.a.p: madeupkid_12", ruleContact, "s.n.a.p: madeupkid_12"},
+		{"leetspeak app and handle", "sn4pch4t: madeupkid_12", ruleContact, "sn4pch4t: madeupkid_12"},
+		{"discord discriminator", "discord: madeupkid#1234", ruleContact, "discord: madeupkid#1234"},
+		{"app id without a colon", "insta id madeupkid_12", ruleContact, "insta id madeupkid_12"},
+		{"snap me handle", "snap me madeupkid_12", ruleContact, "snap me madeupkid_12"},
 
 		// ID numbers.
 		{"aadhaar", "aadhaar " + aadhaar, ruleIDNumber, aadhaar},
@@ -202,10 +205,10 @@ func TestFilterBlocks(t *testing.T) {
 		{"uk landline elsewhere", "0161 234 5678 is the office", ruleContact, "0161 234 5678"},
 		{"international with 00", "0049 151 23456789", ruleContact, "0049 151 23456789"},
 		{"indian with 0091", "0091 98765 43210", ruleContact, "0091 98765 43210"},
-		{"us number with its 1", "1 415 867 5309", ruleContact, "1 415 867 5309"},
-		{"us number with a cue", "call 415 867 5309", ruleContact, "415 867 5309"},
-		{"us number dotted", "415.867.5309", ruleContact, "415.867.5309"},
-		{"us number with minus signs", "415−867−5309", ruleContact, "415−867−5309"},
+		{"us number with its 1", "1 495 867 5309", ruleContact, "1 495 867 5309"},
+		{"us number with a cue", "call 495 867 5309", ruleContact, "495 867 5309"},
+		{"us number dotted", "495.867.5309", ruleContact, "495.867.5309"},
+		{"us number with minus signs", "495−867−5309", ruleContact, "495−867−5309"},
 		{"en dash", "98765–43210", ruleContact, "98765–43210"},
 		{"em dash", "98765—43210", ruleContact, "98765—43210"},
 		{"short groups beside a long one", "98765 432 10", ruleContact, "98765 432 10"},
@@ -246,26 +249,26 @@ func TestFilterBlocks(t *testing.T) {
 		// Links to every kind of profile the link rule knows.
 		{"discord invite path", "discord.com/invite/abc123", ruleContact, "discord.com/invite/abc123"},
 		{"discord user", "discord.com/users/123456789", ruleContact, "discord.com/users/123456789"},
-		{"tiktok profile", "tiktok.com/@coolkid", ruleContact, "tiktok.com/@coolkid"},
-		{"twitter profile", "twitter.com/coolkid", ruleContact, "twitter.com/coolkid"},
-		{"x profile", "x.com/coolkid", ruleContact, "x.com/coolkid"},
-		{"reddit user", "reddit.com/u/coolkid", ruleContact, "reddit.com/u/coolkid"},
-		{"facebook profile", "facebook.com/coolkid", ruleContact, "facebook.com/coolkid"},
-		{"messenger", "messenger.com/t/coolkid", ruleContact, "messenger.com/t/coolkid"},
+		{"tiktok profile", "tiktok.com/@madeupkid", ruleContact, "tiktok.com/@madeupkid"},
+		{"twitter profile", "twitter.com/madeupkid", ruleContact, "twitter.com/madeupkid"},
+		{"x profile", "x.com/madeupkid", ruleContact, "x.com/madeupkid"},
+		{"reddit user", "reddit.com/u/madeupkid", ruleContact, "reddit.com/u/madeupkid"},
+		{"facebook profile", "facebook.com/madeupkid", ruleContact, "facebook.com/madeupkid"},
+		{"messenger", "messenger.com/t/madeupkid", ruleContact, "messenger.com/t/madeupkid"},
 
 		// Email addresses written out.
-		{"bracketed at, spelled dot", "priya (at) somecollege dot com", ruleContact, "priya (at) somecollege dot com"},
-		{"name-like local part", "priya_k at somecollege dot com", ruleContact, "priya_k at somecollege dot com"},
-		{"provider spelled", "priya at gmail dot com", ruleContact, "priya at gmail dot com"},
-		{"at the rate", "coolkid12 at the rate gmail dot com", ruleContact, "coolkid12 at the rate gmail dot com"},
-		{"attherate", "coolkid12attherategmail.com", ruleContact, "coolkid12attherategmail.com"},
-		{"spaced at before a provider", "coolkid12 @ gmail", ruleContact, "coolkid12 @ gmail"},
-		{"at a provider with a handle", "coolkid12 at gmail", ruleContact, "coolkid12 at gmail"},
-		{"double at", "coolkid12@@gmail.com", ruleContact, "coolkid12@@gmail.com"},
-		{"d0t", "coolkid12 at gmail d0t com", ruleContact, "coolkid12 at gmail d0t com"},
-		{"underscored dot", "coolkid12@gmail_dot_com", ruleContact, "coolkid12@gmail_dot_com"},
-		{"my gmail is", "my gmail is coolkid12", ruleContact, "my gmail is coolkid12"},
-		{"gmail colon", "gmail: coolkid12", ruleContact, "gmail: coolkid12"},
+		{"bracketed at, spelled dot", "madeuppriya (at) somecollege dot com", ruleContact, "madeuppriya (at) somecollege dot com"},
+		{"name-like local part", "madeuppriya_k at somecollege dot com", ruleContact, "madeuppriya_k at somecollege dot com"},
+		{"provider spelled", "madeuppriya at gmail dot com", ruleContact, "madeuppriya at gmail dot com"},
+		{"at the rate", "madeupkid12 at the rate gmail dot com", ruleContact, "madeupkid12 at the rate gmail dot com"},
+		{"attherate", "madeupkid12attherategmail.com", ruleContact, "madeupkid12attherategmail.com"},
+		{"spaced at before a provider", "madeupkid12 @ gmail", ruleContact, "madeupkid12 @ gmail"},
+		{"at a provider with a handle", "madeupkid12 at gmail", ruleContact, "madeupkid12 at gmail"},
+		{"double at", "madeupkid12@@gmail.com", ruleContact, "madeupkid12@@gmail.com"},
+		{"d0t", "madeupkid12 at gmail d0t com", ruleContact, "madeupkid12 at gmail d0t com"},
+		{"underscored dot", "madeupkid12@gmail_dot_com", ruleContact, "madeupkid12@gmail_dot_com"},
+		{"my gmail is", "my gmail is madeupkid12", ruleContact, "my gmail is madeupkid12"},
+		{"gmail colon", "gmail: madeupkid12", ruleContact, "gmail: madeupkid12"},
 
 		// Asking, in more words and more apps.
 		{"curly apostrophe", "what’s your snap", ruleContact, "what’s your snap"},
@@ -278,17 +281,17 @@ func TestFilterBlocks(t *testing.T) {
 		{"are you on", "are you on snap?", ruleContact, "are you on snap"},
 		{"drop your at", "drop ur @", ruleContact, "drop ur @"},
 		{"what's your at", "what's your @ there", ruleContact, "what's your @"},
-		{"handle before the app", "@coolkid on snap", ruleContact, "@coolkid on snap"},
-		{"handle is my app", "coolkid_12 is my snap", ruleContact, "coolkid_12 is my snap"},
-		{"arrow", "snap -> coolkid_12", ruleContact, "snap -> coolkid_12"},
-		{"fat arrow", "insta => coolkid_12", ruleContact, "insta => coolkid_12"},
-		{"unicode arrow", "snap → coolkid_12", ruleContact, "snap → coolkid_12"},
-		{"discriminator without a colon", "discord coolkid#1234", ruleContact, "discord coolkid#1234"},
-		{"app and handle", "snap coolkid_12", ruleContact, "snap coolkid_12"},
-		{"sc colon", "sc: coolkid_12", ruleContact, "sc: coolkid_12"},
-		{"app arrow handle", "snapchat -> coolkid_12", ruleContact, "snapchat -> coolkid_12"},
-		{"handle on my app", "add coolkid_12 on my insta", ruleContact, "coolkid_12 on my insta"},
-		{"handle and app in brackets", "coolkid_12 (snap)", ruleContact, "coolkid_12 (snap"},
+		{"handle before the app", "@madeupkid on snap", ruleContact, "@madeupkid on snap"},
+		{"handle is my app", "madeupkid_12 is my snap", ruleContact, "madeupkid_12 is my snap"},
+		{"arrow", "snap -> madeupkid_12", ruleContact, "snap -> madeupkid_12"},
+		{"fat arrow", "insta => madeupkid_12", ruleContact, "insta => madeupkid_12"},
+		{"unicode arrow", "snap → madeupkid_12", ruleContact, "snap → madeupkid_12"},
+		{"discriminator without a colon", "discord madeupkid#1234", ruleContact, "discord madeupkid#1234"},
+		{"app and handle", "snap madeupkid_12", ruleContact, "snap madeupkid_12"},
+		{"sc colon", "sc: madeupkid_12", ruleContact, "sc: madeupkid_12"},
+		{"app arrow handle", "snapchat -> madeupkid_12", ruleContact, "snapchat -> madeupkid_12"},
+		{"handle on my app", "add madeupkid_12 on my insta", ruleContact, "madeupkid_12 on my insta"},
+		{"handle and app in brackets", "madeupkid_12 (snap)", ruleContact, "madeupkid_12 (snap"},
 		{"doubled letter in the app", "add me on snapp", ruleContact, "add me on snapp"},
 		{"ur snap?", "ur snap?", ruleContact, "ur snap?"},
 		{"stranger-chat app", "add me on omegle", ruleContact, "add me on omegle"},
@@ -296,10 +299,10 @@ func TestFilterBlocks(t *testing.T) {
 		{"steam after add me", "add me on steam pls", ruleContact, "add me on steam"},
 		{"find me on insta", "find me on insta", ruleContact, "find me on insta"},
 		{"can we move to snap", "can we move to snap", ruleContact, "can we move to snap"},
-		{"my insta is a name", "my insta is priya", ruleContact, "my insta is priya"},
-		{"my email is", "my email is coolkid12", ruleContact, "my email is coolkid12"},
-		{"spaced at with a dotted name", "priya.k at gmail.com", ruleContact, "priya.k at gmail.com"},
-		{"at a provider's site", "priya at gmail.com", ruleContact, "priya at gmail.com"},
+		{"my insta is a name", "my insta is madeuppriya", ruleContact, "my insta is madeuppriya"},
+		{"my email is", "my email is madeupkid12", ruleContact, "my email is madeupkid12"},
+		{"spaced at with a dotted name", "madeuppriya.k at gmail.com", ruleContact, "madeuppriya.k at gmail.com"},
+		{"at a provider's site", "madeuppriya at gmail.com", ruleContact, "madeuppriya at gmail.com"},
 		// The look-alikes of what TestFilterLeavesOrdinaryPostsAlone lets
 		// through, still caught.
 		{"bare ask for a number", "what's your no.", ruleContact, "what's your no"},
@@ -310,29 +313,29 @@ func TestFilterBlocks(t *testing.T) {
 		{"mixed separators", "98.76-54.32.10", ruleContact, "98.76-54.32.10"},
 		{"decimal-range shape after a cue", "call 98.765-432.10", ruleContact, "98.765-432.10"},
 		{"phone after call me for", "call me for 9876543210", ruleContact, "9876543210"},
-		{"handle with digits on snap", "coolkid12 on snap", ruleContact, "coolkid12 on snap"},
-		{"handle with digits on insta", "rahul99 on insta", ruleContact, "rahul99 on insta"},
-		{"name-like at a site", "coolkid12 at somesite.com", ruleContact, "coolkid12 at somesite.com"},
+		{"handle with digits on snap", "madeupkid12 on snap", ruleContact, "madeupkid12 on snap"},
+		{"handle with digits on insta", "madeuprahul99 on insta", ruleContact, "madeuprahul99 on insta"},
+		{"name-like at a site", "madeupkid12 at somesite.com", ruleContact, "madeupkid12 at somesite.com"},
 		{"code-shaped name at a provider", "ab12 at gmail.com", ruleContact, "ab12 at gmail.com"},
-		{"code-shaped name at a university", "ana23 at iitb.ac.in", ruleContact, "ana23 at iitb.ac.in"},
+		{"code-shaped name at a university", "ana23 at madeup.ac.in", ruleContact, "ana23 at madeup.ac.in"},
 		{"degree-shaped name at a provider", "B.Tech at gmail.com", ruleContact, "B.Tech at gmail.com"},
-		{"address at a country's university", "email me at ali@ogrenci.edu.tr", ruleContact, "ali@ogrenci.edu.tr"},
-		{"address at an academic subdomain", "x.y@mail.tau.ac.il", ruleContact, "x.y@mail.tau.ac.il"},
-		{"mail provider and a dash", "email - priya.k12", ruleContact, "email - priya.k12"},
-		{"mail provider and an arrow", "gmail -> priya.k12", ruleContact, "gmail -> priya.k12"},
-		{"mail label and a dash", "email id - priya.k12", ruleContact, "email id - priya.k12"},
-		{"my mail provider and a dash", "my gmail - priya.k12", ruleContact, "my gmail - priya.k12"},
+		{"address at a country's university", "email me at ali@madeup-uni.edu.tr", ruleContact, "ali@madeup-uni.edu.tr"},
+		{"address at an academic subdomain", "x.y@mail.madeup.ac.il", ruleContact, "x.y@mail.madeup.ac.il"},
+		{"mail provider and a dash", "email - madeuppriya.k12", ruleContact, "email - madeuppriya.k12"},
+		{"mail provider and an arrow", "gmail -> madeuppriya.k12", ruleContact, "gmail -> madeuppriya.k12"},
+		{"mail label and a dash", "email id - madeuppriya.k12", ruleContact, "email id - madeuppriya.k12"},
+		{"my mail provider and a dash", "my gmail - madeuppriya.k12", ruleContact, "my gmail - madeuppriya.k12"},
 		{"you on an app", "u on snap?", ruleContact, "u on snap?"},
 		{"you on insta", "you on insta?", ruleContact, "you on insta?"},
 		{"gimme your app", "gimme ur snap", ruleContact, "gimme ur snap"},
 		{"lemme get your app", "lemme get ur insta", ruleContact, "lemme get ur insta"},
 		{"hmu and an app", "hmu snap", ruleContact, "hmu snap"},
-		{"app, a chevron and a handle", "insta > priya.k12", ruleContact, "insta > priya.k12"},
-		{"app, two chevrons and a handle", "ig >> priya_k12", ruleContact, "ig >> priya_k12"},
-		{"app, a bar and a handle", "insta | priya_k12", ruleContact, "insta | priya_k12"},
+		{"app, a chevron and a handle", "insta > madeuppriya.k12", ruleContact, "insta > madeuppriya.k12"},
+		{"app, two chevrons and a handle", "ig >> madeuppriya_k12", ruleContact, "ig >> madeuppriya_k12"},
+		{"app, a bar and a handle", "insta | madeuppriya_k12", ruleContact, "insta | madeuppriya_k12"},
 		{"the gram", "add me on the gram", ruleContact, "add me on the gram"},
-		{"discord tag and a discriminator", "discord tag priya#1234", ruleContact, "discord tag priya#1234"},
-		{"label before a tool-shaped handle", "insta id python3", ruleContact, "insta id python3"},
+		{"discord tag and a discriminator", "discord tag madeuppriya#1234", ruleContact, "discord tag madeuppriya#1234"},
+		{"label before a tool-shaped handle", "insta id madeup3", ruleContact, "insta id madeup3"},
 		{"tera snap kya hai", "tera snap kya hai", ruleContact, "tera snap kya hai"},
 		{"teri insta id kya h", "teri insta id kya h", ruleContact, "teri insta id kya h"},
 		{"tera number kya hai", "tera number kya hai", ruleContact, "tera number kya hai"},
@@ -346,8 +349,8 @@ func TestFilterBlocks(t *testing.T) {
 			"https://signal.group/#CjQKIGabcdef"},
 		{"signal number link", "signal.me/#p/+919876543210", ruleContact, "signal.me/#p/+919876543210"},
 		{"slash spelled out", "discord dot gg slash abcdef", ruleContact, "discord dot gg slash abcdef"},
-		{"forward slash spelled out", "t.me forward slash priya_k12", ruleContact, "t.me forward slash priya_k12"},
-		{"slash spelled in a path", "instagram.com slash priya_k12", ruleContact, "instagram.com slash priya_k12"},
+		{"forward slash spelled out", "t.me forward slash madeuppriya_k12", ruleContact, "t.me forward slash madeuppriya_k12"},
+		{"slash spelled in a path", "instagram.com slash madeuppriya_k12", ruleContact, "instagram.com slash madeuppriya_k12"},
 		{"bracketed slash", "discord.gg(/)abcdef", ruleContact, "discord.gg(/)abcdef"},
 		{"spelled slash after a spaced host", "d i s c o r d . g g slash abcdef", ruleContact,
 			"d i s c o r d . g g slash abcdef"},
@@ -373,8 +376,8 @@ func TestFilterBlocks(t *testing.T) {
 		{"apna number bhejo", "apna number bhejo", ruleContact, "apna number bhejo"},
 		{"tera number de", "tera number de", ruleContact, "tera number de"},
 		{"pe baat karte", "whatsapp pe baat karte hain", ruleContact, "whatsapp pe baat karte"},
-		{"handle with hai", "mera insta coolkid_12 hai", ruleContact, "mera insta coolkid_12 hai"},
-		{"copula before the handle", "insta id hai coolkid_12", ruleContact, "insta id hai coolkid_12"},
+		{"handle with hai", "mera insta madeupkid_12 hai", ruleContact, "mera insta madeupkid_12 hai"},
+		{"copula before the handle", "insta id hai madeupkid_12", ruleContact, "insta id hai madeupkid_12"},
 
 		// Read since the posts in testdata/filter_corpus were measured.
 		// Numbers: a "+" inside the bracket, any grouping after a request to
@@ -398,8 +401,8 @@ func TestFilterBlocks(t *testing.T) {
 		{"a stray word before the words", "pls do nine eight seven six five four three two two one", ruleContact,
 			"nine eight seven six five four three two two one"},
 		// A letter in brackets inside an app's name.
-		{"letter in brackets", "i[n]sta: hollow_moon_17", ruleContact, "i[n]sta: hollow_moon_17"},
-		{"letter in round brackets", "sn(a)p: hollow_moon_17", ruleContact, "sn(a)p: hollow_moon_17"},
+		{"letter in brackets", "i[n]sta: madeup_moon_17", ruleContact, "i[n]sta: madeup_moon_17"},
+		{"letter in round brackets", "sn(a)p: madeup_moon_17", ruleContact, "sn(a)p: madeup_moon_17"},
 		// Asking to move, or to swap accounts.
 		{"move this to an app", "let's move this to discord", ruleContact, "let's move this to discord"},
 		{"take this to an app", "can we take this to telegram?", ruleContact, "can we take this to telegram"},
@@ -409,13 +412,97 @@ func TestFilterBlocks(t *testing.T) {
 		{"number bhejo", "number bhejo", ruleContact, "number bhejo"},
 		// Handles: an "@" a few words after the app, a Discord tag after
 		// "disc", a label after an app that is also a word, the ghost.
-		{"@ a few words after the app", "telegram pe aao: @organicchem_aditya", ruleContact,
-			"telegram pe aao: @organicchem_aditya"},
-		{"discord tag after disc", "disc: quietfox#1234", ruleContact, "disc: quietfox#1234"},
-		{"line id", "line id: quiet_fox27", ruleContact, "line id: quiet_fox27"},
-		{"steam username", "steam username quiet_fox27", ruleContact, "steam username quiet_fox27"},
-		{"snapchat ghost", "👻: quiet.fox_27", ruleContact, "👻: quiet.fox_27"},
-		{"my signal is a handle", "my signal is quietfox.27", ruleContact, "my signal is quietfox.27"},
+		{"@ a few words after the app", "telegram pe aao: @madeup_organicchem", ruleContact,
+			"telegram pe aao: @madeup_organicchem"},
+		{"discord tag after disc", "disc: madeupfox#1234", ruleContact, "disc: madeupfox#1234"},
+		{"line id", "line id: madeup_fox27", ruleContact, "line id: madeup_fox27"},
+		{"steam username", "steam username madeup_fox27", ruleContact, "steam username madeup_fox27"},
+		{"snapchat ghost", "👻: madeup.fox_27", ruleContact, "👻: madeup.fox_27"},
+		{"my signal is a handle", "my signal is madeup.quietfox.27", ruleContact, "my signal is madeup.quietfox.27"},
+		// Digits spaced one at a time with a dash or a point among them,
+		// read in the groups the marks make.
+		{"spaced digits with a dash group", "call karna 8 4 3 2 - 1 0 9 7 6 5", ruleContact, "8 4 3 2 - 1 0 9 7 6 5"},
+		{"spaced US number with dashes", "my cell: 9 1 7 - 4 8 2 - 0 1 6 8", ruleContact, "9 1 7 - 4 8 2 - 0 1 6 8"},
+		{"spaced SSN with dashes", "ssn: 6 1 4 - 3 9 - 2 8 5 7 (spaced so it doesnt autofill lol)", ruleIDNumber,
+			"6 1 4 - 3 9 - 2 8 5 7"},
+		// A letter for a digit with no digit beside it.
+		{"lone letters between spaced digits", "num: 8 l 2 O 3 3 4 5 6 1", ruleContact, "8 l 2 O 3 3 4 5 6 1"},
+		{"letters in a group of digits", "my mobile: 07911 4OO 133 (o's are zeros obvs)", ruleContact, "07911 4OO 133"},
+		// Backwards, in pieces, and in code.
+		{"reversed after saying so", "My number in reverse so bots can't read it: 0 1 2 6 5 4 8 7 9 9", ruleContact,
+			"0 1 2 6 5 4 8 7 9 9"},
+		{"pieces joined by then", "my num starts with 99 then 30 then 412 then 875", ruleContact,
+			"99 then 30 then 412 then 875"},
+		{"pieces split to get past the filter", "split it so the mods dont catch: 98 / 1 / 67 / 45 / 231", ruleContact,
+			"98 / 1 / 67 / 45 / 231"},
+		{"strings joined in code", "[code]PHONE = '+91' + '98450' + '17723'[/code] use this to reach me", ruleContact,
+			"'+91' + '98450' + '17723'"},
+		{"a piece for every digit", "call me 9 / 8 / 4 / 5 / 0 / 1 / 7 / 7 / 2 / 3", ruleContact,
+			"9 / 8 / 4 / 5 / 0 / 1 / 7 / 7 / 2 / 3"},
+		{"a piece for every digit, joined by words", "my number: 9 then 8 then 4 then 5 then 0 then 1 then 7 then 7 then 2 then 3",
+			ruleContact, "9 then 8 then 4 then 5 then 0 then 1 then 7 then 7 then 2 then 3"},
+		{"two pieces straight after a call", "call me on 98450/12345", ruleContact, "98450/12345"},
+		{"two pieces joined by a word", "my number is 98450 then 12345", ruleContact, "98450 then 12345"},
+		{"pieces after a cue, a list word further back", "marks are posted. call me on 98/45/01/77/23", ruleContact,
+			"98/45/01/77/23"},
+		// One digit set apart among longer groups.
+		{"Indian mobile with a digit apart", "98450 1 2345", ruleContact, "98450 1 2345"},
+		{"UK mobile with a digit apart", "07911 1 23456", ruleContact, "07911 1 23456"},
+		{"Australian mobile with a digit apart", "0412 3 45678", ruleContact, "0412 3 45678"},
+		{"pairs and a digit apart after a call", "call me 98 45 0 12 345", ruleContact, "98 45 0 12 345"},
+		// National shapes.
+		{"country code after a word for a list", "WAEC past questions sharing, +234 803 123 4567 on whatsapp",
+			ruleContact, "+234 803 123 4567"},
+		{"local number with its area code apart", "Text me @ 482-0196 (area code 494) for the chem lab write up",
+			ruleContact, "482-0196"},
+		{"bare US digits after a line's name", "Google Voice: 2954820174", ruleContact, "2954820174"},
+		{"Australian landline", "(07) 3221 3317 is my home number if mob is off", ruleContact, "(07) 3221 3317"},
+		{"poster's own office line", "my office (03) 9027 0100", ruleContact, "(03) 9027 0100"},
+		{"office line asked for the poster on", "call me at uni (08) 8313 4455", ruleContact, "(08) 8313 4455"},
+		{"a mobile is not an office's", "admissions 0412 345 678", ruleContact, "0412 345 678"},
+		// Ofcom's drama numbers are 496 0000-0999 in some area codes only.
+		{"UK landline past the drama range", "call me on 0161 496 1234", ruleContact, "0161 496 1234"},
+		{"UK landline in an area code with no drama range", "call me on 0170 496 0123", ruleContact, "0170 496 0123"},
+		// Addresses spelled out a character at a time, or in two halves.
+		{"spaced-out address", "email (remove spaces): m a d e u p . 0 9 @ g m a i l . c o m", ruleContact,
+			"m a d e u p . 0 9 @ g m a i l . c o m"},
+		{"address in two halves", "[at] gmail [dot] com — prefix is madeup.quietstorm2007, you figure it out", ruleContact,
+			"[at] gmail [dot] com — prefix is madeup.quietstorm2007"},
+		// Asks read from the app outwards: a verb of moving or talking with
+		// its object and preposition, a question about the reader's account,
+		// messages there, Hinglish either way round, a group set up there.
+		{"come to an app", "come to tg, the board is too slow for doubt solving", ruleContact, "come to tg"},
+		{"switch to an app that is also a word", "can we switch to signal? i'll explain the situation there",
+			ruleContact, "switch to signal"},
+		{"follow back on an app", "follow me back on insta pls", ruleContact, "follow me back on insta"},
+		{"got an account", "u got insta?", ruleContact, "u got insta"},
+		{"have an app that is also a word, off the board", "do you have signal? would rather not do this on a public board",
+			ruleContact, "do you have signal"},
+		{"messages there", "slide into my dms on insta if u wanna rant about kota", ruleContact, "into my dms on insta"},
+		{"Hinglish verb before the app", "dm kar insta pe, sab bata dunga", ruleContact, "dm kar insta pe"},
+		{"Hinglish verb after the app", "insta pe aaja baat karte", ruleContact, "insta pe aaja"},
+		{"Hinglish join", "telegram pe join karo, link maang lo comment me", ruleContact, "telegram pe join"},
+		{"Hinglish ask for an address", "apna gmail id bata, drive link share kar dunga", ruleContact, "apna gmail id bata"},
+		{"Hinglish ask for numbers", "WhatsApp number do sab, group bana rahe hain", ruleContact, "WhatsApp number do"},
+		{"a call set up on an app", "can someone make a discord vc for the mock tonight?", ruleContact,
+			"make a discord vc"},
+		{"text instead of posting", "anyone want to text instead of posting here? easier", ruleContact,
+			"instead of posting"},
+		{"dm the poster instead of posting", "dm me instead of posting here", ruleContact, "instead of posting"},
+		{"talk to the poster instead of posting", "talk to me instead of commenting here", ruleContact,
+			"instead of commenting"},
+		{"this talk taken off the board", "let's take this convo off here", ruleContact, "off here"},
+		{"talk there after a link", "instagram.com/p/C7xYz123/ — this is my post, comment there so we can talk",
+			ruleContact, "comment there"},
+		// Handles a few words after the app.
+		{"come to an app, in Hinglish, with a handle", "snap pe aaja: madeup.0p", ruleContact,
+			"snap pe aaja: madeup.0p"},
+		{"handle after the ghost", "my 👻 is madeup.sprinkles add me", ruleContact, "👻 is madeup.sprinkles"},
+		{"handle on another app", "threema id MADEUP42, add me if you care about privacy", ruleContact,
+			"threema id MADEUP42"},
+		{"handle spelled out", "telegram: madeup underscore jee", ruleContact, "telegram: madeup underscore jee"},
+		{"quoted handle after search", "telegram id same as here, search 'madeupkotafactory'", ruleContact,
+			"telegram id same as here, search 'madeupkotafactory'"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -528,7 +615,7 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		// Code.
 		"[code]user = User(email=\"test@example.com\")[/code]",
 		"[code]git clone git@github.com:owner/repo.git[/code]",
-		"[code]ssh deploy@host.sh[/code]",
+		"[code]ssh deploy@madeup.sh[/code]",
 		"[code]const d = {tg: 1}[/code]",
 		"[code]my_snap = snap(x)[/code]",
 		"[code]arr = [9876543210, 1234567890][/code]",
@@ -762,7 +849,7 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"interest at the rate of 5 percent",
 		// Numbers that are data.
 		"salary 60000-80000 per month",
-		"415 867 5309",
+		"495 867 5309",
 		"data: 9 8 7 6 5 4 3 2 1 0",
 		"the file is 9876543210 bytes",
 		"9876543210 rupees is the budget",
@@ -1051,6 +1138,233 @@ func TestFilterLeavesOrdinaryPostsAlone(t *testing.T) {
 		"we're gonna beat this topic to death in class tomorrow",
 		"valo 5 stack tomorrow 8pm, we're gonna slaughter them on ascent",
 		"Among Us after class? I'm killing all of you in electrical",
+		// The threat grammar's verbs in their ordinary senses: an exam, a
+		// meal, a record, the news, a party, photos, a habit; a game or a
+		// sport; something done to oneself; a place that will be lively;
+		// harm to people at large, or to one person as a caution; and
+		// "dead", "won't see" and "won't make it" said of other things.
+		"I'm going to murder this pizza tonight",
+		"I'm going to strangle my brother if he takes my charger again lol",
+		"im gonna drown myself in coffee before the exam tomorrow",
+		"I'm going to throw the ball to coach at practice tomorrow",
+		"I'm gonna push my sister into the pool at the party tomorrow lol",
+		"we're going to run over the syllabus again tomorrow in class",
+		"I'm going to break the record at sports day tomorrow",
+		"I'll break the news to the class tomorrow",
+		"we're going to smash them in the cricket match tomorrow at the ground",
+		"I'm going to burn the midnight oil tonight at the library",
+		"we're going to start a fire at the campsite tonight for smores",
+		"we'll take out the trash after school tomorrow",
+		"I'll take the principal's car to the garage tomorrow, he asked me to",
+		"I'm bringing a knife to cut the cake at the class party tomorrow",
+		"bringing a bat to the nets tomorrow, who's in?",
+		"I've got a gun in the airsoft tournament tomorrow at the club",
+		"I'm going to shoot the principal's speech for the yearbook tomorrow",
+		"I'm going to shoot my shot with her at the farewell tomorrow",
+		"I'll beat him in the chess tournament tomorrow at school",
+		"going to the school tomorrow with my dad",
+		"I'll put my sister to bed tonight",
+		"I'm going to hunt down that book in the library tomorrow",
+		"the school will burn a hole in my pocket with these fees tomorrow",
+		"our hostel is going to blow up with cheers when india wins tonight",
+		"people will get hurt at this concert tomorrow, too crowded",
+		"kids in my school are getting hurt in PE every week",
+		"you'll get hurt if you climb that wall at school tomorrow",
+		"everyone in the class will be hurt by the new attendance rule tomorrow",
+		"my phone is dead and I have class tomorrow",
+		"the group chat is dead tomorrow lol",
+		"my grandma won't see next week, the doctors said today",
+		"he won't make it to monday's class, he's sick",
+		"we won't make it out of the exam alive tomorrow lol",
+		"I'm going to jump the queue at the canteen tomorrow",
+		"I'm going to attack the problem set tonight at the library",
+		"my dad's car is going to blow up if he keeps ignoring the engine light, the garage said today",
+		"the lab will blow up if you mix those chemicals, sir warned us today",
+		"everyone in the canteen at 1pm will get a free samosa",
+		"the principal won't see you tomorrow, he's busy",
+		"I'm going to stab at the problem again tonight at the library",
+		"I'm throwing my friend a surprise party at the hostel tomorrow",
+		"I'm going to push the teacher to extend the deadline tomorrow",
+		"I'm locking the doors of the hostel room and starting a movie marathon tonight",
+		"I'm going to strangle him at lunch tomorrow (I won't, I love him)",
+		// Hinglish: a DJ, picking someone up, washing, a kitchen knife, a
+		// game's gun, a result.
+		"kal college mein dhamaka hoga, DJ aa raha hai",
+		"kal tujhe station se utha lunga, 6 baje",
+		"kal kapde dho dunga hostel mein",
+		"kal gaadi ko dho dunga",
+		"naya chaku le liya hai kitchen ke liye, kal se sabzi main kaatunga",
+		"bgmi mein kal gun ready hai, school ke baad khelte hai",
+		"kal result aayega, school mein dhamaka hoga",
+		// The self-harm acts said of other things: caffeine, the queue,
+		// the pool, the camera, a chance, a deadline, a boss fight, help
+		// offered, "rope in", on-duty leave, hair dye.
+		"what does kys mean",
+		"please stop breathing on my neck in the queue",
+		"stop living in the past and study",
+		"just jump into the pool, the water is warm",
+		"jump in front of the camera for the photo",
+		"you should jump at the chance to join the club",
+		"just do it already, the form closes tonight",
+		"time to die in the boss fight again",
+		"don't self harm, please talk to someone",
+		"cut yourself some slack, you studied hard",
+		"the world would be better if you learned to code",
+		"death is the only certainty in life, said someone famous",
+		"bus mein latak ja, jagah nahi hai",
+		"we'll rope in the seniors for the fest",
+		"I took od for the fest tomorrow",
+		"stop existing in my group chat with your memes lol",
+		// Study and exam posts in the words of the support rules: tuition
+		// and the next chapter are where "keep going" and "going on" go, an
+		// exam is where "if i died" happens, and hair is what was dyed.
+		"I see no reason to keep going to tuition",
+		"what's the point of going on to the next chapter if we haven't finished this one",
+		"if i died in the exam nobody would notice lol",
+		"nobody would care if I died my hair purple",
+		// Medicines put by for a trip, a camp or exams; accidents and
+		// activities named; a cause laughed at; someone else's way out.
+		"i've been saving up my meds for the trip",
+		"I've been saving my meds for the school trip",
+		"been saving up my prescription for exams",
+		"i cut myself while chopping onions",
+		"i cut myself on a nail",
+		"i cut myself by accident",
+		"i hurt myself while playing cricket",
+		"stats homework is making me want to die lol",
+		"for him the only way out was death",
+		// A jump in athletics, and dying of embarrassment, are not a fall
+		// or a death.
+		"just jump already, the long jump pit is right there",
+		"just do it, worst case you die of embarrassment",
+		// Both halves of a grooming cue, one of them said for a reason that
+		// is all in the open: a reader's year or age beside a cue, or a
+		// question that places the reader beside a meeting in public, with
+		// a group or with an errand, or a question about a thing. Each is
+		// held without the reading that turns its half down.
+		"when you're in 12th you'll understand why boards matter. dm me if you want my notes",
+		"you're 15 minutes late to the thread lol, dm me next time",
+		"u 14? the competition is for 14 and above, dm me",
+		"you're 15? the age limit is 16 for the trek, dm me for the form",
+		"you're in grade 11 so take physics seriously. ask the teacher privately if you're shy",
+		"how old are you? do your parents know about the fee hike?",
+		"you're in 9th? do your parents know about the fee hike?",
+		"which school do you go to? do your parents know about the trip form?",
+		"what time do you get out of school? we can meet at the library for group study",
+		"which year are you in? we could meet at the library to study",
+		"which hostel are you in? let's meet at the mess for dinner",
+		"you're in 12th right? come to my place for group study, my mom will make snacks",
+		"what's your school? our team is meeting at 5, wait for me outside the gate",
+		"which hostel are you in? I'll come by tonight with the notes",
+		"which room are you in? I'll come to your room tonight to return your charger",
+		// One half alone: a question that places the reader with no cue,
+		// and a cue with no such question.
+		"which college do you go to? I'll be at the fest on saturday, say hi to the organisers",
+		"tell me your school name and I'll tell you if they have a good lab",
+		"what time do you get out of school? mine ends at 2",
+		"how old are you? don't tell me, I'll guess from your handwriting",
+		"where exactly is your hostel? the delivery guys can't find B block",
+		"tum 8th mein ho na? board exam ki tension mat lo",
+		"are you usually by yourself at lunch? join our table at the canteen",
+		"do your parents know about the fee hike? the circular came today",
+		// Crisis lines written the way they are dialled, and numbers set
+		// aside for fiction in every layout the rules read.
+		"PAPYRUS HOPELINE247 is 0800 068 4141 in the UK, for under-35s. my sixth form put it on every noticeboard",
+		"NSPCC helpline 0808 800 5000 if something's happening at home",
+		"Mind's infoline is 0300 123 3393",
+		"RAINN is 800-656-4673 any time, and SAMHSA is 1-800-662-4357",
+		"The Mix is 0808 808 4994, free for under 25s",
+		"from outside the UK, PAPYRUS is +44 800 068 4141 and the NSPCC +44 808 800 5000",
+		"my # is 5 5 5 - 0 1 3 9 area code 7 1 8",
+		"need someone to split the cost of a used AP Calc textbook? text 773 555 0142",
+		"(07) 5550 3317 is my home number if mob is off",
+		"my landline is (03) 7010 4482 lol yes we still have one",
+		// Spaced digits, pieces and reversals that are not a number to call.
+		"MCQ key: 3 1 4 2 - 2 4 1 3 - 1 2",
+		"how do i reverse a number like 1029384756 in python",
+		"the number went 99 then 98 then 97 then 96 then 95",
+		"x = 99 + 30 + 412 + 875",
+		"s = '9' + '8' + '7' + '6' + '5' + '4' + '3' + '2' + '1' + '0'",
+		"call 482-0196 for the canteen",
+		"02 2024 1130 deadline for the form",
+		"lol @ g m a i l being down again",
+		"x = a @ b . c",
+		// A channel is one-way: no one on it can message anyone.
+		"whatsapp channel for daily current affairs: whatsapp.com/channel/0029VaB7xKc3MplQ",
+		// Apps named, not asked to move to; a full stop is not a handle's.
+		"my average screen time is like 5 hours, mostly instagram and youtube shorts. should i delete them and use reddit instead.",
+		"come on insta is so boring now",
+		"go to tg for counselling updates",
+		"switch to whatsapp web, it's easier on a laptop",
+		"should i make a whatsapp group for the class?",
+		// Mentioned, quoted or reported, not said: a line quoted from the
+		// post being answered, a word asked about, someone else's words.
+		">>77703 suicidal thoughts aren't a character flaw. please talk to a GP or a helpline. you deserve help",
+		"kys = keep yourself safe? no?? that's not what it means on here??",
+		"teacher: 'what's your number?' me: 'roll no 23, ma'am' — the attendance call at 8am is pain",
+		">>88412\n>i want to die\nanon please don't. one bad semester is not your whole life. tell your parents or a professor tomorrow morning",
+		"my mum said 'add me on whatsapp' and now the family group is chaos",
+		">>12345\n>dm me on insta\nlol no",
+		"he said he wants to die after that exam lol",
+		"my friend keeps saying she wants to hurt herself, what do i do",
+		// An organisation's landline beside its name.
+		"UNSW switchboard is (02) 9385 1000, call them about the ATAR cutoff",
+		"UQ admissions (07) 3365 1111 for international students",
+		"Uni of Adelaide (08) 8313 4455 if you have questions about prereqs",
+		"headspace national office (03) 9027 0100",
+		"IIT Bombay admissions office 022 2572 2545",
+		// Lists of values in pieces near "hmu", "text me" or "call me".
+		"hmu if you get stuck on questions 87, 88, 91, 92, 93",
+		"pages to read: 74, 75, 81, 82, 90 — text me if you want the pdf",
+		"ping me if you solved Q 98, 45, 67, 12, 30 from the DPP",
+		"DPP questions left: 98 / 45 / 67 / 12 / 30 — ping me if you want to split them",
+		"text me the room numbers: 98, 45, 01, 77, 23",
+		"my marks in the 5 mocks were 98, 76, 84, 91, 88 — call me a genius",
+		"my scores went 98 then 76 then 84 then 91 then 88, call me consistent lol",
+		"call me when the bus comes, routes 98 / 45 / 67 / 123 / 0 go to campus",
+		"call me at 5, the answers are 98450 and 12345",
+		"the ratio is 98450/12345 in the table",
+		"scores 9 8 76 5",
+		// A class "dead" over an exam, results or homework, and teachers
+		// that won't survive a load of lessons.
+		"you're all dead tomorrow in the exam lol",
+		"the whole class is dead tomorrow in the physics exam lol",
+		"the whole class is dead tomorrow, sir is checking the assignments",
+		"the seniors are dead tomorrow when the results come out",
+		"everyone in my batch is dead tomorrow, the maths test is impossible",
+		"11C is dead tomorrow, ma'am is checking homework",
+		"the teachers won't survive monday, three classes of us",
+		// Beating someone in a game, in Hinglish.
+		"bhai kal tujhe cricket mein dho dunga",
+		"tujhe kal match mein peet dunga, ready reh",
+		"kal sabko school ke baad thok dunga carrom mein",
+		// A blade for a camp or a trip, a gun at a range, fuel for a bike,
+		// and harm words used of compliments, a checkup, a lift and a budget.
+		"I'm bringing a pocket knife on the school trip tomorrow, is that allowed?",
+		"I'm bringing an axe to the camp tomorrow for firewood",
+		"bringing a machete to the scouts camp tomorrow to clear the trail",
+		"I've got a gun license now, going to the shooting range tomorrow",
+		"I'm going to the hostel tonight with petrol for my bike",
+		"I'm coming to school tomorrow with petrol money for the bus",
+		"I'm going to drown the seniors in compliments at the farewell tomorrow",
+		"I'm going to put my brother in the hospital tomorrow for his checkup",
+		"I'll run the principal over to the station tomorrow in my car",
+		"the library will burn through the budget on friday",
+		// "Make bleed" of ink, and a weapon handed over.
+		"I'm going to make Kabir bleed red ink on his essay tomorrow lol",
+		"I'll take the knife to mum in the kitchen tomorrow",
+		"I'm taking my bat to the coach tomorrow so he can sign it",
+		// Someone else to talk to instead of posting: advice, not an ask.
+		"please talk to a counsellor instead of posting here, they can actually help",
+		"call a helpline instead of posting here if you're in danger",
+		"call 1098 instead of posting here",
+		"text your parents instead of posting here, they're worried",
+		"you should call your mom instead of posting here",
+		"message the mods instead of posting here",
+		"dm the class rep instead of commenting here",
+		// Hyperbole with its cause named and a laugh beside it, and a game.
+		"this group project is going to make me kms 💀",
+		"if i died in minecraft nobody would care lol",
 	}
 	for _, body := range posts {
 		if v := bodyVerdict(body); v.Outcome != contentPublish {
@@ -1143,6 +1457,57 @@ func TestFilterSupport(t *testing.T) {
 		"jeene ka mann nahi karta",
 		"khud ko khatam karne ka soch raha hu",
 		"khud ko hurt karta hu",
+		// Any first-person statement of wanting to die or to hurt oneself,
+		// in any tense: a wish, a thought, a feeling, no reason left, a
+		// world without the poster, an act done or stockpiled for.
+		"I keep thinking everyone would be happier if I just wasn't alive anymore",
+		"i feel like ending it all. everything is too much",
+		"I don't see any reason to keep living. I just go through the motions",
+		"nobody would care if I died. I've started thinking about how I'd do it",
+		"hurt myself last night after the fight with my mum. first time in months",
+		"I'm self harming again. 2 years clean and I relapsed",
+		"I've been saving up pills for a while now. I think tonight might be the night",
+		"i wish i could just disappear and never wake up",
+		"thinking of ending my life tonight",
+		"i want to stop existing",
+		"khud ko khatam kar lunga agar is baar bhi selection nahi hua",
+		"zindagi se thak gaya hoon. marna chahta hoon bas",
+		"marne ke baare mein bahut sochta hoon aajkal",
+		// Medicines put by for no named purpose: "for when", "tonight",
+		// "the end", "the right moment" and "later" are not one.
+		"I've been saving up pills for when I'm ready",
+		"I've been saving up pills for tonight",
+		"been stockpiling paracetamol for the end",
+		"I've been saving my pills for the right moment",
+		"i've been hoarding my meds for when i finally do it",
+		"I've been saving up pills for later",
+		"I've been saving up pills for weeks",
+		// Hurting oneself with no accident or activity named: a tool, a
+		// reason, a body part, a day or a time.
+		"I cut myself using a razor blade last night",
+		"i burned myself using a lighter last night",
+		"i cut myself trying to feel something",
+		"I cut myself on my wrist last night",
+		"i cut myself on my thighs again",
+		"i cut myself on monday",
+		"i cut myself while my parents were asleep",
+		"i cut myself when i'm sad",
+		// A cause named with a crying face, "bruh", or a laugh at a cause
+		// that is someone at home or bullying, is not a joke.
+		"being bullied every day makes me want to die 😭",
+		"my stepdad makes me want to kill myself 😭",
+		"my parents fighting every night makes me want to die 😭😭",
+		"my stepdad makes me want to kill myself bruh",
+		"my stepdad makes me want to die 💀",
+		"being bullied every day makes me want to die",
+		// "keep going", "going on", "if i died" and "a way out" read as
+		// they are meant when nothing else follows.
+		"I see no reason to keep going",
+		"I don't see any reason to keep going to be honest",
+		"what's the point of going on to another day like this",
+		"if i died in my room nobody would notice",
+		"the easiest way out is to just not be alive anymore",
+		"the only way out is death",
 	} {
 		v := bodyVerdict(body)
 		if v.Outcome != contentSupport || v.Message != supportMessage || v.Rule != "" || v.Match != "" {
@@ -1439,6 +1804,147 @@ func TestFilterHolds(t *testing.T) {
 		{"where u live? dm me", holdGrooming},
 		{"where u from? dm me", holdGrooming},
 		{"kitne saal ki ho? photo bhejo", holdGrooming},
+		// Threats read as grammar: the speaker, a verb of harm and what it
+		// is done to (a person, a place, a vehicle), whatever the words
+		// between; carrying a weapon somewhere; harm said to be coming to a
+		// group picked out by where it is or who it is; a place said to be
+		// going to burn; and Hinglish verbs with the subject left out.
+		{"I'm going to stab the new kid in the library tomorrow", holdThreat},
+		{"I'm going to run over the PE teacher in the parking lot on monday", holdThreat},
+		{"we're gonna throw the monitor off the hostel roof tonight", holdThreat},
+		{"I'll push the topper down the stairs after school", holdThreat},
+		{"imma put the warden in the hospital tomorrow", holdThreat},
+		{"I'm going to make the bullies bleed at lunch tomorrow", holdThreat},
+		{"I'll break Kabir's jaw after class", holdThreat},
+		{"I'm going to burn down the girls hostel tonight", holdThreat},
+		{"we're going to torch the principal's office on friday", holdThreat},
+		{"gonna set the staff room on fire monday", holdThreat},
+		{"I'm going to beat the new kid to death after school", holdThreat},
+		{"I'm bringing a machete to the canteen tomorrow", holdThreat},
+		{"bringing my dad's pistol to class on monday", holdThreat},
+		{"I've got a gun and I'm coming to school tomorrow", holdThreat},
+		{"I'm coming to the exam hall tomorrow with a knife", holdThreat},
+		{"going to the hostel tonight with petrol", holdThreat},
+		{"I'm going to take a hammer to the warden's head tomorrow", holdThreat},
+		{"I'll drown the juniors in the pool at 4pm tomorrow", holdThreat},
+		{"on monday I stab the class monitor", holdThreat},
+		{"I'm planting a bomb in the school bus tomorrow", holdThreat},
+		{"I'm going to gun down the debate team at the auditorium tomorrow", holdThreat},
+		{"we will put the PE teacher six feet under on sports day", holdThreat},
+		{"everyone in the computer lab at 2pm will get hurt tomorrow", holdThreat},
+		{"all the seniors in B block are going to get hurt tonight", holdThreat},
+		{"the guys who stole my bag will be beaten up after school tomorrow", holdThreat},
+		{"the library will burn on friday", holdThreat},
+		{"the principal's car will blow up tomorrow", holdThreat},
+		{"the hostel is going up in flames tonight", holdThreat},
+		{"10B is dead tomorrow", holdThreat},
+		{"the warden won't see monday", holdThreat},
+		{"the juniors won't walk out of there alive tomorrow", holdThreat},
+		{"\"i will shoot up the school tomorrow\" and the police can't stop me", holdThreat},
+		{"tujhe kal school ke baad peet dunga", holdThreat},
+		{"usko kal tuition ke baad thok dunga", holdThreat},
+		{"tujhe kal hostel mein dho dalunga", holdThreat},
+		{"kal canteen mein bomb laga denge", holdThreat},
+		{"monitor ko kal class ke baad tapka dunga", holdThreat},
+		{"kal school mein uski gardan tod dunga", holdThreat},
+		{"uss ladki ko kal college ke bahar utha lenge", holdThreat},
+		// Taking it back excuses exasperation with one person close, not
+		// harm to a group.
+		{"I'm going to drown the juniors in the pool tomorrow jk", holdThreat},
+		// "I won't" that goes on to say what the poster won't stop doing,
+		// and "kidding" after a "not", take nothing back.
+		{"I'm going to strangle him at lunch tomorrow, I won't stop till he's dead", holdThreat},
+		{"I'm going to strangle him at lunch tomorrow and I won't stop till he stops breathing", holdThreat},
+		{"I'm going to choke him at lunch tomorrow, I won't hold back", holdThreat},
+		{"I'm going to choke him at lunch tomorrow, I'm not kidding", holdThreat},
+		// A prop, a game or a toy denied is no excuse.
+		{"I've got a gun and I'm coming to school tomorrow, this is not a game", holdThreat},
+		{"I've got a gun and I'm coming to school tomorrow, no more games", holdThreat},
+		{"I've got a gun and I'm coming to school tomorrow, it's not a toy", holdThreat},
+		{"I'm coming to the exam hall tomorrow with a knife, and it's not for cutting fruit", holdThreat},
+		{"I've got a knife and I'm coming to the hostel tonight, it's not for cooking", holdThreat},
+		{"I'm bringing a knife to the camp tomorrow, not for firewood", holdThreat},
+		{"🔫🏫 tomorrow, not a game", holdThreat},
+		// A blade has a use on a camp or a trip; a gun has none there.
+		{"I'm bringing a gun on the school trip tomorrow", holdThreat},
+		// A day someone won't live to see, as the threat's own time.
+		{"the warden won't see the weekend", holdThreat},
+		{"the warden won't see the morning", holdThreat},
+		{"the warden won't see another day", holdThreat},
+		{"the warden won't survive the weekend", holdThreat},
+		{"the warden won't make it to the weekend", holdThreat},
+		{"the warden won't last until the morning", holdThreat},
+		// A weapon in a sentence about an exam is still a weapon.
+		{"10B is dead tomorrow, bringing my dad's gun to the exam", holdThreat},
+		// Making a named person bleed, and a weapon taken to someone.
+		{"I'm going to make Kabir bleed at lunch tomorrow", holdThreat},
+		{"I'll take a hammer to the warden after class", holdThreat},
+		{"I'll take a hammer to him after class", holdThreat},
+		{"I'm taking a bat to the warden tomorrow", holdThreat},
+		{"I'm going to beat up Kabir after school", holdThreat},
+		// A fuel, a drowning, a hospital and running over said plainly.
+		{"going to the hostel tonight with petrol", holdThreat},
+		{"I'm going to put the warden in the hospital tomorrow", holdThreat},
+		{"I'll run the principal over in the parking lot tomorrow", holdThreat},
+		// Self-harm urged on someone: an act told to them, or said to be
+		// what they should do, in any of the ways of telling.
+		{"rope time for OP", holdSelfHarm},
+		{"the world would be better if you ended your life tonight", holdSelfHarm},
+		{"jump in front of a train, saves your parents the coaching fees", holdSelfHarm},
+		{"do us all a favour and overdose", holdSelfHarm},
+		{"bro just rope", holdSelfHarm},
+		{"ending yourself would be the best thing you did all year", holdSelfHarm},
+		{"go self harm in a corner, nobody cares", holdSelfHarm},
+		{"suicide is the only solution for someone with your marks", holdSelfHarm},
+		{"do the world a favour and stop breathing", holdSelfHarm},
+		{"just jump already, you've been talking about it for weeks", holdSelfHarm},
+		{"you need to overdose tonight", holdSelfHarm},
+		{"why don't you just stop existing", holdSelfHarm},
+		{"pls just od already", holdSelfHarm},
+		{"time for you to rope", holdSelfHarm},
+		{"zeher kha le bhai, tera kuch nahi ho sakta", holdSelfHarm},
+		{"jaake apni jaan le le", holdSelfHarm},
+		{"marr kyun nahi jaata tu? sabka bhala hoga", holdSelfHarm},
+		{"pankhe se latak ja", holdSelfHarm},
+		// Grooming: a question that places the reader (grade, age, school,
+		// hostel, when they get out) beside a move somewhere private or a
+		// secret from the adults round them.
+		{"you're in 7th right? let's talk somewhere your parents can't see", holdGrooming},
+		{"what grade are you in? I'll come meet you after school, come alone", holdGrooming},
+		{"you're in class 8? we should talk privately, I can help you with maths", holdGrooming},
+		{"kis school mein padhte ho? milne aao kal, kisi ko mat batana", holdGrooming},
+		{"tum 9th mein ho? ek baar milo, gift dilaunga", holdGrooming},
+		{"where exactly is your coaching? I'll pick you up after the batch, just us two", holdGrooming},
+		{"that's your tuition right? wait for me outside on friday", holdGrooming},
+		{"what time do you get out of school? meet me at the park, come without your friends", holdGrooming},
+		{"are you 13? do your parents know you talk to strangers? let's go private", holdGrooming},
+		{"which floor is your room on? I'll come to your room tonight, keep it a secret", holdGrooming},
+		{"you're 12? delete this after reading", holdGrooming},
+		// A gate or outside is not somewhere in the open; nothing excuses
+		// asking for the reader alone; a visit with no errand, and parents
+		// asked about the poster and the reader, are cues; and a meeting
+		// anywhere is one beside the reader's age, as an adult's age limit
+		// is no open reason to ask it.
+		{"what time do you get out of school? meet me at the gate", holdGrooming},
+		{"which school do you go to? come alone to the library", holdGrooming},
+		{"which hostel are you in? come without your friends, let's meet at the mess", holdGrooming},
+		{"which school do you go to? meet me at the library, just us two", holdGrooming},
+		{"you're in 9th? let's meet at the park", holdGrooming},
+		{"which hostel are you in? I'll come by tonight", holdGrooming},
+		{"which room are you in? I'll come to your room tonight", holdGrooming},
+		{"which school do you go to? do your parents know about us?", holdGrooming},
+		{"how old are you? do your parents know?", holdGrooming},
+		{"how old are you? do your parents know about our chats?", holdGrooming},
+		{"how old are you? meet me at the library", holdGrooming},
+		{"u 14? I'll come by tonight with the notes", holdGrooming},
+		{"any 14yo girls here? let's meet at the canteen", holdGrooming},
+		{"u 14? dm me", holdGrooming},
+		{"u 14? this server is 18+ only, dm me", holdGrooming},
+		{"you're 15? the age limit is 18, dm me anyway", holdGrooming},
+		// Look-alikes of the jump pit and the embarrassment above.
+		{"just jump already", holdSelfHarm},
+		{"just do it already, nobody would miss you if you died", holdSelfHarm},
+		{"just do it, worst case you die of embarrassment, best case you die for real", holdSelfHarm},
 	}
 	// The method questions show the support message first, because the
 	// person asking may be asking for themselves. Every other hold comes
@@ -1502,6 +2008,10 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 		"how many pills would it take to kill me",
 		"how many of my mums sleeping pills from the bathroom cupboard would i have to swallow to die",
 		"how many of the sleeping pills in the bathroom cupboard upstairs are lethal",
+		// A window still reads past a run of spaces or marks before it.
+		"how many    \t   of my mums sleeping pills would it take",
+		"how much  ,  insulin to die",
+		"what dose   --   of insulin is lethal",
 		"paracetamol, how many to die?",
 		"is 20 paracetamol enough to die",
 		"is 20 paracetamol enough to kill me",
@@ -1512,6 +2022,9 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 		"how can i end it all",
 		"how to make myself throw up",
 		"how to purge after eating",
+		// "For me to", and not surviving.
+		"is there a way for me to overdose that won't hurt",
+		"how high does a building have to be for me to not survive the fall",
 	} {
 		if v := bodyVerdict(body); v.Outcome != contentSupport || v.Message != supportMessage {
 			t.Errorf("%q: got %+v, want support first", body, v)
@@ -1523,6 +2036,723 @@ func TestFilterAsksAboutAMethodBeforeHoldingIt(t *testing.T) {
 	for _, body := range []string{"kys", "go die", "neck yourself", "thinspo pls"} {
 		if v := bodyVerdict(body); v.Outcome != contentHold || v.Hold != holdSelfHarm {
 			t.Errorf("%q: got %+v, want it held without the support message", body, v)
+		}
+	}
+}
+
+// TestFilterReadsBothSidesOfItsReadings pins both sides of readings that the
+// corpus alone covered: each pair is a post a reading lets through and a
+// post it must not, so that a reading forced either way fails here.
+func TestFilterReadsBothSidesOfItsReadings(t *testing.T) {
+	const (
+		publish = "publish"
+		support = "support"
+		contact = "block:contact"
+		threat  = "hold:" + holdThreat
+	)
+	for _, c := range []struct{ body, want string }{
+		// threatSymbolRules and threatSymbolCheck: a weapon drawn at a
+		// school, unless a game, a toy, a festival or a story is named.
+		{"🔫🏫 tomorrow", threat},
+		{"💣🏫 monday", threat},
+		{"🔪🏫 at lunch tomorrow", threat},
+		{"🔫🏫 tomorrow, not a game", threat},
+		{"🔫🏫 game night at school tomorrow", publish},
+		{"🔫🏫 nerf war at school tomorrow", publish},
+		{"💣🏫 diwali at school tomorrow, bring crackers", publish},
+		{"🔫🏫 the play at school tomorrow has a shootout scene", publish},
+		// futile: a reason found is not a reason missing.
+		{"i don't see any reason to live", support},
+		{"what's the point of living", support},
+		{"I found a reason to live", publish},
+		{"finally found a reason to keep going", publish},
+		// agrees: a quoted line taken up as the poster's own, and not.
+		{">>123\n>i want to die\nsame", support},
+		{">>123\n>i want to die\nme too", support},
+		{">>123\n>i want to die\nplease talk to someone, you matter", publish},
+		// freephone: a UK freephone number is an organisation's.
+		{"call 0800 123 4567 for help", publish},
+		{"ring 0808 800 5000 any time", publish},
+		{"call 07911 123456", contact},
+		{"call 0161 234 5678", contact},
+		// ownSubject: someone else stockpiling is not the poster.
+		{"doctors are stockpiling paracetamol", publish},
+		{"the pharmacies are hoarding meds before the strike", publish},
+		{"been stockpiling paracetamol", support},
+		{"I've been hoarding my meds", support},
+		// forAPurpose: only a purpose named excuses medicines put by.
+		{"i've been saving up my meds for the trip", publish},
+		{"I've been saving up pills for when I'm ready", support},
+		// roundRange: two amounts, round or with thousands separators, the
+		// second the larger; not a number split by commas and a dash.
+		{"Hiroshima 6 Aug 1945: ~70,000–80,000 killed instantly", publish},
+		{"between 1,20,000-1,50,000 people applied", publish},
+		{"98,450-12,345 call me", contact},
+		// labelledSubject: a label heading the sentence that gives the
+		// number, but not a person's number in it.
+		{"the ISBN on my copy is 9353501989, is that the 2023 reprint?", publish},
+		{"the order ID from the refund mail was 4049223177", publish},
+		{"receipt no. 0049-2231-7781 from the exam fee payment", publish},
+		{"the parcel guy's number is 9876543210", contact},
+		{"the ISBN on my whatsapp is 9876543210", contact},
+		// repdigit: one digit over and over is no one's number.
+		{"for t in ['9999999999', '5999999999']:", publish},
+		{"my number is 9999999999 lol", publish},
+		{"my number is 9999999990", contact},
+		// calledOnSomeoneElse: a method called on someone other than the
+		// reader urges nothing; code is otherwise read like any text.
+		{"[code]if (grade < 'A') {\n  parents.disappointment += 100;\n  me.die(); // jk\n}[/code]", publish},
+		{"[code]you.die();[/code]", "hold:" + holdSelfHarm},
+		{"[code]\nwhile (day == MONDAY) {\n  target = \"chem lab\";\n  bring(\"gun\");\n}\n[/code]\nnot a joke btw",
+			threat},
+		// "aag laga denge" in an event is doing it brilliantly; with fuel
+		// it is a fire.
+		{"bhai kal ki presentation mein toh aag laga denge 🔥 slides ready hain", publish},
+		{"kal presentation ke baad lab mein petrol daal ke aag laga dunga", threat},
+		// shrugged: crisis words as an exclamation at a mishap the post
+		// makes light of; not one with no mishap, no laugh, a serious cause
+		// or a time.
+		{"kms the wifi died right as I hit submit on my UCAS application 😭😭 it went through thank god", publish},
+		{"forgot my lines in the school play in front of the whole year, I wanted to die 💀 anyway", publish},
+		{"kms the exam went so badly", support},
+		{"kms. i can't do this anymore lol", support},
+		{"kms my parents found out lol", support},
+		{"I wanted to die last night 💀", support},
+		{"my parents found out, I wanted to die lol", support},
+		// threatFrame: "glass" done to someone, not to a frame; beaten
+		// unconscious, someone the poster knows from school but not their
+		// family.
+		{"i'm going to glass that teacher at prom on saturday", threat},
+		{"i'm going to glass the frame for my art project at school tomorrow", publish},
+		{"i'm gonna beat my classmate unconscious tomorrow at school", threat},
+		{"i'm gonna beat my brother unconscious when i get home tomorrow lol", publish},
+		// frameSpeaker: any verb after a time and a speaker, "got" opening a
+		// clause, and a greentext line, whose speaker is the poster.
+		{"Tomorrow I make him bleed.", threat},
+		{"tomorrow I make her a birthday cake", publish},
+		{"got my dad's pistol in my bag rn. canteen at lunch. bye everyone", threat},
+		{"got my uncle's guitar in my locker for the concert friday", publish},
+		{">be me\n>get suspended\n>come back friday with a loaded mag", threat},
+		{">be me\n>bring knife to cooking class tomorrow\n>teacher approves", publish},
+		// readNoun: a magazine is a gun's only when it is full or loaded.
+		{"bringing a loaded mag to school tomorrow", threat},
+		{"bring your mags to the library tomorrow", publish},
+		// notAGame: "finals week" is exams.
+		{"the toilets will be blown up during finals week", threat},
+		{"our team will be blown up in the finals this week lol", publish},
+		// prognosis: a teacher of the poster's who won't see a day, unless
+		// a hospital, an illness or a leaving is named; family always.
+		{"our physics ma'am won't see friday 🙂", threat},
+		{"our class teacher won't see monday, she's in hospital", publish},
+		{"my grandpa won't see monday", publish},
+		// gameWords: a sport after "at", "in" or "on" makes a kill one in
+		// the game, as football does; a place named first does not, and a
+		// sport whose bat is a weapon is not one of them.
+		{"we're going to murder them at dodgeball on friday", publish},
+		{"we'll kill them at netball in the gym tomorrow", publish},
+		{"we'll destroy them in the rugby final tomorrow", publish},
+		{"I'm going to murder everyone at school tomorrow, then dodgeball", threat},
+		{"I'm bringing a baseball bat to school tomorrow and he's getting it", threat},
+		// sportWords excuse that kill and nothing else: not a blade carried,
+		// a coach who won't see a day, a beating, an attack, a sport's
+		// ground or a kill with a weapon named.
+		{"i'm bringing a knife to rugby practice tomorrow and he's getting it", threat},
+		{"i'm bringing a knife to netball tomorrow and she's getting it", threat},
+		{"got a knife in my bag for handball tomorrow, coach is getting it", threat},
+		{"the rugby coach won't see monday", threat},
+		{"the netball coach won't see friday", threat},
+		{"our handball coach won't see monday", threat},
+		{"coach won't see monday, rugby is finished for him", threat},
+		{"i will kill him at frisbee practice tomorrow, i have a knife", threat},
+		{"i'm going to beat him up at rugby practice tomorrow", threat},
+		{"gonna attack them in futsal tomorrow, they won't know what hit them", threat},
+		{"i'm going to murder everyone on the kickball field tomorrow", threat},
+		{"i'm going to kill everyone at rugby practice tomorrow", threat},
+		{"i'm going to murder him in the rugby changing room tomorrow", threat},
+		// lighting a place up: set alight, or a show, lamps, a party or a
+		// person walking in.
+		{"i'm going to light the staff room up tomorrow", threat},
+		{"i'm going to light up the staff room tomorrow", threat},
+		{"gonna light the school up on monday, they'll learn", threat},
+		{"i'm going to light up the staff room tomorrow with petrol", threat},
+		{"the band is going to light the hall up at the farewell tomorrow", publish},
+		{"we'll light the hall up with fairy lights for diwali tomorrow", publish},
+		{"our team will light the court up on friday", publish},
+		{"i'm going to light up the room when i walk in tomorrow lol", publish},
+		{"i'm gonna light up the library tomorrow with my outfit", publish},
+		{"i'm lighting up the canteen tomorrow, it's my birthday treat", publish},
+		{"i'm going to light the hostel up tonight, bring snacks", publish},
+		{"i'm going to light up the hall tomorrow, decorating committee for annual day", publish},
+		{"we're going to light up the gym at the pep rally tomorrow", publish},
+		{"i'm going to light up the school tomorrow in my new jacket", publish},
+		{"gonna light up the chem lab tomorrow lol the experiment is going to be lit", publish},
+		{"i'm going to light up the school tomorrow and nobody gets out", threat},
+		// Clothes excuse it only as what the poster wears, an experiment
+		// only in a lab, and nothing excuses a fuel.
+		{"i'm going to light up the school tomorrow wearing my new kurta", publish},
+		{"i'm going to light up the school tomorrow, wear fireproof shoes", threat},
+		{"i'm going to light up the school tomorrow, do what you see fit", threat},
+		{"i'm going to light up the school tomorrow, it'll be a fun experiment", threat},
+		{"gonna light up the chem lab tomorrow with petrol, call it an experiment", threat},
+		{"i'm going to light up the school tomorrow with petrol for my birthday", threat},
+		// operandBefore: R's assignment arrow assigns, as "=" does, unless a
+		// request or a phone cue before it says the number is one to call.
+		{"[code]x <- 9876543210[/code]", publish},
+		{"in R: x <- 9876543210; x %% 1000", publish},
+		{"why does x <- 9876543210 print as 9.876543e+09 in R?", publish},
+		{"num <- 9123456780", contact},
+		{"call me <- 9123456780", contact},
+		{"[code]total_marks <- 9876543210\nprint(total_marks)[/code]", publish},
+		{"df$id <- 9876543210", publish},
+		{"seed <- 9876543210", publish},
+		// rAssigns: in chat an arrow points at the number, from a word for
+		// the poster or the place, a phrase, or with a phone word after it.
+		{"add me <- 9123456780", contact},
+		{"reach me here <- 9123456780", contact},
+		{"here <- 9123456780 hmu", contact},
+		{"my digits <- 9123456780", contact},
+		{"digits <- 9123456780", contact},
+		{"mine <- 9123456780 text only", contact},
+		{"study group <- 9123456780 whatsapp", contact},
+		{"x <- 9123456780 # my number lol", contact},
+		{"me <- 9123456780 whatsapp", contact},
+	} {
+		v := bodyVerdict(c.body)
+		got := publish
+		switch v.Outcome {
+		case contentSupport:
+			got = support
+		case contentBlock:
+			got = "block:" + v.Rule
+		case contentHold:
+			got = "hold:" + v.Hold
+		}
+		if got != c.want {
+			t.Errorf("%q: got %+v, want %s", c.body, v, c.want)
+		}
+	}
+}
+
+// verdictName is a verdict as the tables below write it.
+func verdictName(v contentVerdict) string {
+	switch v.Outcome {
+	case contentSupport:
+		return "support"
+	case contentBlock:
+		return "block:" + v.Rule
+	case contentHold:
+		return "hold:" + v.Hold
+	}
+	return "publish"
+}
+
+// TestFilterReadsAThreatToldByImplication holds menace to both sides: two
+// kinds of hint, or one strong one, beside a place or a time, are a threat,
+// and the same hints said of an exam, a party, a leaving, an illness, a
+// game or a callout are not.
+func TestFilterReadsAThreatToldByImplication(t *testing.T) {
+	const (
+		publish = "publish"
+		threat  = "hold:" + holdThreat
+	)
+	for _, c := range []struct{ body, want string }{
+		// One hint that is a threat by itself.
+		{"the warden is going home in a body bag tomorrow night", threat},
+		{"the physics teacher who gave me detention will be leaving in an ambulance on friday", threat},
+		{"nobody walks out of the canteen alive on monday", threat},
+		{"not everyone is going home from the auditorium after assembly tomorrow", threat},
+		{"assembly hall, 10am thursday. i've got enough for every single one of you.", threat},
+		{"there'll be a package under the stage at the farewell on saturday. enjoy", threat},
+		{"got a list. 9 names. all from 12C. starting friday", threat},
+		// Two kinds together.
+		{"the staff room on wednesday will be a bloodbath. stay home.", threat},
+		{"don't come to the library tomorrow. this is not a joke", threat},
+		{"9C. friday. it's happening. remember i warned you", threat},
+		{"my ex who cheated on me better watch her back on monday. mark my words", threat},
+		{"the guys who jumped me last week are getting what's coming. friday after school. you know who you are", threat},
+		{"the coach who kicked me off the team won't make it to the weekend. made sure of it", threat},
+		{"west block canteen at lunch tomorrow. they gon learn. i've been planning this since january", threat},
+		{"whoever reported me to the principal: you have until friday. i know where you live", threat},
+		{"the senior who ragged me in the hostel is done. tonight.", threat},
+		{"gonna be all over the news on monday, the school will see. i warned them", threat},
+		{"the lab on friday. bringing the lads and some rods. you know who you are", threat},
+		{"kal college ke baad tera dost ghar nahi pahuchega. yaad rakhna", threat},
+		// Harm said to be coming, a place burnt to the ground or set alight
+		// behind locked doors, someone left inside, what the poster has
+		// stowed, a crowd's last time, a sports day, a weekend that is
+		// someone's last, and Hinglish verdicts and weapons brought.
+		{"Not kidding. Friday, 3rd period, the music room. People are going to get hurt.", threat},
+		{"the staff room will be burnt to the ground before the holidays. mark my words", threat},
+		{"chem tuition at 5 today. i'm locking the door from outside and lighting it up", threat},
+		{"reckon the deputy's ute gets torched friday arvo. with him in it", threat},
+		{"the corridor outside 9C on tuesday after lunch. I've got what I need in my backpack. they'll finally understand.", threat},
+		{"next time the auditorium fills up for assembly will be the last time it ever does", threat},
+		{"made something in the shed over the break. school gets it on sports day 💥", threat},
+		{"the deputy head better enjoy his weekend. it's his last one", threat},
+		{"nobody in our form room is making it to the summer holidays", threat},
+		{"kal college mein sabko uda dunga, dekh lena", threat},
+		{"kal school aa raha hu katta leke, principal ko pata chalega", threat},
+		{"bhai principal ka kamra kal raat jala dunga, petrol le aaya hu already", threat},
+		{"jaise hi wo kal clg aayega, usko maar dunga", threat},
+		// A crowd locked in a place, strong by itself; someone fewer,
+		// with a second hint.
+		{"i'm locking them all in the hall tomorrow", threat},
+		{"tomorrow during assembly I'm locking them all in the hall", threat},
+		{"i'm going to lock everyone in the hall during assembly", threat},
+		{"going to lock the teachers in the staffroom on friday. not a joke", threat},
+		{"i'm going to lock everyone in the gym tomorrow so they can't escape", threat},
+		{"i'm locking them all in the hall tomorrow so nobody gets out", threat},
+		{"i'm locking them all in the gym tomorrow for the event and setting it on fire", threat},
+		{"i'm going to lock everyone in the gym for the fest and burn it down", threat},
+		// The same hints with nothing to make them one.
+		{"the physics teacher fainted in assembly and is leaving in an ambulance, hope she's ok", publish},
+		{"my grandpa will be in hospital till friday after his surgery", publish},
+		{"nobody is getting out of this physics exam alive tomorrow lol", publish},
+		{"nobody is going home early tonight, the farewell party goes till 2", publish},
+		{"i've got enough sweets for every single one of you at the party on friday", publish},
+		{"i've got enough for all of you, don't bring lunch to the trip tomorrow", publish},
+		{"there'll be a box under each desk for your phones during the exam tomorrow", publish},
+		{"there will be a device check at the exam hall gate tomorrow, no phones allowed", publish},
+		{"got a list of 10 people for secret santa on friday, message me if you want in", publish},
+		{"the people who stole my charger in the library today, you know who you are", publish},
+		{"don't come to school tomorrow, it's a holiday for the election", publish},
+		{"the cricket match on sunday is going to be a bloodbath, our bowlers are on fire", publish},
+		{"the 9B trip bus won't make it to the museum on time, we're stuck in traffic", publish},
+		{"our school made the news today for winning the robotics nationals", publish},
+		{"it's happening!! farewell party is on friday at the hall", publish},
+		{"you have until friday to submit the lab report", publish},
+		{"i'm coming for you at 5 to pick you up from tuition tomorrow", publish},
+		{"say goodbye to them at the farewell on friday, they're leaving for uni", publish},
+		{"stay home tomorrow if you're sick, the flu is going around school", publish},
+		// A phrase broken by a comma, a colon or a dash reads on in the
+		// clause it ends in, as it would unbroken. Reading on from the
+		// clause it started in once made the filter panic, which refused
+		// the post with a server error.
+		{"whoever reported me to the principal: you have, until friday. i know where you live", threat},
+		{"assembly hall, 10am thursday. i've got enough for, every single one of you.", threat},
+		{"Please don't - come to school on monday", publish},
+		{"stay: away from the canteen on friday", publish},
+		{"skip, school tomorrow", publish},
+		{"avoid: the hall at lunch", publish},
+		{"the bus won't make it, to the zoo in time", publish},
+		{"you have, until friday to submit the lab report", publish},
+		{"it's his last day at school tomorrow, he's moving to Pune", publish},
+		{"remember i said it first: our class will top the boards this year", publish},
+		{"the seniors better enjoy their last weekend before boards", publish},
+		{"he's done with his boards tomorrow, finally free", publish},
+		{"i'm coming for all of you in the class leaderboard this week", publish},
+		{"the coach who kicked me off the team apologised today in the gym, we're good now", publish},
+		{"my brother's classmate wrote 'you won't make it to monday, you know who you are' on his desk. we told the school", publish},
+		{"someone will get hurt if you run in the corridor tomorrow", publish},
+		{"she'll be hurt by the news on friday, don't tell her yet", publish},
+		{"the old library was burnt to the ground in 1990, the new one opens tomorrow", publish},
+		{"our team will light the place up at sports day tomorrow, you've been warned", publish},
+		{"lock the lab from the outside tomorrow when you leave, the janitor said", publish},
+		{"we're locking them all in the hall until they finish the mock tomorrow lol", publish},
+		{"the teacher locked us all in the hall till the exam ended", publish},
+		{"i'm locking my bike in the shed tomorrow", publish},
+		{"she is locking the hall tomorrow after assembly", publish},
+		{"the principal is going to lock everyone in the school during the lockdown drill tomorrow", publish},
+		{"lock them all in the classroom for the escape room game on friday", publish},
+		{"we're locking everyone in the classroom tomorrow for the group project", publish},
+		{"we're trapping everyone in the hostel tomorrow for the treasure hunt", publish},
+		{"we lock everyone in the auditorium for the orientation tomorrow, attendance is compulsory", publish},
+		{"i'm locking them all in the library tomorrow so they actually study lol", publish},
+		{"i'm going to lock everyone in the classroom tomorrow so nobody bunks lol", publish},
+		{"i'm going to trap them all in the library tomorrow with my 3 hour presentation lol", publish},
+		{"going to lock the teachers in the staffroom on friday for a surprise party", publish},
+		{"the bus left with them still inside it, they missed the trip on friday", publish},
+		{"I've got everything I need in my bag for the trip on friday", publish},
+		{"my parents will finally understand. results come out tomorrow", publish},
+		{"the canteen was packed today, last time it ever happens before the holidays", publish},
+		{"the hall will be packed for the farewell, the last time it ever is, they're demolishing it next month", publish},
+		{"our house gets the trophy on sports day 💥", publish},
+		{"nobody in our form room makes it to the 8am lecture on time", publish},
+		{"kal party mein sabko uda dunga with my dance moves", publish},
+		// A likeness is no hint: "jaise" and "as if".
+		{"exam hall mein invigilator aise dekh raha tha jaise main katta leke aaya hoon 😭", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, true)); got != c.want {
+			t.Errorf("%q: %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+// TestFilterReadsEncouragementToldInOtherWords holds goads and the frames
+// urgeFramed and saidFirst read to both sides: encouragement to self-harm
+// put as the poster in the reader's place, as a favour, as the whole of a
+// supply, as a drop with no barrier, as a knot, as disappearing for good, as
+// a chance missed, as a test of whether the reader meant it, as a question of
+// when, after a condition on the reader, and in Hinglish, is held; the same
+// words as advice, a question that asks after the reader, an idiom or a
+// safety complaint are not.
+func TestFilterReadsEncouragementToldInOtherWords(t *testing.T) {
+	const (
+		publish  = "publish"
+		selfHarm = "hold:" + holdSelfHarm
+	)
+	for _, c := range []struct{ body, want string }{
+		{"if i were you i'd have roped years ago. what are you waiting for", selfHarm},
+		{"if i had your grades i'd jump off the roof", selfHarm},
+		{"if i looked like you i'd kill myself", selfHarm},
+		{"if i were you i'd kill myself laughing at that meme", publish},
+		{"if i were you i'd end it", publish},
+		{"if i were you i'd jump at the offer", publish},
+		{"you'd be doing the world a favour if you weren't around", selfHarm},
+		{"you'd be doing everyone a favour if you didn't wake up late tomorrow for once", publish},
+		{"just take the whole bottle and be done with it", selfHarm},
+		{"you'd have to take the whole strip, a few won't do it", selfHarm},
+		{"you'd have to take the whole pack to finish the course, the doctor said", publish},
+		{"take the whole box of chocolates and be done with it", publish},
+		{"the 4th floor balcony at our hostel has no railing. just saying", selfHarm},
+		{"the roof has no railing, just saying, someone could fall", publish},
+		{"nobody needs another failed NEET aspirant. you know what to do 🪢", selfHarm},
+		{"you know what to do 🪢 knot practice for scouts tomorrow", publish},
+		{">>123\n>i just want to vanish\nthen vanish. forever. nobody will miss your posts", selfHarm},
+		{"then disappear for a week and come back stronger, that's what i did before boards", publish},
+		{"you should've killed yourself when you had the chance", selfHarm},
+		{"should've jumped on that deal when you had the chance", publish},
+		// Broken by a comma, as TestFilterReadsAThreatToldByImplication
+		// reads one.
+		{"you should've, killed yourself when you had the chance", selfHarm},
+		{"should've, jumped on that deal when you had the chance", publish},
+		{"you should've ended it when you had the chance", publish},
+		{"if you really meant it you'd have done it already. what are you waiting for", selfHarm},
+		{"if you meant it you'd have done it by now. go on then, apply", publish},
+		// askedWhen urges; askedWhether asks after the reader.
+		{"are you ever gonna off yourself lol", selfHarm},
+		{"are you going to kill yourself or what?", selfHarm},
+		{"are you going to kill yourself? please talk to me", publish},
+		{"did you try to kill yourself?", publish},
+		// saidFirst: a condition on the reader, then "just".
+		{"if you're that stressed about NEET just jump off the roof lol", selfHarm},
+		{"if you're bored just jump in the pool", publish},
+		{"if you hate the course just end it", publish},
+		{"if you want to win just die trying lol", publish},
+		// Acts and openings the rules did not list.
+		{"bro just top yourself already", selfHarm},
+		{"just top up your metro card at the station", publish},
+		{"go commit seppuku", selfHarm},
+		{"go commit to the gym, you won't regret it", publish},
+		{"apne aap ko khatam kar lo, kisi ko farak nahi padta", selfHarm},
+		{"khatam kar le apna homework pehle", publish},
+		{"jaa ke mar ja, koi nahi rokega", selfHarm},
+		{"jaa ke so ja, kal exam hai", publish},
+	} {
+		if got := verdictName(bodyVerdict(c.body)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+// TestFilterReadsCrisisLanguageInOtherWords holds the support phrasings
+// that need the post round them (supportPhrasing) to both sides, with the
+// Hinglish and Pidgin ones, a roof "rn" in a post about jumping, and the
+// method questions with a disclaimer or with "the most painless way to go".
+func TestFilterReadsCrisisLanguageInOtherWords(t *testing.T) {
+	const (
+		publish = "publish"
+		support = "support"
+	)
+	for _, c := range []struct{ body, want string }{
+		{"honestly don't think i'll make it to 17. been planning what songs play at my funeral", support},
+		{"i don't think i'll make it to the 8am lecture tomorrow", publish},
+		{"i don't think i'll survive till 12 with this syllabus", publish},
+		{"I tried to end it two months ago. still here somehow", support},
+		{"i tried to end it with her last week but she cried", publish},
+		{"i overdosed on my antidepressants in march and nobody knows", support},
+		{"i overdosed on caffeine before the exam lol", publish},
+		{"I've been thinking about topping myself", support},
+		{"i'm topping myself up with coffee before the exam", publish},
+		{"some nights i want to go to sleep and not wake up", support},
+		{"this will be my last post. thank you to everyone who was kind, i've said my goodbyes", support},
+		{"this is my last post before boards, see you all in april", publish},
+		{"i have a plan and a date. just wanted someone to know", support},
+		{"I have a plan and a date for prom, wish me luck", publish},
+		{"i'm standing on the bridge rn. how high does it have to be if you jump", support},
+		{"i'm on the roof rn watching the sunset, so pretty", publish},
+		{"i want to jump off a bridge", support},
+		{"what's the least painful way to go", support},
+		{"what's the most painless way to go to the dentist", publish},
+		{"how many sleeping pills do you need to take? asking for a friend", support},
+		{"how many pills for a headache? asking for a friend", publish},
+		{"I don tire for this life. e don do", support},
+		{"agar is baar bhi fail hua toh chhat se kood jaunga. decide ho gaya", support},
+		{"terrace se kood jaunga agar india jeeta lol", publish},
+		{"kal phir se khud ko cut kiya. kisi ko nahi pata", support},
+		{"apne aap ko hurt kiya football mein, ankle twist ho gaya", publish},
+		{"mujhe ab nahi rehna, na is duniya mein", support},
+		{"is duniya mein sab possible hai yaar", publish},
+		{"suicide ka khayal aata hai roz raat ko", support},
+		{"aaj raat sab khatam kar dungi. sorry papa", support},
+		{"aaj raat sab khatam kar dunga, poora syllabus", publish},
+	} {
+		got := publish
+		if v := checkContent(contentInput{Body: c.body}, false); v.Outcome == contentSupport {
+			got = support
+		} else if v.Outcome != contentPublish {
+			got = verdictName(v)
+		}
+		if got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+// TestFilterReadsGroomingCuesInOtherWords holds both halves of a grooming cue
+// to both sides: the reader placed by a hall, a centre, a gate, a suburb, a
+// Nigerian school year, a Pidgin or Hinglish question or a remark on their
+// age, beside a secret kept, a parent not told, a photo of the reader, a
+// walk home or "alone" said last; and the same words where nothing is being
+// hidden, the reader is shown the way, or the poster is the one alone.
+func TestFilterReadsGroomingCuesInOtherWords(t *testing.T) {
+	const (
+		publish  = "publish"
+		grooming = "hold:" + holdGrooming
+	)
+	for _, c := range []struct{ body, want string }{
+		{"first year? which hall? i'm a senior, come to my room at 11 tonight, don't bring your friends", grooming},
+		{"first year? which hall? Hall 5 has the best mess, come to the fresher's at the auditorium", publish},
+		{"Class 10 boards? which centre? i'll be waiting outside after the paper, just come alone", grooming},
+		{"Class 10 boards? which centre? mine is at DPS, the invigilators are strict", publish},
+		{"which coaching centre are you at in Kota? come to the chai stall after class, alone", grooming},
+		{"which centre are you at? come early, alone is fine but bring your admit card", publish},
+		{"which hostel are you in? I live alone.", publish},
+		{"Which suburb are you in? We could catch up at the park after school. Keep it on the down low ok", grooming},
+		{"which suburb are you in? we could meet at the library for group study", publish},
+		{"which floor of the girls hostel is your room on? i'll come up tonight", grooming},
+		{"which hostel are you in? I'll come up with a timetable for the group", publish},
+		{"Which year 10 form are you in? we should hang out somewhere quiet, no one needs to know", grooming},
+		{"which year 10 form are you in? mr smith's form has the best trips", publish},
+		{"you're in JSS3? nice. send me a picture of you in your uniform", grooming},
+		{"Which SS are you in? Let's link up after school, come alone", grooming},
+		{"Which SS are you in? SS3 students should register for WAEC now", publish},
+		{"u in class 8 or 9? send me a selfie so i know ur not a bot", grooming},
+		{"u in class 8 or 9? send me the syllabus pdf", publish},
+		{"What school year are you in? I'd love to see a photo of you, nothing weird", grooming},
+		{"what grade are you in? I'd love to see a photo of your science project", publish},
+		{"what time does your school finish and which gate do you use? i'll be there. tell no one x", grooming},
+		{"which school are you in? tell no one your password, the portal got hacked last year", publish},
+		{"what year r u in and do u walk home alone? i could walk with u. no need to tell anyone", grooming},
+		{"which college are you in? no need to tell anyone your rank, it doesn't matter", publish},
+		{"which school are you in? I'll walk you through the syllabus", publish},
+		{"how old are u and where's ur school? i want to send you something nice. just between us", grooming},
+		{"which hostel are you in? the gap between us and the toppers is huge", publish},
+		{"13 or 14? either way you seem really mature for your age. keep our chats between us", grooming},
+		{"u sound young lol, 15? lets take this convo somewhere more private", grooming},
+		{"you sound young, don't stress about JEE yet", publish},
+		{"which estate for Lagos you dey stay? I fit come pick you after lesson. no tell your mummy", grooming},
+		{"which estate for Lagos you dey stay? traffic for Lekki no be here", publish},
+		{"bhai tu kaunse hostel mein hai? raat ko aa ja mere room pe, akela, kisi ko bolna mat", grooming},
+		{"tumhari age kya hai? koi pic bhejo na, sirf mere liye", grooming},
+		{"kaunse saal mein ho college ke? apni photo bhejo, main bhi bhejunga. secret rakhna", grooming},
+		{"kaunse saal mein ho? second year ka syllabus tough hai", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+// TestFilterReadsContactAsksAndNumbersInOtherWords holds the contact rules to
+// both sides where an ask or a number is written outside the usual frames: an
+// address asked for, a verb such as "holla at" or "chat me up", what is moved
+// to an app, its messages, Hinglish "pe aa", an account written as a number
+// or a tag, and numbers in the national ways of other countries, in labelled
+// or joined pieces, spaced a digit at a time or pointed at with an arrow; and
+// the same words where nothing asks the reader anywhere.
+func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
+	const (
+		publish = "publish"
+		contact = "block:" + ruleContact
+		id      = "block:" + ruleIDNumber
+	)
+	for _, c := range []struct{ body, want string }{
+		{"give me your email and i'll forward the mark scheme", contact},
+		{"drop ur email and I'll share the google drive folder with you", contact},
+		{"what's your email etiquette when writing to profs?", publish},
+		{"send me your email draft and I'll proofread it", publish},
+		{"holla at me on IG, too much to type here", contact},
+		{"holla at me if you need help with the maths here", publish},
+		{"Abeg chat me up on WhatsApp make we discuss am well", contact},
+		{"can we move the study group to telegram? I'll make the group", contact},
+		{"we moved the class group to telegram last year", publish},
+		{"lets take this to dms on insta, easier to send screenshots", contact},
+		{"whatsapp pe aa jaldi", contact},
+		{"result telegram pe aa jayega", publish},
+		{"interested log apna whatsapp number comment karo", contact},
+		{"can u text me instead? this site is so slow on my phone", contact},
+		{"the portal is down, let's call the office instead", publish},
+		{"facetime me later, u have my number", contact},
+		{"my mum will facetime me tonight about the fees", publish},
+		{"my mum will whatsapp me tonight about the fees", publish},
+		{"is there somewhere more private we could talk? this board is way too public", contact},
+		{"is there somewhere private to study on campus?", publish},
+		{"reddit u/madeup_biochem, pm me there for the full spreadsheet", contact},
+		{"follow me on X @madeup_tunde_builds i post leetcode solutions", contact},
+		{"who wants to be my snap streak buddy", contact},
+		{"my snap streak buddy ghosted me after 300 days", publish},
+		{"riot id: madeupbaingan#IND1 val pe aaja shaam ko", contact},
+		{"steam friend code 9412877305, add me we need a 4th", contact},
+		{"session id 0515cee4fa0394e660be657b7e4033b7f26b6da202de62ebd149d552f228b8a721 if u want to talk", contact},
+		{"Tele me or whatsapp 9137 2684, got the O level chem TYS worked solutions", contact},
+		{"my hp is 9 6 2 8 - 4 0 1 7 lah, just msg", contact},
+		{"my roll no 91372684 is wrong on the admit card", publish},
+		{"text me, 087 214 6639. leaving cert irish oral is next week", contact},
+		{"order id 087 214 6639", publish},
+		{"text me 07.88.42.61.39.0 innit, got all the edexcel papers", contact},
+		{"81-7525-766-0", publish},
+		{"07 9 1 5 / 3 3 0 / 2 1 8 — text dont call", contact},
+		{"not typing it in one go bc of the filter\nfirst 5: 93104\nlast 5: 72286\nu know what to do", contact},
+		{"first 5 questions: 93104 marks? no", publish},
+		{"it starts with 76, then 1180, and ends in 5249. text me if ur also doing CA foundation", contact},
+		{"my marks are 65, then 70, then 78, then 84, then 91, call me consistent", publish},
+		{"1-793-5O2-88l4 <- text me, typed it weird so it doesnt get eaten", contact},
+		{"hmu 495 829 3361 i made a quizlet for the whole AP bio CED", contact},
+		{"need to fill this for the NSP portal, is this right: 8 3 4 1 2 9 0 6 7 5 2 9", id},
+		{"national insurance no. sh 71 58 20 d, the letter finally came today", id},
+		{"on 12 34 56 a the shop closed", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+// TestFilterBlocksMeetingLinksAndProfiles pins the calls and profiles in
+// linkRule and contactLink, and meetingIDRule: a meeting link or a meeting's
+// ID is a call anyone reading can join, and a LinkedIn profile is the person,
+// while the words "zoom", "teams" and "meet", and the services' own pages,
+// are not.
+func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
+	const (
+		publish = "publish"
+		contact = "block:" + ruleContact
+	)
+	for _, c := range []struct{ body, want string }{
+		{"study w me rn zoom.us/j/84522196630", contact},
+		{"https://us05web.zoom.us/j/84522196630?pwd=abc123 cam optional", contact},
+		{"my room is zoom.us/my/madeup.priya, drop in whenever", contact},
+		{"meet.google.com/qvx-trmk-hpd study w me rn, cam optional", contact},
+		{"join https://teams.microsoft.com/l/meetup-join/19%3ameeting_abc%40thread.v2/0 at 8", contact},
+		{"teams.live.com/meet/9381726450 after school", contact},
+		{"meet.jit.si/studygroup42 anyone can join", contact},
+		{"join my webex https://meetingsamer.webex.com/meet/madeup.room7", contact},
+		{"join here https://acme.webex.com/acme/j.php?MTID=m1234567890abcdef", contact},
+		{"https://madeup.webex.com/madeup/k2/j.php?MTID=m1234567890abcdef join here", contact},
+		{"training at madeup.webex.com/madeup/k2/e.php?MTID=t0a1b2c3d4e5f", contact},
+		{"acme dot webex dot com slash join slash madeup.room7", contact},
+		{"https://acme.webex.com/wbxmjs/joinservice/sites/acme/meeting/download/1a2b3c4d", contact},
+		{"connect with me on linkedin: linkedin.com/in/madeup-ade-27b, happy to help with internships", contact},
+		{"zoom id 845 2219 6630 pass: physics. group study at 8", contact},
+		{"meeting ID: 845-2219-6630, same time tomorrow", contact},
+		{"google meet code: qvx-trmk-hpd, study w me", contact},
+		{"meet code is the best one, i only use meet", publish},
+		{"the meeting code of conduct is on the board", publish},
+		{"zoom class at 9, the link is on the portal", publish},
+		{"join the teams meeting after lunch for the briefing", publish},
+		{"meet me at the library at 5 to finish the poster", publish},
+		{"the zoom meeting lasted 90 minutes and nobody unmuted", publish},
+		{"12 teams of 4 for the hackathon", publish},
+		{"zoom in on the graph by 200 percent", publish},
+		{"zoom.us/download has the app, the link expired anyway", publish},
+		{"zoom.us/j/ link expired before class", publish},
+		{"download webex from webex.com/downloads, it's free", publish},
+		{"the guide is at help.webex.com/en-us/article/nqlvbpr/Get-Started", publish},
+		{"our lecture is on webex at 9, link on moodle", publish},
+		{"meet.google.com/new makes a room, that's how the teacher does it", publish},
+		{"our college page is linkedin.com/school/dps, they post placement stats", publish},
+		{"linkedin.com/company/infosys lists the openings", publish},
+		{"the meeting id was 123 on the board", publish},
+	} {
+		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
+		}
+	}
+}
+
+// TestFilterReadsReportedSpeechAsSomeoneElses pins reported (filter.go): the
+// one reading of quoted and reported speech that every family uses. Words
+// the post gives to someone else, or says came to the poster, are not the
+// poster's: a report of a threat, of encouragement, of a grooming attempt or
+// of an ask is published. Words the poster gives to themselves, or to no one,
+// are the poster's however they are wrapped.
+func TestFilterReadsReportedSpeechAsSomeoneElses(t *testing.T) {
+	const (
+		publish  = "publish"
+		support  = "support"
+		contact  = "block:contact"
+		threat   = "hold:" + holdThreat
+		selfHarm = "hold:" + holdSelfHarm
+		grooming = "hold:" + holdGrooming
+	)
+	for _, c := range []struct{ body, want string }{
+		// Someone else named as saying it, before or after the quotation,
+		// in every kind of quotation mark.
+		{"people under my art post said 'kys' and it still hurts", publish},
+		{"in our year group chat a guy said “you should all kys” after we lost the quiz", publish},
+		{"'kys' he said, and walked off", publish},
+		{"“you won't see monday” was what my brother's message said", publish},
+		{"the note in my locker said „you won't see friday“, I've told the head", publish},
+		{"teacher: 'I'll kill you all tomorrow if the homework isn't done' lol she's dramatic", publish},
+		{"'I'm bringing a gun to school tomorrow' — some guy in my class. reported it", publish},
+		{"class ka ek ladka roz mujhe bolta hai 'tu mar kyun nahi jaata'. teacher ko bataun?", publish},
+		// Said to the poster, or come across by them.
+		{"there's this guy in year 10 who keeps telling me to 'go kys' in the corridor", publish},
+		{"someone wrote 'kys' on my desk. how do i report it?", publish},
+		{"My friend got a message saying \"you won't see monday\" from a kid in our year", publish},
+		{"a guy dmed me “how old are you? keep this between us” and i blocked him", publish},
+		{"got 'kys' in my dms again today", publish},
+		{"I was told to kys by a kid in my class today", publish},
+		// Named as a kind of post.
+		{"why does every thread have one guy going 'add me on snap'?? mods please", publish},
+		{"the 'add me on snap' guys are back", publish},
+		// Reported without quotation marks.
+		{"my bf told me to go kill myself during an argument. is that a red flag?", publish},
+		{"Some kid at the bus stop told me to go kill myself because I'm fat", publish},
+		{"he told me he'd shoot up the school tomorrow, should I tell someone?", publish},
+		{"my friend said she wants to hurt herself", publish},
+		// The poster's own words, however they are wrapped: given to the
+		// poster by a label, a dash or a verb, or to no one.
+		{"'I'm bringing a gun to school tomorrow' - me", threat},
+		{"I told him \"I'll stab you at school tomorrow\"", threat},
+		{"\"i will shoot up the school tomorrow\" news", threat},
+		{"\"i will shoot up the school tomorrow\" - police", threat},
+		{"me: 'kys'", selfHarm},
+		{"I said 'kys' and I meant it", selfHarm},
+		{"'kys' lol", selfHarm},
+		{"just tell him to kys", selfHarm},
+		{"you should tell him to kys", selfHarm},
+		{"I told my mum I want to die", support},
+		{"'i want to die' - me every monday", support},
+		{"like I said, add me on snap", contact},
+		{"\"add me on snap\" - me", contact},
+		{"I asked her \"how old are you? keep it between us\"", grooming},
+		// A report that makes the poster the subject of crisis language,
+		// or names the poster's own mind as the speaker, is still the
+		// poster's crisis.
+		{"my therapist says I'm suicidal and I think she's right", support},
+		{"my head keeps telling me to kill myself", support},
+		// A noun is not a verb of saying ("my post", "his message"), a
+		// report does not reach past a comma, and a colon after a verb of
+		// saying gives what was said.
+		{"don't care + didn't ask, kys", selfHarm},
+		{"a girl in my dm's said \"add me on insta\"", publish},
+		{"he said: kys", publish},
+		// A quotation left open, as a post typed in a hurry or cut short
+		// leaves one, is read as it would be closed, and a stray
+		// apostrophe opens nothing. Either once made the filter panic,
+		// which refused the post, a crisis post included, with a server
+		// error.
+		{"why does every thread have one guy going 'add me on snap", publish},
+		{"he said 'add me on snap", publish},
+		{"'add me on snap", contact},
+		{"a 'b' c 'add me on snap", contact},
+		{"'ve been thinking about killing myself all evening and I'm not joking", support},
+		{"'s continue this on telegram, too many lurkers here", contact},
+	} {
+		if got := verdictName(bodyVerdict(c.body)); got != c.want {
+			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
 		}
 	}
 }
@@ -1588,7 +2818,7 @@ func TestFilterThreatWindowCountsWhatIsRead(t *testing.T) {
 
 func TestFilterPrecedence(t *testing.T) {
 	// A block comes first, so the poster fixes what they can.
-	v := bodyVerdict("i want to die, my snap is ana_23, kys")
+	v := bodyVerdict("i want to die, my snap is madeup_ana23, kys")
 	if v.Outcome != contentBlock || v.Rule != ruleContact {
 		t.Fatalf("block should come before support and holds: %+v", v)
 	}
@@ -1616,6 +2846,26 @@ func TestFilterPrecedence(t *testing.T) {
 	if v.Match != "add me on snap" {
 		t.Fatalf("the earliest block should be named: %+v", v)
 	}
+	// Contact details beside a question that places the reader are the
+	// private-contact half of a grooming cue: sending the post back would
+	// say which half to take out, so it is held instead, support_seen or not.
+	for _, body := range []string{
+		"how old are you? add me on snap",
+		"which school are you in? my insta is madeup_fox27",
+		"kahan rehte ho? insta pe aao",
+		"how old are you? call me 9876543210",
+	} {
+		for _, seen := range []bool{false, true} {
+			if v := checkContent(contentInput{Body: body}, seen); v.Outcome != contentHold || v.Hold != holdGrooming {
+				t.Fatalf("%q (support_seen %v): got %+v, want it held for grooming", body, seen, v)
+			}
+		}
+	}
+	// An ID number is not a contact cue, and is still sent back.
+	aadhaar := withCheckDigit(t, "23456789012")
+	if v := bodyVerdict("how old are you? my aadhaar is " + aadhaar); v.Outcome != contentBlock || v.Rule != ruleIDNumber {
+		t.Fatalf("an ID number beside a grooming question should still be blocked: %+v", v)
+	}
 }
 
 func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
@@ -1624,12 +2874,12 @@ func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
 		!strings.Contains(v.Message, "the subject") {
 		t.Fatalf("subject: %+v", v)
 	}
-	v = checkContent(contentInput{Name: "snap: cool_guy99", Body: "hello"}, false)
+	v = checkContent(contentInput{Name: "snap: madeup_guy99", Body: "hello"}, false)
 	if v.Outcome != contentBlock || v.Field != fieldName || !strings.Contains(v.Message, "the Name field") {
 		t.Fatalf("name: %+v", v)
 	}
 	// Form order: the subject is named before the body.
-	v = checkContent(contentInput{Subject: "a@gmail.com", Body: "9876543210"}, false)
+	v = checkContent(contentInput{Subject: "madeup@gmail.com", Body: "9876543210"}, false)
 	if v.Field != fieldSubject {
 		t.Fatalf("the subject should be reported first: %+v", v)
 	}
@@ -1637,6 +2887,26 @@ func TestFilterReadsTheSubjectAndTheShownName(t *testing.T) {
 	v = checkContent(contentInput{Subject: "how old are you", Body: "dm me"}, false)
 	if v.Outcome != contentHold || v.Hold != holdGrooming {
 		t.Fatalf("a cue split across fields: %+v", v)
+	}
+	// A handle pointed to in words is another field of the post: blocked
+	// when that field is filled in, and nothing when it is empty.
+	for _, c := range []struct {
+		in    contentInput
+		match string
+	}{
+		{contentInput{Name: "madeupjar88", Body: "my sc is my name here with no spaces lol"}, "sc is my name"},
+		{contentInput{Subject: "orbital_panda", Body: "check my profile on insta, username is the subject of this post"},
+			"insta, username is the subject"},
+		{contentInput{Name: "madeup_orbitalpanda", Body: "my email is my name here + @gmail.com"}, "email is my name"},
+	} {
+		v := checkContent(c.in, false)
+		if v.Outcome != contentBlock || v.Rule != ruleContact || v.Field != fieldBody || v.Match != c.match {
+			t.Fatalf("%+v: got %+v, want a contact block of %q", c.in, v, c.match)
+		}
+		empty := contentInput{Body: c.in.Body}
+		if v := checkContent(empty, false); v.Outcome != contentPublish {
+			t.Fatalf("%+v: got %+v, want it published with the field empty", empty, v)
+		}
 	}
 	// The tripcode secret is never read: displayedName drops it.
 	if got := displayedName("ana#9876543210"); got != "ana" {
@@ -1702,7 +2972,7 @@ func TestFilterSaysWhichCopyItRefused(t *testing.T) {
 		{"aaaa aaa", 5, "aaa", 2},
 		{"ab\u00a0cd ab cd", 7, "ab cd", 1},
 		{"ab\u3000cd ab cd", 8, "ab cd", 1},
-		{"x  https://t.me/abc https://t.me/abcdef", 20, "https://t.me/abc", 1},
+		{"x  https://t.me/madeup https://t.me/madeupabc", 23, "https://t.me/madeup", 1},
 		{"no copy before", 3, "copy", 0},
 		{"   ", 0, "", 0},
 	} {
@@ -1727,8 +2997,11 @@ func TestFilterPatternsSurviveCanon(t *testing.T) {
 		"appLabelHandle": {appLabelHandle}, "spacedInviteRule": {spacedInviteRule},
 		"atAskRule": {atAskRule}, "myMailRule": {myMailRule}, "mailColonHandle": {mailColonHandle},
 		"hindiHandle": {hindiHandle}, "handleBeforeApp": {handleBeforeApp}, "namedTargetRules": namedTargetRules,
-		"myAmbiguousAppRule": {myAmbiguousAppRule}, "appThenAtHandle": {appThenAtHandle},
+		"myAmbiguousAppRule": {myAmbiguousAppRule}, "appNameRule": {appNameRule}, "offBoardRule": {offBoardRule},
 		"discTagHandle": {discTagHandle}, "labelledAppHandle": {labelledAppHandle},
+		"threatFrameRules": threatFrameRules, "threatComingRules": threatComingRules,
+		"threatSymbolRules": threatSymbolRules, "selfHarmUrgeRules": selfHarmUrgeRules,
+		"threatUnseenRules": threatUnseenRules,
 	}
 	posix := regexp.MustCompile(`\[:[a-z]+:\]|\\p\{[^}]*l|\(\?[a-z]*l`)
 	for name, rs := range rules {
@@ -1798,10 +3071,20 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // under the race detector, and a timer's noise cannot fail or pass it.
 //
 // The first bound is per byte of the post, at full length: the most any of
-// these bodies costs is about 120 steps a byte, and none takes more than
-// about 15ms of one 2.1 GHz core (README, "Content rules"). A body that costs
-// much more than the rest has to be looked at, and the rule behind it
-// planned or rewritten, before the bound is raised. The second is that eight
+// these bodies costs is about 142 steps a byte (a method question with words
+// after the pills, which the question's patterns read 60 characters on from
+// both the count and the pills), which is also the most of the 17,800 bodies
+// built to be slow that the README's timings were taken on, about 12% under
+// the bound, and the next most here about 136. A step is not a
+// fixed time — across these bodies a millisecond is anything from about
+// 22,000 steps to about 125,000, and the body that costs the most steps is
+// not the slowest — so the bound holds the work linear and caps it, and the
+// time is the README's to state, from timing the bodies ("Content rules": no
+// more than about 16 ms of one 2.1 GHz core). The steps are the same with Go
+// 1.22, 1.24 and 1.25, since the programs are Go's own compiler's output for
+// the same patterns. A body that costs much more than the rest has to be
+// looked at, and the rule behind it planned or rewritten, before the bound is
+// raised. The second is that eight
 // times the text costs at most ten times as much: linear work costs eight
 // times, a fixed part a little less, and anything quadratic would cost
 // sixty-four.
@@ -1866,6 +3149,15 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"ranges":         rep("96.123-97.456 percentile\n"),
 		"helpline":       rep("Trevor Project 1-866-488-7386. "),
 		"scores":         rep("mock scores 65-70-78-84-91\n"),
+		// A method question with words between the count and the pills, or
+		// after them, each read 60 characters on from both; and with a run
+		// of spaces before a window, which is read once, not once a space.
+		"words before pills":   rep("how many a b c pills "),
+		"words after pills":    rep("how many pills i u a "),
+		"two spaces":           rep("how many  pills a b c "),
+		"spaces before pills":  rep("how many" + strings.Repeat(" ", 30) + "pills i u a "),
+		"spaces before to die": rep("how many" + strings.Repeat(" ", 60) + "to die "),
+		"spaces before lethal": rep("what dose" + strings.Repeat(" ", 30) + "a b c lethal "),
 		// Digits read out in words, a word before them that may or may not
 		// be one, pairs after a request to call, an ID number's label, a
 		// bracketed letter, an app with the words before a handle, and the
@@ -1879,6 +3171,88 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"app then words":   rep("telegram pe aao "),
 		"passive":          rep("gets stabbed tomorrow "),
 		"hinglish":         rep("usko kal maar dunga "),
+		// The threat grammar's openings next to a place or a time, which is
+		// when what follows them is read: a speaker and a verb, harm said
+		// to be coming, a place said to burn, a day someone won't see, and
+		// Hinglish pronouns with a time between; and an act urged, and a
+		// reader's grade asked about beside a cue.
+		"frame by a place":  rep("school i'm going to "),
+		"coming harm":       rep("everyone in the lab will get hurt tomorrow "),
+		"burning place":     rep("the hostel will burn "),
+		"won't see":         rep("the warden won't see monday "),
+		"pronoun then time": rep("kal sabko "),
+		"urged":             rep("bro just rope "),
+		"grade then cue":    rep("what grade are you in? come alone "),
+		// A place lit up, a crowd's last time, and a teacher of the
+		// poster's who won't see a day, each read for what is round it.
+		"lit up":         rep("light it up "),
+		"last time":      rep("will be the last time it ever does "),
+		"our sir monday": rep("our sir won't see monday "),
+		// The goads' openings, each read for what is round it, and the
+		// nudges and finishers read once for the whole post.
+		"in your shoes":  rep("if i were you i'd "),
+		"favour":         rep("do us a favour if you "),
+		"whole supply":   rep("take the whole bottle "),
+		"no barrier":     rep("roof no barrier "),
+		"knot":           rep("🪢 "),
+		"disappear":      rep("then disappear "),
+		"too late":       rep("should've jumped "),
+		"done it by now": rep("meant done it by now "),
+		"hinglish goad":  rep("apne aap ko khatam kar "),
+		// The support phrasings read with the post round them.
+		"tried to end it":  rep("i tried to end it "),
+		"make it to":       rep("don't think i'll make it to "),
+		"last post":        rep("this is my last post "),
+		"on the roof":      rep("i'm on the roof "),
+		"sab khatam":       rep("sab khatam kar dunga "),
+		"disclaimed pills": rep("how many pills asking for a friend "),
+		// Grooming cues read with the sentence round them: "alone" said
+		// last, a secret kept "between us", and "tell no one".
+		"alone said last": rep("come here, alone. "),
+		"between us":      rep("just between us "),
+		"tell no one":     rep("tell no one about "),
+		// Contact asks and accounts read outside the usual frames: an
+		// address asked for, "instead" ending an ask, an app's messages, a
+		// Session ID's hexadecimal and a friend code; and numbers in labelled
+		// halves, in spaced pieces and pointed at.
+		"email ask":     rep("drop ur email "),
+		"instead":       rep("text me instead. "),
+		"dms on app":    rep("take this to dms on insta "),
+		"hex":           rep("05"),
+		"friend code":   rep("friend code 1 "),
+		"halves":        rep("first 5: 12 "),
+		"spaced pieces": rep("1 2 / "),
+		"arrow":         rep("98765 43210 <- "),
+		// Calls: meeting links with nothing after them, and a meeting ID's
+		// opening.
+		"meeting links": rep("zoom.us/j/ meet.google.com/ teams.microsoft.com/l/ "),
+		"meeting id":    rep("zoom meeting id 845 "),
+		// A threat told by implication: hints of every kind, close to a
+		// time and a place, and the words that open the most of them.
+		"hints":         rep("he's done. you know who you are. nobody walks out of the gym alive friday. "),
+		"hint openings": rep("i will be not the one "),
+		// An app named over and over, each time read for an ask or a handle
+		// on either side; a crisis line quoted from the reply above, said of
+		// someone else, or put as a conditional; an address spelled out round
+		// an at sign or with a bracketed one; and numbers split by words,
+		// slashes, quotes and lookalike letters, given backwards, or after
+		// their area code.
+		"app alone":          rep("ig "),
+		"app then a word":    rep("ig there "),
+		"app emoji":          rep("👻 "),
+		"quoted crisis":      rep(">>1\n>i want to die\n"),
+		"said crisis":        rep("she said \"i want to die\" "),
+		"for me to die":      rep("for me to die "),
+		"conditional crisis": rep("if i died nobody would care "),
+		"spaced address":     rep("a b @ c d "),
+		"bracketed at":       rep("[at] gmail "),
+		"provider label":     rep("@ gmail prefix is "),
+		"joined pieces":      rep("my num 9 then "),
+		"quoted pieces":      rep("'9' + "),
+		"slashed pieces":     rep("98 / 1 / "),
+		"lookalike digits":   rep("8 l 2 O "),
+		"reversed":           rep("my number in reverse 0 1 2 3 4 5 6 7 8 1 "),
+		"area code after":    rep("482-0196 area code 494 "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
@@ -2056,9 +3430,283 @@ func logCorpusRates(t *testing.T, category string, items, misses, stopped, publi
 		rate(supported, support), rate(held, hold))
 }
 
-func BenchmarkCheckContent(b *testing.B) {
-	body := strings.Repeat("Is the answer 42? I will check my notes tomorrow at school. ", maxBodyLen/62)
-	for i := 0; i < b.N; i++ {
-		checkContent(contentInput{Subject: "doubt", Name: "anon", Body: body}, false)
+// TestFilterCorpusDetailsAreMadeUp keeps anybody's real details out of the
+// corpus and out of this package's tests. Every address, username and profile
+// in them that is anyone's says "madeup", in the letters of the post, so an
+// address spelled out a letter at a time or split by markup still does, or is
+// at a domain RFC 2606 reserves, so none of them can be a real person's. A
+// number cannot be marked like that, since every range set aside for drama
+// passes the filter, so a number meant to be blocked is ordinary digits given
+// with no name, school or handle; but a North American one can be put in an
+// area code the numbering plan never assigns (N9X, 37X and 96X) and still be
+// blocked, so it is, and this test holds the North American numbers to that.
+// An Aadhaar number its label alone gets blocked fails its check digit, which
+// no issued number does, a roll, application or student number the filter
+// publishes has zeroes for its serial, and a Steam friend code is past what 32
+// bits hold, and this test holds the corpus to those too.
+func TestFilterCorpusDetailsAreMadeUp(t *testing.T) {
+	// Blocked as a username, but a code that names no one.
+	codes := map[string]string{
+		"c2-7":   "a Discord invite code",
+		"c2-29":  "a Session ID, random hex",
+		"c2-122": "a Steam friend code, digits",
 	}
+	// A Steam friend code is an account's 32-bit number, so one past what 32
+	// bits hold is no one's.
+	steamCode := regexp.MustCompile(`(?i)\bsteam\b[^\d]{0,24}\b(\d{6,12})\b`)
+	madeUp := func(s string) bool {
+		letters := strings.Map(func(r rune) rune {
+			if unicode.IsLetter(r) {
+				return unicode.ToLower(r)
+			}
+			return -1
+		}, s)
+		return strings.Contains(letters, "madeup")
+	}
+	email := regexp.MustCompile(`[\pL\pN._%+-]+@[\pL\pN-]+(?:\.[\pL\pN-]+)+`)
+	// An address is fine at a reserved domain, as git's user on a forge, at a
+	// version ("react@18.3.1") or an IP address, or as the tail of a malformed
+	// one a test refuses ("ana@a@iitb.ac.in").
+	fineAddress := func(text string, at []int) bool {
+		addr := text[at[0]:at[1]]
+		local, domain, _ := strings.Cut(addr, "@")
+		return madeUp(addr) || exampleDomain(strings.ToLower(domain)) || local == "git" ||
+			!strings.ContainsFunc(domain, unicode.IsLetter) || at[0] > 0 && text[at[0]-1] == '@'
+	}
+	handle := regexp.MustCompile(`(?:^|[^\pL\pN_.@])@([\pL\pN_][\pL\pN_.]*)`)
+	profile := regexp.MustCompile(`(?i)\b(?:instagram\.com|snapchat\.com|linktr\.ee|linkedin\.com|t\.me|telegram\.me|` +
+		`tiktok\.com|twitter\.com|x\.com|reddit\.com|facebook\.com|messenger\.com|zoom\.us)` +
+		`\s*(?:/|\s(?:forward\s+)?slash\s)\s*(\S*)`)
+	// A group's invite and a post's address are codes, not anybody's name.
+	notAProfile := func(path string) bool {
+		for _, p := range []string{"+", "joinchat", "p/"} {
+			if strings.HasPrefix(path, p) {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A North American number, in digits and laid out the North American way
+	// (after a 1, with its area code in brackets, or with dashes or points),
+	// or in a post meant to be blocked laid out in threes and a four at all,
+	// is in an area code never assigned, in 555-0100 to 555-0199, which are
+	// set aside for fiction, or toll free, a public line's.
+	nanpNumber := regexp.MustCompile(`(?:^|[^\d+])(\+?1[-. ]?)?(\(\s*[2-9]\d\d\s*\)|[2-9]\d\d)([-.\s−]{1,8})` +
+		`([2-9OoIl][\dOoIl]{2})([-.\s−]{1,8})([\dOoIl]{4})(?:\D|$)`)
+	countryCode := regexp.MustCompile(`\+\d{1,3}[-. ]?$`)
+	lookalike := strings.NewReplacer("O", "0", "o", "0", "I", "1", "l", "1")
+	tollFree := setOf(`800 833 844 855 866 877 888`)
+	numbers := 0
+	// An Aadhaar number with its label straight before it ("my aadhaar",
+	// "UID", "aadhaar no") is blocked by the label alone, so it fails its
+	// check digit, which no issued number does.
+	aadhaarNumber := regexp.MustCompile(`(?:^|[^\d])([2-9]\d{3}[ -]?\d{4}[ -]?\d{4})(?:[^\d]|$)`)
+	aadhaars := 0
+	// An exam roll, application, registration or student number the filter
+	// should publish has zeroes for its serial, so it is no one's.
+	studentNumber := regexp.MustCompile(`(?i)\b(?:roll|application|registration|reg|enrol?ment|enrollment|student|` +
+		`hall ticket|admit card)(?:[\s.:#-]+(?:no|number|num|id|card))*[\s.:#-]+(\d[\dA-Z]{4,19})\b`)
+	serials := 0
+	labelledAadhaars := func(where, text string) {
+		lower := strings.ToLower(text)
+		for _, m := range aadhaarNumber.FindAllStringSubmatchIndex(lower, -1) {
+			labelled := false
+			for _, w := range wordsBefore(lower, m[2], 5) {
+				if idFillers[w] {
+					continue
+				}
+				labelled = aadhaarLabels[w]
+				break
+			}
+			if !labelled {
+				continue
+			}
+			aadhaars++
+			if digits := strings.NewReplacer(" ", "", "-", "").Replace(lower[m[2]:m[3]]); verhoeffValid(digits) {
+				t.Errorf("%s: the labelled Aadhaar number %q passes its check digit", where, text[m[2]:m[3]])
+			}
+		}
+	}
+	noOnesNumbers := func(where, text string, spaced bool) {
+		for _, m := range nanpNumber.FindAllStringSubmatchIndex(text, -1) {
+			group := func(k int) string {
+				if m[2*k] < 0 {
+					return ""
+				}
+				return text[m[2*k]:m[2*k+1]]
+			}
+			start := m[4]
+			if m[2] >= 0 {
+				start = m[2]
+			}
+			area := strings.Trim(group(2), "() \t\n\r")
+			laidOut := group(1) != "" || strings.HasPrefix(group(2), "(") ||
+				strings.ContainsAny(group(3)+group(5), "-.−") || spaced
+			if countryCode.MatchString(text[:start]) || !laidOut {
+				continue
+			}
+			numbers++
+			exchange, line := lookalike.Replace(group(4)), lookalike.Replace(group(6))
+			if area[1] != '9' && area[:2] != "37" && area[:2] != "96" && !tollFree[area] &&
+				!(exchange == "555" && strings.HasPrefix(line, "01")) {
+				t.Errorf("%s: the North American number %q is in an area code that is assigned", where,
+					strings.TrimSpace(text[start:m[13]]))
+			}
+		}
+	}
+
+	paths, _ := filepath.Glob(filepath.Join("testdata", "filter_corpus", "*.jsonl"))
+	if len(paths) == 0 {
+		t.Fatal("no corpus files")
+	}
+	checked := 0
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			var it corpusItem
+			if err := json.Unmarshal([]byte(line), &it); err != nil {
+				t.Fatalf("%s: %v", path, err)
+			}
+			post := it.Name + "\n" + it.Subject + "\n" + it.Body
+			for _, m := range steamCode.FindAllStringSubmatch(post, -1) {
+				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
+					t.Errorf("%s: the Steam account number %s fits in 32 bits, so it may be someone's", it.ID, m[1])
+				}
+			}
+			for _, field := range []string{it.Name, it.Subject, it.Body} {
+				noOnesNumbers(it.ID, field, it.Expect != "publish")
+				labelledAadhaars(it.ID, field)
+			}
+			in := contentInput{Subject: normalizeSubject(it.Subject), Name: displayedName(it.Name),
+				Body: normalizeBody(it.Body)}
+			if v := checkContent(in, false); v.Outcome == contentBlock && codes[it.ID] == "" &&
+				(v.Message == blockMessage(kindEmail, v.Field) || v.Message == blockMessage(kindHandle, v.Field)) {
+				checked++
+				if !madeUp(post) {
+					t.Errorf("%s: the address or username %q is not marked made up", it.ID, v.Match)
+				}
+			}
+			for _, text := range []string{post, it.Why, it.Note} {
+				for _, at := range email.FindAllStringIndex(text, -1) {
+					if !fineAddress(text, at) {
+						t.Errorf("%s: the address %q is not marked made up", it.ID, text[at[0]:at[1]])
+					}
+				}
+				for _, m := range profile.FindAllStringSubmatch(text, -1) {
+					if !madeUp(m[1]) && !notAProfile(m[1]) {
+						t.Errorf("%s: the profile %q is not marked made up", it.ID, m[0])
+					}
+				}
+			}
+			if it.Expect == "publish" {
+				for _, m := range studentNumber.FindAllStringSubmatch(post, -1) {
+					serials++
+					if !strings.HasSuffix(strings.TrimRight(m[1], "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"),
+						"000") {
+						t.Errorf("%s: the published number %q has a serial that is not zeroes", it.ID, m[1])
+					}
+				}
+				continue // a decorator in code, "@staticmethod", is no one's
+			}
+			for _, m := range handle.FindAllStringSubmatch(post, -1) {
+				provider, _, _ := strings.Cut(strings.ToLower(m[1]), ".")
+				if !madeUp(m[1]) && !mailProviders[provider] {
+					t.Errorf("%s: the username %q is not marked made up", it.ID, "@"+m[1])
+				}
+			}
+		}
+	}
+	if checked < 100 {
+		t.Fatalf("only %d posts blocked for an address or a username, want the corpus's hundred and more", checked)
+	}
+
+	tests, _ := filepath.Glob("*_test.go")
+	for _, path := range tests {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, line := range strings.Split(string(raw), "\n") {
+			for _, at := range email.FindAllStringIndex(line, -1) {
+				if !fineAddress(line, at) {
+					t.Errorf("%s:%d: the address %q is not marked made up", path, i+1, line[at[0]:at[1]])
+				}
+			}
+			noOnesNumbers(fmt.Sprintf("%s:%d", path, i+1), line, false)
+			for _, m := range steamCode.FindAllStringSubmatch(line, -1) {
+				if n, err := strconv.ParseUint(m[1], 10, 64); err == nil && n <= math.MaxUint32 {
+					t.Errorf("%s:%d: the Steam account number %s fits in 32 bits, so it may be someone's", path, i+1, m[1])
+				}
+			}
+		}
+	}
+	if numbers < 40 {
+		t.Fatalf("only %d North American numbers found, want the corpus's and the tests' forty and more", numbers)
+	}
+	if aadhaars < 10 {
+		t.Fatalf("only %d labelled Aadhaar numbers found, want the corpus's ten and more", aadhaars)
+	}
+	if serials < 15 {
+		t.Fatalf("only %d published roll, application and student numbers found, want the corpus's fifteen and more",
+			serials)
+	}
+}
+
+// BenchmarkCheckContent checks ordinary posts of the maximum length: one
+// sentence over and over, and the corpus's published posts run together and
+// cut into pieces of that length (ordinaryPieces), a different piece each
+// time. Varied text gives the rules more to read than one sentence does, so
+// "corpus" is the figure for an ordinary post; the README's timings are the
+// process's CPU time on one core, the best of several runs of each piece.
+func BenchmarkCheckContent(b *testing.B) {
+	prepareSearches() // planned once, as the server does as it starts, not timed
+	b.Run("sentence", func(b *testing.B) {
+		body := strings.Repeat("Is the answer 42? I will check my notes tomorrow at school. ", maxBodyLen/62)
+		for i := 0; i < b.N; i++ {
+			checkContent(contentInput{Subject: "doubt", Name: "anon", Body: body}, false)
+		}
+	})
+	b.Run("corpus", func(b *testing.B) {
+		pieces := ordinaryPieces(b, maxBodyLen)
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			checkContent(contentInput{Subject: "doubt", Name: "anon", Body: pieces[i%len(pieces)]}, false)
+		}
+	})
+}
+
+// ordinaryPieces runs together the bodies of the corpus's published posts,
+// file by file and a blank line apart, and cuts them into pieces of n
+// characters, dropping the remainder.
+func ordinaryPieces(tb testing.TB, n int) []string {
+	paths, err := filepath.Glob(filepath.Join("testdata", "filter_corpus", "*.jsonl"))
+	if err != nil || len(paths) == 0 {
+		tb.Fatalf("no corpus files: %v", err)
+	}
+	var bodies []string
+	for _, path := range paths {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			tb.Fatal(err)
+		}
+		for _, line := range strings.Split(strings.TrimRight(string(raw), "\n"), "\n") {
+			var it corpusItem
+			if err := json.Unmarshal([]byte(line), &it); err != nil {
+				tb.Fatalf("%s: %v", path, err)
+			}
+			if it.Expect == "publish" {
+				bodies = append(bodies, it.Body)
+			}
+		}
+	}
+	text := []rune(strings.Join(bodies, "\n\n"))
+	var pieces []string
+	for i := 0; i+n <= len(text); i += n {
+		pieces = append(pieces, string(text[i:i+n]))
+	}
+	return pieces
 }

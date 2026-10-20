@@ -19,7 +19,7 @@
 {"id": "contact-19", "body": "number: 9 eight 3 one 0 four 2 2 7 seven, text only", "subject": "", "name": "", "expect": "block", "why": "mixed words and digits"}
 {"id": "contact-20", "body": "[code]const num = '9871203456';[/code]\n^ thats my real one, msg me if u want to collab on the hackathon", "subject": "", "name": "", "expect": "block", "why": "mobile hidden in code block"}
 {"id": "contact-21", "body": "[spoiler]81307 22468[/spoiler] whatsapp only no calls", "subject": "", "name": "", "expect": "block", "why": "mobile inside spoiler"}
-{"id": "contact-22", "body": "split it so the mods dont catch: 98 / 1 / 67 / 45 / 231", "subject": "", "name": "", "expect": "block", "why": "mobile split with slashes", "known_miss": true, "note": "a one-digit group and slashes, with nothing before it asking to be called: reading a slash between digits as a separator would read dates, fractions and page ranges"}
+{"id": "contact-22", "body": "split it so the mods dont catch: 98 / 1 / 67 / 45 / 231", "subject": "", "name": "", "expect": "block", "why": "mobile split with slashes"}
 {"id": "contact-23", "body": "my num is 9 9 1 0 2 3 4 5 6 7 text only", "subject": "", "name": "", "expect": "block", "why": "space per digit mobile"}
 {"id": "contact-24", "body": "anyone doing A level further maths wanna do past papers together over facetime? text 07700 900382", "subject": "", "name": "", "expect": "publish", "why": "UK mobile, an Ofcom drama number, which no one can be called on, so it passes by design (dramaNumber); relabelled from block"}
 {"id": "contact-25", "body": "+44 7700 900917 whatsapp me for the AQA chem required practicals write ups", "subject": "", "name": "", "expect": "block", "why": "UK mobile +44"}
@@ -48,40 +48,40 @@
 {"id": "contact-48", "body": "FSc ke notes chahiye? +92 301 4567823", "subject": "", "name": "", "expect": "block", "why": "Pakistan mobile"}
 {"id": "contact-49", "body": "IOE entrance prep group, msg on viber +977 984-1234567", "subject": "", "name": "", "expect": "block", "why": "Nepal mobile on Viber"}
 {"id": "contact-50", "body": "text +1 647 555 0119 if you're applying to UofT too", "subject": "", "name": "", "expect": "publish", "why": "Canadian number, a NANP 555-01xx number, set aside for fiction, so it passes by design (nanp); relabelled from block"}
-{"id": "contact-51", "body": "email me the pdf pls: rohan.verma2008@gmail.com", "subject": "", "name": "", "expect": "block", "why": "plain email"}
-{"id": "contact-52", "body": "my email is ishaan dot k dot 07 at gmail dot com, send the mock test link", "subject": "", "name": "", "expect": "block", "why": "email spelled with at/dot"}
-{"id": "contact-53", "body": "mail kardo notes, priyanka_s [at] yahoo [dot] co [dot] in", "subject": "", "name": "", "expect": "block", "why": "bracketed [at] [dot] email"}
-{"id": "contact-54", "body": "contact: quietcoder (at) proton (dot) me — I'll send the leetcode sheet", "subject": "", "name": "", "expect": "block", "why": "parenthesised (at) email"}
-{"id": "contact-55", "body": "mail me at anon.student99 @ outlook . com, spaces so the bot doesn't eat it", "subject": "", "name": "", "expect": "block", "why": "spaced-out email"}
-{"id": "contact-56", "body": "gmail: chemkid2009 (u know the rest)", "subject": "", "name": "", "expect": "block", "why": "gmail username given"}
-{"id": "contact-57", "body": "if anyone has the Oxford PAT 2019 solutions pls send to ellie.revises@hotmail.co.uk xx", "subject": "", "name": "", "expect": "block", "why": "UK email"}
-{"id": "contact-58", "body": "[spoiler]tanmay.j.04@gmail.com[/spoiler] for the CS project collab", "subject": "", "name": "", "expect": "block", "why": "email in spoiler"}
-{"id": "contact-59", "body": "my college email is 22bce1047@campusmail-ims.edu.in, mail there for the lab files", "subject": "", "name": "", "expect": "block", "why": "student roll-number email"}
-{"id": "contact-60", "body": "e-mail: s.mehta2007＠gmail．com", "subject": "", "name": "", "expect": "block", "why": "full-width @ and dot email"}
-{"id": "contact-61", "body": "rahul123 at the rate gmail.com", "subject": "", "name": "", "expect": "block", "why": "'at the rate' Indian English email"}
-{"id": "contact-62", "body": "DM not possible here so email bookswap.kota@gmail.com with what u want", "subject": "Selling JEE books", "name": "", "expect": "block", "why": "email for book sale"}
-{"id": "contact-63", "body": "send it to my icloud: harbourlights@icloud.com", "subject": "", "name": "", "expect": "block", "why": "iCloud email"}
-{"id": "contact-64", "body": "mail id: arnav_k AT rediffmail DOT com", "subject": "", "name": "", "expect": "block", "why": "uppercase AT/DOT email"}
-{"id": "contact-65", "body": "my email is in base64 lol: YW5vbi5zdHVkeTIxQGdtYWlsLmNvbQ==", "subject": "", "name": "", "expect": "block", "why": "base64-encoded email", "known_miss": true, "note": "base64 is not decoded; text like it is ordinary in code posts"}
-{"id": "contact-66", "body": "reach me on n.writes2006@yahoo.com, I edit college essays for free", "subject": "", "name": "", "expect": "block", "why": "email offering service"}
-{"id": "contact-67", "body": "made a discord for /math/ olympiad prep, join: discord.gg/imoGrind26", "subject": "", "name": "", "expect": "block", "why": "Discord invite"}
+{"id": "contact-51", "body": "email me the pdf pls: madeup.rohan2008@gmail.com", "subject": "", "name": "", "expect": "block", "why": "plain email"}
+{"id": "contact-52", "body": "my email is madeup dot ishaan dot 07 at gmail dot com, send the mock test link", "subject": "", "name": "", "expect": "block", "why": "email spelled with at/dot"}
+{"id": "contact-53", "body": "mail kardo notes, madeup_priyanka [at] yahoo [dot] co [dot] in", "subject": "", "name": "", "expect": "block", "why": "bracketed [at] [dot] email"}
+{"id": "contact-54", "body": "contact: madeup.quietcoder (at) proton (dot) me — I'll send the leetcode sheet", "subject": "", "name": "", "expect": "block", "why": "parenthesised (at) email"}
+{"id": "contact-55", "body": "mail me at madeup.student99 @ outlook . com, spaces so the bot doesn't eat it", "subject": "", "name": "", "expect": "block", "why": "spaced-out email"}
+{"id": "contact-56", "body": "gmail: madeup.chemkid2009 (u know the rest)", "subject": "", "name": "", "expect": "block", "why": "gmail username given"}
+{"id": "contact-57", "body": "if anyone has the Oxford PAT 2019 solutions pls send to madeup.ellie.revises@hotmail.co.uk xx", "subject": "", "name": "", "expect": "block", "why": "UK email"}
+{"id": "contact-58", "body": "[spoiler]madeup.tanmay.04@gmail.com[/spoiler] for the CS project collab", "subject": "", "name": "", "expect": "block", "why": "email in spoiler"}
+{"id": "contact-59", "body": "my college email is 22bce1047@madeup-college.edu.in, mail there for the lab files", "subject": "", "name": "", "expect": "block", "why": "student roll-number email"}
+{"id": "contact-60", "body": "e-mail: madeup.mehta2007＠gmail．com", "subject": "", "name": "", "expect": "block", "why": "full-width @ and dot email"}
+{"id": "contact-61", "body": "madeup.rahul123 at the rate gmail.com", "subject": "", "name": "", "expect": "block", "why": "'at the rate' Indian English email"}
+{"id": "contact-62", "body": "DM not possible here so email madeup.bookswap.kota@gmail.com with what u want", "subject": "Selling JEE books", "name": "", "expect": "block", "why": "email for book sale"}
+{"id": "contact-63", "body": "send it to my icloud: madeup.harbourlights@icloud.com", "subject": "", "name": "", "expect": "block", "why": "iCloud email"}
+{"id": "contact-64", "body": "mail id: madeup_arnav AT rediffmail DOT com", "subject": "", "name": "", "expect": "block", "why": "uppercase AT/DOT email"}
+{"id": "contact-65", "body": "my email is in base64 lol: bWFkZXVwLnN0dWR5MjFAZ21haWwuY29t", "subject": "", "name": "", "expect": "block", "why": "base64-encoded email", "known_miss": true, "note": "base64 is not decoded; text like it is ordinary in code posts"}
+{"id": "contact-66", "body": "reach me on madeup.writes2006@yahoo.com, I edit college essays for free", "subject": "", "name": "", "expect": "block", "why": "email offering service"}
+{"id": "contact-67", "body": "made a discord for /math/ olympiad prep, join: discord.gg/madeupImo26", "subject": "", "name": "", "expect": "block", "why": "Discord invite"}
 {"id": "contact-68", "body": "https://discord.com/invite/Kx7pQ2mR — study w me server, lofi + pomodoro bot", "subject": "", "name": "", "expect": "block", "why": "Discord invite full URL"}
-{"id": "contact-69", "body": "my discord is pixelmango_ add me we can play valo after boards", "subject": "", "name": "", "expect": "block", "why": "Discord username"}
-{"id": "contact-70", "body": "disc: lunarbyte#4471 (old tag still works i think)", "subject": "", "name": "", "expect": "block", "why": "Discord tag with discriminator"}
-{"id": "contact-71", "body": "discord(.)gg/neetdroppers — pls dont ban mods its just a study server", "subject": "", "name": "", "expect": "block", "why": "obfuscated Discord invite"}
-{"id": "contact-72", "body": "dc pe aa jao: dsc.gg/cbse12science", "subject": "", "name": "", "expect": "block", "why": "Discord short-link invite"}
+{"id": "contact-69", "body": "my discord is madeup_pixelmango_ add me we can play valo after boards", "subject": "", "name": "", "expect": "block", "why": "Discord username"}
+{"id": "contact-70", "body": "disc: madeuplunarbyte#4471 (old tag still works i think)", "subject": "", "name": "", "expect": "block", "why": "Discord tag with discriminator"}
+{"id": "contact-71", "body": "discord(.)gg/madeupdroppers — pls dont ban mods its just a study server", "subject": "", "name": "", "expect": "block", "why": "obfuscated Discord invite"}
+{"id": "contact-72", "body": "dc pe aa jao: dsc.gg/madeup-cbse12science", "subject": "", "name": "", "expect": "block", "why": "Discord short-link invite"}
 {"id": "contact-73", "body": "anyone want to move this to discord? i'll make a server and drop the invite", "subject": "", "name": "", "expect": "block", "why": "ask to move to Discord"}
-{"id": "contact-74", "body": "add me on discord, same username as my name here", "subject": "", "name": "sigmaphysics#x8Kq", "expect": "block", "why": "Discord username via name field"}
+{"id": "contact-74", "body": "add me on discord, same username as my name here", "subject": "", "name": "madeupphysics#x8Kq", "expect": "block", "why": "Discord username via name field"}
 {"id": "contact-75", "body": "discord gg slash 8fHk2Lp the one with the jee bot", "subject": "", "name": "", "expect": "block", "why": "Discord invite spelled out"}
-{"id": "contact-76", "body": "Physics is genuinely killing me, anyone up for a VC study session? discord.gg/latenightphys", "subject": "", "name": "", "expect": "block", "why": "Discord invite with hyperbole"}
-{"id": "contact-77", "body": "t.me/neetpyq_2026 all PYQs topic wise, free", "subject": "", "name": "", "expect": "block", "why": "Telegram channel link"}
-{"id": "contact-78", "body": "hmu on tg @quietgrinder", "subject": "", "name": "", "expect": "block", "why": "Telegram handle"}
-{"id": "contact-79", "body": "telegram pe aao: @organicchem_aditya", "subject": "", "name": "", "expect": "block", "why": "Telegram handle, Hinglish"}
-{"id": "contact-80", "body": "https://telegram.me/cat_quant_daily join for daily DILR sets", "subject": "", "name": "", "expect": "block", "why": "telegram.me link"}
-{"id": "contact-81", "body": "tg: @mumbai_ka_topper", "subject": "", "name": "", "expect": "block", "why": "Telegram handle"}
+{"id": "contact-76", "body": "Physics is genuinely killing me, anyone up for a VC study session? discord.gg/madeupnightphys", "subject": "", "name": "", "expect": "block", "why": "Discord invite with hyperbole"}
+{"id": "contact-77", "body": "t.me/madeup_neetpyq_2026 all PYQs topic wise, free", "subject": "", "name": "", "expect": "block", "why": "Telegram channel link"}
+{"id": "contact-78", "body": "hmu on tg @madeup.quietgrinder", "subject": "", "name": "", "expect": "block", "why": "Telegram handle"}
+{"id": "contact-79", "body": "telegram pe aao: @madeup_organicchem", "subject": "", "name": "", "expect": "block", "why": "Telegram handle, Hinglish"}
+{"id": "contact-80", "body": "https://telegram.me/madeup_cat_quant join for daily DILR sets", "subject": "", "name": "", "expect": "block", "why": "telegram.me link"}
+{"id": "contact-81", "body": "tg: @madeup_mumbai_topper", "subject": "", "name": "", "expect": "block", "why": "Telegram handle"}
 {"id": "contact-82", "body": "lol same. hmu on tg", "subject": "", "name": "", "expect": "block", "why": "ask to move to Telegram"}
-{"id": "contact-83", "body": "t . me / jeeadvleaks (not actually leaks, just notes)", "subject": "", "name": "", "expect": "block", "why": "spaced Telegram link"}
-{"id": "contact-84", "body": "telegram id same as here, search 'kotafactoryreal'", "subject": "", "name": "", "expect": "block", "why": "Telegram username", "known_miss": true, "note": "a username with no underscore, digit or @ beside the app is a word to the filter; reading any word after an app name as a handle would stop posts that name what they search for"}
+{"id": "contact-83", "body": "t . me / madeupadvleaks (not actually leaks, just notes)", "subject": "", "name": "", "expect": "block", "why": "spaced Telegram link"}
+{"id": "contact-84", "body": "telegram id same as here, search 'madeupkotafactory'", "subject": "", "name": "", "expect": "block", "why": "Telegram username"}
 {"id": "contact-85", "body": "chat.whatsapp.com/HkL2xq9ZpBv7Rt3Mn0Wsa CA foundation group", "subject": "", "name": "", "expect": "block", "why": "WhatsApp group invite"}
 {"id": "contact-86", "body": "wa.me/919845612370 msg for the hostel mess menu group", "subject": "", "name": "", "expect": "block", "why": "wa.me link with number"}
 {"id": "contact-87", "body": "lets make a whatsapp group for 12th commerce, comment ur number", "subject": "", "name": "", "expect": "block", "why": "asks for numbers"}
@@ -89,28 +89,28 @@
 {"id": "contact-89", "body": "add me to the WA group pls, 88264 13579", "subject": "", "name": "", "expect": "block", "why": "mobile for WhatsApp group"}
 {"id": "contact-90", "body": "whatsapp pe baat karte hain, yaha sab log padhte hain", "subject": "", "name": "", "expect": "block", "why": "Hinglish ask to move to WhatsApp"}
 {"id": "contact-91", "body": "join our whatsapp community for UCAT prep: chat.whatsapp.com/invite/Lm4pZ8qTr2", "subject": "", "name": "", "expect": "block", "why": "WhatsApp community invite"}
-{"id": "contact-92", "body": "if you want to talk privately my signal is quietfox.27", "subject": "", "name": "", "expect": "block", "why": "Signal username"}
+{"id": "contact-92", "body": "if you want to talk privately my signal is madeup.quietfox.27", "subject": "", "name": "", "expect": "block", "why": "Signal username"}
 {"id": "contact-93", "body": "signal.me/#eu/Zm9vYmFyYmF6cXV4 thats my signal link", "subject": "", "name": "", "expect": "block", "why": "Signal username link"}
-{"id": "contact-94", "body": "do you have signal? would rather not do this on a public board", "subject": "", "name": "", "expect": "block", "why": "ask to move to Signal", "known_miss": true, "note": "\"do you have signal\" is asked about phone signal as often as about the app; the move is only implied by the next sentence"}
-{"id": "contact-95", "body": "add me on snap: kiwi.byte", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
-{"id": "contact-96", "body": "sc: ananya_xo21 👻", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle with ghost"}
-{"id": "contact-97", "body": "snapchat.com/add/rahul.vibes07", "subject": "", "name": "", "expect": "block", "why": "Snapchat add link"}
-{"id": "contact-98", "body": "👻 = meme_lord_2k9 add me i send good memes", "subject": "", "name": "", "expect": "block", "why": "ghost emoji for Snapchat handle"}
-{"id": "contact-99", "body": "snap me @lowkey.laziz", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
-{"id": "contact-100", "body": "my sc is my name here with no spaces lol", "subject": "", "name": "Grey Pigeon", "expect": "block", "why": "Snapchat handle via name field", "known_miss": true, "note": "the handle is the poster's name field, pointed to in words; no rule reads one field through another"}
-{"id": "contact-101", "body": "snap streak anyone? sc dhruv.0612", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
-{"id": "contact-102", "body": "s n a p : coldcoffee.exe", "subject": "", "name": "", "expect": "block", "why": "spaced-out snap label"}
-{"id": "contact-103", "body": "dm me on insta @cheemsdraws, I do commissions", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
-{"id": "contact-104", "body": "ig: _sanskriti.reads_ i post book reviews", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
-{"id": "contact-105", "body": "instagram.com/jee.memes.daily follow for more", "subject": "", "name": "", "expect": "block", "why": "Instagram profile link"}
-{"id": "contact-106", "body": "insta pe follow karo: tanmay.lifts", "subject": "", "name": "", "expect": "block", "why": "Instagram handle, Hinglish"}
-{"id": "contact-107", "body": "my art account: insta → inkyfox.art", "subject": "", "name": "", "expect": "block", "why": "Instagram handle with arrow"}
-{"id": "contact-108", "body": "follow me on ig for daily NEET bio mcqs @biobyte.neet", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
-{"id": "contact-109", "body": "i[n]sta: hollow_moon_17", "subject": "", "name": "", "expect": "block", "why": "obfuscated insta label"}
-{"id": "contact-110", "body": "check my profile on insta, username is the subject of this post", "subject": "parth.codes", "name": "", "expect": "block", "why": "Instagram handle in subject", "known_miss": true, "note": "the handle is the subject, pointed to in words; no rule reads one field through another"}
-{"id": "contact-111", "body": "anyone know good youtube channels for the NID art entrance exam?", "subject": "", "name": "ig: @mehak.draws", "expect": "block", "why": "Instagram handle in name field"}
-{"id": "contact-112", "body": "kik me: velvetbyte09", "subject": "", "name": "", "expect": "block", "why": "Kik username"}
-{"id": "contact-113", "body": "line id: soraa_14, add me if you're into anime", "subject": "", "name": "", "expect": "block", "why": "LINE app id"}
+{"id": "contact-94", "body": "do you have signal? would rather not do this on a public board", "subject": "", "name": "", "expect": "block", "why": "ask to move to Signal"}
+{"id": "contact-95", "body": "add me on snap: madeup.kiwi.byte", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
+{"id": "contact-96", "body": "sc: madeup_ananya21 👻", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle with ghost"}
+{"id": "contact-97", "body": "snapchat.com/add/madeup.vibes07", "subject": "", "name": "", "expect": "block", "why": "Snapchat add link"}
+{"id": "contact-98", "body": "👻 = madeup_meme_lord_2k9 add me i send good memes", "subject": "", "name": "", "expect": "block", "why": "ghost emoji for Snapchat handle"}
+{"id": "contact-99", "body": "snap me @madeup.laziz", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
+{"id": "contact-100", "body": "my sc is my name here with no spaces lol", "subject": "", "name": "Madeup Pigeon", "expect": "block", "why": "Snapchat handle via name field"}
+{"id": "contact-101", "body": "snap streak anyone? sc madeup.dhruv.0612", "subject": "", "name": "", "expect": "block", "why": "Snapchat handle"}
+{"id": "contact-102", "body": "s n a p : madeup.coldcoffee.exe", "subject": "", "name": "", "expect": "block", "why": "spaced-out snap label"}
+{"id": "contact-103", "body": "dm me on insta @madeup.cheemsdraws, I do commissions", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
+{"id": "contact-104", "body": "ig: _madeup.reads_ i post book reviews", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
+{"id": "contact-105", "body": "instagram.com/madeup.jee.memes follow for more", "subject": "", "name": "", "expect": "block", "why": "Instagram profile link"}
+{"id": "contact-106", "body": "insta pe follow karo: madeup.tanmay.lifts", "subject": "", "name": "", "expect": "block", "why": "Instagram handle, Hinglish"}
+{"id": "contact-107", "body": "my art account: insta → madeup.inkyfox.art", "subject": "", "name": "", "expect": "block", "why": "Instagram handle with arrow"}
+{"id": "contact-108", "body": "follow me on ig for daily NEET bio mcqs @madeup.biobyte", "subject": "", "name": "", "expect": "block", "why": "Instagram handle"}
+{"id": "contact-109", "body": "i[n]sta: madeup_moon_17", "subject": "", "name": "", "expect": "block", "why": "obfuscated insta label"}
+{"id": "contact-110", "body": "check my profile on insta, username is the subject of this post", "subject": "madeup.parth.codes", "name": "", "expect": "block", "why": "Instagram handle in subject"}
+{"id": "contact-111", "body": "anyone know good youtube channels for the NID art entrance exam?", "subject": "", "name": "ig: @madeup.mehak.draws", "expect": "block", "why": "Instagram handle in name field"}
+{"id": "contact-112", "body": "kik me: madeup.velvetbyte09", "subject": "", "name": "", "expect": "block", "why": "Kik username"}
+{"id": "contact-113", "body": "line id: madeup_soraa_14, add me if you're into anime", "subject": "", "name": "", "expect": "block", "why": "LINE app id"}
 {"id": "contact-114", "body": "add me on snap", "subject": "", "name": "", "expect": "block", "why": "ask to add on Snapchat"}
 {"id": "contact-115", "body": "what's your number? I'll send you the answer key", "subject": "", "name": "", "expect": "block", "why": "asks for phone number"}
 {"id": "contact-116", "body": "drop ur insta, ill follow", "subject": "", "name": "", "expect": "block", "why": "asks for Instagram"}
@@ -128,15 +128,15 @@
 {"id": "contact-128", "body": "tg pe msg kar, link wahi dunga", "subject": "", "name": "", "expect": "block", "why": "Hinglish ask to move to Telegram"}
 {"id": "contact-129", "body": "discord id share karo sab, server bana raha hu JEE ke liye", "subject": "", "name": "", "expect": "block", "why": "Hinglish ask for Discord ids"}
 {"id": "contact-130", "body": "insta pe dm karo details ke liye", "subject": "", "name": "", "expect": "block", "why": "Hinglish ask to DM on Instagram"}
-{"id": "contact-131", "body": "my aadhaar 5377 0009 3860 is showing as not linked to PAN on the scholarship portal, anyone know why??", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number"}
-{"id": "contact-132", "body": "NSP form rejected again. aadhaar no 896370382045 is correct I triple checked", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number unspaced"}
-{"id": "contact-133", "body": "aadhaar: 3534-9620-0084, name mismatch issue with 10th marksheet, how to fix", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number hyphenated"}
-{"id": "contact-134", "body": "aadhar card number 9620 9770 1138, how do i change the DOB on it before JEE form deadline", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number"}
+{"id": "contact-131", "body": "my aadhaar 5377 0009 3861 is showing as not linked to PAN on the scholarship portal, anyone know why??", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number"}
+{"id": "contact-132", "body": "NSP form rejected again. aadhaar no 896370382045 is correct I triple checked", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number unspaced; its check digit fails, so it is blocked by its label alone and is no one's"}
+{"id": "contact-133", "body": "aadhaar: 3534-9620-0085, name mismatch issue with 10th marksheet, how to fix", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number hyphenated"}
+{"id": "contact-134", "body": "aadhar card number 9620 9770 1139, how do i change the DOB on it before JEE form deadline", "subject": "", "name": "", "expect": "block", "why": "Aadhaar number"}
 {"id": "contact-135", "body": "FAFSA keeps saying my SSN doesn't match. its 532-71-0496, did I typo it somewhere??", "subject": "", "name": "", "expect": "block", "why": "US SSN"}
 {"id": "contact-136", "body": "ssn 418 62 7351 is what the college has on file, is that wrong format for the 1098-T?", "subject": "", "name": "", "expect": "block", "why": "US SSN spaced"}
 {"id": "contact-137", "body": "my NI number is JT 48 21 93 B, does student finance need it or not", "subject": "", "name": "", "expect": "block", "why": "UK National Insurance number"}
 {"id": "contact-138", "body": "NINO: NP521670A — got my letter, do i give this to my part time job?", "subject": "", "name": "", "expect": "block", "why": "UK NI number unspaced"}
-{"id": "contact-139", "body": "Hey, I'm a dropper preparing for JEE Adv 2027. Mains was decent (97.8 %ile) but I messed up adv this year because I had zero consistency.\n\nLooking for someone at a similar level to keep each other accountable — daily targets, weekly mock analysis, that kind of thing. Not looking to chat all day, just check-ins.\n\nIf interested, msg me on telegram @steady_dropper27 with your target score and weak chapters.", "subject": "Looking for a JEE study partner (serious only)", "name": "", "expect": "block", "why": "Telegram handle in long post"}
+{"id": "contact-139", "body": "Hey, I'm a dropper preparing for JEE Adv 2027. Mains was decent (97.8 %ile) but I messed up adv this year because I had zero consistency.\n\nLooking for someone at a similar level to keep each other accountable — daily targets, weekly mock analysis, that kind of thing. Not looking to chat all day, just check-ins.\n\nIf interested, msg me on telegram @madeup_dropper27 with your target score and weak chapters.", "subject": "Looking for a JEE study partner (serious only)", "name": "", "expect": "block", "why": "Telegram handle in long post"}
 {"id": "contact-140", "body": "ok so I finally finished the full organic reaction map (named reactions, reagents, conditions) and it's like 40 pages.\n\n>tried uploading here\n>image limit\n>tried compressing\n>unreadable\n\nso yeah if you want it just whatsapp me on 79861 20435 and I'll send the pdf. no money, just don't resell it to your coaching friends.", "subject": "Organic reaction map pdf", "name": "", "expect": "block", "why": "mobile in long post with greentext"}
 {"id": "contact-141", "body": "is discord down for anyone else? cant load any server", "subject": "", "name": "", "expect": "publish", "why": "app outage question"}
 {"id": "contact-142", "body": "instagram reels are actually rotting my brain, 3 hours gone and zero chapters done", "subject": "", "name": "", "expect": "publish", "why": "complaint about Instagram"}
@@ -193,7 +193,7 @@
 {"id": "contact-193", "body": "[code]int arr[] = {9, 8, 7, 6, 5, 4, 3, 2, 1, 0};\nbubbleSort(arr, 10);[/code]\nwhy does this segfault", "subject": "", "name": "", "expect": "publish", "why": "array of digits in code"}
 {"id": "contact-194", "body": "ISBN 978-93-5260-118-4 is the right edition of the RD Sharma? the cover looks different", "subject": "", "name": "", "expect": "publish", "why": "ISBN"}
 {"id": "contact-195", "body": "scored 1480 on the SAT (720 RW / 760 M), retake or nah?", "subject": "", "name": "", "expect": "publish", "why": "test scores"}
-{"id": "contact-196", "body": "roll no 2301045 and admit card says centre code 4412, is that the same as last year's centre", "subject": "", "name": "", "expect": "publish", "why": "roll number, not contact"}
+{"id": "contact-196", "body": "roll no 2301000 and admit card says centre code 4412, is that the same as last year's centre", "subject": "", "name": "", "expect": "publish", "why": "roll number, not contact; its serial is zeroes, so it is no one's"}
 {"id": "contact-197", "body": ">>48213 >>48219 >>48220\nall three of you are wrong, the answer is 12", "subject": "", "name": "", "expect": "publish", "why": "quote links"}
 {"id": "contact-198", "body": "train 12951 leaves mumbai central at 17:00, reaches delhi 08:32, perfect for the college fest", "subject": "", "name": "", "expect": "publish", "why": "train number and times"}
 {"id": "contact-199", "body": "fees went from ₹1,45,000 to ₹1,82,500 this year and they call it a 'nominal revision'", "subject": "", "name": "", "expect": "publish", "why": "money amounts"}
@@ -215,8 +215,8 @@
 {"id": "contact-215", "body": "why do people keep asking to move to discord, the whole point of this place is no accounts", "subject": "", "name": "", "expect": "publish", "why": "commentary on off-site asks"}
 {"id": "contact-216", "body": "someone in my class got scammed by a 'senior' on telegram who promised a JEE rank booster course. 5k gone. be careful", "subject": "", "name": "", "expect": "publish", "why": "scam warning"}
 {"id": "contact-217", "body": "I like that this site doesn't have DMs tbh. every other app my age is just randoms sliding in", "subject": "", "name": "", "expect": "publish", "why": "opinion on no DMs"}
-{"id": "contact-218", "body": "does anyone have the NCERT exemplar solutions for chem ch 4?", "subject": "", "name": "anon#9820134567", "expect": "publish", "why": "number only after # in name"}
-{"id": "contact-219", "body": "best order to study organic for neet?", "subject": "", "name": "kiwi#snap:kiwi.byte", "expect": "publish", "why": "handle only after # in name"}
+{"id": "contact-218", "body": "does anyone have the NCERT exemplar solutions for chem ch 4?", "subject": "", "name": "anon#7700900318", "expect": "publish", "why": "number only after # in name"}
+{"id": "contact-219", "body": "best order to study organic for neet?", "subject": "", "name": "kiwi#snap:madeup.kiwi.byte", "expect": "publish", "why": "handle only after # in name"}
 {"id": "contact-220", "body": "reading Crime and Punishment for lit class and it's actually good??", "subject": "", "name": "Anonymous#discord.gg/abc12", "expect": "publish", "why": "invite only after # in name"}
 {"id": "contact-221", "body": "our DM made us fight a lich at level 3, we all died, best session ever", "subject": "", "name": "", "expect": "publish", "why": "DM means dungeon master"}
 {"id": "contact-222", "body": "History paper q: explain the significance of the Zimmermann Telegram in the US entering WW1. 8 marks", "subject": "", "name": "", "expect": "publish", "why": "historical telegram"}
@@ -226,3 +226,7 @@
 {"id": "contact-226", "body": "add me to the list of people who forgot the practical file at home", "subject": "", "name": "", "expect": "publish", "why": "add me, not an app"}
 {"id": "contact-227", "body": "insta-regret: bought the 'complete JEE crash course' after one reel, wasted 3k", "subject": "", "name": "", "expect": "publish", "why": "Instagram mention"}
 {"id": "contact-228", "body": "So our chem teacher assigned a 4-person project and we made a whatsapp group for it.\n\n>day 1: 'hi guys let's divide work'\n>day 4: one person has left the group\n>day 9: someone posts a meme\n>day 13: project due tomorrow, I'm doing it alone\n\nWhy are group projects still a thing. The teacher says it 'builds teamwork'. It builds resentment.\n\nAnyway does anyone have a decent source for the electrochemistry part? Our textbook explanation of the salt bridge is useless.", "subject": "Rant: group projects", "name": "", "expect": "publish", "why": "long rant mentioning WhatsApp"}
+{"id": "contact-229", "body": "chem olympiad study group <- 9123456780 whatsapp, add urself", "subject": "", "name": "", "expect": "block", "why": "a mobile pointed at with a chat arrow and an app named after it; R's \"<-\" assigns only to a variable"}
+{"id": "contact-230", "body": "here <- 9123456780 hmu if u need the R notes", "subject": "", "name": "", "expect": "block", "why": "a chat arrow from \"here\" to a mobile, with \"hmu\""}
+{"id": "contact-231", "body": "R doubt: big <- 9876543210L gives NA with a warning, why? isn't L just integer", "subject": "", "name": "", "expect": "publish", "why": "R code: a number assigned to a variable with \"<-\""}
+{"id": "contact-232", "body": "workshop is on webex training, join at madeup.webex.com/madeup/k2/j.php?MTID=m0f1e2d3c4b5a6978 at 6", "subject": "", "name": "", "expect": "block", "why": "a Webex Training join link, whose j.php comes after the site's name and \"k2\""}

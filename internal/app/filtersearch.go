@@ -2,6 +2,7 @@ package app
 
 import (
 	"cmp"
+	"math"
 	"regexp"
 	"regexp/syntax"
 	"slices"
@@ -39,7 +40,10 @@ import (
 // is run by a copy of Go's own regexp machine (regexp/exec.go) that starts
 // threads only at those places: a finder, which keeps only where each
 // thread started, finds where the branch's first match starts, and the
-// machine, from there alone, finds the match again with its groups.
+// machine, from there alone, finds the match again with its groups. Both
+// look one character ahead, as Go's machine does not: a thread is not put
+// at an instruction from which nothing can take the next character or
+// match (viability), since it could only die there.
 // TestFilterSearchesMatchTheirRegexps holds every pattern to that on every
 // view of the filter's test inputs, and FuzzFilterSearches on any text.
 //
@@ -126,6 +130,9 @@ var searches struct {
 	// machines that run branches.
 	classList       []*runeClass
 	maxInst, maxCap int
+	// viables are the distinct viabilities of the branches' instructions,
+	// which each branch's via names by instruction.
+	viables []viable
 }
 
 // newSearch records a rule's regexp. Rules are package variables, so every
@@ -162,6 +169,7 @@ func planSearches() {
 		p.forget()
 	}
 	searches.classList = p.list
+	searches.viables = p.viables
 	for _, tb := range p.tries {
 		searches.tries = append(searches.tries, tb.build())
 		searches.slots = append(searches.slots, len(tb.slots))
@@ -268,6 +276,11 @@ type planner struct {
 	// maxInst and maxCap are the largest program and the most groups of
 	// any branch.
 	maxInst, maxCap int
+	// viables are the distinct viabilities, and viableAt where each is;
+	// viability works them out in scratch, one program at a time.
+	viables  []viable
+	viableAt map[viable]uint16
+	scratch  []viable
 }
 
 type firstSet struct {
@@ -281,6 +294,7 @@ func newPlanner(families int) *planner {
 		tries:    make([]*trieBuilder, families),
 		groups:   make([]int, families),
 		runeSets: map[uint64][][]rune{},
+		viableAt: map[viable]uint16{},
 	}
 	for f := range p.tries {
 		p.tries[f] = &trieBuilder{nodes: []buildNode{{}}, slots: map[int]int32{}}
@@ -642,6 +656,9 @@ type branch struct {
 	// cond the empty-width conditions it starts with.
 	prog *syntax.Prog
 	cond syntax.EmptyOp
+	// via is the viability of each instruction of prog, as an index into
+	// searches.viables.
+	via []uint16
 	// trigger, for a literal branch, names its openings in the trie.
 	trigger int32
 	// rest is what follows the boundary and its separators (delimited), or
@@ -690,6 +707,7 @@ func (p *planner) compile(b *branch, t *syntax.Regexp) *branch {
 		}
 	}
 	b.prog, b.cond = prog, prog.StartCond()
+	b.via = p.viability(prog)
 	p.maxInst = max(p.maxInst, len(prog.Inst))
 	p.maxCap = max(p.maxCap, prog.NumCap)
 	return b
@@ -2096,15 +2114,145 @@ func pad(m []int, numSubexp int) []int {
 	return m
 }
 
+/* Viability ------------------------------------------------------------------- */
+
+// viable is what an instruction can go on to do next: the characters that it,
+// or an instruction it reaches without taking a character, can take, and
+// whether it can reach the end of the program, a match, without taking one.
+// Empty-width assertions are read as holding, so it may say more than the
+// instruction can do in a given place, never less.
+type viable struct {
+	ascii [2]uint64 // the ASCII characters
+	other bool      // some character beyond ASCII
+	match bool
+}
+
+// takes reports whether a thread at the instruction could go on with c next,
+// the character at the place it is put on a queue, or endOfText. One that
+// cannot dies at the next step, having matched nothing, so the machine and
+// the finder do not put it on the queue at all: what they find is the same,
+// and the steps they count are fewer.
+func (v *viable) takes(c rune) bool {
+	switch {
+	case v.match:
+		return true
+	case c < 0:
+		return false
+	case c < utf8.RuneSelf:
+		return v.ascii[c>>6]&(1<<(uint(c)&63)) != 0
+	}
+	return v.other
+}
+
+// viability works out what each instruction of prog can go on to do: what
+// it takes itself, and everything an instruction after it without a
+// character between can, until nothing changes. It returns their indexes
+// into p.viables, of which there are a few thousand.
+func (p *planner) viability(prog *syntax.Prog) []uint16 {
+	if cap(p.scratch) < len(prog.Inst) {
+		p.scratch = make([]viable, len(prog.Inst))
+	}
+	v := p.scratch[:len(prog.Inst)]
+	clear(v)
+	for pc := range prog.Inst {
+		i := &prog.Inst[pc]
+		w := &v[pc]
+		switch i.Op {
+		case syntax.InstMatch:
+			w.match = true
+		case syntax.InstRuneAny, syntax.InstRuneAnyNotNL:
+			w.ascii = [2]uint64{^uint64(0), ^uint64(0)}
+			if i.Op == syntax.InstRuneAnyNotNL {
+				w.ascii[0] &^= 1 << '\n'
+			}
+			w.other = true
+		case syntax.InstRune1:
+			w.add(i.Rune[0], i.Rune[0])
+		case syntax.InstRune:
+			if len(i.Rune) == 1 || syntax.Flags(i.Arg)&syntax.FoldCase != 0 {
+				// One character, or a class matched without regard to
+				// case: ask the instruction about every ASCII character,
+				// and allow for the others.
+				for c := rune(0); c < utf8.RuneSelf; c++ {
+					if i.MatchRune(c) {
+						w.add(c, c)
+					}
+				}
+				w.other = true
+				break
+			}
+			// The ranges are sorted: those that start in ASCII, and
+			// whether the last ends beyond it.
+			for k := 0; k+1 < len(i.Rune) && i.Rune[k] < utf8.RuneSelf; k += 2 {
+				w.add(i.Rune[k], i.Rune[k+1])
+			}
+			w.other = w.other || i.Rune[len(i.Rune)-1] >= utf8.RuneSelf
+		}
+	}
+	for changed := true; changed; {
+		changed = false
+		for pc := len(prog.Inst) - 1; pc >= 0; pc-- {
+			i := &prog.Inst[pc]
+			switch i.Op {
+			case syntax.InstAlt, syntax.InstAltMatch:
+				changed = v[pc].merge(&v[i.Out]) || changed
+				changed = v[pc].merge(&v[i.Arg]) || changed
+			case syntax.InstEmptyWidth, syntax.InstNop, syntax.InstCapture:
+				changed = v[pc].merge(&v[i.Out]) || changed
+			}
+		}
+	}
+	via := make([]uint16, len(v))
+	for pc, w := range v {
+		id, ok := p.viableAt[w]
+		if !ok {
+			if len(p.viables) > math.MaxUint16 {
+				panic("filter patterns: more viabilities than an index holds")
+			}
+			id = uint16(len(p.viables))
+			p.viables = append(p.viables, w)
+			p.viableAt[w] = id
+		}
+		via[pc] = id
+	}
+	return via
+}
+
+// add allows the characters lo to hi.
+func (v *viable) add(lo, hi rune) {
+	if hi >= utf8.RuneSelf {
+		v.other = true
+	}
+	for c := lo; c <= min(hi, utf8.RuneSelf-1); c++ {
+		v.ascii[c>>6] |= 1 << (uint(c) & 63)
+	}
+}
+
+// merge adds what w allows to v, and reports whether that changed v.
+func (v *viable) merge(w *viable) bool {
+	n := viable{[2]uint64{v.ascii[0] | w.ascii[0], v.ascii[1] | w.ascii[1]}, v.other || w.other, v.match || w.match}
+	if n == *v {
+		return false
+	}
+	*v = n
+	return true
+}
+
+// next is the character an instruction put on a queue at a place would take
+// next: the one after the place, in the context cond gives it.
+func (cond lazyFlag) next() rune { return rune(int32(uint32(cond))) }
+
 /* The machine ------------------------------------------------------------------- */
 
 // machine runs a branch's program from one place as Go's regexp runs a
-// pattern (regexp/exec.go, which this follows step for step): a thread per
+// pattern (regexp/exec.go, which this follows step for step, but for not
+// putting a thread where it cannot take the next character): a thread per
 // place in the program, in order of preference, at most one at each
 // instruction, each with the groups as far as it has come, and the first
 // thread to reach the end cutting off every thread after it.
 type machine struct {
 	prog     *syntax.Prog
+	via      []uint16
 	q0, q1   queue
 	pool     []*thread
 	matched  bool
@@ -2145,7 +2293,7 @@ func getMachine() *machine {
 }
 
 func putMachine(m *machine) {
-	m.prog = nil
+	m.prog, m.via = nil, nil
 	machines.Put(m)
 }
 
@@ -2237,7 +2385,7 @@ func (m *machine) run(b *branch, text string, start int) []int {
 	if b.cond == ^syntax.EmptyOp(0) {
 		return nil
 	}
-	m.prog, m.ncap = b.prog, b.prog.NumCap
+	m.prog, m.ncap, m.via = b.prog, b.prog.NumCap, b.via
 	m.matched = false
 	m.matchcap = m.matchcap[:m.ncap]
 	for i := range m.matchcap {
@@ -2345,7 +2493,7 @@ func (m *machine) step(runq, nextq *queue, pos, nextPos int, c rune, nextCond *l
 // instruction reachable from pc by empty-width steps that cond allows.
 func (m *machine) add(q *queue, pc uint32, pos int, cap []int, cond *lazyFlag, t *thread) *thread {
 Again:
-	if pc == 0 {
+	if pc == 0 || !searches.viables[m.via[pc]].takes(cond.next()) {
 		return t
 	}
 	if j := q.sparse[pc]; j < uint32(len(q.dense)) && q.dense[j].pc == pc {
@@ -2421,6 +2569,7 @@ Again:
 // never comes before it.
 type finder struct {
 	prog   *syntax.Prog
+	via    []uint16
 	q0, q1 finderQueue
 	// work counts the threads run at each character, plus one for each.
 	work int
@@ -2453,7 +2602,7 @@ func getFinder() *finder {
 }
 
 func putFinder(f *finder) {
-	f.prog = nil
+	f.prog, f.via = nil, nil
 	finders.Put(f)
 }
 
@@ -2468,7 +2617,7 @@ func (f *finder) run(b *branch, text string, from int, next func(int) int, start
 	if b.cond == ^syntax.EmptyOp(0) {
 		return mstart, mend
 	}
-	f.prog = b.prog
+	f.prog, f.via = b.prog, b.via
 	start := next(from)
 	if start < 0 {
 		return mstart, mend
@@ -2564,7 +2713,7 @@ func (q *finderQueue) before(at int32) bool {
 // machine.add does.
 func (f *finder) add(q *finderQueue, pc uint32, start int32, cond *lazyFlag) {
 Again:
-	if pc == 0 {
+	if pc == 0 || !searches.viables[f.via[pc]].takes(cond.next()) {
 		return
 	}
 	if j := q.sparse[pc]; j < uint32(len(q.dense)) && q.dense[j].pc == pc {

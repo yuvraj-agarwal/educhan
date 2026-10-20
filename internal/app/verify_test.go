@@ -200,21 +200,21 @@ func TestParseEmail(t *testing.T) {
 		domain  string
 		wantErr bool
 	}{
-		{name: "plain", raw: "Ana@IITB.ac.in", key: "ana@iitb.ac.in", domain: "iitb.ac.in"},
-		{name: "padded", raw: "  ana@iitb.ac.in  ", key: "ana@iitb.ac.in", domain: "iitb.ac.in"},
+		{name: "plain", raw: "Madeup.Ana@IITB.ac.in", key: "madeup.ana@iitb.ac.in", domain: "iitb.ac.in"},
+		{name: "padded", raw: "  madeup.ana@iitb.ac.in  ", key: "madeup.ana@iitb.ac.in", domain: "iitb.ac.in"},
 		// Plus-addressing is stripped for the uniqueness key: one mailbox, one
 		// identity, however many tags it can invent.
-		{name: "plus tag", raw: "ana+educhan@iitb.ac.in", key: "ana@iitb.ac.in", domain: "iitb.ac.in"},
+		{name: "plus tag", raw: "madeup.ana+educhan@iitb.ac.in", key: "madeup.ana@iitb.ac.in", domain: "iitb.ac.in"},
 		// Dots are not, because collapsing them would fold two real people at
 		// an institution into one.
-		{name: "dotted", raw: "a.na@iitb.ac.in", key: "a.na@iitb.ac.in", domain: "iitb.ac.in"},
+		{name: "dotted", raw: "madeup.a.na@iitb.ac.in", key: "madeup.a.na@iitb.ac.in", domain: "iitb.ac.in"},
 		{name: "empty", raw: "   ", wantErr: true},
 		{name: "no at", raw: "ana.iitb.ac.in", wantErr: true},
 		{name: "two at", raw: "ana@a@iitb.ac.in", wantErr: true},
 		{name: "no local part", raw: "@iitb.ac.in", wantErr: true},
-		{name: "only a tag", raw: "+tag@iitb.ac.in", wantErr: true},
+		{name: "only a tag", raw: "+madeup@iitb.ac.in", wantErr: true},
 		{name: "bare domain", raw: "ana@localhost", wantErr: true},
-		{name: "spaces", raw: "an a@iitb.ac.in", wantErr: true},
+		{name: "spaces", raw: "ana madeup@iitb.ac.in", wantErr: true},
 		{name: "too long", raw: strings.Repeat("a", maxEmailLen) + "@iitb.ac.in", wantErr: true},
 	}
 
@@ -245,14 +245,15 @@ func TestParseEmail(t *testing.T) {
 func TestEmailHashIdentity(t *testing.T) {
 	a := &App{cfg: Config{VerifySecret: "secret"}}
 
-	same := []string{"ana@iitb.ac.in", "ANA@iitb.ac.in", "ana+one@iitb.ac.in", "ana+two@iitb.ac.in"}
+	same := []string{"madeup.ana@iitb.ac.in", "MADEUP.ANA@iitb.ac.in", "madeup.ana+one@iitb.ac.in",
+		"madeup.ana+two@iitb.ac.in"}
 	want := a.emailHash(mustParseEmail(t, same[0]).Key)
 	for _, raw := range same[1:] {
 		if got := a.emailHash(mustParseEmail(t, raw).Key); !bytes.Equal(got, want) {
 			t.Errorf("%s should hash to the same key as %s", raw, same[0])
 		}
 	}
-	for _, raw := range []string{"an.a@iitb.ac.in", "ana@iitd.ac.in", "anab@iitb.ac.in"} {
+	for _, raw := range []string{"madeup.an.a@iitb.ac.in", "madeup.ana@iitd.ac.in", "madeup.anab@iitb.ac.in"} {
 		if got := a.emailHash(mustParseEmail(t, raw).Key); bytes.Equal(got, want) {
 			t.Errorf("%s should not hash to the same key as %s", raw, same[0])
 		}
@@ -349,14 +350,14 @@ func TestDevSenderPrintsTheCode(t *testing.T) {
 	var out bytes.Buffer
 	sender := mailer.NewDev(&out)
 	err := sender.SendCode(context.Background(), mailer.Code{
-		Address: "ana@iitb.ac.in",
+		Address: "madeup.ana@iitb.ac.in",
 		Code:    "123456",
 		TTL:     15 * time.Minute,
 	})
 	if err != nil {
 		t.Fatalf("SendCode: %v", err)
 	}
-	for _, want := range []string{"ana@iitb.ac.in", "123456", "15m"} {
+	for _, want := range []string{"madeup.ana@iitb.ac.in", "123456", "15m"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("printed %q, want it to contain %q", out.String(), want)
 		}

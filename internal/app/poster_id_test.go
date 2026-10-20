@@ -310,7 +310,7 @@ func TestMalformedPosterKeyIsRefused(t *testing.T) {
 func TestBadgedPostsGetTheirOwnPosterID(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.addBoard("ids")
-	ana := browser{harness: h.harness, key: newPosterKey(t), credential: h.verify("ana@iitb.ac.in").Credential}
+	ana := browser{harness: h.harness, key: newPosterKey(t), credential: h.verify("madeup.ana@iitb.ac.in").Credential}
 
 	thread := ana.thread("ids", "badged opening post", true)
 	plain := ana.reply("ids", thread, "the same browser, unbadged", false)
@@ -340,7 +340,7 @@ func TestBadgedPostsGetTheirOwnPosterID(t *testing.T) {
 	}
 
 	// A second verified address in the same browser is a second badged ID.
-	bo := browser{harness: h.harness, key: ana.key, credential: h.verify("bo@iitb.ac.in").Credential}
+	bo := browser{harness: h.harness, key: ana.key, credential: h.verify("madeup.bo@iitb.ac.in").Credential}
 	boReply := bo.reply("ids", thread, "another credential, same browser", true)
 	if got := posterIDs(t, h.harness, "ids", thread)[boReply]; got == ids[thread] || got == ids[plain] {
 		t.Errorf("a second credential got %q, which is already in use in the thread", got)
@@ -367,12 +367,12 @@ func TestBadgedPostsGetTheirOwnPosterID(t *testing.T) {
 func TestBadgedPosterIDCannotBeRecomputedFromTheDatabase(t *testing.T) {
 	h := verifyServer(t, nil)
 	h.addBoard("ids")
-	issued := h.verify("ana@iitb.ac.in")
+	issued := h.verify("madeup.ana@iitb.ac.in")
 	ana := browser{harness: h.harness, key: newPosterKey(t), credential: issued.Credential}
 
 	// A second verification left in flight, so the pending table has a row to
 	// try as well.
-	if status, out := h.requestCode("bo@iitb.ac.in"); status != http.StatusAccepted {
+	if status, out := h.requestCode("madeup.bo@iitb.ac.in"); status != http.StatusAccepted {
 		t.Fatalf("request a second code: status %d (%s)", status, out.Error)
 	}
 
@@ -503,7 +503,7 @@ func TestPosterKeyIsNeverStoredOrLogged(t *testing.T) {
 	}, &logs)
 	h.addBoard("ids")
 	vh := &verifyHarness{harness: h, mail: mail}
-	issued := vh.verify("ana@iitb.ac.in")
+	issued := vh.verify("madeup.ana@iitb.ac.in")
 
 	key := newPosterKey(t)
 	ana := browser{harness: h, key: key, credential: issued.Credential}
@@ -607,7 +607,7 @@ func TestPosterKeyIsNeverStoredOrLogged(t *testing.T) {
 		"the credential's id":      []byte(credID),
 		"the credential id bytes":  credRaw,
 		"the credential's source":  []byte(credentialSource(credID)),
-		"the verified address":     []byte("ana@iitb.ac.in"),
+		"the verified address":     []byte("madeup.ana@iitb.ac.in"),
 	} {
 		for _, table := range h.tables() {
 			if n := h.rowsContaining(table, needle); n != 0 {
