@@ -342,8 +342,8 @@ func TestEncodingStopsWhenTheContextEndsPartway(t *testing.T) {
 // and returns the context's error, not a decode or format error, when its
 // context is cancelled or past its deadline before it is called, and leaves
 // nothing held in the processing budget. The wait for the budget is what
-// refuses it, before sanitize is reached; TestSanitizeStopsAtOnceWhenTheContextIsAlreadyDone
-// goes past that.
+// refuses it, before sanitize is reached;
+// TestSanitizeStopsAtOnceWhenTheContextIsAlreadyDone goes past that.
 //
 // Unlike the other cancel tests, this one guards behaviour that predates the
 // in-flight cancellation work: the budget wait ((*budget).acquire) has always

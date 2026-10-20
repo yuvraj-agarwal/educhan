@@ -302,11 +302,10 @@ func greyQuadrants(w, h int) *image.Gray {
 // each term the model charges for decoding to come to megabytes more than
 // processingSlack in one of them at least, so that a term left out is seen (a
 // partial cut smaller than the slack it hides instead): 2400×1800, four times
-// a phone screenshot's pixels, for a
-// term of a byte and a half a pixel; 3200×2400 for the three kinds that turn
-// on a term of a byte a pixel; and 1200×900 for the 16-bit colour PNGs,
-// whose least term is eight bytes a pixel, and which take the longest to
-// encode.
+// a phone screenshot's pixels, for a term of a byte and a half a pixel;
+// 3200×2400 for the three kinds that turn on a term of a byte a pixel; and
+// 1200×900 for the 16-bit colour PNGs, whose least term is eight bytes a
+// pixel, and which take the longest to encode.
 //
 // The cost-*.jpg and cost-*.webp files in testdata are 2400×1800, made with
 // Pillow, because Go encodes neither progressive nor CMYK JPEGs nor any WebP:
@@ -329,28 +328,28 @@ func greyQuadrants(w, h int) *image.Gray {
 // whole. The GIF past its canvas has a 3200×2400 interlaced frame on a canvas
 // of 64×64, so that the copy its rows are put in order in is charged on the
 // frame, not the canvas. The GIF of frames put back is stored with frames
-// put back, for which what was under them is kept (gifPlayScratch). An
-// opaque lossy WebP is charged for its planes and
-// two copies of its file (the strip's and the decoder's), so it comes three
-// ways, each term megabytes over the others somewhere: 2400×1800 as Pillow
-// made it, whose planes are megabytes and whose file is not; 144×48 with 8 MiB
-// more at the end of its bitstream (paddedBitstream), whose two copies are
-// megabytes and whose planes are not; and 2400×1800 padded, where both are.
-// The PNG strip is a row of 524288 grey pixels four deep, whose thumbnail
-// scaler holds tables of weights of 64 bytes for each of them (thumbScratch);
-// turned on its side, it is stored four pixels wide, so its thumbnail is a
-// pixel wide and the scaler's buffer is 32 bytes for every one of its rows as
-// well, which only reading the orientation charges. The 16-bit RGBA strip, a
-// row of 1048576 pixels, is decoded through two rows of the file of 8 MiB each
-// beside its picture (pngRowBytes). Two more JPEGs of YCbCr samples, both
-// turned on their side, are converted to RGB, a copy of 4 bytes a pixel that
-// the turn copies again whole, by segments image/jpeg reads where a walk that
-// stopped at the first scan would not see them: the progressive 4:2:0 file,
-// without its JFIF APP0, with an Adobe segment of transform 0 after its last
-// scan, and a baseline 4:2:0 one whose JFIF APP0 is followed by another APP0,
-// which clears what the first said, so that the Adobe segment after it counts.
-// Those marked "o6" carry an EXIF orientation of 6, so they are turned on
-// their side too, and "o3" one of 3, turned around.
+// put back, for which what was under them is kept (gifPlayScratch). An opaque
+// lossy WebP is charged for its planes and two copies of its file (the strip's
+// and the decoder's), so it comes three ways, each term megabytes over the
+// others somewhere: 2400×1800 as Pillow made it, whose planes are megabytes
+// and whose file is not; 144×48 with 8 MiB more at the end of its bitstream
+// (paddedBitstream), whose two copies are megabytes and whose planes are not;
+// and 2400×1800 padded, where both are. The PNG strip is a row of 524288 grey
+// pixels four deep, whose thumbnail scaler holds tables of weights of 64 bytes
+// for each of them (thumbScratch); turned on its side, it is stored four
+// pixels wide, so its thumbnail is a pixel wide and the scaler's buffer is 32
+// bytes for every one of its rows as well, which only reading the orientation
+// charges. The 16-bit RGBA strip, a row of 1048576 pixels, is decoded through
+// two rows of the file of 8 MiB each beside its picture (pngRowBytes). Two
+// more JPEGs of YCbCr samples, both turned on their side, are converted to
+// RGB, a copy of 4 bytes a pixel that the turn copies again whole, by segments
+// image/jpeg reads where a walk that stopped at the first scan would not see
+// them: the progressive 4:2:0 file, without its JFIF APP0, with an Adobe
+// segment of transform 0 after its last scan, and a baseline 4:2:0 one whose
+// JFIF APP0 is followed by another APP0, which clears what the first said, so
+// that the Adobe segment after it counts. Those marked "o6" carry an EXIF
+// orientation of 6, so they are turned on their side too, and "o3" one of 3,
+// turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {

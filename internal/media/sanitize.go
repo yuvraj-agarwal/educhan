@@ -44,9 +44,10 @@ import (
 // So the stored file is always one Go encoded from decoded pixels, and holds
 // nothing of the upload's own bytes. The thumbnail is made from those same
 // pixels as they were handed to the encoder (sanitized.pic; for a GIF, the
-// first picture it shows), not from the stored file decoded again, and the checksum is of the stored file, so all
-// three describe the same picture: exactly when it is stored as a PNG or a
-// GIF, and within what the re-encoding loses when it is stored as a JPEG.
+// first picture it shows), not from the stored file decoded again, and the
+// checksum is of the stored file, so all three describe the same picture:
+// exactly when it is stored as a PNG or a GIF, and within what the
+// re-encoding loses when it is stored as a JPEG.
 //
 // A decoded picture can still hold what nobody sees, in channels a re-encode
 // would carry through untouched: the colour of a fully transparent pixel,
@@ -62,13 +63,13 @@ import (
 // palette from the colours its pixels show, in first-use order, folding every
 // transparent entry onto one and remapping the pixels (cleanPaletted). A
 // GIF's tables are written from the colours its pictures show, in order of
-// their values (playGIF). What is left is the picture: a fully opaque pixel keeps its exact
-// value, including the low byte of a 16-bit channel, because that is the
-// picture and no rewrite that keeps the picture exact can drop it, so data in
-// the low bits of a visible picture (classic steganography) still survives —
-// the job here is to strip metadata and the channels that do not show, not to
-// alter the picture. The one exception is a PNG's gamma, which is applied to
-// its samples so that the picture shows as it did (applyPNGGamma).
+// their values (playGIF). What is left is the picture: a fully opaque pixel
+// keeps its exact value, including the low byte of a 16-bit channel, because
+// that is the picture and no rewrite that keeps the picture exact can drop it,
+// so data in the low bits of a visible picture (classic steganography) still
+// survives — the job here is to strip metadata and the channels that do not
+// show, not to alter the picture. The one exception is a PNG's gamma, which is
+// applied to its samples so that the picture shows as it did (applyPNGGamma).
 
 // storedJPEGQuality is the highest quality an original is stored at as a
 // JPEG, and the quality of one made from a lossy WebP. A JPEG upload saved at
@@ -149,11 +150,11 @@ func transposedZig(k int) int {
 // after the first may reach past the canvas (gifReader), every frame is
 // decoded and kept at a byte a pixel until it is re-encoded, and a frame of
 // one flat colour compresses to almost nothing: a few megabytes of GIF could
-// otherwise ask for gigabytes. Four
-// canvases' worth is a long animation at any ordinary size (a 640×480 GIF can
-// have 300 frames) and no more memory than the largest JPEG. A GIF past it is
-// refused as too costly to process (ErrImageTooCostly), not as too large a
-// picture: its canvas may be small, and each frame smaller.
+// otherwise ask for gigabytes. Four canvases' worth is a long animation at
+// any ordinary size (a 640×480 GIF can have 300 frames) and no more memory
+// than the largest JPEG. A GIF past it is refused as too costly to process
+// (ErrImageTooCostly), not as too large a picture: its canvas may be small,
+// and each frame smaller.
 //
 // It also bounds the work of playing a GIF, which goes through each frame,
 // and each frame it stores, a row at a time: what is held to it is each
