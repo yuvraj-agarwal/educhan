@@ -601,20 +601,30 @@ hands over no code.
 When the purchase is refunded or disputed and the Pass goes on, the right to
 reissue it moves to another payment only while that payment pays for all the
 time the Pass has left. If exactly one payment left on it has a term still
-running or to come, and any others have ended, the right moves to that one,
-and the `409` for another renewal's payment says to use it; its payer can then
-have the Pass reissued without taking a day anybody else paid for on it.
-Otherwise the Pass can no longer be reissued, and a reissue for any of its
-payments answers `409` saying so. Two terms still to come can be two payers',
-a holder's own renewal beside one somebody else gave who saw the code once,
-and the server cannot tell one payer from another, so handing the whole Pass
-to either could give them time the other paid for. For the same reason the
-right goes again as soon as the Pass is renewed once more, by its holder or
-anybody else, since that payment then pays for only part of its time, and a
-reissue code made for it is cancelled with it. Such a Pass goes on working for
-whoever holds its code, and a later refund that leaves one payment paying for
-all its time moves the right to that payment then; a term that simply runs out
-moves nothing, and a renewal only ever takes the right away.
+running or to come, any others having ended and no paid renewal of the Pass
+waiting to be collected, the right moves to that one, and the `409` for
+another renewal's payment says to use it; its payer can then have the Pass
+reissued without taking a day anybody else paid for on it. Otherwise the Pass
+cannot be reissued, and a reissue for any of its payments answers `409` saying
+so. Two terms still to come can be two payers', a holder's own renewal beside
+one somebody else gave who saw the code once, and the server cannot tell one
+payer from another, so handing the whole Pass to either could give them time
+the other paid for. Such a Pass goes on working for whoever holds its code,
+and a later refund or dispute, of one of its payments or of a paid renewal
+not collected yet, that leaves one payment paying for all its time moves the
+right to that payment then; a term that simply runs out moves nothing.
+
+For the same reason the right that moved goes again as soon as the Pass is
+renewed once more, by its holder or anybody else, since that payment then
+pays for only part of its time, and a reissue code made for it is cancelled
+with it; a renewal only ever takes the right away. While a renewal of the
+Pass is under way, from its checkout until it is collected, the payment the
+right moved to gets no reissue code (the same `409`), and one made before is
+refused with `409` and not spent, since the renewal, paid for by somebody,
+would land on the Pass handed over. If the renewal goes unpaid, or is
+refunded or disputed before it is collected, the reissue code works again
+until its deadline. The purchase keeps its own right whatever renewal is
+under way.
 
 **Setting it up.** In Stripe: a one-time Price for the Pass
 (`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
@@ -1182,10 +1192,10 @@ that overwrites the header with just the peer address are each a single hop.
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
 | `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","automatic_tax","price":{"amount","currency"},"paused","claim"}`, or `{"enabled":false}` without it. `"automatic_tax":true` is there only when Stripe Tax adds tax to the price; `price` is left out when Stripe can't be asked and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when the browser's claim cookie has something under it to collect |
 | `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `409` when the Pass to renew was refunded or lapsed meanwhile |
-| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included. With `{"forget":true}` it drops the browser's claim and clears the cookie — `{"status":"forgotten","claim":false}` |
+| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops the browser's claim and clears the cookie — `{"status":"forgotten","claim":false}` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
-| `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on; `404` for a payment that bought nothing or was refunded; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that can no longer be reissued, because its purchase was refunded and no one payment left pays for all its time. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code |
+| `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on; `404` for a payment that bought nothing or was refunded or disputed; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded or disputed, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that cannot be reissued, because its purchase was refunded or disputed and no one payment left pays for all its time, or because a renewal of the Pass is under way when the right has moved. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code |
 | `GET` | `/media/original/{path}` | Full-size attachment |
 | `GET` | `/media/thumb/{path}` | Thumbnail |
 

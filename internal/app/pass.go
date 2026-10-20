@@ -734,6 +734,8 @@ func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
 // uncollected renewal. A reissue code works once; asked again with the nonce
 // that spent it, it is answered with the same code (passReissuedCode), but a
 // renewal, which hands over no code, is refused like any spent reissue code.
+// One for a right that moved, used while its Pass is being renewed, is
+// refused for that and not spent (claimResult.Renewing).
 func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, nonce string) {
 	reissue, ok := parseReissueCode(typed)
 	if !ok {
@@ -745,6 +747,10 @@ func (a *App) redeemPassReissue(w http.ResponseWriter, r *http.Request, typed, n
 	res, err := a.store.redeemPassReissue(r.Context(), hashToken(reissue), c)
 	if err != nil {
 		a.fail(w, r, err, "could not collect the Pass")
+		return
+	}
+	if res.Renewing {
+		writeError(w, http.StatusConflict, passReissueRenewing)
 		return
 	}
 	// Whether this browser also has a purchase to collect, so the page goes
@@ -1013,15 +1019,20 @@ func (b *passBudget) sweepExpired() {
 }
 
 // passReissueRenewal answers a reissue asked for with a renewal's payment, and
-// passReissueNoOrigin one for a Pass that no payment can reissue any more.
-// passReissueSpent refuses a reissue code that gives nothing, which the Pass
-// page knows by these words (PASS_REISSUE_SPENT).
+// passReissueNoOrigin one for a Pass that no payment can reissue now: none
+// left on it pays for all its time, or the one the right moved to is waiting
+// on a renewal under way. passReissueSpent refuses a reissue code that gives
+// nothing, which the Pass page knows by these words (PASS_REISSUE_SPENT), and
+// passReissueRenewing one that cannot be used while a renewal of its Pass is
+// under way and is not spent by being refused.
 const (
 	passReissueRenewal = "that payment renewed a Pass; reissue it with the payment that bought the Pass, " +
-		"or, if that one was refunded, with the one renewal that then paid for all the time it had left"
-	passReissueNoOrigin = "this Pass can no longer be reissued: the payment that bought it was refunded or disputed, " +
-		"and no one payment left on it paid for all the time it had left"
-	passReissueSpent = "this reissue code has been used, has run out or was cancelled"
+		"or, if that one was refunded or disputed, with the one renewal that then paid for all the time it had left"
+	passReissueNoOrigin = "this Pass can't be reissued now: the payment that bought it was refunded or disputed, " +
+		"and no one payment left on it pays for all the time it has left, counting a renewal still being paid for or collected"
+	passReissueSpent    = "this reissue code has been used, has run out or was cancelled"
+	passReissueRenewing = "this reissue code can't be used while its Pass is being renewed: it works again, until its deadline, " +
+		"if that renewal goes unpaid or is refunded, and is cancelled once the renewal is collected"
 )
 
 type passReissueBody struct {
@@ -1043,11 +1054,14 @@ type passReissueBody struct {
 // payment that made it, or a paid order not collected yet, can be reissued:
 // somebody who renewed another person's Pass, and then asks for a reissue
 // with their own payment, would otherwise be handed that person's Pass. A
-// reissue hands over the whole Pass, so when the origin is refunded and the
-// Pass goes on, the right moves to another payment only while that one pays
-// for all the time the Pass has left (revokeTerm, renewPass); otherwise the
-// Pass can no longer be reissued, since the server cannot tell one payer from
-// another.
+// reissue hands over the whole Pass, so when the origin is refunded or
+// disputed and the Pass goes on, the right moves to another payment only
+// while that one pays for all the time the Pass has left, a paid renewal not
+// collected yet counted (moveOrigin, renewPass); otherwise the Pass cannot be
+// reissued, since the server cannot tell one payer from another. Nor can it
+// while a renewal of it is under way, paid or not yet, when the right has
+// moved (createPassReissue, redeemPassReissue): the renewal is somebody's
+// payment, and would land on the reissued Pass.
 func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 	if !a.authorizeMod(w, r) {
 		return
@@ -1069,15 +1083,16 @@ func (a *App) handlePassReissue(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not make a reissue code")
 		return
 	}
-	deadline := passClaimDeadline(time.Now())
-	state, err := a.store.createPassReissue(r.Context(), a.passPaymentHash(pi), hashToken(code), deadline)
+	now := time.Now()
+	deadline := passClaimDeadline(now)
+	state, err := a.store.createPassReissue(r.Context(), a.passPaymentHash(pi), hashToken(code), deadline, now)
 	if err != nil {
 		a.fail(w, r, err, "could not make a reissue code")
 		return
 	}
 	switch state {
 	case reissueMissing:
-		writeError(w, http.StatusNotFound, "no Pass was bought with that payment, or it was refunded")
+		writeError(w, http.StatusNotFound, "no Pass was bought with that payment, or it was refunded or disputed")
 		return
 	case reissueRenewal:
 		writeError(w, http.StatusConflict, passReissueRenewal)
@@ -1442,6 +1457,10 @@ type claimResult struct {
 	// Waiting is set while the claim's order is unpaid and inside its
 	// deadline.
 	Waiting bool
+	// Renewing is set when a reissue code is for a right that moved to a
+	// renewal (moveOrigin) and its Pass is being renewed: the reissue code is
+	// left as it was, to work again if the renewal comes to nothing.
+	Renewing bool
 }
 
 // passWithToken returns the Pass under a code hash and its expiry, or 0.
@@ -1568,8 +1587,9 @@ func renewPass(ctx context.Context, tx pgx.Tx, passID int64, payment []byte, day
 		return time.Time{}, false, err
 	}
 	// A renewal that the right to reissue the Pass moved to when its purchase
-	// was refunded (revokeTerm) loses it now: it no longer pays for all the
-	// time the Pass has left. Its unused reissue codes go with the right.
+	// was refunded or disputed (moveOrigin) loses it now: it no longer pays
+	// for all the time the Pass has left. Its unused reissue codes go with the
+	// right, a code refused while this renewal was under way included.
 	_, err = tx.Exec(ctx, `
 		WITH moved AS (
 		       UPDATE pass_payments SET origin = NULL WHERE pass_id = $1 AND origin = 'moved'
@@ -1582,16 +1602,17 @@ func renewPass(ctx context.Context, tx pgx.Tx, passID int64, payment []byte, day
 type reissueState int
 
 const (
-	reissueMissing  reissueState = iota // no Pass or paid order for the payment, or it was refunded
+	reissueMissing  reissueState = iota // no Pass or paid order for the payment, or it was refunded or disputed
 	reissueRenewal                      // the payment renewed a Pass; only its origin reissues it
-	reissueNoOrigin                     // the payment is on a Pass that has no origin any more (revokeTerm, renewPass)
+	reissueNoOrigin                     // the payment is on a Pass with no origin now (moveOrigin, renewPass, renewalUnderWay)
 	reissueReady                        // a reissue code was made
 )
 
 // createPassReissue records a reissue code for a payment: a Pass's origin, or
 // a paid order nobody collected. A newer reissue code for the same payment
-// replaces the one before it.
-func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []byte, deadline time.Time) (reissueState, error) {
+// replaces the one before it. A right that moved to a renewal (moveOrigin)
+// gives no reissue code while the Pass is being renewed (renewalUnderWay).
+func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []byte, deadline, now time.Time) (reissueState, error) {
 	var state reissueState
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
 		state = reissueMissing
@@ -1621,6 +1642,14 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 				state = reissueRenewal
 				return nil
 			}
+			renewing, err := renewalUnderWay(ctx, tx, paymentHash, now)
+			if err != nil {
+				return err
+			}
+			if renewing {
+				state = reissueNoOrigin
+				return nil
+			}
 		}
 		state = reissueReady
 		_, err := tx.Exec(ctx, `
@@ -1630,6 +1659,24 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 		return err
 	})
 	return state, err
+}
+
+// renewalUnderWay reports whether a payment holds the right to reissue its
+// Pass that moved to it when the purchase was refunded or disputed
+// (moveOrigin), while an order renews that Pass: paid, or unpaid and inside
+// its deadline, as passClaimWaiting counts one. A reissue then would hand the
+// payer the Pass with that renewal still to land on it, and somebody else's
+// time with it, so it waits: an unpaid order goes when Stripe closes its
+// checkout or at its deadline, a refunded one at once, and a collected one
+// takes the right away (renewPass).
+func renewalUnderWay(ctx context.Context, tx pgx.Tx, paymentHash []byte, now time.Time) (bool, error) {
+	var renewing bool
+	err := tx.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM pass_payments p JOIN pass_orders o ON o.renew_pass_id = p.pass_id
+		               WHERE p.payment_hash = $1 AND p.origin = 'moved'
+		                 AND (o.payment_hash IS NOT NULL OR o.expires_at > $2))`,
+		paymentHash, now).Scan(&renewing)
+	return renewing, err
 }
 
 // redeemPassReissue spends a reissue code. A paid order nobody collected is
@@ -1643,6 +1690,13 @@ func (s *Store) createPassReissue(ctx context.Context, paymentHash, tokenHash []
 // answered again. A Pass refunded away since, or given a new code by another
 // reissue, is under no such code, and nothing comes back for it; nor does a
 // renewal, which made no Pass under that code.
+//
+// A reissue code for a right that moved to a renewal (moveOrigin) is not used
+// while the Pass is being renewed, paid or not yet (renewalUnderWay): the
+// renewal would land on the Pass handed over. It is refused and left as it
+// was (Renewing), so it works again, until its deadline, if the renewal is
+// never paid or is refunded; collected, the renewal takes the right away and
+// cancels it (renewPass).
 func (s *Store) redeemPassReissue(ctx context.Context, tokenHash []byte, c passCompletion) (claimResult, error) {
 	var res claimResult
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
@@ -1656,12 +1710,18 @@ func (s *Store) redeemPassReissue(ctx context.Context, tokenHash []byte, c passC
 		}
 		var payment []byte
 		err = tx.QueryRow(ctx, `
-			DELETE FROM pass_reissues WHERE token_hash = $1 AND expires_at > $2
-			RETURNING payment_hash`, tokenHash, c.Now).Scan(&payment)
+			SELECT payment_hash FROM pass_reissues WHERE token_hash = $1 AND expires_at > $2`,
+			tokenHash, c.Now).Scan(&payment)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
 		if err != nil {
+			return err
+		}
+		if res.Renewing, err = renewalUnderWay(ctx, tx, payment, c.Now); err != nil || res.Renewing {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM pass_reissues WHERE token_hash = $1`, tokenHash); err != nil {
 			return err
 		}
 		// Revoking deletes the reissue code, so this never holds while the
@@ -1724,12 +1784,23 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 	var res revocation
 	err := s.passTx(ctx, func(tx pgx.Tx) error {
 		res = revokedNothing
-		tag, err := tx.Exec(ctx, `DELETE FROM pass_orders WHERE payment_hash = $1`, paymentHash)
-		if err != nil {
+		var renewID *int64
+		err := tx.QueryRow(ctx, `
+			DELETE FROM pass_orders WHERE payment_hash = $1 RETURNING renew_pass_id`, paymentHash).Scan(&renewID)
+		switch {
+		case errors.Is(err, pgx.ErrNoRows):
+		case err != nil:
 			return err
-		}
-		if tag.RowsAffected() > 0 {
+		default:
 			res = revokedOrder
+			// A paid renewal not collected yet counts as a term to come of
+			// the Pass it renews, so taking it back is applied as a payment
+			// of that Pass would be.
+			if renewID != nil {
+				if err := moveOrigin(ctx, tx, *renewID, now); err != nil {
+					return err
+				}
+			}
 		}
 		if _, err := tx.Exec(ctx, `DELETE FROM pass_reissues WHERE payment_hash = $1`, paymentHash); err != nil {
 			return err
@@ -1776,16 +1847,8 @@ type revokedPayment struct {
 // at goes as one with none would.
 //
 // A Pass that goes on without its origin, the refunded payment having been
-// it, could no longer be reissued. Reissuing hands over the whole Pass, and
-// the server cannot tell one payer from another, so the right moves to a
-// payment left on it only while that payment pays for all the time the Pass
-// has left: from when it is the one payment whose term is still running or
-// to come, every other's having ended, until the Pass is renewed again
-// (renewPass). Otherwise the Pass has no origin, and no payment of it can be
-// reissued (createPassReissue), so somebody who renewed a code they saw once
-// is never handed time its holder paid for after them. The rule is applied
-// again whenever a payment of such a Pass is revoked, which can leave one
-// such payment; a term that simply runs out changes nothing.
+// it, could no longer be reissued; moveOrigin decides whether another payment
+// takes its place.
 func revokeTerm(ctx context.Context, tx pgx.Tx, p revokedPayment, now time.Time) (revocation, error) {
 	// later is whether a term was paid after this one, and paid whether any
 	// payment left has time to come; the terms after this one stay after now
@@ -1821,15 +1884,35 @@ func revokeTerm(ctx context.Context, tx pgx.Tx, p revokedPayment, now time.Time)
 			return revokedNothing, err
 		}
 	}
-	if _, err := tx.Exec(ctx, `
-		UPDATE pass_payments SET origin = 'moved'
-		WHERE pass_id = $1 AND ends_at > $2
-		  AND NOT EXISTS (SELECT 1 FROM pass_payments WHERE pass_id = $1 AND origin IS NOT NULL)
-		  AND (SELECT count(*) FROM pass_payments WHERE pass_id = $1 AND ends_at > $2) = 1`,
-		p.passID, now); err != nil {
+	if err := moveOrigin(ctx, tx, p.passID, now); err != nil {
 		return revokedNothing, err
 	}
 	return revokedTerm, nil
+}
+
+// moveOrigin gives a Pass with no origin left one, when a payment can be it.
+// Reissuing hands over the whole Pass, and the server cannot tell one payer
+// from another, so the right moves to a payment left on it only while that
+// payment pays for all the time the Pass has left: from when it is the one
+// payment whose term is still running or to come, every other's having ended
+// and no paid renewal of the Pass waiting to be collected, until the Pass is
+// renewed again (renewPass). Otherwise the Pass has no origin, and no payment
+// of it can be reissued (createPassReissue), so somebody who renewed a code
+// they saw once is never handed time its holder paid for after them; and
+// while a renewal of it is under way, paid or not yet, the one it moved to
+// cannot be reissued either (renewalUnderWay). The rule is applied whenever a
+// payment of such a Pass is revoked, or a paid renewal of it not collected
+// yet, which can leave one such payment; a term that simply runs out, or an
+// order that lapses, changes nothing. A Pass that has an origin keeps it.
+func moveOrigin(ctx context.Context, tx pgx.Tx, passID int64, now time.Time) error {
+	_, err := tx.Exec(ctx, `
+		UPDATE pass_payments SET origin = 'moved'
+		WHERE pass_id = $1 AND ends_at > $2
+		  AND NOT EXISTS (SELECT 1 FROM pass_payments WHERE pass_id = $1 AND origin IS NOT NULL)
+		  AND NOT EXISTS (SELECT 1 FROM pass_orders WHERE renew_pass_id = $1 AND payment_hash IS NOT NULL)
+		  AND (SELECT count(*) FROM pass_payments WHERE pass_id = $1 AND ends_at > $2) = 1`,
+		passID, now)
+	return err
 }
 
 // prunePasses deletes what has outlived its use: unpaid orders past their

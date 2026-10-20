@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -2896,6 +2897,203 @@ func TestPassReissueAfterTheOriginIsRefunded(t *testing.T) {
 	}
 	if status, _, _ := p.reissueCode("mod-key", "pi_running_renewal"); status != http.StatusOK {
 		t.Fatalf("reissue with the one renewal left running: status %d", status)
+	}
+}
+
+// originOf reads a payment's right to reissue its Pass: "bought", "moved",
+// none ("") or, for a payment on no Pass, "no payment".
+func (p *passHarness) originOf(paymentIntent string) string {
+	p.t.Helper()
+	var origin *string
+	err := p.app.pool.QueryRow(context.Background(), `SELECT origin FROM pass_payments WHERE payment_hash = $1`,
+		p.app.passPaymentHash(paymentIntent)).Scan(&origin)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return "no payment"
+	case err != nil:
+		p.t.Fatal(err)
+	case origin == nil:
+		return ""
+	}
+	return *origin
+}
+
+// TestPassReissueWaitsForARenewalUnderWay holds the right to reissue a Pass
+// that moved to a renewal, when the purchase was refunded, to the time that
+// renewal paid for. A renewal of the Pass under way is somebody's payment,
+// which would land on the Pass handed over: the holder's, paid and not
+// collected yet, opened and not paid yet, or paid between the reissue code's
+// making and its use. A paid renewal waiting to be collected keeps the right
+// from moving at all, and is counted again if it is refunded; while any
+// renewal is under way, the right that did move gives no reissue code, and one
+// made before is refused without being spent, to work again if the renewal
+// comes to nothing. An unpaid one counts until its deadline, pruned or not.
+// Collected, the renewal stays on the holder's code.
+func TestPassReissueWaitsForARenewalUnderWay(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	refusedNoOrigin := func(paymentIntent, when string) {
+		t.Helper()
+		if status, out, code := p.reissueCode("mod-key", paymentIntent); status != http.StatusConflict ||
+			out.Error != passReissueNoOrigin || code != "" {
+			t.Fatalf("reissue with %s %s: status %d, %+v", paymentIntent, when, status, out)
+		}
+	}
+
+	// The purchase keeps its right while a renewal is under way: its payer
+	// bought the Pass, and the renewal lands on the code it has then.
+	bought := p.buy("pi_bought")
+	p.paid(p.checkout(bought.Pass), "pi_bought_renewal")
+	status, _, token := p.reissueCode("mod-key", "pi_bought")
+	if status != http.StatusOK {
+		t.Fatalf("reissue with the purchase while a renewal of it waits to be collected: status %d", status)
+	}
+	status, reissued := p.otherBrowser().redeem(token)
+	if status != http.StatusOK || reissued.Status != "issued" {
+		t.Fatalf("redeem with the purchase while a renewal of it waits to be collected: status %d, %+v", status, reissued)
+	}
+	if status, out := p.claim(); status != http.StatusOK || out.Status != "renewed" {
+		t.Fatalf("the renewal collected after the reissue: status %d, %+v", status, out)
+	}
+
+	// Paid and not collected when the purchase is refunded: the holder's
+	// renewal is a term to come beside the onlooker's, so neither pays for
+	// all the Pass's time and the right moves to neither. Collected, the
+	// renewal is on the holder's code, and the Pass still cannot be
+	// reissued.
+	held := p.buy("pi_paid_bought")
+	p.otherBrowser().renew(held.Pass, "pi_paid_onlooker")
+	p.paid(p.checkout(held.Pass), "pi_paid_renewal")
+	p.refund("pi_paid_bought")
+	if got := p.originOf("pi_paid_onlooker"); got != "" {
+		t.Fatalf("the onlooker's renewal beside the holder's paid one: origin %q, want none", got)
+	}
+	refusedNoOrigin("pi_paid_onlooker", "while the holder's paid renewal waits to be collected")
+	status, renewed := p.claim()
+	if status != http.StatusOK || renewed.Status != "renewed" {
+		t.Fatalf("the holder collects the renewal: status %d, %+v", status, renewed)
+	}
+	if status, out := p.activate(held.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(renewed.ExpiresAt) {
+		t.Fatalf("the holder's code after collecting the renewal: status %d, %+v; want good until %v", status, out, renewed.ExpiresAt)
+	}
+	refusedNoOrigin("pi_paid_onlooker", "after the holder collected the renewal")
+
+	// Refunded before it is collected, the holder's renewal leaves the
+	// onlooker's the one payment paying for all the time there is, and the
+	// right moves to it then.
+	refunded := p.buy("pi_refunded_bought")
+	p.otherBrowser().renew(refunded.Pass, "pi_refunded_onlooker")
+	p.paid(p.checkout(refunded.Pass), "pi_refunded_renewal")
+	p.refund("pi_refunded_bought")
+	if got := p.originOf("pi_refunded_onlooker"); got != "" {
+		t.Fatalf("the onlooker's renewal beside the holder's paid one: origin %q, want none", got)
+	}
+	p.refund("pi_refunded_renewal")
+	if got := p.originOf("pi_refunded_onlooker"); got != "moved" {
+		t.Fatalf("the onlooker's renewal once the holder's uncollected one was refunded: origin %q, want moved", got)
+	}
+	if status, _, _ := p.reissueCode("mod-key", "pi_refunded_onlooker"); status != http.StatusOK {
+		t.Fatalf("reissue with the one renewal left: status %d", status)
+	}
+
+	// Opened and not paid yet when the purchase is refunded: the right moves
+	// to the onlooker's renewal, but gives no reissue code while the
+	// checkout is open, or once it is paid; collected, the renewal takes the
+	// right away and stays on the holder's code.
+	opened := p.buy("pi_opened_bought")
+	p.otherBrowser().renew(opened.Pass, "pi_opened_onlooker")
+	session := p.checkout(opened.Pass)
+	p.refund("pi_opened_bought")
+	if got := p.originOf("pi_opened_onlooker"); got != "moved" {
+		t.Fatalf("the onlooker's renewal beside an unpaid checkout: origin %q, want moved", got)
+	}
+	refusedNoOrigin("pi_opened_onlooker", "while the holder's renewal checkout is open")
+	p.paid(session, "pi_opened_renewal")
+	refusedNoOrigin("pi_opened_onlooker", "while the holder's renewal is paid and not collected")
+	status, renewed = p.claim()
+	if status != http.StatusOK || renewed.Status != "renewed" {
+		t.Fatalf("the holder collects the renewal: status %d, %+v", status, renewed)
+	}
+	if status, out := p.activate(opened.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(renewed.ExpiresAt) {
+		t.Fatalf("the holder's code after collecting the renewal: status %d, %+v; want good until %v", status, out, renewed.ExpiresAt)
+	}
+	refusedNoOrigin("pi_opened_onlooker", "after the holder collected the renewal")
+	// A checkout Stripe closes unpaid is nothing under way.
+	lapsed := p.buy("pi_lapsed_bought")
+	p.otherBrowser().renew(lapsed.Pass, "pi_lapsed_onlooker")
+	session = p.checkout(lapsed.Pass)
+	p.refund("pi_lapsed_bought")
+	refusedNoOrigin("pi_lapsed_onlooker", "while the holder's renewal checkout is open")
+	p.webhook(stripeCheckoutExpired, map[string]any{"id": session, "object": "checkout.session", "mode": "payment", "payment_status": "unpaid"})
+	if status, _, _ := p.reissueCode("mod-key", "pi_lapsed_onlooker"); status != http.StatusOK {
+		t.Fatalf("reissue with the one renewal left once the holder's checkout closed unpaid: status %d", status)
+	}
+	// Nor is an unpaid order past its deadline, before anything prunes it.
+	late := p.buy("pi_late_bought")
+	p.otherBrowser().renew(late.Pass, "pi_late_onlooker")
+	p.checkout(late.Pass)
+	p.refund("pi_late_bought")
+	refusedNoOrigin("pi_late_onlooker", "while the holder's renewal checkout is open")
+	if _, err := p.app.pool.Exec(context.Background(), `
+		UPDATE pass_orders SET expires_at = now() - interval '1 day'
+		WHERE renew_pass_id = (SELECT pass_id FROM pass_payments WHERE payment_hash = $1)`,
+		p.app.passPaymentHash("pi_late_onlooker")); err != nil {
+		t.Fatal(err)
+	}
+	if status, _, _ := p.reissueCode("mod-key", "pi_late_onlooker"); status != http.StatusOK {
+		t.Fatalf("reissue with the one renewal left once the holder's unpaid checkout passed its deadline: status %d", status)
+	}
+
+	// Made with nothing under way, and used after the holder paid to renew:
+	// the reissue code is refused, not spent, and the holder keeps the Pass.
+	// Collected, the renewal stays on the holder's code and cancels the
+	// reissue code.
+	between := p.buy("pi_between_bought")
+	onlooker := p.otherBrowser()
+	onlooker.renew(between.Pass, "pi_between_onlooker")
+	p.refund("pi_between_bought")
+	status, _, code := p.reissueCode("mod-key", "pi_between_onlooker")
+	if status != http.StatusOK {
+		t.Fatalf("reissue with the renewal the right moved to: status %d", status)
+	}
+	p.paid(p.checkout(between.Pass), "pi_between_renewal")
+	if status, out := onlooker.redeem(code); status != http.StatusConflict || out.Error != passReissueRenewing || out.Pass != "" {
+		t.Fatalf("a reissue code used while the holder's paid renewal waits to be collected: status %d, %+v", status, out)
+	}
+	if n := p.rowsContaining("pass_reissues", p.app.passPaymentHash("pi_between_onlooker")); n != 1 {
+		t.Fatalf("the refused reissue code is in %d pass_reissues rows, want 1: it was spent", n)
+	}
+	status, renewed = p.claim()
+	if status != http.StatusOK || renewed.Status != "renewed" {
+		t.Fatalf("the holder collects the renewal: status %d, %+v", status, renewed)
+	}
+	if status, out := p.activate(between.Pass); status != http.StatusOK || !out.ExpiresAt.Equal(renewed.ExpiresAt) {
+		t.Fatalf("the holder's code after collecting the renewal: status %d, %+v; want good until %v", status, out, renewed.ExpiresAt)
+	}
+	if status, out := onlooker.redeem(code); status != http.StatusForbidden || out.Error != passReissueSpent {
+		t.Fatalf("the reissue code after the holder collected the renewal: status %d, %+v", status, out)
+	}
+	// Paid, and refunded before it is collected, the renewal comes to
+	// nothing, and the reissue code works again.
+	again := p.buy("pi_again_bought")
+	taker := p.otherBrowser()
+	taker.renew(again.Pass, "pi_again_onlooker")
+	p.refund("pi_again_bought")
+	_, _, code = p.reissueCode("mod-key", "pi_again_onlooker")
+	session = p.checkout(again.Pass)
+	if status, out := taker.redeem(code); status != http.StatusConflict || out.Error != passReissueRenewing {
+		t.Fatalf("a reissue code used while the holder's renewal checkout is open: status %d, %+v", status, out)
+	}
+	p.paid(session, "pi_again_renewal")
+	if status, out := taker.redeem(code); status != http.StatusConflict || out.Error != passReissueRenewing {
+		t.Fatalf("a reissue code used while the holder's paid renewal waits to be collected: status %d, %+v", status, out)
+	}
+	p.refund("pi_again_renewal")
+	status, fresh := taker.redeem(code)
+	if status != http.StatusOK || fresh.Status != "issued" || fresh.Pass == again.Pass {
+		t.Fatalf("the reissue code once the holder's renewal was refunded: status %d, %+v", status, fresh)
+	}
+	if status, _ := p.activate(fresh.Pass); status != http.StatusOK {
+		t.Fatalf("the reissued code: status %d", status)
 	}
 }
 
