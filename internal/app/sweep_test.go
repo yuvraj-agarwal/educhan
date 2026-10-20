@@ -237,6 +237,41 @@ func TestSweepAgainstAnotherMediaStoreFails(t *testing.T) {
 	}
 }
 
+// A sweep whose verification step fails as well — as it does every night for
+// a role that may not vacuum pg_statistic — still says that the files were
+// not in its media store: the error it exits with carries both, so neither
+// hides the other. A plain VACUUM stands in for that role, as in
+// TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile.
+func TestSweepErrorNamesEveryStepThatFailed(t *testing.T) {
+	h := testServer(t, nil)
+	h.addBoard("elsewhere")
+	h.exec(`UPDATE boards SET archive_days = 0 WHERE slug = 'elsewhere'`)
+	thread := h.imageThread("elsewhere", "stored where the sweeper is not looking")
+	h.archiveThread("elsewhere", thread.ThreadNo, time.Minute)
+
+	store := h.app.media
+	wrong, err := media.NewLocalStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("empty store: %v", err)
+	}
+	h.app.media = wrong
+	h.app.store.statisticsVacuumCommand = "VACUUM (SKIP_LOCKED)"
+	report, err := h.app.Sweep(context.Background())
+	h.app.media = store
+	h.app.store.statisticsVacuumCommand = vacuumCommand
+	if err == nil {
+		t.Fatal("a sweep that failed twice reported success")
+	}
+	for _, want := range []string{"EDUCHAN_MEDIA_BACKEND", "must own the database"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not say %q", err, want)
+		}
+	}
+	if report.BlobsMissing != 2 {
+		t.Errorf("sweep report = %+v, want both files missing", report)
+	}
+}
+
 // A cancelled sweep stops and says so, rather than reporting a pass it did
 // not make.
 func TestSweepStopsWhenCancelled(t *testing.T) {

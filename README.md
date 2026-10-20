@@ -1369,7 +1369,8 @@ and missing, and credentials rewritten) and nothing about which boards or
 threads went or what any credential says, and exits non-zero if the database
 fails, any file could not be removed or was missing, or the rewrite or a vacuum
 — of either verification table or of `pg_statistic` — did not finish; the error
-it exits with says why without naming the file.
+it exits with says why, giving every reason when more than one step failed, and
+names no file (`TestSweepErrorNamesEveryStepThatFailed`).
 It also refuses to run on a database a newer release has migrated (see below).
 It needs none of the web server's secrets — the poster-ID salt, the moderation
 key, the verification secret — and, run without them, it does not warn about

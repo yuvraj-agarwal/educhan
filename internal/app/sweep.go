@@ -110,19 +110,22 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 		}
 	}
 	a.logSweep(report)
+	// Every step that failed says so: a verification step that fails every
+	// night, for a role that may not vacuum pg_statistic, must not hide a
+	// media store that is not the server's.
+	errs := []error{err}
 	switch {
-	case err != nil:
-		return report, err
 	case report.BlobsMissing > 0:
-		return report, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
+		errs = append(errs, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
 			"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
 			"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
-			report.BlobsMissing)
+			report.BlobsMissing))
 	case report.BlobFailures > 0:
-		return report, fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
-			"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
+		errs = append(errs, fmt.Errorf("sweep: %d files could not be removed from the media store "+
+			"(the first: %s); they stay queued in media_deletions for the next sweep",
+			report.BlobFailures, firstFailure))
 	}
-	return report, nil
+	return report, errors.Join(errs...)
 }
 
 // removeQueuedMedia works through media_deletions once, removing each file and

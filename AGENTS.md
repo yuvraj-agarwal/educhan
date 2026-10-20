@@ -632,7 +632,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   find, a rewrite or vacuum of the verification tables that did not finish, a
   vacuum of `pg_statistic` that did not finish (which a role that owns the tables
   but not the database gets every night), or a database a newer release migrated
-  (`TestSchemaFromANewerReleaseStopsTheSweeper`).
+  (`TestSchemaFromANewerReleaseStopsTheSweeper`). When more than one of those fails,
+  the error carries each, so that a failing vacuum of `pg_statistic` does not hide
+  files missing from the media store (`TestSweepErrorNamesEveryStepThatFailed`).
   It builds its App with `New` like the server, and runs without the salt, the
   moderation key and the verification secret on purpose, so `New` warns about none
   of them: those warnings are
