@@ -526,8 +526,9 @@ process's CPU time, the best of several runs, on a shared four-core machine;
 `go test -run - -bench CheckContent ./internal/app` times both kinds of
 maximum-length post. Each server prepares the
 rules once, as it starts: about 3.5 seconds of one core, with the heap reaching
-about 320 MB while it does and about 64 MB kept afterwards, and a post that
-arrives before that is done waits for it. A
+330–370 MiB on one core while it does (270–300 MiB on four) and about 65 MiB
+kept afterwards, the rest given back to the system over the next few minutes;
+a post that arrives before that is done waits for it. A
 refused post costs no cooldown, so refusals are counted instead: after
 `EDUCHAN_REFUSAL_LIMIT` of them (10 by default) in a minute, a client's posts
 are answered `429` without being read until the minute is up (see
@@ -781,18 +782,20 @@ server that would refuse what it sends.
   refused (see **Formats**), and the rest wait for room in the order they arrived. The
   uploads' own bytes have a budget of their own (64 MiB), taken before a request body is
   read, so how many requests an instance is let take at once does not decide how many
-  images it holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at
-  once to a server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an
-  instance of 512 MiB has room with that limit set. A post waits for room in either
-  budget for about ten seconds at most. Once there is room to read it, its body has 30
-  seconds to arrive, and once it has arrived its image has 25 seconds to be processed
-  and stored. A post that cannot be taken in time — no room within the wait, or its
-  image not stored within those 25 seconds — answers `503` (see
-  [Flood control](#flood-control)) with nothing stored, rather than being made after
-  its answer could no longer be sent. A body that takes longer than its 30 seconds is
-  the connection's doing, not the server's, and answers `408` with
-  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time
-  a post spent waiting for room is not counted against its body.
+  images it holds. Between them that is 320 MiB at most, beside the content rules
+  prepared at start (about 65 MiB): eighty 8 MiB uploads sent at once to a server run
+  with `GOMEMLIMIT=400MiB` and one core peaked at 416–424 MiB resident, whether they came
+  while the rules were being prepared or after, so an instance of 512 MiB has room with
+  that limit set; without it the same burst reached 502–507 MiB, which is no room at all.
+  A post waits for room in either budget for about ten seconds at most. Once there is
+  room to read it, its body has 30 seconds to arrive, and once it has arrived its image
+  has 25 seconds to be processed and stored. A post that cannot be taken in time — no
+  room within the wait, or its image not stored within those 25 seconds — answers `503`
+  (see [Flood control](#flood-control)) with nothing stored, rather than being made after
+  its answer could no longer be sent. A body that takes longer than its 30 seconds is the
+  connection's doing, not the server's, and answers `408` with
+  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
+  post spent waiting for room is not counted against its body.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering

@@ -698,13 +698,16 @@ before, so those runs were slower all round). Before the searches were planned t
 typical post, the repeated sentence and a post of `㏂`, which folds to `maxFoldRunes`,
 took about 4 ms, 36 ms and 400–490 ms.
 `go test -run - -bench CheckContent ./internal/app` times both kinds of maximum-length
-post as wall time, GC included. Refusals are budgeted all the same; see the API
-contract. Planning takes about 3.5 s of one core, once per process, and keeps about 64
-MB of heap; while it runs the heap reaches about 280 MB with four cores and about 320 MB
-with one (`runtime.MemStats.HeapSys`), which the server's 512 MiB has to hold beside
-everything else. `Routes` starts it in the background, and a post that comes first waits
-for it. The plain view is skipped when the loose one is only it with `l` read as `i`
-(`looseOnly`). What holds the cost down:
+post as wall time, GC included. Refusals are budgeted all the same; see the API contract.
+Planning takes about 3.5 s of one core, once per process, and keeps about 65 MiB of heap;
+while it runs the heap reaches 270–300 MiB with four cores and 330–370 MiB with one
+(`runtime.MemStats.HeapSys`, three and five runs on a shared machine), and the runtime
+gives the difference back to the system slowly: a server left idle after it started stayed
+at 350–367 MiB resident for two minutes and was at 160–185 MiB after four. The server's
+512 MiB has to hold that beside everything else (see the upload budgets below). `Routes`
+starts it in the background, and a post that comes first waits for it. The plain view is
+skipped when the loose one is only it with `l` read as `i` (`looseOnly`). What holds the
+cost down:
 
 - `TestFilterCostIsBounded` counts work rather than time (`checkContentCost`: the
   places tried, the characters read, the machines' steps, and each check a match is put
@@ -1196,10 +1199,14 @@ posting form (see **The content rules' answers** under Front end conventions).
   `maxRequestBytes` between them, as a JSON post may, the first value of each name is the
   one read, and parts past `maxFormParts` refuse the form
   (`TestMultipartPostsAreReadAsTheFormSendsThem`). Between them the two budgets hold 320
-  MiB at most, whatever `containerConcurrency` lets in; the rest of the process is about
-  40 MiB idle, and eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB`
-  peaked at 330 MiB resident (786 MiB before the upload budget), so a 512 MiB instance
-  needs that limit, which this code does not set. **Every wait is bounded, and a slow
+  MiB at most, whatever `containerConcurrency` lets in; beside them the content filter
+  keeps about 65 MiB of planned searches, and the rest of the process is about 40 MiB.
+  Eighty 8 MiB uploads sent at once to a server with `GOMEMLIMIT=400MiB` and one core
+  peaked at 416–424 MiB resident, whether they came while the filter was being planned or
+  after it (three runs each; 330 MiB before the filter, 786 MiB before the upload
+  budget), and at 502–507 MiB with no limit, so a 512 MiB instance needs that limit,
+  which this code does not set. The limit is passed rather than kept, since what the
+  budgets and the filter hold is live. **Every wait is bounded, and a slow
   client is told apart from a busy server.** A post waits for room in the upload budget
   under `reserveContext` (`postDeadline`, 25 s, from when its handler starts); a wait that
   does not get room gives up `processingAllowance` (15 s: the slowest admitted upload
