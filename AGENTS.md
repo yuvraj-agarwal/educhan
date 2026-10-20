@@ -932,7 +932,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
-  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
+  `TestClientKnowsTheServersImageRefusals`, `TestClientKnowsWhenNoCodeIsPending` and
+  `TestAnExpiredCodeIsSaidToHaveExpired` in `internal/app/web_invariants_test.go`) run
   the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
   `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every
