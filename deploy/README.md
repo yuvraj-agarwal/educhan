@@ -308,8 +308,8 @@ looks tempting and breaks something:
 Four values do not belong in a deployment command: the database URL (it carries
 the password), the poster-ID salt, the moderation key, and the captcha secret.
 Unset, the captcha secret switches the captcha off, the way verification is off
-without its secret; set, it must be at least 32 characters or the server refuses
-to start, and `openssl rand -hex 32` makes 64. `first-deploy.sh` creates it the
+without its secret; set, it must be at least 32 bytes or the server refuses to
+start, and `openssl rand -hex 32` makes 64. `first-deploy.sh` creates it the
 same way, only if it is missing. Only the service reads it: the sweeper Job
 neither has nor needs it.
 
@@ -347,6 +347,7 @@ version and rolling out a new revision straight away, which replaces every
 instance together:
 
 ```bash
+export REGION="${REGION:-asia-south1}"   # the region the service runs in
 openssl rand -hex 32 | gcloud secrets versions add educhan-captcha-secret --data-file=-
 gcloud run services update educhan --region "$REGION" \
   --update-secrets EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest
@@ -364,6 +365,8 @@ that `EDUCHAN_CAPTCHA_SECRET` is unset, and `GET /api/site` answers
 `"captcha":false`. To add it by hand, once:
 
 ```bash
+export REGION="${REGION:-asia-south1}"   # the region the service runs in
+export RUN_SA="educhan-run@$(gcloud config get-value project).iam.gserviceaccount.com"
 openssl rand -hex 32 \
   | gcloud secrets create educhan-captcha-secret --replication-policy=automatic --data-file=-
 gcloud secrets add-iam-policy-binding educhan-captcha-secret \
@@ -459,7 +462,7 @@ gcloud run deploy educhan \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest,EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
   --cpu 1 --memory 512Mi --concurrency 80 --max-instances 4 \
   --allow-unauthenticated
 ```
@@ -684,8 +687,8 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_GCS_PREFIX` | unused | `media` | Optional key prefix, so the bucket can hold other things too |
 | `EDUCHAN_POSTER_ID_SALT` | random per process | from Secret Manager | Set it locally too, or poster IDs change on every restart. Must be stable across instances and revisions |
 | `EDUCHAN_MOD_KEY` | unset; export a throwaway | from Secret Manager | Unset means every moderation endpoint answers `403` |
-| `EDUCHAN_CAPTCHA_SECRET` | unset unless testing the captcha | from Secret Manager | Keys the posting captcha's challenges. Unset switches the captcha off; under 32 characters refuses to start. Same value on every instance; rotate it with a new revision (section 2.4), which fails only challenges from the last half hour |
-| `EDUCHAN_CAPTCHA_WORK` | `1500` (default) | `1500` (default) | Average attempts a challenge asks for, raised for an address asking for challenges quickly. Between `1` and `7500` |
+| `EDUCHAN_CAPTCHA_SECRET` | unset unless testing the captcha | from Secret Manager | Keys the posting captcha's challenges. Unset switches the captcha off; under 32 bytes refuses to start. Same value on every instance; rotate it with a new revision (section 2.4), which fails only challenges from the last half hour |
+| `EDUCHAN_CAPTCHA_WORK` | `1500` (default) | `1500` (default) | Work a challenge asks for: the average counter its answer is at, so about this many PBKDF2 attempts (one more on average), raised for an address asking for challenges quickly. Between `1` and `7500` |
 | `EDUCHAN_VERIFY_SECRET` | unset unless testing verification | **unset** | Institutional verification. Unset switches it off; rotating it revokes every badge. Left off on Cloud Run until a mail `Sender` exists — see below |
 | `EDUCHAN_TRUST_PROXY` | `0` | `1` | Cloud Run's front end appends exactly one hop to `X-Forwarded-For` |
 | `EDUCHAN_LOG_FORMAT` | `text` (default) | `json` | JSON is what Cloud Logging parses into structured fields |
