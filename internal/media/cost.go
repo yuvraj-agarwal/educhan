@@ -81,7 +81,11 @@ const cheapestRest int64 = 1 << 20
 // processingSlack is what each estimate adds for what it does not itemise:
 // decoders' tables and row buffers, compressors' windows, a PNG's gamma tables
 // (applyPNGGamma, 128 KiB at most), the thumbnail's own pixels and encoding,
-// and what a phase allocates while a collection runs.
+// and what a phase allocates while a collection runs. Rows as wide as the
+// picture are not in it, because a strip as wide as Inspect admits makes
+// them tens of megabytes: image/png's decoder reads through two rows of the
+// file (pngRowBytes) and its encoder writes through six of the stored
+// picture (pngEncoderRows), and each is charged to its phase.
 const processingSlack int64 = 4 << 20
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides
@@ -188,8 +192,10 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 	scratch := thumbScratch(tw, th)
 	// The encoder writes into a buffer the size of the upload, which
 	// doubles up to limit, holding the old and the new while it grows
-	// (storedBuffer). What it wrote is kept for the thumbnail.
-	phases = append(phases, phase{first: min(upload, limit), alloc: 2 * limit, after: held + limit})
+	// (storedBuffer), and image/png through rows of the picture
+	// (pngEncoderRows). What it wrote is kept for the thumbnail.
+	rows := pngEncoderRows(format, data, tw)
+	phases = append(phases, phase{first: min(upload, limit), alloc: 2*limit + rows, after: held + limit})
 	// The scaler allocates its scratch whole as it starts. What the
 	// encoder wrote is kept after it, until it has been stored (Save
 	// holds the budget until then), but nothing larger is made for
@@ -197,6 +203,30 @@ func completedCost(format Format, data []byte, cfg image.Config, frames gifFrame
 	// Cloud Storage writer is given no buffer of its own (GCSStore.Put).
 	phases = append(phases, phase{first: scratch, alloc: scratch, after: limit})
 	return peakOf(phases...) + processingSlack
+}
+
+// pngEncoderRows is what image/png's encoder writes a picture tw pixels wide
+// through when an upload of format is stored as a PNG: six rows, the row
+// being written under each of its five filters and the row before it, each a
+// filter byte and the row at no more bytes a pixel than the decoded picture
+// holds — pngBytesPerPixel for a PNG, and 4 for a lossless WebP or a lossy one
+// with an alpha plane, which are stored as PNGs of NRGBA pictures. In a strip
+// as wide as Inspect admits they come to tens of megabytes. A JPEG, and a
+// lossy WebP stored as one, is written by jpegenc, a few blocks at a time.
+func pngEncoderRows(format Format, data []byte, tw int) int64 {
+	var bpp int64
+	switch format.Name {
+	case FormatPNG.Name:
+		bpp = pngBytesPerPixel(data)
+	case FormatWebP.Name:
+		if lossless, alpha, _ := webpPicture(data); !lossless && !alpha {
+			return 0
+		}
+		bpp = 4
+	default:
+		return 0
+	}
+	return 6 * (1 + bpp*int64(tw))
 }
 
 // storedOnItsSide reports whether an upload's EXIF orientation turns it on
@@ -226,11 +256,16 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		return jpegPhases(data, w, h)
 	case FormatPNG.Name:
 		d := pngBytesPerPixel(data) * px
-		decode := phase{first: d, alloc: d, after: d}
+		// image/png reads the file a row at a time into two buffers beside
+		// the picture, the row and the one before it, which a strip as wide
+		// as the pixel cap allows makes tens of megabytes.
+		rows := 2 * pngRowBytes(data, w)
+		decode := phase{first: d, alloc: d + rows, after: d}
 		if pngInterlaced(data) {
 			// Each of the seven passes is decoded into a picture of its own
-			// and merged into the whole; the last pass is half of it.
-			decode.alloc = 2 * d
+			// and merged into the whole; the last pass is half of it. Its
+			// rows are no wider than the picture's.
+			decode.alloc = 2*d + rows
 		}
 		phases := []phase{decode}
 		if pngOrientation(data) >= 2 {
@@ -814,6 +849,29 @@ func pngHasTRNS(data []byte) bool {
 		i += 12 + int(n)
 	}
 	return true
+}
+
+// pngRowBytes is a row of a PNG w pixels wide as its image data holds it, a
+// filter byte and the row's samples at the channels and bit depth its IHDR
+// gives, which is what image/png reads each row into (readImagePass), two of
+// them at once. A header too short to say is costed as 16-bit RGBA, the
+// widest kind.
+func pngRowBytes(data []byte, w int64) int64 {
+	bits := int64(64)
+	if len(data) >= 29 {
+		depth := int64(data[24])
+		switch data[25] {
+		case 0, 3: // grey, palette
+			bits = depth
+		case 2: // truecolour
+			bits = 3 * depth
+		case 4: // grey with alpha
+			bits = 2 * depth
+		case 6: // truecolour with alpha
+			bits = 4 * depth
+		}
+	}
+	return 1 + (bits*w+7)/8
 }
 
 func pngInterlaced(data []byte) bool {

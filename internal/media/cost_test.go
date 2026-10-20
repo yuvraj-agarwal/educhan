@@ -340,15 +340,17 @@ func greyQuadrants(w, h int) *image.Gray {
 // scaler holds tables of weights of 64 bytes for each of them (thumbScratch);
 // turned on its side, it is stored four pixels wide, so its thumbnail is a
 // pixel wide and the scaler's buffer is 32 bytes for every one of its rows as
-// well, which only reading the orientation charges. Two more JPEGs of YCbCr
-// samples, both turned on their side, are converted to RGB, a copy of 4 bytes
-// a pixel that the turn copies again whole, by segments image/jpeg reads where
-// a walk that stopped at the first scan would not see them: the progressive
-// 4:2:0 file, without its JFIF APP0, with an Adobe segment of transform 0
-// after its last scan, and a baseline 4:2:0 one whose JFIF APP0 is followed by
-// another APP0, which clears what the first said, so that the Adobe segment
-// after it counts. Those marked "o6" carry an EXIF orientation of 6, so they
-// are turned on their side too, and "o3" one of 3, turned around.
+// well, which only reading the orientation charges. The 16-bit RGBA strip, a
+// row of 1048576 pixels, is decoded through two rows of the file of 8 MiB each
+// beside its picture (pngRowBytes). Two more JPEGs of YCbCr samples, both
+// turned on their side, are converted to RGB, a copy of 4 bytes a pixel that
+// the turn copies again whole, by segments image/jpeg reads where a walk that
+// stopped at the first scan would not see them: the progressive 4:2:0 file,
+// without its JFIF APP0, with an Adobe segment of transform 0 after its last
+// scan, and a baseline 4:2:0 one whose JFIF APP0 is followed by another APP0,
+// which clears what the first said, so that the Adobe segment after it counts.
+// Those marked "o6" carry an EXIF orientation of 6, so they are turned on
+// their side too, and "o3" one of 3, turned around.
 func costFixtures(t *testing.T) map[string][]byte {
 	t.Helper()
 	turned := func(jpg []byte, o uint16) []byte {
@@ -382,6 +384,7 @@ func costFixtures(t *testing.T) map[string][]byte {
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
 		"PNG strip o6": withPNGChunks(rawPNG(t, 1<<19, 4, 0, 8, false, false),
 			pngChunk("eXIf", orientationTIFF(binary.BigEndian, 6))),
+		"PNG RGBA 16-bit strip":        rawPNG(t, 1<<20, 1, 6, 16, false, false),
 		"GIF of four frames":           gifOfFrames(t, w, h, 4),
 		"GIF of two interlaced frames": interlaced(t, gifOfFrames(t, large, tall, 2)),
 		"GIF past its canvas":          interlaced(t, gifPastCanvas(t, large, tall)),
@@ -836,6 +839,77 @@ func TestThumbScratchCoversTheScaler(t *testing.T) {
 		t.Logf("%s: thumbnail held %.1f MiB of %.1f", name, float64(held)/(1<<20), float64(want)/(1<<20))
 		if held > want {
 			t.Errorf("%s: making the thumbnail held %d bytes live, over thumbScratch and processingSlack, %d", name, held, want)
+		}
+	}
+}
+
+// image/png's encoder writes a picture through six rows of it, the row under
+// each of its five filters and the row before it, each as wide as the
+// picture; in a strip a million pixels wide they are more than
+// processingSlack, so they are charged (pngEncoderRows), and what the encoder
+// holds is no more than that and the slack. That is so for every kind of PNG
+// as sanitizePNG hands it to the encoder, and for the NRGBA picture a lossless
+// WebP or a lossy one with an alpha plane is stored as. They are measured
+// here, in the encoder alone, because measured over the whole of Process
+// they would not show left out: the scaler's scratch for a strip's
+// thumbnail, made once the encoder is done with them, is larger.
+func TestPNGEncoderRowsAreCharged(t *testing.T) {
+	const w = 1 << 20
+	type strip struct {
+		name   string
+		format Format
+		data   []byte // the upload, which pngEncoderRows reads the kind from
+		pic    image.Image
+	}
+	var strips []strip
+	for _, k := range []struct {
+		name          string
+		colour, depth byte
+		trns          bool
+	}{
+		{"palette PNG", 3, 8, false},
+		{"8-bit grey PNG", 0, 8, false},
+		{"16-bit grey PNG", 0, 16, false},
+		{"8-bit grey+tRNS PNG", 0, 8, true},
+		{"16-bit grey+tRNS PNG", 0, 16, true},
+		{"8-bit grey+alpha PNG", 4, 8, false},
+		{"8-bit RGB PNG", 2, 8, false},
+		{"16-bit RGB PNG", 2, 16, false},
+		{"8-bit RGBA PNG", 6, 8, false},
+		{"16-bit RGBA PNG", 6, 16, false},
+	} {
+		data := rawPNG(t, w, 1, k.colour, k.depth, false, k.trns)
+		pic, err := png.Decode(bytes.NewReader(data))
+		if err != nil {
+			t.Fatalf("%s: %v", k.name, err)
+		}
+		reduceHiddenColour(pic)
+		strips = append(strips, strip{k.name, FormatPNG, data, pic})
+	}
+	nrgba := image.NewNRGBA(image.Rect(0, 0, w, 1))
+	for i := 3; i < len(nrgba.Pix); i += 8 {
+		nrgba.Pix[i] = 0xFF // every other pixel opaque, so it is stored with alpha
+	}
+	strips = append(strips,
+		strip{"lossless WebP", FormatWebP, webpHeader("lossless", w, 1), nrgba},
+		strip{"lossy WebP with transparency", FormatWebP, webpHeader("alpha", w, 1), nrgba})
+
+	for _, s := range strips {
+		rows := pngEncoderRows(s.format, s.data, w)
+		want := rows + processingSlack
+		out := bytes.NewBuffer(make([]byte, 0, 4<<20))
+		held := leastPeak(t, s.name, want, func() error {
+			out.Reset()
+			return png.Encode(out, s.pic)
+		})
+		t.Logf("%s: encoding held %.1f MiB of %.1f", s.name, float64(held)/(1<<20), float64(want)/(1<<20))
+		if held > want {
+			t.Errorf("%s: encoding a %dx1 strip held %d bytes live, over pngEncoderRows and processingSlack, %d", s.name, w, held, want)
+		}
+		// The palette here has two colours, which are written at a bit a
+		// pixel, so its rows are within the slack; every other kind's are not.
+		if _, paletted := s.pic.(*image.Paletted); !paletted && held <= processingSlack {
+			t.Errorf("%s: encoding a %dx1 strip held %d bytes live, within processingSlack: the strip is too narrow to show the rows", s.name, w, held)
 		}
 	}
 }
@@ -1408,7 +1482,7 @@ func jpegFrameAt(data []byte) int {
 // about 750,000 pixels in colour or 1.3 to 1.5 million otherwise; everything
 // else in the accepted list at every shape. At a quarter of the size, every
 // kind is accepted at every shape up to a thousand to one, and a PNG of any
-// size is refused once its longer side passes about 4 million.
+// size is refused once its longer side passes 2.2 to 3.7 million.
 //
 // That is millions of shapes, so this reads the estimate Inspect compares
 // with the budget (processingCost), with a JPEG's frame header rewritten in
@@ -1626,22 +1700,31 @@ func TestEncodingsAreJudgedAtEveryShape(t *testing.T) {
 	wg.Wait()
 
 	// However narrow a PNG is, it is refused once its longer side passes
-	// about 4 million pixels: every kind at every orientation, from an
-	// upload of a kilobyte, as a row and as a column.
+	// 2.2 to 3.7 million pixels, by its kind and which way it lies: every
+	// kind at every orientation, from an upload of a kilobyte, as a row and
+	// as a column, is accepted at 2.1 million and refused at 3.7 million.
+	// The thumbnail's scaler sets the limit for a column, and for a row the
+	// scaler and image/png's rows of the picture together (pngRowBytes,
+	// pngEncoderRows), which is why a row of more bytes a pixel stops sooner.
 	for _, k := range quarter {
 		if k.format != png {
 			continue
 		}
 		for _, o := range k.turns {
-			for _, size := range []image.Point{{4_100_000, 1}, {1, 4_100_000}} {
+			for _, size := range []image.Point{{2_100_000, 1}, {1, 2_100_000}} {
+				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); err != nil {
+					t.Errorf("Inspect(%s, o%d, %dx%d, 1 KiB) = %v, want it accepted", k.name, o, size.X, size.Y, err)
+				}
+			}
+			for _, size := range []image.Point{{3_700_000, 1}, {1, 3_700_000}} {
 				if _, err := Inspect(headerUpload(k.head(size.X, size.Y), o, 1<<10)); !errors.Is(err, ErrImageTooCostly) {
 					t.Errorf("Inspect(%s, o%d, %dx%d, 1 KiB) = %v, want it refused", k.name, o, size.X, size.Y, err)
 				}
 			}
 		}
 	}
-	if _, err := Inspect(headerUpload(headPNG(3, 8, false)(4_000_000, 1), 1, 1<<10)); err != nil {
-		t.Errorf("Inspect(palette PNG, 4000000x1, 1 KiB) = %v, want it accepted: the limit is about 4 million", err)
+	if _, err := Inspect(headerUpload(headPNG(3, 8, false)(3_600_000, 1), 1, 1<<10)); err != nil {
+		t.Errorf("Inspect(palette PNG, 3600000x1, 1 KiB) = %v, want it accepted: the limit is about 3.7 million", err)
 	}
 }
 

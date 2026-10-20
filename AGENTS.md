@@ -823,25 +823,27 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   decode to 4 bytes a pixel, and which are RGB is read as `image/jpeg` reads it, from the
   APP0 and Adobe segments of the whole file, after its scans too (`readJPEGFrame`,
   `TestJPEGColourModelIsReadAsTheDecoderReadsIt`); a 16-bit PNG to 8, or to 2 when it is
-  grey with no transparency, as `pngBytesPerPixel` reads its header; `image/gif` keeps
-  `gifFrameOverhead` for every frame besides its pixels, so a GIF of thousands of empty
-  frames is not free, and `playGIF` four bytes and two bits a pixel of the canvas, and
-  four bytes more for an animation whose tables give more than 255 colours,
-  `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the encoder's
-  output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
+  grey with no transparency, as `pngBytesPerPixel` reads its header, and every PNG through
+  two rows of the file beside its picture (`pngRowBytes`), tens of megabytes in a strip;
+  `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
+  thousands of empty frames is not free, and `playGIF` four bytes and two bits a pixel of
+  the canvas, and four bytes more for an animation whose tables give more than 255
+  colours, `gifPlayScratch`, and `gifFramePlay` a frame), the copy `orient` makes, the
+  encoder's output buffer (`storedBuffer`, which refuses to grow past `storedLimit` with
   `ErrStoredTooLarge`: four times the upload plus half a byte a pixel, so a file Go's
   encoders cannot compress the way it came is refused rather than stored many times
   larger; a lossy WebP with transparency, stored as a PNG and so meant to grow, is held to
   `pngLimit` of its size instead, which the header gives, so its cost refuses it up front
-  rather than after decoding), and the thumbnail scaler's scratch (`thumbScratch`, for the
-  picture as it is stored, turned upright by `storedOnItsSide`): its buffer, as wide as
-  the thumbnail and as tall as the picture, and its tables of weights, 64 bytes for every
-  pixel of the two sides, which are most of it for a long strip — a PNG a pixel wide and
-  25 million long would have taken 1.6 GB of them before they were charged.
-  `TestThumbScratchCoversTheScaler` measures both, and the turned PNG strip in
-  `costFixtures` the whole. `peakOf` takes them phase by phase and counts each phase's
-  first allocation on top of the previous phase's peak, because a collection that began
-  before the boundary still holds that phase's scratch. An estimate over
+  rather than after decoding), the six rows of the stored picture `image/png`'s encoder
+  writes a PNG through (`pngEncoderRows`), and the thumbnail scaler's scratch
+  (`thumbScratch`, for the picture as it is stored, turned upright by `storedOnItsSide`):
+  its buffer, as wide as the thumbnail and as tall as the picture, and its tables of
+  weights, 64 bytes for every pixel of the two sides, which are most of it for a long
+  strip — a PNG a pixel wide and 25 million long would have taken 1.6 GB of them before
+  they were charged. `TestThumbScratchCoversTheScaler` measures both, and the turned PNG
+  strip in `costFixtures` the whole. `peakOf` takes them phase by phase and counts each
+  phase's first allocation on top of the previous phase's peak, because a collection that
+  began before the boundary still holds that phase's scratch. An estimate over
   `processingBudget` (256 MiB) is refused from the header as `ErrImageTooCostly` (`image
   too large to process`), before any cooldown, and so is a GIF whose frames' charge passes
   `maxGIFFramePixels`; `ErrImageTooLarge` (`image resolution is too large`) is kept for a
