@@ -1354,12 +1354,15 @@ table, which VACUUM reports only as a warning; the sweep's connection asks for
 warnings itself, so a `client_min_messages` in `DATABASE_URL` or a role's
 default cannot make a moment's reader look like a role that may not vacuum the
 table (`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has
-a table it can still wait for another lock it needs — the table's TOAST table,
-which autovacuum vacuums on its own, as it still does `pg_statistic`'s, or the
-table's row in `pg_class`, which a `GRANT` on the table holds until its
-transaction ends — but for a tenth of a second at most, with the requests that
-need the table waiting behind it; then it gives the table up and tries again
-later (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). And a run that
+a table it can still wait for another lock it needs — the table's row in
+`pg_class`, which a `GRANT` on the table holds until its transaction ends, or
+its TOAST table, which a `VACUUM` of that TOAST table by name holds, as
+autovacuum does `pg_statistic`'s (the verification tables' TOAST tables take
+their tables' `autovacuum_enabled = false`, so autovacuum comes to them only
+near transaction id wraparound, which the nightly `VACUUM FULL` keeps away) —
+but for a tenth of a second at most, with the requests that need the table
+waiting behind it; then it gives the table up and tries again later
+(`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). And a run that
 has its locks holds the table against reads as well as writes until it has
 written the table out, so badged posts and confirmations wait for the whole run:
 between about half a second and two and a half seconds for 220,000 credentials,

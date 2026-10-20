@@ -1225,20 +1225,23 @@ const verificationLockTimeout = "5s"
 // SKIP_LOCKED makes VACUUM FULL pass over a table another session holds
 // rather than wait for it, but only the table it is given. Once it has that
 // table it takes other locks, and waits for each while it holds the table
-// against every read. One is its TOAST table's, which autovacuum vacuums on
-// its own, with no lock on the table — as it does pg_statistic's, for which
-// 0015 left autovacuum on — and which a VACUUM of the TOAST table by name
-// holds too. Another is its row in pg_class, which it updates, and so waits
-// for any transaction that has updated the row and not ended: a GRANT on the
-// table, say, which takes no lock on the table itself. Meanwhile
-// CredentialLabel waits on the credentials table, and every query whose plan
-// needs statistics its connection has not cached waits on pg_statistic, on
-// any table. So the vacuum waits that long at most for such a lock and gives
-// the table up (vacuumBlocked), and the sweep tries again a moment later, as
-// for a table another session holds. An uncontended lock is granted at once,
-// so the bound need be no longer than a request should wait; and it is below
-// PostgreSQL's deadlock_timeout, so the sweep gives way to an autovacuum
-// rather than having it cancelled.
+// against every read. One is its TOAST table's, which a VACUUM of the TOAST
+// table by name holds, with no lock on the table. Autovacuum holds
+// pg_statistic's the same way, since 0015 left autovacuum on for the catalog.
+// It leaves the verification tables' TOAST tables alone: a TOAST table with no
+// setting of its own takes its table's, and 0015 turned autovacuum off on
+// both, so it comes to them only to keep their transaction ids from wrapping
+// around, which the nightly VACUUM FULL keeps from coming due. Another is its
+// row in pg_class, which it updates, and so waits for any transaction that
+// has updated the row and not ended: a GRANT on the table, say, which takes no
+// lock on the table itself. Meanwhile CredentialLabel waits on the credentials
+// table, and every query whose plan needs statistics its connection has not
+// cached waits on pg_statistic, on any table. So the vacuum waits that long at
+// most for such a lock and gives the table up (vacuumBlocked), and the sweep
+// tries again a moment later, as for a table another session holds. An
+// uncontended lock is granted at once, so the bound need be no longer than a
+// request should wait; and it is below PostgreSQL's deadlock_timeout, so the
+// sweep gives way to an autovacuum rather than having it cancelled.
 const vacuumLockTimeout = "100ms"
 
 // How long RewriteCredentials keeps trying VACUUM FULL on the verification
@@ -1471,10 +1474,11 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // every badged post and confirmation behind its wait as well as its run, so it
 // runs with SKIP_LOCKED: it passes over a table it cannot take at once, with a
 // warning, and this tries again a moment later. SKIP_LOCKED does not cover the
-// locks VACUUM FULL takes once it has the table, its TOAST table's above all,
-// and it holds the table while it waits for one; so this sets the
-// connection's lock_timeout to vacuumLockTimeout first, and a run that times
-// out has given the table up, and is tried again the same way.
+// locks VACUUM FULL takes once it has the table, its TOAST table's and its row
+// in pg_class (vacuumLockTimeout says who can hold them), and it holds the
+// table while it waits for one; so this sets the connection's lock_timeout to
+// vacuumLockTimeout first, and a run that times out has given the table up,
+// and is tried again the same way.
 //
 // It copies, rather than drops, a deleted row that some snapshot could still
 // read: one deleted by a transaction no older than its cutoff. The cutoff is

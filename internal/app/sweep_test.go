@@ -1985,9 +1985,11 @@ func TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor(t *testing.T) {
 
 // SKIP_LOCKED covers only the table VACUUM FULL is given. Once it has that
 // table it takes other locks, waiting for each while it holds the table
-// against every read: its TOAST table's, which autovacuum vacuums on its own,
-// without the table — as it does pg_statistic's, where every query whose plan
-// needs statistics its connection has not cached would wait with it — and its
+// against every read: its TOAST table's, which a VACUUM of the TOAST table by
+// name holds without the table, as autovacuum does pg_statistic's on its own,
+// where every query whose plan needs statistics its connection has not cached
+// would wait with it (autovacuum leaves the verification tables' TOAST tables
+// alone, as it does the tables, except near transaction id wraparound); and its
 // row in pg_class, which a GRANT on the table updates without taking the
 // table. So the vacuum gives the table up after vacuumLockTimeout and the
 // sweep tries again, as for a table another session holds, rather than hold

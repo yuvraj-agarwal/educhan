@@ -856,11 +856,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     that leaves). `SKIP_LOCKED` passes over a table another session holds, with a
     `55P03` warning, rather than queueing every badged post behind the vacuum's wait.
     It covers only the table it names: once `VACUUM FULL` has the table it waits,
-    holding the table, for the other locks it needs — its TOAST table's, which
-    autovacuum takes on its own, and its row in `pg_class`, which an open `GRANT`
-    on the table holds — so `vacuumVerificationTables` first sets `lock_timeout` to
-    `vacuumLockTimeout` (100 ms), and a run that times out, with `55P03` as an
-    error, has given the table up and is tried again like a skipped one
+    holding the table, for the other locks it needs — its TOAST table's, which a
+    `VACUUM` of the TOAST table by name holds, and its row in `pg_class`, which an
+    open `GRANT` on the table holds. (Autovacuum takes `pg_statistic`'s TOAST table
+    on its own, below, but not these: a TOAST table takes its table's
+    `autovacuum_enabled = false`, so autovacuum comes to them only near transaction id
+    wraparound, which the nightly `VACUUM FULL` keeps from coming due.) So
+    `vacuumVerificationTables` first sets `lock_timeout` to `vacuumLockTimeout`
+    (100 ms), and a run that times out, with `55P03` as an error, has given the table
+    up and is tried again like a skipped one
     (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`, where a `GRANT` stands
     in for the TOAST table, which a test's role cannot hold). Neither does anything
     about the run: once `VACUUM FULL` has a table and its locks it holds it against
