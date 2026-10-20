@@ -581,8 +581,7 @@ keep the file out of the public namespace altogether, is not built.
 self-harm methods — appears in its thread, the index and the catalog, and can
 be replied to. Code from before `0011` does not know `expired_at` either, and
 shows again every archived thread a held reply kept. The rollback warning in
-`deploy/README.md` names only `0005` so far; `0009` and `0011` belong beside
-it.
+`deploy/README.md` says the same.
 
 ## Image attachments
 
