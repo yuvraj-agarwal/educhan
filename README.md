@@ -639,26 +639,30 @@ server that would refuse what it sends.
   how many requests an instance is let take at once does not decide how many images it
   holds. Between them that is 320 MiB at most: eighty 8 MiB uploads sent at once to a
   server run with `GOMEMLIMIT=400MiB` peaked at 330 MiB resident, so an instance of 512
-  MiB has room with that limit set. The posts of one client (one address, as flood control
-  counts them) hold at most half the upload budget at once, so a client cannot take all of
-  it with a few connections that declare large bodies and send nothing; its next image
-  post past that answers `429`, with a `Retry-After` of 10 seconds and no cooldown
-  started. A post waits for room in either budget for about ten seconds at most. Once
-  there is room to read it, its body has 30 seconds to arrive, at an even pace with 5
-  seconds to spare — a body that falls further behind the pace that would bring it all in
-  by then, sending nothing or a trickle, is cut off then and its room given back — and
-  once it has arrived its image has 25 seconds to be processed and stored. A post that
-  cannot be taken in time — no room within the wait, or its image not stored within those
-  25 seconds — answers `503` (see [Flood control](#flood-control)) with nothing stored,
-  rather than being made after its answer could no longer be sent. A body that takes
-  longer than its 30 seconds, or falls behind its pace, is the connection's doing, not the
-  server's, and answers `408` with `{"error":"upload too slow"}`, with nothing stored and
-  no cooldown started; the time a post spent waiting for room is not counted against its
-  body. A body sent without a `Content-Length` (chunked), whose length the server learns
-  only at its end, is held to the pace of the largest body a post may have, and when it is
-  slower than that it is cut off only once it has sent nothing for 5 seconds: a small
-  image sent slowly still arrives, but such a body that trickles keeps its room for the 30
-  seconds, and only its client's share of the upload budget limits how many do.
+  MiB has room with that limit set. The posts of one client hold at most half the upload
+  budget at once, so a client cannot take all of it with a few connections that declare
+  large bodies and send nothing; its next image post past that answers `429`, with a
+  `Retry-After` of 10 seconds and no cooldown started. A client here is one address, as
+  flood control counts them, except that the addresses of one IPv6 /64 network count as
+  one client, since a host can usually take any address in its /64: the people on one
+  such network share that half, as those behind one IPv4 address do, while flood control
+  still counts each of their addresses apart. A post waits for room in either budget for
+  about ten seconds at most. Once there is room to read it, its body has 30 seconds to
+  arrive, at an even pace with 5 seconds to spare — a body that falls further behind the
+  pace that would bring it all in by then, sending nothing or a trickle, is cut off then
+  and its room given back — and once it has arrived its image has 25 seconds to be
+  processed and stored. A post that cannot be taken in time — no room within the wait, or
+  its image not stored within those 25 seconds — answers `503` (see [Flood
+  control](#flood-control)) with nothing stored, rather than being made after its answer
+  could no longer be sent. A body that takes longer than its 30 seconds, or falls behind
+  its pace, is the connection's doing, not the server's, and answers `408` with
+  `{"error":"upload too slow"}`, with nothing stored and no cooldown started; the time a
+  post spent waiting for room is not counted against its body. A body sent without a
+  `Content-Length` (chunked), whose length the server learns only at its end, is held to
+  the pace of the largest body a post may have, and when it is slower than that it is cut
+  off only once it has sent nothing for 5 seconds: a small image sent slowly still
+  arrives, but such a body that trickles keeps its room for the 30 seconds, and only its
+  client's share of the upload budget limits how many do.
 - **Spoilers**: a `spoiler` field (`1`, `true`, or `on` in a form; a boolean in JSON) marks
   the image to be covered until it is clicked. The attachment comes back with
   `"spoiler": true`; the thumbnail is made exactly as for any other image, because covering

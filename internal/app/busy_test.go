@@ -632,11 +632,12 @@ func drainShares(t *testing.T, h *harness, clients ...string) {
 // post is answered, and a post whose body never arrives never reaches flood
 // control. So eight connections declaring 8 MiB bodies and sending nothing
 // held the whole budget for the read timeout, turned every other image post
-// away 503, and cost their client nothing. Now one client's posts hold at most
-// clientUploadShare, half the budget, its next post refused 429 at once; and a
-// body that falls behind an even pace through its read window by more than
-// uploadPaceGrace is cut off and answered 408, giving its room back, whether
-// it sends nothing or a trickle.
+// away 503, and cost their client nothing. Now one client's posts, an IPv6
+// client's counted by its /64 (shareKey), hold at most clientUploadShare, half
+// the budget, its next post refused 429 at once; and a body that falls behind
+// an even pace through its read window by more than uploadPaceGrace is cut
+// off and answered 408, giving its room back, whether it sends nothing or a
+// trickle.
 func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 	const declared = 8 << 20 // the default attachment limit, declared and never sent
 	conns := int(media.UploadBudget / declared)
@@ -670,6 +671,33 @@ func TestIdleUploadsCannotHoldTheUploadBudget(t *testing.T) {
 		}
 		if n := h.countRows("posts"); n != 1 {
 			t.Errorf("%d posts stored, want the other client's", n)
+		}
+	})
+
+	// A host on IPv6 can usually take any address in its /64: counted per
+	// address, a few of them would hold the whole budget.
+	t.Run("the addresses of one IPv6 network hold one share", func(t *testing.T) {
+		h := testServer(t, func(cfg *Config) { cfg.TrustedProxyHops = 1 })
+		h.addBoard("general")
+		h.app.uploadPaceGrace = time.Minute // so only the share is at work
+		h.app.uploadReadTimeout = time.Minute
+		h.app.postDeadline = 16 * time.Second // a wait for room gives up after a second
+		const network, other = "2001:db8:0:1::", "2001:db8:0:2::1"
+		drainShares(t, h, shareKey(network+"1"), shareKey(other))
+		for i := 1; i <= conns; i++ {
+			idleUpload(t, h.base, network+strconv.Itoa(i), declared)
+		}
+		if got := h.app.uploadShares.of(shareKey(network + "1")); got != clientUploadShare {
+			t.Errorf("the idle network holds %d bytes of the upload budget, want its share, %d", got, clientUploadShare)
+		}
+
+		var created createdPost
+		if status := uploadFrom(t, h, other, &created); status != http.StatusCreated {
+			t.Fatalf("another network's image post: status %d (%s), want 201", status, created.Error)
+		}
+		var refused busyPost
+		if status := uploadFrom(t, h, network+"99", &refused); status != http.StatusTooManyRequests {
+			t.Errorf("another address of the idle network: status %d (%s), want 429", status, refused.Error)
 		}
 	})
 

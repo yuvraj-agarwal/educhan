@@ -8,6 +8,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/netip"
 	"os"
 	"path"
 	"strconv"
@@ -36,11 +37,11 @@ const clientUploadShare = media.UploadBudget / 2
 
 // errUploadShare is a post refused because its client's other posts hold
 // their share of the upload budget already (clientUploadShare).
-var errUploadShare = errors.New("too many images uploading at once from this address")
+var errUploadShare = errors.New("too many images uploading at once from this client")
 
 // uploadShares counts what each client's posts hold of the upload budget,
-// keyed on the client address as flood control is, so that none holds more
-// than clientUploadShare. A client's entry goes once it holds nothing.
+// keyed on shareKey, so that none holds more than clientUploadShare. A
+// client's entry goes once it holds nothing.
 type uploadShares struct {
 	mu   sync.Mutex
 	held map[string]int64
@@ -69,6 +70,27 @@ func (s *uploadShares) take(client string, n int64) (func(), bool) {
 			}
 		})
 	}, true
+}
+
+// shareKey is the client a post's share of the upload budget is counted
+// under: its address as flood control counts it (clientIP), except that an
+// IPv6 address counts as its /64 network. A host on IPv6 can usually take any
+// address in its /64, so counted per address the share would bound nothing:
+// a few addresses would hold the whole budget. The people on one /64, a
+// campus network's say, have one share between them, as those behind one IPv4
+// address do. Flood control is not grouped so: its cooldowns are a wait after
+// each post, which a whole network would feel, where a share is room for a
+// few uploads at once.
+func shareKey(client string) string {
+	addr, err := netip.ParseAddr(client)
+	if err != nil || !addr.Is6() || addr.Is4In6() {
+		return client
+	}
+	network, err := addr.WithZone("").Prefix(64)
+	if err != nil {
+		return client
+	}
+	return network.String()
 }
 
 // of reports what client's posts hold, for tests.
@@ -286,12 +308,12 @@ func (a *App) parseSubmission(ctx context.Context, w http.ResponseWriter, r *htt
 }
 
 // reserveUpload takes room for a multipart post's body of at most size bytes:
-// its client's share first (clientUploadShare), refused at once with
-// errUploadShare when the client's other posts hold it already, and then the
-// upload budget itself (media.ReserveUpload), waited for under ctx. The
-// function it returns gives both back.
+// its client's share first (clientUploadShare, the client as shareKey counts
+// it), refused at once with errUploadShare when the client's other posts hold
+// it already, and then the upload budget itself (media.ReserveUpload), waited
+// for under ctx. The function it returns gives both back.
 func (a *App) reserveUpload(ctx context.Context, r *http.Request, size int64) (func(), error) {
-	share, ok := a.uploadShares.take(clientIP(r, a.cfg.TrustedProxyHops), size)
+	share, ok := a.uploadShares.take(shareKey(clientIP(r, a.cfg.TrustedProxyHops)), size)
 	if !ok {
 		return nil, errUploadShare
 	}

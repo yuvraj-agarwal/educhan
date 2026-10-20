@@ -891,22 +891,25 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   control, so before the share one client's eight connections declaring 8 MiB bodies and
   sending nothing held the whole budget for the read timeout, turned every other image
   post away `503`, and were charged nothing. Now `reserveUpload` takes from the client's
-  share first (`clientUploadShare`, half the budget, counted per `clientIP` in
-  `uploadShares`, and room for the largest body `maxUploadLimit` allows, which
-  `TestConfigFromEnvRejectsInvalidValues` holds), and a post past it is read to its end
-  unkept and answered `429` (`errUploadShare`, `busyRetryAfter` to wait, nothing charged)
-  without waiting; and `pacedBody` holds the body to an even pace through its read window,
-  moving the read deadline before every read to `uploadPaceGrace` (5 s) past when what has
-  arrived would have at the pace that brings it all in by the window's end, so a body that
-  sends nothing or a trickle is answered `408` and gives its room back after the grace,
-  not at the window's end (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a
+  share first (`clientUploadShare`, half the budget and room for the largest body
+  `maxUploadLimit` allows, which `TestConfigFromEnvRejectsInvalidValues` holds; counted in
+  `uploadShares` per `clientIP`, but per /64 for an IPv6 address (`shareKey`), since its
+  host can usually take any address in its /64 and counted per address the share would
+  bound nothing, while flood control stays per address, its cooldowns being a wait a whole
+  network would feel), and a post past it is read to its end unkept and answered `429`
+  (`errUploadShare`, `busyRetryAfter` to wait, nothing charged) without waiting; and
+  `pacedBody` holds the body to an even pace through its read window, moving the read
+  deadline before every read to `uploadPaceGrace` (5 s) past when what has arrived would
+  have at the pace that brings it all in by the window's end, so a body that sends nothing
+  or a trickle is answered `408` and gives its room back after the grace, not at the
+  window's end (`TestIdleUploadsCannotHoldTheUploadBudget`). A body without a
   `Content-Length` (chunked) is paced against the most a body may be, which is what it
   reserved, and at that pace a small one sent slowly was cut off, so it also has the grace
   from each read: it is cut off only once it is both behind that pace and silent for the
   grace, and one that trickles keeps its room to the window's end, bounded by the share
   alone (`TestUnsizedUploadsAreCutOffOnlyWhenTheyStop`). Between them the two budgets hold
-  320 MiB at most, whatever `containerConcurrency` lets in; the rest of
-  the process is about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
+  320 MiB at most, whatever `containerConcurrency` lets in; the rest of the process is
+  about 40 MiB idle, and eighty 8 MiB uploads sent at once to a server with
   `GOMEMLIMIT=400MiB` peaked at 330 MiB resident (786 MiB before the upload budget), so a
   512 MiB instance needs that limit, which this code does not set. **Every wait is
   bounded, and a slow client is told apart from a busy server.** A post waits for room in
