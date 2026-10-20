@@ -169,14 +169,14 @@ whichever educhan tab in the browser sent it: one still waiting on its anti-spam
 check is not sent, a post whose answer the server refused is not sent again, and
 one answered afterwards keeps nothing. Every open educhan tab also drops the
 badge and the poster key it holds; any posting form it shows, or is drawing at
-that moment, loses its Name and the option to post with the badge, and one that
-had the badge ticked says so when next pressed. The other tabs hear of it
-through `BroadcastChannel`, which every current browser has; in one without it,
-the other tabs drop only the badge, as they do for Forget this credential. A tab
-that stored one of the three again before it heard, for a post or a confirmation
-it handled meanwhile, removes it when it hears, but only while storage still
-holds what that tab stored: a badge confirmed or a key made in another tab since
-the press stays.
+that moment, loses its Name and the option to post with the badge, without a
+word when next pressed, which would tell whoever pressed it that the browser had
+held a badge. The other tabs hear of it through `BroadcastChannel`, which every
+current browser has; in one without it, the other tabs drop only the badge, as
+they do for Forget this credential. A tab that stored one of the three again
+before it heard, for a post or a confirmation it handled meanwhile, removes it
+when it hears, but only while storage still holds what that tab stored: a badge
+confirmed or a key made in another tab since the press stays.
 
 A badge is a weak thing to inherit: it grants posting under an institution's
 label and nothing else, with no account, no history, and no route back to the

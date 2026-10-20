@@ -579,18 +579,29 @@ check before the test changes.
   revoked, another address verified there) reads it again and, when it is not the badge
   that tab offered, takes the option out of every posting form on screen
   (`dropBadgeOption`, which moves focus on the box to the form's button) and draws
-  `/verify` again only if it shows the badge panel; the address and code steps are left
-  as they are, and a code step stays the code step whatever badge is read in meanwhile
+  `/verify` again only if it shows the badge panel. The address step is left as it is,
+  and so is a code step unless the badge read in is one newly verified there: the browser
+  has one verification in progress, held by its cookie, so that badge spent or replaced
+  the code the step asks for, and the step goes, drawn again as the panel with a word on
+  why if it is on screen (`codeSpentElsewhere`). A code request still on its way draws
+  its code step when answered, its code being the one the server holds
   (`followCredentialStorage`, by the `storage` event,
   `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
-  with its badged post on its way, refuses its next press once, saying the badge has
-  gone and that pressing again posts without it, under the same ID as the reader's
-  unbadged posts in a reply's thread while the poster key is the one it had
-  (`withdrawBadgeOption`, `badgeWithdrawn`, carried across a redraw by the draft,
+  with its badged post on its way, refuses its next press once, saying the badge has gone
+  and that pressing again posts without it, under the same ID as the reader's unbadged
+  posts in a reply's thread while the poster key is the one it had
+  (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
-  out tied to those posts, which the badge's own ID is there to keep apart. A badged
-  post refused as expired or revoked forgets the credential it sent only while storage
-  still holds it, so a badge verified in another tab meanwhile stays.
+  out tied to those posts, which the badge's own ID is there to keep apart. A redraw's
+  draft carries a ticked badge as the badge it was ticked for, and ticks the new form's
+  box only if the form offers that one: a form offering none, or another verified
+  meanwhile, is noted instead, so no badge goes out that the reader did not tick, and the
+  reader ticking or unticking the box takes the note off. Forget this browser takes the
+  option out without a word and drops the note: a word would tell whoever presses next
+  that the browser held a badge, and with the poster key gone the post shares an ID with
+  none made before. A badged post refused as expired or revoked forgets the credential it
+  sent only while storage still holds it, so a badge verified in another tab meanwhile
+  stays.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -624,19 +635,19 @@ check before the test changes.
   pressing tab (what is on its way, a redraw's draft included, the badge and the poster
   key the page holds, the code step, the note, and the Name and the badge option of every
   posting form on screen, whose note on the anti-spam check then says what a form without
-  the option says: `dropBadgeOption`, and which says so at its next press if it had the
-  badge ticked: `withdrawBadgeOption`) and draws `/verify` again if it is showing. The
-  message is one constant that says nothing about anyone. The pressing tab clears storage
-  before it posts the message, so another tab can store the credential, the poster key or
-  the name again, for a post or a confirmation it handles before it hears; each tab notes
-  what it stores of those three (`storedHere`), and on hearing removes each only while
-  storage still holds it as that tab stored it: never a badge confirmed or a key made in
-  another tab since, however late it hears (a name is compared by its text, so the same
-  name stored since goes too). In a browser without `BroadcastChannel` a forget covers
-  the tab it was pressed in, and the other tabs drop only the badge, as they do for
-  Forget this credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the
-  FAQ's shared-computer advice points to: the key left behind would give the next
-  person at the computer the same IDs in the same threads.
+  the option says: `dropBadgeOption`, without a word at its next press, which would say
+  the browser held a badge) and draws `/verify` again if it is showing. The message is
+  one constant that says nothing about anyone. The pressing tab clears storage before it
+  posts the message, so another tab can store the credential, the poster key or the name
+  again, for a post or a confirmation it handles before it hears; each tab notes what it
+  stores of those three (`storedHere`), and on hearing removes each only while storage
+  still holds it as that tab stored it: never a badge confirmed or a key made in another
+  tab since, however late it hears (a name is compared by its text, so the same name
+  stored since goes too). In a browser without `BroadcastChannel` a forget covers the tab
+  it was pressed in, and the other tabs drop only the badge, as they do for Forget this
+  credential (`TestForgettingTheBrowserReachesEveryTab`). It is what the FAQ's
+  shared-computer advice points to: the key left behind would give the next person at the
+  computer the same IDs in the same threads.
 
 ### Child safety
 

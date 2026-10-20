@@ -1482,26 +1482,28 @@ function dropBadgeOption(form) {
   }
 }
 
-// The posting forms whose option to post with the badge was taken out while
-// it was ticked, by anything but the form's own post being refused: another
-// tab forgetting, refusing or replacing the badge (followCredentialStorage),
-// or this browser being forgotten (forgetOnThisPage), whether the form was
-// idle or its badged post was on its way. Said nothing, the form's next press
-// would post without the badge, under the ID the reader's other posts in the
-// thread without one share, which is what a badged post's own ID is there to
-// keep apart. So that press is refused, once, saying so (submit), and the one
-// after it posts. Each is kept with the poster key storage held when its
-// option went, for the notice to name that ID only while the key is the same
+// The posting forms whose ticked badge went from under them: their option to
+// post with it taken out because another tab forgot, refused or replaced it
+// (followCredentialStorage), whether the form was idle or its badged post was
+// on its way, or drawn again by a redraw that offers another badge or none
+// (restoreDraft). Said nothing, the form's next press would post without the
+// badge, under the ID the reader's other posts in the thread without one
+// share, which is what a badged post's own ID is there to keep apart. So that
+// press is refused, once, saying so (submit), and the one after it posts. Each
+// is kept with the badge that went, by its token, and the poster key storage
+// held then, for the notice to name that ID only while the key is the same
 // (badgeWithdrawnNotice). It lives with the form, and a draft carries it
-// across a re-render (formDraft, restoreDraft).
+// across a re-render (formDraft, restoreDraft). Forget this browser drops
+// it: the key goes too, so the next post has an ID of its own.
 const badgeWithdrawn = new WeakMap();
 
 // withdrawBadgeOption is dropBadgeOption for a badge that has gone from under
-// the form, noting the form in badgeWithdrawn if its box was ticked.
-function withdrawBadgeOption(form) {
+// the form, offered, the one the page held and the box was drawn for, noting
+// the form in badgeWithdrawn if its box was ticked.
+function withdrawBadgeOption(form, offered) {
   const box = field(form, "badge");
   if (box && box.checked) {
-    badgeWithdrawn.set(form, storageGet(POSTER_KEY_STORAGE_KEY) || "");
+    badgeWithdrawn.set(form, { token: offered.token, key: storageGet(POSTER_KEY_STORAGE_KEY) || "" });
   }
   dropBadgeOption(form);
 }
@@ -1514,14 +1516,17 @@ const BADGE_GONE = "Your badge is no longer available in this browser — verify
 // that the badge has gone, and what pressing again does. A reply then goes out
 // under the same ID as the reader's posts in the thread without a badge while
 // storage holds the poster key it held when the badge went, the key that ID is
-// made from; Forget this browser takes the key away, so the next post gets a
-// new one, and a new thread has no posts yet to share an ID with. A badge
-// another tab stored since is not offered on this form, which was drawn
-// before it.
-function badgeWithdrawnNotice(form, key) {
-  const gone = state.verification.badge
-    ? "The badge this form offered has gone from this browser, and the form offers no other."
-    : BADGE_GONE;
+// made from: a forget in another tab that this one hears of only as the badge
+// going, in a browser without BroadcastChannel, takes the key away too, and a
+// new thread has no posts yet to share an ID with. A badge another tab stored
+// since is not offered on a form drawn before it, and on one drawn since it is
+// not ticked: ticking it is the reader's choice, and takes the note off.
+function badgeWithdrawnNotice(form, { key }) {
+  const gone = !state.verification.badge
+    ? BADGE_GONE
+    : field(form, "badge")
+      ? "The badge you ticked for this post has gone from this browser, and the one this form now offers is not ticked."
+      : "The badge this form offered has gone from this browser, and the form offers no other.";
   const sameID = form.dataset.kind === "reply" && key !== "" && key === storageGet(POSTER_KEY_STORAGE_KEY);
   return sameID
     ? `${gone} Pressing again posts this without a badge, under the same ID as the posts you make in this thread without one.`
@@ -2062,10 +2067,11 @@ function forgetBrowser() {
 // greet the next person with the last one's institution; and, in every posting
 // form on screen, empties the Name, drawn with the forgotten name, which would
 // post under its tripcode, and takes out the option to post with the badge,
-// which names the institution as well. A form that had it ticked says so at
-// its next press, as when another tab forgets the badge (withdrawBadgeOption):
-// its post was written to go with the badge. Its notice names no ID, since the
-// forget takes away the poster key the reader's other posts had theirs from.
+// which names the institution as well. Nothing is said at a form's next press,
+// though the badge was ticked or the form noted after another tab took a badge
+// away (badgeWithdrawn): that would tell whoever presses it that this browser
+// held a badge, and with the poster key gone too the post has an ID of its
+// own, shared with none of the posts made before the forget.
 function forgetOnThisPage() {
   browserForgets += 1;
   state.verification.badge = null;
@@ -2079,7 +2085,8 @@ function forgetOnThisPage() {
       name.defaultValue = "";
       name.value = "";
     }
-    withdrawBadgeOption(form);
+    badgeWithdrawn.delete(form);
+    dropBadgeOption(form);
   }
 }
 
@@ -2140,10 +2147,10 @@ function openForgetChannel() {
 // it. If that is not the one this tab offered, every posting form on screen
 // loses the option, which named the badge that has gone, and one that had it
 // ticked says so at its next press (withdrawBadgeOption); and /verify, when it
-// shows the badge panel, is drawn again. /verify showing the address or the
-// code step is left as it is, whatever badge it was drawn over, so a reader
-// filling it in, or waiting on a code request, loses nothing. The storage
-// event reaches every other tab, with BroadcastChannel or without.
+// shows the badge panel, is drawn again. /verify showing the address step is
+// left as it is, whatever badge it was drawn over, so a reader filling it in,
+// or waiting on a code request, loses nothing. So is a code step, unless the
+// badge read in is one newly verified there (codeSpentElsewhere).
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -2151,11 +2158,14 @@ function followCredentialStorage(event) {
   const offered = state.verification.badge;
   state.verification.badge = state.verification.enabled ? readBadge() : null;
   const held = state.verification.badge;
+  if (held && !(offered && held.token === offered.token)) {
+    codeSpentElsewhere();
+  }
   if (!offered || (held && held.token === offered.token)) {
     return;
   }
   for (const form of el.main.querySelectorAll("form[data-kind]")) {
-    withdrawBadgeOption(form);
+    withdrawBadgeOption(form, offered);
   }
   if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('[data-action="forget-verification"]')) {
     renderVerify(state.route);
@@ -2163,6 +2173,32 @@ function followCredentialStorage(event) {
 }
 
 window.addEventListener("storage", followCredentialStorage);
+
+// What /verify says when the code step it showed is put away, the code having
+// been spent or replaced in another tab.
+const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, so the code asked for here no longer works.";
+
+// codeSpentElsewhere is a tab's answer to a badge newly verified in another:
+// the browser has one verification in progress at a time, held by its cookie,
+// so the code step this tab drew is for a code that verified the badge there
+// or was replaced by the one that did, and the server takes it no more. The
+// step goes, so /verify next shows the badge panel, and is drawn again now,
+// with a word on why, when the code step is on screen. A code request from
+// this tab still on its way is left to draw its code step: its code is the one
+// the server holds, asked for after that verification.
+function codeSpentElsewhere() {
+  if (verifyStep.step !== "code") {
+    return;
+  }
+  verifyStep = { step: "email", label: "" };
+  if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) {
+    renderVerify(state.route).then((drawn) => {
+      if (drawn) {
+        showNotice(CODE_SPENT_ELSEWHERE);
+      }
+    });
+  }
+}
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
 // whatever state verification is in, since the key and the name are there
@@ -2291,8 +2327,9 @@ function verifyViewHTML() {
 
   // The badge panel, unless the reader is replacing the badge or a code is
   // pending: a code asked for over a badge, after Verify another address or
-  // while another tab confirmed one, is typed in all the same, since the badge
-  // it earns replaces the one held.
+  // with its request on its way while another tab verified one, is typed in
+  // all the same, since the badge it earns replaces the one held. A code step
+  // drawn before another tab verified a badge is put away (codeSpentElsewhere).
   if (v.badge && !verifyStep.replacing && verifyStep.step !== "code") {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
@@ -3325,9 +3362,10 @@ function captureDraft() {
 }
 
 // formDraft reads what a posting form holds, noting browserForgets as it was,
-// so that restoreDraft can tell a Name read before a forget. A form whose
-// ticked badge was taken out (badgeWithdrawn) is read as ticked, with the key
-// it was noted with.
+// so that restoreDraft can tell a Name read before a forget. A ticked badge is
+// read as the badge it was ticked for, the one the page holds, and a form
+// whose ticked badge went from under it (badgeWithdrawn) as ticked for the
+// badge that went, with the key it was noted with.
 function formDraft(form) {
   const image = field(form, "image");
   const details = form.closest("details");
@@ -3338,6 +3376,7 @@ function formDraft(form) {
   const sage = field(form, "sage");
   const badge = field(form, "badge");
   const spoiler = field(form, "spoiler");
+  const ticked = badgeWithdrawn.get(form) || (badge && badge.checked ? { token: state.verification.badge?.token } : null);
   return {
     forgets: browserForgets,
     open: details ? details.open : true,
@@ -3345,8 +3384,7 @@ function formDraft(form) {
     name: value("name"),
     body: value("body"),
     sage: sage ? sage.checked : false,
-    badge: badge ? badge.checked : badgeWithdrawn.has(form),
-    withdrawnKey: badgeWithdrawn.get(form),
+    badge: ticked,
     file: image && image.files ? image.files[0] : null,
     spoiler: spoiler ? spoiler.checked : false,
   };
@@ -3407,13 +3445,21 @@ function restoreDraft(draft) {
   }
   const sage = field(form, "sage");
   if (sage) sage.checked = draft.sage;
-  // A badge ticked in the draft that the new form does not offer, gone from
-  // the browser meanwhile, is noted as one taken out of the form would be.
+  // A badge ticked in the draft is ticked again only if the new form offers
+  // the same one. One the new form does not offer, gone from the browser
+  // meanwhile, is noted as one taken out of the form would be, and so is one
+  // whose new form offers another, verified in another tab meanwhile: ticked
+  // here, that one would go out unasked for. A draft read before a forget
+  // brings neither back (forgetOnThisPage).
   const badge = field(form, "badge");
+  const ticked = forgotten ? null : draft.badge;
+  const offered = state.verification.badge;
+  const same = Boolean(ticked && badge && offered && ticked.token === offered.token);
   if (badge) {
-    badge.checked = draft.badge;
-  } else if (draft.badge) {
-    badgeWithdrawn.set(form, draft.withdrawnKey ?? (storageGet(POSTER_KEY_STORAGE_KEY) || ""));
+    badge.checked = same;
+  }
+  if (ticked && !same) {
+    badgeWithdrawn.set(form, { token: ticked.token, key: ticked.key ?? (storageGet(POSTER_KEY_STORAGE_KEY) || "") });
   }
 
   // A form with no image field, on a site that takes no images, gets no file
@@ -3778,6 +3824,9 @@ el.main.addEventListener("change", (event) => {
     captchaImageAttached(event.target.form);
   }
   if (event.target.matches('input[type="checkbox"][name="badge"]')) {
+    // Ticking or unticking the badge a form offers is the reader's choice,
+    // made after the one a note on the form is about (badgeWithdrawn).
+    badgeWithdrawn.delete(event.target.form);
     badgeToggled(event.target);
     captchaBadgeToggled(event.target);
   }
@@ -4468,9 +4517,9 @@ el.main.addEventListener("submit", async (event) => {
   // A form whose ticked badge was taken out from under it says so before its
   // post goes without one, once; the press after it posts (badgeWithdrawn).
   if (badgeWithdrawn.has(form)) {
-    const key = badgeWithdrawn.get(form);
+    const withdrawn = badgeWithdrawn.get(form);
     badgeWithdrawn.delete(form);
-    showNotice(badgeWithdrawnNotice(form, key));
+    showNotice(badgeWithdrawnNotice(form, withdrawn));
     return;
   }
 
