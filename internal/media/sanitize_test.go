@@ -342,10 +342,11 @@ func TestOrientKeepsEveryPixelKindExact(t *testing.T) {
 }
 
 // The orientation reader works on whatever an upload holds. Broken EXIF is
-// read as upright, never as a panic, a hang or an allocation, and the decoder
-// alone decides whether the file is an image: one whose segment runs off the
-// end is refused as corrupt, one whose EXIF is merely nonsense is stored
-// upright, with the nonsense gone.
+// read for what Chromium reads of it (TestOrientationIsReadAsChromiumReadsIt)
+// and as upright where it cannot be read, never as a panic, a hang or an
+// allocation, and the decoder alone decides whether the file is an image: one
+// whose segment runs off the end is refused as corrupt, one whose EXIF is
+// merely nonsense is stored upright, with the nonsense gone.
 func TestHostileEXIF(t *testing.T) {
 	base := encodeJPEGImage(t, quadrants(64, 32))
 	le := binary.LittleEndian
@@ -376,7 +377,8 @@ func TestHostileEXIF(t *testing.T) {
 		{"truncated TIFF", withSegments(base, exifSegment(header[:6])), 1, false},
 		{"IFD with no room for its count", withSegments(base, exifSegment(header)), 1, false},
 		{"IFD offset outside the segment", withSegments(base, exifSegment(outside)), 1, false},
-		{"huge entry count", withSegments(base, exifSegment(hugeCount)), 1, false},
+		// Read for the one entry it holds, as Chromium reads it.
+		{"huge entry count", withSegments(base, exifSegment(hugeCount)), 6, false},
 		{"IFD offsets in a loop", withSegments(base, exifSegment(loop)), 6, false},
 		{"orientation of the wrong type", withSegments(base, exifSegment(wrongType)), 1, false},
 		{"orientation out of range", withSegments(base, exifSegment(outOfRange)), 1, false},
@@ -413,6 +415,64 @@ func TestHostileEXIF(t *testing.T) {
 			}
 			requireFree(t, got.Data, "Exif")
 		})
+	}
+}
+
+// The orientation is read from EXIF as Chromium reads it, so that the stored
+// picture is turned as the poster's browser showed it, in a JPEG's Exif
+// segment and a PNG's eXIf chunk alike: the first Orientation entry that is a
+// single SHORT from 1 to 8 counts, one that is not is passed over rather than
+// read as upright, and an IFD that claims more entries than it holds is read
+// for the ones it holds. Each want is what Chromium 141 did with both files,
+// loaded as images: turned them by it, or, for 1, left them as they were.
+func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
+	le := binary.LittleEndian
+	o := func(v uint16) tiffEntry { return shortEntry(le, 0x0112, v) }
+	ifd0 := func(entries ...tiffEntry) []byte { return appendIFD(tiffHeader(le), le, entries, 0) }
+	// claiming says an IFD0 holds count entries, whatever it holds.
+	claiming := func(count uint16, tiff []byte) []byte {
+		out := append([]byte(nil), tiff...)
+		le.PutUint16(out[8:], count)
+		return out
+	}
+	twoShorts := tiffEntry{tag: 0x0112, typ: tiffTypeShort, count: 2, value: le.AppendUint16(le.AppendUint16(nil, 6), 6)}
+	cases := []struct {
+		name string
+		tiff []byte
+		want int
+	}{
+		{"one orientation", ifd0(o(6)), 6},
+		{"five entries claimed, one held and no next offset", claiming(5, ifd0(o(6))[:8+2+12]), 6},
+		{"65535 entries claimed, one held", claiming(65535, ifd0(o(6))), 6},
+		{"orientation 9, then 6", ifd0(o(9), o(6)), 6},
+		{"orientation 0, then 6", ifd0(o(0), o(6)), 6},
+		{"orientation as a LONG, then as a SHORT", ifd0(longEntry(le, 0x0112, 6), o(6)), 6},
+		{"orientation of two SHORTs, then of one", ifd0(twoShorts, o(6)), 6},
+		{"orientation 1, then 6", ifd0(o(1), o(6)), 1},
+		{"orientation 9 alone", ifd0(o(9)), 1},
+		{"orientation as a LONG alone", ifd0(longEntry(le, 0x0112, 6)), 1},
+		{"orientation of two SHORTs alone", ifd0(twoShorts), 1},
+	}
+	pic := quadrants(64, 32)
+	jpg, pngFile := encodeJPEGImage(t, pic), pngOf(t, pic)
+	for _, c := range cases {
+		jpgUpload := withSegments(jpg, exifSegment(c.tiff))
+		pngUpload := withPNGChunks(pngFile, pngChunk("eXIf", c.tiff))
+		if got := jpegOrientation(jpgUpload); got != c.want {
+			t.Errorf("%s: jpegOrientation = %d, want %d", c.name, got, c.want)
+		}
+		if got := pngOrientation(pngUpload); got != c.want {
+			t.Errorf("%s: pngOrientation = %d, want %d", c.name, got, c.want)
+		}
+		wantW, wantH := 64, 32
+		if c.want >= 5 {
+			wantW, wantH = 32, 64
+		}
+		for format, upload := range map[string][]byte{"JPEG": jpgUpload, "PNG": pngUpload} {
+			if got := process(t, upload); got.Width != wantW || got.Height != wantH {
+				t.Errorf("%s: the %s is stored %dx%d, want %dx%d", c.name, format, got.Width, got.Height, wantW, wantH)
+			}
+		}
 	}
 }
 

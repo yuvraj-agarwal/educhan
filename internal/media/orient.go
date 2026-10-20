@@ -92,7 +92,12 @@ func pngOrientation(data []byte) int {
 
 // tiffOrientation reads the Orientation entry of IFD0 in a TIFF structure, the
 // body of an Exif segment or an eXIf chunk, under the same rules as
-// jpegOrientation.
+// jpegOrientation, and the way Chromium reads it, so that the picture is
+// stored turned as the poster's browser showed it: the first Orientation entry
+// that is a single SHORT from 1 to 8 counts, and one that is not (of another
+// type or count, or 0, or 9) is passed over rather than read as upright; and
+// an IFD that claims more entries than the segment holds is read for the
+// entries it does hold (TestOrientationIsReadAsChromiumReadsIt).
 func tiffOrientation(tiff []byte) int {
 	if len(tiff) < 8 {
 		return 1
@@ -115,24 +120,16 @@ func tiffOrientation(tiff []byte) int {
 		return 1
 	}
 	entries := tiff[offset+2:]
-	count := int(order.Uint16(tiff[offset : offset+2]))
-	if count > len(entries)/12 {
-		// An IFD claiming more entries than the segment holds is not one we
-		// can trust any part of.
-		return 1
-	}
+	count := min(int(order.Uint16(tiff[offset:offset+2])), len(entries)/12)
 	for k := 0; k < count; k++ {
 		entry := entries[12*k : 12*k+12]
-		if order.Uint16(entry[0:2]) != exifOrientationTag {
+		if order.Uint16(entry[0:2]) != exifOrientationTag ||
+			order.Uint16(entry[2:4]) != tiffTypeShort || order.Uint32(entry[4:8]) != 1 {
 			continue
-		}
-		if order.Uint16(entry[2:4]) != tiffTypeShort || order.Uint32(entry[4:8]) != 1 {
-			return 1
 		}
 		if v := int(order.Uint16(entry[8:10])); v >= 1 && v <= 8 {
 			return v
 		}
-		return 1
 	}
 	return 1
 }
