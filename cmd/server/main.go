@@ -46,7 +46,14 @@ func main() {
 // it is logged here, once (fatal), before the application is closed, and
 // returned for main's exit status.
 func run(args []string, logs io.Writer) error {
+	// Made before the flags and the configuration are read, so a mistake in
+	// either is written to logs too, in the format the environment names (or
+	// as text, if the configuration then refuses it).
+	log := newLogger(os.Getenv("EDUCHAN_LOG_FORMAT"), logs)
+	slog.SetDefault(log)
+
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
+	flags.SetOutput(logs)
 	sweep := flags.Bool("sweep", false,
 		"delete archived threads past their board's archive_days, with their media, and spent captcha answers past their day, then exit")
 	if err := flags.Parse(args); err != nil {
@@ -65,10 +72,26 @@ func run(args []string, logs io.Writer) error {
 	if err != nil {
 		return fatal(err)
 	}
-	log := newLogger(cfg.LogFormat, logs)
+	// The same format, now as the configuration has read it.
+	log = newLogger(cfg.LogFormat, logs)
 	slog.SetDefault(log)
 
-	startupCtx, cancelStartup := context.WithTimeout(context.Background(), startupTimeout)
+	// A sweep listens for SIGTERM from before it connects, so a stop while it
+	// is still starting up (connecting, or waiting for or running migrations)
+	// ends New with the stop as its error, which is written, and the process
+	// exits 1 with nothing deleted, the spent answers included. Without this,
+	// the signal would kill it there at once, without a word. The error is
+	// written at once, unless the database stops answering while the sweep is
+	// connected to it: New gives up the connection before it returns, which
+	// pgx allows fifteen seconds, longer than Cloud Run waits. The server
+	// listens for signals only once it serves (serve).
+	base := context.Background()
+	if *sweep {
+		var stop context.CancelFunc
+		base, stop = signal.NotifyContext(base, syscall.SIGINT, syscall.SIGTERM)
+		defer stop()
+	}
+	startupCtx, cancelStartup := context.WithTimeout(base, startupTimeout)
 	defer cancelStartup()
 
 	application, err := app.New(startupCtx, cfg, log)
@@ -77,7 +100,7 @@ func run(args []string, logs io.Writer) error {
 	}
 
 	if *sweep {
-		return runSweep(application)
+		return runSweep(base, application)
 	}
 	defer application.Close()
 	return fatal(serve(cfg, application, log))
@@ -93,21 +116,21 @@ func fatal(err error) error {
 }
 
 // runSweep makes one pass over the archive, writes its error, and closes the
-// application. SIGTERM, which a Cloud Run Job receives when it overruns its
-// task timeout, stops it at the next batch or the next file. A batch commits
-// or rolls back whole, and its files' keys are queued in the same
-// transaction, so a file the run did not get to is removed by the next one.
-// A stopped run still deletes the spent captcha answers, giving that five
-// seconds at most, then writes its error and closes, waiting on the close for
-// sweepCloseTimeout at most. So even with the database not answering, a
-// stopped run writes its error and exits within those five seconds and the
-// close's two, inside the ten Cloud Run gives it, as long as no file deletion
-// is in hand when the media store or the database stops answering: the file
-// in hand is finished, and its key forgotten, whatever the stop, and that
-// waits on both.
-func runSweep(application *app.App) error {
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
+// application. ctx is run's: SIGTERM, which a Cloud Run Job receives when it
+// overruns its task timeout, stops the pass at the next batch or the next
+// file, or in looking up the next file. A batch commits or rolls back whole,
+// and its files' keys are queued in the same transaction, so a file the run
+// did not get to is removed by the next one. A stopped run still deletes the
+// spent captcha answers, giving that five seconds at most, then writes its
+// error and closes, waiting on the close for sweepCloseTimeout at most. So
+// even with the database not answering, a stopped run writes its error and
+// exits within those five seconds and the close's two, inside the ten Cloud
+// Run gives it, as long as no file deletion is in hand when the media store or
+// the database stops answering: the file in hand is finished, and its key
+// forgotten, whatever the stop, and that waits on both. A stop that came while
+// the sweep was still starting up never gets here: it ended New, and run wrote
+// that, with nothing deleted.
+func runSweep(ctx context.Context, application *app.App) error {
 	_, err := application.Sweep(ctx)
 	// Written before the close, so a process killed while it closes has
 	// already said why it failed.

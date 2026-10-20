@@ -841,29 +841,41 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   and `TestSweepsPruneGivesUpAtItsBound` through `Config.spentPruneWithin`), as the file
   in hand does, so a sweep cancelled before its batches (`TestSweepStopsWhenCancelled`)
   or among its files (`TestSweepStoppedAmongItsFilesStillPrunesSpentCaptchas`)
-  prunes all the same, and its error is the stop, with no prune failed on the
-  stopped context beside it. It logs one record of counts and nothing that names a
-  board or thread, failures included, and the error it returns has the key taken out
+  prunes all the same, and its error is the stop, with the prune's own failure beside it
+  if the prune could not finish (its database not answering, say), but no prune failed
+  on the stopped context. It logs one record of counts and nothing that names a board or
+  thread, failures included, and the error it returns has the key taken out
   (`TestSweepLogsOnlyCounts`); it returns an error — a non-zero exit — on a stop before
-  its files are done, a database failure, a file it could not remove or did not find,
-  or a database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`);
-  a stop that comes later, while the spent answers go, finds nothing left to stop
-  and adds no error of its own: the sweep ends as one that was not stopped would,
-  failing only if its pass failed (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`).
-  `runSweep` in `cmd/server` writes the sweep's error before it closes the App, and
-  waits on the close for `sweepCloseTimeout` (two seconds) at most, since pgx gives a
-  connection that has stopped answering fifteen: so with the database not answering, a
-  stopped sweep writes its error and exits within the prune's five seconds and the
-  close's two, inside Cloud Run's ten, as long as no file deletion is in hand when the
-  media store or the database stops answering, since the file in hand waits on both
+  its files are done, a database failure, a file it could not remove or did not find, or
+  a database a newer release migrated (`TestSchemaFromANewerReleaseStopsTheSweeper`); a
+  stop that comes later, while the spent answers go, finds nothing left to stop and adds
+  no error of its own: the sweep ends as one that was not stopped would, failing only if
+  its pass failed (`TestSweepStoppedWhileItPrunesEndsAsIfNotStopped`). `runSweep` in
+  `cmd/server` writes the sweep's error before it closes the App, and waits on the close
+  for `sweepCloseTimeout` (two seconds) at most, since pgx gives a connection that has
+  stopped answering fifteen: so with the database not answering, a sweep stopped once
+  under way writes its error and exits within the prune's five seconds and the close's
+  two, inside Cloud Run's ten, as long as no file deletion is in hand when the media
+  store or the database stops answering, since the file in hand waits on both
   (`TestStoppedSweepExitsWhenTheDatabaseStopsAnswering`, a whole process behind a proxy
-  that stops forwarding). It builds its App with `New` like the server, and runs without
-  the salt, the moderation key, the verification secret and the captcha secret on
-  purpose, so `New` warns about none of them: those warnings are `WarnServingSettings`,
-  which only `serve` in `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
-  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
-  goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
-  are, `SweepArchived` must skip held threads, and its comment says so.
+  that stops forwarding). In sweep mode `run` takes the signal context before `New`, so
+  a stop while the sweep is still starting up (connecting, or waiting for or running
+  migrations) ends `New` with the stop as its error, which is written, and the process
+  exits 1 with nothing deleted, the spent answers included
+  (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting to a proxy that answers
+  nothing and waiting on the migrations' lock): at once, unless the database stops
+  answering while the sweep is connected to it, when `New` first gives up the
+  connection, which pgx allows fifteen seconds. Every error `run` ends on, a flag or a
+  setting it cannot read included, is written once, as `msg=fatal`
+  (`TestRunRefusesWhatItDoesNotUnderstand`, `TestSweepModeFailsWithoutADatabase`,
+  `TestServingFailsWhenTheAddressIsTaken`). It builds its App with `New` like the
+  server, and runs without the salt, the moderation key, the verification secret and the
+  captcha secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random

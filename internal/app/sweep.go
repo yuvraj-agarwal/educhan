@@ -82,11 +82,13 @@ type SweepReport struct {
 // spent captcha answers past their day. A batch that fails leaves the files to
 // the next sweep. The spent answers go whatever failed before them, a stop
 // included: a sweep whose ctx is cancelled before its files are done stops at
-// the batch or the file it is on and prunes them all the same, so its error is
-// the stop alone, and no failure the stop would have caused. A stop that comes
-// later, while the spent answers go, finds nothing left to stop: the prune
-// runs past it, and the stop adds no error of its own, so the sweep ends as
-// one that was not stopped would, failing only if its pass failed.
+// the batch or the file it is on, or in looking up the next file, and prunes
+// them all the same, so its error is the stop, with the prune's own failure
+// beside it if the prune could not finish, and no failure the stop would have
+// caused. A stop that comes later, while the spent answers go, finds nothing
+// left to stop: the prune runs past it, and the stop adds no error of its own,
+// so the sweep ends as one that was not stopped would, failing only if its
+// pass failed.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }

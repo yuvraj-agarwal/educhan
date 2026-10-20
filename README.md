@@ -1203,19 +1203,26 @@ file the store refuses to delete keeps its key, so the next sweep tries it again
 rather than leaving an image public with nothing left to say it exists. Last,
 whatever happened to the threads and the files, it deletes the spent
 [captcha](#captcha) answers past their day, the ones no later post or code
-request came along to prune. A sweep that is stopped, say by the SIGTERM a Cloud
-Run Job gets at its task timeout, deletes them too: the batch it is on commits
-or rolls back whole, the file it is removing is finished while a lookup of the
-next one is cut short, and then the spent answers go, given at most five
-seconds. It then writes its error (the stop, and the prune's own failure if the
-prune could not finish, but no failure the stop caused) and exits non-zero,
-waiting at most two seconds for its connections to close. So even with the
-database not answering, the error is written and the process exits inside the
-ten seconds Cloud Run waits before it kills it, as long as no file is being
-removed when the media store or the database stops answering: the file in hand
-is finished whatever the stop, and that waits on both. A stop that comes once
-the files are done, while the spent answers go, finds nothing left to stop: the
-sweep finishes, and exits as one that was not stopped.
+request came along to prune. A sweep that is stopped once it is under way, say
+by the SIGTERM a Cloud Run Job gets at its task timeout, deletes them too: the
+batch it is on commits or rolls back whole, the file it is removing is finished
+while a lookup of the next one is cut short, and then the spent answers go,
+given at most five seconds. It then writes its error (the stop, and the prune's
+own failure if the prune could not finish, but no failure the stop caused) and
+exits non-zero, waiting at most two seconds for its connections to close. So
+even with the database not answering, the error is written and the process exits
+inside the ten seconds Cloud Run waits before it kills it, as long as no file is
+being removed when the media store or the database stops answering: the file in
+hand is finished whatever the stop, and that waits on both. A stop that comes
+once the files are done, while the spent answers go, finds nothing left to stop:
+the sweep finishes, and exits as one that was not stopped. A stop while the
+sweep is still starting up (connecting, or waiting for or running migrations)
+ends it before it is under way: it writes the stop as its error and exits
+non-zero with nothing deleted, the spent answers included, and a migration it
+was in the middle of is not applied. That is at once, unless the database stops
+answering while the sweep is connected to it: then the error waits until the
+connection is given up, fifteen seconds later, which is longer than Cloud Run
+waits.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost
