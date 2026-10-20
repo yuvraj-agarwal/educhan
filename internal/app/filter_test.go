@@ -2704,6 +2704,80 @@ func TestFilterReadsContactAsksAndNumbersInOtherWords(t *testing.T) {
 		{"need to fill this for the NSP portal, is this right: 8 3 4 1 2 9 0 6 7 5 2 9", id},
 		{"national insurance no. sh 71 58 20 d, the letter finally came today", id},
 		{"on 12 34 56 a the shop closed", publish},
+		// "<app> me" after a lead that is not a subject and its verb: a
+		// condition, a relative, a purpose or whom it asks (R1 A7-1).
+		{"lonely girls whatsapp me", contact},
+		{"if ur bored kik me", contact},
+		{"anyone who wants the notes whatsapp me", contact},
+		{"for more pics snapchat me", contact},
+		{"she keeps trying to kik me", publish},
+		{"random guys kik me all the time and it's creepy", publish},
+		{"why would you whatsapp me at 3am", publish},
+		// Everyone's numbers asked for (R1-M11).
+		{"anyone wanna make a whatsapp group for jee 2027? drop your numbers", contact},
+		{"send your numbers in the comments", contact},
+		{"drop ur numbers i'll add you", contact},
+		{"post your numbers from the mock test here", publish},
+		{"drop your numbers in the poll for the best anime", publish},
+		// A group set up on an app, named after the group (R1-M13).
+		{"make a gc on snap", contact},
+		{"creating a whatsapp group for neet 2027 aspirants", contact},
+		{"anyone want to start a telegram group", contact},
+		{"made a discord server for jee 2027 join", contact},
+		{"can someone add me to the whatsapp group", contact},
+		{"my mom made a whatsapp group for the relatives and it's chaos", publish},
+		{"creating a discord server is easy, there's a template", publish},
+		{"my school is creating a telegram group for notices", publish},
+		// A message asked for with "me" before it, open DMs, and an
+		// account asked about without a question mark (R1-M14).
+		{"send me a dm on insta", contact},
+		{"shoot me a text on whatsapp", contact},
+		{"dms open on discord", contact},
+		{"do u have telegram", contact},
+		{"have you got snapchat?", contact},
+		{"is anyone here on telegram", contact},
+		{"my friend sent me a dm on insta that made me cry, what do i do", publish},
+		{"do you use discord for studying or is it distracting? asking for tips", publish},
+		{"r u on minecraft rn", publish},
+		// A handle after "user", a pointing emoji or "~", and reddit's u/
+		// (R1-M15).
+		{"my roblox user is madeup_riya", contact},
+		{"insta 👉 madeup.riya", contact},
+		{"snap ~ madeup_r", contact},
+		{"my reddit is u/madeup_riya", contact},
+		{"my threads is @madeup.riya", contact},
+		{"my roblox user is banned lol", publish},
+		{"threads is just twitter again", publish},
+		// Talking privately, in private, one on one or somewhere else
+		// (R1-M16).
+		{"can we talk privately?", contact},
+		{"lets talk in private", contact},
+		{"can we talk somewhere else?", contact},
+		{"lets go private", contact},
+		{"can we talk 1 on 1?", contact},
+		{"i want to talk privately with my parents about this, how do i start", publish},
+		{"we should talk in private with the teacher about the marks", publish},
+		{"can we talk elsewhere? this thread is for physics only", publish},
+		{"lets go private colleges if govt doesn't work out", publish},
+		// "snap me", a call suggested, a video call on an app and the
+		// Hinglish "<app> karo" (R1-M17).
+		{"snap me later", contact},
+		{"can we facetime?", contact},
+		{"can we video call on whatsapp", contact},
+		{"mujhe whatsapp karo", contact},
+		{"snap me back to reality lol, exams are in 2 days", publish},
+		{"can we facetime grandma tonight", publish},
+		{"maine whatsapp kar diya tha", publish},
+		// A South African or Irish mobile run together after its cue, and a
+		// North American number with a slash after its area code after one
+		// (R1-M20).
+		{"my number is 0821234567", contact},
+		{"the reference number is 0821234567 on the receipt", publish},
+		{"phone 495/418-3927", contact},
+		{"call me on 495 / 418-3927", contact},
+		{"120/555-1234", publish},
+		{"the ratio was 495/418-3927 in the lab", publish},
+		{"phone battery 495/418-3927 lol", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
@@ -2756,6 +2830,25 @@ func TestFilterBlocksMeetingLinksAndProfiles(t *testing.T) {
 		{"our college page is linkedin.com/school/dps, they post placement stats", publish},
 		{"linkedin.com/company/infosys lists the openings", publish},
 		{"the meeting id was 123 on the board", publish},
+		// A meeting ID straight after the app, Webex's own wording, and a
+		// Meet code after Meet's name (R1-M12, D5); Teams' and Zoom's web
+		// join links (D4); and a LinkedIn profile's path or name after the
+		// word (R1-M18).
+		{"join zoom 845 2219 6630 at 7", contact},
+		{"zoom (845 2219 6630)", contact},
+		{"webex: 2634 123 4567", contact},
+		{"Meeting number (access code): 2634 123 4567", contact},
+		{"Join meeting\nMeeting number: 2634 123 4567\nPassword: abc", contact},
+		{"gmeet: abc-defg-hij", contact},
+		{"study session on gmeet, code abc-defg-hij", contact},
+		{"https://teams.microsoft.com/meet/2547913827125?p=Xy7Kq2Lm", contact},
+		{"https://us02web.zoom.us/wc/join/84522196630?pwd=abc", contact},
+		{"LinkedIn - /in/madeup-riya", contact},
+		{"linkedin: madeup-riya-123456", contact},
+		{"zoom 2x speed on lectures is a lifesaver", publish},
+		{"meet: tuesday 5pm, room 204", publish},
+		{"https://zoom.us/wc/ is the web client, it's slow", publish},
+		{"linkedin: covid-19 posts everywhere", publish},
 	} {
 		if got := verdictName(checkContent(contentInput{Body: c.body}, false)); got != c.want {
 			t.Errorf("%q: got %s, want %s", c.body, got, c.want)
@@ -3393,8 +3486,26 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"spaced guns":        rep("🔫 "),
 		"pills and a handle": rep("howmany@pills_(snap "),
 		"pills run on":       rep("howmany@pills/how'many pills_(snap pills_(snap "),
-		// A bare "dm" after an age question.
-		"bare dm": rep("age? dm. "),
+		// The newer asks, each read with the words round it: an app made a
+		// verb after a lead, everyone's numbers with the post round them
+		// read for a group, a group set up on an app, talking privately or
+		// going private, a call suggested, the Hinglish "<app> karo", an
+		// account asked about without its question mark, a Meet code after
+		// Meet's name, reddit's u/ and a LinkedIn profile's name; and a bare
+		// "dm" after an age question.
+		"app me after a lead": rep("lonely girls whatsapp me "),
+		"numbers asked":       rep("drop your numbers "),
+		"group on an app":     rep("make a gc on snap "),
+		"privately":           rep("can we talk privately "),
+		"go private":          rep("lets go private "),
+		"call suggested":      rep("lets facetime "),
+		"app karo":            rep("mujhe whatsapp karo "),
+		"account asked":       rep("do u have telegram "),
+		"meet code":           rep("gmeet abc-defg-hij "),
+		"reddit u":            rep("reddit u/ab "),
+		"linkedin name":       rep("linkedin: a-b-12345 "),
+		"bare dm":             rep("age? dm. "),
+		"slash area code":     rep("phone 495/418-3927 "),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
