@@ -237,13 +237,17 @@ func TestEveryOrientationIsApplied(t *testing.T) {
 	}
 }
 
-// Turning a YCbCr picture keeps every pixel's colour exactly, whatever its
-// subsampling and size. Where the chroma samples line up with the turned
-// picture, the planes are turned as they are and keep their subsampling; an
-// odd side mirrored at 4:2:0, a side that is not a multiple of four mirrored
-// at 4:1:1, and 4:1:1 or 4:1:0 on its side do not, and are turned a pixel at
-// a time into 4:4:4, where before the colours along the side shifted a pixel.
-func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
+// Turning a YCbCr picture keeps every pixel's colour as a browser shows it,
+// whatever its subsampling and size. Where the chroma samples line up with
+// the turned picture, the planes are turned as they are and keep their
+// subsampling, every sample exactly. An odd side mirrored at 4:2:0, a side
+// that is not a multiple of four mirrored at 4:1:1, and 4:1:1 or 4:1:0 on its
+// side do not line up, and are turned a pixel at a time into 4:4:4, where
+// before the colours along the side shifted a pixel: each pixel's luma
+// exactly, and its chroma widened as libjpeg-turbo widens it for display
+// (libjpegUpsampled), not the sample it lies in, which at a sharp colour edge
+// is far from what the poster saw.
+func TestOrientTurnsEverySubsamplingAsShown(t *testing.T) {
 	ratios := []image.YCbCrSubsampleRatio{
 		image.YCbCrSubsampleRatio444, image.YCbCrSubsampleRatio422, image.YCbCrSubsampleRatio420,
 		image.YCbCrSubsampleRatio440, image.YCbCrSubsampleRatio411, image.YCbCrSubsampleRatio410,
@@ -255,26 +259,22 @@ func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
 		image.YCbCrSubsampleRatio440: image.YCbCrSubsampleRatio422,
 	}
 	rng := rand.New(rand.NewSource(1))
-	for _, size := range []image.Point{{8, 12}, {7, 5}, {5, 7}, {9, 6}, {6, 9}, {10, 13}, {1, 1}, {3, 2}} {
+	blended := 0 // widened pixels whose chroma is not the sample they lie in
+	sizes := []image.Point{{8, 12}, {7, 5}, {5, 7}, {9, 6}, {6, 9}, {10, 13}, {1, 1}, {3, 2}, {4, 3}, {17, 9}, {2, 7}}
+	for _, size := range sizes {
 		w, h := size.X, size.Y
 		for _, ratio := range ratios {
 			src := image.NewYCbCr(image.Rect(0, 0, w, h), ratio)
 			rng.Read(src.Y)
 			rng.Read(src.Cb)
 			rng.Read(src.Cr)
+			shownCb := libjpegUpsampled(src.Cb, src.CStride, ratio, w, h)
+			shownCr := libjpegUpsampled(src.Cr, src.CStride, ratio, w, h)
 			fx, fy := subsampling(ratio)
 			for o := 1; o <= 8; o++ {
 				dst, ok := orient(src, o).(*image.YCbCr)
 				if !ok {
 					t.Fatalf("%dx%d %v orientation %d: turned into %T, want YCbCr", w, h, ratio, o, orient(src, o))
-				}
-				for y := 0; y < h; y++ {
-					for x := 0; x < w; x++ {
-						dx, dy := orientedPoint(o, x, y, w, h)
-						if got, want := dst.YCbCrAt(dx, dy), src.YCbCrAt(x, y); got != want {
-							t.Fatalf("%dx%d %v orientation %d: (%d,%d) landed as %v, want %v", w, h, ratio, o, x, y, got, want)
-						}
-					}
 				}
 				mirrorsX := o == 2 || o == 3 || o == 7 || o == 8
 				mirrorsY := o == 3 || o == 4 || o == 6 || o == 7
@@ -290,11 +290,90 @@ func TestOrientKeepsEverySubsamplingExact(t *testing.T) {
 					}
 				}
 				if dst.SubsampleRatio != want {
-					t.Errorf("%dx%d %v orientation %d: turned at %v, want %v", w, h, ratio, o, dst.SubsampleRatio, want)
+					t.Fatalf("%dx%d %v orientation %d: turned at %v, want %v", w, h, ratio, o, dst.SubsampleRatio, want)
+				}
+				widened := want != ratio && want == image.YCbCrSubsampleRatio444
+				for y := 0; y < h; y++ {
+					for x := 0; x < w; x++ {
+						dx, dy := orientedPoint(o, x, y, w, h)
+						want := src.YCbCrAt(x, y)
+						if widened {
+							if shownCb[y][x] != want.Cb || shownCr[y][x] != want.Cr {
+								blended++
+							}
+							want.Cb, want.Cr = shownCb[y][x], shownCr[y][x]
+						}
+						if got := dst.YCbCrAt(dx, dy); got != want {
+							t.Fatalf("%dx%d %v orientation %d: (%d,%d) landed as %v, want %v", w, h, ratio, o, x, y, got, want)
+						}
+					}
 				}
 			}
 		}
 	}
+	if blended == 0 {
+		t.Fatal("no widened pixel's chroma differed from the sample it lies in: the cases test nothing")
+	}
+}
+
+// libjpegUpsampled is one chroma plane of a w×h JPEG at ratio, held with
+// stride stride, widened to a sample a pixel as libjpeg-turbo widens it with
+// do_fancy_upsampling on, its default and Chromium's: jdsample.c's C methods
+// transcribed (the SIMD ones compute the same), h2v2_fancy_upsample and
+// h2v1_fancy_upsample when the plane is more than two samples wide and the
+// box filters h2v2_upsample and h2v1_upsample when not, h1v2_fancy_upsample,
+// and int_upsample's replication for 4:1:1 and 4:1:0, with the context rows
+// jdmainct.c supplies around the picture: the first sample row again above
+// it and the last again below.
+func libjpegUpsampled(plane []uint8, stride int, ratio image.YCbCrSubsampleRatio, w, h int) [][]uint8 {
+	fx, fy := subsampling(ratio)
+	cw, ch := chromaSize(ratio, w, h)
+	row := func(i int) []uint8 {
+		i = max(0, min(i, ch-1))
+		return plane[i*stride : i*stride+cw]
+	}
+	var shown [][]uint8
+	for in := 0; in < ch; in++ {
+		for v := 0; v < fy; v++ {
+			near, far, bias := row(in), row(in-1), 1 // the next nearest row is the one above
+			if v == 1 {
+				far, bias = row(in+1), 2 // and for the second output row, the one below
+			}
+			var out []uint8
+			switch {
+			case fx == 2 && fy == 2 && cw > 2: // h2v2_fancy_upsample
+				this := 3*int(near[0]) + int(far[0])
+				next := 3*int(near[1]) + int(far[1])
+				out = append(out, uint8((this*4+8)>>4), uint8((this*3+next+7)>>4))
+				last := this
+				this = next
+				for c := 2; c < cw; c++ {
+					next = 3*int(near[c]) + int(far[c])
+					out = append(out, uint8((this*3+last+8)>>4), uint8((this*3+next+7)>>4))
+					last, this = this, next
+				}
+				out = append(out, uint8((this*3+last+8)>>4), uint8((this*4+7)>>4))
+			case fx == 2 && fy == 1 && cw > 2: // h2v1_fancy_upsample
+				out = append(out, near[0], uint8((3*int(near[0])+int(near[1])+2)>>2))
+				for c := 1; c < cw-1; c++ {
+					out = append(out, uint8((3*int(near[c])+int(near[c-1])+1)>>2), uint8((3*int(near[c])+int(near[c+1])+2)>>2))
+				}
+				out = append(out, uint8((3*int(near[cw-1])+int(near[cw-2])+1)>>2), near[cw-1])
+			case fx == 1 && fy == 2: // h1v2_fancy_upsample
+				for c := 0; c < cw; c++ {
+					out = append(out, uint8((3*int(near[c])+int(far[c])+bias)>>2))
+				}
+			default: // h2v2_upsample, h2v1_upsample, int_upsample: each sample repeated
+				for c := 0; c < cw; c++ {
+					for i := 0; i < fx; i++ {
+						out = append(out, near[c])
+					}
+				}
+			}
+			shown = append(shown, out[:w])
+		}
+	}
+	return shown[:h]
 }
 
 // Every other kind of picture a JPEG or a PNG decodes to is turned into a
@@ -1753,7 +1832,9 @@ func sampleBitstream(t *testing.T) riffChunk {
 // than built in code. photo-q30.jpg is a JPEG as libjpeg saves one for the
 // web, from Pillow at quality 30 with optimize=True (Huffman tables fitted
 // to the picture), 4:2:0: 640×480 of the same ramp and noise as the cut-out,
-// softened the same way, opaque.
+// softened the same way, opaque. lossy-alpha.libwebp.png is lossy-alpha.webp
+// as libwebp 1.6.0 decodes it to RGBA, through Pillow 12.3.0: what a browser
+// shows of it.
 func readTestdata(t testing.TB, name string) []byte {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join("testdata", name))
@@ -2083,6 +2164,116 @@ func TestLossyWebPIsStoredAtItsOwnColourResolution(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A lossy WebP with transparency is stored as RGBA, so its half-resolution
+// chroma has to be widened to a sample a pixel, and it is widened as libwebp's
+// fancy upsampler widens it, which is what Chromium shows: a blend of the
+// four nearest samples rather than the nearest alone, which at the colour
+// edges of lossy-alpha.webp's quadrants was 91 levels off what the browser
+// showed, and 151 on a sticker. lossy-alpha.libwebp.png is the fixture as
+// libwebp decodes it; the stored picture is held to it within a level, the
+// rounding of the conversion to RGB (bt601LimitedToRGB, where libwebp's has
+// 14 bits). webpChromaRow is held, bit for bit, to libwebp's own loops
+// (libwebpUpsampled) on planes of every parity, down to a pixel.
+func TestLossyWebPIsUpsampledAsLibwebpDoes(t *testing.T) {
+	got := decodeStored(t, process(t, readTestdata(t, "lossy-alpha.webp")).Data)
+	ref, err := png.Decode(bytes.NewReader(readTestdata(t, "lossy-alpha.libwebp.png")))
+	if err != nil {
+		t.Fatalf("decode the reference: %v", err)
+	}
+	if got.Bounds() != ref.Bounds() {
+		t.Fatalf("stored %v, the reference is %v", got.Bounds(), ref.Bounds())
+	}
+	worst := 0
+	for y := 0; y < 48; y++ {
+		for x := 0; x < 64; x++ {
+			g, r := color.NRGBAModel.Convert(got.At(x, y)).(color.NRGBA), color.NRGBAModel.Convert(ref.At(x, y)).(color.NRGBA)
+			if g.A != r.A {
+				t.Fatalf("(%d,%d): alpha %d, libwebp's %d", x, y, g.A, r.A)
+			}
+			if r.A == 0 {
+				continue // libwebp keeps a colour under a clear pixel; educhan does not
+			}
+			for _, d := range [3]int{int(g.R) - int(r.R), int(g.G) - int(r.G), int(g.B) - int(r.B)} {
+				worst = max(worst, d, -d)
+			}
+			if worst > 1 {
+				t.Fatalf("(%d,%d) stored as %v, libwebp shows %v", x, y, g, r)
+			}
+		}
+	}
+
+	rng := rand.New(rand.NewSource(3))
+	for _, size := range []image.Point{{1, 1}, {1, 6}, {6, 1}, {2, 2}, {3, 3}, {7, 5}, {8, 6}, {9, 10}, {16, 9}} {
+		w, h := size.X, size.Y
+		m := image.NewYCbCr(image.Rect(0, 0, w, h), image.YCbCrSubsampleRatio420)
+		rng.Read(m.Cb)
+		rng.Read(m.Cr)
+		cw, ch := (w+1)/2, (h+1)/2
+		want := [2][][]uint8{libwebpUpsampled(m.Cb, m.CStride, cw, ch, w, h), libwebpUpsampled(m.Cr, m.CStride, cw, ch, w, h)}
+		cb, cr := make([]uint8, w), make([]uint8, w)
+		for y := 0; y < h; y++ {
+			webpChromaRow(cb, cr, m, y)
+			for x := 0; x < w; x++ {
+				if cb[x] != want[0][y][x] || cr[x] != want[1][y][x] {
+					t.Fatalf("%dx%d (%d,%d): chroma %d,%d, libwebp's %d,%d", w, h, x, y, cb[x], cr[x], want[0][y][x], want[1][y][x])
+				}
+			}
+		}
+	}
+}
+
+// libwebpUpsampled is a 4:2:0 chroma plane of cw×ch samples widened to w×h
+// by libwebp's fancy upsampler, transcribed from src/dsp/upsampling.c
+// (UPSAMPLE_FUNC, here for one plane rather than U and V packed together)
+// and the order src/dec/io_dec.c's EmitFancyRGB runs it in: the first row on
+// its own, against its own chroma row, then pairs of rows between two chroma
+// rows, then, for an even height, the last row on its own.
+func libwebpUpsampled(plane []uint8, stride, cw, ch, w, h int) [][]uint8 {
+	out := make([][]uint8, h)
+	for y := range out {
+		out[y] = make([]uint8, w)
+	}
+	row := func(j int) []uint8 { return plane[j*stride : j*stride+cw] }
+	// linePair is UPSAMPLE_FUNC: top and bottom are output rows (bottom may
+	// be nil), between chroma rows topUV and curUV.
+	linePair := func(top, bottom []uint8, topUV, curUV []uint8) {
+		lastPair := (w - 1) >> 1
+		tl, l := int(topUV[0]), int(curUV[0])
+		top[0] = uint8((3*tl + l + 2) >> 2)
+		if bottom != nil {
+			bottom[0] = uint8((3*l + tl + 2) >> 2)
+		}
+		for x := 1; x <= lastPair; x++ {
+			t, uv := int(topUV[x]), int(curUV[x])
+			avg := tl + t + l + uv + 8
+			diag12 := (avg + 2*(t+l)) >> 3
+			diag03 := (avg + 2*(tl+uv)) >> 3
+			top[2*x-1] = uint8((diag12 + tl) >> 1)
+			top[2*x] = uint8((diag03 + t) >> 1)
+			if bottom != nil {
+				bottom[2*x-1] = uint8((diag03 + l) >> 1)
+				bottom[2*x] = uint8((diag12 + uv) >> 1)
+			}
+			tl, l = t, uv
+		}
+		if w&1 == 0 {
+			top[w-1] = uint8((3*tl + l + 2) >> 2)
+			if bottom != nil {
+				bottom[w-1] = uint8((3*l + tl + 2) >> 2)
+			}
+		}
+	}
+	linePair(out[0], nil, row(0), row(0))
+	y := 0
+	for ; y+2 < h; y += 2 {
+		linePair(out[y+1], out[y+2], row(y/2), row(y/2+1))
+	}
+	if h&1 == 0 {
+		linePair(out[h-1], nil, row(ch-1), row(ch-1))
+	}
+	return out
 }
 
 // A decoder stops reading a picture chunk once it has its picture, so a whole

@@ -734,21 +734,26 @@ func opaqueAlpha(m *image.NYCbCrA) bool {
 
 // lossyWebPToNRGBA converts a lossy WebP with transparency, which x/image
 // decodes as image.NYCbCrA, to non-premultiplied RGBA for image/png. Its
-// limited-range YCbCr is taken to full-range RGB (bt601LimitedToRGB) so the
-// stored picture keeps the colours the WebP showed rather than the washed-out
-// ones color.YCbCr would give. A fully transparent pixel keeps no colour, and
-// a partly transparent one only what its alpha shows (reduce8).
+// chroma, at half resolution each way, is upsampled to a sample a pixel as
+// libwebp, and so Chromium, upsamples it (webpChromaRow), and its
+// limited-range YCbCr is taken to full-range RGB (bt601LimitedToRGB), so the
+// stored picture keeps the colours the WebP showed, at its colour edges too,
+// rather than blocks of the nearest chroma or the washed-out colours
+// color.YCbCr would give. A fully transparent pixel keeps no colour, and a
+// partly transparent one only what its alpha shows (reduce8).
 func lossyWebPToNRGBA(p *image.NYCbCrA) *image.NRGBA {
 	b := p.Bounds()
 	out := image.NewNRGBA(b)
+	cb, cr := make([]uint8, b.Dx()), make([]uint8, b.Dx())
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		row := out.Pix[(y-b.Min.Y)*out.Stride:]
+		webpChromaRow(cb, cr, &p.YCbCr, y)
 		for x := b.Min.X; x < b.Max.X; x++ {
 			a := p.A[p.AOffset(x, y)]
 			if a == 0 {
 				continue // NewNRGBA is all zero: no colour under a clear pixel
 			}
-			r, g, bl := bt601LimitedToRGB(p.Y[p.YOffset(x, y)], p.Cb[p.COffset(x, y)], p.Cr[p.COffset(x, y)])
+			r, g, bl := bt601LimitedToRGB(p.Y[p.YOffset(x, y)], cb[x-b.Min.X], cr[x-b.Min.X])
 			r, g, bl = reduce8(r, g, bl, a) // keep only the colour this alpha shows
 			i := (x - b.Min.X) * 4
 			row[i+0], row[i+1], row[i+2], row[i+3] = r, g, bl, a

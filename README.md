@@ -483,16 +483,18 @@ server that would refuse what it sends.
     at 4:4:0, 4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or
     4:1:0), and a 4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses
     depends on the turn, so an odd-sided picture can keep its subsampling through one
-    turn and not through another. It is re-encoded at the lowest quality that compresses
-    no detail more coarsely than the upload did, and at 90 at most: a photo saved at
-    quality 30 by most software is stored at 30, at about the size it came in at and
-    looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
-    whose encoder fitted its Huffman tables to the picture or saved it progressive, as
-    the "optimise" and "progressive" options of an editor do, comes out larger, because
-    Go writes the standard Huffman tables in a single scan: a little larger for a
-    high-quality save (around a tenth at quality 90), but as much as twice the size for
-    a heavily compressed one, where those fixed tables outweigh the picture's own coded
-    data.
+    turn and not through another. When it does not, its colour is widened to full
+    resolution as browsers widen it to show it, each pixel a blend of the samples
+    nearest it, so its colour edges are stored as the poster saw them rather than in
+    blocks. It is re-encoded at the lowest quality that compresses no detail more
+    coarsely than the upload did, and at 90 at most: a photo saved at quality 30 by most
+    software is stored at 30, at about the size it came in at and looking as it did, and
+    one saved at 95 is stored at 90, a little smaller. A file whose encoder fitted its
+    Huffman tables to the picture or saved it progressive, as the "optimise" and
+    "progressive" options of an editor do, comes out larger, because Go writes the
+    standard Huffman tables in a single scan: a little larger for a high-quality save
+    (around a tenth at quality 90), but as much as twice the size for a heavily
+    compressed one, where those fixed tables outweigh the picture's own coded data.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
     browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma it
     is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
@@ -577,17 +579,19 @@ server that would refuse what it sends.
   - *WebP* cannot be encoded in Go, so it is stored as another format made from its
     pixels: a lossy, opaque WebP as a JPEG at quality 90 that keeps the WebP's own
     half-resolution (4:2:0) colour, and any other (lossless, or with transparency) as a
-    PNG, which keeps a lossless picture exactly. A WebP's quality setting does not mean
-    what a JPEG's does, so there is no lower quality to match, and the JPEG is larger
-    the lower the quality the WebP was saved at: measured on photos, up to 1.4 times the
-    WebP's size from quality 90, two to three times from 75, three and a half to five
-    and a half from 25, and up to eight and a half from 5. A lossy WebP's colours come
-    back from the decoder in a narrower range than they were saved in, so they are
-    expanded again before storing, or black would be kept as dark grey and white as
-    light grey. Its `name`, URL and content type are the stored format's (`image.jpg`,
-    `image.png`). Keeping the WebP with only its metadata chunks removed would not be
-    enough: a decoder ignores anything after the picture inside the chunks that hold it,
-    so a second file could ride through unseen. WebPs stored before this stay WebPs.
+    PNG, which keeps a lossless picture exactly and widens a lossy one's half-resolution
+    colour to every pixel as browsers do to show it. A WebP's quality setting does not
+    mean what a JPEG's does, so there is no lower quality to match, and the JPEG is
+    larger the lower the quality the WebP was saved at: measured on photos, up to 1.4
+    times the WebP's size from quality 90, two to three times from 75, three and a half
+    to five and a half from 25, and up to eight and a half from 5. A lossy WebP's
+    colours come back from the decoder in a narrower range than they were saved in, so
+    they are expanded again before storing, or black would be kept as dark grey and
+    white as light grey. Its `name`, URL and content type are the stored format's
+    (`image.jpg`, `image.png`). Keeping the WebP with only its metadata chunks removed
+    would not be enough: a decoder ignores anything after the picture inside the chunks
+    that hold it, so a second file could ride through unseen. WebPs stored before this
+    stay WebPs.
   - Besides metadata, a picture can carry a whole second file in channels it never
     shows, and those are dropped too. A fully transparent pixel is stored with no
     colour, because an editor that erases part of a picture by clearing its alpha often

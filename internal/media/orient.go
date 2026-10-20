@@ -202,11 +202,11 @@ func orientedPoint(o, x, y, w, h int) (int, int) {
 }
 
 // orient returns src turned upright according to EXIF orientation o, or src
-// itself when o is 1 or unknown. Every pixel keeps its value exactly, in a
-// picture of the same kind: a JPEG's YCbCr (orientYCbCr), grayscale or RGBA
-// (what an RGB or a CMYK JPEG is by the time it gets here), and whatever a
-// PNG decodes to, from a palette to 16-bit colour with alpha, are each turned
-// a pixel's bytes at a time into a copy of the same size. That costs the
+// itself when o is 1 or unknown. A JPEG's YCbCr is turned by orientYCbCr;
+// grayscale and RGBA (what an RGB or a CMYK JPEG is by the time it gets
+// here), and whatever a PNG decodes to, from a palette to 16-bit colour with
+// alpha, are each turned a pixel's bytes at a time into a copy of the same
+// kind and size, every pixel keeping its value exactly. That costs the
 // decoded size again, which is what processingCost counts for it.
 func orient(src image.Image, o int) image.Image {
 	b := src.Bounds()
@@ -281,10 +281,13 @@ func orientedRect(w, h, o int) image.Rectangle {
 // others, and turned within its plane it would land first, covering the wrong
 // ones: every colour along that side would shift by a pixel. Nor has a
 // quarter-width chroma (4:1:1, 4:1:0) any counterpart in the image package
-// once turned on its side. Either way every pixel takes the chroma it was
-// decoded with into a picture with chroma at full resolution (4:4:4), 3 bytes
-// a pixel, and jpegenc stores it at 4:4:4, not the subsampling it came in at:
-// finer chroma than the upload carried and a larger file, but no colour lost.
+// once turned on its side. Either way the picture is turned a pixel at a time
+// into one with chroma at full resolution (4:4:4), 3 bytes a pixel, each
+// pixel keeping its luma and taking its chroma as a browser widens it for
+// display (jpegChromaRow), and jpegenc stores it at 4:4:4, not the
+// subsampling it came in at: finer chroma than the upload carried and a
+// larger file, but the colour its poster saw, at its edges too, rather than
+// blocks of the sample each pixel lies in.
 func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
 	w, h := src.Rect.Dx(), src.Rect.Dy()
 	if ratio, ok := turnedSubsampling(src.SubsampleRatio, o, w, h); ok && src.Rect.Min == (image.Point{}) {
@@ -297,12 +300,13 @@ func orientYCbCr(src *image.YCbCr, o int) *image.YCbCr {
 	}
 	dst := image.NewYCbCr(orientedRect(w, h, o), image.YCbCrSubsampleRatio444)
 	b := src.Rect
+	cb, cr := make([]uint8, w), make([]uint8, w)
 	for y := 0; y < h; y++ {
+		jpegChromaRow(cb, cr, src, b.Min.Y+y)
 		for x := 0; x < w; x++ {
-			yi, ci := src.YOffset(b.Min.X+x, b.Min.Y+y), src.COffset(b.Min.X+x, b.Min.Y+y)
 			dx, dy := orientedPoint(o, x, y, w, h)
 			at := dy*dst.YStride + dx // the same offset in all three planes at 4:4:4
-			dst.Y[at], dst.Cb[at], dst.Cr[at] = src.Y[yi], src.Cb[ci], src.Cr[ci]
+			dst.Y[at], dst.Cb[at], dst.Cr[at] = src.Y[src.YOffset(b.Min.X+x, b.Min.Y+y)], cb[x], cr[x]
 		}
 	}
 	return dst

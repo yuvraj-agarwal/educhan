@@ -585,15 +585,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   are what `image/png` decodes them to, so 1-, 2- and 4-bit grey comes back at 8 bits and
   a colour key (tRNS on grey or truecolour) as colour with an alpha channel, or with none
   when no pixel has the key's colour (`TestPNGIsStoredInTheFormItDecodesTo`). `orient`
-  keeps every pixel exactly, in a picture of the kind it was given: YCbCr in its planes
-  where the chroma samples line up with the turned picture, and otherwise at 4:4:4 a pixel
-  at a time, because turning a plane whose last sample covers fewer pixels shifts every
-  colour along that side. `turnedSubsampling` is the rule: 4:4:4 when the turn reverses a
+  turns a picture into one of the kind it was given, every pixel exactly: YCbCr in its
+  planes where the chroma samples line up with the turned picture, and otherwise at 4:4:4
+  a pixel at a time, because turning a plane whose last sample covers fewer pixels shifts
+  every colour along that side. At 4:4:4 a pixel keeps its luma exactly but takes its
+  chroma as libjpeg-turbo, and so Chromium, widens it for display (`jpegChromaRow`),
+  rather than the sample it lies in, which at a colour edge can be a hundred levels off
+  what the poster saw. `turnedSubsampling` is the rule: 4:4:4 when the turn reverses a
   side that is not a whole number of chroma samples long — the width (reversed at
   orientations 2, 3, 7 and 8) when it is odd at 4:2:2 or 4:2:0 or not a multiple of four
   at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is odd at 4:4:0, 4:2:0
   or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8), which no ratio in the
-  image package can hold (`TestOrientKeepsEverySubsamplingExact`,
+  image package can hold (`TestOrientTurnsEverySubsamplingAsShown`,
   `TestOrientKeepsEveryPixelKindExact`). GIF is decoded by `gif.DecodeAll`, which reads
   past comments and every application extension, and written by `playGIF` (`gifplay.go`)
   from what it shows rather than from its frames: the run of pictures Chromium composites,
@@ -704,7 +707,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   quality is no guide: a WebP's quality setting is not a JPEG's, and the lower it was the
   larger the JPEG, measured on photos up to 1.4 times the WebP from quality 90, two to
   three times from 75 and up to eight and a half from 5), otherwise a PNG (lossless pixels
-  exactly, or a lossy picture's alpha), and `Processed.Format`, the stored path's
+  exactly, or a lossy picture with its alpha, its half-resolution chroma widened as
+  libwebp, and so Chromium, widens it: `webpChromaRow`,
+  `TestLossyWebPIsUpsampledAsLibwebpDoes`), and `Processed.Format`, the stored path's
   extension, the content type, the attachment's `name` and the thumbnail's format all
   follow the stored format, not the upload's. Before decoding, `stripWebP` (`webp.go`)
   rewrites the RIFF so the decoder sees only the picture: it keeps VP8X (flags masked to
