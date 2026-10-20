@@ -149,11 +149,17 @@ func TestPageAndServerSkipTheSameSeparators(t *testing.T) {
 // and I or L as 1 (parseCode), and the page sends a code typed with them
 // written as those digits (canonicalCode, by CODE_FOLDS), which is how the
 // server writes a code. Every character is put through both: the server's
-// reading of it as a code's character, and the page's, in capitals as
-// codeCharacters puts it and then folded by its table. Where the server reads
-// the character as one of a code's, the two agree; where the server refuses it,
-// the page folds nothing, so it sends no code the server would not have read
-// from what was typed.
+// reading of it as a code's character, and the page's, in capitals one to a
+// character by unicode.ToUpper, and then folded by its table. codeCharacters's
+// toUpperCase writes the same capital for every character whose capital is a
+// single one, but for a few that Go's Unicode does not have yet, none of them
+// a code's either way. Where the server reads the character as one of a
+// code's, the two agree, and the page's table folds no character the server
+// refuses. toUpperCase writes some characters as several, and for eight of
+// them every one is a letter (ß as SS, the fi ligature as FI, and six more
+// ligatures), which the page then reads as it reads those letters typed, where
+// the server refuses the character itself; the others keep a character that
+// is no code's, which the server refuses too.
 func TestPageAndServerFoldTheSameLetters(t *testing.T) {
 	found := regexp.MustCompile(`\nconst CODE_FOLDS = \{([^}]*)\};\n`).FindStringSubmatch(appScript(t))
 	if found == nil {
