@@ -59,14 +59,19 @@ type SweepReport struct {
 	BlobsRemoved int
 	BlobFailures int
 	BlobsMissing int
-	// The rows of the credentials table the sweep rewrote, which is all of
-	// them (Store.RewriteCredentials), expired ones that no confirmation has
-	// pruned yet included: it shows the rewrite ran, and over how much. Kept
+	// The rows of the credentials table the sweep rewrote: all of them
+	// (Store.RewriteCredentials), expired ones that no confirmation has
+	// pruned yet included, when the rewrite's transaction commits, whatever
+	// fails after it; and 0, whatever the table holds, when it does not,
+	// because the sweep stopped before it or the rewrite failed — its lock
+	// timed out, say (TestSweepFailsWhenTheVerificationTablesAreHeld). Kept
 	// night after night it is a history of the table's size, which the
-	// database does not keep, and it says how many credentials there were
-	// and nothing about any one of them; the log already counts issuances
-	// one by one ("verification issued"). Nothing finer — no label, no
-	// expiry — belongs here.
+	// database does not keep, but for that: a 0 from a sweep that failed
+	// can be a rewrite that did not run, and the sweep's error says which
+	// step failed. It says how many credentials there were and nothing
+	// about any one of them; the log already counts issuances one by one
+	// ("verification issued"). Nothing finer — no label, no expiry —
+	// belongs here.
 	Credentials int
 }
 

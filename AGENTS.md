@@ -626,9 +626,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   below). It logs one record of counts and nothing that names a board or thread or
   says anything of a credential, failures included, and the error it returns has the
   key taken out (`TestSweepLogsOnlyCounts`). `credentials_rewritten` is the number of
-  rows in the credentials table, expired ones no confirmation has pruned yet
-  included; night after night it is a history of the table's size, which the
-  database does not keep, and nothing finer belongs beside it. It returns an error —
+  rows the rewrite copied: on a night its transaction commits, every row in the
+  credentials table, expired ones no confirmation has pruned yet included, even if
+  a later step then fails; on a night it does not — the sweep stopped before it, or
+  the rewrite failed, as when its lock times out — 0, whatever the table holds
+  (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Night after night it is a
+  history of the table's size, which the database does not keep, but for that: a 0
+  on a night that exits non-zero can be a rewrite that did not run, and the error
+  says which step failed. Nothing finer belongs beside it. It returns an error —
   a non-zero exit — on a database failure, a file it could not remove or did not
   find, a rewrite or vacuum of the verification tables that did not finish, a
   vacuum of `pg_statistic` that did not finish (which a role that owns the tables
