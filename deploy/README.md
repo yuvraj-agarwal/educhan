@@ -568,6 +568,8 @@ trap 'echo "Stopped at the step that failed above; nothing after it ran. Run the
 field() { python3 -c "import sys,json;print(json.load(sys.stdin)[\"$1\"])"; }
 
 # Checked before anything is made in Stripe.
+gcloud run services describe educhan --region "$REGION" --format='value(metadata.name)' >/dev/null ||
+  { echo "No service educhan in ${REGION}: export REGION with the service's region."; exit 1; }
 [[ $PUBLIC_URL =~ ^https://[^/?#]+$ ]] ||
   { echo "PUBLIC_URL must be a bare https:// origin, not ${PUBLIC_URL}."; exit 1; }
 [[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
@@ -623,11 +625,13 @@ echo "Done. The service verifies webhook endpoint ${ENDPOINT}, under Product ${P
 ```
 
 Running the block again is safe, but each run that gets past its checks makes
-another Product, Price and webhook endpoint in Stripe, and the service verifies
-only the endpoint named by the last run that printed "Done". Delete the other
-endpoints (*Developers → Webhooks*), whose deliveries the server can't verify,
-and archive the other Products; a run that stopped part way may have left one
-of each.
+another Product, Price and webhook endpoint in Stripe. An instance reads the
+newest version of each secret when it starts, so once a run has added its
+versions, instances started from then on verify that run's endpoint, even if
+the run stopped at the update after. So run the block until it prints "Done",
+and only then delete every endpoint but the one it named (*Developers →
+Webhooks*), whose deliveries the server can't verify, and archive every Product
+but its own.
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price. The Price is tax-inclusive, so every buyer pays USD 20.00. To have Stripe
@@ -671,7 +675,8 @@ export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin, as above
 PUBLIC_URL="${PUBLIC_URL%/}"
 
 read -rsp 'Stripe secret key: ' STRIPE_ADMIN; echo
-# Newest first. Move the one the last setup run that printed "Done" named.
+# Newest first. Move the one named by the setup run that last printed "Done",
+# with no run stopped part way since (see the cleanup above).
 curl -fsS 'https://api.stripe.com/v1/webhook_endpoints?limit=100' -u "${STRIPE_ADMIN}:" \
   | python3 -c 'import sys,json;[print(e["id"],e["url"]) for e in sorted(json.load(sys.stdin)["data"],key=lambda e:-e["created"])]'
 read -rp 'Endpoint to move (we_…): ' ENDPOINT
