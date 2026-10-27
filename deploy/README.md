@@ -534,8 +534,8 @@ any of them set without the secret (section 2.9).
 
 What a Pass buys is skipping the captcha, so sell it only where the captcha is
 on, which `GET /api/site` shows as `"captcha":true`; a service made before the
-captcha gets its secret first (section 2.4). The block below stores nothing
-otherwise.
+captcha gets its secret first (section 2.4). The block below checks it, and
+makes nothing otherwise.
 
 **In the Stripe dashboard first.** Under *Settings → Public details*, set a
 support email: it is printed on every receipt, and a buyer who lost their code
@@ -548,7 +548,9 @@ email receipts for successful payments, and set up no custom domain for
 Checkout: the server sends buyers only to `https://checkout.stripe.com` and
 refuses any other address Stripe hands back.
 
-In Cloud Shell (the `read`s keep the keys out of your shell history):
+In Cloud Shell. Past its first lines the block runs in a subshell that stops at
+the first step that fails, so a run either finishes or says where it stopped,
+and the keys, read with `read`, stay out of your shell and its history:
 
 ```bash
 export REGION="${REGION:-asia-south1}"   # the region the service runs in
@@ -560,65 +562,72 @@ export RUN_SA="educhan-run@$(gcloud config get-value project).iam.gserviceaccoun
 export PUBLIC_URL="${PUBLIC_URL:-$(gcloud run services describe educhan --region "$REGION" --format='value(status.url)')}"
 PUBLIC_URL="${PUBLIC_URL%/}"
 
+(
+set -euo pipefail
+trap 'echo "Stopped at the step that failed above; nothing after it ran. Run the block again." >&2' ERR
+field() { python3 -c "import sys,json;print(json.load(sys.stdin)[\"$1\"])"; }
+
+# Checked before anything is made in Stripe.
+[[ $PUBLIC_URL =~ ^https://[^/?#]+$ ]] ||
+  { echo "PUBLIC_URL must be a bare https:// origin, not ${PUBLIC_URL}."; exit 1; }
+[[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
+  { echo "${PUBLIC_URL} does not answer, or its captcha is off (section 2.4)."; exit 1; }
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
+[[ $STRIPE_KEY == [rs]k_* && $STRIPE_ADMIN == [rs]k_* ]] ||
+  { echo 'Those are not Stripe keys (sk_… or rk_…).'; exit 1; }
 
 # The product and its one-time price: USD 20.00, a year of the Pass. The amount
 # is in the currency's smallest unit (2000 = USD 20.00), and any tax is part of
 # it, not added on top (below). A new price later is a new Price and a new
 # EDUCHAN_STRIPE_PRICE_ID, not a code change.
 PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
-  -d name="educhan Pass" | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+  -d name="educhan Pass" | field id)
 PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
   -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 -d tax_behavior=inclusive \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["id"])')
+  | field id)
 
 # The webhook endpoint, pinned to the API version the server is written
 # against. Its signing secret is returned by this call and no other.
-WEBHOOK_SECRET=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STRIPE_ADMIN}:" \
+ENDPOINT_JSON=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STRIPE_ADMIN}:" \
   -d url="${PUBLIC_URL}/api/pass/stripe-webhook" -d api_version=2024-06-20 \
   -d "enabled_events[]=checkout.session.completed" \
   -d "enabled_events[]=checkout.session.async_payment_succeeded" \
   -d "enabled_events[]=checkout.session.async_payment_failed" \
   -d "enabled_events[]=checkout.session.expired" \
   -d "enabled_events[]=charge.refunded" \
-  -d "enabled_events[]=charge.dispute.created" \
-  | python3 -c 'import sys,json;print(json.load(sys.stdin)["secret"])')
-unset STRIPE_ADMIN
+  -d "enabled_events[]=charge.dispute.created")
+ENDPOINT=$(field id <<<"$ENDPOINT_JSON")
+WEBHOOK_SECRET=$(field secret <<<"$ENDPOINT_JSON")
 
-# Store nothing unless the captcha is on and every value came back: a call
-# above that failed leaves its variable empty, and the server refuses to start
-# on an empty setting.
-if [[ $(curl -fsS "${PUBLIC_URL}/api/site") != *'"captcha":true'* ]]; then
-  echo "${PUBLIC_URL} does not answer, or its captcha is off (section 2.4), so nothing was stored."
-elif [[ $STRIPE_KEY == [rs]k_* && $PRICE_ID == price_* && $WEBHOOK_SECRET == whsec_* && $PUBLIC_URL =~ ^https://[^/?#]+$ ]]; then
-  # Made once and never replaced: every stored Pass is a hash under it.
-  gcloud secrets describe educhan-pass-secret >/dev/null 2>&1 ||
-    openssl rand -hex 32 | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
-  # The two Stripe values get a new version on every run, to match what it made.
-  for secret in educhan-stripe-secret-key educhan-stripe-webhook-secret; do
-    gcloud secrets describe "$secret" >/dev/null 2>&1 ||
-      gcloud secrets create "$secret" --replication-policy=automatic
-  done
-  printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
-  printf '%s' "$WEBHOOK_SECRET" | gcloud secrets versions add educhan-stripe-webhook-secret --data-file=-
-  for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
-    gcloud secrets add-iam-policy-binding "$secret" \
-      --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
-  done
-  gcloud run services update educhan --region "$REGION" \
-    --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
-    --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
-else
-  echo 'A value above is missing, so nothing was stored. Fix it and run the block again.'
-fi
-unset STRIPE_KEY WEBHOOK_SECRET
+# Made once and never replaced: every stored Pass is a hash under it.
+gcloud secrets describe educhan-pass-secret >/dev/null 2>&1 ||
+  openssl rand -hex 32 | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
+for secret in educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+  gcloud secrets describe "$secret" >/dev/null 2>&1 ||
+    gcloud secrets create "$secret" --replication-policy=automatic
+done
+for secret in educhan-pass-secret educhan-stripe-secret-key educhan-stripe-webhook-secret; do
+  gcloud secrets add-iam-policy-binding "$secret" \
+    --member="serviceAccount:${RUN_SA}" --role=roles/secretmanager.secretAccessor
+done
+# The two Stripe values get a new version on every run, to match what it made,
+# and the service moves onto them straight away.
+printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
+printf '%s' "$WEBHOOK_SECRET" | gcloud secrets versions add educhan-stripe-webhook-secret --data-file=-
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
+echo "Done. The service verifies webhook endpoint ${ENDPOINT}, under Product ${PRODUCT}."
+)
 ```
 
-Running the block again is safe, but each run makes another Product, Price and
-webhook endpoint in Stripe, and the service keeps only the newest endpoint's
-signing secret. Delete the older endpoints (*Developers → Webhooks*), whose
-deliveries the server can no longer verify, and archive the older Products.
+Running the block again is safe, but each run that gets past its checks makes
+another Product, Price and webhook endpoint in Stripe, and the service verifies
+only the endpoint named by the last run that printed "Done". Delete the other
+endpoints (*Developers → Webhooks*), whose deliveries the server can't verify,
+and archive the other Products; a run that stopped part way may have left one
+of each.
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price. The Price is tax-inclusive, so every buyer pays USD 20.00. To have Stripe
@@ -662,7 +671,7 @@ export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin, as above
 PUBLIC_URL="${PUBLIC_URL%/}"
 
 read -rsp 'Stripe secret key: ' STRIPE_ADMIN; echo
-# Newest first: the service holds the secret of the newest one the block made.
+# Newest first. Move the one the last setup run that printed "Done" named.
 curl -fsS 'https://api.stripe.com/v1/webhook_endpoints?limit=100' -u "${STRIPE_ADMIN}:" \
   | python3 -c 'import sys,json;[print(e["id"],e["url"]) for e in sorted(json.load(sys.stdin)["data"],key=lambda e:-e["created"])]'
 read -rp 'Endpoint to move (we_…): ' ENDPOINT
@@ -690,6 +699,9 @@ gcloud run services update educhan --region "$REGION" \
   --no-default-url --update-env-vars EDUCHAN_PASS_SALES=open
 ```
 
+If sales were paused before the move, while waiting to retire the Pass say,
+leave out `--update-env-vars EDUCHAN_PASS_SALES=open` so they stay paused.
+
 A holder who did not carry their code over, or whose checkout on `run.app` was
 not collected by then, writes to the support address on the receipt and gets a
 reissue code (the README's *Lost codes*), though a Pass whose purchase was
@@ -706,7 +718,10 @@ there while sales are paused, or the next run opens them. With the `run.app`
 addresses turned off, `service.yaml` needs
 `run.googleapis.com/default-url-disabled: "true"` under the Service's
 `metadata.annotations` as well (it is there, commented out), or each
-`services replace` turns them back on.
+`services replace` turns them back on. The Service's metadata takes one
+`annotations:` key, so if it already has one, such as section 2.6's
+`invoker-iam-disabled`, add the line under it: with a second key, one of the two
+is dropped.
 
 **To stop selling, pause.** This leaves everything already sold working:
 

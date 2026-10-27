@@ -12,7 +12,9 @@ metadata:
     cloud.googleapis.com/location: ${REGION}
   # Once readers come in through a domain of your own and the run.app
   # addresses are turned off (deploy/README.md section 2.10), keep them off
-  # here: applying this file without it turns them back on.
+  # here: applying this file without it turns them back on. Metadata takes
+  # one annotations: key, so if it has one already (section 2.6's
+  # invoker-iam-disabled, say), add the line under that one instead.
   # annotations:
   #   run.googleapis.com/default-url-disabled: "true"
 spec:
