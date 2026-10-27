@@ -51,10 +51,12 @@ type App struct {
 // and prepares the media store. ctx bounds all of it. A step that waits on
 // something ends when ctx does, but for the two answers migrate waits for
 // whatever the stop (a migration's COMMIT, and the migrations' lock given
-// back), so New looks at ctx after migrate, and after the local media store
-// and the domain file, which wait on nothing. A stop, or a bound, that ends
-// ctx while New runs ends New, with what it opened closed and ctx's error as
-// its own.
+// back, both until migrateAnswerTimeout after ctx ends at most) and the read
+// of the domain file, which ctx does not cut short though it can wait, on a
+// slow mount say. So New looks at ctx after migrate and after the domain file,
+// and after the media store too, for one that answers just as ctx ends. A
+// stop, or a bound, that ends ctx while New runs ends New, with what it opened
+// closed and ctx's error as its own.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
 		return nil, err

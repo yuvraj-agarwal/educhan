@@ -298,17 +298,19 @@ func wantOneFatalLine(t *testing.T, out, want string) {
 
 // A sweep stopped while it is still starting up, connecting to a database that
 // does not answer, waiting for the migrations' lock, which a server starting
-// from a new release holds while it migrates, or checking a Cloud Storage
-// bucket that does not answer, says why it ended: it listens for SIGTERM from
-// before it connects, and every step of its startup ends with the stop, so it
-// writes the stop as its error, and it exits with status 1 at once, with
-// nothing deleted. Before, SIGTERM killed it there without a word; and with
-// SIGTERM caught, a bucket check made on a context the stop does not reach
-// would hold the stop until the process was killed. (A database that stops
-// answering once the sweep is connected to it holds the error back until pgx
-// gives up the connection, fifteen seconds later, which this does not wait
-// for. The two answers migrate waits for whatever the stop are
-// TestSweepStoppedAsMigrateFinishesEndsThere's.)
+// from a new release holds while it migrates, checking a Cloud Storage bucket
+// that does not answer, or reading a domain file that is slow to come, says why
+// it ended: it listens for SIGTERM from before it connects, and every step of
+// its startup ends with the stop, or, as the domain file's read does, is
+// followed by a look at it, so it writes the stop as its error, and it exits
+// with status 1 at once, with nothing deleted. Before, SIGTERM killed it there
+// without a word; with SIGTERM caught, a bucket check made on a context the
+// stop does not reach would hold the stop until the process was killed; and
+// with no look after the domain file, a stop while it was read let the sweep go
+// on to prune. (A database that stops answering once the sweep is connected to
+// it holds the error back until pgx gives up the connection, fifteen seconds
+// later, which this does not wait for. The two answers migrate waits for
+// whatever the stop are TestSweepStoppedAsMigrateFinishesEndsThere's.)
 func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 	// Nothing is left to wait for once the stop has ended the startup.
 	const quickly = 3 * time.Second
@@ -319,12 +321,14 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 		// DATABASE_URL and a func that reports whether it is waiting yet.
 		wait func(t *testing.T, db *pgxpool.Pool, databaseURL string) (string, func() bool)
 		want string
+		// check, when there is one, looks at what the stopped sweep left.
+		check func(t *testing.T, db *pgxpool.Pool)
 	}{
 		{"connecting", func(t *testing.T, _ *pgxpool.Pool, databaseURL string) (string, func() bool) {
 			proxy := startStallingProxy(t, databaseURL)
 			proxy.freeze()
 			return throughProxy(t, databaseURL, proxy, ""), func() bool { return proxy.accepted.Load() > 0 }
-		}, "ping postgres"},
+		}, "ping postgres", nil},
 		{"waiting for the migrations' lock", func(t *testing.T, db *pgxpool.Pool, databaseURL string) (string, func() bool) {
 			ctx := context.Background()
 			lock, err := db.Acquire(ctx)
@@ -361,7 +365,7 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 				}
 				return waiting
 			}
-		}, "acquire migration lock"},
+		}, "acquire migration lock", nil},
 		{"checking the media store's bucket", func(t *testing.T, _ *pgxpool.Pool, databaseURL string) (string, func() bool) {
 			// Frozen from the start, it stands in for a Cloud Storage that
 			// takes the bucket check's request and never answers it.
@@ -371,7 +375,53 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 			t.Setenv("EDUCHAN_GCS_BUCKET", "educhan-test")
 			t.Setenv("STORAGE_EMULATOR_HOST", "http://"+storage.addr)
 			return databaseURL, func() bool { return storage.accepted.Load() > 0 }
-		}, "prepare media store"},
+		}, "prepare media store", nil},
+		{"reading the domain file", func(t *testing.T, db *pgxpool.Pool, databaseURL string) (string, func() bool) {
+			// Migrated first, with a spent answer two days past its day,
+			// which a sweep that got as far as pruning would delete.
+			if err := run([]string{"-sweep"}, io.Discard); err != nil {
+				t.Fatalf("migrate the schema: %v", err)
+			}
+			if _, err := db.Exec(context.Background(), `INSERT INTO captcha_spent (signature_hash, expires_at)
+				VALUES ('\x01', now() - interval '2 days')`); err != nil {
+				t.Fatalf("spend an answer: %v", err)
+			}
+			list, err := os.ReadFile("../../internal/app/verify_domains.txt")
+			if err != nil {
+				t.Fatalf("read the domain list: %v", err)
+			}
+			// A FIFO stands in for a file on a mount that is slow to answer:
+			// the sweep's read of it waits until something is written.
+			fifo := filepath.Join(t.TempDir(), "verify_domains.txt")
+			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+				t.Fatalf("make the domain file: %v", err)
+			}
+			t.Setenv("EDUCHAN_VERIFY_DOMAINS", fifo)
+			return databaseURL, func() bool {
+				// Opened without waiting, it opens only once the sweep has it
+				// open to read.
+				w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+				if err != nil {
+					return false
+				}
+				// The stop is sent as this returns, and the list is written
+				// after it, so the read ends with the stop already come.
+				go func() {
+					defer w.Close()
+					time.Sleep(300 * time.Millisecond)
+					_, _ = w.Write(list)
+				}()
+				return true
+			}
+		}, "load verification domains", func(t *testing.T, db *pgxpool.Pool) {
+			var spent int
+			if err := db.QueryRow(context.Background(), `SELECT count(*) FROM captcha_spent`).Scan(&spent); err != nil {
+				t.Fatalf("count spent answers: %v", err)
+			}
+			if spent != 1 {
+				t.Errorf("the sweep stopped while starting up left %d spent answers, want the one past its day kept", spent)
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := sweepEnv(t)
@@ -408,22 +458,27 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 			if strings.Contains(text, "msg=sweep ") {
 				t.Errorf("the sweep stopped while starting up swept; its log:\n%s", text)
 			}
+			if tc.check != nil {
+				tc.check(t, db)
+			}
 			t.Logf("exited %v after SIGTERM; its log:\n%s", took.Round(10*time.Millisecond), text)
 		})
 	}
 }
 
-// migrate waits for two answers whatever the stop, for two seconds at most
-// (the app's migrateAnswerTimeout): a migration's COMMIT once it is sent,
-// counted from the stop, and the release of the migrations' lock. A sweep
-// stopped while it waits on one still ends with the stop, written as its one
-// fatal line, and deletes nothing: New looks at the stop once migrate is done.
+// migrate waits for two answers whatever the stop, both for two seconds at
+// most after the stop (the app's migrateAnswerTimeout): a migration's COMMIT
+// once it is sent, and the release of the migrations' lock. A sweep stopped
+// while it waits on one still ends with the stop, written as its one fatal
+// line, and deletes nothing: New looks at the stop once migrate is done.
 // Before, an unlock that the database did not answer held the stop until the
-// process was killed, a slow one let the sweep go on to prune, and a commit
-// cut short was written as a failure though the migration had been applied.
+// process was killed, a slow one let the sweep go on to prune, a commit cut
+// short was written as a failure though the migration had been applied, and an
+// unlock sent once a slow commit was answered had two seconds of its own, so
+// the sweep exited nearly four seconds after the stop.
 func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
-	// The unlock's two seconds, and some to spare.
-	const quickly = 5 * time.Second
+	// The two seconds after the stop, and some to spare.
+	const quickly = 3 * time.Second
 
 	// locked says whether a connection named appName holds an advisory lock.
 	locked := func(t *testing.T, db *pgxpool.Pool, appName string) bool {
@@ -442,10 +497,13 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 		migrated  bool
 		statement string
 		hold      time.Duration
+		// then, once statement has been sent, has the proxy freeze the first
+		// connection to send this one.
+		then string
 		// check looks at what the stopped sweep left and wrote.
 		check func(t *testing.T, db *pgxpool.Pool, appName, text string)
 	}{
-		{"giving the lock back, unanswered", true, "pg_advisory_unlock", 0, func(t *testing.T, db *pgxpool.Pool, appName, text string) {
+		{"giving the lock back, unanswered", true, "pg_advisory_unlock", 0, "", func(t *testing.T, db *pgxpool.Pool, appName, text string) {
 			wantOneFatalLine(t, text, "migrate: context canceled")
 			if !strings.Contains(text, "could not release migration lock") {
 				t.Errorf("the unanswered unlock was not reported; its log:\n%s", text)
@@ -459,7 +517,7 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 				t.Errorf("the migrations' lock was still held five seconds after the stopped sweep exited")
 			}
 		}},
-		{"giving the lock back, slowly", true, "pg_advisory_unlock", 1500 * time.Millisecond, func(t *testing.T, db *pgxpool.Pool, _, text string) {
+		{"giving the lock back, slowly", true, "pg_advisory_unlock", 1500 * time.Millisecond, "", func(t *testing.T, db *pgxpool.Pool, _, text string) {
 			wantOneFatalLine(t, text, "migrate: context canceled")
 			if strings.Contains(text, "could not release migration lock") {
 				t.Errorf("the slow unlock was reported as failed; its log:\n%s", text)
@@ -473,10 +531,15 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 			}
 		}},
 		// The first COMMIT of a fresh schema's migrations is 0001's.
-		{"committing a migration", false, "Q\x00\x00\x00\x0bcommit\x00", time.Second, func(t *testing.T, db *pgxpool.Pool, _, text string) {
-			wantOneFatalLine(t, text, "context canceled")
+		{"committing a migration", false, "Q\x00\x00\x00\x0bcommit\x00", time.Second, "", func(t *testing.T, db *pgxpool.Pool, _, text string) {
+			wantOneFatalLine(t, text, "migrate: begin migration 0002_imageboard.sql: context canceled")
 			if strings.Contains(text, "commit migration") {
 				t.Errorf("the sweep reported the commit failed; its log:\n%s", text)
+			}
+			// Ended before the next migration's BEGIN, its connection is
+			// still sound, and the lock is given back.
+			if strings.Contains(text, "could not release migration lock") {
+				t.Errorf("the lock's release failed after the commit; its log:\n%s", text)
 			}
 			applied := strings.Index(text, `msg="applied migration" version=1 `)
 			if applied < 0 || applied > strings.Index(text, "msg=fatal") {
@@ -498,10 +561,30 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 		// Frozen before it is forwarded, the COMMIT never reaches the
 		// database: given up two seconds after the stop, it is reported as
 		// failed, and its connection closed takes the lock with it.
-		{"committing a migration, unanswered", false, "Q\x00\x00\x00\x0bcommit\x00", 0, func(t *testing.T, db *pgxpool.Pool, appName, text string) {
+		{"committing a migration, unanswered", false, "Q\x00\x00\x00\x0bcommit\x00", 0, "", func(t *testing.T, db *pgxpool.Pool, appName, text string) {
 			wantOneFatalLine(t, text, "commit migration 0001_init.sql")
 			if strings.Contains(text, "msg=\"applied migration\"") {
 				t.Errorf("a migration whose commit went unanswered was logged as applied; its log:\n%s", text)
+			}
+			held := true
+			for deadline := time.Now().Add(5 * time.Second); held && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+				held = locked(t, db, appName)
+			}
+			if held {
+				t.Errorf("the migrations' lock was still held five seconds after the stopped sweep exited")
+			}
+		}},
+		// The stop comes as 0001 commits, and the database answers the
+		// COMMIT 1.8 s later: the unlock, sent then and never answered, has
+		// what is left of the two seconds after the stop, not two of its own.
+		{"committing a migration slowly, then giving the lock back, unanswered", false, "Q\x00\x00\x00\x0bcommit\x00", 1800 * time.Millisecond, "pg_advisory_unlock", func(t *testing.T, db *pgxpool.Pool, appName, text string) {
+			wantOneFatalLine(t, text, "migrate: begin migration 0002_imageboard.sql: context canceled")
+			applied := strings.Index(text, `msg="applied migration" version=1 `)
+			if applied < 0 || applied > strings.Index(text, "msg=fatal") {
+				t.Errorf("the committed migration was not logged as applied before the stop; its log:\n%s", text)
+			}
+			if !strings.Contains(text, "could not release migration lock") {
+				t.Errorf("the unanswered unlock was not reported; its log:\n%s", text)
 			}
 			held := true
 			for deadline := time.Now().Add(5 * time.Second); held && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
@@ -543,6 +626,10 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 				sweep.kill()
 				t.Fatalf("the sweep never sent %q; its log:\n%s", tc.statement, sweep.log(time.Now()))
 			}
+			var frozen <-chan struct{}
+			if tc.then != "" {
+				frozen = proxy.on(tc.then, 0)
+			}
 			// The lock is held while its release waits, frozen or held: the
 			// check above can see it.
 			if tc.statement == "pg_advisory_unlock" && tc.hold == 0 && !locked(t, db, appName) {
@@ -563,6 +650,13 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 			}
 			if strings.Contains(text, "msg=sweep ") {
 				t.Errorf("the sweep stopped as migrate finished swept; its log:\n%s", text)
+			}
+			if frozen != nil {
+				select {
+				case <-frozen:
+				default:
+					t.Errorf("the sweep never sent %q after %q; its log:\n%s", tc.then, tc.statement, text)
+				}
 			}
 			tc.check(t, db, appName, text)
 			t.Logf("exited %v after SIGTERM; its log:\n%s", took.Round(10*time.Millisecond), text)
