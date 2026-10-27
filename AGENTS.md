@@ -584,11 +584,15 @@ before the test changes.
   revoked, another address verified there) reads it again and, when it is not the badge
   that tab offered, takes the option out of every posting form on screen
   (`dropBadgeOption`, which moves focus on the box to the form's button) and draws
-  `/verify` again only if it shows the badge panel. The address step is left as it is,
-  and so is a code step unless the badge read in is one newly verified there: the
-  browser has one verification in progress, held by its cookie, so that badge spent or
-  replaced the code a step asks for when no confirmation of it is on its way, and the
-  step goes, drawn again as the panel with a notice if it is on screen
+  `/verify` again only if it shows the badge panel, then and once the page has asked the
+  server: a redraw that is not a render passes `renderVerify` what it found on screen
+  that called for it (`over`), and draws nothing if that has gone meanwhile. The address
+  step is left as it is, as is one the reader moves to (Verify another address, Use a
+  different address) while a redraw asks the server, and so is a code step unless the
+  badge read in is one newly verified there: the browser has one verification in
+  progress, held by its cookie, so that badge spent or replaced the code a step asks for
+  when no confirmation of it is on its way, and the step goes, drawn again as the panel
+  with a notice if it is on screen, then and once the page has asked the server
   (`codeSpentElsewhere`; `CODE_SPENT_ELSEWHERE` says an address was verified in another
   tab and the code here no longer works, never that the one is why). A confirmation
   already on its way, counted on the step (`confirming`) from before it is sent until it
@@ -596,16 +600,18 @@ before the test changes.
   over it, may have reached the server first and verified this tab's address, so it is
   left to its answer, the step only marked (`spentElsewhere`): a success draws the panel
   for the badge it earned, over its own form or over the code step or panel that
-  `/verify` drawn again meanwhile shows, taking off any notice about the step it
-  overtook, never over an address step, which may be half filled in; and a refusal of
-  any kind puts the step away then, with the notice wherever a code step is on screen,
-  once no other confirmation of it is on its way. While one is, the step stays for that
-  one's answer, and the refused form, on screen, shows the notice. A code request still
-  on its way draws its code step when answered, the cookie its answer sets holding the
-  browser's verification from then on (`followCredentialStorage`, by the `storage`
-  event, `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked,
-  idle or with its badged post on its way, refuses its next press once, saying the badge
-  has gone and that pressing again posts without it, under the same ID as the reader's
+  `/verify` drawn again meanwhile shows, if that is still on screen once the page has
+  asked the server, and only then takes off any notice about the step it overtook; never
+  over an address step, which may be half filled in, nor over `/verify` a forget drew
+  meanwhile, whose notice stays; and a refusal of any kind puts the step away then, with
+  the notice wherever a code step is on screen, once no other confirmation of it is on
+  its way. While one is, the step stays for that one's answer, and the refused form, on
+  screen, shows the notice. A code request still on its way draws its code step when
+  answered, the cookie its answer sets holding the browser's verification from then on
+  (`followCredentialStorage`, by the `storage` event,
+  `TestForgettingTheBadgeReachesEveryTab`). A form that had the badge ticked, idle or
+  with its badged post on its way, refuses its next press once, saying the badge has
+  gone and that pressing again posts without it, under the same ID as the reader's
   unbadged posts in a reply's thread while the poster key is the one it had
   (`withdrawBadgeOption`, `badgeWithdrawn`,
   `TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress`): said nothing, the post would go
@@ -625,14 +631,15 @@ before the test changes.
   for another tab's change: a confirmation answered after the reader left `/verify`, the
   feature switched off or the badge run out as `/verify` loads (`loadVerification`,
   which starts no puzzle, as drawing a page never does), and a badged post refused as
-  expired or revoked, for a form on the page the reader went to meanwhile
-  (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). Forget this browser takes the option out
-  without a word and drops the note: a word would tell whoever presses next that the
-  browser held a badge, and with the poster key gone the post shares an ID with none
-  made before. A badged post refused as expired or revoked forgets the credential
-  it sent only while storage still holds it, so a badge verified in another tab
-  meanwhile stays, and its form, still on screen with something written or attached,
-  starts the puzzle the post it goes on to needs.
+  expired or revoked, for a form on the page the reader went to meanwhile, and for
+  `/verify` there, drawn again where it shows that badge's panel, as another tab's is,
+  so it says why the badge went (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). Forget this
+  browser takes the option out without a word and drops the note: a word would tell
+  whoever presses next that the browser held a badge, and with the poster key gone the
+  post shares an ID with none made before. A badged post refused as expired or revoked
+  forgets the credential it sent only while storage still holds it, so a badge verified
+  in another tab meanwhile stays, and its form, still on screen with something written
+  or attached, starts the puzzle the post it goes on to needs.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and

@@ -2188,21 +2188,22 @@ function openForgetChannel() {
 
 // followCredentialStorage is a tab's answer to the badge changing in another
 // tab of this browser: Forget this credential or Forget this browser pressed
-// there, the server refusing the badge there as run out or replaced, or
-// another address verified there. The browser holds one badge, in storage, so
-// this tab reads it again, and a badged post from here sends only the badge
-// the browser still holds; the next form or /verify page this tab draws shows
-// it. If that is not the one this tab offered, every posting form on screen
-// loses the option, which named the badge that has gone, and one that had it
-// ticked says so at its next press (withdrawBadgeOption); and /verify, when it
-// shows the badge panel, is drawn again. /verify showing the address step is
-// left as it is, whatever badge it was drawn over, so a reader filling it in,
-// or waiting on a code request, loses nothing. So is a code step, unless the
-// badge read in is one newly verified there (codeSpentElsewhere). An emptied
-// credential is the browser forgotten in another tab (forgetBrowser): the
-// options go as for any badge gone, before or after its message on
-// FORGET_CHANNEL is heard here, but start no puzzle, since a forget starts
-// nothing.
+// there, the server refusing the badge there as run out or replaced, or another
+// address verified there. The browser holds one badge, in storage, so this tab
+// reads it again, and a badged post from here sends only the badge the browser
+// still holds; the next form or /verify page this tab draws shows it. If that
+// is not the one this tab offered, every posting form on screen loses the
+// option, which named the badge that has gone, and one that had it ticked says
+// so at its next press (withdrawBadgeOption); and /verify, when it shows the
+// badge panel, is drawn again, if the panel is still on screen once the page
+// has asked the server (renderVerify). /verify showing the address step is left
+// as it is, whatever badge it was drawn over, as is one the reader moves to
+// while the panel is drawn again, so a reader filling it in, or waiting on a
+// code request, loses nothing. So is a code step, unless the badge read in is
+// one newly verified there (codeSpentElsewhere). An emptied credential is the
+// browser forgotten in another tab (forgetBrowser): the options go as for any
+// badge gone, before or after its message on FORGET_CHANNEL is heard here, but
+// start no puzzle, since a forget starts nothing.
 function followCredentialStorage(event) {
   if (event.key !== CREDENTIAL_STORAGE_KEY && event.key !== null) {
     return;
@@ -2220,8 +2221,9 @@ function followCredentialStorage(event) {
   for (const form of el.main.querySelectorAll("form[data-kind]")) {
     withdrawBadgeOption(form, offered, forgotten);
   }
-  if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('[data-action="forget-verification"]')) {
-    renderVerify(state.route);
+  const panel = el.main.querySelector('[data-action="forget-verification"]');
+  if (state.route.view === "verify" && ageStatus() === "ok" && panel) {
+    renderVerify(state.route, panel);
   }
 }
 
@@ -2241,19 +2243,21 @@ const CODE_SPENT_ELSEWHERE = "An address was verified in another tab, and the co
 // code that verified the badge there or was replaced by the one that did, and
 // the server takes it no more. The step goes, so /verify next shows the badge
 // panel, and is drawn again now, with a word on why, when a code step is on
-// screen. A confirmation of the step already on its way, counted on the step
-// (confirming) whether its form is still on screen or /verify has been drawn
-// again over it since, may have reached the server before the other tab's
-// verification and verified this tab's address, so it is left to its answer:
-// the step is only marked (spentElsewhere), and submitVerification settles it.
-// A success stores the badge it earned and draws the panel for it wherever
-// /verify shows a code step or the panel; a refusal of any kind comes back
-// here, and the step goes as above once no other confirmation of it is on its
-// way; while one is, the refused form, still on screen, says why its code was
-// refused (CODE_SPENT_ELSEWHERE). A code request from this tab still on its way
-// is not a code step yet, and draws its own when answered: the cookie that
-// answer sets holds the browser's verification from then on, and its code is
-// the one asked for.
+// screen and still is once the page has asked the server (renderVerify): an
+// address step the reader moved to meanwhile is left as it is. A confirmation
+// of the step already on its way, counted on the step (confirming) whether its
+// form is still on screen or /verify has been drawn again over it since, may
+// have reached the server before the other tab's verification and verified this
+// tab's address, so it is left to its answer: the step is only marked
+// (spentElsewhere), and submitVerification settles it. A success stores the
+// badge it earned and draws the panel for it wherever /verify shows a code step
+// or the panel, both when it is answered and once the page has asked the
+// server; a refusal of any kind comes back here, and the step goes as above
+// once no other confirmation of it is on its way; while one is, the refused
+// form, still on screen, says why its code was refused (CODE_SPENT_ELSEWHERE).
+// A code request from this tab still on its way is not a code step yet, and
+// draws its own when answered: the cookie that answer sets holds the browser's
+// verification from then on, and its code is the one asked for.
 function codeSpentElsewhere() {
   if (verifyStep.step !== "code") {
     return;
@@ -2263,8 +2267,9 @@ function codeSpentElsewhere() {
     return;
   }
   verifyStep = { step: "email", label: "" };
-  if (state.route.view === "verify" && ageStatus() === "ok" && el.main.querySelector('form[data-verify="confirm"]')) {
-    renderVerify(state.route).then((drawn) => {
+  const step = el.main.querySelector('form[data-verify="confirm"]');
+  if (state.route.view === "verify" && ageStatus() === "ok" && step) {
+    renderVerify(state.route, step).then((drawn) => {
       if (drawn) {
         showNotice(CODE_SPENT_ELSEWHERE);
       }
@@ -2495,12 +2500,15 @@ function verifyViewHTML() {
 }
 
 // renderVerify draws /verify for route, the render or the press that asked for
-// it, unless a newer render has begun while it asked the server: then, like
-// the other views, it draws nothing and says nothing (overtaken). It returns
-// whether it drew.
-async function renderVerify(route) {
+// it, unless a newer render has begun while it asked the server: then, like the
+// other views, it draws nothing and says nothing (overtaken). A redraw that is
+// not a render passes over, what it found on screen that called for it, and
+// draws nothing either if that has left the screen while it asked: the reader
+// has moved on within /verify meanwhile, to an address step they may be filling
+// in, say, or a forget has drawn the page again. It returns whether it drew.
+async function renderVerify(route, over) {
   await loadVerification();
-  if (overtaken(route)) {
+  if (overtaken(route) || (over && !over.isConnected)) {
     return false;
   }
   el.main.innerHTML = verifyViewHTML();
@@ -4775,6 +4783,13 @@ el.main.addEventListener("submit", async (event) => {
             }
           }
         }
+        // /verify, the page the reader went to, showing the panel for that
+        // badge, is drawn again, as for a badge forgotten in another tab
+        // (followCredentialStorage), and says why it went.
+        const panel = el.main.querySelector('[data-action="forget-verification"]');
+        if (state.route.view === "verify" && ageStatus() === "ok" && panel) {
+          renderVerify(state.route, panel);
+        }
       }
       dropBadgeOption(form);
       if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
@@ -4959,13 +4974,14 @@ async function submitVerification(form) {
       }
     }
     verifyStep = { step: "email", label: "" };
+    // Each redraw below draws only if what it is drawn over is still on screen
+    // once the page has asked the server (renderVerify): a forget pressed
+    // meanwhile may have drawn /verify itself, or the reader moved on to an
+    // address step.
+    const overtook = el.main.querySelector('form[data-verify="confirm"], [data-action="forget-verification"]');
     if (onScreen()) {
-      await renderVerify(route);
-    } else if (
-      state.route.view === "verify" &&
-      ageStatus() === "ok" &&
-      el.main.querySelector('form[data-verify="confirm"], [data-action="forget-verification"]')
-    ) {
+      await renderVerify(route, form);
+    } else if (state.route.view === "verify" && ageStatus() === "ok" && overtook) {
       // /verify drawn again while this was on its way, the reader back from
       // another page say, shows what this answer has overtaken: a code step,
       // for this code, now spent, or for one asked for since, whose
@@ -4976,8 +4992,9 @@ async function submitVerification(form) {
       // a later confirmation of it refused say, goes with the step; what this
       // answer said itself, that storage refused the badge, stays, as it does
       // over this form. The address step, which the reader may be filling in,
-      // is left as it is.
-      renderVerify(state.route).then((drawn) => {
+      // is left as it is, as is one they move to, or one a forget draws with
+      // its notice, while this redraw asks the server.
+      renderVerify(state.route, overtook).then((drawn) => {
         if (drawn) {
           clearNotice();
           if (!stored) {
