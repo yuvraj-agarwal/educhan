@@ -100,9 +100,9 @@ func pngGamma(data []byte) (gamma float64, ok bool) {
 // of 64 MiB and used one 488 KiB short, and from a 6.5 MB upload whose
 // profile held 6 MiB of random bytes it passed over one of 57 MiB and used
 // one of 56 MiB. The cut here is at 64 MiB, so a profile between Chromium's
-// cut and it, a band of megabytes for a large upload, is taken as used here,
-// where Chromium passes it over and applies the gAMA, or does not show the
-// picture.
+// cut and it, a band wider than the compressed chunk, tens of megabytes for
+// an upload near MaxUploadBytes, is taken as used here, where Chromium
+// passes it over and applies the gAMA, or does not show the picture.
 const maxICCProfile = 64 << 20
 
 // iccProfileRead is how much of a PNG's ICC profile pngProfileUsable keeps
