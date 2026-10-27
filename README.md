@@ -1050,52 +1050,53 @@ not-found view.
   waiting, so an answer lost on the way is asked for again and brings the same code;
   refused then, it checks the Pass it holds and says a date that moved on. A code the
   server hands over is stored before anything else and stays on screen, beside any code it
-  took the place of, until the reader leaves the page; it can be shown again from the held
-  Pass's panel to write down. A browser that will not store it is told so, and that it
-  won't be shown again once the reader leaves the page: it is not drawn again for whoever
-  comes back to the page next, by a link or by the Back button from another site. A code
-  that arrives while the reader is on another page is shown when they come back to the
-  Pass page. A code typed in after it ran out, within its month of grace, is kept as run
-  out, with its date, to renew. A Pass that has run out here can be checked again, in case
-  it was renewed elsewhere. A renewal the page collects is checked against the Pass it
-  holds (`/api/pass/activate`) before it says that Pass is renewed; one it cannot match to
-  the Pass it holds is reported as a renewal of a Pass, by a payment from this browser or
-  by the reissue code that brought it, with that Pass's new date. An answer about a Pass,
-  to a check or a post, that arrives after the Pass left the browser (removed or replaced,
-  here or in another tab), or after Remove the Pass or Forget this browser was pressed, is
-  dropped, not stored back. An answer to anything the Pass page asked is drawn, focused or
-  announced only while the reader is still on the Pass page; one that arrives after they
-  left stores what is still right to store and draws nothing. Brought back from the
-  back-forward cache, the Pass page is drawn again from the start, age screen first. A
-  code typed or pasted in is sent as the server writes it, in capitals, with an O, I or L
-  as the digit the server reads it as, and grouped with dashes, whatever separators it was
-  pasted with. A reissue code is typed or pasted into the code box, never carried in an
-  address. Pressing the button spends it at once, even in a browser that holds a Pass,
-  whose code is then shown beside the new one to write down; a Pass code typed over a good
-  Pass is refused instead. It goes in the body of one claim, with a nonce of its own
-  (`educhan:pass-reissue-nonce`), and is never stored: it stays in the box, in memory
-  only, until an answer arrives, so pressing again after a lost answer asks with the same
-  nonce. The nonce stays until an answer says the code issued or renewed a Pass, never
-  going on a refusal, so the right code typed after a mistyped one still gets back a Pass
-  whose answer was lost. A try that went unanswered is noted until then too
-  (`educhan:pass-reissue-unanswered`), and only after one is a refusal worded for an
-  earlier try that may have landed, with the Pass held here checked; a Pass the check
-  finds no longer valid is removed, with word that the right reissue code, entered again,
-  gets its new code. The box has autocomplete off, and is emptied by **Remove the Pass**
-  and **Forget this browser**, pressed in any tab of the browser, and by leaving the page.
-  Those two and **Stop collecting it here** stop any collection under way, drop its nonce
-  and then the browser's claim, and drop unstored an answer to a claim that was already on
-  its way, in every tab of the browser (the `storage` event), a tab brought back from the
-  back-forward cache included, so the next person at a shared computer collects nothing. A
-  checkout still opening when one of them is pressed, in any tab, is called off, or not
-  followed to Stripe once it answers, and keeps no claim past it, but for the moment
-  [educhan Pass](#educhan-pass) describes; checkouts go one at a time, so one pressed
-  after it holds the claim, and a tab that leaves educhan calls off a checkout still
-  opening. Remove and Forget also drop the reissue code's nonce and its note, any note
-  that a Pass was found gone, and an answer on its way to a reissue code or to a check of
-  a code; Stop leaves those alone, since a reissue it dropped would be spent for nothing.
-  Nothing collects again until the server has that request: **Check now** and **Stop
-  collecting it here** stay off meanwhile, in every tab and in whatever is drawn
+  took the place of, until the reader leaves the page; once drawn, kept or not, it is not
+  drawn again for whoever comes back to the page next, by a link or by the Back button
+  from another site, though one the browser keeps can be shown again from the held Pass's
+  panel to write down. A browser that will not store it is told so, and that it won't be
+  shown again once the reader leaves the page. A code that arrives while the reader is on
+  another page, or that they leave before it is drawn, is shown when they come back to the
+  Pass page, beside any code it took the place of. A code typed in after it ran out,
+  within its month of grace, is kept as run out, with its date, to renew. A Pass that has
+  run out here can be checked again, in case it was renewed elsewhere. A renewal the page
+  collects is checked against the Pass it holds (`/api/pass/activate`) before it says that
+  Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal of a
+  Pass, by a payment from this browser or by the reissue code that brought it, with that
+  Pass's new date. An answer about a Pass, to a check or a post, that arrives after the
+  Pass left the browser (removed or replaced, here or in another tab), or after Remove the
+  Pass or Forget this browser was pressed, is dropped, not stored back. An answer to
+  anything the Pass page asked is drawn, focused or announced only while the reader is
+  still on the Pass page; one that arrives after they left stores what is still right to
+  store and draws nothing. Brought back from the back-forward cache, the Pass page is
+  drawn again from the start, age screen first. A code typed or pasted in is sent as the
+  server writes it, in capitals, with an O, I or L as the digit the server reads it as,
+  and grouped with dashes, whatever separators it was pasted with. A reissue code is typed
+  or pasted into the code box, never carried in an address. Pressing the button spends it
+  at once, even in a browser that holds a Pass, whose code is then shown beside the new
+  one to write down; a Pass code typed over a good Pass is refused instead. It goes in the
+  body of one claim, with a nonce of its own (`educhan:pass-reissue-nonce`), and is never
+  stored: it stays in the box, in memory only, until an answer arrives, so pressing again
+  after a lost answer asks with the same nonce. The nonce stays until an answer says the
+  code issued or renewed a Pass, never going on a refusal, so the right code typed after a
+  mistyped one still gets back a Pass whose answer was lost. A try that went unanswered is
+  noted until then too (`educhan:pass-reissue-unanswered`), and only after one is a
+  refusal worded for an earlier try that may have landed, with the Pass held here checked;
+  a Pass the check finds no longer valid is removed, with word that the right reissue
+  code, entered again, gets its new code. The box has autocomplete off, and is emptied by
+  **Remove the Pass** and **Forget this browser**, pressed in any tab of the browser, and
+  by leaving the page. Those two and **Stop collecting it here** stop any collection under
+  way, drop its nonce and then the browser's claim, and drop unstored an answer to a claim
+  that was already on its way, in every tab of the browser (the `storage` event), a tab
+  brought back from the back-forward cache included, so the next person at a shared
+  computer collects nothing. A checkout still opening when one of them is pressed, in any
+  tab, is called off, or not followed to Stripe once it answers, and keeps no claim past
+  it, but for the moment [educhan Pass](#educhan-pass) describes; checkouts go one at a
+  time, so one pressed after it holds the claim, and a tab that leaves educhan calls off a
+  checkout still opening. Remove and Forget also drop the reissue code's nonce and its
+  note, any note that a Pass was found gone, and an answer on its way to a reissue code or
+  to a check of a code; Stop leaves those alone, since a reissue it dropped would be spent
+  for nothing. Nothing collects again until the server has that request: **Check now** and
+  **Stop collecting it here** stay off meanwhile, in every tab and in whatever is drawn
   meanwhile, a tab that opens the Pass page meanwhile draws it then, and a Stop that
   cannot reach educhan says so, turns the buttons back on and goes on collecting. **Use
   this code here** (a Pass code or a reissue code), **Check it again**, **Buy on Stripe**
@@ -1118,13 +1119,19 @@ not-found view.
   page cannot be sure of, such as a copy from an email box in some browsers, does not
   count, so the clipboard is emptied after it too. A code copied any other way, by hand
   included, stays until something else is copied. Removing the Pass, or forgetting the
-  browser, in another tab takes a code just handed over off this tab's screen. A post
-  whose Pass was no good goes out like any other, and its answer says so: the page forgets
-  an unknown Pass, keeps one that ran out to renew, and says the post was sent. A notice a
-  press on the Pass page raises, a refusal say, is brought into view when it is out of
-  view, as it is on a phone, where the forms sit far below the notice; focus stays where
-  the press put it, or, when another tab's forget drew the page again while the press
-  waited, goes to what was drawn in its place.
+  browser, in another tab takes a code just handed over off this tab's screen, kept or
+  not, as long as the browser stores that tab's mark: one that stores nothing at all tells
+  no other tab, and a code there stays until the reader leaves the Pass page. Another code
+  stored in another tab takes a kept one off too, but not one the browser could not keep.
+  A post whose Pass was no good goes out like any other, and its answer says so: the page
+  forgets an unknown Pass, keeps one that ran out to renew, and says the post was sent. A
+  notice a press on the Pass page raises, a refusal say, is brought into view when it is
+  out of view, as it is on a phone, where the forms sit far below the notice; focus stays
+  where the press put it, or, when another tab's forget drew the page again while the
+  press waited, goes to the same button drawn again, else to what was drawn in its place.
+  A drawing something else sets off, another tab's forget say, keeps focus on the control
+  that had it when it draws that control again, without scrolling the page, and otherwise
+  moves it to what was drawn in its place.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and

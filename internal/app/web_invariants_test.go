@@ -710,10 +710,26 @@ func TestPassCodeCanBeShownBeforeItIsRemoved(t *testing.T) {
 	if !strings.Contains(show, "if (!slot.hidden) {\n    slot.hidden = true;\n    slot.textContent = \"\";\n") {
 		t.Error("Hide the code leaves the code in the page")
 	}
-	// Shown, it takes focus, so a screen reader reads it out.
+	// Shown, it takes focus, so a screen reader reads it out: the code in its
+	// own slot, not a code just handed over that the page shows beside it.
 	if !strings.HasSuffix(show, "  slot.hidden = false;\n  button.textContent = \"Hide the code\";\n"+
-		"  button.setAttribute(\"aria-expanded\", \"true\");\n  document.getElementById(\"pass-code\").focus();\n}") {
+		"  button.setAttribute(\"aria-expanded\", \"true\");\n  slot.querySelector(\".pass-code\").focus();\n}") {
 		t.Error("Show the code no longer moves focus to the code it shows")
+	}
+	// The held Pass's code and a code just handed over can be on the page
+	// together, so each has an id of its own, and each Copy the code copies
+	// the code in its own panel: copying the held Pass's to write it down
+	// before Remove must not copy the other.
+	if !strings.Contains(show, `<p class="pass-code" id="pass-held-code" tabindex="-1">${esc(held.code)}</p>`) ||
+		strings.Count(code, `id="pass-code"`) != 1 || strings.Count(code, `id="pass-held-code"`) != 1 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "passIssuedHTML")), `<p class="pass-code" id="pass-code">${esc(issued.code)}</p>`) {
+		t.Error("the held Pass's code shown and a code just handed over no longer have ids of their own")
+	}
+	copied := code[strings.Index(code, `if (event.target.closest('[data-action="copy-pass"]')) {`):]
+	copied = copied[:strings.Index(copied, "\n    return;\n  }")]
+	if !strings.Contains(copied, "event.preventDefault();\n    const code = event.target.closest(\".verify-panel\")?.querySelector(\".pass-code\");\n") ||
+		strings.Contains(code, `getElementById("pass-code")`) || strings.Contains(code, `getElementById("pass-held-code")`) {
+		t.Error("Copy the code no longer copies the code in its own panel")
 	}
 	if !strings.Contains(words(jsFunction(t, script, "forgetBrowserHTML")), "show its code on the") {
 		t.Error("Forget this browser no longer says where the code can be seen before it is forgotten")
@@ -1942,24 +1958,24 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 		t.Error("passViewHTML takes the code just handed over from its caller again, so a redraw loses it")
 	}
 	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 6 {
-		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page, "+
-			"leaving the document with one this browser could not keep, removing the Pass, forgetting the browser, "+
-			"and another tab removing or replacing it", n)
+		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page or the document "+
+			"once it is drawn, removing the Pass, forgetting the browser, another tab's Remove or Forget, "+
+			"and another tab removing the Pass or replacing one this browser kept", n)
 	}
-	// It goes once the reader leaves the Pass page, kept or not: one this
-	// browser could not keep is nowhere else, and its panel says it won't be
-	// shown again once they leave, so the next person at a shared computer
-	// must not find it by opening the Pass page. One the page has not drawn,
-	// because its answer came while the reader was elsewhere or they left
-	// before the drawing came, has had no panel to say so, and stays to be
-	// drawn when they come back: the server hands a code over once, and a
-	// reissue code is spent.
+	// It goes once the reader leaves the Pass page, kept or not, once the page
+	// has drawn it: one this browser could not keep is nowhere else, and its
+	// panel says it won't be shown again once they leave, so the next person
+	// at a shared computer must not find it by opening the Pass page. One the
+	// page has not drawn, because its answer came while the reader was
+	// elsewhere or they left before the drawing came, has been seen by
+	// nobody, and stays to be drawn when they come back, kept or not: the
+	// server hands a code over once, a reissue code is spent, and beside a
+	// kept one may be the code of the Pass it took the place of, which is
+	// nowhere else.
 	render := withoutComments(jsFunction(t, script, "render"))
 	if !strings.Contains(render, "if (state.route.view === \"pass\" && route.view !== \"pass\") {\n"+
-		"    passLost = \"\";\n    forgetTypedCode();\n    if (passJustIssued && (passJustIssued.kept || passJustIssued.shown)) {\n"+
-		"      passJustIssued = null;\n    }\n  }") {
-		t.Error("render no longer drops a code just handed over, kept or not, once the reader leaves the Pass page, and only then, " +
-			"or drops one this browser could not keep before the page has drawn it")
+		"    passLost = \"\";\n    forgetTypedCode();\n    forgetShownCode();\n  }") {
+		t.Error("render no longer drops a code just handed over that the page has drawn once the reader leaves the Pass page, and only then")
 	}
 	// Shown is set as the page draws the code's panel, and only there.
 	view = withoutComments(jsFunction(t, script, "passViewHTML"))
@@ -1970,17 +1986,16 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	}
 	// Nor when they leave the document, for another site, and come Back to a
 	// page the back-forward cache kept: that page is shown as it was left
-	// until it is drawn again, so the code's panel goes with it. A code the
-	// browser keeps is drawn again there, as before, and so is one it could
-	// not keep that the page has not drawn yet.
-	unkept := withoutComments(jsFunction(t, script, "forgetUnkeptCode"))
-	if unkept != "function forgetUnkeptCode() {\n  if (passJustIssued && !passJustIssued.kept && passJustIssued.shown) {\n    passJustIssued = null;\n"+
+	// until it is drawn again, so the code's panel goes with it, kept or not.
+	// One the page has not drawn yet is drawn there.
+	shown := withoutComments(jsFunction(t, script, "forgetShownCode"))
+	if shown != "function forgetShownCode() {\n  if (passJustIssued && passJustIssued.shown) {\n    passJustIssued = null;\n"+
 		"    const panel = document.getElementById(\"pass-issued\");\n    if (panel) {\n      panel.remove();\n    }\n  }\n}" {
-		t.Errorf("forgetUnkeptCode no longer drops a code this browser could not keep once drawn, panel and all, and only such a code:\n%s", unkept)
+		t.Errorf("forgetShownCode no longer drops a code just handed over once drawn, kept or not, panel and all, and only once drawn:\n%s", shown)
 	}
 	hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});"))
-	if !strings.Contains(hide, "\n  forgetUnkeptCode();\n") || strings.Count(withoutComments(script), "forgetUnkeptCode()") != 2 {
-		t.Error("leaving the document no longer drops a code just handed over that this browser could not keep, " +
+	if !strings.Contains(hide, "\n  forgetShownCode();\n") || strings.Count(withoutComments(script), "forgetShownCode()") != 3 {
+		t.Error("leaving the document no longer drops a code just handed over that the page has drawn, " +
 			"so a page brought back from the back-forward cache shows it again")
 	}
 	issued := withoutComments(jsFunction(t, script, "passIssuedHTML"))
@@ -2536,11 +2551,17 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	if !strings.Contains(withoutComments(script), "\nwindow.addEventListener(\"storage\", followPassStorage);\n") {
 		t.Error("a tab no longer follows the Pass another tab removed or replaced")
 	}
+	// A code just handed over goes from this tab's screen once another tab
+	// removes the Pass, kept or not, and once another code takes the place of
+	// one this browser kept. One it could not keep was never the Pass it
+	// holds, and may be a spent reissue code's only copy, so another code
+	// written meanwhile leaves it be.
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
-	if !strings.Contains(follow, "if (!now || (passJustIssued && passJustIssued.code !== now.code)) {\n    passJustIssued = null;\n  }") ||
+	if !strings.Contains(follow, "if (!now || (passJustIssued && passJustIssued.kept && passJustIssued.code !== now.code)) {\n    passJustIssued = null;\n  }") ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
-		t.Error("a code just handed over stays on screen after another tab removed or replaced the Pass")
+		t.Error("a code just handed over stays on screen after another tab removed the Pass or replaced one this browser kept, " +
+			"or goes when another tab stores a code beside one this browser could not keep")
 	}
 	// A code this tab copied stops counting as its to empty from the
 	// clipboard once the browser no longer holds that code, whether or not
@@ -2559,11 +2580,13 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 // the way, whether or not a Pass was held. Another tab then drops an answer
 // to a claim already on its way and sends no claim until the mark goes. For
 // Remove and Forget it also drops a reissue code's nonce and an answer about
-// a Pass on its way, and empties its code box, so a reissue code typed there
-// is not left for the next person at the computer, even when the Pass's own
-// removal drew that tab again first. Stop leaves a reissue code alone, here
-// and in other tabs: it is about a checkout, and a reissue code it dropped
-// would be spent with nothing to show for it.
+// a Pass on its way, empties its code box and drops a code just handed over,
+// kept or not, so neither a reissue code typed there nor a code shown there
+// is left for the next person at the computer, even when the Pass's own
+// removal drew that tab again first, or the browser could keep no Pass to
+// remove. Stop leaves a reissue code alone, here and in other tabs: it is
+// about a checkout, and a reissue code it dropped would be spent with nothing
+// to show for it.
 func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2615,7 +2638,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	steps := []string{"const code = !mark.startsWith(\"stop:\");", "passForgetHeardLast = mark.slice(0, mark.indexOf(\":\"));", "passVisit += 1;", "passForgets += 1;",
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
-			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n  }",
+			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n    passJustIssued = null;\n  }",
 		"const waited = heedPassForget(key, mark);",
 		"for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;", "return waited;\n}"}
 	for at, step := 0, 0; step < len(steps); step++ {
@@ -2640,7 +2663,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		"forgetPassClaim": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
 			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);"},
 		"stopForPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
-			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "forgetTypedCode();", "passLost = \"\";"},
+			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "forgetTypedCode();", "passLost = \"\";", "passJustIssued = null;"},
 	} {
 		body := withoutComments(jsFunction(t, script, name))
 		for _, only := range steps {
@@ -2722,7 +2745,8 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 
 // After a button on the Pass page draws it again, focus goes to what took the
 // button's place, not the top of the document; a button disabled while it
-// waited, and left in place, gets focus back.
+// waited, and left in place, gets focus back, and a drawing something else
+// set off keeps focus on the control that had it.
 func TestPassPageButtonsKeepFocus(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2742,13 +2766,30 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 			t.Errorf("%s moves focus after %d of its redraws", name, n)
 		}
 	}
-	// What arrives after a button was pressed (Check now's claim, say) draws
-	// the page again through redrawPass, which moves focus that was on the
-	// page to what took the button's place.
+	// What arrives after a button was pressed (Check now's claim, or another
+	// tab's forget, say) draws the page again through redrawPass, which keeps
+	// focus that was on the page on the same control when the drawing draws
+	// it again, without scrolling the page, since it is where it was, and
+	// otherwise moves it to what took the control's place. The same control
+	// is found by its id, else by its action within its own panel (a Copy the
+	// code beside the held Pass's code is not one beside a code just handed
+	// over), else by its form's kind and its part there.
 	redraw := withoutComments(jsFunction(t, script, "redrawPass"))
-	if !strings.Contains(redraw, "const focused = el.main.contains(document.activeElement);") ||
-		!strings.Contains(redraw, "passFocus(...selectors);") {
-		t.Error("redrawPass no longer keeps focus that was on the page")
+	if redraw != "function redrawPass(info, ...selectors) {\n"+
+		"  const focused = el.main.contains(document.activeElement) ? document.activeElement : null;\n"+
+		"  const twin = focused ? passTwin(focused) : \"\";\n  drawPass(info);\n"+
+		"  if (focused && !el.main.contains(document.activeElement)) {\n    const same = twin && el.main.querySelector(twin);\n"+
+		"    if (same) {\n      same.focus({ preventScroll: true });\n    } else {\n      passFocus(...selectors);\n    }\n  }\n}" {
+		t.Errorf("redrawPass no longer keeps focus that was on the page on the same control, or else on what took its place:\n%s", redraw)
+	}
+	twin := withoutComments(jsFunction(t, script, "passTwin"))
+	if twin != "function passTwin(control) {\n  if (control.id) {\n    return `#${CSS.escape(control.id)}`;\n  }\n"+
+		"  const panel = control.closest(\".verify-panel[id]\");\n  const within = panel ? `#${CSS.escape(panel.id)} ` : \"\";\n"+
+		"  if (control.dataset.action) {\n    return `${within}[data-action=\"${control.dataset.action}\"]`;\n  }\n"+
+		"  const form = control.closest(\"form[data-pass]\");\n  if (form && control.matches('button[type=\"submit\"], input')) {\n"+
+		"    const part = control.matches(\"input\") ? \"input\" : 'button[type=\"submit\"]';\n"+
+		"    return `form[data-pass=\"${form.dataset.pass}\"] ${part}`;\n  }\n  return \"\";\n}" {
+		t.Errorf("passTwin no longer finds a control drawn again by its id, its action in its own panel, or its form's kind and its part there:\n%s", twin)
 	}
 	// A drawing set off by something else (a claim's answer, another tab's
 	// change to the Pass) leaves a reader typing in the code box where they
@@ -2756,7 +2797,7 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 	draw := withoutComments(jsFunction(t, script, "drawPass"))
 	if !strings.Contains(draw, "const typing = box && document.activeElement === box ? [box.selectionStart, box.selectionEnd] : null;") ||
 		!strings.Contains(draw, "if (typing) {\n      again.focus();\n      again.setSelectionRange(typing[0], typing[1]);") ||
-		!strings.Contains(redraw, "if (focused && !el.main.contains(document.activeElement)) {\n    passFocus(...selectors);") {
+		!strings.Contains(redraw, "if (focused && !el.main.contains(document.activeElement)) {\n    const same = twin && el.main.querySelector(twin);") {
 		t.Error("a drawing of the Pass page takes focus out of the code box while the reader types in it")
 	}
 	claimed := withoutComments(jsFunction(t, script, "showClaimed"))
@@ -2775,21 +2816,28 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 	// Turned away, Check it again and Stop collecting it here stay where they
 	// were, enabled again, with focus back on them.
 	// A button the page was drawn again over while it waited, by another
-	// tab's forget say, is gone: focus goes to what was drawn in its place,
-	// the same button of a form of the same kind or with the same action,
-	// else the first of the Pass forms' controls, else the first panel, and
-	// at the least the page (passFocus), never the top of the document.
+	// tab's forget say, is gone: focus goes to the same button drawn again
+	// (passTwin), else the first of the Pass forms' controls, else the first
+	// panel, and at the least the page (passFocus), never the top of the
+	// document.
 	if refocused := withoutComments(jsFunction(t, script, "refocus")); refocused != "function refocus(button) {\n"+
 		"  if (document.activeElement && document.activeElement !== document.body) {\n    return;\n  }\n"+
 		"  if (button.isConnected) {\n    button.focus();\n    return;\n  }\n"+
-		"  const form = button.closest(\"form[data-pass]\");\n  passFocus(\n"+
-		"    form ? `form[data-pass=\"${form.dataset.pass}\"] button[type=\"submit\"]` : `[data-action=\"${button.dataset.action}\"]`,\n"+
-		"    \"form[data-pass] input, form[data-pass] button\",\n    '.verify-panel[tabindex=\"-1\"]'\n  );\n}" {
+		"  passFocus(passTwin(button), \"form[data-pass] input, form[data-pass] button\", '.verify-panel[tabindex=\"-1\"]');\n}" {
 		t.Errorf("refocus no longer gives focus back to a button that lost it while disabled, and only then, "+
-			"or to what was drawn in its place when the page was drawn again meanwhile:\n%s", refocused)
+			"or to the same button drawn again when the page was drawn again meanwhile:\n%s", refocused)
 	}
-	if passFocused := withoutComments(jsFunction(t, script, "passFocus")); !strings.HasSuffix(passFocused, "\n  }\n  el.main.focus();\n}") {
+	passFocused := withoutComments(jsFunction(t, script, "passFocus"))
+	if !strings.HasSuffix(passFocused, "\n  }\n  el.main.focus();\n}") {
 		t.Error("passFocus, finding none of what it was given, no longer focuses the page, so focus can stay at the top of the document")
+	}
+	// passTwin has no selector for a control it cannot tell again, and
+	// querySelector would throw on the empty one.
+	if !strings.Contains(passFocused, "const target = selector && el.main.querySelector(selector);") {
+		t.Error("passFocus no longer passes over an empty selector")
+	}
+	if n := strings.Count(code, "passTwin("); n != 3 {
+		t.Errorf("passTwin is named %d times; want its declaration, redrawPass and refocus", n)
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "checkHeldPass")), "button.disabled = false;\n    refocus(button);") {
 		t.Error("Check it again, turned away, leaves focus at the top of the document")

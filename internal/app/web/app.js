@@ -2367,13 +2367,17 @@ const passForgetHeard = new Map();
 // of a different Pass it took the place of in this browser, and shown is
 // whether the Pass page has drawn it. It is drawn on every drawing of the Pass
 // page, so no redraw or poll loses a code the server will not show again,
-// until the reader leaves the page (render). One this browser could not store
-// goes then too, once drawn, as its panel says, and when the document is left,
-// for another site say (pagehide), so a page brought back from the
-// back-forward cache does not show it to whoever uses the browser next
-// (forgetUnkeptCode); one it keeps is drawn again on such a page. One not yet
-// drawn, its answer having come while the reader was elsewhere, waits for
-// them to come back to the Pass page, since it is nowhere else.
+// until the reader leaves the page (render), or the document, for another site
+// say (pagehide), once drawn, kept or not (forgetShownCode): one this browser
+// could not store goes as its panel says, and a page brought back from the
+// back-forward cache shows neither kind to whoever uses the browser next. One
+// not yet drawn, its answer having come while the reader was elsewhere, or
+// they having left before its drawing came, waits for them to come back to the
+// Pass page: one this browser could not keep is nowhere else, and nor is the
+// code of a Pass one it keeps took the place of (replaced). Remove the Pass
+// and Forget this browser, here or in another tab (stopForPassForget), drop it
+// too, and so does another tab's removing the Pass, or replacing one this
+// browser kept (followPassStorage).
 let passJustIssued = null;
 
 // lastPassInfo is what GET /api/pass said for the drawing on screen, so a
@@ -2755,9 +2759,12 @@ function heedPassForget(key, mark) {
 // and Forget ("remove:" and "browser:") also drop a reissue code's nonce and
 // its mark, and any answer about a Pass on its way or arriving while the mark
 // is there (passCodeForgets, passCodeForgetting), and empty the code box here,
-// and what this tab would say about a Pass found gone (passLost), so neither a
-// reissue code typed in this tab nor the last holder's news is left for the
-// next person at the computer; Stop ("stop:") leaves a reissue code alone.
+// and drop what this tab would say about a Pass found gone (passLost) and a
+// code just handed over here (passJustIssued), kept or not, which the drawing
+// once the wait is over leaves off, so neither a reissue code typed in this
+// tab nor the last holder's news or code is left for the next person at the
+// computer; Stop ("stop:") leaves a reissue code alone, and a code just handed
+// over too.
 // Check now and Stop go off, as in the tab Stop was pressed in, and in a tab
 // that hears of the forget (followPassForget), focus on one of them stays on
 // its panel until the page is drawn again once the wait is over, so the drawing
@@ -2775,6 +2782,7 @@ function stopForPassForget(key, mark) {
     dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);
     forgetTypedCode();
     passLost = "";
+    passJustIssued = null;
   }
   const waited = heedPassForget(key, mark);
   const focused = document.activeElement;
@@ -2900,16 +2908,19 @@ function forgetTypedCode() {
   }
 }
 
-// forgetUnkeptCode drops a code just handed over that this browser could not
-// keep, once the Pass page has drawn it, as its panel promises once the reader
-// leaves, and takes its panel off the page too: a page brought back from the
-// back-forward cache is shown as it was left until it is drawn again (the
-// pageshow listener). One not yet drawn, its answer having come while the
-// reader was on another page, has made no such promise and is nowhere else, so
-// it is left to be drawn when they come back to the Pass page, as a code the
-// browser keeps is left to be drawn again there.
-function forgetUnkeptCode() {
-  if (passJustIssued && !passJustIssued.kept && passJustIssued.shown) {
+// forgetShownCode drops a code just handed over once the Pass page has drawn
+// it, kept or not, for a reader leaving the page (render) or the document
+// (pagehide), and takes its panel off the page too: a page brought back from
+// the back-forward cache is shown as it was left until it is drawn again (the
+// pageshow listener). One this browser could not keep goes as its panel
+// promises, and one it keeps can still be shown from the held Pass's panel.
+// One not yet drawn, its answer having come while the reader was on another
+// page, or they having left before its drawing came, has been seen by nobody,
+// so it is left to be drawn when they come back to the Pass page: one this
+// browser could not keep is nowhere else, and beside one it keeps may be the
+// code of the Pass it took the place of, which is nowhere else either.
+function forgetShownCode() {
+  if (passJustIssued && passJustIssued.shown) {
     passJustIssued = null;
     const panel = document.getElementById("pass-issued");
     if (panel) {
@@ -3206,7 +3217,9 @@ function passHeldHTML(info, held, codeOnScreen) {
 
 // showPassCode shows or hides the code of the Pass this browser holds, to be
 // written down before it is removed, or typed in on another device. The code
-// goes on the screen and nowhere else.
+// goes on the screen and nowhere else, with an id of its own, since a code
+// just handed over may be on the page beside it (#pass-code), and focus goes
+// to the one it shows.
 function showPassCode(button) {
   const slot = document.getElementById("pass-shown");
   const held = storedPass();
@@ -3221,14 +3234,14 @@ function showPassCode(button) {
     return;
   }
   slot.innerHTML = `
-    <p class="pass-code" id="pass-code" tabindex="-1">${esc(held.code)}</p>
+    <p class="pass-code" id="pass-held-code" tabindex="-1">${esc(held.code)}</p>
     <div class="actions">
       <button class="btn subtle" type="button" data-action="copy-pass">Copy the code</button>
     </div>`;
   slot.hidden = false;
   button.textContent = "Hide the code";
   button.setAttribute("aria-expanded", "true");
-  document.getElementById("pass-code").focus();
+  slot.querySelector(".pass-code").focus();
 }
 
 // The 18+ box for buying or renewing. Never ticked in advance, never
@@ -3490,10 +3503,11 @@ function focusPassPanel(id) {
 
 // passFocus moves focus, after a button on the Pass page has drawn it again, to
 // the first of selectors still on the page: what took the button's place,
-// rather than the top of the document, where a keyboard would start again.
+// rather than the top of the document, where a keyboard would start again. An
+// empty selector is passed over.
 function passFocus(...selectors) {
   for (const selector of selectors) {
-    const target = el.main.querySelector(selector);
+    const target = selector && el.main.querySelector(selector);
     if (target) {
       target.focus();
       return;
@@ -3524,14 +3538,36 @@ function showPassNotice(message) {
   });
 }
 
+// passTwin is a selector for control as the Pass page draws it again, so focus
+// on it can stay on it across a drawing (redrawPass, refocus): its id, else its
+// action within the panel it is in, else the kind of its form (form[data-pass])
+// and its part there, the button that sends it or the box. A Copy the code
+// beside the held Pass's code is not one beside a code just handed over. It is
+// "" for anything else.
+function passTwin(control) {
+  if (control.id) {
+    return `#${CSS.escape(control.id)}`;
+  }
+  const panel = control.closest(".verify-panel[id]");
+  const within = panel ? `#${CSS.escape(panel.id)} ` : "";
+  if (control.dataset.action) {
+    return `${within}[data-action="${control.dataset.action}"]`;
+  }
+  const form = control.closest("form[data-pass]");
+  if (form && control.matches('button[type="submit"], input')) {
+    const part = control.matches("input") ? "input" : 'button[type="submit"]';
+    return `form[data-pass="${form.dataset.pass}"] ${part}`;
+  }
+  return "";
+}
+
 // refocus gives focus back to a button that was disabled while it waited,
 // which dropped it to the top of the document, once it is enabled again.
 // Focus the reader has moved on meanwhile stays where they put it. A button the
 // page was drawn again over while it waited (by another tab's forget, say) is
-// gone, so focus goes to what was drawn in its place: the same button of a form
-// of the same kind (form[data-pass]) or with the same action, else the first
-// of the Pass forms' controls, else the first panel, never the top of the
-// document.
+// gone, so focus goes to the same button drawn again (passTwin), else the
+// first of the Pass forms' controls, else the first panel, never the top of
+// the document.
 function refocus(button) {
   if (document.activeElement && document.activeElement !== document.body) {
     return;
@@ -3540,12 +3576,7 @@ function refocus(button) {
     button.focus();
     return;
   }
-  const form = button.closest("form[data-pass]");
-  passFocus(
-    form ? `form[data-pass="${form.dataset.pass}"] button[type="submit"]` : `[data-action="${button.dataset.action}"]`,
-    "form[data-pass] input, form[data-pass] button",
-    '.verify-panel[tabindex="-1"]'
-  );
+  passFocus(passTwin(button), "form[data-pass] input, form[data-pass] button", '.verify-panel[tabindex="-1"]');
 }
 
 // renderPass draws the Pass page from the server's answer, and resolves to
@@ -3766,14 +3797,22 @@ function refreshFailedPass(...selectors) {
 
 // redrawPass draws the Pass page again, as drawPass does, for something that
 // arrived while the reader was on it, and keeps a keyboard where it was: focus
-// that was on the page moves to the first of selectors still on it
-// (passFocus), rather than falling to the top of the document with the element
-// that had it. Focus drawPass kept in the code box stays there.
+// that was on the page stays on the same control when the drawing draws it
+// again (passTwin), without scrolling the page, since it is where it was, and
+// otherwise moves to the first of selectors still on the page (passFocus),
+// what took its place, rather than falling to the top of the document with the
+// element that had it. Focus drawPass kept in the code box stays there.
 function redrawPass(info, ...selectors) {
-  const focused = el.main.contains(document.activeElement);
+  const focused = el.main.contains(document.activeElement) ? document.activeElement : null;
+  const twin = focused ? passTwin(focused) : "";
   drawPass(info);
   if (focused && !el.main.contains(document.activeElement)) {
-    passFocus(...selectors);
+    const same = twin && el.main.querySelector(twin);
+    if (same) {
+      same.focus({ preventScroll: true });
+    } else {
+      passFocus(...selectors);
+    }
   }
 }
 
@@ -5094,18 +5133,16 @@ async function render({ draft = captureDraft() } = {}) {
   renderedPath = window.location.pathname + window.location.search;
   const route = parseRoute();
   // What the Pass page had to say goes once the reader leaves it, with what
-  // was typed in its code box and a code just handed over, kept or not: one
-  // this browser could not keep is nowhere else, and its panel says it won't
-  // be shown again, so the next person at a shared computer can't open the
-  // Pass page to find it. Such a code the page has not drawn yet, because the
-  // reader left before its drawing came, stays to be drawn when they come back,
-  // since the server will not hand it over again.
+  // was typed in its code box and a code just handed over that it has drawn,
+  // kept or not (forgetShownCode): one this browser could not keep is nowhere
+  // else, and its panel says it won't be shown again, so the next person at a
+  // shared computer can't open the Pass page to find it. One the page has not
+  // drawn yet, because the reader left before its drawing came, stays to be
+  // drawn when they come back, since the server will not hand it over again.
   if (state.route.view === "pass" && route.view !== "pass") {
     passLost = "";
     forgetTypedCode();
-    if (passJustIssued && (passJustIssued.kept || passJustIssued.shown)) {
-      passJustIssued = null;
-    }
+    forgetShownCode();
   }
   state.route = route;
   state.thread = null;
@@ -5623,9 +5660,11 @@ document.addEventListener("click", (event) => {
     return;
   }
 
+  // Each Copy the code copies the code in its own panel: the held Pass's,
+  // shown, and a code just handed over can be on the page together.
   if (event.target.closest('[data-action="copy-pass"]')) {
     event.preventDefault();
-    const code = document.getElementById("pass-code");
+    const code = event.target.closest(".verify-panel")?.querySelector(".pass-code");
     if (code && navigator.clipboard) {
       // Noted only once the code is on the clipboard: a copy the browser
       // refused leaves the reader's own clipboard, which Remove the Pass then
@@ -5769,16 +5808,16 @@ window.addEventListener("pageshow", (event) => {
 });
 
 // Leaving the document, for Stripe say, takes what was typed in the Pass page's
-// code box with it, and a code just handed over that this browser could not
-// keep, once drawn, as leaving the page within the site does (render), so the
-// back-forward cache does not bring them back (forgetUnkeptCode). A checkout
-// still on its way is called off, since the reader has left it
-// (callOffPassCheckouts), and so is a press still waiting to go (passLeft,
-// passForgetsSettled), which would otherwise go once the page is brought back.
+// code box with it, and a code just handed over, kept or not, once drawn, as
+// leaving the page within the site does (render), so the back-forward cache
+// does not bring them back (forgetShownCode). A checkout still on its way is
+// called off, since the reader has left it (callOffPassCheckouts), and so is a
+// press still waiting to go (passLeft, passForgetsSettled), which would
+// otherwise go once the page is brought back.
 window.addEventListener("pagehide", () => {
   passLeft += 1;
   forgetTypedCode();
-  forgetUnkeptCode();
+  forgetShownCode();
   callOffPassCheckouts(false);
 });
 
@@ -5788,18 +5827,23 @@ document.addEventListener("cut", forgetCopiedPassCode);
 // followPassStorage follows a change another tab of this browser made to the
 // Pass it holds (the storage event reaches every tab but the one that made
 // it): removed there, by Remove the Pass or Forget this browser say, or
-// replaced by another code. A code just handed over here that this browser no
-// longer holds stops being drawn, so one forgotten in another tab is not left
-// on this tab's screen, and a code this tab copied that the browser no longer
-// holds no longer counts as its to empty from the clipboard. The Pass page,
-// if it is on screen here, is drawn again from what this browser holds now,
-// which also hides a code shown on it.
+// replaced by another code. A code just handed over here stops being drawn
+// once the Pass is removed, kept or not, and one this browser kept once
+// another code takes its place, so a Pass forgotten in another tab is not left
+// on this tab's screen; one it could not keep was never the Pass it holds, and
+// another code stored meanwhile leaves it be. Remove and Forget reach such a
+// code by their mark too (stopForPassForget), which also needs the browser to
+// store: one that stores nothing at all tells this tab nothing, and a code
+// here then stays until the reader leaves the Pass page. A code this tab
+// copied that the browser no longer holds no longer counts as its to empty
+// from the clipboard. The Pass page, if it is on screen here, is drawn again
+// from what this browser holds now, which also hides a code shown on it.
 function followPassStorage(event) {
   if (event.key !== PASS_STORAGE_KEY && event.key !== null) {
     return;
   }
   const now = storedPass();
-  if (!now || (passJustIssued && passJustIssued.code !== now.code)) {
+  if (!now || (passJustIssued && passJustIssued.kept && passJustIssued.code !== now.code)) {
     passJustIssued = null;
   }
   if (!now || now.code !== passCodeCopied) {
@@ -5817,8 +5861,11 @@ function followPassStorage(event) {
 // Once the wait ends, the Pass page, if the reader is on it here, is drawn
 // again from the server, even if the mark came while it was still loading, and
 // drew nothing, keeping a keyboard where it was (redrawPass): focus on the page
-// just before the drawing, on a button given back meanwhile say, goes to what
-// took its place, and focus on the body or outside the page stays there.
+// just before the drawing, on a button given back meanwhile say, stays on the
+// same control when the drawing draws it again, and otherwise goes to what
+// took its place, and focus on the body or outside the page stays there. The
+// drawing leaves off what Remove and Forget dropped, a code just handed over
+// included.
 function followPassForget(event) {
   const key = event.key;
   if (!key || !key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {
