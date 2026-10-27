@@ -716,7 +716,7 @@ SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sess
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
   -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" \
   -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
-  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. The key needs Checkout Sessions: Write."; exit 1; }
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. If it is about the Price (inactive, recurring or tax), fix the Price first (below); otherwise the key needs Checkout Sessions: Write."; exit 1; }
 curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
   -u "${STRIPE_KEY}:" >/dev/null
 printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
@@ -757,12 +757,16 @@ its ID, and the key block above puts in a new key. Both stay in the Stripe
 account (and sandbox) and the mode (test or live) the setup block ran in, since
 its webhook endpoint hears only of payments there: a Price ID from anywhere else
 needs a new Price made there, not a key from where that Price is. This reads the
-latest such line:
+latest such line, with when and by which revision it was logged:
 
 ```bash
 gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="the Pass price in Stripe needs fixing"' \
-  --freshness=7d --limit=1 --format='value(jsonPayload.error)'
+  --freshness=7d --limit=1 --format='value(timestamp,resource.labels.revision_name,jsonPayload.error)'
 ```
+
+A line from before your last change no longer applies; the price back in
+`/api/pass` a minute or so after a fix shows it took. While sales are paused the
+server doesn't read the Price, so it logs nothing new.
 
 `PUBLIC_URL` is where Stripe sends a buyer back and where it sends its
 webhooks, and it has to be the one address readers use: the cookie that lets a
