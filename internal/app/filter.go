@@ -2564,9 +2564,15 @@ var (
 
 // announcedOn reports the poster saying they are on the app, with an
 // invitation to talk round it in the sentence: "i'm on discord if u wanna
-// chat", "im on telegram, dm me", "dm me, im on insta", not "i'm on discord
-// too much" or "i'm on insta all day and nobody wants to talk". It returns
-// where the "i'm" starts.
+// chat", "im on telegram, dm me", "dm me, im on insta", "i'm on snap every
+// night if u wanna chat", not "i'm on discord too much" or "i'm on insta all
+// day and nobody wants to talk". An offer to talk ("if anyone wants to talk")
+// is turned down where the sentence keeps the talk here ("reply here", "this
+// thread") or where the app is followed by how much the poster is on it and
+// the talk by what it is about ("i'm on insta 6 hours a day, anyone else
+// wanna talk about phone addiction?"): that is a post about the app, not an
+// address on it. An invitation to message ("dm me", "hmu", "add me") is
+// never turned down. It returns where the "i'm" starts.
 func announcedOn(before, following []aWord) (int, bool) {
 	n := len(before)
 	if n < 2 || !is(before[n-1].w, "on") {
@@ -2583,31 +2589,91 @@ func announcedOn(before, following []aWord) (int, bool) {
 	default:
 		return 0, false
 	}
-	if invitesTalk(before[:k]) || invitesTalk(following) {
-		return before[k].from, true
+	direct, offer, topic := invitesTalk(before[:k])
+	direct2, offer2, topic2 := invitesTalk(following)
+	switch {
+	case direct || direct2:
+	case !offer && !offer2:
+		return 0, false
+	case talksHere(before) || talksHere(following):
+		return 0, false
+	case (topic || topic2) && appUsage(following):
+		return 0, false
 	}
-	return 0, false
+	return before[k].from, true
 }
 
-// invitesTalk reports an invitation to talk in ws: "dm me", "hmu", "if u
-// wanna chat", "anyone wanna talk".
-func invitesTalk(ws []aWord) bool {
+// invitesTalk reads ws for an invitation to talk: direct, "dm me", "hmu",
+// "add me"; or an offer, "if u wanna chat", "anyone wanna talk", and whether
+// what it is about follows the offer ("anyone wanna talk about the syllabus").
+func invitesTalk(ws []aWord) (direct, offer, topic bool) {
 	asked := false
 	for i, w := range ws {
 		switch {
 		case is(w.w, "hmu"):
-			return true
+			return true, false, false
 		case inviteVerbs[w.w] && i+1 < len(ws) && (is(ws[i+1].w, "me") || is(ws[i+1].w, "us")):
-			return true
+			return true, false, false
 		case talkInvites[w.w] && i > 0 && talkLeads[ws[i-1].w] && asked:
-			return true
+			offer = true
+			// "talk about", "chat more about"
+			topic = topic || i+1 < len(ws) && is(ws[i+1].w, "about") ||
+				i+2 < len(ws) && is(ws[i+2].w, "about")
 		}
 		asked = asked || talkAskers[w.w]
+	}
+	return false, offer, topic
+}
+
+// talksHere reports ws keeping a talk on the board: "reply here", "this
+// thread", "on here".
+func talksHere(ws []aWord) bool {
+	for _, w := range ws {
+		if is(w.w, "here") || is(w.w, "thread") {
+			return true
+		}
+	}
+	return false
+}
+
+// appUsage reports how much the poster is on an app, in the words straight
+// after its name: "a lot", "all day", "6 hours a day", "every night", "way too
+// much", "less now", "only for the class channel".
+func appUsage(ws []aWord) bool {
+	i := 0
+	for i < len(ws) && i < 2 && usageLeads[ws[i].w] {
+		i++
+	}
+	if i >= len(ws) {
+		return false
+	}
+	w, next := ws[i].w, ""
+	if i+1 < len(ws) {
+		next = ws[i+1].w
+	}
+	switch {
+	case usageWords[w]:
+		return true
+	case is(w, "all") || is(w, "every") || is(w, "each"):
+		return next != ""
+	case is(w, "too") || is(w, "so"):
+		return is(next, "much") || is(next, "often") || is(next, "long")
+	case is(w, "only") || is(w, "just") || is(w, "mostly"):
+		return is(next, "for") || is(next, "to")
+	case w[0] >= '0' && w[0] <= '9':
+		// "6 hours", "5hrs a day", "24/7"
+		return usageUnits[next] || usageUnits[strings.TrimLeft(w, "0123456789+")]
 	}
 	return false
 }
 
 var (
+	// usageLeads, usageWords and usageUnits say how much the poster is on an
+	// app (appUsage).
+	usageLeads = canonSetOf(`way like literally basically honestly still`)
+	usageWords = canonSetOf(`lot alot lots constantly daily nightly everyday nonstop less more much often barely
+		rarely hardly`)
+	usageUnits  = canonSetOf(`hours hour hrs hr h mins min minutes 7 x7`)
 	onAdverbs   = canonSetOf(`also always usually mostly active available online mainly`)
 	inviteVerbs = canonSetOf(`dm pm msg message text ping add hit snap`)
 	talkInvites = canonSetOf(`chat talk vc call`)
