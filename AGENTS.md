@@ -14,7 +14,8 @@ not.
 - **Go 1.22** (standard library HTTP, `log/slog`), **PostgreSQL 16**, `pgx`/`pgxpool`,
   `golang.org/x/image` (WebP decoding and thumbnail scaling).
 - `cmd/server` — entrypoint (config, logger, graceful shutdown), plus the one-shot
-  `-sweep` mode that deletes expired archived threads and exits.
+  `-sweep` mode that deletes expired archived threads, rewrites and vacuums the
+  verification tables, and exits.
 - `internal/app`
   - `app.go` — wiring and routes; `config.go` — environment configuration.
   - `handlers.go` — HTTP handlers, validation, JSON responses.

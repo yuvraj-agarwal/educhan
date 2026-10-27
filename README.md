@@ -1429,7 +1429,9 @@ One thing remains per instance:
 ```bash
 make db-up   # local PostgreSQL for development and the integration tests
 make run     # go run ./cmd/server
-make sweep   # go run ./cmd/server -sweep: delete expired archived threads once
+make sweep   # go run ./cmd/server -sweep, once: delete expired archived threads,
+             # and rewrite and vacuum the verification tables, which takes the
+             # database owner's privileges ("The archive sweeper" says more)
 make build   # go build ./...
 make test    # go test ./... (integration tests need PostgreSQL; they skip without it)
 make check   # gofmt check, go vet, go test
