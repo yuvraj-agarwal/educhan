@@ -137,13 +137,12 @@ type Processed struct {
 // animated WebP, which nothing here decodes, is refused as ErrCorruptImage
 // from its chunks (webpAnimated), whatever its size, and so is any WebP whose
 // chunks stripWebP would refuse (webpKept), such as one cut short, whose RIFF
-// runs past the end of the file, one with a chunk that does, and a still
-// whose canvas and bitstream disagree or that has no bitstream or two. A file
-// whose processing would hold more than the whole processing budget
-// (processingCost) is refused as ErrImageTooCostly: that depends on how it is
-// encoded as well as on its resolution, which ErrImageTooLarge is kept for.
-// Inspect cannot tell whether the pixels decode; only Process can, and
-// Process runs it first.
+// runs past the end of the file, one with a chunk that does, and a still whose
+// canvas and bitstream disagree or that has no bitstream or two. A file whose
+// processing would hold more than the whole processing budget (processingCost)
+// is refused as ErrImageTooCostly: that depends on how it is encoded as well
+// as on its resolution, which ErrImageTooLarge is kept for. Inspect cannot
+// tell whether the pixels decode; only Process can, and Process runs it first.
 func Inspect(data []byte) (Format, error) {
 	in, err := inspect(data)
 	return in.format, err
