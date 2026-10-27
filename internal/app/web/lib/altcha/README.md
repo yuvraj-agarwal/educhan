@@ -32,10 +32,10 @@ or refused as expired or revoked (never for Forget this browser, nor as `/verify
 drawn over the form; a form off the screen then, while a post link's lookup loads say,
 is only noted, or the form a redraw draws in its place is), and on the press then
 refused once to say so; when an image picked or dropped on it is attached; after a
-refusal that spent the answer, while its form is on screen; and on a press with no good
-answer held and none being solved. It stops every copy once one has found the answer or
-all have given up, when ticking the badge stops the puzzle, and when starting the copies
-fails part way.
+refusal saying it spent the answer, while its form is on screen; and on a press with no
+good answer held and none being solved. It stops every copy once one has found the
+answer or all have given up, when ticking the badge stops the puzzle, and when starting
+the copies fails part way.
 
 The CSP needs no change for the worker: `worker-src` falls back to `default-src 'self'`.
 

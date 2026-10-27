@@ -469,8 +469,8 @@ var captchaFunctions = []string{
 // A captcha answer is good for one request and kept in memory only: never in
 // storage, a cookie or a draft, where it would outlive the page or be found by
 // the next person at a shared computer. It is set where it is solved, taken out
-// where a request takes it, put back where a request left it unspent or got no
-// response, and read nowhere else.
+// where a request takes it, put back where a request left it unspent, or may
+// have spent it without saying so, and read nowhere else.
 func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 	script := appScript(t)
 	banned := []string{"storageSet", "storageGet", "localStorage", "sessionStorage", "indexedDB", "document.cookie"}
@@ -552,8 +552,8 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // this browser, nor as /verify is drawn over the form; a form off the screen
 // then is only noted, or the form a redraw draws in its place is), the press
 // refused once for that, of a form with something written or attached, and a
-// post or code request refused after the server spent its answer, which the
-// reader, still on its form, is about to send again.
+// post or code request refused with the header saying the server spent its
+// answer, which the reader, still on its form, is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -609,7 +609,7 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 			`if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } return; }`) {
 		t.Errorf("prepareCaptcha() is called %d times in app.js; want seven: from the focusin listener in a box to write "+
 			"in a form that needs an answer, on unticking the badge where the tick stopped a puzzle or something is "+
-			"written, on an image attached to a form that needs an answer, after a refusal that spent the answer "+
+			"written, on an image attached to a form that needs an answer, after a refusal saying it spent the answer "+
 			"of a form still on screen, once a ticked badge is taken out of a form with something written, "+
 			"by the page seeing its badge change other than by a forget or by a refusal of it as expired or revoked "+
 			"of a form still on screen, and on the press that note refuses, of a form with something written", n)
@@ -845,7 +845,7 @@ func TestClientAndServerAgreeOnTheCaptcha(t *testing.T) {
 		t.Error("sendWithCaptcha no longer drops a refused answer and resends exactly once")
 	}
 	// Any other refusal keeps the answer unless the server says it spent it,
-	// and then the next puzzle starts at once.
+	// and then, while its form is on screen, the next puzzle starts at once.
 	if !strings.Contains(code, `const CAPTCHA_SPENT_HEADER = "`+captchaSpentHeader+`";`) ||
 		!strings.Contains(send, `err.headers.get(CAPTCHA_SPENT_HEADER) === "spent"`) ||
 		!strings.Contains(withoutComments(jsFunction(t, script, "api")), "err.headers = res.headers;") {
@@ -1082,9 +1082,10 @@ func TestARequestGoesOnlyFromAFormOnScreen(t *testing.T) {
 // one, its form gone, dropped without a word. So a request takes the answer
 // out of the page as it is handed over, in the same step, and a press
 // meanwhile solves a fresh puzzle. The answer goes back only when the request
-// left it unspent, or brought no response at all, which may have spent it,
-// and only into an empty place while it is still good: the next request is
-// then refused as used and solves a fresh one.
+// left it unspent, or may have spent it without saying so (it brought no
+// response, or the 500 for a spend whose reply from the database was lost), and
+// only into an empty place while it is still good: the next request is then
+// refused as used and solves a fresh one.
 func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1115,7 +1116,8 @@ func TestEachCaptchaAnswerGoesOnOneRequest(t *testing.T) {
 		// Sent and taken: kept by nothing.
 		"try { return await send(answer); } catch (err) {",
 		// Refused without the spent header or a captcha reason, or never
-		// answered: put back. Refused with the header: the next puzzle starts.
+		// answered: put back. Refused with the header: the next puzzle starts,
+		// for a form still on screen.
 		`const reason = err.payload && err.payload.captcha; if (!reason) { ` +
 			`if (!(err.headers && err.headers.get(CAPTCHA_SPENT_HEADER) === "spent")) { keepCaptcha(taken); } ` +
 			`else if (answer && needsIt() && onScreen()) { prepareCaptcha(); } throw err; }`,
@@ -1578,15 +1580,15 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 // box only if that is the badge it offers: a new form offering none, or
 // another, is noted instead, so a badge verified in another tab meanwhile never
 // goes out unticked by the reader. And a badged post refused as expired or
-// revoked forgets that credential only if storage still holds it: one another
-// tab stored meanwhile is not the one refused, and, unless the browser was
-// forgotten since the press, a form on screen is told that its badge was
-// replaced by one verified since in this browser, not the server's "verify
-// again", which would cost another code and replace the badge the browser
-// holds. That notice is the form's one refusal for the badge, so a note left on
-// it while the post was on its way goes, and, unless release left the post with
-// nothing in it, it says what the next press does and how to post with the new
-// badge.
+// revoked forgets that credential only if storage still holds it: one stored
+// meanwhile, in another tab or by a confirmation in this one, is not the one
+// refused, and, unless the browser was forgotten since the press, a form on
+// screen is told that its badge was replaced by one verified since in this
+// browser, not the server's "verify again", which would cost another code and
+// replace the badge the browser holds. That notice is the form's one refusal
+// for the badge, so a note left on it while the post was on its way goes, and,
+// unless release left the post with nothing in it, it says what the next press
+// does and how to post with the new badge.
 func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1678,9 +1680,10 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	// ID the reader's other posts there without one share. A form on screen
 	// whose badge storage has replaced since the press, the browser not
 	// forgotten meanwhile, is told so in place of the server's wording, which
-	// says to verify again, and a note left on it while the post was on its
-	// way, by another tab's change or a redraw that put it back, goes, so that
-	// notice is its one refusal for the badge.
+	// says to verify again, and a note left on it while the post was on its way
+	// goes, whatever left it (another tab's change, a confirmation answered in
+	// this one, or a redraw that put it back), so that notice is its one
+	// refusal for the badge.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+

@@ -1581,11 +1581,12 @@ function pressedWithoutBadge(form, key) {
     : "Pressing again posts this without a badge.";
 }
 
-// What a posting form on screen says when the server refuses its badged post
-// as expired or revoked while storage holds another badge, verified since in
-// another tab of this browser, and the browser was not forgotten since the
-// press: a badge stored after a forget is someone else's, so the form is then
-// told the server's words (submit).
+// What a posting form on screen says when the server refuses its badged post as
+// expired or revoked while storage holds another badge, verified since in this
+// browser, in another tab or in this one by a confirmation answered after the
+// reader left /verify, and the browser was not forgotten since the press: a
+// badge stored after a forget is someone else's, so the form is then told the
+// server's words (submit).
 const BADGE_REPLACED = "The badge this post carried was replaced by one verified since in this browser, so nothing was posted.";
 
 // badgeReplacedNotice is that form's notice, in place of the server's, which
@@ -4220,13 +4221,14 @@ function posterKey() {
 // as expired or revoked (a form off the screen then, while a post link's lookup
 // loads say, is only noted, or the form a redraw draws in its place is), and
 // the press then refused once to say so, of a form with something written or
-// attached; a refusal that spent the answer, while the form is on screen; and a
-// press with no good answer held and none being solved. By the time a post is
-// written its puzzle is usually solved. The answer is kept in memory only,
-// never in storage or a draft, and is good for one request.
+// attached; a refusal saying it spent the answer, while the form is on screen;
+// and a press with no good answer held and none being solved. By the time a
+// post is written its puzzle is usually solved. The answer is kept in memory
+// only, never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
-// The server sets this header, to "spent", on any response to a request whose
-// answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
+// The server sets this header, to "spent", on every response to a request whose
+// answer it has used up, a refusal included, but one: a 500 for a spend whose
+// reply from the database was lost (captchaSpentHeader in captcha.go).
 const CAPTCHA_SPENT_HEADER = "Educhan-Captcha";
 // Up to this many copies of the worker share a puzzle, each trying every nth
 // counter, for a browser that runs them side by side. How much the extra
@@ -4393,11 +4395,11 @@ function takeCaptcha(answer) {
   return taken;
 }
 
-// keepCaptcha puts back an answer a request took and did not spend, or that
-// brought no response at all, which may have spent it: it was not sent, the
-// server refused the request without using it, or nothing came back. It goes
-// back only while the page holds no other answer, and only while it is still
-// good.
+// keepCaptcha puts back an answer a request took and did not spend, or that may
+// have spent it without saying so: it was not sent, the server refused the
+// request without using it, nothing came back, or what came back was the 500
+// for a spend whose reply from the database was lost. It goes back only while
+// the page holds no other answer, and only while it is still good.
 function keepCaptcha(taken) {
   if (taken && !captcha.answer && Date.now() < taken.goodUntil) {
     captcha.answer = taken.answer;
@@ -4522,24 +4524,27 @@ function runCaptchaWorkers(challenge, signal) {
 // another press while this request is on its way, from a form on another page
 // say, solves a fresh puzzle rather than sending the same answer, which the
 // server would let only one of the two use. It is put back (keepCaptcha) only
-// when this request left it unspent, or brought no response, as below.
+// when this request left it unspent, or may have: it brought no response, or
+// the one refusal that cannot say, as below.
 // A refusal of the answer itself, for being missing, out of date, used or
 // wrong, comes before anything is stored or sent, so the answer is dropped and
 // the request sent once more with a fresh one, and the reader presses the
 // button once. (A used answer was spent by an earlier request, whose cooldowns
 // can refuse the resend; that refusal keeps the fresh answer, as below.) Any
-// other refusal says whether the server spent the answer before refusing, with
-// the Educhan-Captcha: spent header. A refusal with the header drops the
-// answer and starts the next puzzle at once, so it is ready, or nearly, when
-// the reader presses again: an image the server could not read once the
-// answer was spent, say, or a cooldown that another request from this address
-// started between flood control's check before the spend and its check after
-// it, a 429 like the one for a cooldown found before the spend. A refusal
-// without the header, such as one of what was written or for a cooldown found
-// before the spend, leaves the answer held: it is put back for the next press,
-// which then goes straight out. With no answer from the server at all the
-// answer is put back too; if it had been spent, the next request is refused as
-// "used" and solves a fresh one here.
+// other refusal but that one says whether the server spent the answer before
+// refusing, with the Educhan-Captcha: spent header. A refusal with the header
+// drops the answer and, while its form is on screen, starts the next puzzle at
+// once, so it is ready, or nearly, when the reader presses again: an image
+// whose pixels failed to decode once the answer was spent, say, or a cooldown
+// that another request from this address started between flood control's check
+// before the spend and its check after it, a 429 like the one for a cooldown
+// found before the spend. A refusal without the header, such as one of what was
+// written or for a cooldown found before the spend, leaves the answer held: it
+// is put back for the next press, which then goes straight out. With no answer
+// from the server at all the answer is put back too; if it had been spent, the
+// next request is refused as "used" and solves a fresh one here. So it is after
+// the one refusal that cannot say: a 500 for a spend the database applied but
+// whose reply was lost, which carries no header though the answer is spent.
 // solving(true) and solving(false) bracket the time spent on the puzzle.
 // onScreen() says whether the form the request came from is still on screen
 // (formOnScreen), and the browser not forgotten since the press. A request
@@ -4891,26 +4896,27 @@ el.main.addEventListener("submit", async (event) => {
     // meanwhile: the badge went with it, a badge stored since is someone
     // else's, and the note would tell the next person there had been one.
     // What was refused is the credential this post sent (held), and only that
-    // one goes: storage may hold another by now, verified in another tab while
-    // the post was on its way, or none, forgotten there, and this tab follows
-    // that from storage as for any change there (followCredentialStorage). The
-    // form offered the one refused, so its option goes either way. Its box was
-    // ticked, so the post it goes on to is one the box no longer skips the
-    // puzzle for: that starts now, as for the reader's own untick
-    // (captchaBadgeToggled), on a form still on screen with some of the post in
-    // it. A form still on screen is told by the refusal's notice (below). One
-    // off the screen, while a post link's lookup loads say, is told nothing
-    // here, so it is noted as for any ticked badge that goes from under a form
-    // (withdrawBadgeOption, starting nothing): the redraw that draws its page
-    // again reads the note with its values (formDraft) and notes the form it
-    // draws (restoreDraft), whose next press is refused once, rather than
-    // posting without the badge unsaid. When storage holds another badge, which
-    // the page keeps, and the browser was not forgotten meanwhile, a form on
-    // screen is told so in its own words (badgeReplacedNotice), not the
-    // server's, and that notice is its one refusal for the badge: a note left
-    // on it while the post was on its way, by another tab's change or a redraw
-    // that put it back (followCredentialStorage, restoreDraft), goes, so the
-    // next press is not refused for the badge again.
+    // one goes: storage may hold another by now, verified since in this
+    // browser, in another tab or in this one by a confirmation answered after
+    // the reader left /verify, or none, forgotten in another tab, and the page
+    // follows that as it follows any such change (followCredentialStorage,
+    // submitVerification). The form offered the one refused, so its option goes
+    // either way. Its box was ticked, so the post it goes on to is one the box
+    // no longer skips the puzzle for: that starts now, as for the reader's own
+    // untick (captchaBadgeToggled), on a form still on screen with some of the
+    // post in it. A form still on screen is told by the refusal's notice
+    // (below). One off the screen, while a post link's lookup loads say, is
+    // told nothing here, so it is noted as for any ticked badge that goes from
+    // under a form (withdrawBadgeOption, starting nothing): the redraw that
+    // draws its page again reads the note with its values (formDraft) and notes
+    // the form it draws (restoreDraft), whose next press is refused once,
+    // rather than posting without the badge unsaid. When storage holds another
+    // badge, which the page keeps, and the browser was not forgotten meanwhile,
+    // a form on screen is told so in its own words (badgeReplacedNotice), not
+    // the server's, and that notice is its one refusal for the badge: a note
+    // left on it while the post was on its way goes, whatever left it
+    // (followCredentialStorage, submitVerification, restoreDraft), so the next
+    // press is not refused for the badge again.
     const reason = err.payload && err.payload.credential;
     let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {

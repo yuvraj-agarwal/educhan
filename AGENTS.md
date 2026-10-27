@@ -420,7 +420,7 @@ before the test changes.
   link's lookup loads say, is only noted, or the form a redraw draws in its place is),
   the press that is then refused once to say so, on a form with something written or
   attached (`submit`), an image picked or dropped on it and attached
-  (`captchaImageAttached`; not one a re-render puts back), a refusal that spent the
+  (`captchaImageAttached`; not one a re-render puts back), a refusal saying it spent the
   answer while its form is on screen, and a press with no good answer held. Ticking the
   badge stops it unless a request is waiting for it (`stopCaptcha`, which says whether
   it stopped one). It runs ALTCHA's vendored worker in up to `CAPTCHA_MAX_WORKERS`
@@ -442,8 +442,9 @@ before the test changes.
   form, which none does) in a browser not forgotten since the press. Each request takes
   its answer out of the page as it is handed over (`takeCaptcha`), so a second press
   while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
-  into an empty place, only while good) only when it left it unspent, or brought no
-  response, which may have spent it: the next request is then refused as used and solves
+  into an empty place, only while good) only when it left it unspent, or may have spent
+  it without saying so, as when it brought no response, or the `500` for a spend whose
+  reply from the database was lost: the next request is then refused as used and solves
   a fresh one. One whose form has left the screen is dropped unsent with its answer put
   back, and, sent or not, is not navigated from and says nothing on the page the reader
   went to; a post that did go still empties and releases its form, wherever it is. From
@@ -666,20 +667,22 @@ before the test changes.
   presses next that the browser held a badge, and with the poster key gone the post
   shares an ID with none made before. A badged post refused as expired or revoked
   forgets the credential it sent only while storage still holds it, so a badge verified
-  in another tab meanwhile stays, and its form, still on screen with something written
-  or attached, starts the puzzle the post it goes on to needs. The refusal's notice
-  tells a form on screen; one off the screen, while a post link's lookup loads say, is
-  noted, starting nothing, so the form the redraw draws in its place refuses its next
-  press once. When storage holds another badge, verified in another tab meanwhile, and
-  the browser was not forgotten since the press (a badge stored after a forget is
-  someone else's), the form on screen is told so in the page's own words rather than the
+  since in this browser stays, and its form, still on screen with something written or
+  attached, starts the puzzle the post it goes on to needs. The refusal's notice tells a
+  form on screen; one off the screen, while a post link's lookup loads say, is noted,
+  starting nothing, so the form the redraw draws in its place refuses its next press
+  once. When storage holds another badge, verified since in this browser (in another
+  tab, or in this one by a confirmation answered after the reader left /verify), and the
+  browser was not forgotten since the press (a badge stored after a forget is someone
+  else's), the form on screen is told so in the page's own words rather than the
   server's "verify again" (`badgeReplacedNotice`): its badge was replaced by one
   verified since in this browser, so nothing was posted, and, unless release left the
   post with nothing in it (the form is then told only what went and why, and, by
   `imageTakenOff`, to write something instead), pressing again posts without a badge,
   and Update, or the board's Index for a new thread, draws the form again offering the
   new one, unticked. That notice is its one refusal for the badge, so a note left on it
-  while the post was on its way goes.
+  while the post was on its way goes, whatever left it (`followCredentialStorage`,
+  `submitVerification`, `restoreDraft`).
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -1075,8 +1078,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   than `media.MaxPixels`), a reply the thread would refuse (`ReplyRefusal`), and a
   captcha answer that is missing, wrong, expired or already spent (`checkCaptcha`).
   Decoding the pixels is not up front, because it is the cost the upload cooldown limits,
-  so an image that fails to decode is refused by `storeUpload` after `allow`
-  (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides).
+  so an image whose pixels fail to decode is refused by `storeUpload` after `allow`
+  (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides). Nor is a change to
+  the thread after `ReplyRefusal` read it, archived, locked or deleted meanwhile, or its
+  last image slot taken by a racing reply, which `CreateReply` refuses after `allow` too.
   State is per process and in memory, the captcha's challenge count (`captchaMeter`)
   included — a shared backend means replacing `cooldownLimiter`, which nothing else
   depends on, and the meter.

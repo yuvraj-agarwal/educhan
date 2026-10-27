@@ -561,12 +561,16 @@ func (a *App) checkCaptcha(w http.ResponseWriter, r *http.Request, payload strin
 // written, so every response written after a request's answer is spent carries
 // it, whatever its status, a refusal included, such as one for a cooldown
 // another request started meanwhile (one from the same client address, or, for
-// a code request, one for the same email address from anywhere), an image that
-// cannot be read, a thread that filled up or was archived, locked or deleted
-// while the post was on its way, a code that could not be sent, or a server
-// error. The client keeps its answer through any other refusal without it (the
-// captcha's own refusals carry none, and drop it) and solves the next one as
-// soon as a refusal with it arrives.
+// a code request, one for the same email address from anywhere), an image whose
+// pixels fail to decode, a thread that filled up or was archived, locked or
+// deleted while the post was on its way, a code that could not be sent, or a
+// server error. The one exception is a spend the database applied but whose
+// reply was lost: spendCaptcha then answers 500 "could not check the captcha"
+// without the header, though the answer is spent. The client keeps its answer
+// through any other refusal without it (the captcha's own refusals carry none,
+// and drop it), so after that 500 its next send is refused as used and it
+// solves again, and, while the request's form is still on screen, it solves the
+// next puzzle as soon as a refusal with it arrives.
 const captchaSpentHeader = "Educhan-Captcha"
 
 // spendCaptcha marks a checked answer used, refusing a second use of it. It

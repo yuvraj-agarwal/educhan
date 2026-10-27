@@ -738,15 +738,18 @@ another board holds the upload cooldown that two image threads need.
 
 A refused request answers `429` with a `Retry-After` header in seconds and a
 `retry_after` field in the body. Set a cooldown to `0` to switch it off. A
-request rejected for any other reason — an empty body, an oversized image, a
-file that is not an accepted image or whose header claims too many pixels, a
-reply to a missing, locked or archived thread or an image past a thread's cap —
-does not start a cooldown, so a typo never costs a wait. Two refusals come
-only after the cooldowns have started: an image whose header reads but whose
-pixels do not decode, which only decoding it can find, and decoding is the cost
-the upload cooldown is there for; and the loser of two replies racing for a
-thread's last image slot (see the HTTP API). The loser of two posts racing with
-one [captcha](#captcha) answer is refused before its cooldowns start.
+request rejected for a reason that can be known up front — an empty body, an
+oversized image, a file that is not an accepted image or whose header claims too
+many pixels, a reply to a missing, locked or archived thread or an image past a
+thread's cap — is turned away before flood control and does not start a
+cooldown, so a typo never costs a wait. A refusal that can be known only once
+flood control has let a post through comes after its cooldowns have started: an
+image whose header reads but whose pixels do not decode, which only decoding it
+can find, and decoding is the cost the upload cooldown is there for; or a thread
+that changed while the reply was on its way, locked, archived or deleted
+meanwhile, or given its last image slot by another reply racing it (see the HTTP
+API). The loser of two posts racing with one [captcha](#captcha) answer is
+refused before its cooldowns start.
 
 The cooldowns are keyed on client addresses, and so is the [captcha](#captcha)'s
 count of challenges, which works like a one-minute cooldown; they are the only
@@ -794,10 +797,10 @@ script from anywhere else runs on the page, and no cookie is set.
    Forget this browser and `/verify` loading over the form start nothing, and a
    form off the screen then, while a post link's lookup loads say, is only
    noted, or the form a redraw draws in its place is), the press then refused
-   once to say so, a refusal that spent the answer while its form is on screen,
-   and a press with no answer ready can start one too (the full list heads
-   `/* Captcha */` in `app.js`); drawing a page never does. A challenge is a
-   random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
+   once to say so, a refusal saying it spent the answer while its form is on
+   screen, and a press with no answer ready can start one too (the full list
+   heads `/* Captcha */` in `app.js`); drawing a page never does. A challenge is
+   a random salt and nonce, a PBKDF2-SHA-256 cost, the first half of a key, an
    expiry half an hour away, and the server's HMAC over all of it. The server
    made the key by choosing a counter at random, from one to just under twice
    the work, and deriving PBKDF2 over the nonce with that counter appended.
@@ -857,12 +860,14 @@ for a cooldown another request started meanwhile (one from the same address or,
 for a code request, one for the same email address from anywhere), an image
 whose pixels fail to decode, a thread that filled up or was archived, locked or
 deleted meanwhile, or, for a code request, a code that could not be sent. The
-page keeps its answer through any other refusal without that header (the
-captcha's own refusals carry none, and drop it), so the next press goes straight
-out, and starts the next puzzle as soon as one with it arrives, while its form
-is on screen. A request that brought no response at all puts its answer back
-too, which may have been spent, so the next press can be told it was used and
-solve a fresh one.
+one exception is a spend the database applied but whose reply was lost: the
+answer is spent, though the response, a `500` saying the server could not check
+the captcha, carries no header. The page keeps its answer through any other
+refusal without that header (the captcha's own refusals carry none, and drop
+it), so the next press goes straight out, and starts the next puzzle as soon as
+one with it arrives, while its form is on screen. A request that brought no
+response at all puts its answer back too, which may have been spent, so the next
+press can be told it was used and solve a fresh one, as after that `500`.
 
 While a post or a code request waits for its puzzle and its answer, its form
 is held: its boxes and buttons are switched off, and look it, so what is sent
@@ -1008,15 +1013,17 @@ locked one `{"error":"thread is locked"}`, and one bringing an image to a thread
 at its board's image limit `{"error":"image limit reached"}`. These refusals,
 and a reply to a thread that does not exist, come before flood control and
 before the image is stored, so they start no cooldown, and a reply refused at
-the image limit posts at once when sent again without the image. (Two replies
-racing for a thread's last image slot can both get that far; the loser is
-refused inside the transaction, after its cooldowns have started.)
+the image limit posts at once when sent again without the image. Only a thread
+that changes after these checks have let a reply through refuses it after its
+cooldowns have started, inside the transaction: one archived, locked or deleted
+meanwhile, or one whose last image slot another reply racing it took.
 
 `"captcha"` is the answer to a challenge from `GET /api/captcha`, base64 JSON of
 `{"challenge":{"parameters","signature"},"solution":{"counter","derivedKey"}}`.
 It is needed when the captcha is on, except on a post that asks for a badge and
 gets it. [Captcha](#captcha) has its refusals, and the `Educhan-Captcha: spent`
-header on any response to a request that used one up.
+header on every response to a request that used one up, but for the one `500` it
+describes, after a spend whose reply from the database was lost.
 
 JSON request bodies must be `application/json`; unknown fields are rejected. The
 two posting endpoints also accept `multipart/form-data` with the same fields

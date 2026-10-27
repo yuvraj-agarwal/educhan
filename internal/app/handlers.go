@@ -450,9 +450,9 @@ func (a *App) waitedOut(w http.ResponseWriter, action string, cooldowns []cooldo
 // again because another post from the same address may have gone ahead since
 // the first. Only a client racing itself meets a refusal here. A post refused
 // here that carried an answer has spent it, and the refusal says so
-// (Educhan-Captcha: spent), so the page solves the next one; a badged post,
-// or any post with the captcha off, had none to spend, and its refusal says
-// nothing about one.
+// (Educhan-Captcha: spent), so the page solves the next one while the post's
+// form is on screen; a badged post, or any post with the captcha off, had none
+// to spend, and its refusal says nothing about one.
 func (a *App) allow(w http.ResponseWriter, cooldowns []cooldown) bool {
 	return a.allowAction(w, "posting", cooldowns)
 }

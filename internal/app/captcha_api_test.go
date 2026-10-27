@@ -210,9 +210,9 @@ func (h *harness) createThreadWithCaptcha(board, body string) createdPost {
 	return out
 }
 
-// The captcha is checked before flood control and spent after it: a post
-// refused by the captcha starts no cooldown, and a post refused by a cooldown
-// keeps its answer for when it is let through.
+// The captcha is checked before flood control and spent once flood control's
+// first check has passed: a post refused by the captcha starts no cooldown, and
+// a post that check refuses keeps its answer for when it is let through.
 func TestCaptchaAndFloodControl(t *testing.T) {
 	h := captchaServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Hour })
 	h.addBoard("general", "other")
@@ -234,10 +234,10 @@ func TestCaptchaAndFloodControl(t *testing.T) {
 
 // A refusal says whether it took the answer with it. Every refusal before the
 // spend, a cooldown included, leaves the answer for the next press and carries
-// no header; one after it, for an image the server cannot read, carries the
-// header, and the answer is refused as used from then on. So the page keeps an
-// answer exactly as long as it is good and solves the next one only when it
-// has to.
+// no header; one after it, for an image whose pixels fail to decode, carries
+// the header, and the answer is refused as used from then on. So, but for the
+// one 500 that captchaSpentHeader describes, the page keeps an answer exactly
+// as long as it is good and solves the next one only when it has to.
 func TestARefusalSaysWhetherTheAnswerWasSpent(t *testing.T) {
 	h := captchaServer(t, func(cfg *Config) { cfg.ThreadCooldown = time.Hour })
 	h.addBoard("general", "other", "third")
@@ -764,8 +764,8 @@ func TestABadgedBurstFromOneAddressPostsOnce(t *testing.T) {
 
 // A reply is held to the same order as a thread: a captcha refusal starts no
 // cooldown, a reply flood control refuses keeps its answer, and the answer is
-// spent before the image is processed, so a refusal for an image that fails
-// to decode says the answer went with it.
+// spent before the image is processed, so a refusal for an image whose pixels
+// fail to decode says the answer went with it.
 func TestReplyCaptchaAndFloodControl(t *testing.T) {
 	h := captchaServer(t, func(cfg *Config) {
 		cfg.PostCooldown = time.Hour
