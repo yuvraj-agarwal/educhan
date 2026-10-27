@@ -621,17 +621,21 @@ and timeout the schedule can move only between 03:00 and 04:00 UTC.
 `TestCredentialDaysEndAfterTheSweep` reads `--schedule`, `--max-retries` and
 `--task-timeout` from this guide and from `first-deploy.sh`, and fails outside
 that. Beyond it, move `credentialDayStart` in `internal/app/verify.go` and the
-backup window with the schedule. A new `credentialDayStart` splits the
-credential day it is deployed in (the root README's [Transaction ids, and the
-nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what
-that dates), so deploy it soon after the later of the old start and the new,
-once the `verification issued` lines in the server's log show that nobody has
-verified since the old start. The credentials issued from the deploy until the
-next new start share their expiry with no others, so a later deploy dates them
-to the fewer hours left in between, for as long as they are kept. A start moved
-earlier can instead go out at any time between that day's new start and its old
-one, whether or not anyone has verified, since the credentials issued before the
-deploy and those after it then each span at least a day less the move.
+backup window with the schedule, and ship the three together by re-running
+`first-deploy.sh` with its schedule and its `05:00` backup times edited to
+match, which moves the image, the Scheduler job and the backup window in one
+run; `make cloud-deploy` moves only the images. A new `credentialDayStart`
+splits the credential day it is deployed in (the root README's [Transaction ids,
+and the nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite)
+says what that dates), so deploy it soon after the later of the old start and
+the new, once the `verification issued` lines in the server's log show that
+nobody has verified since the old start. The credentials issued from the deploy
+until the next new start share their expiry with no others, so a later deploy
+dates them to the fewer hours left in between, for as long as they are kept. A
+start moved earlier can instead go out at any time between that day's new start
+and its old one, whether or not anyone has verified, since the credentials
+issued before the deploy and those after it then each span at least a day less
+the move.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
