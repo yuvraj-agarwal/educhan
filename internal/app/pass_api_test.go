@@ -389,37 +389,47 @@ func TestPassStatus(t *testing.T) {
 
 // TestPassPriceCarriesStripesExponent holds the price GET /api/pass sends to
 // Stripe's own amount beside the exponent Stripe keeps it in, from Stripe's
-// table and not the browser's: none for JPY, three for BHD, and two for ISK
-// and UGX, which Stripe still writes in hundredths though the browser gives
-// them no decimals, as for USD and HUF. So the page shows 3,000 ISK, not
-// 300,000. The currency is sent in lower case, and looked up in the table so,
-// whatever case Stripe writes it in.
+// table and not the browser's, for every currency on Stripe's lists
+// (docs.stripe.com/currencies): none for its zero-decimal currencies, but for
+// ISK and UGX, which Stripe still writes in hundredths though the browser
+// gives them no decimals, so the page shows 3,000 ISK, not 300,000; three for
+// its three-decimal ones; and two for the rest, as for USD and HUF. The
+// currency is sent in lower case, and looked up in the table so, whatever case
+// Stripe writes it in. stripeDecimals holds those lists and nothing else, so
+// a row dropped or added there fails here.
 func TestPassPriceCarriesStripesExponent(t *testing.T) {
+	stripes := map[string]int{
+		"bif": 0, "clp": 0, "djf": 0, "gnf": 0, "jpy": 0, "kmf": 0, "krw": 0, "mga": 0,
+		"pyg": 0, "rwf": 0, "vnd": 0, "vuv": 0, "xaf": 0, "xof": 0, "xpf": 0,
+		"isk": 2, "ugx": 2,
+		"bhd": 3, "jod": 3, "kwd": 3, "omr": 3, "tnd": 3,
+		"usd": 2, "huf": 2,
+	}
+	notTwo := maps.Clone(stripes)
+	maps.DeleteFunc(notTwo, func(_ string, exponent int) bool { return exponent == 2 })
+	if !maps.Equal(stripeDecimals, notTwo) {
+		t.Errorf("stripeDecimals is %v; want Stripe's zero- and three-decimal currencies, but ISK and UGX: %v", stripeDecimals, notTwo)
+	}
+	var currencies []string
+	for currency := range stripes {
+		currencies = append(currencies, currency)
+	}
+	slices.Sort(currencies)
 	p := passServer(t, nil)
-	for _, tc := range []struct {
-		currency string
-		amount   int64
-		exponent int
-	}{
-		{"usd", 2000, 2},
-		{"jpy", 3000, 0},
-		{"isk", 300000, 2},
-		{"ugx", 7500000, 2},
-		{"bhd", 7500, 3},
-		{"huf", 800000, 2},
-		{"BHD", 7500, 3},
-	} {
-		p.stripe.mu.Lock()
-		p.stripe.price["currency"], p.stripe.price["unit_amount"] = tc.currency, tc.amount
-		p.stripe.mu.Unlock()
-		p.app.pass.priceMu.Lock()
-		p.app.pass.priceFetchedAt = time.Time{}
-		p.app.pass.priceMu.Unlock()
-		var status map[string]any
-		p.get("/api/pass", &status)
-		want := map[string]any{"amount": float64(tc.amount), "currency": strings.ToLower(tc.currency), "exponent": float64(tc.exponent)}
-		if got, _ := status["price"].(map[string]any); !maps.Equal(got, want) {
-			t.Errorf("GET /api/pass for %s: price %v, want %v", tc.currency, status["price"], want)
+	for _, currency := range currencies {
+		for _, written := range []string{currency, strings.ToUpper(currency)} {
+			p.stripe.mu.Lock()
+			p.stripe.price["currency"], p.stripe.price["unit_amount"] = written, 7500
+			p.stripe.mu.Unlock()
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Time{}
+			p.app.pass.priceMu.Unlock()
+			var status map[string]any
+			p.get("/api/pass", &status)
+			want := map[string]any{"amount": float64(7500), "currency": currency, "exponent": float64(stripes[currency])}
+			if got, _ := status["price"].(map[string]any); !maps.Equal(got, want) {
+				t.Errorf("GET /api/pass for %s: price %v, want %v", written, status["price"], want)
+			}
 		}
 	}
 }
