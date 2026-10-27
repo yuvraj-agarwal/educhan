@@ -749,16 +749,21 @@ more settings have working defaults and need no change: `EDUCHAN_PASS_DAYS`,
 `EDUCHAN_PASS_HOURLY_POSTS` and `EDUCHAN_PASS_COOLDOWN` (section 4).
 
 If the service's log says `the Pass price in Stripe needs fixing`, its `error`
-says why: the Price is archived, recurring or without a fixed amount, or, with
-Stripe Tax on, says neither `inclusive` nor `exclusive`; or Stripe refused the
-key or the Price ID, such as a test-mode Price ID with a live key. Until it is
-fixed, `/api/pass` leaves the price out, and with Stripe Tax on, checkout
-answers `503`. A new Price, made and set as above, mends a fault in the Price or
-its ID, and the key block above puts in a new key. Both stay in the Stripe
-account (and sandbox) and the mode (test or live) the setup block ran in, since
-its webhook endpoint hears only of payments there: a Price ID from anywhere else
-needs a new Price made there, not a key from where that Price is. This reads the
-latest such line, with when and by which revision it was logged:
+says why: the Price is archived, recurring or without a fixed amount (one whose
+buyer chooses what to pay, say), or, with Stripe Tax on, says neither
+`inclusive` nor `exclusive`; or Stripe refused the request for the Price (a key
+or Price ID it does not take, say, such as a test-mode Price ID with a live
+key), and Stripe's own message after those words names the cause. Until it is
+fixed, `/api/pass` leaves the price out and checkout answers `503`, with Stripe
+Tax on or off, before any cooldown starts or anything is opened in Stripe. While
+Stripe is out of reach or failing, the log says `could not read the Pass price
+from Stripe` instead, and checkout answers `502` until Stripe answers. A new
+Price, made and set as above, mends a fault in the Price or its ID, and the key
+block above puts in a new key. Both stay in the Stripe account (and sandbox) and
+the mode (test or live) the setup block ran in, since its webhook endpoint hears
+only of payments there: a Price ID from anywhere else needs a new Price made
+there, not a key from where that Price is. This reads the latest such line, with
+when and by which revision it was logged:
 
 ```bash
 gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="the Pass price in Stripe needs fixing"' \
