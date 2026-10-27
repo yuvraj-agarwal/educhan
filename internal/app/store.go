@@ -1241,7 +1241,11 @@ const verificationLockTimeout = "5s"
 // tries again a moment later, as for a table another session holds. An
 // uncontended lock is granted at once, so the bound need be no longer than a
 // request should wait; and it is below PostgreSQL's deadlock_timeout, so the
-// sweep gives way to an autovacuum rather than having it cancelled.
+// sweep gives way to an autovacuum rather than having it cancelled. The bound
+// covers the whole statement, so it would also end a wait that came after the
+// run had committed and let go of the table, with the table in its new file:
+// the sweep's runs leave out the one step that waits there (vacuumCommand),
+// and a run that ends so all the same counts as the run it was (vacuumFull).
 const vacuumLockTimeout = "100ms"
 
 // How long RewriteCredentials keeps trying VACUUM FULL on the verification
@@ -1258,7 +1262,20 @@ const (
 
 // vacuumCommand is what RewriteCredentials runs on the probe table, each
 // verification table, and pg_statistic.
-const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED)"
+//
+// SKIP_DATABASE_STATS leaves out the step a VACUUM otherwise ends with, after
+// its run on the table has committed: moving the database's oldest
+// transaction id up in its row in pg_database (datfrozenxid). That step holds
+// no table, but it waits for any other session taking the same step, and,
+// since PostgreSQL 16.5, for any transaction that has updated the row and not
+// ended — an ALTER DATABASE, or a GRANT on the database. With the connection's
+// lock_timeout at vacuumLockTimeout, such a wait would fail the statement with
+// the table already in its new file, and the sweep would run VACUUM FULL on
+// the table again, holding up every request on it a second time, or fail
+// although its runs had done their job (TestVacuumDoesNotWaitForTheDatabasesRow).
+// Autovacuum takes the step whenever it works on the database, so leaving it
+// out costs nothing but the time until then.
+const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)"
 
 // sqlstateLockNotAvailable is the code of the warning VACUUM gives when
 // SKIP_LOCKED makes it pass over a table another session holds, and of the
@@ -1477,8 +1494,12 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // locks VACUUM FULL takes once it has the table, its TOAST table's and its row
 // in pg_class (vacuumLockTimeout says who can hold them), and it holds the
 // table while it waits for one; so this sets the connection's lock_timeout to
-// vacuumLockTimeout first, and a run that times out has given the table up,
-// and is tried again the same way.
+// vacuumLockTimeout first, and a run that times out with the table still in
+// its old file has given the table up, and is tried again the same way. The
+// step a VACUUM ends with across the whole database, which waits for any
+// transaction that has updated the database's row in pg_database, comes after
+// the run has committed and holds no table; the runs leave it out
+// (vacuumCommand).
 //
 // It copies, rather than drops, a deleted row that some snapshot could still
 // read: one deleted by a transaction no older than its cutoff. The cutoff is
@@ -1604,7 +1625,9 @@ const (
 	vacuumHeld
 	// VACUUM FULL took the table, but another session held a lock it needs
 	// with it, its TOAST table's say, for longer than vacuumLockTimeout, and
-	// it gave the table up in its old file.
+	// it gave the table up in its old file. (A run that lock_timeout ends
+	// after it has moved the table to a new file is not this: it counts as
+	// done, or too soon, as any run does.)
 	vacuumBlocked
 	// The table is in a new file, but a transaction older than the rewrite
 	// held VACUUM FULL's cutoff back, so the file holds what the rewrite
@@ -1635,14 +1658,15 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 		command = s.statisticsVacuumCommand
 	}
 	notices.take()
-	if _, err := conn.Exec(ctx,
-		command+" "+pgx.Identifier(strings.Split(table, ".")).Sanitize()); err != nil {
-		// lock_timeout ended a wait for a lock other than the table's, which
-		// SKIP_LOCKED would have passed over; the run rolled back.
-		var pgErr *pgconn.PgError
-		if errors.As(err, &pgErr) && pgErr.Code == sqlstateLockNotAvailable {
-			return vacuumBlocked, nil
-		}
+	_, err = conn.Exec(ctx, command+" "+pgx.Identifier(strings.Split(table, ".")).Sanitize())
+	// lock_timeout ended a wait for a lock other than the table's, which
+	// SKIP_LOCKED would have passed over. A wait in the run rolled the run
+	// back, and left the table in its old file; a wait after the run had
+	// committed — in the step SKIP_DATABASE_STATS leaves out (vacuumCommand),
+	// say — left it in its new one, and the run counts as the run it was.
+	var pgErr *pgconn.PgError
+	timedOut := errors.As(err, &pgErr) && pgErr.Code == sqlstateLockNotAvailable
+	if err != nil && !timedOut {
 		return 0, fmt.Errorf("vacuum %s: %w", table, err)
 	}
 	warnings := notices.take()
@@ -1654,6 +1678,8 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 		switch {
 		case slices.Contains(warnings, sqlstateLockNotAvailable):
 			return vacuumHeld, nil
+		case timedOut:
+			return vacuumBlocked, nil
 		case table == statisticsCatalog:
 			return 0, fmt.Errorf("VACUUM FULL left %s in its old file: only a superuser or a role with "+
 				"the privileges of the database's owner may vacuum it, so the sweeper's database role "+

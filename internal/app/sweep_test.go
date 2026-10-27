@@ -2195,6 +2195,122 @@ func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
 	}
 }
 
+// holdOpen begins a transaction on the server's pool, runs statement in it,
+// and leaves it open, holding what the statement took, until the test ends it
+// or ends.
+func (h *harness) holdOpen(statement string) pgx.Tx {
+	h.t.Helper()
+	ctx := context.Background()
+	tx, err := h.app.pool.Begin(ctx)
+	if err != nil {
+		h.t.Fatalf("begin: %v", err)
+	}
+	h.t.Cleanup(func() { _ = tx.Rollback(ctx) })
+	if _, err := tx.Exec(ctx, statement); err != nil {
+		h.t.Fatalf("hold: %v", err)
+	}
+	return tx
+}
+
+// A VACUUM ends, unless it is told to skip it, with a step across the whole
+// database: in a transaction of its own, after its run on the table has
+// committed, it updates the database's row in pg_database, and since
+// PostgreSQL 16.5 it first waits for any transaction that has updated that
+// row and not ended — an ALTER DATABASE, or a GRANT on the database — which
+// takes no lock on any table. The sweep's vacuumLockTimeout ends that wait
+// with 55P03 as an error, as it ends a wait for the table's TOAST table, but
+// with the table already in its new file. The sweep took such a run for one
+// that had given the table up: it ran VACUUM FULL on the table again, holding
+// every request on it up a second time, and while the transaction outlasted
+// its patience it failed, blaming a lock on a TOAST table or a row in
+// pg_class. So the sweep's runs skip that step (SKIP_DATABASE_STATS), which
+// autovacuum takes on its own, and the sweep finishes while the transaction is
+// open, with one run on each table. In the second case pg_statistic's run
+// takes the step, standing in for any wait that ends a run after it has
+// committed: the sweep tells such a run by its table's new file, and counts it
+// as the run it was.
+func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
+	for _, statistics := range []struct{ name, command string }{
+		{"skipped", vacuumCommand},
+		{"taken after the run", "VACUUM (FULL, SKIP_LOCKED)"},
+	} {
+		t.Run(statistics.name, func(t *testing.T) {
+			h := testServer(t, nil)
+			h.app.store.statisticsVacuumCommand = statistics.command
+			h.app.store.vacuumPatience = 5 * time.Second
+			ctx := context.Background()
+			h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+				VALUES ('\x01', '\x02', 'Altered College', date_trunc('day', now()) + interval '181 days')`)
+
+			// A transaction that began before the rewrite keeps the vacuum off
+			// the tables altogether, so the one on the database's row has to
+			// come after it: a reader holds the credentials table and
+			// pg_statistic, which the vacuum passes over, until the vacuum has
+			// moved the pending table, which it does after the rewrite has
+			// committed.
+			reader := h.holdOpen(`SELECT (SELECT count(*) FROM verification_credentials),
+				(SELECT count(*) FROM pg_stats)`)
+			vacuumed := []string{"verification_credentials", "verification_pending", "pg_statistic"}
+			watch := h.watchFiles(append([]string{vacuumProbeTable}, vacuumed...)...)
+			swept := h.sweepLater()
+			waitUntil(t, "the sweep has vacuumed the pending table", func() bool {
+				return watch.runs("verification_pending") > 0
+			})
+			// It sets the connection limit the database already has, and rolls
+			// back.
+			altered := h.holdOpen(`DO $$ BEGIN
+				EXECUTE (SELECT format('ALTER DATABASE %I CONNECTION LIMIT %s', datname, datconnlimit)
+				         FROM pg_database WHERE datname = current_database());
+			END $$`)
+
+			// Positive control: the step across the database waits for that
+			// transaction, and gives up after the sweep's lock timeout.
+			config := h.app.pool.Config().ConnConfig
+			if config.RuntimeParams == nil {
+				config.RuntimeParams = map[string]string{}
+			}
+			config.RuntimeParams["lock_timeout"] = vacuumLockTimeout
+			conn, err := pgx.ConnectConfig(ctx, config)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(func() { conn.Close(ctx) })
+			_, err = conn.Exec(ctx, `VACUUM (ONLY_DATABASE_STATS)`)
+			if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != sqlstateLockNotAvailable {
+				t.Fatalf("VACUUM (ONLY_DATABASE_STATS) returned %v while a transaction held the database's row, "+
+					"want it to wait out its lock timeout: the test cannot see what it is for", err)
+			}
+
+			if err := reader.Rollback(ctx); err != nil {
+				t.Fatalf("end the reader: %v", err)
+			}
+			sweep := await(t, "the sweep", swept)
+			watch.close()
+			if sweep.err != nil {
+				t.Errorf("a sweep that ran while a transaction held the database's row returned %v, "+
+					"want it to finish", sweep.err)
+			}
+			for _, table := range vacuumed {
+				if n := watch.runs(table); n != 1 {
+					t.Errorf("the sweep ran VACUUM FULL on %s %d times, want once: every run holds every "+
+						"request on the table up", table, n)
+				}
+			}
+			// The runs on the probe and the verification tables leave the step
+			// out altogether: one that took it would count all the same, but
+			// only after waiting out the lock timeout every time.
+			if _, err := conn.Exec(ctx, h.app.store.vacuumCommand+" "+vacuumProbeTable); err != nil {
+				t.Errorf("the sweep's VACUUM returned %v while a transaction held the database's row, "+
+					"want it to leave the step across the database out", err)
+			}
+			if err := altered.Rollback(ctx); err != nil {
+				t.Fatalf("end the ALTER DATABASE: %v", err)
+			}
+			h.assertNothingButLiveRows("verification_credentials")
+		})
+	}
+}
+
 // PostgreSQL's statistics keep the time of the last scan of every table and
 // index (last_seq_scan, last_idx_scan), and a confirmation checking the
 // credentials' primary key is such a scan: on a day with a single issuance it

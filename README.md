@@ -352,7 +352,14 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    say, while a `VACUUM` runs on that — and requests queue behind that wait, so
    it waits a tenth of a second at most and then gives the table up and tries
    again later as well
-   (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). But a run that has
+   (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). A `VACUUM` also
+   ends, once its run has committed, by updating the database's row in
+   `pg_database`, which holds no table but waits for any transaction that has
+   changed that row — an `ALTER DATABASE`, or a `GRANT` on the database — and
+   that wait, cut short, would make a run that had done its job look given up.
+   The sweep's runs leave that step out, as autovacuum takes it on its own, and
+   a run that is cut short after it has written its table out counts as the run
+   it was (`TestVacuumDoesNotWaitForTheDatabasesRow`). But a run that has
    its locks holds the table against every read and write until it has written
    the table out, so badged posts and confirmations wait for the whole run —
    between about half a second and two and a half seconds for 220,000
@@ -1362,7 +1369,11 @@ their tables' `autovacuum_enabled = false`, so autovacuum comes to them only
 near transaction id wraparound, which the nightly `VACUUM FULL` keeps away) —
 but for a tenth of a second at most, with the requests that need the table
 waiting behind it; then it gives the table up and tries again later
-(`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). And a run that
+(`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). A transaction left
+open on the database's own row — an `ALTER DATABASE`, or a `GRANT` on the
+database — does not hold it up: the step at the end of a `VACUUM` that waits
+for one comes after the table is written out, and the sweep's runs leave it to
+autovacuum (`TestVacuumDoesNotWaitForTheDatabasesRow`). And a run that
 has its locks holds the table against reads as well as writes until it has
 written the table out, so badged posts and confirmations wait for the whole run:
 between about half a second and two and a half seconds for 220,000 credentials,

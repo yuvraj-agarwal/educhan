@@ -849,11 +849,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     verification table whole and through each of its indexes, which it finds in the
     catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
     show for them is the sweep's rather than the last confirmation's. Last,
-    `VACUUM (FULL, SKIP_LOCKED)` on each table, outside the transaction, writes both
-    tables to new files without the dead versions — or the deleted pending rows, with
-    their email hash and an expiry to the microsecond — and drops the old files, which
-    are not wiped (the README's "Transaction ids, and the nightly rewrite" ends on what
-    that leaves). `SKIP_LOCKED` passes over a table another session holds, with a
+    `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table, outside the
+    transaction, writes both tables to new files without the dead versions — or the
+    deleted pending rows, with their email hash and an expiry to the microsecond — and
+    drops the old files, which are not wiped (the README's "Transaction ids, and the
+    nightly rewrite" ends on what that leaves).
+    `SKIP_LOCKED` passes over a table another session holds, with a
     `55P03` warning, rather than queueing every badged post behind the vacuum's wait
     (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum` watches `pg_locks` for that wait,
     which at `vacuumLockTimeout` a try is too short to time). It covers only the table
@@ -868,7 +869,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     (100 ms), and a run that times out, with `55P03` as an error, has given the table
     up and is tried again like a skipped one
     (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`, where a `GRANT` stands
-    in for the TOAST table, which a test's role cannot hold). Neither does anything
+    in for the TOAST table, which a test's role cannot hold). That bound covers the
+    whole statement, and a `VACUUM` ends, after its run has committed, by updating
+    the database's row in `pg_database`, which waits for any transaction that has
+    updated that row (an `ALTER DATABASE`, a `GRANT` on the database) and holds no
+    table; timed out there, a run that had done its job looked given up, and the
+    sweep ran it again or failed. So the runs leave that step out
+    (`SKIP_DATABASE_STATS`; autovacuum takes it on its own), and `vacuumFull` counts
+    a run that times out as given up only while the table is still in its old file
+    (`TestVacuumDoesNotWaitForTheDatabasesRow`). Neither does anything
     about the run: once `VACUUM FULL` has a table and its locks it holds it against
     reads as well as writes until it has written it out (between about half a second
     and two and a half seconds at 220,000 credentials on development machines), every
@@ -899,7 +908,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     them out of `pg_stats` only: their old versions stay in `pg_statistic`'s file and
     its TOAST table's (the email hashes' histogram is stored out of line), and in every
     backup of those files, until the catalog is written out anew, and no query can see
-    whether they are there. So the sweep runs the same `VACUUM (FULL, SKIP_LOCKED)` on
+    whether they are there. So the sweep runs the same `VACUUM` on
     `pg_catalog.pg_statistic` every night, with the same `relfrozenxid` check against
     the rewrite, which is later than `0015`, in the same passes as the verification
     tables: after them in each, but not waiting for them, so a table left for the next
@@ -964,6 +973,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
     `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
     `TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+    `TestVacuumDoesNotWaitForTheDatabasesRow`,
     `TestSweepLeavesNoScanTimeFromBeforeIt` and
     `TestVerificationTablesKeepNoStatistics` hold it.
   - **The credential is a header, not a cookie, and this is load-bearing.** It is
