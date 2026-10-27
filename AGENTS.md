@@ -826,16 +826,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   linear light, showed its mid-grey of 128 at about 188) and applying it needs only a
   curve. `pngGamma` (`gamma.go`) reads it as Chromium does: the first `gAMA` before the
   first `IDAT`, and none at 0, within 5% of 1/2.2, or beside an `sRGB` chunk whose
-  rendering intent is 0 to 3 or a first `iCCP` chunk holding a profile Chromium uses, one
-  that inflates whole, checksum and all, to no more than 64 MiB and that skcms, Chromium's
-  colour engine, would take (`pngProfileUsable`, which reads it as `skcms_Parse` does
-  short of its lookup tables). An `sRGB` or `iCCP` chunk Chromium cannot read takes
-  nothing's place there, and the `gAMA` beside it is applied; a `cICP` chunk, which
-  Chromium reads before them all, is not read here. `applyPNGGamma` converts the colour
-  samples, never alpha, to the sRGB values that show the same light, at the picture's own
-  depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored
-  grey ramp to within a level of what Chromium 141 drew for each tag, and has a case for
-  each of those rules and for a profile broken in each way the reading looks for;
+  rendering intent is 0 to 3 or the first `iCCP` chunk that is not empty holding a profile
+  Chromium uses, one that inflates whole, checksum and all, with no preset dictionary, to
+  no more than 64 MiB and that skcms, Chromium's colour engine, would take
+  (`pngProfileUsable`, which reads it as `skcms_Parse` does short of its lookup tables).
+  An `sRGB` or `iCCP` chunk Chromium cannot read takes nothing's place there, and the
+  `gAMA` beside it is applied; a `cICP` chunk, which Chromium reads before them all, is
+  not read here. `applyPNGGamma` converts the colour samples, never alpha, to the sRGB
+  values that show the same light, at the picture's own depth, before
+  `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored grey ramp to
+  within a level of what Chromium 141 drew for each tag, and has a case for each of those
+  rules and for a profile broken in each way the reading looks for;
   `TestPNGGammaConvertsColourOnly` covers every picture type `image/png` decodes to. A
   change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and

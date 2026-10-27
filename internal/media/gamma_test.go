@@ -147,7 +147,9 @@ func iCCPChunk(name string, method byte, stream []byte) []byte {
 // first of two; so is each here. It passes over an sRGB chunk whose
 // rendering intent it does not know and a profile it cannot read, and
 // applies the gamma beside them, so each kind of those is here too, with a
-// profile that differs from a sound one in one thing.
+// profile that differs from a sound one in one thing. It reads only the
+// first iCCP chunk that is not empty, so a broken profile keeps a later one
+// from being read and an empty chunk does not.
 func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 	ramp := greyRampPNG(t)
 	columns := []int{0, 16, 32, 64, 96, 128, 160, 192, 224, 255}
@@ -158,6 +160,12 @@ func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 	}
 	profile := sRGBProfile(nil)
 	sound := deflated(profile)
+	// dictionary is sound with a header asking for the empty preset
+	// dictionary (FDICT set, then its Adler-32 of 1), which compress/zlib
+	// reads and Chromium refuses; wide is sound with a header asking for a
+	// 64 KiB window, which both refuse. Each header is a multiple of 31.
+	dictionary := append([]byte{0x78, 0xBB, 0, 0, 0, 1}, sound[2:]...)
+	wide := append([]byte{0x88, 0x1C}, sound[2:]...)
 	// edited is a copy of b changed by edit.
 	edited := func(b []byte, edit func(b []byte)) []byte {
 		b = append([]byte(nil), b...)
@@ -197,9 +205,14 @@ func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 		{"gamma 1.0 beside a profile named in 80 bytes", beside(iCCPChunk(strings.Repeat("n", 80), 0, sound)), untouched},
 		{"gamma 1.0 beside a profile with bytes after its stream", beside(iCCPChunk("x", 0, append(sound, "junk"...))), untouched},
 		{"gamma 1.0 beside a profile after one that is not", beside(iccp([]byte("not a profile")), iccp(profile)), linear},
+		{"gamma 1.0 beside an empty iCCP chunk", beside(pngChunk("iCCP", nil)), linear},
+		{"gamma 1.0 beside a profile after an empty iCCP chunk", beside(pngChunk("iCCP", nil), iccp(profile)), untouched},
+		{"gamma 1.0 beside a profile after two empty iCCP chunks", beside(pngChunk("iCCP", nil), pngChunk("iCCP", nil), iccp(profile)), untouched},
 		{"gamma 1.0 beside a profile that does not inflate", beside(pngChunk("iCCP", []byte("x\x00\x00not a profile"))), linear},
 		{"gamma 1.0 beside a profile whose checksum is wrong", beside(iCCPChunk("x", 0, edited(sound, func(z []byte) { z[len(z)-1] ^= 1 }))), linear},
 		{"gamma 1.0 beside a profile cut short", beside(iCCPChunk("x", 0, sound[:len(sound)-6])), linear},
+		{"gamma 1.0 beside a profile whose stream asks for a dictionary", beside(iCCPChunk("x", 0, dictionary)), linear},
+		{"gamma 1.0 beside a profile whose stream asks for a 64 KiB window", beside(iCCPChunk("x", 0, wide)), linear},
 		{"gamma 1.0 beside a profile with no name", beside(iCCPChunk("", 0, sound)), linear},
 		{"gamma 1.0 beside a profile named in 81 bytes", beside(iCCPChunk(strings.Repeat("n", 81), 0, sound)), linear},
 		{"gamma 1.0 beside a profile of compression method 1", beside(iCCPChunk("x", 1, sound)), linear},

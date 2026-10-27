@@ -41,14 +41,14 @@ import (
 // does when its rendering intent, its first byte, is one of the four there
 // are, whatever follows it, and an iCCP chunk when it holds a profile
 // Chromium uses (pngProfileUsable). Chromium reads every sRGB chunk until
-// one will do but only the first iCCP, so a profile that will not do keeps a
-// later one from being read.
+// one will do but only the first iCCP that is not empty, so a profile that
+// will not do keeps a later one from being read.
 func pngGamma(data []byte) (gamma float64, ok bool) {
 	var (
 		value   uint32
 		tagged  bool   // a gAMA chunk has been read
 		srgb    bool   // an sRGB chunk says the samples are sRGB
-		profile []byte // the first iCCP chunk's data
+		profile []byte // the first iCCP chunk's data that is not empty
 	)
 	i := 8 // the signature
 	for i+8 <= len(data) {
@@ -70,7 +70,7 @@ func pngGamma(data []byte) (gamma float64, ok bool) {
 				srgb = true
 			}
 		case "iCCP":
-			if profile == nil {
+			if profile == nil && n > 0 {
 				profile = data[i+8 : i+8+int(n)]
 			}
 		}
@@ -107,11 +107,18 @@ const iccProfileRead = 256 << 10
 // Chromium uses, as its PNG decoder and skcms read one: a name of one to 80
 // bytes and its NUL, compression method 0, and a zlib stream that inflates
 // whole, checksum and all, to no more than maxICCProfile, holding a profile
-// iccProfileUsable takes. The stream is inflated to its end, so whatever it
-// holds past what is kept is counted and let go.
+// iccProfileUsable takes. Chromium's inflater refuses a stream whose header
+// asks for a preset dictionary, which compress/zlib takes when the
+// dictionary it names is the empty one, so that is looked for first; one
+// that asks for a window over 32 KiB, which both refuse, is left to
+// compress/zlib. The stream is inflated to its end, so whatever it holds
+// past what is kept is counted and let go.
 func pngProfileUsable(chunk []byte) bool {
 	name := bytes.IndexByte(chunk[:min(len(chunk), 81)], 0)
-	if name < 1 || name+1 >= len(chunk) || chunk[name+1] != 0 {
+	if name < 1 || name+3 >= len(chunk) || chunk[name+1] != 0 {
+		return false
+	}
+	if chunk[name+3]&0x20 != 0 { // FDICT, in the stream's second byte
 		return false
 	}
 	z, err := zlib.NewReader(bytes.NewReader(chunk[name+2:]))
