@@ -291,8 +291,9 @@ if [[ -z "$answered" ]]; then
 WARNING: ${URL}/api/boards did not answer in six tries. A 403 above means the
 service is not public: run
   gcloud run services update ${SERVICE} --region ${REGION} --no-invoker-iam-check
-Anything else, read what the service logged:
-  gcloud run services logs read ${SERVICE} --region ${REGION} --limit 50
+Anything else, read what the service logged, newest first:
+  gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="${SERVICE}"' \\
+    --freshness=1h --limit=20 --format='value(timestamp,severity,jsonPayload,textPayload)'
 EOF
 fi
 
