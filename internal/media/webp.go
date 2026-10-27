@@ -80,9 +80,9 @@ func stripWebP(data []byte) ([]byte, webpInfo, error) {
 // and returns the chunks it keeps and what it learned of the picture. Of a
 // still picture it copies nothing but the ten bytes of the VP8X it rewrites,
 // the chunks it returns aliasing data, so Inspect runs it to refuse, before
-// any cooldown, every still that stripWebP would refuse once processed: one
-// whose canvas and bitstream disagree, with no bitstream or two, or with a
-// chunk anywhere that does not hold together. An animation's frames it
+// any cooldown, every still that stripWebP would refuse once processed, such
+// as one whose canvas and bitstream disagree, with no bitstream or two, or
+// with a chunk anywhere that does not hold together. An animation's frames it
 // copies as it strips them (stripFrame), which Inspect never asks of it,
 // since it refuses an animation first (webpAnimated).
 func webpKept(data []byte) ([]riffChunk, webpInfo, error) {

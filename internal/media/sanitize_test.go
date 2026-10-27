@@ -2514,6 +2514,23 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 	brokenAfter := append(append(append([]byte(nil), clean...), "EXIF"...), 100, 0, 0, 0)
 	brokenAfter = append(brokenAfter, make([]byte, 10)...)
 	binary.LittleEndian.PutUint32(brokenAfter[4:8], uint32(len(brokenAfter)-8))
+	// An extended file whose chunk after the VP8X, before the picture,
+	// claims 100000 bytes, inside a RIFF that covers the file.
+	brokenBefore := webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ICCP", payload: []byte("icc")}, bitstream)
+	binary.LittleEndian.PutUint32(brokenBefore[12+8+10+4:], 100000)
+	// lossy-alpha.webp is VP8X, ALPH and VP8, 64×48.
+	var vp8, alph riffChunk
+	walkChunks(readTestdata(t, "lossy-alpha.webp")[12:], func(c riffChunk) {
+		switch c.id {
+		case "VP8 ":
+			vp8 = c
+		case "ALPH":
+			alph = c
+		}
+	})
+	if vp8.id == "" || alph.id == "" {
+		t.Fatal("lossy-alpha.webp has no ALPH or VP8 chunk")
+	}
 
 	cases := map[string][]byte{
 		"RIFF size past the end": longer,
@@ -2528,6 +2545,12 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 		"no bitstream":                        webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
 		"alpha in the simple format":          webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
 		"a malformed chunk after the picture": brokenAfter,
+		"a malformed chunk after the VP8X":    brokenBefore,
+		"alpha after the bitstream":           webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), vp8, alph),
+		"two alpha planes":                    webpFile(vp8xChunk(vp8xFlagAlpha, 64, 48), alph, alph, vp8),
+		"alpha beside a lossless bitstream":   webpFile(vp8xChunk(vp8xFlagAlpha, 320, 200), alph, bitstream),
+		"a second VP8X":                       webpFile(vp8xChunk(0, 320, 200), vp8xChunk(0, 320, 200), bitstream),
+		"ANIM in a still":                     webpFile(vp8xChunk(0, 320, 200), riffChunk{id: "ANIM", payload: make([]byte, 6)}, bitstream),
 		"frame outside the canvas": webpFile(vp8xChunk(vp8xFlagAnimation, 320, 200),
 			riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(2, 0, 320, 200, bitstream)),
 	}

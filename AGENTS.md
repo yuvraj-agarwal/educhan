@@ -744,18 +744,21 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also reads
   every other WebP's chunks as `stripWebP` does, without writing the file (`webpKept`),
   and refuses whatever `stripWebP` would refuse once processed: a RIFF that runs past the
-  end of the file or a chunk that does, a canvas its bitstream disagrees with, no
-  bitstream or two. Before that some of these passed `Inspect` and were refused after
-  flood control, since x/image's `DecodeConfig` reads no further than a VP8X or, in a
-  file without one, the bitstream: in an extended file a canvas its bitstream disagrees
-  with and no bitstream or two, and in any a chunk after the picture that runs past the
-  end (`TestMalformedWebPIsRefused`, whose cases `Inspect` must refuse, and
-  `FuzzStripWebP`, which holds `Inspect` to admitting no WebP that `stripWebP` refuses).
-  Test fixtures that stand in for a picture never decoded still need a bitstream header of
-  the canvas's size (`vp8Stub`, `vp8lStub`). A WebP stored before this change stays a
-  `.webp` and is served as `image/webp` (`ContentTypeForExt`). `Processed.Data` is the
-  stored file, `Width`/`Height` are the upright picture's, the thumbnail is made from the
-  upright pixels, and `StoredImage.Checksum` and `Size` are of the stored bytes — the
+  end of the file or a chunk that does, no bitstream, and in a simple-format file an ALPH
+  before its bitstream, or in an extended one a bitstream that does not match the canvas,
+  a second bitstream, an ALPH after its bitstream, beside a lossless one or after another
+  ALPH, a second VP8X or an ANIM. Before that `Inspect`'s own checks caught only the RIFF
+  of these, leaving the rest to x/image's `DecodeConfig`, which reads no further than a
+  VP8X or, in a file without one, the bitstream, so in an extended file any of the rest, a
+  chunk that runs past the end wherever it lies among them, passed `Inspect` and was
+  refused after flood control, and so was a chunk after the picture that runs past the end
+  in a simple-format file (`TestMalformedWebPIsRefused`, whose cases `Inspect` must
+  refuse, and `FuzzStripWebP`, which holds `Inspect` to admitting no WebP that `stripWebP`
+  refuses). Test fixtures that stand in for a picture never decoded still need a bitstream
+  header of the canvas's size (`vp8Stub`, `vp8lStub`). A WebP stored before this change
+  stays a `.webp` and is served as `image/webp` (`ContentTypeForExt`). `Processed.Data` is
+  the stored file, `Width`/`Height` are the upright picture's, the thumbnail is made from
+  the upright pixels, and `StoredImage.Checksum` and `Size` are of the stored bytes — the
   plan's `blocked_media` check on the re-encoded output (2.2) depends on that. Tests build
   their fixtures in code (`fixtures_test.go`) and check every needle is in the upload
   before checking it is gone from what is stored: `TestJPEGIsStoredWithoutMetadata`,
