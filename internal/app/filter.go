@@ -367,7 +367,7 @@ func isJSSpace(r rune) bool {
 // checkContentCost counts. Searching for the quote again from one character
 // on after every copy, as the page does, costs the length of the rest of the
 // post for each copy, and a post can hold a copy at nearly every character
-// ("a a a … a @ g m a i l . c o m" quotes forty "a"s).
+// ("a a a … a @ m a d e u p . c o m" quotes forty "a"s).
 //
 // A quote of more than one word is found only where its first word ends a
 // run of src's words (src split at whitespace, as the page's \s splits it),
