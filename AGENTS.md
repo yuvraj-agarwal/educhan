@@ -985,22 +985,26 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
   8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
   each with a table of its own and a pixel to clear), a lossless WebP of 25 megapixels,
-  which a crafted file of a few dozen bytes can be, 4 to 6.5, and a JPEG is held to
-  `maxJPEGScanRevisits` passes' work over its blocks (`jpegScanBlockVisits`, which weighs
-  a baseline scan's visit at six first-pass visits and an AC refinement scan's at two, for
-  what the decoder does on each), so the worst admitted one, a 25-megapixel baseline file
-  of four full-resolution components, is about 5 to 6 s to decode and 5.5 to 7.5 s to
-  process, and a progressive one, which the memory estimate holds to fewer blocks, about 3
-  to 4 s to decode, rather than the thousands of seconds a repeated cheap scan would take)
-  before that deadline, with `media.ErrBusy`, and room that is there is taken however near
-  the deadline. Its body then has `uploadReadTimeout` (30 s) to arrive, counted from when
-  the wait ends, so time spent waiting for room is not taken out of the body's: a read
-  deadline set on the connection through an `http.ResponseController` once `ReserveUpload`
-  has returned, whatever it returned (the logging middleware's `statusRecorder` carries an
-  `Unwrap` so the controller reaches the connection underneath); a body slower than that
-  is the client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one
-  that falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and
-  a body that waited for room is not answered `408` for the server's load. A turned-away
+  which a crafted file of a few dozen bytes can be, 4 to 6.5, a lossy WebP with
+  transparency at the most pixels the memory estimate admits (19 megapixels square, 21 in
+  a strip) 4.5 to 9.5 by what its alpha holds, which with the CMYK JPEG below makes it the
+  slowest kind (it was measured in runs in which that JPEG took 8.5 to 10 s, see
+  `processingAllowance`), and a JPEG is held to `maxJPEGScanRevisits` passes' work over
+  its blocks (`jpegScanBlockVisits`, which weighs a baseline scan's visit at six
+  first-pass visits and an AC refinement scan's at two, for what the decoder does on
+  each), so the worst admitted one, a 25-megapixel baseline file of four full-resolution
+  components, is about 5 to 6 s to decode and 5.5 to 7.5 s to process, and a progressive
+  one, which the memory estimate holds to fewer blocks, about 3 to 4 s to decode, rather
+  than the thousands of seconds a repeated cheap scan would take) before that deadline,
+  with `media.ErrBusy`, and room that is there is taken however near the deadline. Its
+  body then has `uploadReadTimeout` (30 s) to arrive, counted from when the wait ends, so
+  time spent waiting for room is not taken out of the body's: a read deadline set on the
+  connection through an `http.ResponseController` once `ReserveUpload` has returned,
+  whatever it returned (the logging middleware's `statusRecorder` carries an `Unwrap` so
+  the controller reaches the connection underneath); a body slower than that is the
+  client's doing, answered `408` (`upload too slow`, `isReadTimeout`), as is one that
+  falls behind its pace (`pacedBody`), not the `503` a server with no room gives, and a
+  body that waited for room is not answered `408` for the server's load. A turned-away
   post's body is read past at the same pace, and `turnAway` answers it from how that read
   ended, never from the request's context, which net/http cancels for a read deadline as
   for a client gone: mapped through `fail`, a busy refusal whose body fell behind answered

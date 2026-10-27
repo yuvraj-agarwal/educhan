@@ -36,7 +36,7 @@ const UploadBudget int64 = 64 << 20
 // estimate (processingCost), and, for a JPEG, the scan cap
 // (maxJPEGScanRevisits); and a PNG is written at deflate's fastest level
 // (storedPNG), whose work follows the length of the rows rather than what they
-// hold. So no admitted upload is processed for more than several seconds of
+// hold. So no admitted upload is processed for more than about ten seconds of
 // CPU on one core. The slowest kinds measured, each on one core:
 //   - a 25-megapixel 16-bit PNG: ~4-5 s; at 8 bits, one with transparency of
 //     about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted to
@@ -45,9 +45,18 @@ const UploadBudget int64 = 64 << 20
 //     file of a few dozen bytes can be, as a lossless bitstream can spend no
 //     bits on a pixel, ~4-5 s, and ~5.5-6.5 s with its predictor, cross-colour
 //     and subtract-green transforms; and a lossy one with transparency of 19
-//     megapixels (4362×4362), the largest square the memory estimate admits,
-//     or of 21 megapixels in a strip (1300×16178), about the most pixels it
-//     admits, ~3-5 s.
+//     megapixels (4362×4362), the largest square the memory estimate admits, or
+//     of 21 megapixels in a strip (1300×16178), about the most pixels it
+//     admits, which with the CMYK JPEG below is the slowest upload admitted:
+//     ~4.5-5.5 s for a photograph half transparent throughout, ~6.5-7.5 s for
+//     noise that fills the default size limit (8 MiB), and ~8-9.5 s with an
+//     alpha plane crafted as a lossless bitstream that runs every transform. Of
+//     that, decoding takes ~1-4 s, converting the picture for image/png
+//     (lossyWebPToNRGBA) ~1 s, writing the PNG, of up to ~70 MB, ~2-4 s, and
+//     the thumbnail ~1 s; with an alpha opaque but for rounded corners, or
+//     clear throughout, it takes ~3.5-4.5 s. Those were measured in runs in
+//     which the 16-bit PNG took its ~4-5 s and the CMYK JPEG ~8.5-10 s, as on a
+//     busy host (below).
 //   - a JPEG at the scan cap (jpegScanBlockVisits weighs each scan by its
 //     work): a progressive one of ~0.8 million blocks, the most the memory
 //     estimate admits of one (a 25-megapixel 4:2:2 picture or ~17 megapixels
