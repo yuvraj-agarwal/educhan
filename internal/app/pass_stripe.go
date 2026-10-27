@@ -33,9 +33,11 @@ import (
 const (
 	stripeAPIBase = "https://api.stripe.com"
 	// stripeAPIVersion pins the shape of what the API returns. Webhook payloads
-	// follow the version the endpoint was created with instead, so the
-	// README's "Setting it up" says to create it with this one. Only fields
-	// that have been stable across versions are read either way.
+	// follow the version the endpoint was created with instead, so the README's
+	// "Setting it up" says to create it with this one. Only fields that have
+	// been stable across versions are read either way, and requests must send
+	// only parameters this version has, which is why checkout does not send
+	// adaptive_pricing (createCheckout).
 	stripeAPIVersion = "2024-06-20"
 	// stripeSignatureTolerance is how old a webhook's signed timestamp may be,
 	// Stripe's own recommended default. It bounds how long a captured delivery
@@ -85,12 +87,22 @@ type checkoutSession struct {
 // nothing but a value to leak through history or a Referer.
 //
 // It sells one of the configured Price, which checkout has read and found to
-// have a fixed amount in its own currency alone (passPrice), and nothing lets
-// the buyer change what they pay: no promotion codes, discounts or adjustable
-// quantity are sent, and Checkout offers none unless asked, and Stripe is told
-// not to convert the price into the buyer's currency. So what a paid session
-// paid is that amount in that currency, with any tax Stripe adds to an
-// exclusive Price, and the webhook does not check it.
+// have a fixed amount in its own currency alone (passPrice), and nothing it
+// sends lets the buyer change what they pay: no promotion codes, discounts or
+// adjustable quantity are sent, and Checkout offers none unless asked. So, with
+// Stripe's Adaptive Pricing off in the Stripe account, what a paid session paid
+// is that amount in that currency, with any tax Stripe adds to an exclusive
+// Price. With it on, Stripe may show a buyer abroad the price converted into
+// their own currency, at Stripe's exchange rate and with any fee Stripe adds
+// for the conversion, and charge them that. The webhook does not check what was
+// paid either way.
+//
+// Adaptive Pricing is left to the account, and the README says to switch it off
+// in the Stripe Dashboard: adaptive_pricing, the parameter that turns it off
+// for one session, came in a later API version than stripeAPIVersion
+// (2024-11-20.acacia, by Stripe's changelog), so under the pinned one Stripe
+// may refuse it as unknown, and with it every checkout. It is not sent
+// (checkSessionSent).
 //
 // No customer object is created (Stripe's default for one-off payments), and
 // no metadata is attached: Stripe learns that somebody bought a Pass, which it
@@ -108,11 +120,6 @@ func (c *stripeClient) createCheckout(ctx context.Context, successURL, cancelURL
 		// Sent either way, so an account set to collect tax by default never
 		// adds tax that the Pass page did not show.
 		"automatic_tax[enabled]": {strconv.FormatBool(c.tax)},
-		// Stripe's Adaptive Pricing, which an account can have on for every
-		// checkout, would show a buyer elsewhere the price converted into
-		// their own currency and charge them that, not the price the Pass
-		// page shows.
-		"adaptive_pricing[enabled]": {"false"},
 	}
 	var s checkoutSession
 	if err := c.call(ctx, http.MethodPost, "/v1/checkout/sessions", form, &s); err != nil {

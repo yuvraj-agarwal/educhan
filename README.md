@@ -738,13 +738,15 @@ listed in the [HTTP API](#http-api) table, whose signing secret is
 account a public support email: the receipt is how a buyer finds their payment,
 and whom to write to about a lost code. Buyers are sent only to
 `checkout.stripe.com`, so a custom checkout domain set up in Stripe would make
-every checkout fail. Then set `EDUCHAN_PASS_SECRET` and `EDUCHAN_PUBLIC_URL`
-(the site's bare `https://` origin) beside them, and `EDUCHAN_MOD_KEY` if it is
-not set already: a lost code is reissued behind the moderation key, and without
-it every reissue answers `403`, which the server warns about as it starts. Every
-Pass setting given without the secret refuses to start rather than leaving the
-Pass quietly off, and `EDUCHAN_PASS_SALES=paused` keeps it off sale while
-everything else is tried.
+every checkout fail. Switch Stripe's Adaptive Pricing off in the Stripe
+Dashboard too, so that Stripe converts no buyer's price into their own currency
+(**What the buyer pays**, below). Then set `EDUCHAN_PASS_SECRET` and
+`EDUCHAN_PUBLIC_URL` (the site's bare `https://` origin) beside them, and
+`EDUCHAN_MOD_KEY` if it is not set already: a lost code is reissued behind the
+moderation key, and without it every reissue answers `403`, which the server
+warns about as it starts. Every Pass setting given without the secret refuses to
+start rather than leaving the Pass quietly off, and `EDUCHAN_PASS_SALES=paused`
+keeps it off sale while everything else is tried.
 
 **Tax.** With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, checkout asks Stripe Tax to
 collect sales tax, VAT or GST, and Stripe's page asks the buyer for a billing
@@ -773,24 +775,30 @@ it by default would otherwise do, and the page says nothing about tax.
 **What the buyer pays.** The webhook does not check what was paid, since
 checkout read the Price within the hour and found it one the Pass is sold at,
 with a fixed amount in its own currency alone, and the session sells one of it
-and lets the buyer change nothing: no promotion codes, discounts or quantity to
-choose. Nor does Stripe convert the price: checkout turns Stripe's Adaptive
-Pricing off for the session (`adaptive_pricing[enabled]=false`), which an
-account can have on for every checkout, and which would show a buyer elsewhere
-the amount converted into their own currency and charge them that. A Price with
-currency options in any currency but its own is not sold (`503`, as above, and
-logged with the other currencies named), since Stripe's page would charge a
-buyer it places in one of those currencies that option's amount, or what they
-choose to pay where the option lets them, under the option's own tax behavior;
-Stripe sends a Price's currency options only when asked for them, and checkout
-asks (`TestPassSellsInThePricesOwnCurrencyAlone`). A failed read and a refused
-Price are each kept a minute before Stripe is asked again, and a Price the Pass
-is sold at is kept an hour (`TestPassPriceIsKeptForItsTime`). Stripe never
-changes a Price's own amount or currency, so a new price takes a new Price, a
-new `EDUCHAN_STRIPE_PRICE_ID` and a restart. Currency options, though, can be
-added to a Price in place, keeping its ID: the next read, within the hour,
-refuses the Price, but a checkout before it may charge a buyer in one of those
-currencies that option's amount, so a Price on sale should be given none.
+with no promotion codes, discounts or quantity for the buyer to choose. So, with
+Stripe's Adaptive Pricing off in the Stripe account, the buyer pays the Price's
+own amount in its own currency, as the Pass page shows it, with any tax Stripe
+adds to an exclusive Price. With it on, Stripe may show a buyer abroad the price
+converted into their own currency, at Stripe's exchange rate and with any fee
+Stripe adds for the conversion, and charge them that. The server does not turn
+it off: the checkout parameter that does (`adaptive_pricing`) came in a later
+Stripe API version than the `2024-06-20` the server pins, and Stripe may refuse
+it under that one. To sell only at the Price's own amount in its own currency,
+switch Adaptive Pricing off in the Stripe Dashboard, in the account and mode
+(test or live) the Pass is sold in. A Price with currency options in any
+currency but its own is not sold (`503`, as above, and logged with the other
+currencies named), since Stripe's page would charge a buyer it places in one of
+those currencies that option's amount, or what they choose to pay where the
+option lets them, under the option's own tax behavior; Stripe sends a Price's
+currency options only when asked for them, and checkout asks
+(`TestPassSellsInThePricesOwnCurrencyAlone`). A failed read and a refused Price
+are each kept a minute before Stripe is asked again, and a Price the Pass is
+sold at is kept an hour (`TestPassPriceIsKeptForItsTime`). Stripe never changes
+a Price's own amount or currency, so a new price takes a new Price, a new
+`EDUCHAN_STRIPE_PRICE_ID` and a restart. Currency options, though, can be added
+to a Price in place, keeping its ID: the next read, within the hour, refuses the
+Price, but a checkout before it may charge a buyer in one of those currencies
+that option's amount, so a Price on sale should be given none.
 
 ## Posting identity
 
@@ -1238,7 +1246,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_PASS_SECRET` | empty | Keys the hashes the educhan Pass stores of its codes and of Stripe's payment and session ids (a claim cookie and a reissue code are random, and stored as plain SHA-256), and signs the name a checkout's answer gives its order. **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 bytes (`openssl rand -hex 32` makes 64). Rotating it cancels every Pass and orphans every payment record |
 | `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key that creates checkouts and reads the Price, for `GET /api/pass` and before a checkout; a restricted key (`rk_…`) needs Checkout Sessions write and Prices read. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook`. Required with `EDUCHAN_PASS_SECRET` |
-| `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for, in its own currency alone: one with currency options in others is not sold (see [What the buyer pays](#educhan-pass)). Required with `EDUCHAN_PASS_SECRET` |
+| `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for, priced in its own currency alone: one with currency options in others is not sold (see [What the buyer pays](#educhan-pass), which also covers Stripe's Adaptive Pricing). Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax collect sales tax, VAT or GST at checkout. Switch Stripe Tax on in the account first, and give the Price a tax behavior: `inclusive` takes the tax out of its amount, and the Pass page says "tax included"; `exclusive` adds it at checkout, and the page says "plus any tax". A Price with neither is not sold while this is on (see [Tax](#educhan-pass)). Off, checkout tells Stripe to collect no tax, even where the account collects it by default, and the page says nothing about tax |
 | `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts, from 1 to 36500 days. Each order keeps the term it was sold with, so a change applies to checkouts started after it and to nothing already sold |
