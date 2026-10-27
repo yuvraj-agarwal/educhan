@@ -662,15 +662,17 @@ func TestEmptyEXIFBlocksArePassedOver(t *testing.T) {
 	}
 }
 
-// Chromium follows every Exif sub-IFD entry in IFD0, each into a scan of
-// the sub-IFD it names, so an IFD0 of 65535 entries that each name IFD0 is
-// 4.3 billion entries to read: a PNG of 768 KB that took ~26-27 s of CPU
-// before the reader was bounded, and Inspect reads its orientation more than
-// once, all before any cooldown. The reader stops after maxEXIFEntries
-// entries in all, the 131070th read and the 131071st not, which leaves the
-// last three files here upright where Chromium 141 turned each of them; and
-// it still reads every entry of IFD0 and of one sub-IFD however many each
-// holds.
+// Chromium follows every Exif sub-IFD entry in IFD0 into a scan of the sub-IFD
+// it names, so an IFD0 of 65535 entries that each name IFD0 is 4.3 billion
+// entries to read: a PNG of 768 KB that took ~26-27 s of CPU before the reader
+// was bounded, and Inspect reads its orientation more than once, all before
+// any cooldown. The reader stops after maxEXIFEntries entries in all, the
+// 131070th read and the 131071st not, and still reads every entry of IFD0 and
+// of one sub-IFD however many each holds. That leaves the file whose
+// orientation is the 131071st entry, and the one of 65534 entries naming IFD0
+// and a last naming an orientation, upright where Chromium 141, reading on,
+// turned them. The file of 65535 entries naming IFD0 holds no orientation: it
+// is here to show that reading it stays prompt.
 func TestEXIFReadIsBounded(t *testing.T) {
 	le := binary.LittleEndian
 	o6 := shortEntry(le, 0x0112, 6)

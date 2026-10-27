@@ -472,29 +472,30 @@ server that would refuse what it sends.
   its GPS position, camera and timestamps, XMP, IPTC captions, comments, and colour
   profiles. Both storage backends get the same rewritten file. Files stored before this
   are the exception (below).
-  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a
-    phone photo stored on its side is upright everywhere, thumbnail included, and its
-    reported width and height are the upright ones. It keeps its chroma subsampling, so
-    colour saved at full resolution (4:4:4, as editors save screenshots and diagrams at
-    high quality) stays sharp. The exception is a picture whose sampling grid a turn
-    cannot line up, which is stored at finer 4:4:4 instead, a larger file with its
-    colour kept rather than lost: one that the turn mirrors along a side that is not a
-    whole number of colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height
-    at 4:4:0, 4:2:0 or 4:1:0, or a width that is not a multiple of four at 4:1:1 or
-    4:1:0), and a 4:1:1 or 4:1:0 picture turned on its side. Which sides a turn reverses
-    depends on the turn, so an odd-sided picture can keep its subsampling through one
-    turn and not through another. When it does not, its colour is widened to full
-    resolution as browsers widen it to show it, each pixel a blend of the samples
-    nearest it, so its colour edges are stored as the poster saw them rather than in
-    blocks. It is re-encoded at the lowest quality that compresses no detail more
-    coarsely than the upload did, and at 90 at most: a photo saved at quality 30 by most
-    software is stored at 30, at about the size it came in at and looking as it did, and
-    one saved at 95 is stored at 90, a little smaller. A file whose encoder fitted its
-    Huffman tables to the picture or saved it progressive, as the "optimise" and
-    "progressive" options of an editor do, comes out larger, because Go writes the
-    standard Huffman tables in a single scan: a little larger for a high-quality save
-    (around a tenth at quality 90), but as much as twice the size for a heavily
-    compressed one, where those fixed tables outweigh the picture's own coded data.
+  - *JPEG* is decoded, turned upright by its EXIF orientation, and re-encoded, so a phone
+    photo stored on its side is upright everywhere, thumbnail included, and its reported
+    width and height are the upright ones. It keeps its chroma subsampling, so colour
+    saved at full resolution (4:4:4, as editors save screenshots and diagrams at high
+    quality) stays sharp. The exception is a picture whose sampling grid a turn cannot
+    line up, which is stored at finer 4:4:4 instead, a larger file with its colour kept
+    rather than lost: one that the turn mirrors along a side that is not a whole number of
+    colour samples long (an odd width at 4:2:2 or 4:2:0, an odd height at 4:4:0, 4:2:0 or
+    4:1:0, or a width that is not a multiple of four at 4:1:1 or 4:1:0), and a 4:1:1 or
+    4:1:0 picture turned on its side. Which sides a turn reverses depends on the turn, so
+    an odd-sided picture can keep its subsampling through one turn and not through
+    another. When it does not, its colour is widened to full resolution as browsers widen
+    it to show it, so that its colour edges are stored as the poster saw them: each pixel
+    a blend of the samples nearest it at 4:2:0, 4:2:2 and 4:4:0, and the sample it lies in
+    at 4:1:1 and 4:1:0, or where the colour of a halved width is two samples across or
+    fewer, as libjpeg-turbo shows it. It is re-encoded at the lowest quality that
+    compresses no detail more coarsely than the upload did, and at 90 at most: a photo
+    saved at quality 30 by most software is stored at 30, at about the size it came in at
+    and looking as it did, and one saved at 95 is stored at 90, a little smaller. A file
+    whose encoder fitted its Huffman tables to the picture or saved it progressive, as the
+    "optimise" and "progressive" options of an editor do, comes out larger, because Go
+    writes the standard Huffman tables in a single scan: a little larger for a
+    high-quality save (around a tenth at quality 90), but as much as twice the size for a
+    heavily compressed one, where those fixed tables outweigh its own coded data.
   - *PNG* is decoded, turned upright by an EXIF orientation in its `eXIf` chunk (which
     browsers apply too), and re-encoded, keeping none of its ancillary chunks. A gamma it
     is tagged with in a `gAMA` chunk, which browsers apply as well, is applied to its
@@ -512,13 +513,12 @@ server that would refuse what it sends.
     from an upload of 1.4 MB, about 17 seconds of CPU. Stored PNGs are larger for it:
     about a tenth for most of the photos and screenshots tried, and more for the smooth
     16-bit synthetic pictures tried, which the default level packs tightly: up to 1.3
-    times for flat colour or a gradient along one axis, and 1.3 to 14 times for a
-    gradient across both axes, by its slope and the picture's size (at 25 megapixels up
-    to about 7 times, for one rising twice as fast across as down). So a picture that the
-    default level stored close to its limit (four times the upload plus half a byte a
-    pixel, see above) can come out past it, and is then refused as too large once
-    re-encoded where an earlier release stored it, as a 16-bit gradient of 25 megapixels
-    sent as a 1.7 MB file was.
+    times for flat colour or a gradient along one axis, and up to 14 times for a gradient
+    across both axes, by its slope and the picture's size (at 25 megapixels up to about 7
+    times, for one rising twice as fast across as down). So a picture that the default
+    level stored close to its limit (four times the upload plus half a byte a pixel, see
+    above) can come out past it, and is then refused as too large once re-encoded where an
+    earlier release stored it, as a 16-bit gradient of 25 megapixels in a 1.7 MB file was.
   - *GIF* is stored as what it shows, not as the frames it came in: the pictures a browser
     shows one after another, each for as long as it shows, and the loop count (from either
     of the two extensions browsers read it from), and nothing else. It is read as Chromium

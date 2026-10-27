@@ -41,10 +41,12 @@ const UploadBudget int64 = 64 << 20
 //   - a 25-megapixel 16-bit PNG: ~4-5 s; at 8 bits, one with transparency of
 //     about 7 MiB, ~2-3 s. Written at deflate's default level, rows crafted to
 //     make it search took a 16-bit one of 1.4 MB ~17 s.
-//   - a WebP stored as a PNG: a lossless one of 20 megapixels, ~2 s, and a
-//     lossy one with transparency of 19 megapixels (4362×4362), the largest
-//     square the memory estimate admits, or of 21 megapixels in a strip
-//     (1300×16178), about the most pixels it admits, ~3-5 s.
+//   - a WebP stored as a PNG: a lossless one of 25 megapixels, ~2.5-4.5 s,
+//     which a crafted file of a few dozen bytes can come to, as a lossless
+//     bitstream can spend no bits on a pixel; and a lossy one with
+//     transparency of 19 megapixels (4362×4362), the largest square the
+//     memory estimate admits, or of 21 megapixels in a strip (1300×16178),
+//     about the most pixels it admits, ~3-5 s.
 //   - a JPEG at the scan cap (jpegScanBlockVisits weighs each scan by its
 //     work): a progressive one of ~0.8 million blocks, the most the memory
 //     estimate admits of one (a 25-megapixel 4:2:2 picture or ~17 megapixels

@@ -425,7 +425,7 @@ func sanitizePNG(ctx context.Context, data []byte, limit int64) (sanitized, erro
 // 573 PNGs stored from a mixed corpus of 14,015 uploads, PNG uploads a median
 // of 5% larger and at most 2.2 times, and WebPs stored as PNGs a median of 11%.
 // Synthetic pictures grow more: grey 16-bit ones of 25 megapixels 1.3 times
-// when flat or graded along one axis, 1.6 times graded radially and 1.3 to 7
+// when flat or graded along one axis, 1.6 times graded radially and up to 7
 // times graded across both axes, by the slope (6.9 rising twice as fast across
 // as down); smaller ones graded across both axes up to 14 times; and rows
 // crafted for it 11 times. So a picture the default level stored close to

@@ -589,14 +589,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   planes where the chroma samples line up with the turned picture, and otherwise at 4:4:4
   a pixel at a time, because turning a plane whose last sample covers fewer pixels shifts
   every colour along that side. At 4:4:4 a pixel keeps its luma exactly but takes its
-  chroma as libjpeg-turbo, and so Chromium, widens it for display (`jpegChromaRow`),
-  rather than the sample it lies in, which at a colour edge can be a hundred levels off
-  what the poster saw. `turnedSubsampling` is the rule: 4:4:4 when the turn reverses a
-  side that is not a whole number of chroma samples long — the width (reversed at
-  orientations 2, 3, 7 and 8) when it is odd at 4:2:2 or 4:2:0 or not a multiple of four
-  at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is odd at 4:4:0, 4:2:0
-  or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8), which no ratio in the
-  image package can hold (`TestOrientTurnsEverySubsamplingAsShown`,
+  chroma as libjpeg-turbo, and so Chromium, widens it for display (`jpegChromaRow`): at
+  4:2:0, 4:2:2 and 4:4:0 a blend of the samples nearest it rather than the sample it lies
+  in, which at a colour edge can be a hundred levels off what the poster saw; at 4:1:1 and
+  4:1:0, or where a halved width is two chroma samples across or fewer, the sample it lies
+  in, as libjpeg-turbo shows it. `turnedSubsampling` is the rule: 4:4:4 when the turn
+  reverses a side that is not a whole number of chroma samples long — the width (reversed
+  at orientations 2, 3, 7 and 8) when it is odd at 4:2:2 or 4:2:0 or not a multiple of
+  four at 4:1:1 or 4:1:0, the height (reversed at 3, 4, 6 and 7) when it is odd at 4:4:0,
+  4:2:0 or 4:1:0 — and when 4:1:1 or 4:1:0 turns on its side (5 to 8), which no ratio in
+  the image package can hold (`TestOrientTurnsEverySubsamplingAsShown`,
   `TestOrientKeepsEveryPixelKindExact`). GIF is decoded by `gif.DecodeAll`, which reads
   past comments and every application extension, and written by `playGIF` (`gifplay.go`)
   from what it shows rather than from its frames: the run of pictures Chromium composites,
@@ -955,10 +957,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   (`storedPNG`, `TestStoredPNGsAreDeflatedAtBestSpeed`; at the default level what its rows
   held decided how long deflate searched them, and crafted rows took a 16-bit picture of
   1.4 MB about 17 s; the price is size, the 16-bit synthetic pictures tried stored up to
-  14 times larger, so a PNG the default level stored near `storedLimit` can now be
-  refused `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one
-  core, an 8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000
-  canvas each with a table of its own and a pixel to clear), and a JPEG is held to
+  14 times larger, so a PNG the default level stored near `storedLimit` can now be refused
+  `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
+  8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
+  each with a table of its own and a pixel to clear), and a JPEG is held to
   `maxJPEGScanRevisits` passes' work over its blocks (`jpegScanBlockVisits`, which weighs
   a baseline scan's visit at six first-pass visits and an AC refinement scan's at two, for
   what the decoder does on each), so the worst admitted one, a 25-megapixel baseline file
