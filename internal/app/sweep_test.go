@@ -2110,52 +2110,284 @@ func TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor(t *testing.T) {
 	}
 }
 
+// issueMany writes n credentials straight into the table in one statement:
+// enough of them that a run of VACUUM FULL on the table takes long enough to
+// be seen copying it, which issueDirectly's transaction a row would take far
+// longer to write.
+func (h *harness) issueMany(n int) {
+	h.t.Helper()
+	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+		SELECT int4send(i), sha256(int4send(i)), 'Somewhere', date_trunc('day', now()) + interval '181 days'
+		FROM generate_series(1, $1::int) AS i`, n)
+}
+
+// waitLonger is waitUntil for a wait that copying a big table, or the sweep's
+// growing pauses between tries, can stretch past waitUntil's few seconds.
+func waitLonger(t *testing.T, what string, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for !cond() {
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting until %s", what)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+// vacuumRunWatch follows the runs of VACUUM FULL on one table, whether or not
+// they moved it to a new file: a run that gives the table up leaves it in its
+// old file, where a fileWatch sees nothing, though it held every request on
+// the table up for as long as it ran. It polls pg_stat_progress_cluster about
+// every millisecond, where a run shows from the moment it has the table until
+// it ends, and tells one run from the next by its backend and the time its
+// statement began. A run on a table of a hundred thousand rows lasts hundreds
+// of polls.
+type vacuumRunWatch struct {
+	mu   sync.Mutex
+	seen []vacuumRun // every run seen, in the order they began
+	stop chan struct{}
+	done chan struct{}
+}
+
+// vacuumRun is what a vacuumRunWatch saw of one run.
+type vacuumRun struct {
+	id      string   // its backend and the time its statement began
+	phases  []string // each phase it was seen in, in order
+	written int64    // the most rows it was seen to have written to its new file
+}
+
+func (r vacuumRun) String() string {
+	return fmt.Sprintf("{wrote %d rows; %s}", r.written, strings.Join(r.phases, ", "))
+}
+
+// watchVacuumRuns starts a vacuumRunWatch on table, on a connection of its own
+// so that it takes nothing from the server's pool.
+func (h *harness) watchVacuumRuns(table string) *vacuumRunWatch {
+	h.t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		h.t.Fatalf("connect: %v", err)
+	}
+	var oid uint32
+	if err := conn.QueryRow(ctx, `SELECT $1::text::regclass::oid`, table).Scan(&oid); err != nil {
+		conn.Close(ctx)
+		h.t.Fatalf("find %s: %v", table, err)
+	}
+	w := &vacuumRunWatch{stop: make(chan struct{}), done: make(chan struct{})}
+	go func() {
+		defer close(w.done)
+		defer conn.Close(ctx)
+		for {
+			select {
+			case <-w.stop:
+				return
+			case <-time.After(time.Millisecond):
+			}
+			rows, err := conn.Query(ctx, `
+				SELECT p.pid::text || ' ' || a.query_start::text, p.phase, p.heap_tuples_written
+				FROM pg_stat_progress_cluster p JOIN pg_stat_activity a USING (pid)
+				WHERE p.relid = $1 AND p.command = 'VACUUM FULL'
+				ORDER BY a.query_start`, oid)
+			if err != nil {
+				h.t.Errorf("read pg_stat_progress_cluster: %v", err)
+				return
+			}
+			var now vacuumRun
+			var phase string
+			w.mu.Lock()
+			_, err = pgx.ForEachRow(rows, []any{&now.id, &phase, &now.written}, func() error {
+				i := slices.IndexFunc(w.seen, func(r vacuumRun) bool { return r.id == now.id })
+				if i < 0 {
+					w.seen = append(w.seen, vacuumRun{id: now.id})
+					i = len(w.seen) - 1
+				}
+				run := &w.seen[i]
+				if len(run.phases) == 0 || run.phases[len(run.phases)-1] != phase {
+					run.phases = append(run.phases, phase)
+				}
+				run.written = max(run.written, now.written)
+				return nil
+			})
+			w.mu.Unlock()
+			if err != nil {
+				h.t.Errorf("read pg_stat_progress_cluster: %v", err)
+				return
+			}
+		}
+	}()
+	h.t.Cleanup(w.close)
+	return w
+}
+
+// runs returns every run seen so far.
+func (w *vacuumRunWatch) runs() []vacuumRun {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return slices.Clone(w.seen)
+}
+
+// close stops the watch and waits for its last poll; it may be called more
+// than once.
+func (w *vacuumRunWatch) close() {
+	select {
+	case <-w.stop:
+	default:
+		close(w.stop)
+	}
+	<-w.done
+}
+
+// vacuumConn connects as the sweep does, with its lock timeout.
+func (h *harness) vacuumConn() *pgx.Conn {
+	h.t.Helper()
+	ctx := context.Background()
+	config := h.app.pool.Config().ConnConfig
+	if config.RuntimeParams == nil {
+		config.RuntimeParams = map[string]string{}
+	}
+	config.RuntimeParams["lock_timeout"] = vacuumLockTimeout
+	conn, err := pgx.ConnectConfig(ctx, config)
+	if err != nil {
+		h.t.Fatalf("connect: %v", err)
+	}
+	h.t.Cleanup(func() { conn.Close(ctx) })
+	return conn
+}
+
 // SKIP_LOCKED covers only the table VACUUM FULL is given. Once it has that
-// table it takes other locks, waiting for each while it holds the table
-// against every read: its TOAST table's, which a VACUUM of the TOAST table by
-// name holds without the table, as autovacuum does pg_statistic's on its own,
-// where every query whose plan needs statistics its connection has not cached
-// would wait with it (autovacuum leaves the verification tables' TOAST tables
-// alone, as it does the tables, except near transaction id wraparound); and its
-// row in pg_class, which a GRANT on the table updates without taking the
-// table. So the vacuum gives the table up after vacuumLockTimeout and the
-// sweep tries again, as for a table another session holds, rather than hold
-// it for the connection's lock_timeout and then fail. A test's role cannot
-// hold a TOAST table, so a GRANT left open stands in.
+// table it needs more, and waits for each while it holds the table against
+// every read (vacuumLockTimeout says what). Two come only after it has copied
+// the whole table: its row in pg_class, which it updates, and so waits for
+// any transaction that has updated the row and not ended — a GRANT on the
+// table, which takes no lock on the table itself — and a lock on each of its
+// indexes, which it rebuilds — held by a COMMENT ON INDEX, say. A run while a
+// session holds either would hold every request on the table up for the
+// length of the copy and then give the table up, and tried again would do the
+// same, try after try for the sweep's patience. So the sweep looks first, and
+// runs no VACUUM FULL on a table while such a holder is there; it waits for
+// the holder to end, and then takes the table once. The table is big enough
+// that a run takes a while: the positive control shows a run copying all of
+// it and then waiting out the sweep's lock timeout. (A transaction older than
+// the rewrite would keep the vacuum off the tables altogether, so the holder
+// begins after the rewrite: a reader holds the credentials table until the
+// vacuum has passed over it once, which it does after the rewrite has
+// committed.)
+func TestSweepRunsNoVacuumWhileItWouldWait(t *testing.T) {
+	const issued = 100_000
+	for _, holder := range []struct{ name, statement string }{
+		{"GRANT", `GRANT SELECT ON verification_credentials TO PUBLIC`},
+		{"COMMENT ON INDEX", `COMMENT ON INDEX verification_credentials_expires_idx IS NULL`},
+	} {
+		t.Run(holder.name, func(t *testing.T) {
+			h := testServer(t, nil)
+			ctx := context.Background()
+			h.issueMany(issued)
+
+			// Positive control: a run while the holder is open copies the
+			// whole table, then waits out the sweep's lock timeout, and leaves
+			// the table in its old file.
+			before := h.relationFiles("verification_credentials")[0]
+			held := h.holdOpen(holder.statement)
+			control := h.watchVacuumRuns("verification_credentials")
+			_, err := h.vacuumConn().Exec(ctx, h.app.store.vacuumCommand+" verification_credentials")
+			if pgErr := (*pgconn.PgError)(nil); !errors.As(err, &pgErr) || pgErr.Code != sqlstateLockNotAvailable {
+				t.Fatalf("VACUUM FULL returned %v while a %s was open, want it to wait out its lock timeout: "+
+					"the test cannot see what it is for", err, holder.name)
+			}
+			control.close()
+			if runs := control.runs(); len(runs) != 1 || runs[0].written != issued {
+				t.Fatalf("the watch saw %v of a VACUUM FULL that waited for a %s, want one run that had "+
+					"copied all %d rows: the test cannot see what it is for", runs, holder.name, issued)
+			}
+			if after := h.relationFiles("verification_credentials")[0]; after != before {
+				t.Fatalf("a VACUUM FULL that waited out its lock timeout moved the table to file %d", after)
+			}
+			if err := held.Rollback(ctx); err != nil {
+				t.Fatalf("end the %s: %v", holder.name, err)
+			}
+
+			reader := h.holdOpen(`SELECT count(*) FROM verification_credentials`)
+			runs := h.watchVacuumRuns("verification_credentials")
+			files := h.watchFiles(vacuumProbeTable, "verification_pending")
+			swept := h.sweepLater()
+			waitLonger(t, "the sweep has vacuumed the pending table", func() bool {
+				return files.runs("verification_pending") > 0
+			})
+			held = h.holdOpen(holder.statement)
+			if err := reader.Rollback(ctx); err != nil {
+				t.Fatalf("end the reader: %v", err)
+			}
+			// Each try probes the cutoff first. A run on the credentials table
+			// also ends the wait, so that a sweep that runs one fails below
+			// rather than here.
+			tries := files.runs(vacuumProbeTable)
+			waitLonger(t, "the sweep has tried four more times", func() bool {
+				return files.runs(vacuumProbeTable) >= tries+4 || len(runs.runs()) > 0
+			})
+			if seen := runs.runs(); len(seen) > 0 {
+				t.Errorf("the sweep ran VACUUM FULL on the credentials table %d times while a %s was open (%v), "+
+					"holding up every request on it each time for a run that would give it up; want none until "+
+					"the %[2]s ends", len(seen), holder.name, seen)
+			}
+			select {
+			case sweep := <-swept:
+				t.Fatalf("the sweep ended (%v) while a %s was open; want it to wait for it", sweep.err, holder.name)
+			default:
+			}
+			if err := held.Rollback(ctx); err != nil {
+				t.Fatalf("end the %s: %v", holder.name, err)
+			}
+
+			sweep := await(t, "the sweep", swept)
+			if sweep.err != nil {
+				t.Fatalf("a sweep whose %s ended while it waited: %v", holder.name, sweep.err)
+			}
+			runs.close()
+			if seen := runs.runs(); len(seen) != 1 {
+				t.Errorf("the sweep ran VACUUM FULL on the credentials table %d times (%v), want once, after the "+
+					"%s ended", len(seen), seen, holder.name)
+			}
+			if after := h.relationFiles("verification_credentials")[0]; after == before {
+				t.Errorf("the credentials table is still in file %d after a sweep that finished", after)
+			}
+			h.assertNothingButLiveRows("verification_credentials")
+		})
+	}
+}
+
+// What the sweep cannot see coming is a GRANT that begins during a run, after
+// the sweep has looked: the run copies the table, then waits for the GRANT.
+// It gives the table up after vacuumLockTimeout, rather than hold it for the
+// connection's lock_timeout and then fail, and the sweep tries again later;
+// and from then on the look before each try sees the GRANT, so the sweep runs
+// no VACUUM FULL on the table again until it has ended, rather than copy the
+// table only to give it up, try after try. The table is big enough that the
+// copy takes a while, so the GRANT can begin during it.
 func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
+	const issued = 200_000
 	h := testServer(t, nil)
 	ctx := context.Background()
-	h.exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
-		VALUES ('\x01', '\x02', 'Granted College', date_trunc('day', now()) + interval '181 days')`)
-	hold := func(statement string) pgx.Tx {
-		tx, err := h.app.pool.Begin(ctx)
-		if err != nil {
-			t.Fatalf("begin: %v", err)
-		}
-		t.Cleanup(func() { _ = tx.Rollback(ctx) })
-		if _, err := tx.Exec(ctx, statement); err != nil {
-			t.Fatalf("hold: %v", err)
-		}
-		return tx
-	}
+	h.issueMany(issued)
+	before := h.relationFiles("verification_credentials")[0]
 
-	// A transaction that began before the rewrite keeps the vacuum off the
-	// tables altogether, so the GRANT has to come after it: a reader holds
-	// the credentials table until the vacuum has passed over it once, which
-	// it does after the rewrite has committed.
-	reader := hold(`SELECT count(*) FROM verification_credentials`)
-	files := h.relationFiles("verification_credentials", "verification_pending")
+	runs := h.watchVacuumRuns("verification_credentials")
+	probes := h.watchFiles(vacuumProbeTable)
 	swept := h.sweepLater()
-	waitUntil(t, "the sweep has vacuumed the pending table", func() bool {
-		return h.relationFiles("verification_pending")[0] != files[1]
+	waitLonger(t, "the sweep's VACUUM FULL is copying the credentials table", func() bool {
+		var copying bool
+		if err := h.app.pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT FROM pg_stat_progress_cluster
+			               WHERE relid = 'verification_credentials'::regclass
+			                 AND phase IN ('initializing', 'seq scanning heap'))`).Scan(&copying); err != nil {
+			t.Fatalf("read pg_stat_progress_cluster: %v", err)
+		}
+		return copying
 	})
-	granter := hold(`GRANT SELECT ON verification_credentials TO PUBLIC`)
+	granter := h.holdOpen(`GRANT SELECT ON verification_credentials TO PUBLIC`)
 	var grantPID int32
 	if err := granter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&grantPID); err != nil {
 		t.Fatalf("read the GRANT's backend: %v", err)
-	}
-	if err := reader.Rollback(ctx); err != nil {
-		t.Fatalf("end the reader: %v", err)
 	}
 
 	waiting := func() bool {
@@ -2167,7 +2399,7 @@ func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
 		}
 		return n > 0
 	}
-	waitUntil(t, "the vacuum waits for the GRANT", waiting)
+	waitLonger(t, "the run waits for the GRANT once it has copied the table", waiting)
 	start := time.Now()
 	for waiting() {
 		if took := time.Since(start); took > 2*time.Second {
@@ -2181,7 +2413,22 @@ func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
 			"want it to try again", sweep.err)
 	default:
 	}
-	waitUntil(t, "the vacuum tries the credentials table again", waiting)
+
+	// Each try probes the cutoff first. A second run on the credentials table
+	// also ends the wait, so that a sweep that runs one fails below rather
+	// than here.
+	tries := probes.runs(vacuumProbeTable)
+	waitLonger(t, "the sweep has tried four more times", func() bool {
+		return probes.runs(vacuumProbeTable) >= tries+4 || len(runs.runs()) > 1
+	})
+	if seen := runs.runs(); len(seen) != 1 || seen[0].written != issued {
+		t.Errorf("while the GRANT was open the sweep ran VACUUM FULL on the credentials table %d times (%v); "+
+			"want just the one the GRANT began during, which copied all %d rows: every run held up every "+
+			"request on the table, only to give it up", len(seen), seen, issued)
+	}
+	if after := h.relationFiles("verification_credentials")[0]; after != before {
+		t.Errorf("the credentials table moved to file %d while a GRANT VACUUM FULL waits for was open", after)
+	}
 	if err := granter.Rollback(ctx); err != nil {
 		t.Fatalf("end the GRANT: %v", err)
 	}
@@ -2190,9 +2437,15 @@ func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
 	if sweep.err != nil {
 		t.Fatalf("a sweep whose GRANT ended while it waited: %v", sweep.err)
 	}
-	if after := h.relationFiles("verification_credentials")[0]; after == files[0] {
+	runs.close()
+	if seen := runs.runs(); len(seen) != 2 {
+		t.Errorf("the sweep ran VACUUM FULL on the credentials table %d times (%v), want twice: the run the "+
+			"GRANT began during, and one after it ended", len(seen), seen)
+	}
+	if after := h.relationFiles("verification_credentials")[0]; after == before {
 		t.Errorf("the credentials table is still in file %d after a sweep that finished", after)
 	}
+	h.assertNothingButLiveRows("verification_credentials")
 }
 
 // holdOpen begins a transaction on the server's pool, runs statement in it,

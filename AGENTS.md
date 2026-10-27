@@ -867,32 +867,43 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `55P03` warning, rather than queueing every badged post behind the vacuum's wait
     (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum` watches `pg_locks` for that wait,
     which at `vacuumLockTimeout` a try is too short to time). It covers only the table
-    it names: once `VACUUM FULL` has the table it waits, holding the table, for the
-    other locks it needs — its TOAST table's, which a `VACUUM` of the TOAST table by
-    name holds, and its row in `pg_class`, which an open `GRANT` on the table holds.
-    (Autovacuum takes `pg_statistic`'s TOAST table on its own, below, but not these: a
-    TOAST table takes its table's `autovacuum_enabled = false`, so autovacuum comes to
-    them only near transaction id wraparound, which the nightly `VACUUM FULL` keeps
-    from coming due.) So
-    `vacuumVerificationTables` first sets `lock_timeout` to `vacuumLockTimeout`
-    (100 ms), and a run that times out, with `55P03` as an error, has given the table
-    up and is tried again like a skipped one
-    (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`, where a `GRANT` stands
-    in for the TOAST table, which a test's role cannot hold). That bound covers the
-    whole statement, and a `VACUUM` ends, after its run has committed, by updating
-    the database's row in `pg_database`, which waits for any transaction that has
-    updated that row (an `ALTER DATABASE`, a `GRANT` on the database) and holds no
-    table; timed out there, a run that had done its job looked given up, and the
-    sweep ran it again or failed. So the runs leave that step out
-    (`SKIP_DATABASE_STATS`; autovacuum takes it on its own), and `vacuumFull` counts
-    a run that times out as given up only while the table is still in its old file
-    (`TestVacuumDoesNotWaitForTheDatabasesRow`). Neither does anything
-    about the run: once `VACUUM FULL` has a table and its locks it holds it against
-    reads as well as writes until it has written it out (between about half a second
-    and two and a half seconds at 220,000 credentials on development machines), every
-    badged post and confirmation waits for it, and three waiting on one instance hold
-    its whole pool. So each table is taken once a night, and never for a run that
-    cannot do its job. `VACUUM FULL` keeps any deleted row an older snapshot could
+    it names: once `VACUUM FULL` has the table it waits, holding the table, for what
+    else it needs — before the copy, its TOAST table's lock, which a `VACUUM` of the
+    TOAST table by name holds; after copying the whole table, its row in `pg_class`,
+    which an open `GRANT` or `REVOKE` on the table has updated, and each index's lock,
+    which an open `COMMENT ON INDEX` holds. (Autovacuum takes `pg_statistic`'s TOAST
+    table on its own, below, but not these: a TOAST table takes its table's
+    `autovacuum_enabled = false`, so autovacuum comes to them only near transaction id
+    wraparound, which the nightly `VACUUM FULL` keeps from coming due.) A run that
+    waited after the copy would hold every request on the table up for the whole copy
+    and then give the table up, and do the same on every try. So `vacuumFull` looks
+    first (`vacuumWaitsQuery`: `pg_locks` on the TOAST table and the indexes, and the
+    lock an open transaction holds on its own id, the `xmax` of a `pg_class` row it
+    updated) for a session holding any of these that does not hold the table itself,
+    which `SKIP_LOCKED` passes over anyway, and while it finds one runs nothing and
+    tries again later (`TestSweepRunsNoVacuumWhileItWouldWait` counts the runs in
+    `pg_stat_progress_cluster`, on a table big enough to take a while to copy). What
+    the look cannot see coming, a `GRANT` begun during a run, `lock_timeout` bounds:
+    `vacuumVerificationTables` first sets it to `vacuumLockTimeout` (100 ms), and a run
+    that times out, with `55P03` as an error, has given the table up and is tried
+    again like a skipped one, by which time the look sees the holder
+    (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`: one run, then none until
+    the `GRANT` ends; a test's role cannot hold a TOAST table, so no test holds one).
+    That bound covers the whole statement, and a `VACUUM` ends, after its run has
+    committed, by updating the database's row in `pg_database`, which waits for any
+    transaction that has updated that row (an `ALTER DATABASE`, a `GRANT` on the
+    database) and holds no table; timed out there, a run that had done its job looked
+    given up, and the sweep ran it again or failed. So the runs leave that step out
+    (`SKIP_DATABASE_STATS`; autovacuum takes it on its own), and `vacuumFull` counts a
+    run that times out as given up only while the table is still in its old file
+    (`TestVacuumDoesNotWaitForTheDatabasesRow`). None of these does anything about the
+    run: once `VACUUM FULL` has a table and its locks it holds it against reads as well
+    as writes until it has written it out (between about half a second and two and a
+    half seconds at 220,000 credentials on development machines), every badged post and
+    confirmation waits for it, and three waiting on one instance hold its whole pool. So
+    each table is taken once a night, and never for a run that cannot do its job, unless
+    a session begins to hold what the run needs during it, which costs that one run.
+    `VACUUM FULL` keeps any deleted row an older snapshot could
     read: any statement or transaction in the database that began before the rewrite
     committed and is still running, the server's own requests included, or a
     transaction anywhere on the instance that had written something by then. So before
@@ -925,8 +936,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     (`TestSweepFailsWhenTheVerificationTablesAreHeld`). It takes milliseconds, but while
     it runs a query whose plan needs statistics its connection has not cached waits, on
     any table, which is why it too skips a held catalog (a session reading `pg_stats`
-    holds it), and why the lock timeout matters most there: `0015` left autovacuum on
-    for the catalog, TOAST table included. Only a
+    holds it), and why the look before each run matters most there: `0015` left
+    autovacuum on for the catalog, TOAST table included, so the sweep leaves the
+    catalog alone while autovacuum holds its TOAST table. Only a
     superuser or a role with the privileges of the database's owner — the owner, or a
     member of its role that inherits them, which `pg_has_role(datdba, 'USAGE')` says —
     may vacuum that catalog; a role that owns every table but not the database may
@@ -982,6 +994,7 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `TestSweepFailsWhenVacuumLeavesPgStatisticInItsFile`,
     `TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`,
     `TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`,
+    `TestSweepRunsNoVacuumWhileItWouldWait`,
     `TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
     `TestVacuumDoesNotWaitForTheDatabasesRow`,
     `TestSweepLeavesNoScanTimeFromBeforeIt` and

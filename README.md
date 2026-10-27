@@ -358,10 +358,20 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    wait for a table another session holds, so requests do not queue behind a
    vacuum waiting to start: it passes over the table and tries again later
    (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum`). Once it has a table it
-   can still have to wait for another lock it needs — the table's TOAST table,
-   say, while a `VACUUM` runs on that — and requests queue behind that wait, so
-   it waits a tenth of a second at most and then gives the table up and tries
-   again later as well
+   can still have to wait for something else another session holds, with
+   requests queued behind it: before it copies the table, the lock on the
+   table's TOAST table, which a `VACUUM` of that TOAST table holds; after it
+   has copied the whole table, the table's row in `pg_class`, which an open
+   `GRANT` or `REVOKE` on the table has updated, and the lock on each index,
+   which an open `COMMENT ON INDEX` holds. A run that waited after the copy
+   would hold requests up for the whole copy and then give the table up, and
+   do the same on every try. So before each run the sweep looks in `pg_locks`
+   for another session holding any of these, and while one does it leaves the
+   table alone and tries again later
+   (`TestSweepRunsNoVacuumWhileItWouldWait`). One that begins during a run,
+   after the look, the run waits for a tenth of a second at most and then gives
+   the table up, having held requests up for as much of the copy as it had
+   done; the next try's look sees it
    (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). A `VACUUM` also
    ends, once its run has committed, by updating the database's row in
    `pg_database`, which holds no table but waits for any transaction that has
@@ -386,7 +396,8 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    own (migration `0016`), which works out the same cutoff in milliseconds and
    holds up nobody, and it takes the verification tables only once the probe's
    `relfrozenxid` is newer than the rewrite — once the older transactions have
-   ended — which makes one run on each table a night
+   ended. With the look above, that makes one run on each table a night, and
+   one more for each holder that begins during a run
    (`TestSweepWaitsForAnOlderTransactionToEnd`,
    `TestBadgedPostsDoNotQueueBehindVacuumsAnOlderSnapshotWouldSpoil`). It checks
    each table's new file the same way afterwards, and tries again if it still
@@ -403,9 +414,11 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    not cached waits, on any table, so this run too passes over the catalog while
    another session holds it — one reading `pg_stats`, say — and tries again
    (`TestSweepFailsWhenTheVerificationTablesAreHeld`). Autovacuum is still on
-   for the catalog and vacuums its TOAST table on its own; when the run finds
-   that table held, it waits for it a tenth of a second at most, those requests
-   waiting with it, and then gives the catalog up and tries again too. Only a
+   for the catalog and vacuums its TOAST table on its own; while it does, the
+   look before each run leaves the catalog alone and the sweep tries again, and
+   if it takes that table after the look, the run waits for it a tenth of a
+   second at most, those requests waiting with it, and then gives the catalog
+   up and tries again too. Only a
    superuser or a role with the privileges of the database's owner may vacuum
    the catalog: the owner, or a member of the owner's role that inherits its
    privileges. Owning the tables is not enough, and nor is a membership that
@@ -416,9 +429,9 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    FROM pg_database WHERE datname = current_database()`, run as the sweeper's
    role, says whether it has that, and this has not been tried there yet.
 
-The sweep keeps at this for up to a minute. A session that holds a table, a
-lock its vacuum needs, or an old snapshot for longer than that — an export, a
-`psql` left in a transaction — fails the sweep, which exits non-zero
+The sweep keeps at this for up to a minute. A session that holds a table,
+something its vacuum would wait for, or an old snapshot for longer than that —
+an export, a `psql` left in a transaction — fails the sweep, which exits non-zero
 (`TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,
 `TestSweepFailsWhenTheVerificationTablesAreHeld`). It does not report success
 with the old rows still in the tables' files, or the old samples in
@@ -1390,14 +1403,21 @@ table, which VACUUM reports only as a warning; the sweep's connection asks for
 warnings itself, so a `client_min_messages` in `DATABASE_URL` or a role's
 default cannot make a moment's reader look like a role that may not vacuum the
 table (`TestSweepHearsVacuumsWarningsWhateverTheConnectionAsksFor`). Once it has
-a table it can still wait for another lock it needs — the table's row in
-`pg_class`, which a `GRANT` on the table holds until its transaction ends, or
-its TOAST table, which a `VACUUM` of that TOAST table by name holds, as
-autovacuum does `pg_statistic`'s (the verification tables' TOAST tables take
-their tables' `autovacuum_enabled = false`, so autovacuum comes to them only
-near transaction id wraparound, which the nightly `VACUUM FULL` keeps away) —
-but for a tenth of a second at most, with the requests that need the table
-waiting behind it; then it gives the table up and tries again later
+a table it can still wait for something else, holding the table while the
+requests that need it wait behind it: its TOAST table, which a `VACUUM` of that
+TOAST table by name holds, as autovacuum does `pg_statistic`'s (the
+verification tables' TOAST tables take their tables' `autovacuum_enabled =
+false`, so autovacuum comes to them only near transaction id wraparound, which
+the nightly `VACUUM FULL` keeps away); its row in `pg_class`, which an open
+`GRANT` or `REVOKE` on the table has updated; or one of its indexes, which an
+open `COMMENT ON INDEX` holds. It would wait for the last two only after
+copying the whole table, so a run then would hold those requests up for the
+whole copy and then give the table up, try after try. So before each run the
+sweep looks in `pg_locks` for another session holding any of these, and while
+one does it leaves the table alone and tries again later
+(`TestSweepRunsNoVacuumWhileItWouldWait`). One that begins during a run, after
+the look, the run waits for a tenth of a second at most before it gives the
+table up, and the next try's look sees it
 (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). A transaction left
 open on the database's own row — an `ALTER DATABASE`, or a `GRANT` on the
 database — does not hold it up: the step at the end of a `VACUUM` that waits
@@ -1412,12 +1432,14 @@ too. So the sweep takes a table only when the run can leave none of the old rows
 in its new file, which is not until the oldest transaction that began before the
 rewrite has ended; until then it waits, trying the cutoff on an empty table of
 its own (`vacuum_probe`) that holds nobody up. It keeps at that for a minute and
-then fails, so a session holding a table or an old snapshot for longer — an
-export, say — costs a failed run, which the Job's retry or the next night's run
-repeats, and for an old snapshot no run of `VACUUM FULL` on a verification table
-at all, rather than a site stalled again and again or a run that reports success
-with the old rows still in the tables' files. The run that succeeds still holds
-badged posts up for as long as it takes, once a night.
+then fails, so a session holding a table, something a run would wait for, or an
+old snapshot for longer — an export, a `GRANT` left open, say — costs a failed
+run, which the Job's retry or the next night's run repeats, but no run of
+`VACUUM FULL` on the table it holds up (for an old snapshot, on either
+verification table), rather than a site stalled again and again or a run that
+reports success with the old rows still in the tables' files. The run that
+succeeds still holds badged posts up for as long as it takes, once a night, and
+each holder that begins during a run costs a run more.
 
 It logs one line of counts (threads, posts, attachments, files removed, failed,
 and missing, and credentials rewritten) and nothing about which boards or
