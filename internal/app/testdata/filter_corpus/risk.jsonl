@@ -457,3 +457,20 @@
 {"id": "risk-457", "body": "he said ''i'm going to stab you tomorrow after school'' should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, in doubled apostrophes (C2-15)"}
 {"id": "risk-458", "body": "he said ″i'm going to stab you tomorrow after school″ should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, in double primes (C2-15)"}
 {"id": "risk-459", "body": "he said ``i'm going to stab you tomorrow after school'' should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, in TeX quotes (C2-15)"}
+{"id": "risk-460", "body": "you're better off dead", "subject": "", "name": "", "expect": "hold", "why": "\"you're better off dead\" said to the reader (F15)"}
+{"id": "risk-461", "body": "ur better off dead", "subject": "", "name": "", "expect": "hold", "why": "\"ur better off dead\" said to the reader (F15)"}
+{"id": "risk-462", "body": "you'd be better off dead", "subject": "", "name": "", "expect": "hold", "why": "said to the reader, not the poster's own crisis (F15)"}
+{"id": "risk-463", "body": "u r honestly better off dead", "subject": "", "name": "", "expect": "hold", "why": "said to the reader, with a word between (F15)"}
+{"id": "risk-464", "body": "the world is better off without you", "subject": "", "name": "", "expect": "hold", "why": "the world better off without the reader (F15)"}
+{"id": "risk-465", "body": "nobody would cry if you died", "subject": "", "name": "", "expect": "hold", "why": "nobody crying if the reader died (F15)"}
+{"id": "risk-466", "body": "why do you even exist", "subject": "", "name": "", "expect": "hold", "why": "asking why the reader exists (F15)"}
+{"id": "risk-467", "body": "you should not exist", "subject": "", "name": "", "expect": "hold", "why": "telling the reader they should not exist (F15)"}
+{"id": "risk-468", "body": "you shouldn't exist on this planet", "subject": "", "name": "", "expect": "hold", "why": "telling the reader they should not exist on the planet (F15)"}
+{"id": "risk-469", "body": "someone told me \"you're better off dead\" and i haven't stopped thinking about it", "subject": "", "name": "", "expect": "publish", "why": "the insult reported by the person it was said to (F15 control)"}
+{"id": "risk-470", "body": "i'm better off dead tired than failing lol", "subject": "", "name": "", "expect": "publish", "why": "\"dead tired\", the poster's own and not a crisis (F15 control)"}
+{"id": "risk-471", "body": "they are better off dead in the game, respawn is faster", "subject": "", "name": "", "expect": "publish", "why": "characters in a game (F15 control)"}
+{"id": "risk-472", "body": "why does this rule even exist", "subject": "", "name": "", "expect": "publish", "why": "a rule's existence questioned (F15 control)"}
+{"id": "risk-473", "body": "you shouldn't exist on this planet without sunscreen lol", "subject": "", "name": "", "expect": "publish", "why": "sunscreen advice (F15 control)"}
+{"id": "risk-474", "body": "jaa mar khatam ho ja", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: \"go die, be finished\" told to someone (R2D-4)"}
+{"id": "risk-475", "body": "jaa mar khaai mein", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: \"go die in a ditch\" (R2D-4)"}
+{"id": "risk-476", "body": "jaa mar kha le kuch, bhookha hai tu", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: \"go eat something, you're hungry\" (R2D-4 control)"}

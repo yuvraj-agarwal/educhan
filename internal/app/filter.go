@@ -3298,7 +3298,7 @@ var (
 	// myself a reminder", "overdose on caffeine") and routines ("take all my
 	// pills before breakfast").
 	methodActs = words(words(`hang`, `drown`, `poison`, `shoot`, `stab`, `electrocute`)+`~my~self`, `slit~my~wrists?`,
-		`overdose`, `od`, `take~all~(?:of~)?my~`+words(`pills`, `meds`, `tablets`, `medicines?`, `medications?`,
+		`overdose`, `od`, `suicide`, `take~all~(?:of~)?my~`+words(`pills`, `meds`, `tablets`, `medicines?`, `medications?`,
 			`sleeping~pills`), `jump~in~front~of~(?:a|the)~`+words(`train`, `bus`, `car`, `truck`, `lorry`, `metro`))
 	crisisActs = words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `not~wake~up`, `never~wake~up`,
 		`(?:go~to~)?sleep~and~`+words(`never`, `not`)+`~wake~up`, `not~be~here`, `disappear`, `end~it~all`, `end~my~life`, `end~it`, `end~myself`,
@@ -3313,6 +3313,24 @@ var (
 		`were~not`)+`~`+words(`alive`, `here`, `around`, `born`), words(`didn'?t`, `did~not`)+`~`+words(`exist`,
 		`wake~up`), `never~existed`, `never~woke~up`, `stopped~existing`, `disappeared`, `killed~my~self`,
 		`ended~it(?:~all)?`, `ended~my~life`, `took~my~(?:own~)?life`, `was~never~born`, `had~never~been~born`)
+	// plannedActs are what the poster says they are going to, planning to
+	// or have decided to do: "i'm going to kill myself", "planning to end
+	// my life", "decided to end it tonight".
+	plannedActs = words(`kill(?:ing)?~my~self`, `end(?:ing)?~it~all`,
+		`end(?:ing)?~my~life`, `end(?:ing)?~myself`, `end(?:ing)?~it`, `commit(?:ting)?~suicide`, `suicide`,
+		`tak(?:e|ing)~my~(?:own~)?life`, `hurt(?:ing)?~myself`, `cut(?:ting)?~myself`, `overdos(?:e|ing)`,
+		`jump(?:ing)?~off~(?:a|the)~`+words(`bridge`, `building`, `roof`, `cliff`),
+		words(`hang(?:ing)?`, `drown(?:ing)?`, `poison(?:ing)?`, `shoot(?:ing)?`, `stab(?:bing)?`)+`~my~self`,
+		`slit(?:ting)?~my~wrists?`, `tak(?:e|ing)~all~my~`+words(`pills`, `meds`, `tablets`), `od`)
+	// hinglishActs are ending one's life, and hinglishIntents wanting, meaning
+	// or being about to do it: "apni life end kar dunga", "zindagi khatam
+	// karna chahta hu", "suicide kar lu", "khudkushi karne ka mann hai".
+	hinglishActs = words(`(?:apni~)?life~end`, `(?:apni~)?`+words(`zindagi`, `zindgi`, `jindagi`)+`~`+
+		words(`khatam`, `khatm`, `khtm`, `end`), `suicide`, `khud~?kushi`, `khud~?khushi`)
+	hinglishIntents = words(words(`kar`, `kr`)+`~`+words(`dunga`, `dungi`, `doonga`, `doongi`, `lunga`, `lungi`,
+		`loonga`, `loongi`, `lu`, `loon`, `lun`, `lena~hai`), words(`karna`, `krna`)+`~`+words(`chahta`, `chahti`,
+		`chahte`, `hai`, `h`), words(`karne`, `krne`)+`~`+words(`ka`, `ki`)+`~`+words(`mann`, `man`, `dil`,
+		`ichha`, `iccha`, `irada`))
 	// drinkBleach is "drink bleach", "drink some bleach", "drink a glass of
 	// bleach".
 	drinkBleach = `drink~(?:` + words(`some`, `a~`+words(`cup`, `glass`, `bottle`, `mug`)+`~of`) + `~)?bleach`
@@ -3341,12 +3359,31 @@ var supportRules = []rule{bothViews(`\b` + words(
 	`i~wish~i~`+words(`could`, `would`, `can`, `'?d`)+`~(?:just~)?`+words(crisisActs, `never~been~born`),
 	`i~`+words(`'?m`, `am`, `m`)+`~(?:`+words(`so`, `just`, `honestly`, `really`)+`~)?ready~to~die`,
 	`i~(?:'?m|am|m)?~`+words(`going~to`, `gonna`, `gunna`, `about~to`, `ready~to`, `thinking~about`,
-		`thinking~of`, `planning~to`, `planning~on`)+`~`+words(`kill(?:ing)?~my~self`, `end(?:ing)?~it~all`,
-		`end(?:ing)?~my~life`, `end(?:ing)?~myself`, `end(?:ing)?~it`, `commit(?:ting)?~suicide`,
-		`tak(?:e|ing)~my~(?:own~)?life`, `hurt(?:ing)?~myself`, `cut(?:ting)?~myself`, `overdos(?:e|ing)`,
-		`jump(?:ing)?~off~(?:a|the)~`+words(`bridge`, `building`, `roof`, `cliff`),
-		words(`hang(?:ing)?`, `drown(?:ing)?`, `poison(?:ing)?`, `shoot(?:ing)?`, `stab(?:bing)?`)+`~my~self`,
-		`slit(?:ting)?~my~wrists?`, `tak(?:e|ing)~all~my~`+words(`pills`, `meds`, `tablets`), `od`),
+		`thinking~of`, `planning~to`, `planning~on`)+`~`+plannedActs,
+	// The same plan with the "I" left out, which ownSubject reads: "planning
+	// to end my life", "i've decided to end my life", "decided to end it
+	// tonight"; and the plan named: "i'm planning my suicide".
+	words(`planning~to`, `planning~on`, `planned~to`, `decided~to`, `deciding~to`, `decided~i'?m~going~to`,
+		`made~up~my~mind~to`)+`~`+plannedActs,
+	words(`planning`, `planned`, `plotting`)+`~my~(?:own~)?suicide`,
+	// "i should just die", "i deserve to die", "i don't deserve to live".
+	`i~(?:`+words(`really`, `honestly`, `literally`, `seriously`)+`~)?`+words(`should`, `shud`, `shld`, `deserve~to`)+
+		`~(?:just~)?die`,
+	`i~`+words(`don'?t`, `dont`, `do~not`)+`~(?:even~)?deserve~to~`+words(`live`, `be~alive`, `exist`),
+	// "i just want it all to end", "i want my life to end": supportCheck
+	// turns down a sentence about exams or an essay ending. A bare "want
+	// it to stop" is as often a headache, the rain or the drilling next
+	// door, and is not read.
+	words(`want`, `wanted`, `wanna`, `need`, `wish`)+`~`+words(`it~all`, `everything`, `my~life`, `this~life`,
+		`all~of~(?:this|it)`)+`~to~`+words(`end`, `stop`, `be~over`),
+	// "having thoughts of suicide", "suicide is the only option for me".
+	words(`having`, `have`, `had`, `get`, `getting`, `got`, `keep~having`)+`~(?:`+words(`these`, `the`, `some`,
+		`serious`, `constant`, `bad`, `dark`)+`~)?thoughts~`+words(`of`, `about`)+`~`+words(`suicide`,
+		`killing~my~self`, `ending~my~life`, `ending~it(?:~all)?`, `dying`),
+	`suicide~`+words(`is`, `'?s`, `seems~like`, `feels~like`, `looks~like`)+`~(?:`+words(`the`, `my`)+`~)?only~`+
+		words(`option`, `way~out`, `way`, `answer`, `choice`, `solution`, `escape`),
+	// "i give up on life", "giving up on living".
+	words(`give`, `gave`, `given`, `giving`)+`~up~on~`+words(`life`, `living`),
 	`i~`+words(`'?ll`, `will`, `wil`, `shall`, `might`, `may`, `could`)+`~(?:just~)?`+
 		words(`kill~my~self`, `end~it~all`, `end~my~life`, `commit~suicide`, `take~my~(?:own~)?life`, methodActs),
 	// Hoping or praying not to live: "i hope i die in my sleep", "i pray i
@@ -3374,6 +3411,7 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// poster as its subject and a time or nothing after it, and no essay
 	// or series being ended.
 	`ending~it(?:~all)?`, `gonna~`+words(`end~it(?:~all)?`, `kill~my~self`, methodActs),
+	`i~`+words(`'?ll`, `will`)+`~(?:just~)?`+words(`end~it(?:~all)?`, `end~my~life`),
 	// A suicide note, and "by the time you read this i'll be gone".
 	words(`written`, `wrote`, `writing`, `write`, `finished`, `left`, `leaving`)+`~my~suicide~`+words(`note`, `letter`),
 	`my~suicide~`+words(`note`, `letter`)+`~`+words(`is`, `'?s`)+`~`+words(`ready`, `done`, `written`, `finished`),
@@ -3417,8 +3455,11 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// "the urge to cut is so strong tonight": supportCheck turns down an
 	// object after "cut" ("the urge to cut my hair").
 	words(`urge`, `urges`)+`~to~`+words(`cut`, `self~harm`, `sh`, `hurt~myself`, `relapse`),
-	`i~`+words(`'?m`, `am`, `m`, `feel`, `feeling`, `felt`, `been`, `'?ve~been`, `have~been`, `get`, `got`)+
-		`~(?:(?:so|really|very|kinda|pretty|a~bit|super)~)?suicidal`,
+	// "i'm feeling suicidal", "been feeling so suicidal", "feeling
+	// suicidal tonight": with the "I" left out, ownSubject reads it.
+	`(?:i~)?`+words(`'?m`, `am`, `m`, `was`, `feel`, `feeling`, `felt`, `been`, `'?ve~been`, `have~been`, `get`, `got`,
+		`getting`, `keep~feeling`, `still~feel`, `still~feeling`)+`~(?:`+words(`feeling`, `getting`, `been~feeling`)+
+		`~)?(?:(?:so|really|very|kinda|pretty|a~bit|super|extremely|quite|lowkey)~)?suicidal`,
 	`suicidal~`+words(`thoughts`, `feelings`, `again`, `ideation`),
 	`(?:i~)?`+words(`don'?t`, `do~not`, `dont`, `dnt`)+`~(?:really~)?`+words(`want~to`, `wanna`, `wana`)+`~`+
 		words(`be~alive`, `live`, `exist`, `be~here~anymore`, `wake~up`),
@@ -3467,12 +3508,29 @@ var supportRules = []rule{bothViews(`\b` + words(
 		`starved`, `starving`, `starve`)+`~my~self`,
 	`self~harm(?:ing|ed)`,
 	words(`cutting`, `cut`)+`~again`,
+	// "i've been cutting my wrists again", "i cut my arm last night":
+	// supportCheck wants the poster doing it, and no accident.
+	words(`cut`, `cutting`)+`~my~`+words(`wrists?`, `arms?`, `thighs?`, `legs?`,
+		`skin`, `veins?`, `stomach`, `hips?`, `forearms?`, `ankles?`),
+	// "i scratch myself till i bleed", "i bang my head against the wall till
+	// it bleeds", "i hit myself when i'm stressed": supportCheck wants
+	// bleeding, bruises or distress in the sentence and no accident.
+	`i~(?:`+words(`'?ve~been`, `have~been`, `been`, `keep`, `kept`, `still`, `sometimes`, `always`, `often`, `just`,
+		`started`, `start`)+`~)?`+words(`scratch`, `scratched`, `scratching`, `hit`, `hitting`, `punch`, `punched`,
+		`punching`, `bang`, `banged`, `banging`, `slap`, `slapped`, `slapping`)+`~`+words(`my~self`, `myself`,
+		`my~head`),
+	// "i make myself throw up after meals".
+	words(`make`, `made`, `making`)+`~my~self~`+words(`throw~up`, `vomit`, `puke`, `sick`)+`(?:~after~`+
+		words(`meals?`, `eating`, `food`, `dinner`, `lunch`, `breakfast`, `i~eat`)+`)?`,
 	`nothing~(?:left~)?to~live~for`,
 	`better~off~dead`,
 	`i~wish~i~`+words(`was`, `were`)+`~dead`,
 	`i~wish~i~`+words(`wasn'?t`, `weren'?t`, `was~never`, `were~never`, `had~never~been`, `hadn'?t~been`)+
 		`~`+words(`born`, `alive`),
-	`everyone~`+words(`would`, `will`)+`~be~better~off~without~me`,
+	words(`everyone`, `everybody`, `everyone~else`, `the~world`, `this~world`, `my~family`, `my~parents`,
+		`my~friends`, `my~mom`, `my~mum`, `my~dad`, `my~class`)+`~`+words(`would`, `will`, `'?d`, `'?ll`, `is`, `are`,
+		`'?s`)+`~(?:all~)?(?:be~)?(?:`+words(`so~much`, `much`, `a~lot`, `way`)+`~)?`+words(`better~off`, `better`,
+		`happier`)+`~without~me`,
 	words(`nobody`, `no~one`, `noone`)+`~would~`+words(`miss`, `care~if`)+`~me`,
 	// Hinglish: "mujhe marna hai", "mujhe sach mein mar jaana hai",
 	// "suicide karna chahta hoon", "jeene ka mann nahi karta", "khud ko
@@ -3534,7 +3592,12 @@ var supportRules = []rule{bothViews(`\b` + words(
 		`karunga`, `karungi`)+
 		`(?:~`+words(`chahta`, `chahti`, `hai`, `h`)+`)?`,
 	words(`jeena`, `jina`)+`~`+words(`nahi`, `nhi`)+`~`+words(`chahta`, `chahti`, `hai`),
-	words(`marne`, `suicide~karne`, `suicide~krne`)+`~ka~(?:mann|man)~`+words(`hai`, `h`, `karta`, `karti`,
+	// "mujhe nahi jeena", "main ab nahi jeena chahti": supportCheck wants
+	// nothing after it but a time or a filler.
+	words(`nahi`, `nhi`)+`~`+words(`jeena`, `jina`)+`(?:~`+words(`chahta`, `chahti`, `chahte`, `hai`, `h`)+`)?`,
+	words(`jeene`, `jine`)+`~ki~`+words(`ichha`, `iccha`, `icchha`, `ichchha`, `khwahish`)+`~`+words(`nahi`, `nhi`),
+	hinglishActs+`~`+hinglishIntents,
+	words(`marne`, `suicide~karne`, `suicide~krne`, `khud~?kushi~karne`, `khud~?khushi~karne`)+`~ka~(?:mann|man)~`+words(`hai`, `h`, `karta`, `karti`,
 		`kar~raha`, `kar~rha`),
 ) + `\b`),
 	// With no "I", where a sentence, a line or a greentext line starts:
@@ -3583,6 +3646,17 @@ var selfHarmRules = []rule{bothViews(`\b` + words(
 	words(`nobody`, `no~one`, `noone`)+`~`+words(`would`, `will`, `'?d`, `is~gonna`, `is~going~to`)+
 		`~(?:even~)?`+words(`miss`, `care~if`)+`~`+words(`you`, `u`),
 	`(?:the~)?world~`+words(`would`, `will`)+`~be~better~(?:off~)?without~`+words(`you`, `u`),
+	// "you're better off dead", "you'd be better off dead" (selfHarmCheck
+	// reads the "you" before it), "why do you even exist", "you shouldn't
+	// exist", "nobody would cry if you died".
+	`better~off~dead`,
+	`why~`+words(`do`, `does`, `did`)+`~`+words(`you`, `u`, `ya`)+`~(?:`+words(`even`, `still`)+`~)?`+
+		words(`exist`, `live`, `breathe`),
+	words(`you`, `u`)+`~(?:`+words(`really`, `just`, `honestly`, `seriously`)+`~)?`+words(`should~not`, `shouldn'?t`,
+		`shouldnt`, `shudnt`, `should~never`)+`~(?:`+words(`even`, `have`)+`~)?`+words(`exist`, `existed`,
+		`been~born`, `be~alive`),
+	words(`nobody`, `no~one`, `noone`)+`~`+words(`would`, `will`, `'?d`)+`~(?:even~)?`+words(`cry`, `notice`)+`~`+
+		words(`if`, `when`)+`~`+words(`you`, `u`),
 	// Said of someone else: "OP should neck himself", "everyone crying about
 	// results should just kill themselves".
 	words(`should`, `shud`, `need~to`, `needs~to`, `ought~to`, `deserves?~to`, `can~go`, `must`, `gotta`, `better`)+
@@ -3646,8 +3720,9 @@ var selfHarmUrgeRules = []rule{
 		`obvious`) + `~)?` + words(`solution`, `option`, `answer`, `way~out`, `choice`, `cure`, `fix`) + `\b`),
 	// "the world would be better if you ended your life tonight".
 	bothViews(`\b` + words(`world`, `everyone`, `everybody`, `we`, `parents`, `family`, `mom`, `mum`, `dad`, `class`,
-		`board`, `school`, `earth`, `planet`, `society`, `everything`) + `~` + words(`would`, `will`, `'?d`) +
-		`~be~better~(?:off~)?` + words(`if~`+words(`you`, `u`)+`~`+words(`died`, `were~dead`, `was~dead`,
+		`board`, `school`, `earth`, `planet`, `society`, `everything`) + `~(?:` + words(`would`, `will`, `'?d`) +
+		`~(?:all~)?be|` + words(`is`, `are`, `'?s`) + `)~(?:all~)?(?:` + words(`so~much`, `much`, `way`) +
+		`~)?better~(?:off~)?` + words(`if~`+words(`you`, `u`)+`~`+words(`died`, `were~dead`, `was~dead`,
 		`ended~(?:your|ur)~life`, `ended~it`, `killed~(?:your|ur)~self`, `weren'?t~`+words(`here`, `alive`, `around`,
 			`born`), `didn'?t~exist`, `never~existed`, `disappeared`, `jumped`, `hanged~(?:your|ur)~self`,
 		`were~gone`), `without~`+words(`you`, `u`)) + `\b`),
@@ -3718,6 +3793,16 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		words(`die`, `kill~`+words(`my`, `your`, `ur`, `one`)+`~self`, `commit~suicide`,
 			`end~`+words(`my`, `your`, `one'?s`)+`~life`, `od`, `overdose`, `end~it(?:~all)?`, `go`),
 	`suicide~`+words(`method`, `methods`, `guide`, `instructions`, `tips`),
+	// Asked the way a search is: "ways to commit suicide", "methods of
+	// suicide", "easiest ways to die", "tips for purging". methodCheck
+	// wants nothing after a bare "die", "suicide" or "purging", or a way
+	// of dying ("painlessly"), so "ways to die in minecraft", "methods of
+	// suicide prevention" and "ways to die with dignity" in a novel are not.
+	words(`ways`, `methods`, `tips`, `techniques`, `tricks`)+`~`+words(`to`, `of`, `for`)+`~`+searchedMethods,
+	// "can you die from cutting your wrists": methodCheck wants "can you",
+	// "will i" or the like just before it.
+	`die~`+words(`from~`+words(`cutting`, `slitting`), `if~`+words(`i`, `you`, `u`)+`~`+words(`cut`, `slit`))+
+		`~(?:`+words(`my`, `your`, `ur`, `one'?s`, `the`, `their`)+`~)?wrists?`,
 	// "how deep should i cut"
 	`how~deep~`+words(`should`, `do`, `can`, `would`, `to`, `must`)+`~(?:`+words(`i`, `you`, `u`, `one`)+`~)?`+
 		`(?:`+words(`have`, `need`)+`~to~)?cut`,
@@ -3827,6 +3912,9 @@ var methods = words(
 	`end~it~all`,
 	`make~`+words(`my`, `your`)+`~self~`+words(`throw~up`, `vomit`, `puke`),
 	`purge~(?:after~)?`+words(`eating`, `meals?`, `food`, `dinner`, `lunch`, `breakfast`),
+	// "how to purge", with nothing after it or unseen ("without anyone
+	// knowing", "quietly"), which methodCheck reads.
+	`purge`,
 	`kill~`+words(`my`, `your`, `ur`, `them`, `one`)+`~sel(?:f|ves)`,
 	`commit~suicide`,
 	`end~`+words(`my`, `your`, `their`, `a`, `one'?s`)+`~life`,
@@ -3837,6 +3925,13 @@ var methods = words(
 	`starve~`+words(`my`, `your`)+`~self`,
 	words(`tie`, `make`)+`~(?:a~)?noose`,
 )
+
+// searchedMethods open what a search for ways, methods or tips asks after:
+// "ways to commit suicide", "methods of suicide", "ways to die painlessly",
+// "tips for purging". Only the first word is here, since every branch
+// planned copies it; searchedMethod reads the rest.
+var searchedMethods = words(`commit(?:ting)?`, `suicide`, `die`, `dying`, `kill(?:ing)?`, `end(?:ing)?`,
+	`overdos(?:e|ing)`, `od`, `purg(?:e|ing)`, `hang(?:ing)?`, `starv(?:e|ing)`, `self~harm(?:ing)?`)
 
 // hiddenMethods are asked after "how to" only, which is how they are asked:
 // slitting wrists, bleeding out, purging ("how to throw up after eating"),
@@ -9423,7 +9518,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		if (is(first, "self") || is(last, "again")) && !doneAgain(text, m, next) {
 			return false
 		}
-		if is(last, "self") || is(last, "myself") {
+		if is(last, "self") || is(last, "myself") || cutBodyParts[last] {
 			if hurtByAccident(next) {
 				return false
 			}
@@ -9443,11 +9538,12 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return false
 	case is(first, "suicidal") && len(ws) == 2 && !is(last, "again"):
 		// "suicidal thoughts aren't a character flaw" says what they are,
-		// not that the poster has them.
-		if len(next) > 0 && genericVerbs[next[0]] && !hasFirstPerson(wordsIn(clauseBefore(text, m[0]))) {
+		// not that the poster has them; "suicidal thoughts are back" does.
+		if len(next) > 0 && genericVerbs[next[0]] && !(len(next) > 1 && thoughtsReturn[next[1]]) &&
+			!hasFirstPerson(wordsIn(clauseBefore(text, m[0]))) {
 			return false
 		}
-	case reasonWords[first] && !is(first, "no") && !is(first, "nothing") && !is(first, "zero"):
+	case reasonWords[first] && !is(first, "no") && !is(first, "nothing") && !is(first, "zero") && !is(last, "me"):
 		if !futile(text, m[0]) {
 			return false
 		}
@@ -9455,7 +9551,7 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 	switch {
 	case is(last, "kms"):
 		return f.kmsCheck(v, m, next)
-	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && cutsSomethingElse(text, m, next):
+	case (hasWord(ws, "cut") || hasWord(ws, "cutting")) && cutsSomethingElse(text, m, ws, next):
 		return false
 	case is(last, "cut"):
 		return !cutObject(next)
@@ -9498,6 +9594,13 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 			len(next) == 0 && anyIn(wordsIn(sentenceAround(text, m[0], m[1])), heights)
 	case selfCompound(text, m[1]):
 		return false
+	case anyIn(ws, makeWords) && hasWord(ws, "myself") || anyIn(ws, makeWords) && hasWord(ws, "self"):
+		// "i make myself throw up after meals"; "make myself sick" only
+		// after a meal, not "with worry"; not "making myself throw up
+		// laughing". Read before livingWords, which has the "up" of
+		// "throw up" for "give up".
+		return ownSubject(text, m[0]) && (!is(last, "sick") || len(next) == 0) &&
+			!(len(next) > 0 && strings.HasSuffix(next[0], "ing") && !is(next[0], "eating"))
 	case livingWords[last] || is(last, "life") && hasWord(ws, "with") ||
 		is(last, "going") && len(next) > 0 && is(next[0], "to"):
 		// "keep going" is read like "go on" only with "to" after it: "keep
@@ -9510,6 +9613,15 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return false
 	case is(last, "myself") && anyIn(ws, burnWords) && nextIn(0, canonSetOf(`out`)):
 		return false // "burning myself out studying"
+	case anyIn(ws, hitSelfWords) && (is(last, "myself") || is(last, "self") || is(last, "head")):
+		// "i hit myself when i'm stressed", "till i bleed"; not "i hit
+		// myself on the door frame lol" or "i scratch myself when
+		// mosquitoes bite". Banging one's head is an idiom of frustration
+		// unless it bleeds or bruises: "banging my head against the wall
+		// over this proof, so stressed".
+		s := wordsIn(sentenceAround(text, m[0], m[1]))
+		return (anyIn(s, bleedSigns) || !is(last, "head") && anyIn(s, hurtSigns)) && !hurtByAccident(next) &&
+			!accidentAhead(next) && !(len(next) > 0 && (is(next[0], "on") || is(next[0], "into")))
 	case is(last, "die"):
 		// "ready to die for my country"; not "want to die for real".
 		if len(next) > 0 && is(next[0], "for") && !(len(next) > 1 && (is(next[1], "real") || is(next[1], "good"))) {
@@ -9522,11 +9634,31 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return false
 	case is(last, "myself") && (hasWord(ws, "hang") || hasWord(ws, "hanging")) && hangsFromABar(next):
 		return false
+	case wantWords[first] && (is(last, "end") || is(last, "stop") || is(last, "over")):
+		// "i just want it all to end", not "i just want it all to end, this
+		// exam season is brutal" or "i want everything to stop for a minute".
+		s := wordsIn(sentenceAround(text, m[0], m[1]))
+		return (len(next) == 0 || endItTimes[next[0]] || trailFillers[next[0]] || shrugs[next[0]]) &&
+			!anyIn(s, examsSleptAfter) && !anyIn(s, schoolWorkWords) && !anyIn(s, endedThings)
+	case is(last, "me") && hasWord(ws, "without"):
+		// "my family would be better off without me", not "without me
+		// hogging the tv".
+		return !(len(next) > 0 && strings.HasSuffix(next[0], "ing"))
+	case is(last, "life") && hasWord(ws, "up"):
+		// "i give up on life", not "i give up on life admin" or "chem
+		// homework done, i give up on life lol".
+		s := sentenceAround(text, m[0], m[1])
+		sw := wordsIn(s)
+		return livingCheck(text, m, ws, next) &&
+			!(anyIn(sw, schoolWorkWords) && (anyIn(sw, laughs) || strings.ContainsAny(s, "💀☠😂🤣")))
 	case is(last, "it") && (hasWord(ws, "end") || hasWord(ws, "ending")):
 		// "end it" is the end of something else unless nothing, or a time,
 		// comes after it: "i'm going to end it tonight", not "end it with her"
 		// or "ending it tonight with a final revision of organic chem".
-		return (len(next) == 0 || nextIn(0, endItTimes)) && !endsWithWork(next)
+		before, after := clausesBeside(text, m[0], m[1])
+		v.work += 2 * besideWindow
+		return (len(next) == 0 || nextIn(0, endItTimes)) && !endsWithWork(next) && !opensOnAnEnd(before) &&
+			!opensOnAnEnd(after)
 	case is(last, "things") && hasWord(ws, "ending") && nextIn(0, canonSetOf(`with between`)):
 		// "ending things with my boyfriend", but not "ending things with pills".
 		return !anyIn(next[1:min(len(next), 4)], partnerWords)
@@ -9569,7 +9701,12 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 			}
 		}
 	case is(first, "ending") || is(first, "gonna"):
-		return ownSubject(text, m[0]) && !r.postHas("endedThings", endedThings)
+		// "i'm ending it here, the essay is long enough": the clause beside
+		// it opens on what is ended, not "sorry for this post" or "too much
+		// drama at home".
+		before, after := clausesBeside(text, m[0], m[1])
+		v.work += 2 * besideWindow
+		return ownSubject(text, m[0]) && !opensOnAnEnd(before) && !opensOnAnEnd(after)
 	case is(first, "been") || is(first, "relapsed"):
 		return ownSubject(text, m[0])
 	case is(first, "clean"):
@@ -9580,11 +9717,44 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 			(ownSubject(text, m[0]) || anyIn(before, selfSubjects) || onlyADuration(before))
 	case is(first, "by"):
 		return !(len(next) > 0 && travelWords[next[0]])
+	case is(ws[len(ws)-1], "dead") && hasWord(ws, "off"):
+		// "you'd be better off dead" is said to the reader, a goad the
+		// self_harm rule holds, not the poster's own crisis.
+		return !anyIn(wordsIn(clauseBefore(text, m[0])), secondSubjects) && !(len(next) > 0 && deadIntensified[next[0]])
+	case thoughtsHad[first] && hasWord(ws, "thoughts") && len(next) > 0 && genericVerbs[next[0]]:
+		// "having thoughts of suicide is common" says what they are.
+		return false
+	case is(ws[len(ws)-1], "suicidal") && !selfSubjects[first] || planWords[first] || giveUpWords[first] ||
+		thoughtsHad[first] && hasWord(ws, "thoughts"):
+		// "feeling suicidal", "planning to end my life", "giving up on
+		// life", "having thoughts of suicide": the poster's only.
+		return ownSubject(text, m[0])
+	case is(first, "suicide") && len(ws) > 3:
+		// "suicide is the only option for me", not "for you" (a goad) or
+		// "for him".
+		s := wordsIn(sentenceAround(text, m[0], m[1]))
+		if anyIn(s, storyWords) || anyIn(s, writingWork) || anyIn(s, otherObjects) {
+			return false // "in the play, suicide is the only option left for the heroine"
+		}
+		return !anyIn(s, secondPerson) && !anyIn(s, readerWords) && (hasFirstPerson(s) || !anyIn(s, otherPeople) && !anyIn(s, otherSubjects))
+	case is(first, "nahi") || is(first, "nhi"):
+		// "mujhe nahi jeena", not "mujhe nahi jeena aise boring life mein
+		// bina chai ke lol".
+		for _, w := range next {
+			if !hindiLifeTails[w] {
+				return false
+			}
+		}
+		return !anyIn(sentence(), laughs)
 	case is(ws[len(ws)-1], "note") || is(ws[len(ws)-1], "letter") || len(ws) > 3 && is(ws[2], "note") ||
 		len(ws) > 3 && is(ws[2], "letter"):
-		return !r.postHas("writingWork", writingWork) && !r.postHas("story", storyWords)
+		// A note for a class or in a book, said so in its own clause: "the
+		// teacher made us analyse the suicide note in the play", not "i
+		// wrote my suicide note. nobody in my class will notice".
+		clause := append(wordsIn(clauseBefore(text, m[0])), wordsIn(clauseAfter(text, m[1]))...)
+		return !anyIn(clause, writingWork) && !anyIn(clause, storyWords)
 	case is(first, "life") || is(first, "my") && len(ws) > 1 && is(ws[1], "life"):
-		return !otherOwners[prev]
+		return !otherOwners[prev] && !hindiOthers[prev]
 	case is(first, "apni") || is(first, "jaan"):
 		// "tere liye jaan de dunga", and after it, "jaan de dunga is
 		// project ke liye".
@@ -9602,6 +9772,29 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 }
 
 var (
+	// planWords, giveUpWords and thoughtsHad open a support phrasing that
+	// needs the poster as its subject.
+	planWords = canonSetOf(`planning planned plotting decided deciding made`)
+	// hitSelfWords hurt oneself other than by cutting or burning, which
+	// supportCheck wants with hurtSigns in the sentence.
+	hitSelfWords = canonSetOf(`scratch scratched scratching hit hitting punch punched punching bang banged banging slap
+		slapped slapping`)
+	hurtSigns = canonSetOf(`bleed bleeds bleeding bled blood bloody bruise bruises bruised bruising marks scars stress
+		stressed anxious anxiety angry upset panic panicking overwhelmed hate punish punishment numb`)
+	bleedSigns = canonSetOf(`bleed bleeds bleeding bled blood bloody bruise bruises bruised bruising marks scars`)
+	makeWords  = canonSetOf(`make made making`)
+	// secondSubjects are the reader as the subject of a clause.
+	secondSubjects = canonSetOf(`you u ya yall y'all you're youre ur you'd youd u'd you'll youll r`)
+	giveUpWords    = canonSetOf(`give gave given giving`)
+	thoughtsHad    = canonSetOf(`having have had get getting got keep`)
+	// thoughtsReturn, after "suicidal thoughts are", say the poster has
+	// them: "are back", "are getting worse".
+	thoughtsReturn = canonSetOf(`back again worse bad so really getting coming creeping constant louder unbearable
+		everywhere returning killing`)
+	// hindiLifeTails may follow "nahi jeena": a time, "anymore" or a
+	// filler, nothing that names what life is not wanted like.
+	hindiLifeTails = canonSetOf(`ab abhi aur anymore yaar yar bas bus please pls plz sach mein me really
+		honestly bhai bro dost mujhe main`)
 	tookWords  = canonSetOf(`took taken swallowed downed popped`)
 	medRoutine = canonSetOf(`doctor doctors dr prescribed prescription dose dosage breakfast lunch dinner headache
 		headaches fever cold cough pain cramps migraine vitamin vitamins supplements routine usual daily`)
@@ -9614,9 +9807,15 @@ var (
 		story stories poem speech relationship situationship friendship contract streak episode episodes season
 		seasons movie movies film films show shows series book books novel novels anime manga scene scenes
 		character characters finale plot netflix drama serial webseries cartoon comic comics fanfic fiction`)
-	relapseWords = canonSetOf(`relapse relapsed relapsing`)
-	selfSubjects = canonSetOf(`i i'm im i've ive i'd i'll`)
-	travelWords  = canonSetOf(`to for on at in into`)
+	// endedLeads may come before what is ended at the start of a clause;
+	// endCauses after "end it with" are why; farewellPosts with "last" are
+	// a goodbye.
+	endedLeads    = canonSetOf(`the this that my our its last final next one a an of whole entire`)
+	endCauses     = canonSetOf(`results result marks mark grades grade scores score rank ranks percentile`)
+	farewellPosts = canonSetOf(`post posts message messages msg note letter goodbye`)
+	relapseWords  = canonSetOf(`relapse relapsed relapsing`)
+	selfSubjects  = canonSetOf(`i i'm im i've ive i'd i'll`)
+	travelWords   = canonSetOf(`to for on at in into`)
 	// writingWork is a suicide note written for a class or read in one.
 	writingWork = canonSetOf(`assignment essay essays english class creative writing poem prompt analyse analyze
 		play novel character`)
@@ -9653,36 +9852,125 @@ func hangsFromABar(next []string) bool {
 
 // cutsSomethingElse reports a cut that is of something named, short of the
 // object straight after it that cutObject reads: a session cut short ("i cut
-// last night's study session short"), or hair or nails in the sentence ("i
-// want to cut again, my bangs grew out").
-func cutsSomethingElse(text string, m []int, next []string) bool {
-	if anyIn(next[:min(len(next), 5)], cutShort) {
+// last night's study session short", "cut practice"), hair or nails cut ("cut
+// my bangs"), or, after a cut with nothing named, hair or nails in the
+// sentence ("i want to cut again, my bangs grew out"). A cut of the poster
+// ("cut myself", "cutting my wrists") is never something else, whatever is
+// round it ("after practice", "under my hair"), and nor is hair in an idiom
+// or a hiding place ("tearing my hair out", "hid it under my hair").
+func cutsSomethingElse(text string, m []int, ws, next []string) bool {
+	if anyIn(ws, selfCuts) || anyIn(ws, cutBodyParts) || cutOfTheBody(next) {
+		return false
+	}
+	if hasWord(next[:min(len(next), 5)], "short") {
 		return true
 	}
-	return anyIn(wordsIn(sentenceAround(text, m[0], m[1])), groomed)
+	object := next
+	if len(object) > 1 && cutDets[object[0]] {
+		object = object[1:]
+	}
+	if len(object) > 0 && (cutShort[object[0]] || groomed[object[0]]) {
+		return true
+	}
+	sentence := wordsIn(sentenceAround(text, m[0], m[1]))
+	for i, w := range sentence {
+		if groomed[w] && !anyIn(sentence[max(0, i-3):i], hairIdioms) {
+			return true
+		}
+	}
+	return false
+}
+
+// cutOfTheBody reports a part of the poster's body cut, named after "cut":
+// "my wrists", "my arm".
+func cutOfTheBody(next []string) bool {
+	return len(next) > 1 && is(next[0], "my") && cutBodyParts[next[1]]
 }
 
 // endsWithWork reports "end it" or "ending it" with a piece of school work or
 // something watched: "ending it tonight with a final revision of organic
-// chem", "end it with a question", not "with pills".
+// chem", "end it with a question", not "with pills". Results or marks after
+// "with" are why, not what ("end it tonight with these results"), and a
+// last post is a goodbye ("ending it tonight with one last post").
 func endsWithWork(next []string) bool {
 	for i, w := range next {
 		if is(w, "with") {
 			later := next[i+1 : min(len(next), i+6)]
+			if anyIn(later, endCauses) || hasWord(later, "last") && anyIn(later, farewellPosts) {
+				return false
+			}
 			return anyIn(later, schoolWorkWords) || anyIn(later, endedThings) || anyIn(later, revisionWords)
 		}
 	}
 	return false
 }
 
+// opensOnAnEnd reports a clause that opens on what "ending it" ends, past
+// its determiners: "the essay is long enough", "this series has dragged on",
+// "last episode of the series".
+func opensOnAnEnd(ws []string) bool {
+	for _, w := range ws[:min(len(ws), 4)] {
+		if endedThings[w] {
+			return true
+		}
+		if !endedLeads[w] {
+			return false
+		}
+	}
+	return false
+}
+
+// besideWindow is how far clausesBeside reads each way.
+const besideWindow = 120
+
+// clausesBeside returns the words of the clause before the one at text[a:b]
+// and of the clause after it, within its sentence and besideWindow bytes.
+func clausesBeside(text string, a, b int) (before, after []string) {
+	s := text[max(0, a-besideWindow):a]
+	if i := strings.LastIndexAny(s, ".!?\n"); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.LastIndexAny(s, ",;:"); i >= 0 {
+		s = s[:i]
+		if j := strings.LastIndexAny(s, ",;:"); j >= 0 {
+			s = s[j+1:]
+		}
+		before = wordsIn(s)
+	}
+	t := text[b:min(len(text), b+besideWindow)]
+	if i := strings.IndexAny(t, ".!?\n"); i >= 0 {
+		t = t[:i]
+	}
+	if i := strings.IndexAny(t, ",;:"); i >= 0 {
+		t = t[i+1:]
+		if j := strings.IndexAny(t, ",;:"); j >= 0 {
+			t = t[:j]
+		}
+		after = wordsIn(t)
+	}
+	return before, after
+}
+
 var (
+	// eatWords are "eat" in Hinglish, said whole: "jaa mar kha le", not
+	// "khatam" (finish) or "khaai" (a ditch).
+	eatWords      = canonSetOf(`kha khale khaa khao khana khaana khaake khake khaale`)
 	durationUnits = canonSetOf(`day days week weeks month months year years yr yrs`)
 	durationWords = canonSetOf(`a an one two three four five six seven eight nine ten eleven twelve few couple of
 		almost nearly over about around like half whole full`)
-	hangPlaces    = canonSetOf(`from on off by`)
-	hangBars      = canonSetOf(`bar bars rings ring monkey pull pullup chinup chin jungle gym trapeze`)
-	cutShort      = canonSetOf(`short session sessions nap trip practice`)
-	groomed       = canonSetOf(`hair hairs bangs fringe nails nail beard mullet layers`)
+	hangPlaces = canonSetOf(`from on off by`)
+	hangBars   = canonSetOf(`bar bars rings ring monkey pull pullup chinup chin jungle gym trapeze`)
+	cutShort   = canonSetOf(`session sessions nap trip practice`)
+	groomed    = canonSetOf(`hair hairs bangs fringe nails nail beard mullet layers`)
+	// selfCuts make a cut the poster's; cutDets may come before what is
+	// cut; cutBodyParts are where on themselves; hairIdioms, before hair,
+	// make it no haircut ("tearing my hair out", "under my hair").
+	selfCuts     = canonSetOf(`myself meself mysef`)
+	cutDets      = canonSetOf(`the my our this that today's tonight's tomorrow's a`)
+	cutBodyParts = canonSetOf(`wrist wrists arm arms thigh thighs leg legs skin vein veins stomach hip hips
+		forearm forearms ankle ankles`)
+	hairIdioms = canonSetOf(`pull pulling pulled tear tearing tore rip ripping under behind hide hid hiding cover
+		covering through`)
 	revisionWords = canonSetOf(`revision revisions revise revising notes flashcards question questions problem problems
 		chapter syllabus chem physics maths math bio biology history`)
 	// sleepUntil and examsSleptAfter: "sleep forever after the last exam".
@@ -9695,7 +9983,7 @@ var (
 // down on sugar", "cut 5 kg", "cut the video". With nothing named, or
 // "again" or "so bad" after it, the cut is the poster's own.
 func cutObject(next []string) bool {
-	if len(next) == 0 {
+	if len(next) == 0 || cutOfTheBody(next) {
 		return false
 	}
 	return isASCIIDigit(next[0][0]) || cutObjects[next[0]]
@@ -10269,7 +10557,7 @@ var (
 	dyeThings     = canonSetOf(`hair clothes shirt shirts jeans hoodie tshirt dress`)
 	describes     = canonSetOf(`is isn't isnt was looks look looked sucks so too 's are`)
 	livingWords   = canonSetOf(`live living exist up on`)
-	lifeTopics    = canonSetOf(`science sciences skills skill insurance cycle cycles style styles span coach coaching lessons lesson hacks goals choices story stories partner expectancy support`)
+	lifeTopics    = canonSetOf(`admin science sciences skills skill insurance cycle cycles style styles span coach coaching lessons lesson hacks goals choices story stories partner expectancy support`)
 	livingPlaces  = canonSetOf(`in with on at there here near abroad without together alone by like tomorrow today tonight next this until after before during for early late`)
 	livingCues    = []string{"anymore", "any more", "like this", "this world", "this life"}
 	dontWords     = canonSetOf(`don't dont dnt do`)
@@ -10521,8 +10809,8 @@ func selfHarmCheck(v *view, m []int) bool {
 		// "just end it" and "you should end it" are a relationship, an
 		// argument or a series as often: only with nothing but a shrug
 		// after it, and none of those before or after it.
-		if !onlyShrugs(next) || anyIn(wordsIn(text[max(0, m[0]-120):m[0]]), endItOthers) ||
-			anyIn(wordsIn(text[m[1]:min(len(text), m[1]+120)]), endItOthers) || namesWhatIsEnded(text, m) {
+		if !onlyShrugs(next) || endsSomethingElse(wordsIn(text[max(0, m[0]-120):m[0]])) ||
+			endsSomethingElse(wordsIn(text[m[1]:min(len(text), m[1]+120)])) || namesWhatIsEnded(text, m) {
 			return false
 		}
 	case is(last, "starve") || is(last, "eating"):
@@ -10543,7 +10831,7 @@ func selfHarmCheck(v *view, m []int) bool {
 		// "ja mar gaya" is "died", told; "jaa mar kha le" is a beating taken
 		// ("maar khana") or "go on, eat first".
 		if nextIn(0, diedWords) || len(ws) == 2 && len(next) > 0 && strings.HasPrefix(next[0], "gay") ||
-			len(next) > 0 && strings.HasPrefix(next[0], "kha") {
+			nextIn(0, eatWords) {
 			return false
 		}
 	case is(first, "take") && nextIn(0, pillRoutine) && !(is(next[0], "at") && len(next) > 1 && is(next[1], "once")):
@@ -10554,8 +10842,30 @@ func selfHarmCheck(v *view, m []int) bool {
 		return false
 	case is(last, "deeper") && nextIn(0, deeperObjects):
 		return false
-	case hasWord(ws, "miss") || hasWord(ws, "care"):
+	case hasWord(ws, "miss") || hasWord(ws, "care") || hasWord(ws, "cry") || hasWord(ws, "notice"):
 		return caresIfYouDie(next)
+	case is(last, "exist") || is(last, "live") || is(last, "breathe") || is(last, "existed") || is(last, "born") ||
+		is(last, "alive"):
+		// "why do you even exist", "you shouldn't exist (on this planet)";
+		// not "why do you live in delhi", "exist in the database" or "you
+		// shouldn't exist on this planet without sunscreen".
+		if onlyShrugs(next) {
+			return true
+		}
+		if len(next) < 2 || !is(next[0], "on") && !is(next[0], "in") {
+			return false
+		}
+		for j := 1; j < min(len(next), 4); j++ {
+			if earthWords[next[j]] {
+				return onlyShrugs(next[j+1:])
+			}
+		}
+		return false
+	case is(last, "dead") && hasWord(ws, "better"):
+		// "you're better off dead", "u r honestly better off dead"; not
+		// "i'd be better off dead", the poster's own, or "better off dead
+		// tired than hungover".
+		return youBefore(wordsIn(clauseBefore(text, m[0]))) && !nextIn(0, deadIntensified)
 	}
 	if prev := wordsIn(clauseBefore(text, m[0])); len(prev) > 0 && len(next) > 0 && strings.HasSuffix(next[0], "ing") {
 		p := prev[len(prev)-1]
@@ -10579,6 +10889,24 @@ func selfHarmCheck(v *view, m []int) bool {
 	}
 	return true
 }
+
+// youBefore reports the words of the clause before "better off dead"
+// saying it of the reader: "you're", "you'd be", "u r honestly", "you
+// are", with at most four words such as "be", "really" or "so much" after
+// it.
+func youBefore(prev []string) bool {
+	k := len(prev)
+	for n := 0; k > 0 && n < 4 && betterFillers[prev[k-1]]; n++ {
+		k--
+	}
+	return k > 0 && (youForms[prev[k-1]] || k > 1 && is(prev[k-1], "r") && is(prev[k-2], "u"))
+}
+
+var (
+	youForms      = canonSetOf(`you u ur you're youre you'd youd u'd ud ya`)
+	betterFillers = canonSetOf(`be are would will honestly really all probably literally seriously just so much way`)
+	earthWords    = canonSetOf(`planet earth world`)
+)
 
 // urgeCheck vets a selfHarmUrgeRules match. The acts need a frame that
 // says them to someone (urgeFramed); what judges the act itself needs it
@@ -10646,7 +10974,8 @@ func urgeCheck(v *view, m []int) bool {
 			hasWord(ws, "cure") || hasWord(ws, "fix") || hasWord(ws, "out") && hasWord(ws, "way") {
 			return anyIn(sentence, secondPerson) || anyIn(sentence, othersWords)
 		}
-		return true
+		// "better off without you know who's tweets" is no "you".
+		return !(len(next) > 0 && is(next[0], "know") && (is(last, "you") || is(last, "u")))
 	case is(first, "zeher") || is(first, "zehar") || is(first, "zahar") || is(first, "jeher") || is(first, "zaher") ||
 		is(first, "apni") || strings.HasPrefix(first, "mar"):
 		return true
@@ -12280,8 +12609,11 @@ func methodCheck(v *view, m []int) bool {
 		return !anyIn(ws, medicalWords) && !anyIn(ws, ailments)
 	case is(first, "how") && (is(ws[1], "many") || is(ws[1], "much")), is(first, "what") && doseWords[ws[1]]:
 		// The medicine may be named before the question: "paracetamol, how
-		// many to die?".
-		return namesAMedicine(v, sentenceAround(text, m[0], m[1])) || hasFirstPerson(ws)
+		// many to die?"; or a height asked in floors: "how many floors to
+		// die".
+		sentence := sentenceAround(text, m[0], m[1])
+		return namesAMedicine(v, sentence) || hasFirstPerson(ws) ||
+			is(ws[1], "many") && anyIn(wordsIn(sentence), heightUnits) && fallFatal(wordsIn(sentence))
 	case is(first, "lethal") || is(first, "fatal") || is(first, "deadly"):
 		sentence := sentenceAround(text, m[0], m[1])
 		sws := wordsIn(sentence)
@@ -12341,6 +12673,18 @@ func methodCheck(v *view, m []int) bool {
 			return false
 		}
 		return anyIn(wordsIn(sentenceAround(text, m[0], m[1])), methodAsks) || questionAfter(text, m[1])
+	case is(first, "die") && (is(ws[len(ws)-1], "wrist") || is(ws[len(ws)-1], "wrists")):
+		// "can you die from cutting your wrists", not "you can die from
+		// cutting your wrists, so" or "on a tin can".
+		return dieAsked(wordsBefore(text, m[0], 3)) && !hurtByAccident(next) && !accidentAhead(next)
+	case len(ws) == 3 && searchKinds[first] && (is(ws[1], "to") || is(ws[1], "of") || is(ws[1], "for")):
+		return searchedMethod(ws[2], next)
+	case is(ws[len(ws)-1], "purge") || is(ws[len(ws)-1], "purging") ||
+		searchWays[first] && (is(ws[len(ws)-1], "die") || is(ws[len(ws)-1], "dying") || is(ws[len(ws)-1], "suicide")):
+		// "how to purge", "easiest way to die", with nothing after it: not
+		// "how to purge the nginx cache" or "the best way to die with
+		// dignity"; "how to purge" also unseen, "without anyone knowing".
+		return len(next) == 0 || onlyShrugs(next) || is(ws[len(ws)-1], "purge") && unseenAfter(next)
 	case is(ws[len(ws)-1], "go"):
 		// "the most painless way to go", with nowhere to go to after it.
 		return len(next) == 0 && (hasWord(ws, "painless") || hasWord(ws, "painful"))
@@ -12380,7 +12724,83 @@ func doseAsked(text string, m []int, sentence string, sws []string) bool {
 	return !anyIn(wordsIn(rest), doseStatements)
 }
 
+// searchedMethod reads what a search for ways, methods or tips asks after,
+// from its first word w and the words after it: "ways to die", with nothing
+// after it or a way of dying ("painlessly", "in my sleep"), "methods of
+// suicide" with nothing after it, and "tips for killing myself", "ending my
+// life", "ending it all", "hanging myself", "starving myself" and "self
+// harm"; not "ways to die in minecraft", "methods of suicide prevention",
+// "ways to kill time" or "tips for ending the essay".
+func searchedMethod(w string, next []string) bool {
+	nothing := len(next) == 0 || onlyShrugs(next)
+	self := len(next) > 0 && (selfObjects[next[0]] || len(next) > 1 && possessives[next[0]] && is(next[1], "self"))
+	switch {
+	case is(w, "die"):
+		return nothing || dyingWays[next[0]] || len(next) > 1 && is(next[0], "without") && is(next[1], "pain") ||
+			len(next) > 2 && is(next[0], "in") && possessives[next[1]] && is(next[2], "sleep")
+	case is(w, "dying") || is(w, "suicide") || is(w, "purge") || is(w, "purging"):
+		return nothing
+	case is(w, "commit") || is(w, "committing"):
+		return len(next) > 0 && is(next[0], "suicide")
+	case is(w, "end") || is(w, "ending"):
+		return len(next) > 1 && (possessives[next[0]] || is(next[0], "one's") || is(next[0], "ones")) &&
+			is(next[1], "life") || len(next) > 1 && is(next[0], "it") && is(next[1], "all")
+	case is(w, "kill") || is(w, "killing") || is(w, "hang") || is(w, "hanging") || is(w, "starve") ||
+		is(w, "starving"):
+		return self
+	}
+	return true
+}
+
+// unseenAfter reports the words after a method saying it is to go unseen:
+// "quietly", "without anyone knowing", "without my parents noticing".
+func unseenAfter(next []string) bool {
+	if len(next) > 0 && unseenWays[next[0]] {
+		return true
+	}
+	if len(next) < 3 || !is(next[0], "without") {
+		return false
+	}
+	k := 1
+	if possessives[next[1]] {
+		k = 2
+	}
+	return len(next) > k+1 && unseenBy[next[k]] && unseenVerbs[next[k+1]]
+}
+
+// dieAsked reports the words before "die", nearest first, asking it: "can
+// you", "will i", "could a person".
+func dieAsked(before []string) bool {
+	if len(before) >= 3 && is(before[0], "person") && is(before[1], "a") {
+		return dieAsks[before[2]]
+	}
+	return len(before) >= 2 && dieSubjects[before[0]] && dieAsks[before[1]]
+}
+
 var (
+	// searchKinds are what a search asks for: "ways to", "tips for".
+	searchKinds = canonSetOf(`ways methods tips techniques tricks`)
+	// dyingWays are ways of dying a search asks for: "ways to die painlessly".
+	dyingWays = canonSetOf(`painlessly quickly fast peacefully`)
+	// selfObjects and possessives make a method one's own: "kill myself",
+	// "end my life", "hang my self".
+	selfObjects = canonSetOf(`myself yourself oneself urself`)
+	possessives = canonSetOf(`my your ur`)
+	// unseenWays, unseenBy and unseenVerbs make a method unseen: "how to
+	// purge quietly", "without my roommates hearing".
+	unseenWays  = canonSetOf(`quietly secretly silently`)
+	unseenBy    = canonSetOf(`anyone anybody parents family people roommate roommates`)
+	unseenVerbs = canonSetOf(`knowing noticing hearing finding`)
+	// dieAsks and dieSubjects ask whether one would die: "can you", "will i".
+	dieAsks     = canonSetOf(`can will would could`)
+	dieSubjects = canonSetOf(`i you u someone`)
+	// searchWays open a method asked the way a search is: "ways to",
+	// "easiest methods of", "tips for".
+	searchWays = canonSetOf(`painless easiest easy quickest quick best fastest surest least good simple effective ways
+		methods tips techniques tricks`)
+	// heightUnits make a how-many question one about a height: "how many
+	// floors to die".
+	heightUnits = canonSetOf(`floors floor stories storeys storey metres meters feet ft`)
 	// selfWords are the poster as a subject or an object, not as an owner:
 	// "lethal dose for me", not "my pharm notes".
 	selfWords = canonSetOf(`i i'm im i'll i'd i've ive me myself`)

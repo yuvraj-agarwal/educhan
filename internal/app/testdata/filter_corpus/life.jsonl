@@ -334,3 +334,94 @@
 {"id": "life-334", "body": "lethal dose of paracetamol for me? i weigh 50kg", "subject": "", "name": "", "expect": "hold", "why": "the poster's own dose asked for (R2P-LETHAL-DOSE-ACADEMIC control)"}
 {"id": "life-335", "body": "whats the lethal dose of ibuprofen", "subject": "", "name": "", "expect": "hold", "why": "a dose asked for with \"what's\" (R2P-LETHAL-DOSE-ACADEMIC control)"}
 {"id": "life-336", "body": "i need to know the lethal dose of paracetamol", "subject": "", "name": "", "expect": "hold", "why": "the poster asking for a dose (R2P-LETHAL-DOSE-ACADEMIC control)"}
+{"id": "life-337", "body": "i'm feeling suicidal", "subject": "", "name": "", "expect": "support", "why": "feeling suicidal, with the \"I\" a word further back than \"i feel suicidal\" (F1)"}
+{"id": "life-338", "body": "i've been feeling suicidal lately", "subject": "", "name": "", "expect": "support", "why": "feeling suicidal, in the perfect (F1)"}
+{"id": "life-339", "body": "feeling really suicidal tonight", "subject": "", "name": "", "expect": "support", "why": "feeling suicidal with the \"I\" left out (F1)"}
+{"id": "life-340", "body": "i want to suicide", "subject": "", "name": "", "expect": "support", "why": "\"suicide\" used as a verb, as Indian English has it (F1)"}
+{"id": "life-341", "body": "i will suicide", "subject": "", "name": "", "expect": "support", "why": "\"suicide\" as a verb, said as a plan (F1)"}
+{"id": "life-342", "body": "i'm planning my suicide", "subject": "", "name": "", "expect": "support", "why": "the poster's own suicide named as their plan (F1)"}
+{"id": "life-343", "body": "suicide is the only option for me", "subject": "", "name": "", "expect": "support", "why": "suicide named as the poster's only option (F1)"}
+{"id": "life-344", "body": "i've been having thoughts of suicide", "subject": "", "name": "", "expect": "support", "why": "the poster having thoughts of suicide (F1)"}
+{"id": "life-345", "body": "suicidal thoughts are back", "subject": "", "name": "", "expect": "support", "why": "suicidal thoughts said to have come back, the poster's own (F1)"}
+{"id": "life-346", "body": "my friend is feeling suicidal, how do i help her", "subject": "", "name": "", "expect": "publish", "why": "a friend's feelings, asked about by someone helping (F1 control)"}
+{"id": "life-347", "body": "suicidal thoughts are common in teens, the helpline is free", "subject": "", "name": "", "expect": "publish", "why": "says what suicidal thoughts are, not that the poster has them (F1 control)"}
+{"id": "life-348", "body": "the character in the novel was planning his suicide for chapters", "subject": "", "name": "", "expect": "publish", "why": "a character's plan in a novel (F1 control)"}
+{"id": "life-349", "body": "i should just die", "subject": "", "name": "", "expect": "support", "why": "the poster saying they should die (F2)"}
+{"id": "life-350", "body": "i deserve to die", "subject": "", "name": "", "expect": "support", "why": "the poster saying they deserve to die (F2)"}
+{"id": "life-351", "body": "i don't deserve to live", "subject": "", "name": "", "expect": "support", "why": "the poster saying they do not deserve to live (F2)"}
+{"id": "life-352", "body": "i just want it all to end", "subject": "", "name": "", "expect": "support", "why": "wanting it all to end, with nothing else named (F2)"}
+{"id": "life-353", "body": "i want my life to end", "subject": "", "name": "", "expect": "support", "why": "wanting their life to end (F2)"}
+{"id": "life-354", "body": "planning to end my life", "subject": "", "name": "", "expect": "support", "why": "a plan to end their life with the \"I\" left out (F2)"}
+{"id": "life-355", "body": "decided to end my life tonight", "subject": "", "name": "", "expect": "support", "why": "a decision to end their life, with the \"I\" left out (F2)"}
+{"id": "life-356", "body": "the world would be better without me", "subject": "", "name": "", "expect": "support", "why": "the world better without the poster (F2)"}
+{"id": "life-357", "body": "my parents would be better off without me", "subject": "", "name": "", "expect": "support", "why": "the poster's parents better off without them (F2)"}
+{"id": "life-358", "body": "i give up on life", "subject": "", "name": "", "expect": "support", "why": "giving up on life, said of themselves (F2)"}
+{"id": "life-359", "body": "i should just die of embarrassment lol", "subject": "", "name": "", "expect": "publish", "why": "an idiom of embarrassment (F2 control)"}
+{"id": "life-360", "body": "i just want it all to end, this exam season is brutal", "subject": "", "name": "", "expect": "publish", "why": "wanting an exam season over (F2 control)"}
+{"id": "life-361", "body": "the world would be better without plastic", "subject": "", "name": "", "expect": "publish", "why": "the world better without plastic, not without the poster (F2 control)"}
+{"id": "life-362", "body": "i give up on life admin, my inbox is a mess", "subject": "", "name": "", "expect": "publish", "why": "\"life admin\" given up on (F2 control)"}
+{"id": "life-363", "body": "decided to end it with my boyfriend", "subject": "", "name": "", "expect": "publish", "why": "a relationship ended (F2 control)"}
+{"id": "life-364", "body": "planning to end my subscription to netflix", "subject": "", "name": "", "expect": "publish", "why": "a subscription ended (F2 control)"}
+{"id": "life-365", "body": "main apni life end kar dunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I will end my life\" (F3)"}
+{"id": "life-366", "body": "apni life end karna chahta hu", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I want to end my life\" (F3)"}
+{"id": "life-367", "body": "mann karta hai suicide kar lu", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I feel like killing myself\" (F3)"}
+{"id": "life-368", "body": "main ab nahi jeena chahti", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I don't want to live any more\" (F3)"}
+{"id": "life-369", "body": "khudkushi karne ka mann hai", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I feel like committing suicide\" (F3)"}
+{"id": "life-370", "body": "zindagi khatam karna chahta hu", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I want to end my life\" (F3)"}
+{"id": "life-371", "body": "jeene ki ichha nahi hai", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I have no wish to live\" (F3)"}
+{"id": "life-372", "body": "mujhe nahi jaana tuition aaj", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: not wanting to go to tuition (F3 control)"}
+{"id": "life-373", "body": "uski life end kar di us movie ne lol", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: a film that \"ended\" someone's life, a joke about a film (F3 control)"}
+{"id": "life-374", "body": "ye chapter khatam karna chahta hu aaj raat", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: wanting to finish a chapter tonight (F3 control)"}
+{"id": "life-375", "body": "nahi jeena aise exams ke saath lol", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: a joke about exams, not about living (F3 control)"}
+{"id": "life-376", "body": "i scratch myself till i bleed", "subject": "", "name": "", "expect": "support", "why": "scratching themselves until they bleed (F16)"}
+{"id": "life-377", "body": "i hit myself when i'm stressed", "subject": "", "name": "", "expect": "support", "why": "hitting themselves when stressed (F16)"}
+{"id": "life-378", "body": "i punch myself when i get angry", "subject": "", "name": "", "expect": "support", "why": "punching themselves (F16)"}
+{"id": "life-379", "body": "i bang my head against the wall till it bleeds", "subject": "", "name": "", "expect": "support", "why": "banging their head until it bleeds (F16)"}
+{"id": "life-380", "body": "i make myself throw up after meals", "subject": "", "name": "", "expect": "support", "why": "making themselves throw up after meals (F16)"}
+{"id": "life-381", "body": "i've been making myself throw up after eating", "subject": "", "name": "", "expect": "support", "why": "making themselves throw up after eating (F16)"}
+{"id": "life-382", "body": "i bang my head against the wall trying to understand recursion", "subject": "", "name": "", "expect": "publish", "why": "the idiom of frustration, with no bleeding or bruise (F16 control)"}
+{"id": "life-383", "body": "i hit myself on the door frame lol", "subject": "", "name": "", "expect": "publish", "why": "an accident on a door frame (F16 control)"}
+{"id": "life-384", "body": "i scratch myself when mosquitoes bite, any cream?", "subject": "", "name": "", "expect": "publish", "why": "scratching bites (F16 control)"}
+{"id": "life-385", "body": "i keep making myself throw up laughing at this meme", "subject": "", "name": "", "expect": "publish", "why": "\"throw up laughing\" at a meme (F16 control)"}
+{"id": "life-386", "body": "i make myself sick with worry before exams", "subject": "", "name": "", "expect": "publish", "why": "sick with worry, not after a meal (F16 control)"}
+{"id": "life-387", "body": "i cut myself again after practice", "subject": "", "name": "", "expect": "support", "why": "cutting themselves, with practice named after it (R2D-1)"}
+{"id": "life-388", "body": "i cut myself last night after the trip", "subject": "", "name": "", "expect": "support", "why": "cutting themselves, with a trip named after it (R2D-1)"}
+{"id": "life-389", "body": "I've been cutting myself again and pulling my hair out", "subject": "", "name": "", "expect": "support", "why": "cutting themselves, with hair named in the sentence (C2-6)"}
+{"id": "life-390", "body": "i want to cut myself, i hate my hair and my face", "subject": "", "name": "", "expect": "support", "why": "wanting to cut themselves, with hair named (C2-6)"}
+{"id": "life-391", "body": "i cut myself again last night and hid the marks under my hair", "subject": "", "name": "", "expect": "support", "why": "cutting themselves and hiding the marks under their hair (C2-6)"}
+{"id": "life-392", "body": "i relapsed and cut again last night after practice", "subject": "", "name": "", "expect": "support", "why": "cutting again with no hair or nails named, after practice (R2D-1)"}
+{"id": "life-393", "body": "cut practice short today because of rain", "subject": "", "name": "", "expect": "publish", "why": "practice cut short (R2D-1 control)"}
+{"id": "life-394", "body": "i'm cutting my hair myself tonight, wish me luck", "subject": "", "name": "", "expect": "publish", "why": "cutting their own hair (C2-6 control)"}
+{"id": "life-395", "body": "i cut my nails too short and now typing hurts", "subject": "", "name": "", "expect": "publish", "why": "nails cut too short (C2-6 control)"}
+{"id": "life-396", "body": "i want to cut my wrists", "subject": "", "name": "", "expect": "support", "why": "wanting to cut their wrists (C2-5)"}
+{"id": "life-397", "body": "i've been cutting my wrists again", "subject": "", "name": "", "expect": "support", "why": "cutting their wrists again (C2-5)"}
+{"id": "life-398", "body": "i cut my arm again last night", "subject": "", "name": "", "expect": "support", "why": "cutting their arm again (C2-5)"}
+{"id": "life-399", "body": "i cut my thighs last night so nobody would see", "subject": "", "name": "", "expect": "support", "why": "cutting their thighs where nobody would see (C2-5)"}
+{"id": "life-400", "body": "i cut my arm on a rusty nail, do i need a tetanus shot", "subject": "", "name": "", "expect": "publish", "why": "an arm cut on a nail by accident (C2-5 control)"}
+{"id": "life-401", "body": "i cut my leg shaving, how do i stop the bleeding", "subject": "", "name": "", "expect": "publish", "why": "a leg cut shaving (C2-5 control)"}
+{"id": "life-402", "body": "i cut my finger chopping onions", "subject": "", "name": "", "expect": "publish", "why": "a finger cut in the kitchen (C2-5 control)"}
+{"id": "life-403", "body": "i'm ending it tonight. sorry for this post", "subject": "", "name": "", "expect": "support", "why": "ending it tonight; \"post\" later in the post ends nothing (C2-7)"}
+{"id": "life-404", "body": "i can't show my face at school after what happened. i'm ending it tonight", "subject": "", "name": "", "expect": "support", "why": "ending it tonight; \"show\" in another sentence (C2-7)"}
+{"id": "life-405", "body": "too much drama at home, i'm ending it tonight", "subject": "", "name": "", "expect": "support", "why": "ending it tonight; \"drama\" is what drove it (C2-7)"}
+{"id": "life-406", "body": "i wrote my suicide note last night. tell my english teacher i'm sorry", "subject": "", "name": "", "expect": "support", "why": "a suicide note written; \"english\" in the next sentence (C2-7)"}
+{"id": "life-407", "body": "i wrote my suicide note. nobody in my class will even notice", "subject": "", "name": "", "expect": "support", "why": "a suicide note written; \"class\" in the next sentence (C2-7)"}
+{"id": "life-408", "body": "i'm going to end it tonight with these results there's no point anymore", "subject": "", "name": "", "expect": "support", "why": "ending it tonight because of the results (C2-12)"}
+{"id": "life-409", "body": "i'll end it tonight with my board results like this i have no future", "subject": "", "name": "", "expect": "support", "why": "ending it tonight because of board results (C2-12)"}
+{"id": "life-410", "body": "i'm ending it tonight with one last post", "subject": "", "name": "", "expect": "support", "why": "ending it tonight, the post a farewell (C2-12)"}
+{"id": "life-411", "body": "how to purge", "subject": "", "name": "", "expect": "hold", "why": "the README's own method question, with nothing after it (F13)"}
+{"id": "life-412", "body": "how do i purge", "subject": "", "name": "", "expect": "hold", "why": "a purge asked how (F13)"}
+{"id": "life-413", "body": "how to purge without anyone knowing", "subject": "", "name": "", "expect": "hold", "why": "a purge asked how, unseen (F13)"}
+{"id": "life-414", "body": "how to purge without my parents noticing", "subject": "", "name": "", "expect": "hold", "why": "a purge asked how, unseen by parents (F13)"}
+{"id": "life-415", "body": "tips for purging", "subject": "", "name": "", "expect": "hold", "why": "tips asked for purging (F13)"}
+{"id": "life-416", "body": "ways to commit suicide", "subject": "", "name": "", "expect": "hold", "why": "ways to commit suicide, asked the way a search is (F14)"}
+{"id": "life-417", "body": "methods of suicide", "subject": "", "name": "", "expect": "hold", "why": "methods of suicide, asked the way a search is (F14)"}
+{"id": "life-418", "body": "ways to die painlessly", "subject": "", "name": "", "expect": "hold", "why": "a way of dying asked for (F14)"}
+{"id": "life-419", "body": "ways to end my life", "subject": "", "name": "", "expect": "hold", "why": "ways to end their life (F14)"}
+{"id": "life-420", "body": "ways to hang myself", "subject": "", "name": "", "expect": "hold", "why": "ways to hang themselves (F14)"}
+{"id": "life-421", "body": "tips for committing suicide", "subject": "", "name": "", "expect": "hold", "why": "tips asked for committing suicide (F14)"}
+{"id": "life-422", "body": "easiest methods of suicide", "subject": "", "name": "", "expect": "hold", "why": "the easiest methods of suicide (F14)"}
+{"id": "life-423", "body": "how many floors to die", "subject": "", "name": "", "expect": "hold", "why": "a height asked in floors for dying (F14)"}
+{"id": "life-424", "body": "can you die from cutting your wrists", "subject": "", "name": "", "expect": "hold", "why": "whether cutting wrists kills, asked (F14)"}
+{"id": "life-425", "body": "will i die if i cut my wrist", "subject": "", "name": "", "expect": "hold", "why": "whether the poster would die cutting a wrist (F14)"}
+{"id": "life-426", "body": "you can die from cutting your wrists so be careful with the new knives in lab", "subject": "", "name": "", "expect": "publish", "why": "a warning about lab knives, not a question (F14 control)"}
+{"id": "life-427", "body": "can you die from cutting your finger", "subject": "", "name": "", "expect": "publish", "why": "a cut finger, not a wrist (F14 control)"}

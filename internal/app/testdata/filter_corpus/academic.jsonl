@@ -271,3 +271,15 @@
 {"id": "acad-271", "body": "results are out! drop your numbers below, our study group did really well this time", "subject": "", "name": "", "expect": "publish", "why": "a study group set up nothing (C2-2)"}
 {"id": "acad-272", "body": "how did everyone do in the mock? drop your numbers below. the text section was brutal", "subject": "", "name": "", "expect": "publish", "why": "\"the text section\" texts no one (C2-2)"}
 {"id": "acad-273", "body": "neet mock results out, drop your numbers. the bio section was a tough call", "subject": "", "name": "", "expect": "publish", "why": "\"a tough call\" calls no one (C2-2)"}
+{"id": "acad-274", "body": "i'll end it here, the essay is long enough", "subject": "", "name": "", "expect": "publish", "why": "an essay ended (C2-12 control)"}
+{"id": "acad-275", "body": "i will end it with a question, examiners love that", "subject": "", "name": "", "expect": "publish", "why": "an answer ended with a question (C2-12 control)"}
+{"id": "acad-276", "body": "how to purge the nginx cache", "subject": "", "name": "", "expect": "publish", "why": "a cache purged (F13 control)"}
+{"id": "acad-277", "body": "how to purge without deleting the logs", "subject": "", "name": "", "expect": "publish", "why": "a purge of a system with its logs kept (F13 control)"}
+{"id": "acad-278", "body": "tips for purging old git branches", "subject": "", "name": "", "expect": "publish", "why": "git branches purged (F13 control)"}
+{"id": "acad-279", "body": "the purge in the french revolution, how to explain it in the essay", "subject": "", "name": "", "expect": "publish", "why": "a historical purge (F13 control)"}
+{"id": "acad-280", "body": "ways to die in minecraft", "subject": "", "name": "", "expect": "publish", "why": "ways to die in a game (F14 control)"}
+{"id": "acad-281", "body": "methods of suicide prevention in schools, need sources for my essay", "subject": "", "name": "", "expect": "publish", "why": "suicide prevention researched for an essay (F14 control)"}
+{"id": "acad-282", "body": "ways to kill time on a long train ride", "subject": "", "name": "", "expect": "publish", "why": "killing time (F14 control)"}
+{"id": "acad-283", "body": "ways to commit to a study schedule", "subject": "", "name": "", "expect": "publish", "why": "committing to a schedule (F14 control)"}
+{"id": "acad-284", "body": "how many floors does the new library have", "subject": "", "name": "", "expect": "publish", "why": "floors of a library (F14 control)"}
+{"id": "acad-285", "body": "you shouldn't exist in the database twice, fix the join", "subject": "", "name": "", "expect": "publish", "why": "a database row (F15 control)"}
