@@ -399,7 +399,7 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 			return databaseURL, func() bool {
 				// Opened without waiting, it opens only once the sweep has it
 				// open to read.
-				w, err := os.OpenFile(fifo, os.O_WRONLY|syscall.O_NONBLOCK, 0)
+				w, err := openFIFOWriter(fifo)
 				if err != nil {
 					return false
 				}
