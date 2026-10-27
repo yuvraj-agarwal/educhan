@@ -270,15 +270,24 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 		a.fail(w, r, err, "could not complete verification")
 		return
 	}
-	expires := time.Now().Add(a.cfg.VerifyCredentialTTL)
+	issued := time.Now()
+	expires := issued.Add(a.cfg.VerifyCredentialTTL)
 
 	label, err := a.store.ConfirmVerification(r.Context(), confirmVerification{
 		TokenHash:        hashToken(pending.Value),
 		CodeHash:         a.codeHash(pending.Value, code),
 		CredentialIDHash: hashToken(id),
-		// Rounded up so the stored row dates the issuance to the day rather
-		// than the second, and still outlives the credential it revokes.
-		ExpiresAt: nextDayBoundary(expires),
+		// Counted from the end of the day the credential is issued in rather
+		// than from now, so that the stored row dates the issuance to that
+		// day rather than the second, and still outlives the credential it
+		// revokes. The row's transaction id dates it more closely until the
+		// nightly sweep rewrites the table (Store.RewriteCredentials);
+		// credentialDayEnd says why the day ends when it does. A change to
+		// the lifetime splits the day it is deployed in, as the credentials
+		// issued before and after it get different expiries; the README's
+		// "What that protects, exactly" says what that dates, and when to
+		// deploy one.
+		ExpiresAt: credentialDayEnd(issued).Add(a.cfg.VerifyCredentialTTL),
 	})
 	switch {
 	case errors.Is(err, errNotFound):
@@ -308,11 +317,12 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	clearCookie(w, pendingCookieName, pendingCookiePath)
 	// That a credential was issued, and nothing about whose or where. The
-	// stored row dates an issuance only to the day; a line naming the
-	// institution, stamped to the second, would date that row exactly on any
-	// day it was the institution's only one, and line it up with the badged
-	// posts that follow. The request log's line for this endpoint already
-	// carries the time, so this line carries no more than that does.
+	// stored row, once the nightly sweep has rewritten it, dates an issuance
+	// only to the day; a line naming the institution, stamped to the second,
+	// would date that row exactly on any day it was the institution's only
+	// one, and line it up with the badged posts that follow. The request
+	// log's line for this endpoint already carries the time, so this line
+	// carries no more than that does.
 	a.log.Info("verification issued")
 
 	// The credential is handed back in the body rather than set as a cookie, so
@@ -516,13 +526,70 @@ func verificationCode() (string, error) {
 	return fmt.Sprintf("%0*d", verifyCodeDigits, n), nil
 }
 
-// nextDayBoundary rounds a time up to the next UTC midnight. Credential rows
-// are stored with this rather than the exact expiry, which leaves an operator
-// able to tell what day an address was verified and not what minute — the
-// resolution that would let issuance be lined up against a post.
-func nextDayBoundary(t time.Time) time.Time {
-	utc := t.UTC()
-	return time.Date(utc.Year(), utc.Month(), utc.Day(), 0, 0, 0, 0, time.UTC).AddDate(0, 0, 1)
+// credentialDayStart is when, in UTC, a credential day begins: the day a
+// credential row dates its issuance to (credentialDayEnd).
+const credentialDayStart = 5 * time.Hour
+
+// credentialDayEnd returns the end of the credential day t falls in, a day
+// that runs from credentialDayStart (05:00 UTC) to the same time the next
+// day. A credential row's stored expiry is the end of the day it was issued
+// in plus the credential's lifetime, rather than the exact expiry, so that it
+// tells what day an address was verified and not what minute — the resolution
+// that would let an issuance be lined up against a post.
+//
+// That is half of what keeps the credential's own row to the day. The other
+// half is the nightly sweep, which rewrites every credential row so that the
+// transaction id PostgreSQL keeps on each is the sweep's
+// (Store.RewriteCredentials), and the two have to agree on when a day ends.
+// The sweep gives its id to every row issued before it and to none issued
+// after, so it splits the day it runs in. Were that day to begin at midnight,
+// a row of it carrying the sweep's id would have been issued between midnight
+// and the sweep at 03:17 UTC, and the expiry and the id together would date it
+// to those three hours, until the next sweep and in that morning's backups.
+// So a day ends after the sweep instead, and after the time the Job's one
+// retry may take as well, which the deploy guide keeps before its backup
+// window opens at 05:00 UTC (deploy/README.md sections 2.2 and 2.9). Then
+// the sweep's id is on every credential of an earlier day, where it says
+// nothing the expiry does not, and on those of the day it runs in that were
+// issued in the 22 hours before it; one issued between the sweep and 05:00
+// carries its own id, which dates it anyway until the next sweep.
+// TestCredentialDaysEndAfterTheSweep reads the schedule, and the Job's retries
+// and task timeout, from the deploy guide and first-deploy.sh, and wants the
+// day the sweep runs in to end half an hour or more after the latest the
+// sweep and its retry can still be running, and two hours at most after the
+// scheduled time: a sweep scheduled at 03:00 UTC or later, whose retry cannot
+// run past 04:30. With one retry of a fifteen-minute task, that is a sweep
+// scheduled from 03:00 to 04:00. A change to the schedule, the retries or the
+// timeout that leaves that window means moving credentialDayStart with it,
+// not only a move past 05:00. A sweep at 04:40 that succeeds at once falls in
+// the same day as one at 03:17, and splits it no more; but its retry can run
+// until 05:10, and a retry that rewrites after 05:00 splits the next day, as
+// a sweep at 05:30 always does, which is why the test rejects it. And the day
+// of a sweep at 02:30 ends two and a half hours after it. A sweep run after
+// 05:00 — by hand, or late — still splits the day it runs in at the time it
+// runs, and the README says what that leaves. A new credentialDayStart splits
+// the day it is deployed in too: the credentials issued from the last old
+// start to the deploy, and those issued from the deploy until the next new
+// start, each get an expiry no other credential shares. So it goes out soon
+// after the later of the old start and the new, once nobody has verified
+// since the old start, which leaves the first set empty. A start moved
+// earlier can instead go out at any time between the new start and the old
+// one, quiet or not, once that night's sweep on the old schedule, and its
+// retry if it fails, has finished, and with the new revision serving all
+// traffic before the old start, since each set then spans at least a day less
+// the move (the README's "What that protects, exactly", and deploy/README.md
+// section 2.9).
+//
+// It is not all an operator can see. The code request and the confirmation
+// each took a transaction id from the counter the posts take theirs from, and
+// the gaps they leave among the posts' ids still place the issuance between
+// two posts as closely as the row's own id did, which can be to the minute:
+// the README's "What that protects, exactly" and
+// TestIssuanceLeavesGapsAmongThePostsTransactionIDs.
+func credentialDayEnd(t time.Time) time.Time {
+	shifted := t.UTC().Add(-credentialDayStart)
+	day := time.Date(shifted.Year(), shifted.Month(), shifted.Day(), 0, 0, 0, 0, time.UTC)
+	return day.AddDate(0, 0, 1).Add(credentialDayStart)
 }
 
 /* Cookies ------------------------------------------------------------------- */

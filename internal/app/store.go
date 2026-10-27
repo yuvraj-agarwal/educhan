@@ -5,10 +5,14 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgconn/ctxwatch"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/yuvraj-agarwal/educhan/internal/media"
 )
@@ -53,10 +57,35 @@ const (
 // Store is the PostgreSQL-backed persistence layer.
 type Store struct {
 	pool *pgxpool.Pool
+	// What RewriteCredentials runs on the probe and verification tables, and
+	// on pg_statistic, and how long it keeps trying: vacuumCommand (both of
+	// the first two) and vacuumPatience, which tests change to see a vacuum
+	// that skips a table, or a sweep that gives up sooner.
+	vacuumCommand           string
+	statisticsVacuumCommand string
+	vacuumPatience          time.Duration
+	// How long RewriteCredentials's connection waits on a cancel request
+	// (cancelGrace), which a test shortens to see PostgreSQL not answer one.
+	cancelGrace time.Duration
+	// How long after the rewrite RewriteCredentials reads the verification
+	// tables a last time (statsHandOver). The app package's test harness sets
+	// it to zero, as only TestSweepLeavesNoScanTimeFromBeforeIt there is about
+	// it, and every other sweep would wait it out for nothing; cmd/server's
+	// tests sweep from an App built by New, as the Job does, and wait it out.
+	statsHandOver time.Duration
+	// vacuumed, which tests set, is called with the table of each VACUUM FULL
+	// after which vacuumFull finds the table in a new file. Every schema in
+	// the database shares pg_statistic, so another process's sweep — the
+	// cmd/server tests', run alongside the app package's — moves its file
+	// too, and only the sweep can say which runs on it were its own.
+	vacuumed func(table string)
 }
 
 // NewStore wraps an existing pool.
-func NewStore(pool *pgxpool.Pool) *Store { return &Store{pool: pool} }
+func NewStore(pool *pgxpool.Pool) *Store {
+	return &Store{pool: pool, vacuumCommand: vacuumCommand, statisticsVacuumCommand: vacuumCommand,
+		vacuumPatience: vacuumPatience, cancelGrace: cancelGrace, statsHandOver: statsHandOver}
+}
 
 // Ping reports whether the database is reachable.
 func (s *Store) Ping(ctx context.Context) error { return s.pool.Ping(ctx) }
@@ -1037,9 +1066,10 @@ type pendingVerification struct {
 // the one that arrived, or not the one being used.
 func (s *Store) StartVerification(ctx context.Context, in pendingVerification) error {
 	return s.inTx(ctx, func(tx pgx.Tx) error {
-		// Pending rows are swept here rather than on a timer: they are the one
-		// part of this feature that carries a fresh timestamp, so the sooner
-		// spent ones go the better.
+		// Pending rows are swept here, and by the nightly sweep
+		// (RewriteCredentials), rather than on a timer: they are the one part
+		// of this feature that carries a fresh timestamp, so the sooner spent
+		// ones go the better.
 		if _, err := tx.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
 			return fmt.Errorf("prune pending verifications: %w", err)
 		}
@@ -1108,6 +1138,14 @@ func (s *Store) ConfirmVerification(ctx context.Context, in confirmVerification)
 		case attempts >= maxVerifyAttempts:
 			outcome = errVerifyAttempts
 		case subtle.ConstantTimeCompare(codeHash, in.CodeHash) != 1:
+			if attempts+1 >= maxVerifyAttempts {
+				// The wrong code that spends the last attempt ends the
+				// verification there and then, and says so. Answered as just
+				// a wrong code, it would leave the page offering a box that not
+				// even the right code could get through.
+				outcome = errVerifyAttempts
+				break
+			}
 			_, err := tx.Exec(ctx,
 				`UPDATE verification_pending SET attempts = attempts + 1 WHERE token_hash = $1`, in.TokenHash)
 			outcome = errVerifyCode
@@ -1166,6 +1204,779 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 		return "", errNotFound
 	}
 	return label, err
+}
+
+// verificationLockTimeout bounds every wait RewriteCredentials makes for a
+// lock outside the vacuum, which has a bound of its own (vacuumLockTimeout).
+// The one it can wait on in practice is the rewrite's lock on the
+// credentials table, which lets plain reads through and waits for everything
+// else on the table: a transaction that has written to it or locked rows in
+// it, a VACUUM, ANALYZE or index build on it, a change to its schema, or
+// another sweep's rewrite or vacuum. While the rewrite waits, confirmations
+// queue behind it, each holding one of its instance's few database
+// connections, and once they hold them all every request on that instance
+// waits too; so a transaction left open on the table — a psql session that
+// wrote to it, say — fails the sweep within seconds rather than stalling the
+// site until it ends.
+//
+// It bounds only the wait. Once the lock is granted, confirmations queue for
+// as long as the rewrite's statement runs as well, and that grows with the
+// table: about three seconds for 220,000 credentials, as measured on a
+// development machine. So a confirmation that arrives as the rewrite starts
+// can wait five seconds plus the rewrite. Reads do not queue behind the
+// rewrite.
+//
+// The vacuum after it does not wait for a table another session holds, since
+// it passes over one, and waits at most vacuumLockTimeout for any other lock;
+// but VACUUM FULL holds a table it has taken against every read and write,
+// CredentialLabel's included, until it has written the table out, or given
+// it up. Every badged post and confirmation that reaches the table meanwhile
+// waits, each holding a pooled connection, and three of them hold all an
+// instance has by default (EDUCHAN_DB_MAX_CONNS), so for the length of the run
+// every request on that instance can wait. That too grows with the table:
+// between about half a second and two and a half seconds for 220,000
+// credentials, as measured on development machines. So vacuumVerificationTables
+// runs on a table only once a probe says the run can do its job and nothing it
+// would wait for once it had the table is held (vacuumLockTimeout), rather
+// than again and again while an older transaction keeps it from doing its job
+// or another session makes it give the table up: once a night, unless a
+// session begins to hold such a thing during a run.
+const verificationLockTimeout = "5s"
+
+// vacuumLockTimeout bounds every wait for a lock in vacuumVerificationTables.
+// SKIP_LOCKED makes VACUUM FULL pass over a table another session holds
+// rather than wait for it, but only the table it is given. Once it has that
+// table it needs more, and waits for each while it holds the table against
+// every read. Before it copies the table it locks the table's TOAST table,
+// which a VACUUM of the TOAST table by name holds, with no lock on the table.
+// Autovacuum holds pg_statistic's the same way, since 0015 left autovacuum on
+// for the catalog. It leaves the verification tables' TOAST tables alone: a
+// TOAST table with no setting of its own takes its table's, and 0015 turned
+// autovacuum off on both, so it comes to them only to keep their transaction
+// ids from wrapping around, which the nightly VACUUM FULL keeps from coming
+// due. After it has copied the whole table it updates the table's row in
+// pg_class, and so waits for any transaction that has updated the row and not
+// ended — a GRANT or REVOKE on the table, say, which takes no lock on the
+// table itself — and then it rebuilds each index, waiting for any lock on it:
+// a COMMENT ON INDEX left open, say. Meanwhile CredentialLabel waits on the
+// credentials table, and every query whose plan needs statistics its
+// connection has not cached waits on pg_statistic, on any table.
+//
+// So before each run vacuumFull looks for any of those held by a session that
+// does not hold the table itself, which SKIP_LOCKED would pass over anyway
+// (vacuumWaitsQuery), and while it finds one it leaves the table alone
+// (vacuumWouldWait) and the sweep tries again later. A run that waited for one
+// after the copy would have held every request on the table up for the whole
+// copy and then given the table up, and tried again it would do the same, try
+// after try. What vacuumFull cannot see coming — a GRANT that begins during the
+// run — VACUUM FULL waits for this long at most, and then gives the table up
+// (vacuumBlocked). A GRANT that commits sooner ends the wait sooner, and the run
+// with it, the table still in its old file: VACUUM FULL cannot update a row
+// the GRANT has changed under it (concurrentlyUpdated), and that run has given
+// the table up too. Either way the sweep tries again a moment later, and by
+// then the look before the run sees the GRANT, or that it has ended
+// (TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld,
+// TestVacuumTriesAgainWhenTheGrantItWaitsForCommits). An autocommit GRANT,
+// the usual kind, commits within milliseconds, and so ends a run the second
+// way. An uncontended lock is granted at once, so the bound
+// need be no longer than a request should wait; and it is below PostgreSQL's
+// deadlock_timeout, so the sweep gives way to an autovacuum rather than having
+// it cancelled. The bound covers the whole statement, so it would also end a
+// wait that came after the run had committed and let go of the table, with the
+// table in its new file: the sweep's runs leave out the one step that waits
+// there (vacuumCommand), and a run that ends so all the same counts as the run
+// it was (vacuumFull).
+const vacuumLockTimeout = "100ms"
+
+// vacuumWaitsQuery says whether VACUUM FULL, once it had the table $1, would
+// wait for another session (vacuumLockTimeout says for what): whether a
+// session that holds no lock on the table holds one on its TOAST table or one
+// of its indexes, or has an open transaction that has updated the table's row
+// in pg_class or one of theirs. A row's xmax is the id of the transaction that
+// updated it, and a transaction holds a lock on its own id until it ends, so
+// the lock says the update has not. A session that holds the table is left to
+// SKIP_LOCKED, which passes over the table with the warning vacuumFull reads.
+const vacuumWaitsQuery = `
+	WITH target AS (
+	    SELECT oid, reltoastrelid FROM pg_class WHERE oid = $1::text::regclass
+	), taken AS (
+	    SELECT reltoastrelid AS oid FROM target WHERE reltoastrelid <> 0
+	    UNION ALL
+	    SELECT indexrelid FROM pg_index WHERE indrelid = (SELECT oid FROM target)
+	), here AS (
+	    SELECT oid FROM pg_database WHERE datname = current_database()
+	), holders AS (
+	    SELECT l.virtualtransaction, l.pid FROM pg_locks l
+	    WHERE l.locktype = 'relation' AND l.granted
+	      AND l.database = (SELECT oid FROM here) AND l.relation IN (SELECT oid FROM taken)
+	    UNION ALL
+	    SELECT l.virtualtransaction, l.pid FROM pg_class c
+	    JOIN pg_locks l ON l.locktype = 'transactionid' AND l.granted AND l.transactionid = c.xmax
+	    WHERE c.oid IN (SELECT oid FROM target UNION ALL SELECT oid FROM taken)
+	)
+	SELECT EXISTS (
+	    SELECT FROM holders h
+	    WHERE h.pid IS DISTINCT FROM pg_backend_pid()
+	      AND NOT EXISTS (
+	          SELECT FROM pg_locks t
+	          WHERE t.locktype = 'relation' AND t.granted AND t.database = (SELECT oid FROM here)
+	            AND t.relation = (SELECT oid FROM target) AND t.virtualtransaction = h.virtualtransaction))`
+
+// How long RewriteCredentials keeps trying VACUUM FULL on the verification
+// tables — while a transaction older than the rewrite is open, while another
+// session holds a table or something VACUUM FULL would wait for once it had
+// the table (vacuumLockTimeout), or while a table's new file still holds rows
+// deleted before the rewrite — before the sweep fails; and how long it waits
+// between tries: vacuumFirstWait at first, doubling each time up to
+// vacuumMaxWait.
+const (
+	vacuumPatience  = time.Minute
+	vacuumFirstWait = 100 * time.Millisecond
+	vacuumMaxWait   = 5 * time.Second
+)
+
+// vacuumCommand is what RewriteCredentials runs on the probe table, each
+// verification table, and pg_statistic.
+//
+// SKIP_DATABASE_STATS leaves out the step a VACUUM otherwise ends with, after
+// its run on the table has committed: moving the database's oldest
+// transaction id up in its row in pg_database (datfrozenxid). That step holds
+// no table, but it waits for any other session taking the same step, and,
+// since PostgreSQL 16.5, for any transaction that has updated the row and not
+// ended — an ALTER DATABASE, or a GRANT on the database. With the connection's
+// lock_timeout at vacuumLockTimeout, such a wait would fail the statement with
+// the table already in its new file, and the sweep would run VACUUM FULL on
+// the table again, holding up every request on it a second time, or fail
+// although its runs had done their job (TestVacuumDoesNotWaitForTheDatabasesRow).
+// Autovacuum takes the step whenever it works on the database, so leaving it
+// out costs nothing but the time until then.
+const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)"
+
+// sqlstateLockNotAvailable is the code of the warning VACUUM gives when
+// SKIP_LOCKED makes it pass over a table another session holds, and of the
+// error it fails with when lock_timeout ends a wait for any other lock.
+const sqlstateLockNotAvailable = "55P03"
+
+// sqlstateInternalError and concurrentlyUpdated are the code and message of
+// the error VACUUM FULL fails with when it has waited to update its table's
+// row in pg_class, or an index's, for a transaction that had updated the row
+// — a GRANT on the table, say — and that transaction commits within
+// vacuumLockTimeout: it cannot update a row another transaction has changed
+// since its snapshot. PostgreSQL raises it with elog, so the message is never
+// translated; the code is the one every internal error has, so it takes both.
+const (
+	sqlstateInternalError = "XX000"
+	concurrentlyUpdated   = "tuple concurrently updated"
+)
+
+// verificationTables are the tables RewriteCredentials rewrites and vacuums.
+var verificationTables = [...]string{"verification_credentials", "verification_pending"}
+
+// statisticsCatalog is the catalog ANALYZE copied samples of the verification
+// tables' columns into before 0015, which RewriteCredentials vacuums with
+// them, after them in each pass (vacuumVerificationTables says why).
+const statisticsCatalog = "pg_catalog.pg_statistic"
+
+// vacuumProbeTable is the empty table (0016) on which RewriteCredentials runs
+// VACUUM FULL to learn whether a run on a verification table would drop what
+// the rewrite deleted, before it takes one (vacuumVerificationTables).
+const vacuumProbeTable = "vacuum_probe"
+
+// RewriteCredentials takes from the verification tables what PostgreSQL
+// records about every row whatever the schema leaves out, and returns how many
+// credential rows it rewrote. The archive sweeper calls it once a night.
+//
+// Every row carries the id of the transaction that wrote it (xmin). Posts are
+// written by transactions too, and carry created_at, so a credential's xmin
+// falls between two posts' and dates its issuance to the minutes between them;
+// with its label, it points at the first badged posts after it. That is what
+// leaving out created_at was for, and freezing does not undo it: a frozen row
+// keeps its xmin. A row's place in the table (ctid) follows the order rows
+// were written in, which is the order of issuance again.
+//
+// So the credentials are deleted and inserted back from the copy the delete
+// returns, in random order, in one statement: afterwards every row carries
+// this transaction's id, and where a row sits says nothing about when it was
+// issued. The id says of a row only that it was issued before the sweep:
+// nothing its expiry does not for one issued on an earlier day, and for one of
+// the day the sweep runs in, which ends after the scheduled sweep
+// (credentialDayEnd), that it came in the 22 hours of that day before the
+// sweep. The lock is the one that holds back writers and lets readers
+// through. The statement after it takes its snapshot once the lock is
+// granted, so a confirmation that committed before then is in the copy; one
+// that arrives after waits for the commit and then writes over the rewritten
+// rows, whether it issues a new credential or replaces one. CredentialLabel
+// reads throughout: the old rows until the commit, the new ones after, never
+// neither.
+//
+// The old versions are still in the table's file with their xmin, as are the
+// pending rows confirmations deleted, each with an email hash and an expiry to
+// the microsecond, and vacuumVerificationTables writes both tables to new
+// files without them; then pg_statistic, whose files can still hold the
+// samples ANALYZE took of the pending table before 0015, which are much the
+// same. The times PostgreSQL's statistics keep of the last scan of each table
+// and index would date the last confirmation before the sweep, so restampScans
+// makes them the sweep's: once after the rewrite, and once more after the
+// vacuum, when every connection has handed the statistics what it read before
+// the rewrite (statsHandOver).
+//
+// A code that expired unconfirmed leaves its pending row live until the next
+// request prunes it (StartVerification), whenever that comes. Its expiry, less
+// the code's lifetime, is the time it was asked for, to the microsecond, and
+// its email hash is the address's: an address that already holds a credential
+// — a second browser asking for a code it never confirms, say — joins it to
+// that credential, which it then says was issued before that time. So before
+// the rewrite those rows are deleted. The delete must come no later than the
+// rewrite: what the vacuum is checked against is the rewrite's transaction
+// id, which says nothing of rows a later transaction deleted (no test holds
+// this order). And it runs in a transaction of its own rather than in the
+// rewrite's, because a confirmation locks its code's pending row before it
+// writes to the credentials table: in the rewrite's transaction, which holds
+// that table, a delete waiting for such a row would wait for a confirmation
+// waiting for the rewrite, until PostgreSQL failed one of them
+// (TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable). A code
+// still in flight stays, and still confirms; the README says what its row
+// keeps, and until when.
+//
+// None of this reaches the posts. Requesting a code and confirming one are
+// writes, and each takes a transaction id from the counter posts take theirs
+// from, so the ids they took are missing from the posts' xmins, between the
+// two posts written around each, for as long as those posts exist; the
+// README's "Transaction ids, and the nightly rewrite" says what that still
+// dates, and TestIssuanceLeavesGapsAmongThePostsTransactionIDs holds it.
+//
+// It works on a connection of its own rather than one from the pool, for what
+// the pool's connections should not carry: the lock timeout, a handler for
+// the warnings with which VACUUM reports a table it skipped, and a
+// cancellation that stops the statement on the server before it returns
+// (sweepConnection). The connection asks for those warnings itself
+// (client_min_messages), because DATABASE_URL or a role's or the database's
+// default can turn them off, and without the warning a table another session
+// held looks like one the role may not vacuum (vacuumFull).
+func (s *Store) RewriteCredentials(ctx context.Context) (rewritten int, err error) {
+	// A statement the cancellation stopped fails with PostgreSQL's
+	// "canceling statement due to user request"; the error says why as well.
+	defer func() {
+		if err != nil && ctx.Err() != nil && !errors.Is(err, ctx.Err()) {
+			err = fmt.Errorf("%w: %w", ctx.Err(), err)
+		}
+	}()
+	notices := &noticeLog{}
+	conn, err := s.sweepConnection(ctx, notices)
+	if err != nil {
+		return 0, fmt.Errorf("connect: %w", err)
+	}
+	defer closeSweepConnection(ctx, conn, s.cancelGrace)
+
+	if _, err := conn.Exec(ctx, `DELETE FROM verification_pending WHERE expires_at <= now()`); err != nil {
+		return 0, fmt.Errorf("delete expired codes: %w", err)
+	}
+
+	var rewrite uint32 // the rewriting transaction's id
+	err = pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, func(tx pgx.Tx) error {
+		if _, err := tx.Exec(ctx, `LOCK TABLE verification_credentials IN EXCLUSIVE MODE`); err != nil {
+			return fmt.Errorf("lock credentials: %w", err)
+		}
+		tag, err := tx.Exec(ctx, `
+			WITH copy AS (
+			    DELETE FROM verification_credentials
+			    RETURNING email_hash, credential_id_hash, label, expires_at
+			)
+			INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+			SELECT email_hash, credential_id_hash, label, expires_at FROM copy
+			ORDER BY random()`)
+		if err != nil {
+			return fmt.Errorf("rewrite credentials: %w", err)
+		}
+		rewritten = int(tag.RowsAffected())
+		// The old versions carry this id as the transaction that deleted
+		// them, and the vacuum is measured against it. Asking for it gives
+		// the transaction one even when there was nothing to delete.
+		if err := tx.QueryRow(ctx, `SELECT pg_current_xact_id()::xid`).Scan(&rewrite); err != nil {
+			return fmt.Errorf("read the rewrite's transaction id: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	committed := time.Now()
+	if err := restampScans(ctx, conn); err != nil {
+		return rewritten, err
+	}
+	if err := s.vacuumVerificationTables(ctx, conn, notices, rewrite); err != nil {
+		return rewritten, err
+	}
+	timer := time.NewTimer(time.Until(committed.Add(s.statsHandOver)))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return rewritten, fmt.Errorf("wait for the statistics: %w", ctx.Err())
+	case <-timer.C:
+	}
+	return rewritten, restampScans(ctx, conn)
+}
+
+// statsHandOver is how long after the rewrite has committed RewriteCredentials
+// reads the verification tables a second time (restampScans): long enough for
+// every other connection to have handed the statistics the counts of the
+// scans it made before the commit.
+//
+// A connection keeps its counts and hands them over later. When one of its
+// transactions ends it hands over everything it has kept, but no more than
+// once a second, and if it then sits idle it hands the rest over within ten
+// seconds. If it finds the statistics' entry for a table locked, it keeps
+// that table's counts rather than wait, and waits for the lock only once it
+// has sat idle for ten seconds, or when a transaction of its ends a minute or
+// more after it first kept counts back (PGSTAT_MIN_INTERVAL,
+// PGSTAT_IDLE_INTERVAL and PGSTAT_MAX_INTERVAL in PostgreSQL's pgstat.c). The
+// time it hands over as a scan's is the end of its latest transaction by
+// then, or, when that transaction left none, the moment it hands the counts
+// over. So the counts of a confirmation that commits on a server's connection
+// less than a second after that connection last handed its counts over reach
+// the statistics up to ten seconds after the commit, or up to a minute after
+// under contention, with the time of the next request that connection served,
+// or of the hand-over: after the sweep's first read, and the statistics keep
+// the latest time they are given. Those are the indexes a confirmation reads,
+// so that time would date the last issuance before the sweep to within ten
+// seconds. The second read, a minute and five seconds after the commit, puts
+// the sweep's time back over it; the five seconds are for the transaction
+// that ends the minute. Scans made after the commit need no such cover: a
+// confirmation then writes a row with a transaction id of its own, which
+// dates it until the next sweep anyway, and a badged post's read of its
+// credential says when the post was written, as the post itself does
+// (TestSweepLeavesNoScanTimeFromBeforeIt).
+//
+// The vacuum's patience is a minute too, so a sweep that the vacuum holds up
+// waits little or nothing more, and one that it does not takes a minute
+// longer than it would. A cancelled sweep stops waiting at once
+// (TestCancelledSweepStopsWaitingForTheStatistics).
+const statsHandOver = 65 * time.Second
+
+// cancelGrace is how long a statement on RewriteCredentials's connection
+// waits, once the sweep is cancelled, for PostgreSQL to answer the cancel
+// request, and then how long the sweep waits for pgx to send its own if it
+// did not.
+const cancelGrace = 3 * time.Second
+
+// sweepConnection opens the connection RewriteCredentials works on, set up as
+// that function says, with notices collecting the codes of the warnings it is
+// sent.
+//
+// A sweep is cancelled by SIGTERM, which a Job past its task timeout gets, or
+// by Ctrl-C on make sweep, and the process exits as soon as the sweep returns.
+// PostgreSQL does not notice a closed socket until the statement on it ends,
+// so a statement nobody has asked it to cancel by then runs on: a VACUUM FULL
+// in flight holds its table against every read to its end, and commits, and a
+// rewrite holds its lock to the end of its statement. Two things see that the
+// cancel request has gone out before the sweep returns, and while PostgreSQL
+// answers promptly either would on its own.
+//
+// Here the context's cancellation sends the cancel request first, and the
+// statement waits up to the store's cancelGrace for PostgreSQL's answer,
+// which is the statement stopping: it fails with PostgreSQL's "canceling
+// statement due to user request". That is pgx's
+// CancelRequestContextWatcherHandler. pgx's default, which the pool's
+// connections keep, gives up on the socket at once instead, and sends the
+// cancel request from a goroutine as it closes the connection; that is also
+// what this connection falls back to when no answer comes within the grace,
+// and closeSweepConnection waits for that goroutine. (Closing the pool waits
+// for its connections' goroutines the same way, and the sweeper closes it
+// before it exits.)
+//
+// TestCancelledSweepStopsItsStatementOnTheServer fails only without both; its
+// check that the error is PostgreSQL's fails without the handler, and
+// TestCancelledSweepWaitsForPgxsOwnCancelRequest fails without the wait.
+func (s *Store) sweepConnection(ctx context.Context, notices *noticeLog) (*pgx.Conn, error) {
+	config := s.pool.Config().ConnConfig
+	if config.RuntimeParams == nil {
+		config.RuntimeParams = map[string]string{}
+	}
+	config.RuntimeParams["lock_timeout"] = verificationLockTimeout
+	config.RuntimeParams["client_min_messages"] = "warning"
+	config.OnNotice = notices.add
+	grace := s.cancelGrace
+	config.BuildContextWatcherHandler = func(conn *pgconn.PgConn) ctxwatch.Handler {
+		return &pgconn.CancelRequestContextWatcherHandler{Conn: conn, DeadlineDelay: grace}
+	}
+	return pgx.ConnectConfig(ctx, config)
+}
+
+// closeSweepConnection closes RewriteCredentials's connection. When
+// PostgreSQL did not answer a cancel request within the grace, pgx gave up on
+// the connection and is sending a cancel request of its own, and then closing
+// it, from a goroutine, so this waits up to grace for that to finish before
+// the sweep returns and the process exits.
+func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Duration) {
+	_ = conn.Close(context.WithoutCancel(ctx))
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case <-conn.PgConn().CleanupDone():
+	case <-timer.C:
+	}
+}
+
+// vacuumVerificationTables runs VACUUM FULL on each verification table once it
+// can leave no row deleted by the rewrite (transaction id rewrite) or before
+// it in the table's new file, trying for up to s.vacuumPatience.
+//
+// VACUUM FULL writes a table to a new file and drops the old one; it cannot
+// run in a transaction. For as long as it runs it holds the table against
+// every read and write, CredentialLabel's included (verificationLockTimeout
+// says what that costs), so it runs on each table only when it can do its
+// job: once a night, unless something gets in its way. Three things can.
+//
+// Another session can hold the table. VACUUM FULL waiting for it would queue
+// every badged post and confirmation behind its wait as well as its run, so it
+// runs with SKIP_LOCKED: it passes over a table it cannot take at once, with a
+// warning, and this tries again a moment later. SKIP_LOCKED does not cover
+// what VACUUM FULL needs once it has the table — locks on its TOAST table and
+// its indexes, and its row in pg_class — and it holds the table while it waits
+// for one, some only after it has copied the whole table (vacuumLockTimeout
+// says who can hold them). So vacuumFull first looks for a session holding
+// one, and while there is one leaves the table alone and this tries again
+// later; and this sets the connection's lock_timeout to vacuumLockTimeout, so
+// that a run that meets one begun since the look gives the table up after
+// that long, or sooner if the holder commits a change to the row it waits for,
+// with the table still in its old file, and is tried again the same way. The
+// step a VACUUM ends with across the whole database, which waits
+// for any transaction that has updated the database's row in pg_database,
+// comes after the run has committed and holds no table; the runs leave it out
+// (vacuumCommand).
+//
+// It copies, rather than drops, a deleted row that some snapshot could still
+// read: one deleted by a transaction no older than its cutoff. The cutoff is
+// the oldest snapshot or transaction still open in this database, or older:
+// VACUUM FULL's own snapshot counts, and that is older than every transaction
+// still open anywhere on the instance that has written something. So a
+// snapshot in this database taken before the rewrite committed and still in
+// use — a statement running then, which a request in flight is enough for, or
+// a transaction reading from one snapshot, as an export does — or a
+// transaction anywhere on the instance that had written something by then
+// would put every row the rewrite deleted into the new file, each with the
+// xmin it was issued under, and the pending rows confirmations deleted with
+// them, after holding up every request on the table for nothing. VACUUM FULL
+// freezes what it keeps and moves the table's relfrozenxid up to its cutoff,
+// so those rows are gone exactly when relfrozenxid is newer than the rewrite.
+// A run on vacuum_probe, which holds nothing and which nothing else uses,
+// computes the same cutoff in a few milliseconds and holds up nobody; so
+// before each attempt this runs one there, and until the probe's relfrozenxid
+// is newer than the rewrite it waits for the older transactions to end rather
+// than take a verification table. A run on a verification table is still
+// checked the same way, and one that kept the rows is tried again after the
+// next probe.
+//
+// And it skips, with a different warning, a table its role may not vacuum —
+// one it owns neither itself nor through owning the database. Waiting does
+// not change that, so the sweep fails at once. The table's file is compared
+// before and after to see whether VACUUM FULL ran at all.
+//
+// It takes pg_statistic the same way, in the same passes: after the
+// verification tables in each, whether or not they are done, so a table left
+// for the next pass does not hold the catalog back, nor the catalog a table
+// (TestSweepFailsWhenTheVerificationTablesAreHeld). Before 0015, ANALYZE
+// copied samples of every column of the verification tables into that
+// catalog — for the pending table, the email hashes of codes in flight beside
+// their expiries, to the microsecond — and 0015 deleted them;
+// but a delete leaves the old versions in the catalog's file, and a sample big
+// enough to be stored out of line, as the email hashes' histogram is, in its
+// TOAST table's file, until something writes them out anew. Only VACUUM FULL
+// does: a plain vacuum, autovacuum's included, marks the space free and
+// leaves the bytes. No query sees an old version, so the sweep cannot tell
+// whether a database upgraded across 0015 still holds them, and it rewrites
+// the catalog every night. The catalog is small, so a run is short; but while
+// it runs, a query whose plan needs statistics its connection has not cached
+// waits, on any table, so here too the sweep passes over the catalog while
+// anybody holds it rather than queue them all behind its wait, and leaves it
+// alone while anybody else holds its TOAST table, which autovacuum still
+// vacuums on its own. Only a superuser or a role with the
+// privileges of the database's owner may vacuum it — the owner, or a member of
+// the owner's role that inherits its privileges, which pg_has_role(datdba,
+// 'USAGE') says; a membership that does not inherit is not enough, and nor is
+// owning the tables — and a logical replication slot holds its cutoff back as
+// an older transaction does.
+func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
+	rewrite uint32) error {
+	if _, err := conn.Exec(ctx, `SELECT set_config('lock_timeout', $1, false)`, vacuumLockTimeout); err != nil {
+		return fmt.Errorf("set the vacuum's lock timeout: %w", err)
+	}
+	start := time.Now()
+	deadline := start.Add(s.vacuumPatience)
+	wait := vacuumFirstWait
+	left := slices.Concat(verificationTables[:], []string{statisticsCatalog})
+	for {
+		var why []string
+		switch probe, err := s.vacuumFull(ctx, conn, notices, vacuumProbeTable, rewrite); {
+		case err != nil:
+			return err
+		case probe == vacuumHeld || probe == vacuumWouldWait || probe == vacuumBlocked:
+			why = append(why, lockedOut(probe, vacuumProbeTable))
+		case probe == vacuumTooSoon:
+			why = append(why, "VACUUM FULL would keep the rows the rewrite deleted, which a transaction "+
+				"older than the rewrite could still read: a statement or transaction in this database, "+
+				"or one anywhere on the instance that had written something")
+		default:
+			var held []string
+			for _, table := range left {
+				outcome, err := s.vacuumFull(ctx, conn, notices, table, rewrite)
+				if err != nil {
+					return err
+				}
+				switch outcome {
+				case vacuumHeld, vacuumWouldWait, vacuumBlocked:
+					why = append(why, lockedOut(outcome, table))
+				case vacuumTooSoon:
+					reader := "a transaction older than the rewrite"
+					if table == statisticsCatalog {
+						reader += ", or a logical replication slot,"
+					}
+					why = append(why, fmt.Sprintf("VACUUM FULL kept rows deleted from %s before the rewrite, "+
+						"which %s could still read", table, reader))
+				default:
+					continue
+				}
+				held = append(held, table)
+			}
+			if len(held) == 0 {
+				return nil
+			}
+			left = held
+		}
+		// It stops once the next pause would take it past its patience, which
+		// can be seconds before the patience is up, so it says how long it
+		// tried rather than how long it might have.
+		if time.Until(deadline) < wait {
+			return fmt.Errorf("%s; tried for %s, and the next sweep tries again",
+				strings.Join(why, "; "), time.Since(start).Truncate(100*time.Millisecond))
+		}
+		timer := time.NewTimer(wait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return fmt.Errorf("vacuum verification tables: %w", ctx.Err())
+		case <-timer.C:
+		}
+		wait = min(2*wait, vacuumMaxWait)
+	}
+}
+
+// vacuumOutcome is what one VACUUM FULL of a table came to, when it is
+// something waiting can change.
+type vacuumOutcome int
+
+const (
+	// The table is in a new file holding no row deleted by the rewrite or
+	// before it.
+	vacuumDone vacuumOutcome = iota
+	// Another session held the table, and VACUUM FULL passed over it.
+	vacuumHeld
+	// Another session held something VACUUM FULL would wait for once it had
+	// the table (vacuumWaitsQuery), so it was not run.
+	vacuumWouldWait
+	// VACUUM FULL took the table, but another session held something it
+	// needs with it, a lock on its TOAST table or an index or its row in
+	// pg_class, for longer than vacuumLockTimeout, or committed a change to
+	// that row while the run waited for it, and the run gave the table up in
+	// its old file. (A run that lock_timeout ends after it has moved the table
+	// to a new file is not this: it counts as done, or too soon, as any run
+	// does.)
+	vacuumBlocked
+	// The table is in a new file, but a transaction older than the rewrite
+	// held VACUUM FULL's cutoff back, so the file holds what the rewrite
+	// deleted from it.
+	vacuumTooSoon
+)
+
+// lockedOut says why VACUUM FULL left table in its old file, for the
+// outcomes another session's lock decides.
+func lockedOut(outcome vacuumOutcome, table string) string {
+	switch outcome {
+	case vacuumWouldWait:
+		return fmt.Sprintf("VACUUM FULL was not run on %s while another session held what it would wait "+
+			"for once it had the table: a lock on its TOAST table or an index, or its row in pg_class or "+
+			"an index's, updated by a transaction still open (a GRANT on the table, say)", table)
+	case vacuumBlocked:
+		return fmt.Sprintf("VACUUM FULL took %s, then gave it up waiting for another session: for a lock "+
+			"on its TOAST table or an index, or for its row in pg_class or an index's, which that session "+
+			"held for longer than %s or changed meanwhile (a GRANT on the table, say)", table,
+			vacuumLockTimeout)
+	}
+	return fmt.Sprintf("VACUUM FULL could not take %s, which another session held", table)
+}
+
+// vacuumFull runs VACUUM FULL on table once and says what it came to, or
+// returns an error for what waiting cannot change.
+func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeLog,
+	table string, rewrite uint32) (vacuumOutcome, error) {
+	var waits bool
+	if err := conn.QueryRow(ctx, vacuumWaitsQuery, table).Scan(&waits); err != nil {
+		return 0, fmt.Errorf("read what VACUUM FULL would wait for on %s: %w", table, err)
+	}
+	if waits {
+		return vacuumWouldWait, nil
+	}
+	before, err := relationFile(ctx, conn, table)
+	if err != nil {
+		return 0, err
+	}
+	command := s.vacuumCommand
+	if table == statisticsCatalog {
+		command = s.statisticsVacuumCommand
+	}
+	notices.take()
+	_, err = conn.Exec(ctx, command+" "+pgx.Identifier(strings.Split(table, ".")).Sanitize())
+	// Another session ended a wait for something other than the table, which
+	// SKIP_LOCKED would have passed over: lock_timeout ended it, or the
+	// transaction the run waited for to update a row in pg_class committed
+	// first, having changed the row (concurrentlyUpdated). A wait in the run
+	// rolled the run back, and left the table in its old file; a wait after
+	// the run had committed — in the step SKIP_DATABASE_STATS leaves out
+	// (vacuumCommand), say — left it in its new one, and the run counts as the
+	// run it was.
+	var pgErr *pgconn.PgError
+	cutShort := errors.As(err, &pgErr) && (pgErr.Code == sqlstateLockNotAvailable ||
+		pgErr.Code == sqlstateInternalError && pgErr.Message == concurrentlyUpdated)
+	if err != nil && !cutShort {
+		return 0, fmt.Errorf("vacuum %s: %w", table, err)
+	}
+	warnings := notices.take()
+	after, err := relationFile(ctx, conn, table)
+	if err != nil {
+		return 0, err
+	}
+	if after != before && s.vacuumed != nil {
+		s.vacuumed(table)
+	}
+	if after == before {
+		switch {
+		case slices.Contains(warnings, sqlstateLockNotAvailable):
+			return vacuumHeld, nil
+		case cutShort:
+			return vacuumBlocked, nil
+		case table == statisticsCatalog:
+			return 0, fmt.Errorf("VACUUM FULL left %s in its old file: only a superuser or a role with "+
+				"the privileges of the database's owner may vacuum it, so the sweeper's database role "+
+				"must own the database, or be a member of the owner's role that inherits its privileges; "+
+				"SELECT pg_has_role(datdba, 'USAGE') FROM pg_database WHERE datname = current_database(), "+
+				"run as that role, says whether it does", table)
+		}
+		return 0, fmt.Errorf("VACUUM FULL left %s in its old file: the sweeper's database role "+
+			"must own the verification tables and %s, as the role that ran the migrations does, "+
+			"or the database", table, vacuumProbeTable)
+	}
+	var clean bool
+	if err := conn.QueryRow(ctx,
+		`SELECT age(relfrozenxid) < age($2::xid) FROM pg_class WHERE oid = $1::text::regclass`,
+		table, rewrite).Scan(&clean); err != nil {
+		return 0, fmt.Errorf("read what VACUUM FULL kept of %s: %w", table, err)
+	}
+	if !clean {
+		return vacuumTooSoon, nil
+	}
+	return vacuumDone, nil
+}
+
+// restampScans reads each verification table through each of its indexes, and
+// once whole, so that the times PostgreSQL's statistics keep of the last scan
+// of each — last_idx_scan in pg_stat_user_indexes, last_seq_scan and
+// last_idx_scan in pg_stat_user_tables — are the sweep's. Otherwise they
+// would keep the time a request last read a table that way: a confirmation
+// checking the credentials' primary key, say, which on a day with a single
+// issuance dates that credential to the second though its row says only the
+// day. The statistics keep the latest time they are given, so a time they
+// were given before this read is gone after it. One that a connection had
+// yet to hand over can still come after it, later than this read's, which is
+// why RewriteCredentials reads the tables a second time (statsHandOver).
+func restampScans(ctx context.Context, conn *pgx.Conn) error {
+	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		// The second read comes after the vacuum, which leaves the
+		// connection's lock_timeout at vacuumLockTimeout. A read waits only
+		// for a session that holds the whole table, a schema change, say,
+		// and holds nobody up while it waits; so it waits as long as the
+		// sweep's other waits outside the vacuum do.
+		if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`,
+			verificationLockTimeout); err != nil {
+			return fmt.Errorf("set the reads' lock timeout: %w", err)
+		}
+		rows, err := tx.Query(ctx, `
+			SELECT c.relname, a.attname
+			FROM pg_index i
+			JOIN pg_class c ON c.oid = i.indrelid
+			JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = i.indkey[0]
+			WHERE i.indrelid = ANY ($1::text[]::regclass[])`, verificationTables[:])
+		if err != nil {
+			return fmt.Errorf("list the verification tables' indexes: %w", err)
+		}
+		var probes [][2]string
+		for rows.Next() {
+			var table, column string
+			if err := rows.Scan(&table, &column); err != nil {
+				rows.Close()
+				return fmt.Errorf("list the verification tables' indexes: %w", err)
+			}
+			probes = append(probes, [2]string{table, column})
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("list the verification tables' indexes: %w", err)
+		}
+
+		// For this transaction only: with reading the table and sorting
+		// priced out, ordering by an index's first column reads that index.
+		if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = off; SET LOCAL enable_bitmapscan = off;
+			SET LOCAL enable_sort = off`); err != nil {
+			return fmt.Errorf("plan index scans: %w", err)
+		}
+		for _, p := range probes {
+			if _, err := tx.Exec(ctx, `SELECT FROM `+pgx.Identifier{p[0]}.Sanitize()+
+				` ORDER BY `+pgx.Identifier{p[1]}.Sanitize()+` LIMIT 1`); err != nil {
+				return fmt.Errorf("scan an index of %s: %w", p[0], err)
+			}
+		}
+		if _, err := tx.Exec(ctx, `SET LOCAL enable_seqscan = on; SET LOCAL enable_indexscan = off;
+			SET LOCAL enable_indexonlyscan = off`); err != nil {
+			return fmt.Errorf("plan table scans: %w", err)
+		}
+		for _, table := range verificationTables {
+			if _, err := tx.Exec(ctx, `SELECT FROM `+pgx.Identifier{table}.Sanitize()); err != nil {
+				return fmt.Errorf("scan %s: %w", table, err)
+			}
+		}
+		return nil
+	})
+}
+
+// noticeLog collects the codes of the notices and warnings a connection is
+// sent, which is how VACUUM reports a table it skipped.
+type noticeLog struct {
+	mu    sync.Mutex
+	codes []string
+}
+
+func (n *noticeLog) add(_ *pgconn.PgConn, notice *pgconn.Notice) {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	n.codes = append(n.codes, notice.Code)
+}
+
+// take returns the codes collected since it was last called.
+func (n *noticeLog) take() []string {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	codes := n.codes
+	n.codes = nil
+	return codes
+}
+
+// relationFile returns the number of the file a table is stored in, which
+// VACUUM FULL replaces.
+func relationFile(ctx context.Context, conn *pgx.Conn, table string) (int64, error) {
+	var file int64
+	if err := conn.QueryRow(ctx,
+		`SELECT pg_relation_filenode($1::text::regclass)::bigint`, table).Scan(&file); err != nil {
+		return 0, fmt.Errorf("find the file %s is stored in: %w", table, err)
+	}
+	return file, nil
 }
 
 // attachedImages collects the blob paths a query selects, as the pairs

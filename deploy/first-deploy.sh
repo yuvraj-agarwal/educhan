@@ -135,17 +135,22 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
 # Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
 # sweep (below), so a backup holds as little as possible of what the sweep
-# deletes. Point-in-time recovery stays off, the gcloud default for this
-# edition, and is never changed here. deploy/README.md section 2.2 says what
-# each of these keeps. An existing instance with backups on gets only the start
-# time moved, so a re-run never shortens a retention someone has raised and
-# never turns backups back on where someone turned them off.
+# deletes or rewrites. 05:00 UTC is also when a verification credential's day
+# ends (credentialDayStart in internal/app/verify.go), so none of the three
+# moves alone (deploy/README.md sections 2.2 and 2.9). Point-in-time recovery
+# stays off, the gcloud default for this edition, and is never changed here.
+# deploy/README.md section 2.2 says what each of these keeps. An existing
+# instance with backups on gets only the start time moved, so a re-run never
+# shortens a retention someone has raised and never turns backups back on where
+# someone turned them off. BACKUP_START is the window's start for the check,
+# the move and the create alike, so changing it here changes all three.
+BACKUP_START=05:00
 if exists gcloud sql instances describe "$DB_INSTANCE"; then
   BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
     --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
-  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *05:00 ]]; then
-    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null ||
-      echo "Could not move the backup window to 05:00 UTC; see deploy/README.md section 2.2." >&2
+  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *"$BACKUP_START" ]]; then
+    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time="$BACKUP_START" >/dev/null ||
+      echo "Could not move the backup window to ${BACKUP_START} UTC; see deploy/README.md section 2.2." >&2
   fi
 else
   gcloud sql instances create "$DB_INSTANCE" \
@@ -154,7 +159,7 @@ else
     --tier=db-f1-micro \
     --region="$REGION" \
     --storage-size=10GB \
-    --backup --backup-start-time=05:00 --retained-backups-count=7
+    --backup --backup-start-time="$BACKUP_START" --retained-backups-count=7
 fi
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"
@@ -214,8 +219,12 @@ fi
 
 # Organisations created since May 2024 enforce a policy that refuses allUsers
 # as an invoker. There, skip the invoker check instead: the service is still
-# public, and ingress is what limits who can reach it.
-if [[ "$(gcloud projects describe "$PROJECT_ID" --format='value(parent.type)')" == "organization" ]]; then
+# public, and ingress is what limits who can reach it. The whole ancestry, not
+# just the parent: a project in a folder has the organisation further up. If
+# the ancestry can't be read, allUsers is tried, and the check at the end says
+# whether the service answers.
+ancestors="$(gcloud projects get-ancestors "$PROJECT_ID" --format='value(type)' || true)"
+if grep -qx organization <<<"$ancestors"; then
   PUBLIC_ACCESS=(--no-invoker-iam-check)
 else
   PUBLIC_ACCESS=(--allow-unauthenticated)
@@ -258,7 +267,9 @@ gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
   --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
 SCHEDULE_ARGS=(
   --location "$REGION"
-  # Done, retry included, before the database's backup window opens at 05:00 UTC.
+  # Done, retry included, half an hour or more before 05:00 UTC, when the backup
+  # window opens and a verification credential's day ends; with this retry and
+  # timeout that allows 03:00 to 04:00 (TestCredentialDaysEndAfterTheSweep).
   --schedule "17 3 * * *" --time-zone "Etc/UTC"
   --http-method POST
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${SWEEP_JOB}:run"
@@ -274,14 +285,28 @@ URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='valu
 # Not /healthz: Cloud Run reserves some paths ending in "z" on run.app URLs.
 # The board list also reads the database, so it proves the same thing.
 step "Checking ${URL}/api/boards"
+answered=""
 for _ in 1 2 3 4 5 6; do
-  if curl -fsS -o /dev/null "${URL}/api/boards"; then echo "ok"; break; fi
+  if curl -fsS -o /dev/null "${URL}/api/boards"; then answered=1; echo "ok"; break; fi
   sleep 5
 done
+HEADING="educhan is live at:"
+if [[ -z "$answered" ]]; then
+  HEADING="educhan is deployed, but did not answer (see the warning above), at:"
+  cat >&2 <<EOF
+
+WARNING: ${URL}/api/boards did not answer in six tries. A 403 above means the
+service is not public: run
+  gcloud run services update ${SERVICE} --region ${REGION} --no-invoker-iam-check
+Anything else, read what the service logged, newest first:
+  gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="${SERVICE}"' \\
+    --freshness=1h --limit=20 --format='value(timestamp,severity,jsonPayload,textPayload)'
+EOF
+fi
 
 cat <<EOF
 
-educhan is live at:
+${HEADING}
 
   ${URL}
 
@@ -291,8 +316,10 @@ Moderation key (keep it private; it goes in the X-Mod-Key header):
 
 Image uploads and institutional verification are switched off.
 
-Expired archived threads are deleted daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run
-it now and see what it did:
+Expired archived threads are deleted, and the verification tables rewritten,
+daily at 03:17 UTC by the ${SWEEP_JOB} Job. Run it once now: its first run
+also checks that the database role may vacuum pg_statistic, and if it fails,
+deploy/README.md section 2.9 says how to read why.
 
   gcloud run jobs execute ${SWEEP_JOB} --region ${REGION} --wait
 

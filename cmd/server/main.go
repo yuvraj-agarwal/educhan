@@ -2,7 +2,10 @@
 // embedded web UI that consumes it, backed by PostgreSQL.
 //
 // With -sweep it serves nothing: it deletes the archived threads whose board's
-// archive_days have run out, with their media, and exits. That is the mode a
+// archive_days have run out, with their media, rewrites the verification
+// credentials so that every one issued before the sweep carries the sweep's
+// transaction id rather than its own (the README's "Transaction ids, and the
+// nightly rewrite" says what that leaves), and exits. That is the mode a
 // scheduled Cloud Run Job runs, from the same image.
 package main
 
@@ -39,7 +42,8 @@ func main() {
 func run(args []string, logs io.Writer) error {
 	flags := flag.NewFlagSet("educhan", flag.ContinueOnError)
 	sweep := flags.Bool("sweep", false,
-		"delete archived threads past their board's archive_days, with their media, then exit")
+		"delete archived threads past their board's archive_days, with their media, "+
+			"rewrite the verification credentials, then exit")
 	if err := flags.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -76,9 +80,17 @@ func run(args []string, logs io.Writer) error {
 
 // runSweep makes one pass over the archive. SIGTERM, which a Cloud Run Job
 // receives when it overruns its task timeout, stops it at the next batch or
-// the next file. A batch commits or rolls back whole, and its files' keys are
-// queued in the same transaction, so a file the run did not get to is removed
-// by the next one.
+// the next file, or has PostgreSQL cancel the credential rewrite or the vacuum
+// after it before the sweep returns (Store.RewriteCredentials), so that
+// neither runs on, holding its table, after the process has exited. A batch
+// commits or rolls back whole, and its files' keys are queued in the same
+// transaction, so a file the run did not get to is removed by the next one; a
+// cancelled rewrite or vacuum rolls back whole too, and the next run does it
+// again. (A vacuum that had finished when the cancel reached it has committed,
+// and that table is done.) The wait of about a minute that follows, before the
+// sweep reads the verification tables a last time, ends at once, and the next
+// run reads them again. The deferred Close in run waits for the pool's
+// connections to send their own cancel requests.
 func runSweep(application *app.App) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -89,6 +101,11 @@ func runSweep(application *app.App) error {
 func serve(cfg app.Config, application *app.App, log *slog.Logger) error {
 	// Only a server has a use for these; the sweeper runs without them.
 	application.WarnServingSettings()
+	// ReadHeaderTimeout and WriteTimeout together are the longest a request
+	// waits for its answer. app.js gives a Verify request up only after that
+	// (VERIFY_TIMEOUT_MS), and TestVerifyAnswersBelongToTheStepTheyWereSentFrom
+	// holds it to app.ReadHeaderTimeout and app.WriteTimeout and checks that this
+	// server uses them.
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           application.Routes(),
