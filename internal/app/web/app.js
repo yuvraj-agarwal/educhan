@@ -127,10 +127,15 @@ const UPLOADS_SWITCHED_OFF = "image uploads are switched off on this server";
 const UPLOADS_OFF_REASON = "This site doesn't take images.";
 
 async function api(path, options = {}) {
+  // answered, if given, is called once the answer's headers are in, before its
+  // body is read: a checkout is called off only until then
+  // (callOffPassCheckouts), since by the time the headers reach the page the
+  // browser has kept the cookie they set.
+  const { answered, ...rest } = options;
   // The caller's headers are copied rather than used in place: this function
   // adds to them, and a caller passing the same object twice should not
   // accumulate whatever the first call decided.
-  const init = { ...options, headers: { ...(options.headers || {}) } };
+  const init = { ...rest, headers: { ...(rest.headers || {}) } };
   // FormData sets its own multipart content type, boundary included.
   if (init.body !== undefined && !(init.body instanceof FormData)) {
     init.headers["Content-Type"] = "application/json";
@@ -144,6 +149,9 @@ async function api(path, options = {}) {
     const err = new Error(UNREACHABLE);
     err.unreachable = true;
     throw err;
+  }
+  if (answered) {
+    answered();
   }
   const payload = res.status === 204 ? null : await res.json().catch(() => null);
   if (!res.ok) {
@@ -1880,15 +1888,15 @@ function forgetBrowserHTML() {
         keep the key, the name and any badge they have, and a post from one of them puts the
         key and the name back, so close them first. To use the Pass again afterwards, show its
         code on the <a href="/pass">Pass</a> page and write it down first. It also stops this
-        browser collecting a Pass bought here that hasn't arrived yet, even one whose
-        checkout was still opening; if you've paid for one, write to the support address
-        on the receipt Stripe emailed you, and you'll be sent a reissue code to collect
-        it with. If you used Copy the code on the Pass page since you last opened educhan
-        in this tab, and have copied nothing in this tab since, it empties the clipboard
-        too, whatever is on it by then, unless another tab removed or replaced the Pass
-        meanwhile. It does so even after a copy in this tab that educhan can't see took
-        anything, such as one from an email box in some browsers. A Pass code copied any
-        other way, by hand included, stays there until something else is copied.</p>
+        browser collecting a Pass bought here that hasn't arrived yet, even one whose checkout
+        was still opening; if you've paid for one, write to the support address on the receipt
+        Stripe emailed you, and you'll be sent a reissue code to collect it with. If you used
+        Copy the code on the Pass page since you last opened educhan in this tab, and have
+        copied nothing in this tab since, it empties the clipboard too, whatever is on it by
+        then, unless another tab removed or replaced the Pass meanwhile. It does so even after
+        a copy in this tab that educhan can't see took anything, such as one from an email box
+        in some browsers. A Pass code copied any other way, by hand included, stays there
+        until something else is copied.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
     </div>`;
 }
@@ -2143,6 +2151,19 @@ const PASS_NONCE_PATTERN = /^[A-Za-z0-9_-]{22}$/;
 // is answered and never takes it off; one found older than that is taken off.
 const PASS_FORGET_STORAGE_KEY = "educhan:pass-forget";
 const PASS_FORGET_WAIT_MS = 30000;
+// A checkout's answer puts its claim cookie in the place of the one before,
+// whichever checkout started first, so checkouts go one at a time: while one's
+// request is on its way, the tab it was pressed in keeps a mark of its own
+// under this key, a colon and a random token, holding "checkout:" and the time
+// it was set (openPassCheckout), and a checkout waits to go until no other's
+// mark is left, in any tab (passCheckoutLeft). The one that goes last then
+// holds the cookie, so one pressed after a forget is never overtaken by one the
+// forget overtook, which the forget calls off or drops (submitPass). A mark is
+// waited on for at most PASS_FORGET_WAIT_MS from when it was set, in case its
+// tab closed before taking it off, and one found older is taken off. A waiting
+// checkout looks again every PASS_CHECKOUT_LOOK_MS.
+const PASS_CHECKOUT_STORAGE_KEY = "educhan:pass-checkout";
+const PASS_CHECKOUT_LOOK_MS = 100;
 // A reissue code is what the owner sends a buyer who lost their code: the word
 // REISSUE and 28 characters of a Pass code's alphabet, in groups of four. No
 // Pass code has a U, so the code box tells the two apart by the word, or,
@@ -2249,16 +2270,26 @@ let passForgetting = null;
 // (waitOnPassForget).
 const passForgetWaits = new Map();
 
+// passCheckouts holds each checkout this tab has on its way, from its request
+// to its answer (openPassCheckout), as { mark, abort, answered, forgotten }:
+// the key of its mark, the controller that calls its request off, whether its
+// answer has arrived, and whether a forget was pressed here since then. A
+// forget pressed in this tab, and the tab's leaving the document, call off each
+// one not yet answered (callOffPassCheckouts), so its answer never arrives to
+// set a claim; a forget pressed here after an answer arrived goes after the
+// cookie that answer set, and drops it with the rest.
+const passCheckouts = new Set();
+
 // passStartedAgain is set when the visitor leaves Stripe without paying, or
 // says so while a purchase is being collected, or when a checkout opened that
-// the page did not send them to, because they had left the Pass page, a forget
-// came first, or the Pass held changed meanwhile, in another tab say
-// (submitPass): the page then offers to buy again, and goes on collecting
-// underneath until another checkout starts, so a payment that does go through
-// meanwhile is still collected. One answered after a forget has its claim
-// dropped at once (forgetPassOrder), and leaves nothing to collect. A checkout
-// gives the browser a new claim, and the earlier one is no longer collected
-// here (passCollectingHTML says so).
+// the page did not send them to, because they had left the Pass page or the
+// Pass held changed meanwhile, in another tab say (submitPass): the page then
+// offers to buy again, and goes on collecting underneath until another checkout
+// starts, so a payment that does go through meanwhile is still collected. A
+// checkout answered after a forget is set aside in the same way, but leaves
+// nothing to collect, since its claim is dropped too (forgetPassClaim,
+// forgetPassOrder). A checkout gives the browser a new claim, and the earlier
+// one is no longer collected here (passCollectingHTML says so).
 let passStartedAgain = false;
 
 // passCodeTyped is what is in the Pass page's code box, a Pass code or a
@@ -2398,15 +2429,19 @@ function dropPassNonce(key) {
 // request, nothing starts collecting again (passForgetting), and a mark of its
 // own under PASS_FORGET_STORAGE_KEY has the browser's other tabs do the same
 // (followPassForget), and one opened meanwhile wait (heedPassForgetsUnderWay).
-// For Remove the Pass and Forget this browser (emptyBoxes), which take the
-// Pass too, the reissue code's nonce goes as well, an answer about a Pass
-// already on its way is dropped (passCodeForgets), and the other tabs empty
-// their code boxes; Stop collecting it here leaves a reissue code being spent
-// alone. It resolves, once every forget this tab knows to be on its way is
-// over, to whether nothing is left to collect here: true once the server has
-// answered, or when it sells no Pass, and false when it could not be reached,
-// since the claim is then still this browser's.
+// For Remove the Pass and Forget this browser (emptyBoxes), which take the Pass
+// too, the reissue code's nonce goes as well, an answer about a Pass already on
+// its way is dropped (passCodeForgets), and the other tabs empty their code
+// boxes; Stop collecting it here leaves a reissue code being spent alone. A
+// checkout this tab has on its way is called off before any of it, if its
+// answer has not arrived, so that answer sets no claim; one whose answer has
+// arrived set its cookie before this request goes, which drops it with the rest
+// (callOffPassCheckouts). It resolves, once every forget this tab knows to be
+// on its way is over, to whether nothing is left to collect here: true once the
+// server has answered, or when it sells no Pass, and false when it could not be
+// reached, since the claim is then still this browser's.
 function forgetPassClaim(emptyBoxes = false) {
+  callOffPassCheckouts(true);
   passVisit += 1;
   passForgets += 1;
   dropPassNonce(PASS_NONCE_STORAGE_KEY);
@@ -2441,19 +2476,22 @@ function forgetPassClaim(emptyBoxes = false) {
   return passForgetting.then(() => request);
 }
 
-// forgetPassOrder drops the claim a checkout's answer has just set, by the
-// name that answer gives its order: the checkout was on its way when Remove
-// the Pass, Forget this browser or Stop collecting it here was pressed, here
-// or in another tab, and the claim it set would otherwise outlive that forget,
-// for the next person at the computer to find being collected (submitPass,
-// which does not follow it to Stripe). That claim and no other: a checkout
-// started after the forget, here or in another tab, may have set its own by
-// now, which a forget of the browser's claims would take, so this reads no
-// cookie and clears none, and the cookie it set can stay, with nothing under
-// it, until another checkout replaces it. The name is sent once, here, and
-// kept nowhere. It needs no mark and stops nothing, since it reaches no other
-// claim. A server that gave no name is asked nothing: a forget without one is
-// a forget of every claim.
+// forgetPassOrder drops the claim a checkout's answer has just set, by the name
+// that answer gives its order: the checkout was on its way when Remove the
+// Pass, Forget this browser or Stop collecting it here was pressed in another
+// tab, whose request may have gone too soon to see the claim, and that claim
+// would otherwise outlive the forget, for the next person at the computer to
+// find being collected (submitPass, which does not follow it to Stripe). A
+// forget pressed in this tab needs none: it calls off a checkout not yet
+// answered, and goes after the cookie of one answered (callOffPassCheckouts).
+// That claim and no other: a checkout started after the forget, here or in
+// another tab, may have set its own by now, which a forget of the browser's
+// claims would take, so this reads no cookie and clears none, and the cookie it
+// set can stay, with nothing under it, until another checkout replaces it,
+// Remove the Pass, Forget this browser or Stop collecting it here clears it, or
+// it runs out. The name is sent once, here, and kept nowhere. It needs no mark
+// and stops nothing, since it reaches no other claim. A server that gave no
+// name is asked nothing: a forget without one is a forget of every claim.
 function forgetPassOrder(order) {
   if (typeof order !== "string" || !order) {
     return;
@@ -2461,7 +2499,10 @@ function forgetPassOrder(order) {
   api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true, order }) }).catch((err) => {
     // The claim is still this browser's, unless the server sells no Pass now,
     // and the Pass page offers to stop collecting it once it is drawn again.
-    if (err.status !== 403 && passPageShown()) {
+    // Said on whatever page this tab is on, since the reader who pressed the
+    // forget, in another tab, was told it was done: the one exception to
+    // passPageShown in the Pass section.
+    if (err.status !== 403) {
       showNotice(
         "educhan couldn't be reached to drop the checkout that was still opening, so this browser may still be collecting it. Use Forget this browser on the Verify page when you're back online."
       );
@@ -2501,11 +2542,90 @@ function settlePassForgetting() {
   passCodeForgetting = codes.length ? Promise.all(codes) : null;
 }
 
-// passForgetLeft is how much longer a tab waits on another tab's forget, by its
-// mark: until PASS_FORGET_WAIT_MS after it was set, and never longer than that.
+// passForgetLeft is how much longer a tab waits on another tab's forget, or a
+// checkout on another checkout, by its mark: until PASS_FORGET_WAIT_MS after it
+// was set, and never longer than that.
 function passForgetLeft(mark) {
   const left = Number(mark.slice(mark.indexOf(":") + 1)) + PASS_FORGET_WAIT_MS - Date.now();
   return left > 0 ? Math.min(left, PASS_FORGET_WAIT_MS) : 0;
+}
+
+// openPassCheckout notes a checkout as its request goes (passCheckouts), with a
+// mark of its own for the browser's other checkouts to wait on
+// (PASS_CHECKOUT_STORAGE_KEY), and returns it, with the controller that calls
+// its request off. The mark holds nothing but the time.
+function openPassCheckout() {
+  const checkout = {
+    mark: `${PASS_CHECKOUT_STORAGE_KEY}:${newPassNonce()}`,
+    abort: new AbortController(),
+    answered: false,
+    forgotten: false,
+  };
+  storageSet(checkout.mark, `checkout:${Date.now()}`);
+  passCheckouts.add(checkout);
+  return checkout;
+}
+
+// closePassCheckout takes a checkout and its mark off, once its answer is in or
+// it is called off, so the browser's other checkouts go on.
+function closePassCheckout(checkout) {
+  passCheckouts.delete(checkout);
+  try {
+    localStorage.removeItem(checkout.mark);
+  } catch {
+    // Nothing was stored, so nothing needs removing.
+  }
+}
+
+// callOffPassCheckouts calls off each checkout this tab has on its way whose
+// answer has not arrived: its request is dropped, so the browser keeps no
+// cookie from it, and the page follows it nowhere (submitPass). A forget
+// pressed in this tab (forgotten) does so before its own request goes, and
+// notes each checkout whose answer has arrived instead: that answer's cookie is
+// already in the browser, so the forget drops its claim with the rest, and it
+// needs no drop of its own (forgetPassOrder). Leaving the document (pagehide)
+// calls them off too, since nothing here follows an answer that arrives while
+// the page is gone or in the back-forward cache, and a forget pressed in
+// another tab meanwhile would never see its claim.
+function callOffPassCheckouts(forgotten) {
+  for (const checkout of [...passCheckouts]) {
+    if (checkout.answered) {
+      checkout.forgotten = checkout.forgotten || forgotten;
+    } else {
+      closePassCheckout(checkout);
+      checkout.abort.abort();
+    }
+  }
+}
+
+// passCheckoutLeft is how much longer a checkout waits on the others this
+// browser has on their way, here or in another tab, by their marks: until the
+// last of them goes, each for at most PASS_FORGET_WAIT_MS from when it was set
+// (passForgetLeft). A mark older than that is taken off. Storage that cannot be
+// read holds no mark, and a browser like that is not sent to Stripe
+// (passCanBeKept).
+function passCheckoutLeft() {
+  let left = 0;
+  try {
+    const marks = [];
+    for (let at = 0; at < localStorage.length; at += 1) {
+      const key = localStorage.key(at);
+      if (key && key.startsWith(`${PASS_CHECKOUT_STORAGE_KEY}:`)) {
+        marks.push(key);
+      }
+    }
+    for (const key of marks) {
+      const wait = passForgetLeft(localStorage.getItem(key) || "");
+      if (wait > 0) {
+        left = Math.max(left, wait);
+      } else {
+        localStorage.removeItem(key);
+      }
+    }
+  } catch {
+    return 0;
+  }
+  return left;
 }
 
 // heedPassForget waits on a forget another tab has on its way under key, until
@@ -2523,8 +2643,8 @@ function heedPassForget(key, mark) {
 
 // stopForPassForget stops this tab as the tab that pressed Remove the Pass,
 // Forget this browser or Stop collecting it here stopped (forgetPassClaim), for
-// a forget under key that this tab has only now heard of, by its mark's
-// storage event (followPassForget) or by finding the mark there
+// a forget under key that this tab has only now heard of, by its mark's storage
+// event (followPassForget) or by finding the mark there
 // (heedPassForgetsUnderWay), and returns the wait on it. What it is collecting
 // ends, an answer to a claim already on its way is dropped unstored
 // (passForgets), the collection's nonce goes, and nothing collects here until
@@ -2536,9 +2656,11 @@ function heedPassForget(key, mark) {
 // box here, and what this tab would say about a Pass found gone (passLost), so
 // neither a reissue code typed in this tab nor the last holder's news is left
 // for the next person at the computer; Stop ("claim:") leaves a reissue code
-// alone. Check now and Stop go off, as in the tab Stop was pressed in, until
-// the page is drawn again once the wait is over, and focus on one of them
-// stays on its panel, so the drawing gives it to what took its place.
+// alone. Check now and Stop go off, as in the tab Stop was pressed in, and in a
+// tab that hears of the forget (followPassForget), focus on one of them stays
+// on its panel until the page is drawn again once the wait is over, so the
+// drawing gives it to what took its place; a page brought back from the
+// back-forward cache is drawn afresh by render.
 function stopForPassForget(key, mark) {
   const code = mark.startsWith("code:");
   passVisit += 1;
@@ -2569,12 +2691,12 @@ function stopForPassForget(key, mark) {
 // of (stopForPassForget). At load that changes nothing: nothing has been asked
 // for or kept in this page yet, and the tab that set the mark dropped the
 // nonces before it set it. A page brought back from the back-forward cache,
-// though, may hold a collection's nonce, a reissue code's, the last holder's
-// news or a code typed in, and the storage event for the mark, which comes
-// after the pageshow event, finds it already waited on. Nothing collects here
-// until it is over (renderPass, collectPass), and Check now and Stop are drawn
-// off meanwhile (drawPass). A mark set more than PASS_FORGET_WAIT_MS ago is one
-// a tab closed before its answer left, and is taken off.
+// though, may hold a collection's nonce, a reissue code's or the last holder's
+// news, and the storage event for the mark, which comes after the pageshow
+// event, finds it already waited on. Nothing collects here until it is over
+// (renderPass, collectPass), and Check now and Stop are drawn off meanwhile
+// (drawPass). A mark set more than PASS_FORGET_WAIT_MS ago is one a tab closed
+// before its answer left, and is taken off.
 function heedPassForgetsUnderWay() {
   const marks = new Map();
   try {
@@ -2617,26 +2739,29 @@ function passForgotten(forgets) {
 }
 
 // passForgetsSettled waits until no forget is on its way, here or in another
-// tab, which a request about a Pass the reader asks for meanwhile goes after:
-// a code typed in once Remove the Pass was pressed is then not dropped for
-// being sent before Remove's own request was done (passForgotten), and a
-// checkout's claim is not dropped by a forget sent before it. It resolves to
-// what to say if another forget came while it waited, or "": the forgets are
+// tab, which a request about a Pass the reader asks for meanwhile goes after: a
+// code typed in once Remove the Pass was pressed is then not dropped for being
+// sent before Remove's own request was done (passForgotten), and a checkout's
+// claim is not dropped by a forget sent before it. A checkout (checkout) waits
+// as well until no other checkout is on its way, here or in another tab
+// (passCheckoutLeft), so the claim cookie its answer sets is not replaced by an
+// earlier one's that answers later, one a forget overtook included. It resolves
+// to what to say if another forget came while it waited, or "": the forgets are
 // noted when it is called, which is when the button was pressed, so a press
-// made before that forget sends nothing, and one made after it goes. Remove
-// the Pass or Forget this browser, here or in another tab, is
+// made before that forget sends nothing, and one made after it goes. Remove the
+// Pass or Forget this browser, here or in another tab, is
 // PASS_FORGOTTEN_MEANWHILE. A Stop alone is PASS_STOPPED_MEANWHILE, and can
-// come only from a tab that has waited the forget on its way out
-// (PASS_FORGET_WAIT_MS), since Check now and Stop are off until then in every
-// tab that knows of it, and every tab does, opened meanwhile included. Each
-// wait ends a turn after the forgets have, so what a forget does with its own
-// answer (Stop's word that this browser has stopped collecting, say) comes
-// first, and what the press says is not drawn over.
-async function passForgetsSettled() {
+// come only while a checkout waits on another, or from a tab that has waited
+// the forget on its way out (PASS_FORGET_WAIT_MS), since Check now and Stop are
+// off until then in every tab that knows of it, and every tab does, opened
+// meanwhile included. Each wait ends a turn after the forgets have, so what a
+// forget does with its own answer (Stop's word that this browser has stopped
+// collecting, say) comes first, and what the press says is not drawn over.
+async function passForgetsSettled(checkout = false) {
   const codes = passCodeForgets;
   const claims = passForgets;
-  while (passForgetting) {
-    await passForgetting;
+  while (passForgetting || (checkout && passCheckoutLeft() > 0)) {
+    await (passForgetting || new Promise((resolve) => setTimeout(resolve, PASS_CHECKOUT_LOOK_MS)));
     await new Promise((resolve) => setTimeout(resolve));
   }
   if (codes !== passCodeForgets) {
@@ -3006,8 +3131,9 @@ function passStopCollectingHTML() {
   return `
       <p class="muted">Not your computer?
         <button class="link" type="button" data-action="stop-pass-claim">Stop collecting it here</button>,
-        so whoever uses this browser next can't. If it's paid, write to the support address on
-        the receipt Stripe emailed you, and you'll be sent a reissue code to collect it with.</p>`;
+        so whoever uses this browser next can't. That stops a checkout still opening in this
+        browser too. If it's paid, write to the support address on the receipt Stripe emailed
+        you, and you'll be sent a reissue code to collect it with.</p>`;
 }
 
 // passCollectingHTML stands where the forms would be while this browser has a
@@ -3832,12 +3958,15 @@ async function checkHeldPass(button) {
 // here. A request asked for while a forget is on its way is sent once that is
 // done (passForgetsSettled), and not at all if Remove the Pass or Forget this
 // browser was pressed meanwhile, or Stop in a tab that had given up waiting for
-// it. An answer about a Pass that left this browser while it was awaited
-// (removed, or replaced, here or in another tab) is dropped (passStillHeld),
-// and so is any answer once Remove the Pass or Forget this browser has been
-// pressed (passForgotten), and neither starts a checkout: one it opened is left
-// behind (passStartedAgain), or, opened before a forget that came after the
-// press, Stop's included, has its claim dropped too (forgetPassOrder). One that
+// it; a checkout waits for any other this browser has on its way too, so the
+// one pressed last holds the claim cookie. An answer about a Pass that left
+// this browser while it was awaited (removed, or replaced, here or in another
+// tab) is dropped (passStillHeld), and so is any answer once Remove the Pass or
+// Forget this browser has been pressed (passForgotten), and neither starts a
+// checkout: one it opened is left behind (passStartedAgain), or, opened before
+// a forget that came after the press, Stop's included, has its claim dropped
+// too. A checkout still on its way when a forget is pressed in this tab, or the
+// tab leaves the document, is called off (callOffPassCheckouts). One that
 // arrives after the reader left the Pass page stores what it is still right to
 // store, and draws nothing, and starts no checkout either.
 async function submitPass(form) {
@@ -3904,7 +4033,7 @@ async function submitPass(form) {
   button.disabled = true;
   button.textContent = kind === "activate" ? "Checking…" : "Opening Stripe…";
   clearNotice();
-  const meanwhile = await passForgetsSettled();
+  const meanwhile = await passForgetsSettled(kind !== "activate");
   if (meanwhile) {
     button.disabled = false;
     button.textContent = label;
@@ -3916,12 +4045,27 @@ async function submitPass(form) {
   }
   const forgets = passCodeForgets;
   const claims = passForgets;
+  // A checkout is noted while it is on its way (openPassCheckout): the
+  // browser's other checkouts wait for its answer, and until that answer is in,
+  // a forget pressed here, or the tab's leaving the document, calls it off.
+  const checkout = kind === "activate" ? null : openPassCheckout();
+  const options = { method: "POST", body: JSON.stringify(request.body) };
+  if (checkout) {
+    options.signal = checkout.abort.signal;
+    options.answered = () => {
+      checkout.answered = true;
+    };
+  }
   let res = null;
   let failed = null;
   try {
-    res = await api(request.path, { method: "POST", body: JSON.stringify(request.body) });
+    res = await api(request.path, options);
   } catch (err) {
     failed = err;
+  }
+  const calledOff = Boolean(checkout) && checkout.abort.signal.aborted;
+  if (checkout) {
+    closePassCheckout(checkout);
   }
   // A checkout opened is one left behind, as if the reader had left Stripe
   // without paying, unless they are sent to it below: the page then offers to
@@ -3931,19 +4075,23 @@ async function submitPass(form) {
     passStartedAgain = true;
   }
   // A checkout answered after Remove the Pass, Forget this browser or Stop
-  // collecting it here was pressed, here or in another tab, set a claim that
-  // forget never saw: it is not followed to Stripe, and its claim is dropped
-  // at once, by the order its answer names (forgetPassOrder). A Stop leaves
-  // any other answer alone, a code checked or a checkout refused, as it leaves
-  // a reissue code.
+  // collecting it here was pressed, here or in another tab, is not followed to
+  // Stripe, and the claim it set does not outlive that forget. Pressed here,
+  // the forget went after the cookie that answer set, and dropped it with the
+  // rest (callOffPassCheckouts); pressed in another tab, it may have gone too
+  // soon to see it, so that claim is dropped at once, by the order the answer
+  // names (forgetPassOrder). A Stop leaves any other answer alone, a code
+  // checked or a checkout refused, as it leaves a reissue code.
   const dropped = Boolean(res) && kind !== "activate" && (claims !== passForgets || passForgotten(forgets));
-  if (dropped) {
+  if (dropped && !checkout.forgotten) {
     forgetPassOrder(res.order);
   }
-  // The forget that dropped it draws the page again once it is settled; until
-  // then the button that waited has focus back, if nothing else took it and
-  // the reader is still on the Pass page.
-  if (dropped || passForgotten(forgets) || !passStillHeld(held)) {
+  // The forget that dropped it, or called it off, draws the page again once it
+  // is settled, and a page left and brought back from the back-forward cache is
+  // drawn afresh (the pageshow listener); until then the button that waited has
+  // focus back, if nothing else took it and the reader is still on the Pass
+  // page.
+  if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {
     button.disabled = false;
     button.textContent = label;
     if (passPageShown()) {
@@ -5403,11 +5551,13 @@ window.addEventListener("pageshow", (event) => {
   }
 });
 
-// Leaving the document, for Stripe say, takes what was typed in the Pass
-// page's code box with it, as leaving the page within the site does (render),
-// so the back-forward cache does not bring it back.
+// Leaving the document, for Stripe say, takes what was typed in the Pass page's
+// code box with it, as leaving the page within the site does (render), so the
+// back-forward cache does not bring it back. A checkout still on its way is
+// called off, since the reader has left it (callOffPassCheckouts).
 window.addEventListener("pagehide", () => {
   forgetTypedCode();
+  callOffPassCheckouts(false);
 });
 
 document.addEventListener("copy", forgetCopiedPassCode);

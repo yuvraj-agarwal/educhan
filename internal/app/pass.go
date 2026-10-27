@@ -817,16 +817,16 @@ func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
 // forgetPassOrder drops one checkout's claim, the one whose order its answer
 // named (passOrderName), as forgetPassClaim drops each of the browser's: for a
 // checkout that answered after Remove the Pass, Forget this browser or Stop
-// collecting it here, which the page does not follow to Stripe, so that its
-// claim does not outlive the forget. A name without the server's signature,
-// one made from a copy of pass_orders say, is refused. It reads no cookie and
-// clears none. A checkout started after the forget is somebody's purchase, and
-// its cookie can arrive while this request is on its way, so clearing the
-// cookie here could clear that one; the cookie the forgotten checkout set may
-// stay in the browser, with nothing under it, until another checkout replaces
-// it, Remove the Pass, Forget this browser or Stop collecting it here clears it
-// (forgetPassClaim), or it runs out. The answer says nothing of what else
-// waits, since no cookie was read.
+// collecting it here was pressed in another tab, which the page does not follow
+// to Stripe, so that its claim does not outlive the forget. A name without the
+// server's signature, one made from a copy of pass_orders say, is refused. It
+// reads no cookie and clears none. A checkout started after the forget is
+// somebody's purchase, and its cookie can arrive while this request is on its
+// way, so clearing the cookie here could clear that one; the cookie the
+// forgotten checkout set may stay in the browser, with nothing under it, until
+// another checkout replaces it, Remove the Pass, Forget this browser or Stop
+// collecting it here clears it (forgetPassClaim), or it runs out. The answer
+// says nothing of what else waits, since no cookie was read.
 func (a *App) forgetPassOrder(w http.ResponseWriter, r *http.Request, name string) {
 	raw, err := base64.RawURLEncoding.DecodeString(name)
 	if err != nil || len(raw) != sha256.Size+passOrderTagSize ||
