@@ -190,6 +190,7 @@ img { max-width: 100%; }
 }
 
 .verify-link:hover { color: var(--text); border-color: var(--border-strong); text-decoration: none; }
+.verify-link[hidden] { display: none; }
 
 .verify-link[aria-current="page"] {
   color: var(--text);
@@ -330,6 +331,10 @@ main[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s ease 0.15s; }
   border-radius: var(--radius);
   color: var(--danger);
   font-size: 14px;
+  /* The notice sits just under the sticky header, at the top of the page, so
+     one the Pass page brings into view takes the page to its top, clear of the
+     header at any width. */
+  scroll-margin-top: 160px;
 }
 
 .notice[hidden] { display: none; }
@@ -626,6 +631,45 @@ button.link:hover { text-decoration: underline; }
   flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+
+/* The Pass page's list of what a Pass does and does not do. */
+.pass-list {
+  padding-left: 1.2em;
+  display: grid;
+  gap: 6px;
+}
+
+.pass-renew { display: grid; gap: 12px; justify-items: start; }
+.pass-issued { margin-bottom: 18px; }
+
+/* The held Pass's code, shown on request so it can be written down. */
+.pass-shown { display: grid; gap: 12px; }
+.pass-shown[hidden] { display: none; }
+
+/* A Pass code, new or shown on request: large enough to copy down by hand
+   without mistaking one character for another. */
+.pass-code {
+  font-family: var(--mono);
+  font-size: 20px;
+  letter-spacing: 0.06em;
+  color: var(--text);
+  padding: 10px 12px;
+  background: var(--panel-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  justify-self: start;
+  user-select: all;
+  overflow-wrap: anywhere;
+}
+
+/* The code of a Pass a new one took the place of, in a sentence. */
+.pass-code-old {
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  color: var(--text);
+  user-select: all;
+  overflow-wrap: anywhere;
 }
 
 /* The credential outlives the tab now, so the way to get rid of it is called

@@ -32,10 +32,14 @@ type App struct {
 	uploadLimiter *cooldownLimiter
 	verifyLimiter *cooldownLimiter
 	// cooldownSweep drops the limiters' expired entries, which are client
-	// addresses: on a timer, and before a request when the timer has fallen
-	// behind. stopCooldownSweep stops the timer; Close calls it.
+	// addresses, and the Pass budget's past hours: on a timer, and before a
+	// request when the timer has fallen behind. stopCooldownSweep stops the
+	// timer; Close calls it.
 	cooldownSweep     *cooldownSweep
 	stopCooldownSweep func()
+
+	// pass sells and checks the educhan Pass (pass.go).
+	pass *passState
 
 	// schemaAhead lists the migrations the database has and this binary does
 	// not: a newer release migrated it. The sweeper refuses to run on one.
@@ -46,6 +50,9 @@ type App struct {
 // and prepares the media store.
 func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 	if err := checkMailer(cfg); err != nil {
+		return nil, err
+	}
+	if err := validatePassConfig(cfg.Pass); err != nil {
 		return nil, err
 	}
 	poolCfg, err := pgxpool.ParseConfig(cfg.DatabaseURL)
@@ -98,6 +105,7 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		postLimiter:   newCooldownLimiter(cfg.PostCooldown),
 		uploadLimiter: newCooldownLimiter(cfg.UploadCooldown),
 		verifyLimiter: newCooldownLimiter(cfg.VerifyCooldown),
+		pass:          newPassState(cfg.Pass),
 		schemaAhead:   schemaAhead,
 	}
 	every := cfg.cooldownSweepEvery
@@ -105,7 +113,8 @@ func New(ctx context.Context, cfg Config, log *slog.Logger) (*App, error) {
 		every = cooldownSweepInterval
 	}
 	a.cooldownSweep = newCooldownSweep(every,
-		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter)
+		a.threadLimiter, a.postLimiter, a.uploadLimiter, a.verifyLimiter,
+		a.pass.checkoutLimiter, a.pass.activateLimiter, a.pass.budget)
 	a.stopCooldownSweep = a.cooldownSweep.start()
 	return a, nil
 }
@@ -120,7 +129,12 @@ func (a *App) WarnServingSettings() {
 	if a.cfg.PosterIDSaltEphemeral {
 		a.log.Warn("EDUCHAN_POSTER_ID_SALT is unset; poster IDs and secure tripcodes will change on restart")
 	}
-	if a.cfg.ModKey == "" {
+	switch {
+	case a.cfg.ModKey == "" && a.passEnabled():
+		// The Pass is on, and a lost code is reissued behind the same key.
+		a.log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request, " +
+			"and no lost Pass code can be reissued")
+	case a.cfg.ModKey == "":
 		a.log.Warn("EDUCHAN_MOD_KEY is unset; moderation endpoints will refuse every request")
 	}
 	switch {
@@ -205,6 +219,16 @@ func (a *App) Routes() http.Handler {
 	mux.HandleFunc("GET /api/verify", a.handleVerifyStatus)
 	mux.HandleFunc("POST /api/verify/request", a.handleVerifyRequest)
 	mux.HandleFunc("POST /api/verify/confirm", a.handleVerifyConfirm)
+
+	// The educhan Pass. Like verification, nothing here is addressed by
+	// anything a post carries. The webhook is Stripe's, signed with the
+	// endpoint's secret; reissuing is the owner's, behind the moderation key.
+	mux.HandleFunc("GET /api/pass", a.handlePassStatus)
+	mux.HandleFunc("POST /api/pass/checkout", a.handlePassCheckout)
+	mux.HandleFunc("POST /api/pass/claim", a.handlePassClaim)
+	mux.HandleFunc("POST /api/pass/activate", a.handlePassActivate)
+	mux.HandleFunc("POST /api/pass/stripe-webhook", a.handleStripeWebhook)
+	mux.HandleFunc("POST /api/pass/reissue", a.handlePassReissue)
 
 	// Thread routes keyed by primary key, kept for callers that hold an ID from
 	// an earlier revision of the API.

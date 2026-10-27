@@ -790,15 +790,19 @@ func TestUploadRejectionDoesNotConsumeThePostCooldown(t *testing.T) {
 
 // Flood control keys on the client address, and the address is not meant to
 // outlive the cooldowns it is held for. The running app sweeps every limiter
-// on a timer of its own, so an address that posts once and never comes back is
-// forgotten without another request arriving to prompt it.
+// on a timer of its own, the Pass's checkout and code-check limiters among
+// them, so an address that posts once, or starts one checkout, and never comes
+// back is forgotten without another request arriving to prompt it.
 func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
+	stripe := newFakeStripe(t)
 	h := testServer(t, func(cfg *Config) {
 		cfg.TrustedProxyHops = 1
 		cfg.ThreadCooldown = time.Minute
 		cfg.PostCooldown = time.Minute
 		cfg.UploadCooldown = time.Minute
 		cfg.VerifyCooldown = time.Minute
+		cfg.Pass = testPassConfig(stripe)
+		cfg.Pass.CheckoutCooldown = time.Minute
 		cfg.cooldownSweepEvery = time.Millisecond
 	})
 	h.addBoard("general")
@@ -816,10 +820,17 @@ func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
 	// Verification is off here, so its limiter is fed the way a code
 	// request would feed it.
 	h.app.verifyLimiter.record("ip|" + address)
+	if status := h.postFrom(address, "/api/pass/checkout", map[string]any{"adult": true}, nil); status != http.StatusOK {
+		t.Fatalf("checkout: status %d", status)
+	}
+	if status := h.postFrom(address, "/api/pass/activate", map[string]any{"pass": "ZZZZZ-ZZZZZ-ZZZZZ-ZZZZZ"}, nil); status != http.StatusForbidden {
+		t.Fatalf("code check: status %d", status)
+	}
 
 	limiters := map[string]*cooldownLimiter{
 		"thread": h.app.threadLimiter, "post": h.app.postLimiter,
 		"upload": h.app.uploadLimiter, "verify": h.app.verifyLimiter,
+		"pass checkout": h.app.pass.checkoutLimiter, "pass code check": h.app.pass.activateLimiter,
 	}
 	holding := func() []string {
 		var held []string
@@ -833,8 +844,8 @@ func TestFloodControlForgetsAddressesOnAQuietServer(t *testing.T) {
 		slices.Sort(held)
 		return held
 	}
-	if got := holding(); len(got) != 4 {
-		t.Fatalf("the limiters hold %v, want the address in all four", got)
+	if got := holding(); len(got) != len(limiters) {
+		t.Fatalf("the limiters hold %v, want the address in all %d", got, len(limiters))
 	}
 
 	// A minute on, every cooldown has run out; nothing else is sent.

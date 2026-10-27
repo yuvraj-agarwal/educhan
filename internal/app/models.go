@@ -41,6 +41,9 @@ type Site struct {
 	// MaxUploadBytes is the largest image the server takes, the limit behind
 	// its 413. It is reported whether or not uploads are on.
 	MaxUploadBytes int64 `json:"max_upload_bytes"`
+	// Pass reports whether this server has the Pass switched on, on sale or
+	// paused, so the header links to its page only where there is one.
+	Pass bool `json:"pass"`
 }
 
 // Board is a top-level category threads are posted under.
