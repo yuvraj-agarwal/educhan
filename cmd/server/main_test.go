@@ -303,14 +303,15 @@ func wantOneFatalLine(t *testing.T, out, want string) {
 // it ended: it listens for SIGTERM from before it connects, and every step of
 // its startup ends with the stop, or, as the domain file's read does, is
 // followed by a look at it, so it writes the stop as its error, and it exits
-// with status 1 at once, with nothing deleted. Before, SIGTERM killed it there
-// without a word; with SIGTERM caught, a bucket check made on a context the
-// stop does not reach would hold the stop until the process was killed; and
-// with no look after the domain file, a stop while it was read let the sweep go
-// on to prune. (A database that stops answering once the sweep is connected to
-// it holds the error back until pgx gives up the connection, fifteen seconds
-// later, which this does not wait for. The two answers migrate waits for
-// whatever the stop are TestSweepStoppedAsMigrateFinishesEndsThere's.)
+// with status 1 at once, or once the read ends, with nothing deleted. Before,
+// SIGTERM killed it there without a word; with SIGTERM caught, a bucket check
+// made on a context the stop does not reach would hold the stop until the
+// process was killed; and with no look after the domain file, a stop while it
+// was read let the sweep go on to prune. (A database that stops answering once
+// the sweep is connected to it holds the error back until pgx gives up the
+// connection, fifteen seconds later, which this does not wait for. The two
+// answers migrate waits for whatever the stop are
+// TestSweepStoppedAsMigrateFinishesEndsThere's.)
 func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 	// Nothing is left to wait for once the stop has ended the startup.
 	const quickly = 3 * time.Second

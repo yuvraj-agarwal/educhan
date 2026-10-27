@@ -926,21 +926,22 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   to only after the stop); and after the media store, for one that answers just as the
   stop comes, which no test reaches: making the local upload directory does not wait,
   and a bucket check the stop lands in ends with it. The error is written at once, or
-  once that answer comes, unless the database stops answering while the sweep is
-  connected to it, when `New` first gives up the connection, which pgx allows fifteen
-  seconds, seventeen after a commit or an unlock left unanswered. Every error `run` ends
-  on is written once, as `msg=fatal` (`TestSweepModeFailsWithoutADatabase`,
-  `TestServingFailsWhenTheAddressIsTaken` and the stopped sweeps above), and a flag or a
-  setting it cannot read is then the only line written: the flag set writes nothing of
-  its own, and the usage only for `-h` (`TestRunRefusesWhatItDoesNotUnderstand` and
-  `TestRunWritesTheUsageWhenAsked`, which run the whole process and read all it writes).
-  It builds its App with `New` like the server, and runs without the salt, the
-  moderation key, the verification secret and the captcha secret on purpose, so `New`
-  warns about none of them: those warnings are `WarnServingSettings`, which only `serve`
-  in `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
-  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
-  goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
-  are, `SweepArchived` must skip held threads, and its comment says so.
+  once that answer or the domain file's read comes, unless the database stops answering
+  while the sweep is connected to it, when `New` first gives up the connection, which
+  pgx allows fifteen seconds, seventeen after a commit or an unlock left unanswered.
+  Every error `run` ends on is written once, as `msg=fatal`
+  (`TestSweepModeFailsWithoutADatabase`, `TestServingFailsWhenTheAddressIsTaken` and the
+  stopped sweeps above), and a flag or a setting it cannot read is then the only line
+  written: the flag set writes nothing of its own, and the usage only for `-h`
+  (`TestRunRefusesWhatItDoesNotUnderstand` and `TestRunWritesTheUsageWhenAsked`, which
+  run the whole process and read all it writes). It builds its App with `New` like the
+  server, and runs without the salt, the moderation key, the verification secret and the
+  captcha secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random
