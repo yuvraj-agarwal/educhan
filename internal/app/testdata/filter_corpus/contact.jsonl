@@ -357,3 +357,4 @@
 {"id": "contact-357", "body": "insta id hai, search karo “madeupgirl”", "subject": "", "name": "", "expect": "block", "why": "Hinglish: Instagram ID to search in curly quotes (ROB2-2)"}
 {"id": "contact-358", "body": "snap username - search “madeupsnaps”", "subject": "", "name": "", "expect": "block", "why": "Snapchat username to search in curly quotes (ROB2-2)"}
 {"id": "contact-359", "body": "search “madeup study tips” on youtube, the first video helps", "subject": "", "name": "", "expect": "publish", "why": "a video searched for in curly quotes, no account named (ROB2-2 control)"}
+{"id": "contact-360", "body": "the answer to part c is in my notes, text me on 9123456780 for them", "subject": "", "name": "", "expect": "block", "why": "a number to text, beside an answer to a part (R2P-10DIGIT-MATHS control)"}

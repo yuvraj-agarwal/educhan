@@ -14858,7 +14858,9 @@ func standsAlone(v *view, run digitRun) bool {
 // the words people give one, with nothing round it asking for a call or
 // saying whose it is: a largest or smallest number of some kind ("the
 // largest 10-digit number with distinct digits is 9876543210"), a result
-// that "came out as" or was got "for part (b)", the answer key's, a number
+// that "came out as" or was got "for part (b)", the answer key's, a final
+// answer or the answer to a part or a question, one "according to the
+// solutions", a number
 // after a power or factorial in the sentence before ("How many digits does
 // 2^33 have? It's 8589934592"); and digits that count up or down by one
 // (0123456789, 9876543210) beside talk of digits, examples or a program's
@@ -14883,7 +14885,12 @@ var (
 		`\d+~digits?~`+words(`numbers?`, `integers?`, `answers?`),
 		`perfect~`+words(`squares?`, `cubes?`, `numbers?`),
 		`answer~key`, words(`came`, `comes`, `come`)+`~out~`+words(`as`, `to`), `for~part`, `pandigital`,
-		`self~descriptive`, `calculator`) + `)\b`))
+		`self~descriptive`, `calculator`,
+		// "the answer to part c is", "the final answer", "according to the
+		// solutions".
+		`final~answers?`, `answers?~`+words(`to`, `for`)+`~(?:the~)?`+words(`part`, `q\d*`, `question`, `qn`,
+			`ques`, `problem`, `sum`), words(`the`, `my`)+`~answer~`+words(`is`, `was`, `came`),
+		`according~to~the~`+words(`solutions?`, `answers?`, `book`, `textbook`)) + `)\b`))
 	// powerBefore is a power or a factorial written before a number.
 	powerBefore = newWindowSearch(`\d[ \t]*(?:\^|\*\*)[ \t]*\d|\d!`)
 	// ownNumber names a number as someone's: "my 10 digit number is".
