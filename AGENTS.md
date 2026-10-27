@@ -584,22 +584,34 @@ needs a browser check before the test changes.
   or that they left before it was drawn, waits for them to come back, since one the
   browser could not keep is nowhere else, and nor is the code of a Pass one it keeps took
   the place of. A panel on the page goes then even when its code has gone already, dropped
-  by another tab's Remove or Forget whose drawing still waits on the forget. A renewal's
-  date is never stored from the claim's answer, since the Pass it renewed may not be the
-  one held here now: `confirmRenewal` checks the held code with `/api/pass/activate`
-  (`recheckPass`, asked once more after a `429`'s wait), stores what that says unless the
-  Pass held changed meanwhile, and says the Pass is renewed only when the date it checks
-  is the renewal's and later than the one it had; a renewal a reissue code brought is said
-  to come from the code, not from a payment in this browser. A renewal hands over no code,
-  so its claim or reissue code asked again is refused: refused after a retry with a kept
-  nonce, the page checks the held code the same way (`passAfterLostAnswer`) and says only
-  that the Pass is now good until a later date, never where the time came from. A reissue
-  code is typed or pasted into the code box, which takes a Pass code too (`isReissueCode`
-  tells them apart by the server's word and length), and never rides in an address.
-  Pressing the button is the reader's say-so: a Pass held here is replaced at once and its
-  code shown beside the new one, while a Pass code typed over a good one is refused. The
-  code goes once in a claim's body with a nonce of its own (`educhan:pass-reissue-nonce`),
-  the Pass code derived from the two; it is never stored, and stays in the box, in memory
+  by another tab's Remove or Forget whose drawing still waits on the forget. The panel is
+  worded from the Pass stored here as it is drawn (`passIssuedHTML(issued, held)`), not
+  from `kept` alone: held and good, the code is ready and sent with posts; held and run
+  out, by its date or marked so by a post's answer, it is not sent with posts until it is
+  renewed; kept but no longer held, another code having been typed in here or stored by
+  another tab, or the data cleared, the browser no longer has it and it won't be shown
+  again once the reader leaves; and one the browser could not keep says so. `has`, which
+  holds back Buy, is a Pass held or a code shown that the browser could not keep, so Buy
+  is offered beside a code it no longer holds. When educhan says the held code is no
+  longer valid (Check it again, `recheckPass`, Renew, or a post's `"pass": "invalid"`),
+  `forgetInvalidCode` takes that code off its panel if it is the one just handed over: a
+  code of a different Pass it replaced stays, alone, with no Copy the code, until the
+  reader leaves, and with none `passJustIssued` goes. A renewal's date is never stored
+  from the claim's answer, since the Pass it renewed may not be the one held here now:
+  `confirmRenewal` checks the held code with `/api/pass/activate` (`recheckPass`, asked
+  once more after a `429`'s wait), stores what that says unless the Pass held changed
+  meanwhile, and says the Pass is renewed only when the date it checks is the renewal's
+  and later than the one it had; a renewal a reissue code brought is said to come from the
+  code, not from a payment in this browser. A renewal hands over no code, so its claim or
+  reissue code asked again is refused: refused after a retry with a kept nonce, the page
+  checks the held code the same way (`passAfterLostAnswer`) and says only that the Pass is
+  now good until a later date, never where the time came from. A reissue code is typed or
+  pasted into the code box, which takes a Pass code too (`isReissueCode` tells them apart
+  by the server's word and length), and never rides in an address. Pressing the button is
+  the reader's say-so: a Pass held here is replaced at once and its code shown beside the
+  new one, while a Pass code typed over a good one is refused. The code goes once in a
+  claim's body with a nonce of its own (`educhan:pass-reissue-nonce`), the Pass code
+  derived from the two; it is never stored, and stays in the box, in memory
   (`passCodeTyped`), until an answer arrives, so pressing again after a lost answer asks
   with the same nonce. That nonce is dropped only when an answer says the code issued or
   renewed a Pass, or by Remove the Pass and Forget this browser, never on a refusal: an
@@ -693,10 +705,13 @@ needs a browser check before the test changes.
   they went to. When `GET /api/pass` fails, a Pass held here is still drawn, with Show and
   Remove and no Renew, above the code box and the error, and the page is asked for again
   (`refreshFailedPass`) once educhan answers a code typed in or checked there, so the
-  error does not stay under the answer. Another tab's Remove or Forget reaches this one by
+  error does not stay under the answer; that drawing is set off by the answer, not the
+  reader, so it draws as `redrawPass` does (`renderPass` given the selectors), and focus
+  on a control it draws again, Copy the code or Use this code here say, stays there
+  without scrolling the page. Another tab's Remove, Forget or new code reaches this one by
   the `storage` event (`followPassStorage`), which drops a code just handed over once the
-  Pass is removed, kept or not, and one the browser kept once another code takes its
-  place, but not one it could not keep, and draws the Pass page again; Remove and Forget
+  Pass is removed, kept or not, but leaves it, kept or not, beside any code it took the
+  place of when another code is stored, and draws the Pass page again; Remove and Forget
   reach such a code by their mark too (`stopForPassForget`). Both need a browser that
   stores: one that stores nothing at all tells its other tabs nothing, and a code on
   screen there stays until the reader leaves the Pass page. A page brought back from the
