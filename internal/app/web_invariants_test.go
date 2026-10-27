@@ -879,6 +879,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			"why.textContent = message;",
 			"why.hidden = false;",
 			"revealClearOfHeader(form);",
+			"verifyShown.at = performance.now();",
 			"if (!target) return;",
 			`if (invalid) target.setAttribute("aria-invalid", "true");`,
 			"target.focus({ preventScroll: true });",
@@ -1918,7 +1919,9 @@ func TestVerifyStepButtonsClearTheNotice(t *testing.T) {
 // the 18+ attestation, the one box the page draws, which the reader alone
 // ticks (TestBadgeAttestationIsNeverPreselectedOrKept): a double click on Use
 // a different address ticked it, the address step having been brought clear
-// of the header and its label moved under the pointer. CI runs no browser, so
+// of the header and its label moved under the pointer. A refusal said in a
+// step's form moves the step too, though nothing is drawn, and starts the
+// wait again (refuseVerification). CI runs no browser, so
 // the time is held to a span that covers a double tap and a second tap from a
 // reader who saw nothing change, and no more than a second, which a reader
 // who meant to press a button just drawn need not wait out.
@@ -2073,6 +2076,51 @@ func TestVerifyButtonsLetGoAPressAimedAtTheStepBefore(t *testing.T) {
 	if !strings.Contains(withoutComments(jsFunction(t, script, "drawVerifyStep")),
 		"verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };") {
 		t.Error("drawVerifyStep does not note when it drew the step")
+	}
+
+	// A refusal said in a step's form moves the step under the reader's
+	// finger, though nothing is drawn: the sentence opens above the buttons,
+	// and the form is brought clear of the header, which scrolls the page
+	// down or up. So refuseVerification starts the wait again once it has
+	// done both, before anything in it can return. On a phone, the second tap
+	// of a double tap on Verify, a wrong code refused, pressed Keep my badge,
+	// which the scroll had brought up into Verify's place, and the code box
+	// went with the code still pending; and the second tap on Send code with
+	// the 18+ box unticked ticked it, its label brought down into Send code's
+	// place, under the refusal saying why it had to be ticked.
+	refuse := jsLines(jsFunction(t, script, "refuseVerification"))
+	const restart = "verifyShown.at = performance.now();"
+	shown := slices.Index(refuse, "revealClearOfHeader(form);")
+	if shown < 0 || slices.Index(refuse, restart) != shown+1 {
+		t.Errorf("refuseVerification runs\n\t%s\nwant it to start the wait again (%s) straight after it brings the "+
+			"form, with the refusal said in it, into view clear of the header", strings.Join(refuse, "\n\t"), restart)
+	}
+	if n := strings.Count(code, "verifyShown.at ="); n != 1 {
+		t.Errorf("app.js sets verifyShown.at alone %d times; want one, in refuseVerification: a drawing notes "+
+			"when with the step and the drawing (drawVerifyStep)", n)
+	}
+	// Everything else that scrolls the Verify page clear of the header does
+	// it straight after a step is drawn, within the wait that drawing started
+	// (TestVerifyStepsAreShownClearOfTheHeader): showVerifyField,
+	// showHeldBadge, confirmBrowserForgotten and Forget this credential's
+	// branch of the page's click listener. A new place that scrolls it is one
+	// to ask whether it moves a step already on screen, as a refusal does.
+	var scrollers []string
+	for name, callees := range jsCallGraph(t, script) {
+		if callees["revealClearOfHeader"] {
+			scrollers = append(scrollers, name)
+		}
+	}
+	slices.Sort(scrollers)
+	want := []string{"confirmBrowserForgotten", "refuseVerification", "showHeldBadge", "showVerifyField"}
+	if !slices.Equal(scrollers, want) {
+		t.Errorf("the functions that bring something on the Verify page into view clear of the header are %v; this "+
+			"test knows %v, of which refuseVerification alone moves a step already on screen and starts the wait "+
+			"again", scrollers, want)
+	}
+	if n := strings.Count(code, "revealClearOfHeader("); n != 6 {
+		t.Errorf("app.js names revealClearOfHeader( %d times; this test knows six: its declaration, the four "+
+			"functions above and Forget this credential's branch of the page's click listener", n)
 	}
 }
 

@@ -1930,6 +1930,8 @@ function verifyDeadline() {
 // tells a step still on screen from one that was drawn and then drawn over.
 // When it was drawn is how the page's click listener tells a press aimed at
 // the drawing from one aimed at what was there before it (VERIFY_SETTLE_MS).
+// A refusal said in the drawing moves it under the reader as a drawing does,
+// and that time is then when the refusal was said (refuseVerification).
 let verifyShown = { step: null, node: null, at: -Infinity };
 
 // VERIFY_SETTLE_MS is how long the Verify page's own buttons, each of which
@@ -1945,7 +1947,8 @@ let verifyShown = { step: null, node: null, at: -Infinity };
 // took the badge, the post key and the name. A press that soon after a drawing
 // was aimed at what was there before it — nobody reads a new step and aims at
 // one of its buttons in half a second — so it is let go, and a reader who did
-// mean it presses again.
+// mean it presses again. A refusal said in a step's form moves its buttons
+// too, and starts the same wait (refuseVerification).
 const VERIFY_SETTLE_MS = 500;
 const VERIFY_MOVES = [
   '[data-action="forget-verification"]',
@@ -1963,7 +1966,9 @@ const VERIFY_MOVES = [
 // the buttons do. Before, a double click on Use a different address ticked it
 // on a wide screen, where the address step, brought clear of the header,
 // moved the label under the pointer; and a double tap on Verify another
-// address could land on it on a phone.
+// address could land on it on a phone. So could a double tap on Send code
+// with the box unticked, on a phone, once the refusal saying why scrolled the
+// label down into the button's place.
 const VERIFY_ATTESTATION = "label.attest";
 
 // A refusal of the request sent from a step, as its form says it: what it
@@ -2242,11 +2247,23 @@ const VERIFY_CHECKING = "Verifying…";
 // selects what was typed there, for a code to be typed again whole. The form
 // is brought into view clear of the header, and with it the field, the
 // refusal under it and the button that was pressed.
+//
+// Saying it moves the step under the reader's finger, though nothing is drawn:
+// the refusal opens above the buttons, and bringing the form clear of the
+// header scrolls the page, down or up. So the step's buttons and its
+// attestation let a press go for VERIFY_SETTLE_MS from here, as they do once a
+// step is drawn (verifyShown). On a phone, the second tap of a double tap on
+// Verify, a wrong code refused, pressed Keep my badge, which the scroll had
+// brought up into Verify's place, and the code box went with the code still
+// pending; and the second tap on Send code with the 18+ box unticked ticked
+// it, its label brought down into Send code's place, under the refusal
+// saying why it had to be ticked.
 function refuseVerification(form, message, target, { invalid = false, select = false } = {}) {
   const why = form.querySelector(".verify-refused");
   why.textContent = message;
   why.hidden = false;
   revealClearOfHeader(form);
+  verifyShown.at = performance.now();
   if (!target) return;
   if (invalid) target.setAttribute("aria-invalid", "true");
   target.focus({ preventScroll: true });
@@ -3600,10 +3617,10 @@ function isInternalLink(anchor) {
 
 // pressedTooSoon says whether a press is on one of the Verify page's own
 // buttons, or on its attestation, within VERIFY_SETTLE_MS of a step being
-// drawn: aimed at what the drawing replaced, and let go. A click let go on
-// the attestation leaves the box as it was, unticked. The event's time is
-// when the reader pressed, which is before the drawing when the press was
-// waiting behind it.
+// drawn, or moved by a refusal said in it: aimed at what was there before,
+// and let go. A click let go on the attestation leaves the box as it was,
+// unticked. The event's time is when the reader pressed, which is before the
+// drawing, or the refusal, when the press was waiting behind it.
 function pressedTooSoon(event) {
   const aimed = event.target.closest(VERIFY_MOVES) || event.target.closest(VERIFY_ATTESTATION);
   return !!aimed && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;

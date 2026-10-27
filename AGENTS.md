@@ -625,8 +625,14 @@ needs a browser check before the test changes.
   the one box the page draws, lets a press go the same way (`VERIFY_ATTESTATION`, its
   label, which holds the box): it is ticked by the reader alone, and a double click on
   Use a different address ticked it on a wide screen, where the address step brought
-  clear of the header moved its label under the pointer
-  (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
+  clear of the header moved its label under the pointer. A refusal said in a step's
+  form moves the step too, though nothing is drawn — its sentence opens above the
+  buttons, and the form is brought clear of the header, which scrolls the page — so
+  `refuseVerification` starts the wait again. On a phone, the second tap of a double
+  tap on Verify, a wrong code refused, pressed Keep my badge, scrolled up into Verify's
+  place, and the code box went with the code still pending; on Send code with the box
+  unticked, it ticked the box, scrolled down into the button's place, under the refusal
+  saying why (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
 
 ### Child safety
 
