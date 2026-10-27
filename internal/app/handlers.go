@@ -25,9 +25,9 @@ func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSite reports the server's posting settings: whether images are
-// accepted, and how large one may be. It answers every caller the same way and
-// reads nothing from the request, so it says nothing about who is asking, and
-// asking tells the server nothing either.
+// accepted, how large one may be, and whether the educhan Pass is on. It
+// answers every caller the same way and reads nothing from the request, so it
+// says nothing about who is asking, and asking tells the server nothing either.
 func (a *App) handleSite(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, http.StatusOK, Site{
 		Uploads:        a.cfg.UploadsEnabled,

@@ -1,7 +1,9 @@
 package app
 
 import (
+	"encoding/json"
 	"io/fs"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -419,7 +421,7 @@ func TestPassAttestationIsNeverPreselectedOrKept(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(submit, "showNotice(PASS_AGE_REFUSAL);") {
+	if !strings.Contains(submit, "showPassNotice(PASS_AGE_REFUSAL);") {
 		t.Error("submitPass no longer refuses on its own when the box is unticked")
 	}
 	if !strings.Contains(script, `const PASS_AGE_REFUSED = "`+passAdultRequired+`";`) {
@@ -543,7 +545,7 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 			}
 		}
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "showClaimed")), "function showClaimed(claim, news, notice = \"\") {\n  if (!passPageShown()) {\n    return;\n  }") {
+	if !strings.Contains(withoutComments(jsFunction(t, script, "showClaimed")), "function showClaimed(claim, news, notice = \"\", asked = false) {\n  if (!passPageShown()) {\n    return;\n  }") {
 		t.Error("showClaimed draws the Pass page over whatever the reader moved on to")
 	}
 }
@@ -555,7 +557,7 @@ func TestPassPageStoresAClaimedPassBeforeAnythingElse(t *testing.T) {
 func TestPassPageCollectsAPendingPurchase(t *testing.T) {
 	script := appScript(t)
 	render := withoutComments(jsFunction(t, script, "renderPass"))
-	call := regexp.MustCompile(`if \(([^{]*)\) \{\s*collectPass\(visit\);`).FindStringSubmatch(render)
+	call := regexp.MustCompile(`if \(([^{]*)\) \{\s*collectPass\(visit, asked\);`).FindStringSubmatch(render)
 	if call == nil || !strings.Contains(call[1], "info.claim || passNoncePending(PASS_NONCE_STORAGE_KEY)") || strings.Contains(call[1], "back") || strings.Contains(call[1], "paid") {
 		t.Errorf("renderPass no longer collects whenever the server says there is a purchase to collect, "+
 			"or a claim's answer may have been lost: %q", call)
@@ -699,8 +701,35 @@ func TestPassCodeCanBeShownBeforeItIsRemoved(t *testing.T) {
 		!strings.Contains(code, "showPassCode(showPass);") {
 		t.Error("nothing shows the code when Show the code is pressed")
 	}
-	if !strings.Contains(withoutComments(jsFunction(t, script, "showPassCode")), `document.getElementById("pass-shown")`) {
+	show := withoutComments(jsFunction(t, script, "showPassCode"))
+	if !strings.Contains(show, `document.getElementById("pass-shown")`) {
 		t.Error("showPassCode no longer fills the panel's slot")
+	}
+	// Hidden again, the code leaves the page, not only the screen, so nothing
+	// reading the page finds it there afterwards.
+	if !strings.Contains(show, "if (!slot.hidden) {\n    slot.hidden = true;\n    slot.textContent = \"\";\n") {
+		t.Error("Hide the code leaves the code in the page")
+	}
+	// Shown, it takes focus, so a screen reader reads it out: the code in its
+	// own slot, not a code just handed over that the page shows beside it.
+	if !strings.HasSuffix(show, "  slot.hidden = false;\n  button.textContent = \"Hide the code\";\n"+
+		"  button.setAttribute(\"aria-expanded\", \"true\");\n  slot.querySelector(\".pass-code\").focus();\n}") {
+		t.Error("Show the code no longer moves focus to the code it shows")
+	}
+	// The held Pass's code and a code just handed over can be on the page
+	// together, so each has an id of its own, and each Copy the code copies
+	// the code in its own panel: copying the held Pass's to write it down
+	// before Remove must not copy the other.
+	if !strings.Contains(show, `<p class="pass-code" id="pass-held-code" tabindex="-1">${esc(held.code)}</p>`) ||
+		strings.Count(code, `id="pass-code"`) != 1 || strings.Count(code, `id="pass-held-code"`) != 1 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "passIssuedHTML")), `<p class="pass-code" id="pass-code">${esc(issued.code)}</p>`) {
+		t.Error("the held Pass's code shown and a code just handed over no longer have ids of their own")
+	}
+	copied := code[strings.Index(code, `if (event.target.closest('[data-action="copy-pass"]')) {`):]
+	copied = copied[:strings.Index(copied, "\n    return;\n  }")]
+	if !strings.Contains(copied, "event.preventDefault();\n    const code = event.target.closest(\".verify-panel\")?.querySelector(\".pass-code\");\n") ||
+		strings.Contains(code, `getElementById("pass-code")`) || strings.Contains(code, `getElementById("pass-held-code")`) {
+		t.Error("Copy the code no longer copies the code in its own panel")
 	}
 	if !strings.Contains(words(jsFunction(t, script, "forgetBrowserHTML")), "show its code on the") {
 		t.Error("Forget this browser no longer says where the code can be seen before it is forgotten")
@@ -759,7 +788,7 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	// included), Check it again, and a reissue code.
 	for name, guard := range map[string]string{
 		"checkHeldPass":     "if (passForgotten(forgets) || !passStillHeld(held)) {",
-		"submitPass":        "if (passForgotten(forgets) || !passStillHeld(held)) {",
+		"submitPass":        "if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {",
 		"redeemPassReissue": "if (passForgotten(forgets)) {",
 	} {
 		body := withoutComments(jsFunction(t, script, name))
@@ -787,27 +816,41 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	// notice says why. Noted only after the wait, a renewal would send the code
 	// Remove took away, and a reissue code be spent and its Pass stored after
 	// Forget. A Stop alone, which only a tab that has given up waiting can
-	// send, is said apart, since nothing was removed or forgotten. Each wait
-	// ends a turn after the forgets, so what Stop says once it is answered
-	// does not take the place of what the press says.
+	// send, or one pressed while a checkout waits on another, is said apart,
+	// since nothing was removed or forgotten. Each wait ends a turn after the
+	// forgets, so what Stop says once it is answered does not take the place
+	// of what the press says. A checkout waits as well until no other checkout
+	// is on its way, in any tab, by their marks, so the one pressed last holds
+	// the claim cookie: one pressed after a forget is not overtaken by a late
+	// answer to one the forget overtook. A press whose document is left while
+	// it waits (pagehide) stops waiting and sends nothing, ahead of anything
+	// else, and says nothing either, since the reader has gone: brought back
+	// from the back-forward cache, it would otherwise go with no new press, a
+	// checkout to Stripe and a reissue code spent from a box leaving emptied.
 	settled := withoutComments(jsFunction(t, script, "passForgetsSettled"))
-	if !strings.Contains(settled, "const codes = passCodeForgets;\n  const claims = passForgets;\n"+
-		"  while (passForgetting) {\n    await passForgetting;\n    await new Promise((resolve) => setTimeout(resolve));\n  }\n"+
+	if !strings.Contains(settled, "async function passForgetsSettled(checkout = false) {\n"+
+		"  const codes = passCodeForgets;\n  const claims = passForgets;\n  const left = passLeft;\n"+
+		"  while (left === passLeft && (passForgetting || (checkout && passCheckoutLeft() > 0))) {\n"+
+		"    await (passForgetting || new Promise((resolve) => setTimeout(resolve, PASS_CHECKOUT_LOOK_MS)));\n"+
+		"    await new Promise((resolve) => setTimeout(resolve));\n  }\n"+
+		"  if (left !== passLeft) {\n    return PASS_LEFT_MEANWHILE;\n  }\n"+
 		"  if (codes !== passCodeForgets) {\n    return PASS_FORGOTTEN_MEANWHILE;\n  }\n"+
 		"  return claims !== passForgets ? PASS_STOPPED_MEANWHILE : \"\";\n}") {
-		t.Error("passForgetsSettled no longer waits for every forget on its way, and says what came meanwhile")
+		t.Error("passForgetsSettled no longer waits for every forget on its way, and for a checkout every other checkout, " +
+			"and says what came meanwhile, or no longer stops for a document left while it waits")
 	}
 	for name, dropped := range map[string]string{
-		"submitPass": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n    button.disabled = false;\n    button.textContent = label;\n" +
-			"    if (passPageShown()) {\n      refocus(button);\n      showNotice(meanwhile);\n    }\n    return;\n  }",
-		"redeemPassReissue": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n    if (passPageShown()) {\n      showNotice(meanwhile);\n    }\n    return;\n  }",
+		"submitPass": "const meanwhile = await passForgetsSettled(kind !== \"activate\");\n  if (meanwhile) {\n    button.disabled = false;\n    button.textContent = label;\n" +
+			"    if (passPageShown() && meanwhile !== PASS_LEFT_MEANWHILE) {\n      refocus(button);\n      showPassNotice(meanwhile);\n    }\n    return;\n  }",
+		"redeemPassReissue": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n" +
+			"    if (passPageShown() && meanwhile !== PASS_LEFT_MEANWHILE) {\n      showPassNotice(meanwhile);\n    }\n    return;\n  }",
 		"checkHeldPass": "const meanwhile = await passForgetsSettled();\n  if (meanwhile) {\n    button.disabled = false;\n" +
-			"    if (passPageShown()) {\n      refocus(button);\n      showNotice(meanwhile);\n    }\n    return;\n  }",
+			"    if (passPageShown() && meanwhile !== PASS_LEFT_MEANWHILE) {\n      refocus(button);\n      showPassNotice(meanwhile);\n    }\n    return;\n  }",
 	} {
 		body := withoutComments(jsFunction(t, script, name))
 		waited, noted := strings.Index(body, dropped), strings.Index(body, "const forgets = passCodeForgets;")
 		asked := regexp.MustCompile(`await api\(`).FindStringIndex(body)
-		if waited < 0 || noted < waited || asked == nil || asked[0] < noted || strings.Count(body, "passForgetsSettled()") != 1 {
+		if waited < 0 || noted < waited || asked == nil || asked[0] < noted || strings.Count(body, "passForgetsSettled(") != 1 {
 			t.Errorf("%s sends its request while a forget is on its way, or after a Remove or Forget pressed while it waited", name)
 			continue
 		}
@@ -819,11 +862,18 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 			t.Errorf("%s waits before it notes the forgets, so one pressed after its button counts as one pressed before", name)
 		}
 	}
-	if n := strings.Count(withoutComments(script), "passForgetsSettled()"); n != 4 ||
+	if n := strings.Count(withoutComments(script), "passForgetsSettled("); n != 4 ||
 		!strings.Contains(script, "\nconst PASS_FORGOTTEN_MEANWHILE = \"Nothing was sent: the Pass was removed, or this browser forgotten") ||
 		!strings.Contains(script, "\nconst PASS_STOPPED_MEANWHILE = \"Nothing was sent: this browser stopped collecting") {
-		t.Errorf("passForgetsSettled() appears %d times; want its definition and the three presses that wait on it, "+
+		t.Errorf("passForgetsSettled( appears %d times; want its definition and the three presses that wait on it, "+
 			"which say nothing was sent, and why, when a forget came meanwhile", n)
+	}
+	// What a press comes to when its document was left is never said: it is
+	// its own word, returned once and set aside by each of the three presses
+	// before anything is shown.
+	if !strings.Contains(script, "\nconst PASS_LEFT_MEANWHILE = \"left\";\n") ||
+		strings.Count(withoutComments(script), "PASS_LEFT_MEANWHILE") != 5 {
+		t.Error("PASS_LEFT_MEANWHILE is said, or set aside other than by the three presses that wait")
 	}
 	// Each is called straight from the press: the click, or the submit
 	// handler, which hands a Pass form over before it awaits anything.
@@ -833,12 +883,193 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 			"    await submitVerification(form);\n    return;\n  }\n  if (form.dataset.pass) {\n    await submitPass(form);") {
 		t.Error("Check it again or a Pass form waits before it reaches passForgetsSettled, which then notes forgets pressed after it")
 	}
-	// One asked for before the forget and dropped for it gives the button that
-	// waited its focus back, rather than leaving it on the top of the document.
+	// One asked for before the forget and dropped for it, or called off, gives
+	// the button that waited its focus back, rather than leaving it on the top
+	// of the document.
 	if !strings.Contains(withoutComments(jsFunction(t, script, "submitPass")),
-		"if (passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n    button.textContent = label;\n"+
+		"if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n    button.textContent = label;\n"+
 			"    if (passPageShown()) {\n      refocus(button);\n    }\n    return;\n  }") {
-		t.Error("submitPass drops an answer for a forget and leaves focus on the top of the document")
+		t.Error("submitPass drops an answer for a forget, or a checkout called off, and leaves focus on the top of the document")
+	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "checkHeldPass")),
+		"if (passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n"+
+			"    if (passPageShown()) {\n      refocus(button);\n    }\n    return;\n  }") {
+		t.Error("Check it again drops an answer for a forget and leaves focus on the top of the document")
+	}
+	// A checkout still on its way when Remove the Pass, Forget this browser or
+	// Stop collecting it here is pressed must not leave a claim that outlives
+	// the forget. Pressed in its own tab, the forget calls it off first, if
+	// its answer has not arrived, so the browser keeps no cookie from it; if
+	// its answer has arrived, the cookie it set is in the browser before the
+	// forget's request goes, and is dropped with the rest. Pressed in another
+	// tab, the forget may have gone too soon to see that claim: the checkout
+	// is not followed to Stripe, and its claim is dropped by the order its
+	// answer names, never by a forget of every claim, which would take a
+	// checkout's started after the forget, nor by the forget's marks and
+	// counters, which would stop other tabs collecting what is rightly theirs.
+	// Both counters are noted when the request goes, once no forget is on its
+	// way, so only a forget pressed after it counts. The checkout is noted
+	// after them, and taken off as soon as its answer is in, before anything
+	// else is done with it, so another checkout waiting on it goes on.
+	checkout := withoutComments(jsFunction(t, script, "submitPass"))
+	noted := strings.Index(checkout, "const forgets = passCodeForgets;\n  const claims = passForgets;\n")
+	opened := strings.Index(checkout, "const checkout = kind === \"activate\" ? null : openPassCheckout();\n"+
+		"  const options = { method: \"POST\", body: JSON.stringify(request.body) };\n  if (checkout) {\n"+
+		"    options.signal = checkout.abort.signal;\n    options.answered = () => {\n      checkout.answered = true;\n    };\n  }\n")
+	asked := strings.Index(checkout, "res = await api(request.path, options);\n  } catch (err) {\n    failed = err;\n  }\n"+
+		"  const calledOff = Boolean(checkout) && checkout.abort.signal.aborted;\n  if (checkout) {\n    closePassCheckout(checkout);\n  }\n")
+	late := strings.Index(checkout, "const dropped = Boolean(res) && kind !== \"activate\" && (claims !== passForgets || passForgotten(forgets));\n"+
+		"  if (dropped && !checkout.forgotten) {\n    forgetPassOrder(res.order, passForgetHeardLast);\n  }\n")
+	guard := strings.Index(checkout, "if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {")
+	assign := strings.Index(checkout, "window.location.assign(res.url);")
+	if noted < 0 || opened < noted || asked < opened || noted < strings.Index(checkout, "await passForgetsSettled(kind !== \"activate\");") ||
+		late < asked || guard < late || assign < guard || strings.Count(checkout, "openPassCheckout(") != 1 ||
+		strings.Count(checkout, "closePassCheckout(") != 1 || len(regexp.MustCompile(`\bpassForgets\b`).FindAllString(checkout, -1)) != 2 {
+		t.Error("a checkout answered after a forget pressed since it went keeps the claim it set, or is followed to Stripe")
+	}
+	// The answer's headers are noted as they arrive, before its body is read:
+	// a checkout is called off only until then, and once they are in, the
+	// browser has kept the cookie they set.
+	api := withoutComments(jsFunction(t, script, "api"))
+	fetched := strings.Index(api, "res = await fetch(path, init);")
+	noteAnswer := strings.Index(api, "  if (answered) {\n    answered();\n  }\n  const payload = res.status === 204 ? null : await res.json()")
+	if !strings.Contains(api, "const { answered, ...rest } = options;\n") ||
+		!strings.Contains(api, "const init = { ...rest, headers: { ...(rest.headers || {}) } };") || fetched < 0 || noteAnswer < fetched {
+		t.Error("api() no longer says when an answer's headers are in, before its body is read")
+	}
+	// Called off: each checkout not yet answered, its request dropped and its
+	// mark taken off; for a forget pressed here, one already answered is noted
+	// instead, since the forget goes after its cookie and needs no drop by
+	// name. Remove, Forget and Stop do it before anything else, so before the
+	// forget's request goes, and so does leaving the page; a forget heard of
+	// from another tab does not, and leaves the answer to be dropped by name.
+	callOff := withoutComments(jsFunction(t, script, "callOffPassCheckouts"))
+	if callOff != "function callOffPassCheckouts(forgotten) {\n  for (const checkout of [...passCheckouts]) {\n"+
+		"    if (checkout.answered) {\n      checkout.forgotten = checkout.forgotten || forgotten;\n    } else {\n"+
+		"      closePassCheckout(checkout);\n      checkout.abort.abort();\n    }\n  }\n}" {
+		t.Error("callOffPassCheckouts no longer calls off each checkout not yet answered, and notes the rest for a forget")
+	}
+	if forget := withoutComments(jsFunction(t, script, "forgetPassClaim")); !strings.HasPrefix(forget,
+		"function forgetPassClaim(pressed) {\n  callOffPassCheckouts(true);\n  const emptyBoxes = pressed !== \"stop\";\n  passVisit += 1;\n") {
+		t.Error("Remove, Forget or Stop sends its forget before calling off a checkout still on its way in its tab")
+	}
+	if hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});")); !strings.Contains(hide, "  callOffPassCheckouts(false);\n") {
+		t.Error("leaving the page leaves a checkout on its way, whose answer would set a claim nothing here follows")
+	}
+	// And a press still waiting to go (passForgetsSettled) is called off with
+	// it: leaving moves passLeft, which nothing else moves, and every press
+	// notes it before it waits.
+	if hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});")); !strings.Contains(hide, "  passLeft += 1;\n") ||
+		!strings.Contains(code, "\nlet passLeft = 0;\n") || strings.Count(code, "passLeft += 1;") != 1 ||
+		len(regexp.MustCompile(`\bpassLeft\b`).FindAllString(code, -1)) != 5 {
+		t.Error("leaving the page leaves a press waiting to go, which goes with no new press once the page is brought back")
+	}
+	if n := strings.Count(code, "callOffPassCheckouts("); n != 3 {
+		t.Errorf("callOffPassCheckouts is called %d times; want its definition, forgetPassClaim and pagehide", n)
+	}
+	// A checkout's mark holds the time and nothing else, under a key spelled
+	// once and read only where it is put up, where it is waited on, and where
+	// Forget this browser takes every one off, and every mark is waited on for
+	// at most the wait a forget's mark gets.
+	if !strings.Contains(code, "\nconst PASS_CHECKOUT_STORAGE_KEY = \"educhan:pass-checkout\";\nconst PASS_CHECKOUT_LOOK_MS = 100;\n") ||
+		strings.Count(code, `"educhan:pass-checkout"`) != 1 || strings.Count(code, "PASS_CHECKOUT_STORAGE_KEY") != 4 {
+		t.Error("the checkout mark's key is spelled out, or read, other than in openPassCheckout, passCheckoutLeft and forgetBrowser")
+	}
+	// A mark a tab left behind, crashed or killed before its answer came, says
+	// when a checkout was started here. Forget this browser takes every one
+	// off, once its forget has called off this tab's own, and a page load takes
+	// off one past its wait, by passCheckoutLeft's own test. A tab whose
+	// checkout is still on its way puts its mark back as it was when another
+	// tab takes it off, so a checkout pressed after the Forget still waits for
+	// its answer; one past its wait stays off.
+	browser := withoutComments(jsFunction(t, script, "forgetBrowser"))
+	swept := strings.Index(browser, "  const dropped = forgetPassClaim(\"browser\");\n  try {\n    const marks = [];\n"+
+		"    for (let at = 0; at < localStorage.length; at += 1) {\n      const key = localStorage.key(at);\n"+
+		"      if (key && key.startsWith(`${PASS_CHECKOUT_STORAGE_KEY}:`)) {\n        marks.push(key);\n      }\n    }\n"+
+		"    for (const key of marks) {\n      localStorage.removeItem(key);\n    }\n  } catch {\n\n  }\n  return dropped;\n}")
+	if swept < 0 || strings.Count(browser, "forgetPassClaim(") != 1 {
+		t.Error("Forget this browser no longer takes every checkout's mark off once its forget has called off this tab's checkouts")
+	}
+	if !regexp.MustCompile(`\nheedPassForgetsUnderWay\(\);\s*passCheckoutLeft\(\);\n`).MatchString(code) {
+		t.Error("a page load no longer takes off a checkout's mark past its wait")
+	}
+	if keep := withoutComments(jsFunction(t, script, "keepPassCheckoutMark")); keep != "function keepPassCheckoutMark(event) {\n"+
+		"  if (event.newValue !== null || !event.oldValue || passForgetLeft(event.oldValue) === 0) {\n    return;\n  }\n"+
+		"  for (const checkout of passCheckouts) {\n    if (checkout.mark === event.key) {\n"+
+		"      storageSet(checkout.mark, event.oldValue);\n    }\n  }\n}" ||
+		!strings.Contains(code, "\nwindow.addEventListener(\"storage\", keepPassCheckoutMark);\n") {
+		t.Error("a checkout on its way no longer puts back its mark when another tab takes it off, so a later checkout can overtake it")
+	}
+	if open := withoutComments(jsFunction(t, script, "openPassCheckout")); !strings.Contains(open,
+		"mark: `${PASS_CHECKOUT_STORAGE_KEY}:${newPassNonce()}`,\n    abort: new AbortController(),\n    answered: false,\n    forgotten: false,\n  };\n"+
+			"  storageSet(checkout.mark, `checkout:${Date.now()}`);\n  passCheckouts.add(checkout);\n") {
+		t.Error("openPassCheckout no longer marks a checkout with the time alone, or no longer notes it to be called off")
+	}
+	if closed := withoutComments(jsFunction(t, script, "closePassCheckout")); !strings.Contains(closed,
+		"passCheckouts.delete(checkout);\n  try {\n    localStorage.removeItem(checkout.mark);") {
+		t.Error("closePassCheckout no longer takes a checkout's mark off")
+	}
+	left := withoutComments(jsFunction(t, script, "passCheckoutLeft"))
+	if !strings.Contains(left, "if (key && key.startsWith(`${PASS_CHECKOUT_STORAGE_KEY}:`)) {\n        marks.push(key);") ||
+		!strings.Contains(left, "const wait = passForgetLeft(localStorage.getItem(key) || \"\");\n      if (wait > 0) {\n"+
+			"        left = Math.max(left, wait);\n      } else {\n        localStorage.removeItem(key);\n      }") {
+		t.Error("passCheckoutLeft no longer waits on every checkout's mark, each for at most the wait, and takes off one older")
+	}
+	if strings.Count(code, "passCheckoutLeft()") != 3 || strings.Count(code, "openPassCheckout()") != 2 {
+		t.Error("a checkout's mark is put up, or waited on, other than by submitPass's checkout through passForgetsSettled " +
+			"(and swept as the page loads)")
+	}
+	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
+	named := strings.Index(order, `api("/api/pass/claim", { method: "POST", body: JSON.stringify({ forget: true, order }) })`)
+	if checked := strings.Index(order, "if (typeof order !== \"string\" || !order) {\n    return;\n  }"); checked < 0 || named < checked ||
+		strings.Count(order, "api(") != 1 {
+		t.Error("forgetPassOrder no longer drops the one claim its order names, or asks for a forget of every claim when there is no name")
+	}
+	for _, kept := range []string{"storageSet(", "localStorage", "PASS_FORGET_STORAGE_KEY", "passVisit", "passForgets", "passCodeForgets",
+		"dropPassNonce(", "waitOnPassForget(", "heedPassForget("} {
+		if strings.Contains(order, kept) {
+			t.Errorf("forgetPassOrder does %q: the order's name is sent once and kept nowhere, and the drop stops nothing else", kept)
+		}
+	}
+	if strings.Count(code, "forgetPassOrder(") != 2 || strings.Count(code, ".order") != 1 {
+		t.Error("a checkout's order is read, or forgotten by name, other than where a checkout answered after a forget is dropped")
+	}
+	// What it says when educhan cannot be reached names the forget pressed in
+	// the other tab, as that tab's mark has it, and how to drop the claim once
+	// back online with no more than that forget did: Stop collecting it here
+	// again after a Stop, which leaves the poster key, the name, a badge and a
+	// Pass held here; Stop collecting it here after Remove the Pass, which leaves
+	// no Pass to remove; Forget this browser again after Forget.
+	kept := "\nconst PASS_ORDER_KEPT = {\n  stop:\n    \"" +
+		"educhan couldn't be reached to drop the checkout that was still opening when Stop collecting it here was pressed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here again." + "\",\n  remove:\n    \"" +
+		"educhan couldn't be reached to drop the checkout that was still opening when the Pass was removed, so this browser may still be collecting it. Open the Pass page when you're back online and press Stop collecting it here." + "\",\n  browser:\n    \"" +
+		"educhan couldn't be reached to drop the checkout that was still opening when this browser was forgotten, so the browser may still be collecting it. Press Forget this browser on the Verify page again when you're back online." + "\",\n};\n"
+	if !strings.Contains(code, kept) || !strings.Contains(order, "const notice = PASS_ORDER_KEPT[pressed] || PASS_ORDER_KEPT.browser;") ||
+		!strings.HasPrefix(order, "function forgetPassOrder(order, pressed) {") || strings.Count(code, "PASS_ORDER_KEPT") != 3 {
+		t.Error("a checkout's claim that could not be dropped by its order's name is no longer said in words that name the forget " +
+			"pressed, and how to drop it once back online with no more than that")
+	}
+	if !strings.Contains(code, "\nlet passForgetHeardLast = \"\";\n") || strings.Count(code, "passForgetHeardLast") != 3 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "stopForPassForget")), "passForgetHeardLast = mark.slice(0, mark.indexOf(\":\"));") {
+		t.Error("forgetPassOrder is no longer told which forget was pressed in the other tab, as its mark has it")
+	}
+	// What offers Remove the Pass, Forget this browser and Stop collecting it
+	// here says so, as a shared computer's reader needs to hear it.
+	for name, want := range map[string][2]string{
+		"Forget this browser": {"forgetBrowserHTML", "It also stops this browser collecting a Pass bought here that hasn't arrived yet, " +
+			"even one whose checkout was still opening;"},
+		"the held Pass": {"passHeldHTML", "Removing it also stops this browser collecting anything bought here that hasn't " +
+			"arrived yet, even a checkout still opening."},
+		"Stop collecting it here": {"passStopCollectingHTML", "so whoever uses this browser next can't. That stops a checkout " +
+			"still opening in this browser too."},
+	} {
+		if !strings.Contains(words(jsFunction(t, script, want[0])), want[1]) {
+			t.Errorf("%s no longer says a checkout still opening is stopped too (%q)", name, want[1])
+		}
+	}
+	if want := "Either also stops the browser collecting a Pass bought there that hasn't arrived yet, even one whose " +
+		"checkout was still opening, so the next person can't collect it;"; !strings.Contains(words(faqAnswer(t, script, "faq-pass")), want) {
+		t.Errorf("the FAQ's Pass entry no longer says a checkout still opening is stopped too (%q)", want)
 	}
 	submit := withoutComments(submitHandler(t, script))
 	sent := strings.Index(submit, "const sent = pass && passStillHeld(pass) ? pass : null;")
@@ -856,6 +1087,8 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 // still right to store stored. Each drawing after an await, or in a .then,
 // is preceded by that check since the wait; the async functions make it once,
 // at their own level, after their last wait, so no branch goes without it.
+// The one exception is the notice that a checkout's claim could not be
+// dropped by its order's name, said wherever the reader is (forgetPassOrder).
 func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -895,8 +1128,8 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 		"Check now":            handler(`if (event.target.closest('[data-action="collect-pass"]')) {`),
 		"another tab's change": withoutComments(jsFunction(t, script, "followPassStorage")),
 	}
-	waits := regexp.MustCompile(`\bawait |\.then\(`)
-	draws := regexp.MustCompile(`\b(drawPass|redrawPass|passFocus|focusPassPanel|showNotice|refocus|renderPass|announce)\(|location\.assign\(`)
+	waits := regexp.MustCompile(`\bawait |\.then\(|\.catch\(`)
+	draws := regexp.MustCompile(`\b(drawPass|redrawPass|passFocus|focusPassPanel|showNotice|showPassNotice|refocus|renderPass|announce)\(|location\.assign\(`)
 	gates := regexp.MustCompile(`passPageShown\(\)|if \(drawn\) \{`)
 	for name, body := range bodies {
 		waited := waits.FindAllStringIndex(body, -1)
@@ -925,6 +1158,20 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 			}
 		}
 	}
+	// The reader who pressed the forget in another tab was told it was done,
+	// so a claim it left that could not be dropped is said on whatever page
+	// this tab is on, and that notice is all forgetPassOrder draws. On the
+	// Pass page it answers this tab's own Buy or Renew, so it is said there as
+	// every other answer to a press there is, brought into view
+	// (showPassNotice); on any other page it moves nothing (showNotice).
+	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
+	said := regexp.MustCompile(`\.catch\(\(err\) => \{\s*if \(err\.status !== 403\) \{\s*` +
+		`const notice = PASS_ORDER_KEPT\[pressed\] \|\| PASS_ORDER_KEPT\.browser;\s*` +
+		`if \(passPageShown\(\)\) \{\s*showPassNotice\(notice\);\s*\} else \{\s*showNotice\(notice\);\s*\}\s*\}\s*\}\);`)
+	if len(draws.FindAllString(order, -1)) != 2 || strings.Count(order, "passPageShown()") != 1 || !said.MatchString(order) {
+		t.Error("forgetPassOrder no longer says, on whatever page this tab is on, that a claim it could not drop is still collected, " +
+			"in view on the Pass page and moving nothing elsewhere, or says or draws something else")
+	}
 	// The async functions ask once, at their own level, after their last
 	// wait: a check inside one branch would leave the others drawing over
 	// another page.
@@ -942,19 +1189,154 @@ func TestPassAnswersDrawOnlyOnThePassPage(t *testing.T) {
 		}
 	}
 	// A checkout opened that the reader is not then sent to, because they
-	// left the page or a forget came first, is one left behind, as if they had
-	// left Stripe without paying: the forms come back over it, and it is not
-	// drawn as a payment Stripe has yet to confirm.
+	// left the page or the Pass held changed, is one left behind, as if they
+	// had left Stripe without paying: the forms come back over it, and it is
+	// not drawn as a payment Stripe has yet to confirm. One answered after a
+	// forget is set aside in the same way, and has its claim dropped as well
+	// (pinned in TestPassAnswerAboutAPassThatLeftIsDropped).
 	left := strings.Index(submit, "if (res && kind !== \"activate\") {\n    passStartedAgain = true;\n  }")
-	if guarded := strings.Index(submit, "if (passForgotten(forgets) || !passStillHeld(held)) {"); left < 0 || guarded < left ||
+	if guarded := strings.Index(submit, "if (calledOff || dropped || passForgotten(forgets) || !passStillHeld(held)) {"); left < 0 || guarded < left ||
 		!strings.Contains(submit, "passStartedAgain = false;\n    window.location.assign(res.url);") {
 		t.Error("a checkout answered after the reader left the Pass page, or after a forget, is drawn as one to collect")
 	}
 	// Check now moves focus only if its own drawing happened, which renderPass
 	// says; the claim's answer is shown through showClaimed, which asks first.
 	if !strings.Contains(bodies["Check now"], "renderPass().then((drawn) => {\n      if (drawn) {\n        passFocus(") ||
-		!strings.Contains(bodies["renderPass"], "collectPass(visit);\n  }\n  return true;\n}") {
+		!strings.Contains(bodies["renderPass"], "collectPass(visit, asked);\n  }\n  return true;\n}") {
 		t.Error("Check now moves focus once its drawing was overtaken, or the reader left the page")
+	}
+}
+
+// A notice raised by a press on the Pass page is brought into view when it is
+// out of view: on a phone the forms sit far below the notice, at the top of
+// the page, and a refusal said there unseen looks like nothing happened. It
+// goes straight there, not smoothly, only as far as it must (block
+// "nearest"), and only once the press has given focus where it gives it, which
+// it leaves there. Every notice the Pass page's presses raise goes this way,
+// Check now's included: what the first claim of the drawing it asks for comes
+// to answers it. What the page says on its own, later claims' news included,
+// and every other page's notices stay where showNotice puts them, which moves
+// nothing.
+func TestPassNoticesFromAPressAreBroughtIntoView(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	shown := withoutComments(jsFunction(t, script, "showPassNotice"))
+	if shown != "function showPassNotice(message) {\n  showNotice(message);\n  setTimeout(() => {\n"+
+		"    const box = el.notice.getBoundingClientRect();\n"+
+		"    const header = document.querySelector(\".site-header\").getBoundingClientRect();\n"+
+		"    if (!el.notice.hidden && (box.top < header.bottom || box.bottom > window.innerHeight)) {\n"+
+		"      el.notice.scrollIntoView({ block: \"nearest\" });\n    }\n  });\n}" {
+		t.Errorf("showPassNotice no longer brings a notice out of view into it, and only then, straight and as far as it must:\n%s", shown)
+	}
+	if notice := withoutComments(jsFunction(t, script, "showNotice")); strings.Contains(notice, "scroll") || strings.Contains(notice, "focus") {
+		t.Error("showNotice moves the page or focus, for every page's notices")
+	}
+	if strings.Count(code, "el.notice.scrollIntoView(") != 1 || strings.Contains(code, "smooth") {
+		t.Error("the page scrolls to a notice other than in showPassNotice, or scrolls smoothly")
+	}
+	css, err := fs.ReadFile(webFS(), "app.css")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule := string(css)[strings.Index(string(css), "\n.notice {\n"):]
+	rule = rule[:strings.Index(rule, "\n}\n")]
+	if !strings.Contains(rule, "\n  scroll-margin-top: 160px;") || strings.Contains(string(css), "smooth") {
+		t.Error("a notice brought into view can stop under the sticky header, which is 135px tall on a phone, or scrolls smoothly")
+	}
+	block := func(opener string) string {
+		start := strings.Index(code, opener)
+		if start < 0 {
+			t.Fatalf("app.js has no %q; this test reads it", opener)
+		}
+		body := code[start:]
+		return body[:strings.Index(body, "\n    return;\n  }")]
+	}
+	presses := map[string]string{
+		"redeemPassReissue": withoutComments(jsFunction(t, script, "redeemPassReissue")),
+		"checkHeldPass":     withoutComments(jsFunction(t, script, "checkHeldPass")),
+		"submitPass":        withoutComments(jsFunction(t, script, "submitPass")),
+		"Remove the Pass":   block(`if (event.target.closest('[data-action="forget-pass"]')) {`),
+		"Stop collecting":   block(`const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`),
+		"Copy the code":     block(`if (event.target.closest('[data-action="copy-pass"]')) {`),
+	}
+	said := 0
+	for name, body := range presses {
+		if strings.Contains(body, "showNotice(") || !strings.Contains(body, "showPassNotice(") {
+			t.Errorf("%s says a notice that may land out of view", name)
+		}
+		said += strings.Count(body, "showPassNotice(")
+	}
+	// Check now marks the drawing it asks for (passAsked), which renderPass
+	// takes before anything else can, and hands to its collection; only the
+	// first claim's answer, the press's, is said in view (showClaimed), and
+	// later polls' news is not.
+	checkNow := block(`if (event.target.closest('[data-action="collect-pass"]')) {`)
+	render := withoutComments(jsFunction(t, script, "renderPass"))
+	collect := withoutComments(jsFunction(t, script, "collectPass"))
+	claimed := withoutComments(jsFunction(t, script, "showClaimed"))
+	if !strings.Contains(checkNow, "event.preventDefault();\n    passAsked = true;\n    renderPass().then(") ||
+		!strings.Contains(render, "{\n  const visit = ++passVisit;\n  const asked = passAsked;\n  passAsked = false;\n") ||
+		strings.Count(code, "passAsked = ") != 3 || // and its declaration
+		!strings.Contains(render, "collectPass(visit, asked);") ||
+		!strings.HasPrefix(collect, "async function collectPass(visit, asked = false) {") ||
+		strings.Count(collect, ", asked);") != 2 ||
+		!strings.Contains(collect, "\n    }\n    asked = false;\n    await new Promise((resolve) => setTimeout(resolve, wait));") ||
+		!strings.Contains(claimed, "  if (notice && asked) {\n    showPassNotice(notice);\n  } else if (notice) {\n    showNotice(notice);\n  }\n}") {
+		t.Error("what Check now's first claim comes to is not said in view, or a later poll's news is")
+	}
+	said += strings.Count(claimed, "showPassNotice(")
+	// The notice a checkout's tab gives when it could not drop that
+	// checkout's claim (forgetPassOrder) answers its own Buy or Renew when it
+	// is on the Pass page, and is said in view there, and only there; on any
+	// other page it moves nothing (pinned in TestPassAnswersDrawOnlyOnThePassPage).
+	order := withoutComments(jsFunction(t, script, "forgetPassOrder"))
+	if !strings.Contains(order, "if (passPageShown()) {\n        showPassNotice(notice);\n      } else {\n        showNotice(notice);\n      }") {
+		t.Error("forgetPassOrder's notice, raised on the Pass page by this tab's own Buy or Renew, may land out of view")
+	}
+	said += strings.Count(order, "showPassNotice(")
+	// Nowhere else: not what the Pass page says on its own (back from Stripe),
+	// and not another page's.
+	if n := strings.Count(code, "showPassNotice("); n != said+1 {
+		t.Errorf("showPassNotice( appears %d times; want its definition and the Pass page's presses' %d", n, said)
+	}
+	if strings.Contains(withoutComments(jsFunction(t, script, "renderPass")), "showPassNotice(") {
+		t.Error("renderPass moves the page to a notice no press raised")
+	}
+}
+
+// Back from Stripe and Start again do what the Pass page's comments say. The
+// address is tidied to /pass first, so a reload or a shared link says nothing
+// again and sets nothing again. Back with ?cancelled offers the forms over the
+// claim still collected (passStartedAgain) and back with ?paid takes them away,
+// whatever was pressed before. Start again leaves the collecting going
+// underneath, and a Stop that ended the collecting ends Start again with it.
+func TestPassBackFromStripeAndStartAgain(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+	render := withoutComments(jsFunction(t, script, "renderPass"))
+	back := "  if (back) {\n    window.history.replaceState(null, \"\", \"/pass\");\n    renderedPath = \"/pass\";\n" +
+		"    passStartedAgain = back === \"cancelled\";\n  }\n"
+	if at := strings.Index(render, back); at < 0 || at > strings.Index(render, "await ") || strings.Count(render, "passStartedAgain") != 1 {
+		t.Error("back from Stripe no longer tidies the address before anything else, or no longer sets Start again from the address alone")
+	}
+	if !strings.Contains(render, "  if (back === \"cancelled\") {\n    showNotice(\"Checkout cancelled. Nothing was charged.\");\n  }") {
+		t.Error("back from Stripe's cancel no longer says the checkout was cancelled and nothing was charged")
+	}
+	stop := code[strings.Index(code, `const stopClaim = event.target.closest('[data-action="stop-pass-claim"]');`):]
+	stop = stop[:strings.Index(stop, "\n    return;\n  }")]
+	if reset := strings.Index(stop, "      if (done) {\n        passStartedAgain = false;\n      }\n"); reset < 0 ||
+		reset > strings.Index(stop, "if (!passPageShown()) {") {
+		t.Error("a Stop that ended the collecting leaves Start again on, so later drawings still offer the forms over it")
+	}
+	restart := code[strings.Index(code, `if (event.target.closest('[data-action="restart-pass"]')) {`):]
+	restart = restart[:strings.Index(restart, "\n    return;\n  }")]
+	if restart != "if (event.target.closest('[data-action=\"restart-pass\"]')) {\n    event.preventDefault();\n"+
+		"    passStartedAgain = true;\n    drawPass(lastPassInfo);\n    passFocus(\"form[data-pass] input\");" {
+		t.Errorf("Start again no longer just offers the forms back, with collecting going on underneath:\n%s", restart)
+	}
+	if n := strings.Count(code, "passStartedAgain = "); n != 6 {
+		t.Errorf("passStartedAgain is set %d times; want its declaration, back from Stripe, a checkout answered, "+
+			"one followed to Stripe, a Stop that finished and Start again", n)
 	}
 }
 
@@ -1071,15 +1453,15 @@ func TestPassPageDetails(t *testing.T) {
 		// The note is the last holder's news; the next person at a shared
 		// computer is not told about a Pass that was never theirs. It is set
 		// empty in its declaration, on leaving the page, and by these two,
-		// pressed here or in another tab (followPassForget, for a "code:"
+		// pressed here or in another tab (stopForPassForget, for a "code:"
 		// mark).
 		code := withoutComments(script)
 		remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 		remove = remove[:strings.Index(remove, "\n  }\n")]
-		follow := withoutComments(jsFunction(t, script, "followPassForget"))
+		stop := withoutComments(jsFunction(t, script, "stopForPassForget"))
 		if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "passLost = \"\";") ||
 			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 5 ||
-			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(follow) {
+			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(stop) {
 			t.Error("Forget this browser or Remove the Pass, here or in another tab, leaves what the page said about a Pass that has gone")
 		}
 	})
@@ -1087,6 +1469,49 @@ func TestPassPageDetails(t *testing.T) {
 		if !strings.Contains(withoutComments(jsFunction(t, script, "showClaimed")), `focusPassPanel("pass-issued");`) ||
 			!strings.Contains(jsFunction(t, script, "passIssuedHTML"), `id="pass-issued" tabindex="-1"`) {
 			t.Error("a code just handed over is drawn without moving focus to it")
+		}
+		// A code handed over while the reader was elsewhere (a claim or reissue
+		// answer that arrived after they left) is focused when they come back,
+		// once: the drawing that first shows it marks it shown, so no later
+		// drawing or poll moves focus to it again.
+		render := withoutComments(jsFunction(t, script, "renderPass"))
+		fresh := strings.Index(render, "const fresh = Boolean(passJustIssued && !passJustIssued.shown);")
+		drawn := strings.Index(render, "drawPass(info);")
+		focused := strings.Index(render, "if (fresh) {\n    focusPassPanel(\"pass-issued\");\n  }")
+		if fresh < 0 || drawn < fresh || focused < drawn {
+			t.Error("a code handed over while the reader was away is drawn without moving focus to it when they come back")
+		}
+		if !strings.Contains(withoutComments(jsFunction(t, script, "passViewHTML")), "parts.push(passIssuedHTML(issued));\n    issued.shown = true;\n") {
+			t.Error("a code just handed over is not marked shown once drawn, so every drawing and poll moves focus back to it")
+		}
+	})
+	t.Run("a poll that changes nothing draws nothing", func(t *testing.T) {
+		// Every 202 pending would otherwise draw the page again, hiding a code
+		// shown with Show the code and unticking the 18+ box on Renew while a
+		// renewal's checkout is open. Only the note of a failed attempt goes.
+		claimed := withoutComments(jsFunction(t, script, "showClaimed"))
+		same := strings.Index(claimed, "if (!news && !unseen && claim === (lastPassInfo.claim === true)) {\n"+
+			"    const note = document.getElementById(\"pass-collect-note\");\n    if (note) {\n      note.textContent = \"\";\n    }\n    return;\n  }")
+		if unseen := strings.Index(claimed, "const unseen = Boolean(passJustIssued && !passJustIssued.shown);"); same < 0 || unseen > same ||
+			strings.Index(claimed, "redrawPass(") < same {
+			t.Error("a claim's answer that changes nothing draws the Pass page again")
+		}
+	})
+	t.Run("the page says where the reader is", func(t *testing.T) {
+		render := withoutComments(jsFunction(t, script, "renderPass"))
+		if said := strings.Index(render, "announce(\"educhan Pass\");"); said < 0 || said < strings.Index(render, "drawPass(info);") ||
+			said > strings.Index(render, "if (back === \"cancelled\") {") {
+			t.Error("the Pass page is drawn without its title, or without saying so to a screen reader")
+		}
+	})
+	t.Run("back from Stripe, nothing is said to be missing while a lost answer is asked again", func(t *testing.T) {
+		// A nonce kept from a claim whose answer was lost is asked for again
+		// (collectPass) even with nothing left under the claim, and may bring
+		// the code, so "nothing waiting" is not said meanwhile.
+		render := withoutComments(jsFunction(t, script, "renderPass"))
+		if !strings.Contains(render, "} else if (back === \"paid\" && info.enabled && !info.claim && !passNoncePending(PASS_NONCE_STORAGE_KEY)) {\n"+
+			"    showNotice(\n      \"There's nothing waiting to be collected in this browser.") {
+			t.Error("back from Stripe, the Pass page says nothing is waiting while it asks again for a claim whose answer was lost")
 		}
 	})
 	t.Run("drawn again when brought back from the back-forward cache, behind the age screen", func(t *testing.T) {
@@ -1132,9 +1557,50 @@ func TestPassPageDetails(t *testing.T) {
 			t.Error("the FAQ no longer lists every request whose address flood control holds")
 		}
 	})
-	t.Run("the price says when tax is added", func(t *testing.T) {
-		if !strings.Contains(withoutComments(jsFunction(t, script, "passIntroHTML")), `info.automatic_tax ? " plus any tax" : ""`) {
-			t.Error("the price leaves out that Stripe adds tax")
+	t.Run("the price says whether tax is in it, in the server's words", func(t *testing.T) {
+		// GET /api/pass says "included" for a Price with the tax in it and
+		// "added" for one Stripe adds it to at checkout, where it can come to
+		// nothing, and says nothing of tax without Stripe Tax.
+		intro := words(withoutComments(jsFunction(t, script, "passIntroHTML")))
+		if !strings.Contains(intro, "const priced = info.tax === \"included\" ? `${price} for ${term}, tax included` "+
+			": info.tax === \"added\" ? `${price} plus any tax for ${term}` : `${price} for ${term}`;") {
+			t.Error("the price no longer says whether tax is in it, or says so without the server's word")
+		}
+		// Without a price from the server (Stripe could not be asked, or
+		// answered with a Price the Pass can't be sold at, or sales are
+		// paused) no cost is drawn at all, though priced always has words.
+		if !strings.Contains(intro, "const cost = price ? `<p class=\"verify-note\"><strong>${esc(priced)}</strong>, paid once. "+
+			"It doesn't renew by itself.</p>` : \"\";") {
+			t.Error("the cost line is not the price in the server's words, or is drawn without a price")
+		}
+		for behavior, word := range passTaxWords {
+			if !strings.Contains(intro, `info.tax === "`+word+`"`) {
+				t.Errorf("the page does not know the server's word %q for a Price whose tax behavior is %s", word, behavior)
+			}
+		}
+		if strings.Contains(script, "automatic_tax") {
+			t.Error("app.js still reads automatic_tax, which the server no longer sends")
+		}
+	})
+	t.Run("a refusal no other branch knows is said in the server's words, and its button given back", func(t *testing.T) {
+		// Checkout's 503 for a Price the Pass can't be sold at, and its 502
+		// while Stripe can't be asked, reach the reader only this way, so
+		// passErrorText says something else only for a server that did not
+		// answer and a cooldown's wait, and nothing is left pressed. It is
+		// said in view, however far down the page the button was
+		// (showPassNotice).
+		submit := words(withoutComments(jsFunction(t, script, "submitPass")))
+		if !strings.Contains(submit, "showPassNotice(refusedForAge ? PASS_AGE_REFUSAL : passErrorText(failed)); "+
+			"button.disabled = false; button.textContent = label; refocus(button);") {
+			t.Error("a refused checkout is not said, or leaves its button pressed")
+		}
+		text := withoutComments(jsFunction(t, script, "passErrorText"))
+		if strings.Count(text, "return ") != 3 || !strings.HasSuffix(words(text), "const said = err.message.trim(); "+
+			"const text = said.charAt(0).toUpperCase() + said.slice(1); return /[.!?]$/.test(text) ? text : `${text}.`; }") {
+			t.Error("passErrorText says something other than the server's own words for some refusals")
+		}
+		if strings.Contains(withoutComments(script), passPriceUnsold) {
+			t.Error("the page has its own copy of the server's refusal of a Price the Pass can't be sold at")
 		}
 	})
 }
@@ -1418,19 +1884,21 @@ func TestEveryVerifyStateOffersToForgetTheBrowser(t *testing.T) {
 }
 
 // Forget this browser takes the poster key, the name, the badge and the Pass
-// out of storage, but only the Pass, and what goes with it, is followed in
-// the browser's other tabs (followPassStorage, followPassForget): a tab
-// already open keeps a key it made (pagePosterKey), the badge
-// (state.verification) and the name in a form it drew until it is reloaded,
-// and a post from it writes the key and the name back to storage, for every
-// page loaded after it. The Verify page and the FAQ's shared-computer advice
-// say so, and to close those tabs first. A tab that followed the rest as well
-// would make that advice say less than the page does, so this fails then too,
-// for the wording to change with it.
+// out of storage, but only the Pass, and what goes with it, is followed in the
+// browser's other tabs (followPassStorage, followPassForget, and
+// keepPassCheckoutMark, which puts back only the mark of a checkout the tab has
+// on its way): a tab already open keeps a key it made (pagePosterKey), the
+// badge (state.verification) and the name in a form it drew until it is
+// reloaded, and a post from it writes the key and the name back to storage, for
+// every page loaded after it. The Verify page and the FAQ's shared-computer
+// advice say so, and to close those tabs first. A tab that followed the rest as
+// well would make that advice say less than the page does, so this fails then
+// too, for the wording to change with it.
 func TestForgetThisBrowserSaysWhatOtherTabsKeep(t *testing.T) {
 	script := appScript(t)
 	listeners := regexp.MustCompile(`addEventListener\("storage", (\w+)\)`).FindAllStringSubmatch(withoutComments(script), -1)
-	if len(listeners) != 2 || listeners[0][1] != "followPassStorage" || listeners[1][1] != "followPassForget" {
+	if len(listeners) != 3 || listeners[0][1] != "followPassStorage" || listeners[1][1] != "followPassForget" ||
+		listeners[2][1] != "keepPassCheckoutMark" {
 		t.Errorf("the page follows other tabs' storage with %v; the Verify page and the FAQ say only the Pass is followed", listeners)
 	}
 	for name, text := range map[string]string{
@@ -1489,18 +1957,57 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	if strings.Contains(view, "function passViewHTML(info, ") {
 		t.Error("passViewHTML takes the code just handed over from its caller again, so a redraw loses it")
 	}
-	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 5 {
-		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page, "+
-			"removing the Pass, forgetting the browser, and another tab removing or replacing it", n)
+	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 6 {
+		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page or the document "+
+			"once it is drawn, removing the Pass, forgetting the browser, another tab's Remove or Forget, "+
+			"and another tab removing the Pass or replacing one this browser kept", n)
 	}
+	// It goes once the reader leaves the Pass page, kept or not, once the page
+	// has drawn it: one this browser could not keep is nowhere else, and its
+	// panel says it won't be shown again once they leave, so the next person
+	// at a shared computer must not find it by opening the Pass page. One the
+	// page has not drawn, because its answer came while the reader was
+	// elsewhere or they left before the drawing came, has been seen by
+	// nobody, and stays to be drawn when they come back, kept or not: the
+	// server hands a code over once, a reissue code is spent, and beside a
+	// kept one may be the code of the Pass it took the place of, which is
+	// nowhere else.
 	render := withoutComments(jsFunction(t, script, "render"))
-	if !strings.Contains(render, `if (state.route.view === "pass" && route.view !== "pass") {`) ||
-		!strings.Contains(render, "if (passJustIssued && passJustIssued.kept) {\n      passJustIssued = null;") {
-		t.Error("render no longer drops a code just handed over only once the reader leaves the Pass page, and keeps one this browser could not store")
+	if !strings.Contains(render, "if (state.route.view === \"pass\" && route.view !== \"pass\") {\n"+
+		"    passLost = \"\";\n    forgetTypedCode();\n    forgetShownCode();\n  }") {
+		t.Error("render no longer drops a code just handed over that the page has drawn once the reader leaves the Pass page, and only then")
+	}
+	// Shown is set as the page draws the code's panel, and only there.
+	view = withoutComments(jsFunction(t, script, "passViewHTML"))
+	if !strings.Contains(view, "if (issued) {\n    parts.push(passIssuedHTML(issued));\n    issued.shown = true;\n  }") ||
+		strings.Count(withoutComments(script), ".shown = true") != 1 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "keepClaimed")), "      reissued,\n      shown: false,\n    };") {
+		t.Error("a code just handed over is not marked shown as the Pass page draws it, and only then")
+	}
+	// Nor when they leave the document, for another site, and come Back to a
+	// page the back-forward cache kept: that page is shown as it was left
+	// until it is drawn again, so the code's panel goes with it, kept or not.
+	// One the page has not drawn yet is drawn there. A panel on the page goes
+	// even when its code has gone already, dropped by another tab's Remove or
+	// Forget whose drawing still waits on the forget, which would otherwise
+	// leave it in the page the back-forward cache keeps.
+	shown := withoutComments(jsFunction(t, script, "forgetShownCode"))
+	if shown != "function forgetShownCode() {\n  if (passJustIssued && passJustIssued.shown) {\n    passJustIssued = null;\n  }\n"+
+		"  const panel = document.getElementById(\"pass-issued\");\n  if (panel) {\n    panel.remove();\n  }\n}" {
+		t.Errorf("forgetShownCode no longer drops a code just handed over once drawn, kept or not, and only once drawn, "+
+			"and takes the panel of one off the page whether or not its code has gone already:\n%s", shown)
+	}
+	hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});"))
+	if !strings.Contains(hide, "\n  forgetShownCode();\n") || strings.Count(withoutComments(script), "forgetShownCode()") != 3 {
+		t.Error("leaving the document no longer drops a code just handed over that the page has drawn, " +
+			"so a page brought back from the back-forward cache shows it again")
 	}
 	issued := withoutComments(jsFunction(t, script, "passIssuedHTML"))
 	if !strings.Contains(words(issued), "educhan keeps no copy of it: this browser can show it again only until its data is cleared.") {
 		t.Error("the panel of a code just handed over no longer says the browser can show it again")
+	}
+	if !strings.Contains(words(issued), "educhan keeps no copy of it, and this browser couldn't keep it either, so it won't be shown again once you leave this page.") {
+		t.Error("the panel of a code this browser could not keep no longer says it goes once the reader leaves the page")
 	}
 }
 
@@ -1606,9 +2113,9 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	// send a nonce, renderPass's look for one kept from an unanswered claim,
 	// and forgetting, here or in another tab; passNonces only by the helpers.
 	nonceUsers := map[string][]string{
-		"PASS_NONCE_STORAGE_KEY":              {"renderPass", "collectPass", "forgetPassClaim", "followPassForget"},
-		"PASS_REISSUE_NONCE_STORAGE_KEY":      {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
-		"PASS_REISSUE_UNANSWERED_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "followPassForget"},
+		"PASS_NONCE_STORAGE_KEY":              {"renderPass", "collectPass", "forgetPassClaim", "stopForPassForget"},
+		"PASS_REISSUE_NONCE_STORAGE_KEY":      {"redeemPassReissue", "forgetPassClaim", "stopForPassForget"},
+		"PASS_REISSUE_UNANSWERED_STORAGE_KEY": {"redeemPassReissue", "forgetPassClaim", "stopForPassForget"},
 		"passNonces":                          {"passNonce", "passNoncePending", "dropPassNonce"},
 	}
 	for name, users := range nonceUsers {
@@ -1736,8 +2243,8 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		}
 	}
 	for counter, users := range map[string][]string{
-		"passForgets":        {"forgetPassClaim", "collectPass", "followPassForget", "redeemPassReissue", "passForgetsSettled"},
-		"passCodeForgets":    {"forgetPassClaim", "followPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
+		"passForgets":        {"forgetPassClaim", "collectPass", "stopForPassForget", "redeemPassReissue", "submitPass", "passForgetsSettled"},
+		"passCodeForgets":    {"forgetPassClaim", "stopForPassForget", "passForgotten", "recheckPass", "redeemPassReissue", "checkHeldPass", "submitPass", "passForgetsSettled"},
 		"passCodeForgetting": {"settlePassForgetting", "passForgotten"},
 	} {
 		uses := 1
@@ -1759,12 +2266,13 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	// Remove the Pass and Forget this browser have the browser's other tabs
 	// empty their code boxes too (followPassForget); Stop collecting it here
 	// leaves them.
-	if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "return forgetPassClaim(true);") {
+	if browser := withoutComments(jsFunction(t, script, "forgetBrowser")); !strings.Contains(browser, "const dropped = forgetPassClaim(\"browser\");") ||
+		!strings.HasSuffix(browser, "\n  return dropped;\n}") {
 		t.Error("Forget this browser no longer drops a purchase still being collected, here and in the browser's other tabs")
 	}
 	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 	remove = remove[:strings.Index(remove, "\n  }\n")]
-	if !strings.Contains(remove, "const dropped = forgetPassClaim(true);") {
+	if !strings.Contains(remove, "const dropped = forgetPassClaim(\"remove\");") {
 		t.Error("Remove the Pass no longer drops a purchase still being collected, here and in the browser's other tabs")
 	}
 	// Drawn at once, from what is already known, so the code is off the screen
@@ -1788,7 +2296,7 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	stop = stop[:strings.Index(stop, "\n    return;\n  }")]
 	disabled := strings.Index(stop, "const waiting = [stopClaim, ...el.main.querySelectorAll('[data-action=\"collect-pass\"]')];\n"+
 		"    for (const button of waiting) {\n      button.disabled = true;\n    }")
-	dropped := strings.Index(stop, "const dropped = forgetPassClaim();")
+	dropped := strings.Index(stop, "const dropped = forgetPassClaim(\"stop\");")
 	if dropped < 0 || !strings.Contains(stop, "dropped.then((done) => {") {
 		t.Error("Stop collecting it here no longer drops the claim")
 	}
@@ -1802,10 +2310,10 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 	collectButtons := `const PASS_COLLECT_BUTTONS = '[data-action="collect-pass"], [data-action="stop-pass-claim"]';`
 	offWhileStopping := "if (passForgetting) {\n    for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n      button.disabled = true;\n    }\n  }"
 	draw := withoutComments(jsFunction(t, script, "drawPass"))
-	followStop := withoutComments(jsFunction(t, script, "followPassForget"))
+	followStop := withoutComments(jsFunction(t, script, "stopForPassForget"))
 	if !strings.Contains(code, collectButtons) || strings.Index(draw, offWhileStopping) < strings.Index(draw, "el.main.innerHTML = passViewHTML(info);") ||
-		!strings.Contains(followStop, "for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;\n  }") ||
-		strings.Index(followStop, "button.disabled = true;") < strings.Index(followStop, "passForgetting = waited;") ||
+		!strings.Contains(followStop, "for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;\n") ||
+		strings.Index(followStop, "button.disabled = true;") < strings.Index(followStop, "const waited = heedPassForget(key, mark);") ||
 		!strings.Contains(stop, "for (const button of [...waiting, ...el.main.querySelectorAll(PASS_COLLECT_BUTTONS)]) {\n        button.disabled = false;") {
 		t.Error("a Pass page drawn while this browser is stopping collecting offers Check now and Stop again")
 	}
@@ -1818,9 +2326,17 @@ func TestPassClaimsCarryANonceAndCanBeDropped(t *testing.T) {
 		t.Error("a Stop collecting it here that could not reach educhan reads the visit before forgetPassClaim ends it, and never collects again")
 	}
 	failed := regexp.MustCompile(`if \(!done && visit === passVisit\) \{\s*collectPass\(visit\);\s*\}`)
-	said := regexp.MustCompile(`if \(!done\) \{\s*refocus\(stopClaim\);\s*showNotice\("Couldn't reach educhan, so this browser is still collecting it\.[^"]*"\);\s*return;\s*\}`)
+	said := regexp.MustCompile(`if \(!done\) \{\s*refocus\(stopClaim\);\s*showPassNotice\("Couldn't reach educhan, so this browser is still collecting it\.[^"]*"\);\s*return;\s*\}`)
 	if !failed.MatchString(stop) || !said.MatchString(stop) {
 		t.Error("a Stop collecting it here that could not reach educhan no longer goes on collecting, as it says")
+	}
+	// Done, the page is drawn again at once as having nothing to collect, so
+	// the collecting panel, Check now and Stop go with what they collected.
+	done := regexp.MustCompile(`refocus\(stopClaim\);\s*showPassNotice\([^)]*\);\s*return;\s*\}\s*` +
+		`drawPass\(\{ \.\.\.lastPassInfo, claim: false \}\);\s*passFocus\("form\[data-pass\] input", "#pass-held"\);\s*` +
+		`showPassNotice\(\s*"This browser has stopped collecting it\.`)
+	if !done.MatchString(stop) {
+		t.Error("a Stop collecting it here that worked no longer draws the page again with nothing left to collect")
 	}
 	for name, text := range map[string]string{
 		"Forget this browser": words(jsFunction(t, script, "forgetBrowserHTML")),
@@ -1886,7 +2402,7 @@ func TestPassLostRenewalAnswerIsCheckedOnThePassHeld(t *testing.T) {
 	// notice says both, and neither that it was used nor that it needs
 	// replacing.
 	reissue := words(withoutComments(jsFunction(t, script, "redeemPassReissue")))
-	retried := `if (failed.message === PASS_REISSUE_SPENT && again) { showNotice( "This reissue code didn't work this time. ` +
+	retried := `if (failed.message === PASS_REISSUE_SPENT && again) { showPassNotice( "This reissue code didn't work this time. ` +
 		`If an earlier try reached educhan, it may have renewed your Pass already; otherwise check it against the one you were sent: ` +
 		`it may be mistyped, used, run out or cancelled." );`
 	if !strings.Contains(reissue, retried) {
@@ -1991,7 +2507,7 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 	remove = remove[:strings.Index(remove, "\n  }\n")]
 	emptied := strings.Index(remove, "emptyCopiedPassCode();")
-	if emptied < 0 || strings.Contains(remove, "await ") || emptied > strings.Index(remove, "const dropped = forgetPassClaim(true);") ||
+	if emptied < 0 || strings.Contains(remove, "await ") || emptied > strings.Index(remove, "const dropped = forgetPassClaim(\"remove\");") ||
 		emptied > strings.Index(remove, ".then(") || strings.Count(remove, "emptyCopiedPassCode") != 1 {
 		t.Error("Remove the Pass no longer empties the clipboard of a code copied here while the click allows it")
 	}
@@ -2000,7 +2516,7 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 	forgetClick := code[strings.Index(code, `if (event.target.closest('[data-action="forget-browser"]')) {`):]
 	forgetClick = forgetClick[:strings.Index(forgetClick, "\n  }\n")]
 	if !strings.Contains(script, "\nfunction forgetBrowser() {") || emptied < 0 ||
-		emptied > strings.Index(browser, "return forgetPassClaim(true);") ||
+		emptied > strings.Index(browser, "const dropped = forgetPassClaim(\"browser\");") ||
 		strings.Contains(browser, "await ") || strings.Contains(browser, ".then(") ||
 		!regexp.MustCompile(`^if \(event\.target\.closest\('\[data-action="forget-browser"\]'\)\) \{\s*event\.preventDefault\(\);\s*const dropped = forgetBrowser\(\);`).MatchString(forgetClick) {
 		t.Error("Forget this browser no longer empties the clipboard of a code copied here while the click allows it")
@@ -2039,11 +2555,17 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	if !strings.Contains(withoutComments(script), "\nwindow.addEventListener(\"storage\", followPassStorage);\n") {
 		t.Error("a tab no longer follows the Pass another tab removed or replaced")
 	}
+	// A code just handed over goes from this tab's screen once another tab
+	// removes the Pass, kept or not, and once another code takes the place of
+	// one this browser kept. One it could not keep was never the Pass it
+	// holds, and may be a spent reissue code's only copy, so another code
+	// written meanwhile leaves it be.
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
-	if !strings.Contains(follow, "if (!now || (passJustIssued && passJustIssued.code !== now.code)) {\n    passJustIssued = null;\n  }") ||
+	if !strings.Contains(follow, "if (!now || (passJustIssued && passJustIssued.kept && passJustIssued.code !== now.code)) {\n    passJustIssued = null;\n  }") ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
-		t.Error("a code just handed over stays on screen after another tab removed or replaced the Pass")
+		t.Error("a code just handed over stays on screen after another tab removed the Pass or replaced one this browser kept, " +
+			"or goes when another tab stores a code beside one this browser could not keep")
 	}
 	// A code this tab copied stops counting as its to empty from the
 	// clipboard once the browser no longer holds that code, whether or not
@@ -2062,11 +2584,13 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 // the way, whether or not a Pass was held. Another tab then drops an answer
 // to a claim already on its way and sends no claim until the mark goes. For
 // Remove and Forget it also drops a reissue code's nonce and an answer about
-// a Pass on its way, and empties its code box, so a reissue code typed there
-// is not left for the next person at the computer, even when the Pass's own
-// removal drew that tab again first. Stop leaves a reissue code alone, here
-// and in other tabs: it is about a checkout, and a reissue code it dropped
-// would be spent with nothing to show for it.
+// a Pass on its way, empties its code box and drops a code just handed over,
+// kept or not, so neither a reissue code typed there nor a code shown there
+// is left for the next person at the computer, even when the Pass's own
+// removal drew that tab again first, or the browser could keep no Pass to
+// remove. Stop leaves a reissue code alone, here and in other tabs: it is
+// about a checkout, and a reissue code it dropped would be spent with nothing
+// to show for it.
 func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2081,15 +2605,16 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	// when it was set, and is taken off once the request is answered: marks
 	// never take each other's place, so every tab hears each one go.
 	forget := withoutComments(jsFunction(t, script, "forgetPassClaim"))
-	marked := strings.Index(forget, "storageSet(mark, `${emptyBoxes ? \"code\" : \"claim\"}:${Date.now()}`);")
+	marked := strings.Index(forget, "storageSet(mark, `${pressed}:${Date.now()}`);")
 	asked := strings.Index(forget, `await api("/api/pass/claim"`)
 	if !strings.Contains(forget, "const mark = `${PASS_FORGET_STORAGE_KEY}:${newPassNonce()}`;") || marked < 0 || marked > asked ||
 		!strings.Contains(forget, "request.then(() => {\n      try {\n        localStorage.removeItem(mark);") ||
 		strings.Count(forget, "removeItem(") != 1 {
 		t.Error("forgetPassClaim no longer tells the browser's other tabs, before it asks the server, that it is forgetting")
 	}
-	if !strings.Contains(code, "\nfunction forgetPassClaim(emptyBoxes = false) {") || strings.Count(code, "forgetPassClaim(true)") != 2 ||
-		strings.Count(code, "forgetPassClaim()") != 1 {
+	if !strings.Contains(code, "\nfunction forgetPassClaim(pressed) {") || !strings.Contains(forget, "const emptyBoxes = pressed !== \"stop\";") ||
+		strings.Count(code, "forgetPassClaim(\"remove\")") != 1 || strings.Count(code, "forgetPassClaim(\"browser\")") != 1 ||
+		strings.Count(code, "forgetPassClaim(\"stop\")") != 1 || strings.Count(code, "forgetPassClaim(") != 4 {
 		t.Error("only Remove the Pass and Forget this browser have other tabs empty their code boxes")
 	}
 	follow := withoutComments(jsFunction(t, script, "followPassForget"))
@@ -2099,19 +2624,41 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		t.Error("followPassForget reads a storage event other than a forget mark's")
 	}
 	// A mark that goes ends the wait on it, and one this tab already waits on
-	// (found when it was loaded) is not stopped for twice.
+	// (found when it was loaded, or brought back) is not stopped for twice.
+	// Every other one is stopped for in one place, whether this tab hears of it
+	// by its storage event or finds it there when it is loaded or brought back
+	// from the back-forward cache (heedPassForgetsUnderWay): a page brought
+	// back holds what it held when it was left, a collection's nonce, a reissue
+	// code's or the last holder's news, and the storage event for a mark it
+	// found, which comes after the pageshow event, finds it already waited on,
+	// so it is not stopped for a second time, and only stopping for it there
+	// drops what the forget drops.
 	stop := strings.Index(follow, "if (!mark) {\n    const heard = passForgetHeard.get(key);\n    if (heard) {\n      heard();\n    }\n    return;\n  }\n"+
-		"  if (passForgetWaits.has(key)) {\n    return;\n  }")
-	for _, step := range []string{"const code = mark.startsWith(\"code:\");", "passVisit += 1;", "passForgets += 1;",
+		"  if (passForgetWaits.has(key)) {\n    return;\n  }\n  stopForPassForget(key, mark).then(() => {")
+	if stop < 0 || stop < read {
+		t.Error("followPassForget no longer stops this tab for a forget it hears of, once and only once")
+	}
+	stopping := withoutComments(jsFunction(t, script, "stopForPassForget"))
+	steps := []string{"const code = !mark.startsWith(\"stop:\");", "passForgetHeardLast = mark.slice(0, mark.indexOf(\":\"));", "passVisit += 1;", "passForgets += 1;",
 		"dropPassNonce(PASS_NONCE_STORAGE_KEY);",
 		"if (code) {\n    passCodeForgets += 1;\n    dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);\n" +
-			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n  }",
-		"const waited = heedPassForget(key, mark);"} {
-		if at := strings.Index(follow, step); stop < 0 || stop < read || at < stop {
-			t.Errorf("followPassForget no longer does %q when another tab forgets", step)
+			"    dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);\n    forgetTypedCode();\n    passLost = \"\";\n    passJustIssued = null;\n  }",
+		"const waited = heedPassForget(key, mark);",
+		"for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n    button.disabled = true;", "return waited;\n}"}
+	for at, step := 0, 0; step < len(steps); step++ {
+		next := strings.Index(stopping[at:], steps[step])
+		if next < 0 {
+			t.Errorf("stopForPassForget no longer does %q, in its order, when another tab forgets", steps[step])
+			break
 		}
+		at += next
 	}
-	// Stop ("claim:") leaves a reissue code alone, here and in other tabs: its
+	under := withoutComments(jsFunction(t, script, "heedPassForgetsUnderWay"))
+	if !strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      stopForPassForget(key, mark);\n    } else {") ||
+		strings.Count(code, "stopForPassForget(") != 3 || strings.Count(code, "heedPassForget(") != 2 {
+		t.Error("a tab brought back from the back-forward cache while a forget is on its way waits on it without dropping what it drops")
+	}
+	// Stop ("stop:") leaves a reissue code alone, here and in other tabs: its
 	// nonce, the code typed, and an answer on its way, which redeemPassReissue
 	// drops only for Remove and Forget (passCodeForgets, not passForgets), and
 	// which waits on Stop without taking it for one of them (passCodeForgetting
@@ -2119,8 +2666,8 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	for name, steps := range map[string][]string{
 		"forgetPassClaim": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
 			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);"},
-		"followPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
-			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "forgetTypedCode();", "passLost = \"\";"},
+		"stopForPassForget": {"passCodeForgets += 1;", "dropPassNonce(PASS_REISSUE_NONCE_STORAGE_KEY);",
+			"dropPassNonce(PASS_REISSUE_UNANSWERED_STORAGE_KEY);", "forgetTypedCode();", "passLost = \"\";", "passJustIssued = null;"},
 	} {
 		body := withoutComments(jsFunction(t, script, name))
 		for _, only := range steps {
@@ -2131,7 +2678,7 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		}
 	}
 	if !strings.Contains(forget, "waitOnPassForget(\n    mark,\n    emptyBoxes,") ||
-		!strings.Contains(withoutComments(jsFunction(t, script, "heedPassForget")), `return waitOnPassForget(key, mark.startsWith("code:"), over);`) {
+		!strings.Contains(withoutComments(jsFunction(t, script, "heedPassForget")), `return waitOnPassForget(key, !mark.startsWith("stop:"), over);`) {
 		t.Error("a Stop's mark is waited on as one that takes the Pass, and drops a reissue answer")
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "redeemPassReissue")), "const forgets = passCodeForgets;") {
@@ -2141,7 +2688,13 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	// tab closed before its answer, and draws the Pass page again from the
 	// server only then: if the reader is on it, past the age screen, even when
 	// the mark arrived while it was still loading and drew nothing (a skeleton
-	// is no Pass page yet), with focus the drawing dropped put back on the page.
+	// is no Pass page yet). The drawing keeps a keyboard where it was, as
+	// redrawPass does: focus on the page just before it, on a button given back
+	// meanwhile say, goes to what took its place, and focus on the body or
+	// outside the page stays there, so a reader who comes back to this tab does
+	// not find it moved, or a phone's page scrolled to a button. Check now or
+	// Stop, turned off while the forget goes, gives focus it had to its panel,
+	// which is on the page, rather than dropping it to the body.
 	heed := withoutComments(jsFunction(t, script, "heedPassForget"))
 	left := withoutComments(jsFunction(t, script, "passForgetLeft"))
 	if !strings.Contains(heed, "passForgetHeard.set(key, resolve);\n    setTimeout(resolve, passForgetLeft(mark));") ||
@@ -2150,12 +2703,18 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 		!strings.Contains(left, "return left > 0 ? Math.min(left, PASS_FORGET_WAIT_MS) : 0;") {
 		t.Error("a tab no longer waits for another tab's mark to go, or no longer for at most PASS_FORGET_WAIT_MS after it was set")
 	}
-	if !regexp.MustCompile(`waited\.then\(\(\) => \{\s*if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*`+
-		`renderPass\(\)\.then\(\(drawn\) => \{\s*if \(drawn\) \{\s*`+
-		`if \(!document\.activeElement \|\| document\.activeElement === document\.body\) \{\s*passFocus\(`).MatchString(follow) ||
-		strings.Contains(follow, "data-pass-page") {
+	render := withoutComments(jsFunction(t, script, "renderPass"))
+	if !regexp.MustCompile(`stopForPassForget\(key, mark\)\.then\(\(\) => \{\s*if \(passPageShown\(\) && ageStatus\(\) === "ok"\) \{\s*`+
+		regexp.QuoteMeta(`renderPass('form[data-pass] button[type="submit"]', "#pass-held", "form[data-pass] input");`)+`\s*\}\s*\}\);`).MatchString(follow) ||
+		strings.Contains(follow, "data-pass-page") || strings.Contains(follow, "activeElement") || strings.Contains(follow, "passFocus(") ||
+		!strings.Contains(render, "async function renderPass(...selectors) {") ||
+		!strings.Contains(render, "if (selectors.length) {\n    redrawPass(info, ...selectors);\n  } else {\n    drawPass(info);\n  }") {
 		t.Error("followPassForget no longer draws the Pass page from the server once the other tab's request is answered, " +
-			"with focus the drawing dropped on what took its place")
+			"or moves focus that was not on the page")
+	}
+	if !strings.Contains(stopping, "const focused = document.activeElement;\n  for (const button of el.main.querySelectorAll(PASS_COLLECT_BUTTONS)) {\n"+
+		"    button.disabled = true;\n    if (button === focused) {\n      (button.closest('[tabindex=\"-1\"]') || el.main).focus({ preventScroll: true });\n    }\n  }") {
+		t.Error("Check now or Stop, turned off for another tab's forget, drops the focus it had off the page")
 	}
 	// A tab opened while a forget is on its way hears no storage event for it,
 	// nor does one brought back from the back-forward cache for a mark set or
@@ -2163,14 +2722,13 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 	// anything is drawn: one it does not know of is waited on, one whose
 	// mark has gone stops being waited on, and one set longer ago than a tab
 	// waits, left by a tab closed before its answer, is taken off.
-	under := withoutComments(jsFunction(t, script, "heedPassForgetsUnderWay"))
 	if !strings.Contains(under, "if (key && key.startsWith(`${PASS_FORGET_STORAGE_KEY}:`)) {\n        marks.set(key, localStorage.getItem(key) || \"\");") ||
 		!strings.Contains(under, "for (const [key, heard] of passForgetHeard) {\n    if (!marks.has(key)) {\n      heard();") ||
-		!strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      heedPassForget(key, mark);\n    } else {\n"+
+		!strings.Contains(under, "if (passForgetWaits.has(key)) {\n      continue;\n    }\n    if (passForgetLeft(mark) > 0) {\n      stopForPassForget(key, mark);\n    } else {\n"+
 			"      try {\n        localStorage.removeItem(key);") {
 		t.Error("a tab opened while a forget is on its way no longer waits on it, or no longer takes off a mark left behind")
 	}
-	if !strings.Contains(code, "\nwindow.addEventListener(\"storage\", followPassForget);\nheedPassForgetsUnderWay();\n") ||
+	if !strings.Contains(code, "\nwindow.addEventListener(\"storage\", followPassForget);\nwindow.addEventListener(\"storage\", keepPassCheckoutMark);\nheedPassForgetsUnderWay();\n") ||
 		strings.Index(code, "\nheedPassForgetsUnderWay();\n") > strings.LastIndex(code, "\nrender();\n") ||
 		!strings.Contains(withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});")),
 			"if (event.persisted) {\n    heedPassForgetsUnderWay();\n  }\n  if (event.persisted && state.route.view === \"pass\") {") ||
@@ -2191,7 +2749,8 @@ func TestPassForgottenInAnotherTabStopsThisOne(t *testing.T) {
 
 // After a button on the Pass page draws it again, focus goes to what took the
 // button's place, not the top of the document; a button disabled while it
-// waited, and left in place, gets focus back.
+// waited, and left in place, gets focus back, and a drawing something else
+// set off keeps focus on the control that had it.
 func TestPassPageButtonsKeepFocus(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2211,13 +2770,30 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 			t.Errorf("%s moves focus after %d of its redraws", name, n)
 		}
 	}
-	// What arrives after a button was pressed (Check now's claim, say) draws
-	// the page again through redrawPass, which moves focus that was on the
-	// page to what took the button's place.
+	// What arrives after a button was pressed (Check now's claim, or another
+	// tab's forget, say) draws the page again through redrawPass, which keeps
+	// focus that was on the page on the same control when the drawing draws
+	// it again, without scrolling the page, since it is where it was, and
+	// otherwise moves it to what took the control's place. The same control
+	// is found by its id, else by its action within its own panel (a Copy the
+	// code beside the held Pass's code is not one beside a code just handed
+	// over), else by its form's kind and its part there.
 	redraw := withoutComments(jsFunction(t, script, "redrawPass"))
-	if !strings.Contains(redraw, "const focused = el.main.contains(document.activeElement);") ||
-		!strings.Contains(redraw, "passFocus(...selectors);") {
-		t.Error("redrawPass no longer keeps focus that was on the page")
+	if redraw != "function redrawPass(info, ...selectors) {\n"+
+		"  const focused = el.main.contains(document.activeElement) ? document.activeElement : null;\n"+
+		"  const twin = focused ? passTwin(focused) : \"\";\n  drawPass(info);\n"+
+		"  if (focused && !el.main.contains(document.activeElement)) {\n    const same = twin && el.main.querySelector(twin);\n"+
+		"    if (same) {\n      same.focus({ preventScroll: true });\n    } else {\n      passFocus(...selectors);\n    }\n  }\n}" {
+		t.Errorf("redrawPass no longer keeps focus that was on the page on the same control, or else on what took its place:\n%s", redraw)
+	}
+	twin := withoutComments(jsFunction(t, script, "passTwin"))
+	if twin != "function passTwin(control) {\n  if (control.id) {\n    return `#${CSS.escape(control.id)}`;\n  }\n"+
+		"  const panel = control.closest(\".verify-panel[id]\");\n  const within = panel ? `#${CSS.escape(panel.id)} ` : \"\";\n"+
+		"  if (control.dataset.action) {\n    return `${within}[data-action=\"${control.dataset.action}\"]`;\n  }\n"+
+		"  const form = control.closest(\"form[data-pass]\");\n  if (form && control.matches('button[type=\"submit\"], input')) {\n"+
+		"    const part = control.matches(\"input\") ? \"input\" : 'button[type=\"submit\"]';\n"+
+		"    return `form[data-pass=\"${form.dataset.pass}\"] ${part}`;\n  }\n  return \"\";\n}" {
+		t.Errorf("passTwin no longer finds a control drawn again by its id, its action in its own panel, or its form's kind and its part there:\n%s", twin)
 	}
 	// A drawing set off by something else (a claim's answer, another tab's
 	// change to the Pass) leaves a reader typing in the code box where they
@@ -2225,7 +2801,7 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 	draw := withoutComments(jsFunction(t, script, "drawPass"))
 	if !strings.Contains(draw, "const typing = box && document.activeElement === box ? [box.selectionStart, box.selectionEnd] : null;") ||
 		!strings.Contains(draw, "if (typing) {\n      again.focus();\n      again.setSelectionRange(typing[0], typing[1]);") ||
-		!strings.Contains(redraw, "if (focused && !el.main.contains(document.activeElement)) {\n    passFocus(...selectors);") {
+		!strings.Contains(redraw, "if (focused && !el.main.contains(document.activeElement)) {\n    const same = twin && el.main.querySelector(twin);") {
 		t.Error("a drawing of the Pass page takes focus out of the code box while the reader types in it")
 	}
 	claimed := withoutComments(jsFunction(t, script, "showClaimed"))
@@ -2243,9 +2819,29 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 	}
 	// Turned away, Check it again and Stop collecting it here stay where they
 	// were, enabled again, with focus back on them.
-	if !strings.Contains(withoutComments(jsFunction(t, script, "refocus")),
-		"if (button.isConnected && (!document.activeElement || document.activeElement === document.body)) {\n    button.focus();") {
-		t.Error("refocus no longer gives focus back to a button that lost it while disabled, and only then")
+	// A button the page was drawn again over while it waited, by another
+	// tab's forget say, is gone: focus goes to the same button drawn again
+	// (passTwin), else the first of the Pass forms' controls, else the first
+	// panel, and at the least the page (passFocus), never the top of the
+	// document.
+	if refocused := withoutComments(jsFunction(t, script, "refocus")); refocused != "function refocus(button) {\n"+
+		"  if (document.activeElement && document.activeElement !== document.body) {\n    return;\n  }\n"+
+		"  if (button.isConnected) {\n    button.focus();\n    return;\n  }\n"+
+		"  passFocus(passTwin(button), \"form[data-pass] input, form[data-pass] button\", '.verify-panel[tabindex=\"-1\"]');\n}" {
+		t.Errorf("refocus no longer gives focus back to a button that lost it while disabled, and only then, "+
+			"or to the same button drawn again when the page was drawn again meanwhile:\n%s", refocused)
+	}
+	passFocused := withoutComments(jsFunction(t, script, "passFocus"))
+	if !strings.HasSuffix(passFocused, "\n  }\n  el.main.focus();\n}") {
+		t.Error("passFocus, finding none of what it was given, no longer focuses the page, so focus can stay at the top of the document")
+	}
+	// passTwin has no selector for a control it cannot tell again, and
+	// querySelector would throw on the empty one.
+	if !strings.Contains(passFocused, "const target = selector && el.main.querySelector(selector);") {
+		t.Error("passFocus no longer passes over an empty selector")
+	}
+	if n := strings.Count(code, "passTwin("); n != 3 {
+		t.Errorf("passTwin is named %d times; want its declaration, redrawPass and refocus", n)
 	}
 	if !strings.Contains(withoutComments(jsFunction(t, script, "checkHeldPass")), "button.disabled = false;\n    refocus(button);") {
 		t.Error("Check it again, turned away, leaves focus at the top of the document")
@@ -2263,7 +2859,7 @@ func TestPassPageButtonsKeepFocus(t *testing.T) {
 func TestPassCheckoutNeedsABrowserThatKeepsData(t *testing.T) {
 	script := appScript(t)
 	submit := withoutComments(jsFunction(t, script, "submitPass"))
-	probe, checkout := strings.Index(submit, "if (!passCanBeKept()) {\n      showNotice(PASS_NO_STORAGE);\n      return;"), strings.Index(submit, `"/api/pass/checkout"`)
+	probe, checkout := strings.Index(submit, "if (!passCanBeKept()) {\n      showPassNotice(PASS_NO_STORAGE);\n      return;"), strings.Index(submit, `"/api/pass/checkout"`)
 	if probe < 0 || checkout < probe {
 		t.Error("submitPass no longer refuses a checkout in a browser that would keep nothing")
 	}
@@ -2315,6 +2911,110 @@ func TestPassPageWhileSalesArePaused(t *testing.T) {
 	if !strings.Contains(withoutComments(jsFunction(t, script, "submitPass")), "if (failed.status === 403 && failed.message === PASS_NOT_ON_SALE) {\n    drawPass({ ...lastPassInfo, paused: true });") {
 		t.Error("a checkout refused because sales were paused does not draw the page as paused")
 	}
+	// A Pass found run out while sales are paused is not offered a renewal
+	// the page no longer has: the words say sales are paused instead.
+	if got := withoutComments(jsFunction(t, script, "passRunOutText")); got != "function passRunOutText() {\n  return lastPassInfo.paused\n"+
+		"    ? `This Pass has run out. ${PASS_PAUSED}`\n    : \"This Pass has run out. You can renew it below.\";\n}" {
+		t.Errorf("passRunOutText offers to renew a Pass while sales are paused, or no longer offers it otherwise:\n%s", got)
+	}
+}
+
+// A press on the Pass page turns its button off before it waits on anything,
+// so pressing again while the first is on its way sends nothing more: not a
+// second checkout, a reissue code spent twice, or the Pass held checked twice.
+// Nothing else stops a second press, since the page's submit and Check it
+// again handlers call these straight away.
+func TestPassPressesTurnTheirButtonOffBeforeTheyWait(t *testing.T) {
+	script := appScript(t)
+	submit := withoutComments(jsFunction(t, script, "submitPass"))
+	reissue := strings.Index(submit, "if (isReissueCode(typed)) {")
+	if reissue < 0 {
+		t.Fatal("submitPass no longer hands a reissue code over in its own branch; this test reads around it")
+	}
+	reissueEnd := strings.Index(submit[reissue:], "\n    }\n") + reissue
+	for name, body := range map[string]string{
+		"a reissue code":                    submit[reissue:reissueEnd],
+		"Use this code here, Buy and Renew": submit[reissueEnd:],
+		"Check it again":                    withoutComments(jsFunction(t, script, "checkHeldPass")),
+	} {
+		wait, off := strings.Index(body, "await "), strings.Index(body, "button.disabled = true;")
+		if wait < 0 || off < 0 || off > wait {
+			t.Errorf("%s waits before turning its button off, so a second press sends again", name)
+		}
+	}
+}
+
+// The Pass's price is Stripe's amount, a whole number of the currency's
+// smallest unit, and the page divides it by ten to the power Stripe gives that
+// unit, which the server sends beside it (stripeExponent), not by the
+// browser's own count of the currency's decimals: Stripe keeps ISK and UGX in
+// hundredths, where the browser has them whole, so 300000 is 3,000 ISK, never
+// 300,000. Intl then writes a whole amount with the currency's usual digits,
+// and one with a part of a unit with Stripe's decimals, which the usual digits
+// could round away: the browser has ALL whole too, and 1050 is ALL 10.50,
+// never 11.
+func TestPassPriceIsWrittenWithStripesDecimals(t *testing.T) {
+	script := appScript(t)
+	text := withoutComments(jsFunction(t, script, "passPriceText"))
+	divided := regexp.MustCompile(`\n    return format\.format\(price\.amount / 10 \*\* price\.(\w+)\);\n`).FindStringSubmatch(text)
+	if divided == nil || !strings.Contains(text, "    !Number.isSafeInteger(price."+divided[1]+") ||\n    price."+divided[1]+" < 0\n  ) {\n    return \"\";") {
+		t.Fatalf("passPriceText no longer divides Stripe's amount by ten to the exponent the server sends, or uses one it has not checked:\n%s", text)
+	}
+	code := withoutComments(script)
+	if strings.Contains(code, "resolvedOptions") {
+		t.Error("the page takes a currency's decimals from the browser's own table, which is not Stripe's")
+	}
+	// The only digits the page ever gives Intl are Stripe's, and only for an
+	// amount with a part of a unit.
+	field := "price." + divided[1]
+	if !strings.Contains(text, "\n  const options = { style: \"currency\", currency: price.currency.toUpperCase() };\n"+
+		"  if (price.amount % 10 ** "+field+" !== 0) {\n    options.minimumFractionDigits = "+field+";\n"+
+		"    options.maximumFractionDigits = "+field+";\n  }\n  try {\n    const format = new Intl.NumberFormat(undefined, options);\n") ||
+		strings.Count(code, "FractionDigits") != 2 {
+		t.Errorf("passPriceText no longer writes a part of a unit with Stripe's decimals, or gives Intl other digits:\n%s", text)
+	}
+	// What the page hands Intl, read from the price as GET /api/pass sends it,
+	// is what Stripe charges, and a part of a unit is written with as many
+	// decimals as Stripe gives it.
+	for _, c := range []struct {
+		currency string
+		amount   int64
+		charged  float64
+		digits   int // -1 for the currency's usual digits
+	}{
+		{"usd", 2000, 20, -1},
+		{"usd", 2050, 20.5, 2},
+		{"jpy", 2000, 2000, -1},
+		{"isk", 300000, 3000, -1},
+		{"ugx", 7500000, 75000, -1},
+		{"bhd", 20000, 20, -1},
+		{"bhd", 20005, 20.005, 3},
+		{"all", 1050, 10.5, 2},
+		{"rsd", 9999, 99.99, 2},
+	} {
+		sent, err := json.Marshal(passPrice{Amount: c.amount, Currency: c.currency, Exponent: stripeExponent(c.currency)})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var price map[string]any
+		if err := json.Unmarshal(sent, &price); err != nil {
+			t.Fatal(err)
+		}
+		exponent, ok := price[divided[1]].(float64)
+		if !ok {
+			t.Fatalf("the page reads the price's %q, which GET /api/pass does not send: %s", divided[1], sent)
+		}
+		if shown := float64(c.amount) / math.Pow(10, exponent); shown != c.charged {
+			t.Errorf("a Pass priced at %d %s in Stripe is written as %v %s; Stripe charges %v", c.amount, c.currency, shown, c.currency, c.charged)
+		}
+		digits := -1
+		if c.amount%int64(math.Pow(10, exponent)) != 0 {
+			digits = int(exponent)
+		}
+		if digits != c.digits {
+			t.Errorf("a Pass priced at %d %s in Stripe is written with %d decimals (-1 for the usual); want %d", c.amount, c.currency, digits, c.digits)
+		}
+	}
 }
 
 // The header links to the Pass only on a server that has it, or in a browser
@@ -2357,6 +3057,10 @@ func TestPassCopyMatchesWhatTheServerDoes(t *testing.T) {
 			"a refund or a chargeback can take back the time that payment bought",
 			"and so that a lost code can be replaced from the payment on your receipt",
 			"Hours are counted in UTC",
+			// Stripe's events carry the payer's address too, and Stripe Tax
+			// asks for one, so neither page gives a list that leaves it out.
+			"Stripe keeps your payment details, such as your card, email, name and billing address, " +
+				"as any shop's payment company does, and educhan stores none of them",
 		} {
 			if !strings.Contains(text, want) {
 				t.Errorf("%s no longer says %q", name, want)

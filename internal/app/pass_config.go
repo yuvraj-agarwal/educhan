@@ -13,27 +13,34 @@ import (
 
 // PassConfig configures the educhan Pass. Sales are off unless Secret is set,
 // the way verification is off without its secret, and a Secret without the
-// Stripe settings beside it is refused at startup rather than at the first
-// checkout.
+// Stripe settings and PublicURL beside it is refused at startup rather than at
+// the first checkout.
 type PassConfig struct {
 	// Secret keys the hashes the Pass tables hold of each Pass code and of the
-	// processor's session and payment ids. A claim token and a reissue code
+	// processor's session and payment ids, and signs the name a checkout's
+	// answer gives its order (passOrderName). A claim token and a reissue code
 	// are random, and stored as plain SHA-256 (hashToken). Rotating it cancels
 	// every Pass, since no stored code hash matches any more, and orphans the
 	// payment records a refund or a reissue would look for.
 	Secret string
-	// StripeSecretKey is the restricted or secret API key checkout sessions are
-	// created with.
+	// StripeSecretKey is the restricted or secret API key that creates
+	// checkout sessions and reads the Price, for the Pass page and before a
+	// checkout. A restricted key needs Checkout Sessions write and Prices read.
 	StripeSecretKey string
 	// StripeWebhookSecret is the signing secret of the webhook endpoint
 	// pointed at /api/pass/stripe-webhook ("whsec_…").
 	StripeWebhookSecret string
-	// StripePriceID is the one-time Price a Pass sells for ("price_…"). The
-	// amount and currency live in Stripe, so changing the price needs no
-	// deploy.
+	// StripePriceID is the one-time Price a Pass sells for ("price_…"). Its
+	// amount and currency are read from Stripe, which never changes them on a
+	// Price, so a new price is a new Price, set here, and a restart. It is
+	// sold in that currency alone: a Price with currency options in others is
+	// not sold.
 	StripePriceID string
 	// StripeAutomaticTax asks Stripe Tax to work out and collect sales tax,
-	// VAT or GST. It needs Stripe Tax switched on in the Stripe account first.
+	// VAT or GST. It needs Stripe Tax switched on in the Stripe account first,
+	// and a Price that says whether its amount includes the tax (inclusive)
+	// or has it added (exclusive); one that says neither is not sold. Off,
+	// checkout tells Stripe to collect no tax.
 	StripeAutomaticTax bool
 	// PublicURL is the site's own origin, which Stripe sends the buyer back to
 	// after paying ("https://educhan.example"). It is configured rather than
@@ -198,8 +205,9 @@ func validatePassConfig(c PassConfig) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("EDUCHAN_PASS_SECRET is set but %s is not", strings.Join(missing, ", "))
 	}
+	// Counted in bytes, as the README says, since an HMAC's key is bytes.
 	if len(c.Secret) < 32 {
-		return errors.New("EDUCHAN_PASS_SECRET must be at least 32 characters")
+		return errors.New("EDUCHAN_PASS_SECRET must be at least 32 bytes")
 	}
 	if !strings.HasPrefix(c.StripeSecretKey, "sk_") && !strings.HasPrefix(c.StripeSecretKey, "rk_") {
 		return errors.New(`EDUCHAN_STRIPE_SECRET_KEY: want a secret or restricted API key, "sk_…" or "rk_…"`)

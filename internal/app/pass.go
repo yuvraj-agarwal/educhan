@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -80,8 +81,14 @@ const (
 	// passActivateCooldown spaces out code checks from one address. A code is
 	// 100 random bits, so this is courtesy to the database, not a defence.
 	passActivateCooldown = 2 * time.Second
-	// passPriceTTL is how long the price read from Stripe is shown before it is
-	// read again, so a price changed in Stripe shows up within the hour.
+	// passPriceTTL is how long the price read from Stripe is kept before it is
+	// read again. Stripe never changes a Price's own amount or currency, so a
+	// new price is a new Price, set in EDUCHAN_STRIPE_PRICE_ID, and a restart.
+	// What a read picks up is the Price archived, or given currency options in
+	// other currencies, which Stripe allows on the Price in place, within the
+	// hour, or, after a refusal (kept a minute), brought back, rid of those
+	// options, or given a tax behavior where it had none, which Stripe allows
+	// once.
 	passPriceTTL = time.Hour
 )
 
@@ -432,24 +439,21 @@ func passRequest(w http.ResponseWriter, r *http.Request) bool {
 const passNotOnSale = "the Pass is not on sale right now"
 
 // handlePassStatus tells the Pass page whether the Pass is on sale or paused,
-// for how long one lasts, how many posts an hour it skips the captcha for,
-// its price and whether tax is added to it. Like /api/verify it looks up
-// nothing about the caller's Pass: a browser knows its own Pass and when it
-// runs out. The one thing it reads off the request is the claim cookie, which
-// the page cannot see (it is HttpOnly), so the page knows there is a purchase
-// to collect. The claim is looked up for that and nothing else: a cookie with
-// nothing under it any more is no purchase to collect. Every claim cookie the
-// request carries is looked under (passClaimTokens).
+// for how long one lasts, how many posts an hour it skips the captcha for, its
+// price and, with Stripe Tax on, whether tax is in the price or added to it at
+// checkout. Like /api/verify it looks up nothing about the caller's Pass: a
+// browser knows its own Pass and when it runs out. The one thing it reads off
+// the request is the claim cookie, which the page cannot see (it is HttpOnly),
+// so the page knows there is a purchase to collect. The claim is looked up for
+// that and nothing else: a cookie with nothing under it any more is no
+// purchase to collect. Every claim cookie the request carries is looked under
+// (passClaimTokens).
 func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 	if !a.passEnabled() {
 		writeJSON(w, http.StatusOK, map[string]any{"enabled": false})
 		return
 	}
 	out := map[string]any{"enabled": true, "days": a.cfg.Pass.Days, "hourly_posts": a.cfg.Pass.HourlyPosts}
-	// With Stripe Tax on, the price shown is before tax, and the page says so.
-	if a.cfg.Pass.StripeAutomaticTax {
-		out["automatic_tax"] = true
-	}
 	if claims := passClaimTokens(r); len(claims) > 0 {
 		waiting, err := a.store.passClaimWaiting(r.Context(), claimHashes(claims), time.Now())
 		if err != nil {
@@ -464,17 +468,27 @@ func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 		// Nothing is sold, so Stripe is not asked for a price.
 		out["paused"] = true
 	} else if price, err := a.passPrice(r.Context()); err == nil {
-		// The price is shown when Stripe could be asked for it. Without it the
-		// page still sells: Stripe's own page always shows the price before
-		// anyone pays.
+		// The price is shown when Stripe could be asked for it and answered
+		// with a Price the Pass can be sold at (errPassPriceRefused). Without
+		// it the page still offers the Pass, but checkout sells nothing, with
+		// Stripe Tax on or off: it refuses every Price it can't sell and a
+		// request for the Price Stripe refuses (passPriceUnsold), and any
+		// checkout while Stripe is out of reach or failing. With Stripe Tax on,
+		// the Price says whether the tax is in it or added to it, and the page
+		// says which (passTaxWords); one that says neither is a Price the Pass
+		// can't be sold at.
 		out["price"] = price
+		if a.cfg.Pass.StripeAutomaticTax {
+			out["tax"] = passTaxWords[price.TaxBehavior]
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
 }
 
 // passPrice returns the cached price, reading it from Stripe when the cache is
 // stale. A failure is cached for a minute, so an outage or a misconfigured
-// price does not turn every page view into a call to Stripe.
+// price does not turn every page view into a call to Stripe, and a good read
+// for an hour (passPriceTTL); TestPassPriceIsKeptForItsTime holds both.
 func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 	s := a.pass
 	s.priceMu.Lock()
@@ -493,11 +507,25 @@ func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 	defer cancel()
 	s.price, s.priceErr = s.stripe.price(ctx)
 	s.priceFetchedAt = time.Now()
-	if s.priceErr != nil {
+	switch {
+	case errors.Is(s.priceErr, errPassPriceRefused):
+		a.log.Error("the Pass price in Stripe needs fixing", "error", s.priceErr)
+	case s.priceErr != nil:
 		a.log.Error("could not read the Pass price from Stripe", "error", s.priceErr)
 	}
 	return s.price, s.priceErr
 }
+
+// passPriceUnsold is checkout's refusal, with Stripe Tax on or off, when
+// Stripe answered with a Price the Pass can't be sold at, or refused the
+// request for the Price (errPassPriceRefused). It is the owner's to fix, and
+// trying again will not, so it does not say to: the log says what to fix.
+const passPriceUnsold = "the Pass can't be bought right now"
+
+// passStripeUnreachable answers a checkout Stripe could not be asked about:
+// Stripe was out of reach or failing when asked for the Price, or the session
+// could not be opened.
+const passStripeUnreachable = "could not reach the payment page, try again in a moment"
 
 // passAdultRequired refuses a checkout that does not say its buyer is 18 or
 // over, in the badge's words, because it is the same rule.
@@ -514,8 +542,9 @@ type passCheckoutBody struct {
 
 // handlePassCheckout starts a purchase: it opens a Stripe checkout, records an
 // order the webhook can mark paid, and gives the browser the claim it will
-// collect the Pass with. The answer is the Stripe page to go to. While sales
-// are paused it refuses, for a new Pass and a renewal alike.
+// collect the Pass with. The answer is the Stripe page to go to, and the
+// order's name (passOrderName). While sales are paused it refuses, for a new
+// Pass and a renewal alike.
 func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	if !a.requirePass(w) || !passRequest(w, r) {
 		return
@@ -530,6 +559,28 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	if !req.Adult {
 		writeError(w, http.StatusBadRequest, passAdultRequired)
+		return
+	}
+	// The Pass is sold only at a Price read from Stripe and found to be one it
+	// can be sold at, with Stripe Tax on or off: one-time, not archived, with a
+	// fixed amount, so not one whose buyer chooses what to pay, in its own
+	// currency alone, and, while Stripe Tax is on, saying whether tax is in it,
+	// since the page could not otherwise say what the buyer pays. The session
+	// sells one of it, in its own currency, and nothing the buyer can change
+	// (createCheckout), so the webhook need not check what was paid. A Price
+	// the Pass can't be sold at, and a request for the Price Stripe refuses (a
+	// key or Price ID it does not take, say), are refused as the fault in the
+	// setup that they are (503), and every checkout while Stripe is out of
+	// reach or failing as just that (502). passPrice keeps either a minute, and
+	// logged why as it read the Price, so a refusal logs nothing more. Nothing
+	// is opened in Stripe, and no cooldown starts for a fault that is not the
+	// buyer's.
+	switch _, err := a.passPrice(r.Context()); {
+	case errors.Is(err, errPassPriceRefused):
+		writeError(w, http.StatusServiceUnavailable, passPriceUnsold)
+		return
+	case err != nil:
+		writeError(w, http.StatusBadGateway, passStripeUnreachable)
 		return
 	}
 
@@ -569,7 +620,11 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// Orders past their deadline, refunds past their month and Passes past
 	// their grace month go here as well as in the sweep, so a busy server
 	// keeps nothing past its time between two sweeps.
-	if err := a.store.prunePasses(r.Context(), now); err != nil {
+	//
+	// A client gone meanwhile, a checkout the page called off by a forget or
+	// by leaving, is no fault, so it is not logged, here or below, as a.fail
+	// logs nothing for it.
+	if err := a.store.prunePasses(r.Context(), now); err != nil && r.Context().Err() == nil {
 		a.log.Warn("could not prune Pass tables", "error", err)
 	}
 
@@ -589,9 +644,14 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	base := a.cfg.Pass.PublicURL
 	session, err := a.pass.stripe.createCheckout(r.Context(), base+"/pass?paid", base+"/pass?cancelled")
+	if err != nil && r.Context().Err() != nil {
+		// Nobody is left to answer, and Stripe's session, if it opened one, is
+		// left to expire unpaid.
+		return
+	}
 	if err != nil {
 		a.log.Error("could not create a Stripe checkout", "error", err)
-		writeError(w, http.StatusBadGateway, "could not reach the payment page, try again in a moment")
+		writeError(w, http.StatusBadGateway, passStripeUnreachable)
 		return
 	}
 
@@ -622,7 +682,31 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// happens. Only a webhook gives the hold, and it cannot reach the cookie
 	// (passClaimCookieUntil).
 	a.setCookie(w, r, passClaimCookie, claim, passCookiePath, time.Until(passClaimCookieUntil(now)))
-	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL})
+	writeJSON(w, http.StatusOK, map[string]any{"url": session.URL, "order": a.passOrderName(claim)})
+}
+
+// passOrderTagSize is how many bytes of an HMAC an order's name carries.
+const passOrderTagSize = 16
+
+// passOrderName is how a checkout's answer names its order to the page: by
+// what the database holds of the claim the order is under, signed with the
+// secret (passOrderTag). It is for a page that will not send the browser to
+// Stripe, because the browser was forgotten while the checkout was on its
+// way, to drop that claim and no other ({"forget": true, "order"},
+// forgetPassOrder). It collects nothing, since collecting takes the claim
+// itself, which the page never sees (the cookie is HttpOnly). It is signed
+// because the hash alone is what anyone who can read pass_orders holds, from
+// a backup say, and a name made from it would drop every waiting order there,
+// paid ones included, for their buyers to ask the owner for reissue codes.
+func (a *App) passOrderName(claim string) string {
+	hash := hashToken(claim)
+	return base64.RawURLEncoding.EncodeToString(append(hash, a.passOrderTag(hash)...))
+}
+
+// passOrderTag is the signature an order's name carries beside its claim's
+// hash, which only the server, holding the secret, can make.
+func (a *App) passOrderTag(claimHash []byte) []byte {
+	return hmacSum([]byte(a.cfg.Pass.Secret), "pass-order:"+hex.EncodeToString(claimHash))[:passOrderTagSize]
 }
 
 // passClaimCookieLimit is how many claim cookies a request is read for. A
@@ -690,7 +774,15 @@ func (a *App) handlePassClaim(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.Forget {
+		if req.Order != "" {
+			a.forgetPassOrder(w, r, req.Order)
+			return
+		}
 		a.forgetPassClaim(w, r)
+		return
+	}
+	if req.Order != "" {
+		writeError(w, http.StatusBadRequest, `order: goes only with "forget": true`)
 		return
 	}
 	if !isPassToken(req.Nonce) {
@@ -754,6 +846,10 @@ type passClaimBody struct {
 	Reissue string `json:"reissue"`
 	// Forget drops the browser's claim instead (forgetPassClaim).
 	Forget bool `json:"forget"`
+	// Order, beside Forget, names the one claim to drop in place of the
+	// browser's: the one whose order a checkout's answer named
+	// (passOrderName, forgetPassOrder).
+	Order string `json:"order"`
 }
 
 // forgetPassClaim drops the browser's claim, for a shared computer: the order
@@ -774,6 +870,34 @@ func (a *App) forgetPassClaim(w http.ResponseWriter, r *http.Request) {
 	}
 	clearCookie(w, passClaimCookie, passCookiePath)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "forgotten", "claim": false})
+}
+
+// forgetPassOrder drops one checkout's claim, the one whose order its answer
+// named (passOrderName), as forgetPassClaim drops each of the browser's: for a
+// checkout that answered after Remove the Pass, Forget this browser or Stop
+// collecting it here was pressed in another tab, which the page does not follow
+// to Stripe, so that its claim does not outlive the forget. A name without the
+// server's signature, one made from a copy of pass_orders say, is refused. It
+// reads no cookie and clears none. A checkout started after the forget is
+// somebody's purchase, and its cookie can arrive while this request is on its
+// way, so clearing the cookie here could clear that one; the cookie the
+// forgotten checkout set may stay in the browser, with nothing under it, until
+// another checkout replaces it, Remove the Pass, Forget this browser or Stop
+// collecting it here clears it (forgetPassClaim), or it runs out. The answer
+// says nothing of what else waits, since no cookie was read.
+func (a *App) forgetPassOrder(w http.ResponseWriter, r *http.Request, name string) {
+	raw, err := base64.RawURLEncoding.DecodeString(name)
+	if err != nil || len(raw) != sha256.Size+passOrderTagSize ||
+		!hmac.Equal(raw[sha256.Size:], a.passOrderTag(raw[:sha256.Size])) {
+		writeError(w, http.StatusBadRequest, "order: want the name a checkout's answer gave its order")
+		return
+	}
+	claimHash := raw[:sha256.Size]
+	if err := a.store.dropPassClaims(r.Context(), [][]byte{claimHash}); err != nil {
+		a.fail(w, r, err, "could not forget the purchase in progress")
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"status": "forgotten"})
 }
 
 // redeemPassReissue answers a claim that carries a reissue code, in the

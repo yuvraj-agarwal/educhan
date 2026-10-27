@@ -5,8 +5,10 @@
 #
 # REGION defaults to asia-south1. The script follows deploy/README.md 2.1 to 2.9
 # step by step and is safe to re-run: everything it creates is checked for
-# first, so a run that stopped halfway picks up where it left off. At the end it
-# prints the service URL and how to read the moderation key.
+# first, so a run that stopped halfway picks up where it left off, and a re-run
+# from a newer checkout moves both the service and the archive sweeper Job onto
+# the new image. At the end it prints the service URL and how to read the
+# moderation key.
 #
 # What it leaves switched off, on purpose:
 #   - image uploads (EDUCHAN_UPLOADS_ENABLED=false): images are not yet stripped
@@ -37,11 +39,18 @@ fi
 SERVICE=educhan
 DB_INSTANCE=educhan-db
 AR_REPO=educhan
+SWEEP_JOB=educhan-sweep
+SWEEP_SCHEDULE=educhan-sweep-daily
 RUN_SA_NAME=educhan-run
 BUILD_SA_NAME=educhan-build
+SCHEDULER_SA_NAME=educhan-scheduler
 RUN_SA="${RUN_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 BUILD_SA="${BUILD_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
+SCHEDULER_SA="${SCHEDULER_SA_NAME}@${PROJECT_ID}.iam.gserviceaccount.com"
 MEDIA_BUCKET="${PROJECT_ID}-educhan-media"
+# The service and the sweeper Job must agree on these exactly, or the sweep
+# looks for files where the server never put them.
+MEDIA_ENV="EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media"
 STAGING_BUCKET="${PROJECT_ID}_cloudbuild"
 
 step() { printf '\n==> %s\n' "$*"; }
@@ -49,12 +58,14 @@ exists() { "$@" >/dev/null 2>&1; }
 
 cd "$(dirname "$0")/.."
 
-# This checkout must already default uploads to off and cap the database pool.
-# An older one would deploy with uploads accepted and nothing scanned.
+# This checkout must already default uploads to off, cap the database pool,
+# and have the -sweep mode the archive sweeper Job runs. An older one would
+# deploy with uploads accepted and nothing scanned, or a Job that cannot start.
 if ! grep -q EDUCHAN_UPLOADS_ENABLED internal/app/config.go ||
-   ! grep -q EDUCHAN_DB_MAX_CONNS internal/app/config.go; then
-  echo "This checkout predates the uploads switch and the pool cap." >&2
-  echo "Pull the latest main (with PR #13 merged) and run the script again." >&2
+   ! grep -q EDUCHAN_DB_MAX_CONNS internal/app/config.go ||
+   ! grep -q '"sweep"' cmd/server/main.go; then
+  echo "This checkout predates the uploads switch, the pool cap or the sweeper." >&2
+  echo "Pull the latest main and run the script again." >&2
   exit 1
 fi
 IMAGE_TAG="$(git rev-parse --short HEAD)"
@@ -79,7 +90,8 @@ gcloud services enable \
   secretmanager.googleapis.com \
   storage.googleapis.com \
   logging.googleapis.com \
-  containerscanning.googleapis.com
+  containerscanning.googleapis.com \
+  cloudscheduler.googleapis.com
 
 step "Artifact Registry repository"
 exists gcloud artifacts repositories describe "$AR_REPO" --location="$REGION" ||
@@ -94,10 +106,16 @@ exists gcloud iam service-accounts describe "$RUN_SA" ||
 # this project's age implies, so the grants below are always the right ones.
 exists gcloud iam service-accounts describe "$BUILD_SA" ||
   gcloud iam service-accounts create "$BUILD_SA_NAME" --display-name="educhan Cloud Build"
+# Cloud Scheduler starts the sweeper as this account, which may run that one
+# Job and nothing else.
+exists gcloud iam service-accounts describe "$SCHEDULER_SA" ||
+  gcloud iam service-accounts create "$SCHEDULER_SA_NAME" --display-name="educhan sweeper schedule"
 # A freshly created account can take a few seconds to be usable in IAM policies.
-for _ in 1 2 3 4 5 6; do
-  exists gcloud iam service-accounts describe "$BUILD_SA" && break
-  sleep 5
+for sa in "$BUILD_SA" "$SCHEDULER_SA"; do
+  for _ in 1 2 3 4 5 6; do
+    exists gcloud iam service-accounts describe "$sa" && break
+    sleep 5
+  done
 done
 
 step "IAM grants"
@@ -115,13 +133,29 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
   --member="serviceAccount:${BUILD_SA}" --role=roles/storage.objectViewer >/dev/null
 
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
-exists gcloud sql instances describe "$DB_INSTANCE" ||
+# Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
+# sweep (below), so a backup holds as little as possible of what the sweep
+# deletes. Point-in-time recovery stays off, the gcloud default for this
+# edition, and is never changed here. deploy/README.md section 2.2 says what
+# each of these keeps. An existing instance with backups on gets only the start
+# time moved, so a re-run never shortens a retention someone has raised and
+# never turns backups back on where someone turned them off.
+if exists gcloud sql instances describe "$DB_INSTANCE"; then
+  BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
+    --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
+  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *05:00 ]]; then
+    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null ||
+      echo "Could not move the backup window to 05:00 UTC; see deploy/README.md section 2.2." >&2
+  fi
+else
   gcloud sql instances create "$DB_INSTANCE" \
     --database-version=POSTGRES_16 \
     --edition=ENTERPRISE \
     --tier=db-f1-micro \
     --region="$REGION" \
-    --storage-size=10GB
+    --storage-size=10GB \
+    --backup --backup-start-time=05:00 --retained-backups-count=7
+fi
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"
 CLOUDSQL_INSTANCE="$(gcloud sql instances describe "$DB_INSTANCE" --format='value(connectionName)')"
@@ -180,35 +214,92 @@ fi
 
 # Organisations created since May 2024 enforce a policy that refuses allUsers
 # as an invoker. There, skip the invoker check instead: the service is still
-# public, and ingress is what limits who can reach it.
-if [[ "$(gcloud projects describe "$PROJECT_ID" --format='value(parent.type)')" == "organization" ]]; then
+# public, and ingress is what limits who can reach it. The whole ancestry, not
+# just the parent: a project in a folder has the organisation further up. If
+# the ancestry can't be read, allUsers is tried, and the check at the end says
+# whether the service answers.
+ancestors="$(gcloud projects get-ancestors "$PROJECT_ID" --format='value(type)' || true)"
+if grep -qx organization <<<"$ancestors"; then
   PUBLIC_ACCESS=(--no-invoker-iam-check)
 else
   PUBLIC_ACCESS=(--allow-unauthenticated)
 fi
 
 step "Deploying the Cloud Run service"
+# --update-*, not --set-*: a re-run sets the values below and keeps any other
+# variable or secret added by hand since, where --set-* would drop it and switch
+# that feature off without a word. Two things are enforced on every run all the
+# same: uploads stay off, and verification stays off (its secret is removed,
+# whether it was set as a secret or a plain variable) until a mail sender exists.
 gcloud run deploy "$SERVICE" \
   --image "$IMAGE" \
   --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
-  --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=${MEDIA_BUCKET},EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
+  --remove-secrets EDUCHAN_VERIFY_SECRET \
+  --update-env-vars "EDUCHAN_TRUST_PROXY=1,${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false,EDUCHAN_DB_MAX_CONNS=3" \
+  --remove-env-vars EDUCHAN_VERIFY_SECRET \
   --cpu 1 --memory 512Mi --concurrency 80 \
   --min-instances "$MIN_INSTANCES" --max-instances 4 \
   "${PUBLIC_ACCESS[@]}"
 
+# After the service, whose first instance applies any new migrations: the
+# sweeper refuses to run on a schema newer than its image, so it moves onto
+# every new image with the service (deploy/README.md section 2.9).
+step "Archive sweeper: Cloud Run Job ${SWEEP_JOB}, run daily by Cloud Scheduler"
+gcloud run jobs deploy "$SWEEP_JOB" \
+  --image "$IMAGE" \
+  --region "$REGION" \
+  --service-account "$RUN_SA" \
+  --args=-sweep \
+  --set-cloudsql-instances "$CLOUDSQL_INSTANCE" \
+  --update-secrets "DATABASE_URL=educhan-database-url:latest" \
+  --update-env-vars "${MEDIA_ENV},EDUCHAN_LOG_FORMAT=json,EDUCHAN_DB_MAX_CONNS=3" \
+  --tasks 1 --max-retries 1 --task-timeout 15m \
+  --cpu 1 --memory 512Mi
+gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
+  --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
+SCHEDULE_ARGS=(
+  --location "$REGION"
+  # Done, retry included, before the database's backup window opens at 05:00 UTC.
+  --schedule "17 3 * * *" --time-zone "Etc/UTC"
+  --http-method POST
+  --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${SWEEP_JOB}:run"
+  --oauth-service-account-email "$SCHEDULER_SA"
+)
+if exists gcloud scheduler jobs describe "$SWEEP_SCHEDULE" --location "$REGION"; then
+  gcloud scheduler jobs update http "$SWEEP_SCHEDULE" "${SCHEDULE_ARGS[@]}" >/dev/null
+else
+  gcloud scheduler jobs create http "$SWEEP_SCHEDULE" "${SCHEDULE_ARGS[@]}" >/dev/null
+fi
+
 URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='value(status.url)')"
-step "Checking ${URL}/healthz"
+# Not /healthz: Cloud Run reserves some paths ending in "z" on run.app URLs.
+# The board list also reads the database, so it proves the same thing.
+step "Checking ${URL}/api/boards"
+answered=""
 for _ in 1 2 3 4 5 6; do
-  if curl -fsS "${URL}/healthz"; then echo; break; fi
+  if curl -fsS -o /dev/null "${URL}/api/boards"; then answered=1; echo "ok"; break; fi
   sleep 5
 done
+HEADING="educhan is live at:"
+if [[ -z "$answered" ]]; then
+  HEADING="educhan is deployed, but did not answer (see the warning above), at:"
+  cat >&2 <<EOF
+
+WARNING: ${URL}/api/boards did not answer in six tries. A 403 above means the
+service is not public: run
+  gcloud run services update ${SERVICE} --region ${REGION} --no-invoker-iam-check
+Anything else, read what the service logged, newest first:
+  gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="${SERVICE}"' \\
+    --freshness=1h --limit=20 --format='value(timestamp,severity,jsonPayload,textPayload)'
+EOF
+fi
 
 cat <<EOF
 
-educhan is live at:
+${HEADING}
 
   ${URL}
 
@@ -217,6 +308,11 @@ Moderation key (keep it private; it goes in the X-Mod-Key header):
   gcloud secrets versions access latest --secret=educhan-mod-key
 
 Image uploads and institutional verification are switched off.
+
+Expired archived threads are deleted daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run
+it now and see what it did:
+
+  gcloud run jobs execute ${SWEEP_JOB} --region ${REGION} --wait
 
 Check that no log holds a visitor IP: open the URL from your phone or laptop,
 search "what is my ip" to learn that device's address, wait a minute, then
@@ -229,7 +325,8 @@ After the demo, stop paying for the warm instance:
   gcloud run services update ${SERVICE} --region ${REGION} --min-instances 0
 
 To ship a new version later, git pull in this folder and run the same command
-again: it skips what already exists, builds the new commit, and deploys it.
+again: it skips what already exists, builds the new commit, and moves both the
+service and the sweeper Job onto it.
 
   bash deploy/first-deploy.sh ${PROJECT_ID} ${REGION}
 EOF

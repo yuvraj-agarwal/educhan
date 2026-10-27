@@ -12,6 +12,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -83,9 +84,19 @@ type checkoutSession struct {
 // because the browser holds its claim in a cookie and the session id would add
 // nothing but a value to leak through history or a Referer.
 //
+// It sells one of the configured Price, which checkout has read and found to
+// have a fixed amount in its own currency alone (passPrice), and nothing lets
+// the buyer change what they pay: no promotion codes, discounts or adjustable
+// quantity are sent, and Checkout offers none unless asked, and Stripe is told
+// not to convert the price into the buyer's currency. So what a paid session
+// paid is that amount in that currency, with any tax Stripe adds to an
+// exclusive Price, and the webhook does not check it.
+//
 // No customer object is created (Stripe's default for one-off payments), and
 // no metadata is attached: Stripe learns that somebody bought a Pass, which it
-// has to, and nothing about who they are on educhan.
+// has to, and nothing about who they are on educhan. With Stripe Tax on,
+// Stripe's page also asks for the buyer's billing address to work the tax
+// out, and keeps it with the rest of the payment.
 func (c *stripeClient) createCheckout(ctx context.Context, successURL, cancelURL string) (checkoutSession, error) {
 	form := url.Values{
 		"mode":                    {"payment"},
@@ -94,9 +105,14 @@ func (c *stripeClient) createCheckout(ctx context.Context, successURL, cancelURL
 		"success_url":             {successURL},
 		"cancel_url":              {cancelURL},
 		"submit_type":             {"pay"},
-	}
-	if c.tax {
-		form.Set("automatic_tax[enabled]", "true")
+		// Sent either way, so an account set to collect tax by default never
+		// adds tax that the Pass page did not show.
+		"automatic_tax[enabled]": {strconv.FormatBool(c.tax)},
+		// Stripe's Adaptive Pricing, which an account can have on for every
+		// checkout, would show a buyer elsewhere the price converted into
+		// their own currency and charge them that, not the price the Pass
+		// page shows.
+		"adaptive_pricing[enabled]": {"false"},
 	}
 	var s checkoutSession
 	if err := c.call(ctx, http.MethodPost, "/v1/checkout/sessions", form, &s); err != nil {
@@ -121,51 +137,162 @@ func isStripeCheckoutURL(raw string) bool {
 	return err == nil && u.Scheme == "https" && u.Host == stripeCheckoutHost && u.User == nil
 }
 
-// passPrice is what the Pass page shows before anyone clicks: the amount in
-// the currency's smallest unit, as Stripe keeps it, and the currency code.
+// passPrice is what the Pass page shows before anyone clicks: the amount as
+// Stripe keeps it, a whole number of the currency's smallest unit; the
+// currency code; and Exponent, the decimals that unit stands for in Stripe's
+// own table (stripeExponent), so the page shows Amount / 10^Exponent. The page
+// cannot take the decimals from the browser's table of currencies instead:
+// Stripe keeps ISK and UGX in hundredths, for one, where the browser's has
+// them whole. TaxBehavior is the Price's own word on tax, which GET /api/pass
+// passes on as passTaxWords has it.
 type passPrice struct {
-	Amount   int64  `json:"amount"`
-	Currency string `json:"currency"`
+	Amount      int64  `json:"amount"`
+	Currency    string `json:"currency"`
+	Exponent    int    `json:"exponent"`
+	TaxBehavior string `json:"-"`
 }
+
+// stripeDecimals is how many decimals Stripe's amounts carry in each currency
+// that does not have two, after Stripe's page on currencies
+// (docs.stripe.com/currencies): none in its zero-decimal currencies, and three
+// in its three-decimal ones. UGX is on the zero-decimal list and ISK has gone
+// the same way, but Stripe still writes both in hundredths, ending in 00, so
+// 5 ISK is 500, and both are left out here. Every other currency, HUF and TWD
+// among them, is in hundredths too.
+var stripeDecimals = map[string]int{
+	"bif": 0, "clp": 0, "djf": 0, "gnf": 0, "jpy": 0, "kmf": 0, "krw": 0, "mga": 0,
+	"pyg": 0, "rwf": 0, "vnd": 0, "vuv": 0, "xaf": 0, "xof": 0, "xpf": 0,
+	"bhd": 3, "jod": 3, "kwd": 3, "omr": 3, "tnd": 3,
+}
+
+// stripeExponent is how many decimals Stripe's amounts carry in currency, a
+// lower-case code: two, unless stripeDecimals says otherwise.
+func stripeExponent(currency string) int {
+	if n, ok := stripeDecimals[currency]; ok {
+		return n
+	}
+	return 2
+}
+
+// passTaxWords is what GET /api/pass says of tax while Stripe Tax is on, by
+// the Price's tax_behavior: "included" when the amount has the tax in it
+// already, and "added" when Stripe adds it at checkout, which can come to
+// nothing for some buyers. With Stripe Tax off no tax is collected, and
+// nothing is said of it.
+var passTaxWords = map[string]string{"inclusive": "included", "exclusive": "added"}
+
+// errPassPriceRefused is price's refusal of the Price Stripe answered with, as
+// against a read that failed: one archived, recurring, without a fixed amount
+// or priced in other currencies too, or, while Stripe Tax is on, one that does
+// not say whether its amount includes tax (errPassPriceTax). Stripe refusing
+// the request for the Price (a 400, 401, 403 or 404: a key or Price ID it does
+// not take, say) is refused the same way. Asking again changes none of these
+// until the owner fixes the Price, EDUCHAN_STRIPE_PRICE_ID or the key, so
+// checkout refuses it as a fault in the setup (passPriceUnsold), not as Stripe
+// out of reach, with Stripe Tax on or off. passPrice logs each refusal as it
+// reads the Price, at most once a minute while it lasts, and nothing else does,
+// so it says what to fix.
+var errPassPriceRefused = errors.New("stripe: the Pass price can't be sold")
+
+// errPassPriceTax is price's refusal, while Stripe Tax is on, of a Price that
+// does not say whether its amount includes tax. Stripe would settle that by a
+// default in the account that the Pass page cannot know, so the page could
+// show a price the buyer does not pay.
+var errPassPriceTax = fmt.Errorf("%w: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, it must have a tax behavior, inclusive or exclusive: set one on the Price, or make a new Price with one and set EDUCHAN_STRIPE_PRICE_ID to it", errPassPriceRefused)
 
 // price reads the Pass's Price. A recurring Price is refused, because the
 // Pass is bought by hand for each term, as 4chan's is, and never renews
-// itself.
+// itself, and so are an archived one, one without a fixed amount (one whose
+// buyer chooses what to pay, say), one priced in other currencies too, and,
+// while Stripe Tax is on, one that does not say whether tax is in its amount
+// (errPassPriceRefused). So is a read Stripe refuses: most often for the key
+// or the Price ID it was asked with, a Price ID it does not know, one from the
+// other mode (test or live) than the key's, or a key it does not take or that
+// may not read Prices, and Stripe's own message, which follows, names the
+// cause. Stripe out of reach, failing (a 5xx) or asking for fewer requests
+// (429) is a read that failed.
+//
+// A Price's other currencies are its currency options, which Stripe leaves out
+// of the Price unless asked for them, so they are asked for. Checkout would
+// charge a buyer it places in one of them that option's amount, or what they
+// choose to pay where the option lets them, under the option's own tax
+// behavior, while the page shows the Price's own. An option in the Price's own
+// currency, which Stripe may list among them, is the Price itself.
 func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	var p struct {
-		Active     bool   `json:"active"`
-		Type       string `json:"type"`
-		UnitAmount *int64 `json:"unit_amount"`
-		Currency   string `json:"currency"`
+		Active          bool                       `json:"active"`
+		Type            string                     `json:"type"`
+		UnitAmount      *int64                     `json:"unit_amount"`
+		Currency        string                     `json:"currency"`
+		TaxBehavior     string                     `json:"tax_behavior"`
+		CurrencyOptions map[string]json.RawMessage `json:"currency_options"`
 	}
-	if err := c.call(ctx, http.MethodGet, "/v1/prices/"+url.PathEscape(c.priceID), nil, &p); err != nil {
+	query := url.Values{"expand[]": {"currency_options"}}
+	if err := c.call(ctx, http.MethodGet, "/v1/prices/"+url.PathEscape(c.priceID), query, &p); err != nil {
+		var refused *stripeStatusError
+		if errors.As(err, &refused) {
+			switch refused.status {
+			case http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound:
+				return passPrice{}, fmt.Errorf("%w: Stripe refused the request for the Price: %w", errPassPriceRefused, err)
+			}
+		}
 		return passPrice{}, err
 	}
+	currency := strings.ToLower(p.Currency)
+	var others []string
+	for code := range p.CurrencyOptions {
+		if code := strings.ToLower(code); code != currency {
+			others = append(others, code)
+		}
+	}
+	slices.Sort(others)
 	switch {
 	case !p.Active:
-		return passPrice{}, errors.New("stripe: the Pass price is archived")
+		return passPrice{}, fmt.Errorf("%w: it is archived", errPassPriceRefused)
 	case p.Type != "one_time":
-		return passPrice{}, fmt.Errorf("stripe: the Pass price must be one-time, not %q", p.Type)
+		return passPrice{}, fmt.Errorf("%w: it must be one-time, not %q", errPassPriceRefused, p.Type)
 	case p.UnitAmount == nil || *p.UnitAmount <= 0 || p.Currency == "":
-		return passPrice{}, errors.New("stripe: the Pass price has no fixed amount")
+		return passPrice{}, fmt.Errorf("%w: it has no fixed amount", errPassPriceRefused)
+	case len(others) > 0:
+		return passPrice{}, fmt.Errorf("%w: it must be priced in %s alone, not also in %s", errPassPriceRefused, currency, strings.Join(others, ", "))
+	case c.tax && passTaxWords[p.TaxBehavior] == "":
+		return passPrice{}, errPassPriceTax
 	}
-	return passPrice{Amount: *p.UnitAmount, Currency: strings.ToLower(p.Currency)}, nil
+	return passPrice{Amount: *p.UnitAmount, Currency: currency, Exponent: stripeExponent(currency), TaxBehavior: p.TaxBehavior}, nil
 }
 
-// call makes one API request. Errors carry Stripe's message and type but
-// never the request, which holds the secret key in its header.
+// stripeStatusError is an API request Stripe answered with an error status,
+// with Stripe's type and message for it, so price can tell Stripe refusing the
+// request from Stripe failing.
+type stripeStatusError struct {
+	method, path  string
+	status        int
+	kind, message string
+}
+
+func (e *stripeStatusError) Error() string {
+	return fmt.Sprintf("stripe %s %s: status %d: %s: %s", e.method, e.path, e.status, e.kind, e.message)
+}
+
+// call makes one API request, with form as its body, or as its query for a
+// GET. Errors carry Stripe's message and type but never the request, which
+// holds the secret key in its header.
 func (c *stripeClient) call(ctx context.Context, method, path string, form url.Values, out any) error {
+	target := c.base + path
 	var body io.Reader
-	if form != nil {
+	switch {
+	case form != nil && method == http.MethodGet:
+		target += "?" + form.Encode()
+	case form != nil:
 		body = strings.NewReader(form.Encode())
 	}
-	req, err := http.NewRequestWithContext(ctx, method, c.base+path, body)
+	req, err := http.NewRequestWithContext(ctx, method, target, body)
 	if err != nil {
 		return fmt.Errorf("stripe: %w", err)
 	}
 	req.Header.Set("Authorization", "Bearer "+c.key)
 	req.Header.Set("Stripe-Version", stripeAPIVersion)
-	if form != nil {
+	if body != nil {
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 		// A retry by the HTTP client after a lost response must not open a
 		// second session; a fresh key per call is enough for that.
@@ -192,7 +319,7 @@ func (c *stripeClient) call(ctx context.Context, method, path string, form url.V
 			} `json:"error"`
 		}
 		_ = json.Unmarshal(raw, &e)
-		return fmt.Errorf("stripe %s %s: status %d: %s: %s", method, path, res.StatusCode, e.Error.Type, e.Error.Message)
+		return &stripeStatusError{method: method, path: path, status: res.StatusCode, kind: e.Error.Type, message: e.Error.Message}
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return fmt.Errorf("stripe %s %s: decode: %w", method, path, err)

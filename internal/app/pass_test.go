@@ -338,7 +338,7 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"secret without stripe":          {"EDUCHAN_STRIPE_SECRET_KEY": "", "EDUCHAN_STRIPE_WEBHOOK_SECRET": "", "EDUCHAN_STRIPE_PRICE_ID": "", "EDUCHAN_PUBLIC_URL": ""},
 		"stripe without secret":          {"EDUCHAN_PASS_SECRET": ""},
 		"short secret":                   {"EDUCHAN_PASS_SECRET": "short"},
-		"secret of 31 characters":        {"EDUCHAN_PASS_SECRET": strings.Repeat("x", 31)},
+		"secret of 31 bytes":             {"EDUCHAN_PASS_SECRET": strings.Repeat("x", 31)},
 		"webhook secret shape":           {"EDUCHAN_STRIPE_WEBHOOK_SECRET": "sk_x"},
 		"publishable key":                {"EDUCHAN_STRIPE_SECRET_KEY": "pk_live_x"},
 		"key shape":                      {"EDUCHAN_STRIPE_SECRET_KEY": "whsec_x"},
@@ -361,6 +361,10 @@ func TestPassConfigFromEnv(t *testing.T) {
 		"hourly posts negative":          {"EDUCHAN_PASS_HOURLY_POSTS": "-5"},
 		"hourly posts not a number":      {"EDUCHAN_PASS_HOURLY_POSTS": "many"},
 		"tax not a boolean":              {"EDUCHAN_STRIPE_AUTOMATIC_TAX": "maybe"},
+
+		// The secret's 32 are bytes: however few characters spell them, 31
+		// bytes are too few.
+		"secret of 31 bytes in 16 characters": {"EDUCHAN_PASS_SECRET": strings.Repeat("é", 15) + "x"},
 	}
 	for name, change := range bad {
 		env := map[string]string{}
@@ -395,12 +399,17 @@ func TestPassConfigFromEnv(t *testing.T) {
 		t.Fatalf("restricted key: %v", err)
 	}
 
-	// The secret is at least 32 characters, as the README and .env.example
-	// say, and 32 is enough.
-	env["EDUCHAN_PASS_SECRET"] = strings.Repeat("x", 32)
-	set(t, env)
-	if cfg, err := passConfigFromEnv(); err != nil || cfg.Secret != env["EDUCHAN_PASS_SECRET"] {
-		t.Fatalf("a secret of 32 characters: %+v, %v", cfg, err)
+	// The secret is at least 32 bytes, as the README and .env.example say,
+	// and 32 is enough, however few characters spell them.
+	for name, secret := range map[string]string{
+		"32 bytes":                  strings.Repeat("x", 32),
+		"32 bytes in 16 characters": strings.Repeat("é", 16),
+	} {
+		env["EDUCHAN_PASS_SECRET"] = secret
+		set(t, env)
+		if cfg, err := passConfigFromEnv(); err != nil || cfg.Secret != secret {
+			t.Fatalf("a secret of %s: %+v, %v", name, cfg, err)
+		}
 	}
 	env["EDUCHAN_PASS_SECRET"] = testPassSecret
 

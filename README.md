@@ -358,25 +358,28 @@ deadline a week on, rounded up to the next midnight UTC. Changing
 already paid for, whether it is collected, renewed or reissued later.
 
 Every checkout gives the browser a new claim with only its own order under it,
-and an order is collected only through the claim its checkout set. A claim
-token copied off a shared computer, or planted in the browser, before somebody
-buys there collects nothing of what they buy. It also means a browser collects
-only its latest checkout: a Stripe tab left open from an earlier one and paid
-after all is not collected there. The page says so where it shows a checkout
-being collected, beside Start again, beside a checkout not collected yet, and
-under the forms drawn again over a checkout left behind (Start again, back from
+and an order is collected only through the claim its checkout set. A claim token
+copied off a shared computer, or planted in the browser, before somebody buys
+there collects nothing of what they buy. It also means a browser collects only
+its latest checkout: a Stripe tab left open from an earlier one and paid after
+all is not collected there. The page says so where it shows a checkout being
+collected, beside Start again, beside a checkout not collected yet, and under
+the forms drawn again over a checkout left behind (Start again, back from
 Stripe's cancel link, or a checkout whose answer came after the reader left the
-Pass page, after they pressed Remove the Pass or Forget this browser, or after
-the Pass held changed meanwhile, in another tab say, which is not followed to
-Stripe), each with Stop collecting it here, but not in a tab drawn before the
-other checkout started. That payment is still the buyer's, and the owner
-reissues it from the payment on the receipt (see **Lost codes**). The cookie is
-set at checkout to outlast its order's deadline, and 30 days past Stripe's
-24-hour checkout, which is as long as a slow payment holds its order (below)
-when Stripe reports the checkout completed as it happens. Nothing else sets the
-cookie, and only forgetting the claim clears it. A paid order nobody has
-collected by the time the cookie runs out is kept longer, and is collected with
-a reissue code.
+Pass page or after the Pass held changed meanwhile, in another tab say, which is
+not followed to Stripe), each with Stop collecting it here, but not in a tab
+drawn before the other checkout started. That payment is still the buyer's, and
+the owner reissues it from the payment on the receipt (see **Lost codes**). The
+cookie is set at checkout to outlast its order's deadline, and 30 days past
+Stripe's 24-hour checkout, which is as long as a slow payment holds its order
+(below) when Stripe reports the checkout completed as it happens. Nothing else
+sets the cookie, and only forgetting the claim clears it. A paid order nobody
+has collected is kept for its own term past its deadline, or past a slow
+payment's hold (below), and the cookie runs out 24 days after the deadline. So
+with a term of 25 days or more, the default year included, an order paid by its
+deadline outlasts the cookie, and is collected then with a reissue code; with 24
+days or less it can be pruned by the time the cookie runs out, and once it is,
+it cannot be reissued.
 
 Collecting takes the order under the claim once it is paid: a renewal renews
 its Pass by the order's own term, and anything else makes a new Pass, as does
@@ -411,20 +414,23 @@ here all send it. The page stops any collection under way and drops its nonce
 before it does, and starts none until the server has the request, so a claim
 cannot collect what is being dropped. The browser's other tabs do the same:
 while the request is on its way the page keeps a mark in `localStorage`
-(`educhan:pass-forget:` and a random token, a mark for each forget, holding the
-time it was set), and a tab that sees one appear, or finds one when it is
-opened or brought back from the back-forward cache, stops, and starts nothing
-until each such mark goes, or for 30 seconds at most, in case the tab that set
-it was closed first, counted from the time the mark holds; it then draws the
-Pass page if it is open, and a tab opened on an older mark removes it. An
-answer to a claim already on its way, in any tab, when one of them is pressed is
-dropped without being stored or shown; a Pass it brought is still the buyer's,
-and a reissue code from its payment gives it a new code. Remove the Pass and
-Forget this browser go further, in every tab: they also drop a reissue code's
-nonce, and an answer on its way to a reissue code or to a check of a Pass code,
-until the server has the request. Stop collecting it here leaves those alone,
-since it is about a checkout, and a reissue it dropped would be spent with
-nothing to show for it.
+(`educhan:pass-forget:` and a random token, a mark for each forget, holding
+which of them was pressed and the time it was set), and a tab that sees one
+appear, or finds one when it is opened or brought back from the back-forward
+cache, stops as the tab it was pressed in did, one brought back dropping what it
+held when it was left, and starts nothing until each such mark goes, or for 30
+seconds at most, in case the tab that set it was closed first, counted from the
+time the mark holds; it then draws the Pass page if it is open, and a tab opened
+on an older mark removes it. An answer to a claim already on its way, in any
+tab, when one of them is pressed is dropped without being stored or shown; a
+Pass it brought is still the buyer's, and a reissue code from its payment gives
+it a new code. A checkout still on its way then is called off, or not followed
+to Stripe once it answers, and keeps no claim past the forget (below). Remove
+the Pass and Forget this browser go further, in every tab: they also drop a
+reissue code's nonce, and an answer on its way to a reissue code or to a check
+of a Pass code, until the server has the request. Stop collecting it here leaves
+those alone, since it is about a checkout, and a reissue it dropped would be
+spent with nothing to show for it.
 
 A page on another subdomain of the same site can set a cookie of the same name
 for the whole site, at a path the browser sends ahead of the server's own, to
@@ -435,6 +441,47 @@ turn, one order an answer, and asked again after an answer was lost gives the
 Pass made last; and forgetting drops what is under every one. The server can
 clear only the cookie it set; one set from elsewhere stays in the browser with
 nothing under it.
+
+A checkout's answer also names its order (`"order"`): what the database holds of
+its claim, a hash that collects nothing, signed with `EDUCHAN_PASS_SECRET`.
+Collecting takes the claim itself, which the page cannot see, and only the
+server can make a name, so a copy of the database is no way to drop anybody's
+order. A forget pressed in the checkout's own tab needs no name: it first calls
+off the checkout's request, if no answer has come, and its own request then goes
+after any cookie the checkout set, and drops that claim with the rest. The page
+uses the name for a checkout whose answer arrives after Remove the Pass, Forget
+this browser or Stop collecting it here was pressed in another tab since its
+request went: that forget may have gone too soon to see the claim the answer
+set. The page does not follow such a checkout to Stripe, and sends
+`{"forget": true, "order": …}`, which drops that claim alone, as a forget drops
+each of the browser's, and reads no cookie and clears none: another checkout,
+started later, may have set its own cookie by the time the request is answered,
+and clearing would clear that one. So the cookie of a claim dropped this way can
+stay in the browser, with nothing under it, until another checkout replaces it,
+Remove the Pass, Forget this browser or Stop collecting it here clears it, or it
+runs out. If educhan cannot be reached to drop it, the tab says so on whatever
+page it is on, and says how to drop it once back online with no more than the
+forget that was pressed: Stop collecting it here again after a Stop, Stop
+collecting it here after Remove the Pass, which leaves no Pass to remove, and
+Forget this browser again after a Forget. The name is kept in memory for that
+one request and nowhere else, and the drop sets no mark and stops nothing in any
+tab, since it reaches no other claim. Every checkout's answer puts its cookie in
+the place of the one before, whichever checkout started first, so the browser's
+checkouts go one at a time: while one is on its way its tab keeps a mark in
+`localStorage` (`educhan:pass-checkout:` and a random token, holding the time it
+was set), and a checkout waits to go until no other's mark is left, in any tab,
+each for 30 seconds at most from the time it holds. A tab that leaves educhan,
+for another site say, calls off a checkout not yet answered and takes its mark
+off, and a press still waiting to go then (Buy, Renew, a code or Check it again)
+sends nothing. A mark left by a tab that crashed or was killed before its answer
+is taken off once its 30 seconds are over, by the next page to load, and Forget
+this browser takes every mark off; a tab whose checkout is still on its way puts
+its own back. A checkout whose answer reaches its tab in the moment before that
+tab hears of a forget pressed in another is followed to Stripe, as one answered
+before it, and keeps its claim unless its cookie was already in the browser when
+that forget's request went. Every other checkout answered after a forget pressed
+since its request went keeps no claim past it, and a checkout pressed after the
+forget holds the cookie and is never dropped for it.
 
 An order nobody paid for goes at its deadline, or as soon as Stripe reports
 its checkout expired or its payment failed, or reports it paid with a payment
@@ -506,9 +553,21 @@ the server secret and the Stripe account can see:
 - in `pass_reissues`, while a reissue code is unredeemed: its SHA-256 hash,
   the HMAC of the payment it reissues, and its deadline.
 
-There is no `created_at` anywhere, and every date in these tables is rounded
-up to a UTC midnight, so it dates a purchase, a refund or a reissue to the day
-and not the minute.
+There is no `created_at` anywhere, and every date in these tables is rounded up
+to a UTC midnight, so their columns date a purchase, a refund or a reissue only
+to the day. The rows can be dated more closely all the same: each holds the id
+of the transaction that wrote it (Postgres's `xmin`), drawn from the same
+counter as the posts', which carry their time, and the write-ahead log keeps the
+same order, so whoever holds the live database's files or a physical backup (not
+a `pg_dump`) can place a Pass row between two posts. A `passes` row's `xmin`
+moves with each later write to it, a renewal collected, a reissue code redeemed,
+or a refund or dispute that takes days off the Pass, so it dates the latest of
+those. A refund or dispute that takes none off (of a term already run while a
+later one runs, or of a paid renewal not collected yet, say) leaves the row as
+it was, and the `pass_revocations` row it writes dates it instead. One that
+leaves the Pass no paid time to come, as one of any of its terms does once it
+has run out, deletes the row. Stripe keeps the exact time of every payment
+anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
@@ -666,23 +725,72 @@ deadline and pruned, by the daily sweep, the next checkout or a claim from its
 own browser, since Stripe can still report it paid until then. The purchase
 keeps its own right whatever renewal is under way.
 
-**Setting it up.** In Stripe: a one-time Price for the Pass
-(`EDUCHAN_STRIPE_PRICE_ID`); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
+**Setting it up.** In Stripe: a one-time Price for the Pass with a fixed amount
+in one currency alone, with no currency options for others
+(`EDUCHAN_STRIPE_PRICE_ID`), which with Stripe Tax on says whether tax is in its
+amount (**Tax**, below); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
 restricted key (`rk_…`) allowed to write Checkout Sessions and read Prices and
 nothing more; and a webhook endpoint at
 `EDUCHAN_PUBLIC_URL/api/pass/stripe-webhook`, created with API version
-`2024-06-20` (`stripeAPIVersion` in `pass_stripe.go`) and sending the six
-events listed in the [HTTP API](#http-api) table, whose signing secret is
+`2024-06-20` (`stripeAPIVersion` in `pass_stripe.go`) and sending the six events
+listed in the [HTTP API](#http-api) table, whose signing secret is
 `EDUCHAN_STRIPE_WEBHOOK_SECRET`. Turn on Stripe's email receipts and give the
-account a public support email: the receipt is how a buyer finds their
-payment, and whom to write to about a lost code. Buyers are sent only to
+account a public support email: the receipt is how a buyer finds their payment,
+and whom to write to about a lost code. Buyers are sent only to
 `checkout.stripe.com`, so a custom checkout domain set up in Stripe would make
-every checkout fail. Then set `EDUCHAN_PASS_SECRET` beside them, and
-`EDUCHAN_MOD_KEY` if it is not set already: a lost code is reissued behind the
-moderation key, and without it every reissue answers `403`, which the server
-warns about as it starts. Every Pass setting given without the secret refuses
-to start rather than leaving the Pass quietly off, and
-`EDUCHAN_PASS_SALES=paused` keeps it off sale while everything else is tried.
+every checkout fail. Then set `EDUCHAN_PASS_SECRET` and `EDUCHAN_PUBLIC_URL`
+(the site's bare `https://` origin) beside them, and `EDUCHAN_MOD_KEY` if it is
+not set already: a lost code is reissued behind the moderation key, and without
+it every reissue answers `403`, which the server warns about as it starts. Every
+Pass setting given without the secret refuses to start rather than leaving the
+Pass quietly off, and `EDUCHAN_PASS_SALES=paused` keeps it off sale while
+everything else is tried.
+
+**Tax.** With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, checkout asks Stripe Tax to
+collect sales tax, VAT or GST, and Stripe's page asks the buyer for a billing
+address to work it out. The Price then has to say whether its amount includes
+the tax. `inclusive` takes the tax out of the amount, so the tax adds nothing to
+the price shown, and the Pass page says "tax included"; `exclusive` adds it at
+checkout, where it can come to nothing for some buyers, so the page says "plus
+any tax". A Price that says neither (`unspecified`, or nothing at all on an
+older Price) would leave it to a default in the Stripe account that the page
+cannot know, so while Stripe Tax is on it is not sold: `GET /api/pass` leaves
+the price out, checkout answers `503` ("the Pass can't be bought right now"),
+and the log says what to fix. The same holds, with Stripe Tax on or off, for any
+other Price the Pass can't be sold at, one archived, recurring, without a fixed
+amount (one whose buyer chooses what to pay, say) or priced in other currencies
+too (below), and when Stripe refuses the request for the Price (a key or Price
+ID it does not take, say, as for a test Price with a live key). Asking again
+mends none of these. Nor is the Pass sold while Stripe is out of reach or
+failing, with Stripe Tax on or off, since the Price might be such a one:
+checkout answers `502` ("try again in a moment") until Stripe answers. Neither
+refusal starts a cooldown. A Price that says neither can be given a tax behavior
+once, but Stripe never changes one that says `inclusive` or `exclusive`, so
+changing that takes a new Price. With the setting off, checkout tells Stripe to
+collect no tax (`automatic_tax[enabled]=false`), which an account set to collect
+it by default would otherwise do, and the page says nothing about tax.
+
+**What the buyer pays.** The webhook does not check what was paid, since
+checkout read the Price within the hour and found it one the Pass is sold at,
+with a fixed amount in its own currency alone, and the session sells one of it
+and lets the buyer change nothing: no promotion codes, discounts or quantity to
+choose. Nor does Stripe convert the price: checkout turns Stripe's Adaptive
+Pricing off for the session (`adaptive_pricing[enabled]=false`), which an
+account can have on for every checkout, and which would show a buyer elsewhere
+the amount converted into their own currency and charge them that. A Price with
+currency options in any currency but its own is not sold (`503`, as above, and
+logged with the other currencies named), since Stripe's page would charge a
+buyer it places in one of those currencies that option's amount, or what they
+choose to pay where the option lets them, under the option's own tax behavior;
+Stripe sends a Price's currency options only when asked for them, and checkout
+asks (`TestPassSellsInThePricesOwnCurrencyAlone`). A failed read and a refused
+Price are each kept a minute before Stripe is asked again, and a Price the Pass
+is sold at is kept an hour (`TestPassPriceIsKeptForItsTime`). Stripe never
+changes a Price's own amount or currency, so a new price takes a new Price, a
+new `EDUCHAN_STRIPE_PRICE_ID` and a restart. Currency options, though, can be
+added to a Price in place, keeping its ID: the next read, within the hour,
+refuses the Price, but a checkout before it may charge a buyer in one of those
+currencies that option's amount, so a Price on sale should be given none.
 
 ## Posting identity
 
@@ -846,11 +954,11 @@ not-found view.
   and lock a thread. Boards can add their own rules under the header's **Rules**
   disclosure. `/faq` covers what educhan is, who it is for, why it asks when you were
   born, why there are no accounts or private messages, what anonymity here does and does
-  not hide, the badge, tripcodes, per-thread IDs, markup, and the bump limit, image cap,
-  and archive. Both end with the same fixed list of helplines (US, UK and Ireland, India,
-  Australia, and Find A Helpline for everyone else), which is static text: nothing works
-  out where the reader is. The footer links to both on every view; its invitation to
-  verify an address shows only on a server with verification switched on.
+  not hide, the badge, the educhan Pass, tripcodes, per-thread IDs, markup, and the bump
+  limit, image cap, and archive. Both end with the same fixed list of helplines (US, UK
+  and Ireland, India, Australia, and Find A Helpline for everyone else), which is static
+  text: nothing works out where the reader is. The footer links to both on every view; its
+  invitation to verify an address shows only on a server with verification switched on.
 - **Reading**: a subject heads its thread, with the poster's name, tripcode, per-thread ID,
   time, and post number as secondary metadata; sticky, locked, archived, and bump-limit
   badges are tinted chips. Each board's archive lists the threads that have left it,
@@ -911,20 +1019,21 @@ not-found view.
   anything else. A badged post sends the credential instead, never both. The Name field
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
-  `/verify` drops the key, the name, any badge and any Pass, any Pass purchase still
-  being collected and any note that a Pass was found gone, for a shared computer. The
-  browser's other tabs follow it for the Pass and what goes with it (the purchase being
-  collected, the code box and that note, though a code copied in one of them stays on
-  the clipboard), but a tab already open can keep the key, the name and the badge it
-  has, and a post from it puts the key and the name back in storage, so the Verify page
-  and the FAQ say to close those tabs first.
+  `/verify` drops the key, the name, any badge and any Pass, any Pass purchase still being
+  collected, the marks of checkouts started here and any note that a Pass was found gone,
+  for a shared computer. The browser's other tabs follow it for the Pass and what goes
+  with it (the purchase being collected, the code box and that note, though a code copied
+  in one of them stays on the clipboard), but a tab already open can keep the key, the
+  name and the badge it has, and a post from it puts the key and the name back in storage,
+  so the Verify page and the FAQ say to close those tabs first.
 - **educhan Pass**: the header links to `/pass` only once `GET /api/site` says the server
   has the Pass, on sale or paused, or while this browser holds one, so a holder can still
-  show or remove it. `/pass` says what a Pass does and what it costs (with "plus any tax"
-  when Stripe adds it, and "a set time" until the server's terms are known), sells and
-  renews it through Stripe's own page, and takes a code typed in: a Pass code, or a
-  reissue code (see [Lost codes](#educhan-pass)). While sales are paused it says "The Pass
-  is not on sale right now." where Buy and Renew were. A browser that keeps no cookies or
+  show or remove it. `/pass` says what a Pass does and what it costs (with "tax included"
+  or "plus any tax" when `GET /api/pass` says so, nothing about tax while Stripe Tax
+  is off, and "a set time" until the server's terms are known), sells and renews it
+  through Stripe's own page, and takes a code typed in: a Pass code, or a reissue code
+  (see [Lost codes](#educhan-pass)). While sales are paused it says "The Pass is not
+  on sale right now." where Buy and Renew were. A browser that keeps no cookies or
   storage is told so rather than sent to Stripe. The browser keeps the Pass in
   `localStorage` and sends it on unbadged posts only (see [educhan Pass](#educhan-pass));
   the page sends it only in the body of a renewal or a check. When `GET /api/pass` cannot
@@ -935,38 +1044,42 @@ not-found view.
   checkout from it has not been collected yet, which may be a payment Stripe is still
   confirming, and keeps Renew; either way it says that starting another checkout, a
   renewal included, stops this browser collecting that one, and the forms drawn again over
-  a checkout left behind (Start again, back from Stripe's cancel link, or a checkout
-  whose answer came after the reader left the page, after they pressed Remove or Forget,
-  or after the Pass held changed meanwhile, in another tab say, which is not followed to
-  Stripe) still offer **Stop collecting it here**. It asks on every visit, with a growing
-  pause while it is open, and sends the collection's nonce (`educhan:pass-nonce`) each
-  time until an answer says nothing more is waiting, so an answer lost on the way is asked
-  for again and brings the same code; refused then, it checks the Pass it holds and says a
-  date that moved on. A code the server hands over is stored before anything else and
-  stays on screen, beside any code it took the place of, until the reader leaves the page;
-  it can be shown again from the held Pass's panel to write down, and a browser that will
-  not store it is told so. A code typed in after it ran out, within its month of grace, is
-  kept as run out, with its date, to renew. A Pass that has run out here can be checked
-  again, in case it was renewed elsewhere. A renewal the page collects is checked against
-  the Pass it holds (`/api/pass/activate`) before it says that Pass is renewed; one it
-  cannot match to the Pass it holds is reported as a renewal of a Pass, by a payment from
-  this browser or by the reissue code that brought it, with that Pass's new date. An
-  answer about a Pass, to a check or a post, that arrives after the Pass left the browser
-  (removed or replaced, here or in another tab), or after Remove the Pass or Forget this
-  browser was pressed, is dropped, not stored back. An answer to anything the Pass page
-  asked is drawn, focused or announced only while the reader is still on the Pass page;
-  one that arrives after they left stores what is still right to store and draws nothing.
-  Brought back from the back-forward cache, the Pass page is drawn again from the start,
-  age screen first. A code typed or pasted in is sent as the server writes it, in
-  capitals, with an O, I or L as the digit the server reads it as, and grouped with
-  dashes, whatever separators it was pasted with. A reissue code is typed or pasted into
-  the code box, never carried in an address. Pressing the button spends it at once, even
-  in a browser that holds a Pass, whose code is then shown beside the new one to write
-  down; a Pass code typed over a good Pass is refused instead. It goes in the body of one
-  claim, with a nonce of its own (`educhan:pass-reissue-nonce`), and is never stored: it
-  stays in the box, in memory only, until an answer arrives, so pressing again after a
-  lost answer asks with the same nonce. The nonce stays until an answer says the code
-  issued or renewed a Pass, never going on a refusal, so the right code typed after a
+  a checkout left behind (Start again, back from Stripe's cancel link, or a checkout whose
+  answer came after the reader left the page or after the Pass held changed meanwhile, in
+  another tab say, which is not followed to Stripe) still offer **Stop collecting it
+  here**. It asks on every visit, with a growing pause while it is open, and sends the
+  collection's nonce (`educhan:pass-nonce`) each time until an answer says nothing more is
+  waiting, so an answer lost on the way is asked for again and brings the same code;
+  refused then, it checks the Pass it holds and says a date that moved on. A code the
+  server hands over is stored before anything else and stays on screen, beside any code it
+  took the place of, until the reader leaves the page; once drawn, kept or not, it is not
+  drawn again for whoever comes back to the page next, by a link or by the Back button
+  from another site, though one the browser keeps can be shown again from the held Pass's
+  panel to write down. A browser that will not store it is told so, and that it won't be
+  shown again once the reader leaves the page. A code that arrives while the reader is on
+  another page, or that they leave before it is drawn, is shown when they come back to the
+  Pass page, beside any code it took the place of. A code typed in after it ran out,
+  within its month of grace, is kept as run out, with its date, to renew. A Pass that has
+  run out here can be checked again, in case it was renewed elsewhere. A renewal the page
+  collects is checked against the Pass it holds (`/api/pass/activate`) before it says that
+  Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal of a
+  Pass, by a payment from this browser or by the reissue code that brought it, with that
+  Pass's new date. An answer about a Pass, to a check or a post, that arrives after the
+  Pass left the browser (removed or replaced, here or in another tab), or after Remove the
+  Pass or Forget this browser was pressed, is dropped, not stored back. An answer to
+  anything the Pass page asked is drawn, focused or announced only while the reader is
+  still on the Pass page; one that arrives after they left stores what is still right to
+  store and draws nothing. Brought back from the back-forward cache, the Pass page is
+  drawn again from the start, age screen first. A code typed or pasted in is sent as the
+  server writes it, in capitals, with an O, I or L as the digit the server reads it as,
+  and grouped with dashes, whatever separators it was pasted with. A reissue code is typed
+  or pasted into the code box, never carried in an address. Pressing the button spends it
+  at once, even in a browser that holds a Pass, whose code is then shown beside the new
+  one to write down; a Pass code typed over a good Pass is refused instead. It goes in the
+  body of one claim, with a nonce of its own (`educhan:pass-reissue-nonce`), and is never
+  stored: it stays in the box, in memory only, until an answer arrives, so pressing again
+  after a lost answer asks with the same nonce. The nonce stays until an answer says the
+  code issued or renewed a Pass, never going on a refusal, so the right code typed after a
   mistyped one still gets back a Pass whose answer was lost. A try that went unanswered is
   noted until then too (`educhan:pass-reissue-unanswered`), and only after one is a
   refusal worded for an earlier try that may have landed, with the Pass held here checked;
@@ -975,34 +1088,52 @@ not-found view.
   **Remove the Pass** and **Forget this browser**, pressed in any tab of the browser, and
   by leaving the page. Those two and **Stop collecting it here** stop any collection under
   way, drop its nonce and then the browser's claim, and drop unstored an answer to a claim
-  that was already on its way, in every tab of the browser (the `storage` event), so the
-  next person at a shared computer collects nothing. Remove and Forget also drop the
-  reissue code's nonce and its note, any note that a Pass was found gone, and an answer on
-  its way to a reissue code or to a check of a code; Stop leaves those alone, since a
-  reissue it dropped would be spent for nothing. Nothing collects again until the server
-  has that request: **Check now** and **Stop collecting it here** stay off meanwhile, in
-  every tab and in whatever is drawn meanwhile, a tab that opens the Pass page meanwhile
-  draws it then, and a Stop that cannot reach educhan says so, turns the buttons back on
-  and goes on collecting. **Use this code here** (a Pass code or a reissue code), **Check
-  it again**, **Buy on Stripe** and **Renew on Stripe** pressed meanwhile wait, and go
-  once every such request the tab knows of is settled, from this tab or another; but if
-  Remove or Forget is pressed while they wait, in this tab or another, they send nothing,
-  give the button back and say why, and only a press made after the Remove goes. They do
-  the same, saying that the browser stopped collecting a Pass first, when Stop is pressed
-  meanwhile in another tab, whose Stop is on only once that tab has given up waiting on
-  the request. Remove and Forget also empty the clipboard, whatever is on it by then, when
-  the code was copied with **Copy the code** in the same tab since educhan was last opened
-  there and no copy or cut in that tab has certainly put something there since, unless
-  another tab has removed or replaced the Pass meanwhile. A copy counts when what is
-  selected holds something (a text box's own selection where the box says, the document's
-  for an email or number box, and otherwise text the page itself has selected), and a cut
-  only that way and in a box that can be typed in, or in editable text; one the page
-  cannot be sure of, such as a copy from an email box in some browsers, does not count, so
-  the clipboard is emptied after it too. A code copied any other way, by hand included,
-  stays until something else is copied. Removing the Pass, or forgetting the browser, in
-  another tab takes a code just handed over off this tab's screen. A post whose Pass was
-  no good goes out like any other, and its answer says so: the page forgets an unknown
-  Pass, keeps one that ran out to renew, and says the post was sent.
+  that was already on its way, in every tab of the browser (the `storage` event), a tab
+  brought back from the back-forward cache included, so the next person at a shared
+  computer collects nothing. A checkout still opening when one of them is pressed, in any
+  tab, is called off, or not followed to Stripe once it answers, and keeps no claim past
+  it, but for the moment [educhan Pass](#educhan-pass) describes; checkouts go one at a
+  time, so one pressed after it holds the claim, and a tab that leaves educhan calls off a
+  checkout still opening. Remove and Forget also drop the reissue code's nonce and its
+  note, any note that a Pass was found gone, and an answer on its way to a reissue code or
+  to a check of a code; Stop leaves those alone, since a reissue it dropped would be spent
+  for nothing. Nothing collects again until the server has that request: **Check now** and
+  **Stop collecting it here** stay off meanwhile, in every tab and in whatever is drawn
+  meanwhile, a tab that opens the Pass page meanwhile draws it then, and a Stop that
+  cannot reach educhan says so, turns the buttons back on and goes on collecting. **Use
+  this code here** (a Pass code or a reissue code), **Check it again**, **Buy on Stripe**
+  and **Renew on Stripe** pressed meanwhile wait, and go once every such request the tab
+  knows of is settled, from this tab or another; but if Remove or Forget is pressed while
+  they wait, in this tab or another, they send nothing, give the button back and say why,
+  and only a press made after the Remove goes. They do the same, saying that the browser
+  stopped collecting a Pass first, when Stop is pressed meanwhile in another tab, whose
+  Stop is on only once that tab has given up waiting on the request, and a Buy or a Renew
+  still waiting on another checkout does so too when Stop is pressed while it waits, in
+  this tab or another. A press still waiting when the tab leaves educhan sends nothing and
+  gives its button back without a word, so a page brought back from the back-forward cache
+  has it ready. Remove and Forget also empty the clipboard, whatever is on it by then,
+  when the code was copied with **Copy the code** in the same tab since educhan was last
+  opened there and no copy or cut in that tab has certainly put something there since,
+  unless another tab has removed or replaced the Pass meanwhile. A copy counts when what
+  is selected holds something (a text box's own selection where the box says, the
+  document's for an email or number box, and otherwise text the page itself has selected),
+  and a cut only that way and in a box that can be typed in, or in editable text; one the
+  page cannot be sure of, such as a copy from an email box in some browsers, does not
+  count, so the clipboard is emptied after it too. A code copied any other way, by hand
+  included, stays until something else is copied. Removing the Pass, or forgetting the
+  browser, in another tab takes a code just handed over off this tab's screen, kept or
+  not, as long as the browser stores that tab's mark: one that stores nothing at all tells
+  no other tab, and a code there stays until the reader leaves the Pass page. Another code
+  stored in another tab takes a kept one off too, but not one the browser could not keep.
+  A post whose Pass was no good goes out like any other, and its answer says so: the page
+  forgets an unknown Pass, keeps one that ran out to renew, and says the post was sent. A
+  notice a press on the Pass page raises, a refusal say, is brought into view when it is
+  out of view, as it is on a phone, where the forms sit far below the notice; focus stays
+  where the press put it, or, when another tab's forget drew the page again while the
+  press waited, goes to the same button drawn again, else to what was drawn in its place.
+  A drawing something else sets off, another tab's forget say, keeps focus on the control
+  that had it when it draws that control again, without scrolling the page, and otherwise
+  moves it to what was drawn in its place.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
@@ -1104,12 +1235,12 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
-| `EDUCHAN_PASS_SECRET` | empty | Keys the hashes the educhan Pass stores of its codes and of Stripe's payment and session ids (a claim cookie and a reissue code are random, and stored as plain SHA-256). **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 characters. Rotating it cancels every Pass and orphans every payment record |
-| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key checkouts are created with. Required with `EDUCHAN_PASS_SECRET` |
-| `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook` |
-| `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for |
-| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax add sales tax, VAT or GST at checkout; switch Stripe Tax on in the account first |
-| `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back |
+| `EDUCHAN_PASS_SECRET` | empty | Keys the hashes the educhan Pass stores of its codes and of Stripe's payment and session ids (a claim cookie and a reissue code are random, and stored as plain SHA-256), and signs the name a checkout's answer gives its order. **Unset switches the Pass off**, and every other Pass setting below is then refused at startup; at least 32 bytes (`openssl rand -hex 32` makes 64). Rotating it cancels every Pass and orphans every payment record |
+| `EDUCHAN_STRIPE_SECRET_KEY` | empty | Stripe API key that creates checkouts and reads the Price, for `GET /api/pass` and before a checkout; a restricted key (`rk_…`) needs Checkout Sessions write and Prices read. Required with `EDUCHAN_PASS_SECRET` |
+| `EDUCHAN_STRIPE_WEBHOOK_SECRET` | empty | Signing secret (`whsec_…`) of the Stripe webhook endpoint at `/api/pass/stripe-webhook`. Required with `EDUCHAN_PASS_SECRET` |
+| `EDUCHAN_STRIPE_PRICE_ID` | empty | The one-time Price (`price_…`) a Pass sells for, in its own currency alone: one with currency options in others is not sold (see [What the buyer pays](#educhan-pass)). Required with `EDUCHAN_PASS_SECRET` |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | off | Have Stripe Tax collect sales tax, VAT or GST at checkout. Switch Stripe Tax on in the account first, and give the Price a tax behavior: `inclusive` takes the tax out of its amount, and the Pass page says "tax included"; `exclusive` adds it at checkout, and the page says "plus any tax". A Price with neither is not sold while this is on (see [Tax](#educhan-pass)). Off, checkout tells Stripe to collect no tax, even where the account collects it by default, and the page says nothing about tax |
+| `EDUCHAN_PUBLIC_URL` | empty | The site's origin (`https://…`), where Stripe sends a buyer back. Required with `EDUCHAN_PASS_SECRET` |
 | `EDUCHAN_PASS_DAYS` | `365` | How long a Pass lasts, from 1 to 36500 days. Each order keeps the term it was sold with, so a change applies to checkouts started after it and to nothing already sold |
 | `EDUCHAN_PASS_HOURLY_POSTS` | `30` | A Pass's hourly budget: how many posts in one hour, counted in UTC, skip the captcha. At least 1 |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (seconds) | Minimum interval between checkouts from one client |
@@ -1268,9 +1399,9 @@ that overwrites the header with just the peer address are each a single hop.
 | `GET` | `/api/verify` | Whether verification is configured — `{"enabled"}`. It does not read your credential |
 | `POST` | `/api/verify/request` | Email a code — `{"email","adult"}`; `"adult"` must be `true` |
 | `POST` | `/api/verify/confirm` | Exchange a code for a credential — `{"code"}`; returns `{"credential","label","expires_at"}` |
-| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","automatic_tax","price":{"amount","currency"},"paused","claim"}`, or `{"enabled":false}` without it. `"automatic_tax":true` is there only when Stripe Tax adds tax to the price; `price` is left out when Stripe can't be asked and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
-| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url"}`, a page on `checkout.stripe.com`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
-| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}` |
+| `GET` | `/api/pass` | Whether the Pass is on sale — `{"enabled","days","hourly_posts","price":{"amount","currency","exponent"},"tax","paused","claim"}`, or `{"enabled":false}` without it. `"amount"` is the Price's own, a whole number of the currency's smallest unit, and `"exponent"` the decimals that unit stands for in Stripe's own table, not the browser's: `0` for JPY, `3` for BHD, and `2` for most, ISK and UGX among them, so `{"amount":300000,"currency":"isk","exponent":2}` is 3,000 ISK. `"tax"` is there only beside the price and with `EDUCHAN_STRIPE_AUTOMATIC_TAX` on: `"included"` when the Price has the tax in its amount (`tax_behavior` `inclusive`), `"added"` when Stripe adds it at checkout (`exclusive`); `price` is left out when Stripe can't be asked for the Price, refuses the request for the Price (a key or Price ID it does not take, say), or answers with a Price that is archived, recurring, without a fixed amount, priced in other currencies too (its `currency_options`), or, with Stripe Tax on, neither `inclusive` nor `exclusive`, until Stripe is asked again a minute later, and while sales are paused; `"paused":true` only while they are; and `"claim":true` only when a claim cookie the browser sends has something under it to collect |
+| `POST` | `/api/pass/checkout` | Start a purchase — `{"adult","renew"}`; `"adult"` must be `true`, `"renew"` is an existing code to extend. Returns `{"url","order"}`, a page on `checkout.stripe.com` and the order's name, a hash of the claim that collects nothing, signed with `EDUCHAN_PASS_SECRET`, and sets a new claim cookie with only this order under it; `400` without `"adult": true`; `403 {"pass":"invalid"}` when the code to renew is not a Pass code, is unknown or is past its month of grace, before any cooldown starts; `403 {"error":"the Pass is not on sale right now"}` while sales are paused; `503 {"error":"the Pass can't be bought right now"}` when the Price is archived, recurring, without a fixed amount or priced in other currencies too, or, with Stripe Tax on, neither `inclusive` nor `exclusive`, or when Stripe refuses the request for the Price (a key or Price ID it does not take, say), and `502` while Stripe is out of reach or failing when asked for the Price, with Stripe Tax on or off, each before any cooldown starts or anything is opened in Stripe; `429` with `Retry-After` inside `EDUCHAN_PASS_COOLDOWN`; `502` when Stripe fails to open the session, after the cooldown has started, so asking again at once gets `429`; `409 {"pass":"invalid"}` when the Pass to renew was refunded, lapsed or given another code by a reissue meanwhile |
+| `POST` | `/api/pass/claim` | Collect the order under the claim cookie once it is paid, one order an answer under each claim cookie the browser sends — `{"nonce"}`, 16 random bytes in base64url that the page draws for each collection and sends with every claim until an answer says nothing more is waiting (`"claim":false`); the code is derived from the cookie and the nonce together. Answers `{"status":"issued","pass","expires_at","claim"}` when a Pass was made, and the same code again when asked again with the same cookie and nonce; else `{"status":"renewed","expires_at","claim"}`, else `202 {"status":"pending","claim":true}` while the order waits for Stripe; `400` when nothing is left, which is also the answer to a renewal's claim asked again, since a renewal hands over no code. `"claim"` says whether anything still waits. With `{"reissue":"…","nonce"}`, a reissue code (`REISSUE-…`, in either case, with or without the word and the dashes), it redeems the reissue code instead, answering the same way, with the same Pass code when asked again with the same nonce, or `403 {"pass":"invalid"}` for one used, run out or cancelled, a renewal's asked again included, or `409` for one whose right moved, while its Pass is being renewed, which leaves it unspent. With `{"forget":true}` it drops what is under every claim cookie the browser sends and clears the one the server set — `{"status":"forgotten","claim":false}`; with `{"forget":true,"order"}`, the name a checkout's answer gave its order, it drops what is under that checkout's claim alone, reading no cookie and clearing none — `{"status":"forgotten"}` — and answers `400` for a name not shaped as one or not signed by the server, `200` for one with nothing under it, and `400` for an `"order"` without `"forget"` |
 | `POST` | `/api/pass/activate` | Check a code — `{"pass"}`; returns `{"pass","expires_at"}`. A code that has run out is refused with `403 {"pass":"expired","code","expires_at"}` until it is pruned a month on, and an unknown one with `403 {"pass":"invalid"}`. One check per address every 2 seconds, `429` otherwise |
 | `POST` | `/api/pass/stripe-webhook` | Stripe's signed events: `checkout.session.completed`, `checkout.session.async_payment_succeeded`, `checkout.session.async_payment_failed`, `checkout.session.expired`, `charge.refunded`, `charge.dispute.created` |
 | `POST` | `/api/pass/reissue` | Moderation key: a one-time reissue code that gives a lost Pass a new code — `{"payment_intent":"pi_…"}`; returns `{"code","expires_at"}`, the code being `REISSUE` and seven groups of four letters and digits, for the owner to send on; `404` for a payment that bought nothing or was refunded or disputed; `409` for a collected renewal's payment (use the purchase's, or, if that was refunded or disputed, the one renewal that then paid for all the time left, until the Pass is renewed again), and for any payment of a Pass that cannot be reissued, because its purchase was refunded or disputed and no one payment left pays for all its time, or because a renewal of the Pass is under way when the right has moved. A purchase or a renewal paid and never collected is reissued too, and its reissue code collects it: a renewal's renews the Pass it was for, with no code |
@@ -1463,14 +1594,15 @@ gcloud run deploy educhan --image "$IMAGE" --region "$REGION"
 
 The first deploy is longer, because it is what establishes the configuration that
 later deploys inherit — the runtime service account, the Cloud SQL instance, and
-the secrets:
+the secrets. `bash deploy/first-deploy.sh PROJECT_ID`, run in Cloud Shell, does
+all of it, the archive sweeper Job included; by hand it is:
 
 ```bash
 gcloud run deploy educhan --image "$IMAGE" --region "$REGION" \
   --service-account "$RUN_SA" \
   --add-cloudsql-instances "$CLOUDSQL_INSTANCE" \
   --set-secrets "DATABASE_URL=educhan-database-url:latest,EDUCHAN_POSTER_ID_SALT=educhan-poster-id-salt:latest,EDUCHAN_MOD_KEY=educhan-mod-key:latest" \
-  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_LOG_FORMAT=json" \
+  --set-env-vars "EDUCHAN_TRUST_PROXY=1,EDUCHAN_MEDIA_BACKEND=gcs,EDUCHAN_GCS_BUCKET=$MEDIA_BUCKET,EDUCHAN_GCS_PREFIX=media,EDUCHAN_LOG_FORMAT=json,EDUCHAN_UPLOADS_ENABLED=false" \
   --allow-unauthenticated
 ```
 
@@ -1491,12 +1623,15 @@ Anywhere without that mount — a VM, a laptop — the [Cloud SQL Auth
 Proxy](https://cloud.google.com/sql/docs/postgres/sql-proxy) opens a local port
 and `DATABASE_URL` becomes an ordinary TCP connection string.
 
-Three things need setting for a real deployment, and the deploy guide covers
+Four things need setting for a real deployment, and the deploy guide covers
 each: `EDUCHAN_POSTER_ID_SALT` has to be a stable secret or poster IDs differ
-between instances, `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end, and
+between instances; `EDUCHAN_TRUST_PROXY` is `1` behind Cloud Run's front end;
 media belongs in Cloud Storage — `EDUCHAN_MEDIA_BACKEND=gcs` with an
-`EDUCHAN_GCS_BUCKET`, because the container filesystem does not outlive the
-container.
+`EDUCHAN_GCS_BUCKET` and `EDUCHAN_GCS_PREFIX`, which the sweeper Job must match
+exactly, because the container filesystem does not outlive the container; and
+Cloud Run's request logs, which carry every visitor's IP, must be excluded from
+Cloud Logging before the service takes traffic (deploy guide section 2.8), or
+the promise that IPs are not logged does not hold.
 
 ### The archive sweeper
 

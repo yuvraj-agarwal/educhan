@@ -5,12 +5,14 @@ import (
 	"context"
 	"crypto/hmac"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -26,7 +28,7 @@ import (
 )
 
 const (
-	testPassSecret    = "test-pass-secret-at-least-32-characters"
+	testPassSecret    = "test-pass-secret-of-at-least-32-bytes"
 	testWebhookSecret = "whsec_test_signing_secret"
 	testPriceID       = "price_test_pass"
 	testPublicURL     = "https://educhan.test"
@@ -41,10 +43,22 @@ type fakeStripe struct {
 	mu       sync.Mutex
 	sessions []url.Values
 	headers  []http.Header
-	price    map[string]any
-	// priceReads counts the times the price was asked for.
-	priceReads int
-	fail       bool
+	// price is the Price as Stripe keeps it; its "currency_options" are sent
+	// only when asked for, as Stripe sends them.
+	price map[string]any
+	// priceReads counts the times the price was asked for, and priceQueries
+	// holds the query each time.
+	priceReads   int
+	priceQueries []url.Values
+	// priceStatus, when set, is the error status the price is read with, and
+	// priceMessage Stripe's message for it, as for a Price ID or key Stripe
+	// refuses or a read that fails.
+	priceStatus  int
+	priceMessage string
+	// priceDropped, when set, drops the connection the price is asked for
+	// on, unanswered, as for Stripe out of reach.
+	priceDropped bool
+	fail         bool
 	// sessionURL, when set, is the page a new session is said to be on.
 	sessionURL string
 	// opening, when set, runs while a session is being created, with the
@@ -96,7 +110,30 @@ func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "url": page})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/prices/"+testPriceID:
 		f.priceReads++
-		_ = json.NewEncoder(w).Encode(f.price)
+		f.priceQueries = append(f.priceQueries, r.URL.Query())
+		if f.priceDropped {
+			conn, _, err := w.(http.Hijacker).Hijack()
+			if err != nil {
+				f.t.Errorf("drop the price's connection: %v", err)
+				return
+			}
+			conn.Close()
+			return
+		}
+		if f.priceStatus != 0 {
+			kind := "invalid_request_error"
+			if f.priceStatus >= 500 {
+				kind = "api_error"
+			}
+			w.WriteHeader(f.priceStatus)
+			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"type": kind, "message": f.priceMessage}})
+			return
+		}
+		price := maps.Clone(f.price)
+		if !slices.Contains(r.URL.Query()["expand[]"], "currency_options") {
+			delete(price, "currency_options")
+		}
+		_ = json.NewEncoder(w).Encode(price)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprint(w, `{"error":{"type":"invalid_request_error","message":"no such route"}}`)
@@ -178,20 +215,21 @@ func passServerLogging(t *testing.T, tune func(*Config), logs io.Writer) *passHa
 }
 
 type passResponse struct {
-	Enabled      bool       `json:"enabled"`
-	Days         int        `json:"days"`
-	HourlyPosts  int        `json:"hourly_posts"`
-	Price        *passPrice `json:"price"`
-	AutomaticTax bool       `json:"automatic_tax"`
-	Paused       bool       `json:"paused"`
-	URL          string     `json:"url"`
-	Status       string     `json:"status"`
-	Pass         string     `json:"pass"`
-	ExpiresAt    time.Time  `json:"expires_at"`
-	Claim        bool       `json:"claim"`
-	Code         string     `json:"code"`
-	Error        string     `json:"error"`
-	RetryAfter   int        `json:"retry_after"`
+	Enabled     bool       `json:"enabled"`
+	Days        int        `json:"days"`
+	HourlyPosts int        `json:"hourly_posts"`
+	Price       *passPrice `json:"price"`
+	Tax         string     `json:"tax"`
+	Paused      bool       `json:"paused"`
+	URL         string     `json:"url"`
+	Order       string     `json:"order"`
+	Status      string     `json:"status"`
+	Pass        string     `json:"pass"`
+	ExpiresAt   time.Time  `json:"expires_at"`
+	Claim       bool       `json:"claim"`
+	Code        string     `json:"code"`
+	Error       string     `json:"error"`
+	RetryAfter  int        `json:"retry_after"`
 }
 
 // refusalState reads the machine-readable refusal, which shares the "pass" key
@@ -208,6 +246,15 @@ func refusalState(t *testing.T, out passResponse) string {
 // returns the Stripe session id the fake handed out.
 func (p *passHarness) checkout(renew string) string {
 	p.t.Helper()
+	session, _ := p.checkoutNamed(renew)
+	return session
+}
+
+// checkoutNamed starts a purchase as checkout does, and returns the name the
+// answer gave its order as well, which the page sends back to forget that
+// order alone (forgetOrder).
+func (p *passHarness) checkoutNamed(renew string) (string, string) {
+	p.t.Helper()
 	var out passResponse
 	body := map[string]any{"adult": true}
 	if renew != "" {
@@ -219,7 +266,10 @@ func (p *passHarness) checkout(renew string) string {
 	if !strings.HasPrefix(out.URL, "https://checkout.stripe.com/c/pay/") {
 		p.t.Fatalf("checkout url %q", out.URL)
 	}
-	return out.URL[strings.LastIndexByte(out.URL, '/')+1:]
+	if out.Order == "" {
+		p.t.Fatalf("checkout: %+v, with no name for its order", out)
+	}
+	return out.URL[strings.LastIndexByte(out.URL, '/')+1:], out.Order
 }
 
 // webhook delivers a signed event, as Stripe does.
@@ -328,31 +378,672 @@ func TestPassStatus(t *testing.T) {
 		t.Fatal("the Pass is on sale with no configuration")
 	}
 
+	// Stripe Tax is off, so nothing is said of tax (TestPassTaxFollowsThePrice).
 	p := passServer(t, nil)
 	p.get("/api/pass", &out)
 	if !out.Enabled || out.Days != 365 || out.HourlyPosts != 30 || out.Price == nil || out.Price.Amount != 2000 ||
-		out.Price.Currency != "usd" || out.AutomaticTax || out.Claim {
+		out.Price.Currency != "usd" || out.Tax != "" || out.Claim {
 		t.Fatalf("status: %+v", out)
-	}
-
-	// With Stripe Tax on, the page is told the price is before tax.
-	taxed := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
-	var withTax passResponse
-	taxed.get("/api/pass", &withTax)
-	if !withTax.AutomaticTax {
-		t.Fatalf("status with Stripe Tax on: %+v", withTax)
 	}
 }
 
-func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
+// TestPassPriceCarriesStripesExponent holds the price GET /api/pass sends to
+// Stripe's own amount beside the exponent Stripe keeps it in, from Stripe's
+// table and not the browser's, for every currency on Stripe's lists
+// (docs.stripe.com/currencies): none for its zero-decimal currencies, but for
+// ISK and UGX, which Stripe still writes in hundredths though the browser
+// gives them no decimals, so the page shows 3,000 ISK, not 300,000; three for
+// its three-decimal ones; and two for the rest, as for USD and HUF. The
+// currency is sent in lower case, and looked up in the table so, whatever case
+// Stripe writes it in. stripeDecimals holds those lists and nothing else, so
+// a row dropped or added there fails here.
+func TestPassPriceCarriesStripesExponent(t *testing.T) {
+	stripes := map[string]int{
+		"bif": 0, "clp": 0, "djf": 0, "gnf": 0, "jpy": 0, "kmf": 0, "krw": 0, "mga": 0,
+		"pyg": 0, "rwf": 0, "vnd": 0, "vuv": 0, "xaf": 0, "xof": 0, "xpf": 0,
+		"isk": 2, "ugx": 2,
+		"bhd": 3, "jod": 3, "kwd": 3, "omr": 3, "tnd": 3,
+		"usd": 2, "huf": 2,
+	}
+	notTwo := maps.Clone(stripes)
+	maps.DeleteFunc(notTwo, func(_ string, exponent int) bool { return exponent == 2 })
+	if !maps.Equal(stripeDecimals, notTwo) {
+		t.Errorf("stripeDecimals is %v; want Stripe's zero- and three-decimal currencies, but ISK and UGX: %v", stripeDecimals, notTwo)
+	}
+	var currencies []string
+	for currency := range stripes {
+		currencies = append(currencies, currency)
+	}
+	slices.Sort(currencies)
 	p := passServer(t, nil)
+	for _, currency := range currencies {
+		for _, written := range []string{currency, strings.ToUpper(currency)} {
+			p.stripe.mu.Lock()
+			p.stripe.price["currency"], p.stripe.price["unit_amount"] = written, 7500
+			p.stripe.mu.Unlock()
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Time{}
+			p.app.pass.priceMu.Unlock()
+			var status map[string]any
+			p.get("/api/pass", &status)
+			want := map[string]any{"amount": float64(7500), "currency": currency, "exponent": float64(stripes[currency])}
+			if got, _ := status["price"].(map[string]any); !maps.Equal(got, want) {
+				t.Errorf("GET /api/pass for %s: price %v, want %v", written, status["price"], want)
+			}
+		}
+	}
+}
+
+// TestPassStatusSurvivesStripeTrouble holds GET /api/pass to offering the Pass
+// without its price when Stripe can't be asked for it, refuses the request for
+// the Price, or answers with a Price the Pass can't be sold at: archived,
+// recurring or without a fixed amount, which a zero amount or no currency is
+// not either.
+func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
+	for what, trouble := range map[string]func(f *fakeStripe){
+		"Stripe down":       func(f *fakeStripe) { f.fail = true },
+		"no such Price":     func(f *fakeStripe) { f.priceStatus = http.StatusNotFound },
+		"key refused":       func(f *fakeStripe) { f.priceStatus = http.StatusUnauthorized },
+		"archived":          func(f *fakeStripe) { f.price["active"] = false },
+		"recurring":         func(f *fakeStripe) { f.price["type"] = "recurring" },
+		"without an amount": func(f *fakeStripe) { f.price["unit_amount"] = nil },
+		"zero amount":       func(f *fakeStripe) { f.price["unit_amount"] = 0 },
+		"no currency":       func(f *fakeStripe) { f.price["currency"] = "" },
+	} {
+		p := passServer(t, nil)
+		p.stripe.mu.Lock()
+		trouble(p.stripe)
+		p.stripe.mu.Unlock()
+		var out passResponse
+		p.get("/api/pass", &out)
+		if !out.Enabled || out.Price != nil {
+			t.Errorf("%s: %+v; want the Pass offered without a price", what, out)
+		}
+	}
+}
+
+// TestPassTaxFollowsThePrice holds what GET /api/pass says of tax to the
+// Price's own tax behavior, and checkout to telling Stripe whether to collect
+// tax either way, so an account that collects it by default adds none the page
+// did not show, and to sending nothing else, with Stripe Tax on as with it off
+// (checkSessionSent): nothing that lets the buyer change what they pay is added
+// for Stripe Tax. With Stripe Tax on, an inclusive Price has the tax "included"
+// and an exclusive one has it "added" at checkout. A Price that says neither,
+// or was made before Prices said, is not sold, since Stripe would settle it by
+// a default in the account that the page cannot know: the status leaves the
+// price out, and checkout refuses before Stripe opens anything or a cooldown
+// starts, as it refuses every Price it can't sell
+// (TestPassRefusesAPriceItCannotSell), and the log says what to fix once, where
+// the Price is read, and nothing of the buyer. Nor is anything sold while the
+// Price can't be read. Given a behavior, the Price sells. With Stripe Tax off,
+// no tax is collected and nothing is said of it, whatever the Price says.
+func TestPassTaxFollowsThePrice(t *testing.T) {
+	// absent is a Price without the field; nil is one where Stripe has it null.
+	type absent struct{}
+	for _, tc := range []struct {
+		name     string
+		tax      bool
+		behavior any
+		word     string
+	}{
+		{"Stripe Tax off, inclusive", false, "inclusive", ""},
+		{"Stripe Tax off, exclusive", false, "exclusive", ""},
+		{"Stripe Tax off, unspecified", false, "unspecified", ""},
+		{"Stripe Tax off, null", false, nil, ""},
+		{"Stripe Tax on, inclusive", true, "inclusive", "included"},
+		{"Stripe Tax on, exclusive", true, "exclusive", "added"},
+		{"Stripe Tax on, unspecified", true, "unspecified", ""},
+		{"Stripe Tax on, null", true, nil, ""},
+		{"Stripe Tax on, absent", true, absent{}, ""},
+	} {
+		sold := !tc.tax || tc.word != ""
+		t.Run(tc.name, func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) {
+				cfg.Pass.StripeAutomaticTax = tc.tax
+				cfg.Pass.CheckoutCooldown = time.Hour
+			}, &logs)
+			p.stripe.mu.Lock()
+			if _, ok := tc.behavior.(absent); ok {
+				delete(p.stripe.price, "tax_behavior")
+			} else {
+				p.stripe.price["tax_behavior"] = tc.behavior
+			}
+			p.stripe.mu.Unlock()
+
+			var status map[string]any
+			p.get("/api/pass", &status)
+			_, priced := status["price"]
+			tax, said := status["tax"]
+			if priced != sold || said != (tc.word != "") || said && tax != tc.word {
+				t.Fatalf("GET /api/pass: %v; want the price %t and the tax %q", status, sold, tc.word)
+			}
+			// The price is its amount, currency and exponent alone: what the
+			// Price says of tax goes out as "tax", in the server's words, or
+			// not at all.
+			if got, _ := status["price"].(map[string]any); sold && !maps.Equal(got, map[string]any{"amount": float64(2000), "currency": "usd", "exponent": float64(2)}) {
+				t.Fatalf("GET /api/pass price: %v; want the amount, the currency and its exponent alone", status["price"])
+			}
+
+			var out passResponse
+			code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out)
+			if sold {
+				if code != http.StatusOK {
+					t.Fatalf("checkout: status %d (%s)", code, out.Error)
+				}
+				checkSessionSent(t, p.stripe.sessions[0], tc.tax)
+				return
+			}
+			if code != http.StatusServiceUnavailable || out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
+				t.Fatalf("checkout of a Price that does not say whether tax is in it: status %d (%s), %d Stripe sessions; want 503 and none",
+					code, out.Error, p.stripe.sessionCount())
+			}
+			// What to fix is logged where the Price is read, once while the
+			// refusal is kept, and not again for each checkout it refuses.
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable {
+				t.Fatalf("a second checkout of that Price: status %d (%s)", code, out.Error)
+			}
+			var told int
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				if !strings.Contains(line, "EDUCHAN_STRIPE_AUTOMATIC_TAX") {
+					continue
+				}
+				told++
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("a log line is not JSON: %q", line)
+				}
+				if len(record) != 4 || record["msg"] != "the Pass price in Stripe needs fixing" || record["error"] != errPassPriceTax.Error() ||
+					!strings.Contains(errPassPriceTax.Error(), "EDUCHAN_STRIPE_PRICE_ID") {
+					t.Errorf("the log line does not say what to fix, or carries more than its words: %s", line)
+				}
+			}
+			if told != 1 {
+				t.Fatalf("%d log lines say what to fix, want 1 for a read and two refused checkouts:\n%s", told, logs.String())
+			}
+
+			// Given a behavior, the Price sells once the cached refusal runs
+			// out, and the refused checkout started no cooldown.
+			p.stripe.mu.Lock()
+			p.stripe.price["tax_behavior"] = "inclusive"
+			p.stripe.mu.Unlock()
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Time{}
+			p.app.pass.priceMu.Unlock()
+			p.get("/api/pass", &status)
+			if status["tax"] != "included" || status["price"] == nil {
+				t.Fatalf("GET /api/pass once the Price is inclusive: %v", status)
+			}
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK {
+				t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
+			}
+			checkSessionSent(t, p.stripe.sessions[0], true)
+		})
+	}
+
+	// While Stripe can't be asked for the Price, it may be one the Pass can't
+	// be sold at (with Stripe Tax on, one that says neither, as here), so
+	// nothing is sold, with Stripe Tax on or off
+	// (TestPassRefusesAPriceItCannotSell): checkout answers 502 for as long
+	// as the failed read is kept, with nothing opened in Stripe, no cooldown
+	// started and nothing logged past the failed read itself.
+	t.Run("Stripe Tax on, the Price not read", func(t *testing.T) {
+		var logs syncBuffer
+		p := passServerLogging(t, func(cfg *Config) {
+			cfg.Pass.StripeAutomaticTax = true
+			cfg.Pass.CheckoutCooldown = time.Hour
+		}, &logs)
+		p.stripe.mu.Lock()
+		p.stripe.price["tax_behavior"] = "unspecified"
+		p.stripe.fail = true
+		p.stripe.mu.Unlock()
+		var status map[string]any
+		if p.get("/api/pass", &status); status["price"] != nil {
+			t.Fatalf("GET /api/pass with Stripe down: %v", status)
+		}
+		p.stripe.mu.Lock()
+		p.stripe.fail = false
+		p.stripe.mu.Unlock()
+		var out passResponse
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusBadGateway ||
+			out.Error != passStripeUnreachable || p.stripe.sessionCount() != 0 {
+			t.Fatalf("checkout while the Price's failed read is kept: status %d (%s), %d Stripe sessions; want 502 and none",
+				code, out.Error, p.stripe.sessionCount())
+		}
+		if n := strings.Count(logs.String(), `"msg":"could not read the Pass price from Stripe"`); n != 1 {
+			t.Fatalf("%d log lines for one failed read of the Price, want 1:\n%s", n, logs.String())
+		}
+
+		// Read again once the failure runs out, the Price is refused for what
+		// it says, and given a behavior it sells.
+		refresh := func() {
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Time{}
+			p.app.pass.priceMu.Unlock()
+		}
+		refresh()
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable || out.Error != passPriceUnsold {
+			t.Fatalf("checkout once the Price is read: status %d (%s)", code, out.Error)
+		}
+		p.stripe.mu.Lock()
+		p.stripe.price["tax_behavior"] = "inclusive"
+		p.stripe.mu.Unlock()
+		refresh()
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+			t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
+		}
+		checkSessionSent(t, p.stripe.sessions[0], true)
+	})
+}
+
+// TestPassRefusesAPriceItCannotSell holds a Price that Stripe answers with but
+// the Pass can't be sold at, archived, recurring, without a fixed amount (one
+// whose buyer chooses what to pay among them), priced in other currencies too
+// (TestPassSellsInThePricesOwnCurrencyAlone) or, with Stripe Tax on, silent on
+// tax, and a request for the Price Stripe refuses (a 400, 401, 403 or 404),
+// to the fault in the setup that it is, with Stripe Tax on or off. Checkout
+// refuses it with 503 and words of its own, never the 502 that says to try
+// again in a moment, which is for Stripe out of reach or failing (a 5xx, or a
+// 429); it opens nothing in Stripe and starts no cooldown, and the log says
+// what is wrong once, where the Price is read. The refusal is kept a minute,
+// as a failed read is, so the Price fixed sells once that has run out.
+func TestPassRefusesAPriceItCannotSell(t *testing.T) {
+	refused := func(status int, message string) func(f *fakeStripe) {
+		return func(f *fakeStripe) { f.priceStatus, f.priceMessage = status, message }
+	}
+	const byStripe = "Stripe refused the request for the Price: stripe GET /v1/prices/" + testPriceID + ": status "
+	for _, tc := range []struct {
+		name   string
+		set    func(f *fakeStripe)
+		reason string
+		// taxOnly is a Price refused only while Stripe Tax is on.
+		taxOnly bool
+	}{
+		{"archived", func(f *fakeStripe) { f.price["active"] = false }, "it is archived", false},
+		{"recurring", func(f *fakeStripe) { f.price["type"] = "recurring" }, `it must be one-time, not "recurring"`, false},
+		{"without an amount", func(f *fakeStripe) { f.price["unit_amount"] = nil }, "it has no fixed amount", false},
+		// "Customer chooses what to pay": Stripe sends the Price with no
+		// unit_amount, and the buyer types the amount on Stripe's page.
+		{"customer chooses what to pay", func(f *fakeStripe) {
+			f.price["unit_amount"] = nil
+			f.price["custom_unit_amount"] = map[string]any{"minimum": 100, "maximum": nil, "preset": nil}
+		}, "it has no fixed amount", false},
+		{"zero amount", func(f *fakeStripe) { f.price["unit_amount"] = 0 }, "it has no fixed amount", false},
+		{"no currency", func(f *fakeStripe) { f.price["currency"] = "" }, "it has no fixed amount", false},
+		// Checkout would charge a buyer it places in another currency that
+		// option's amount, under its own tax behavior, or what they choose
+		// to pay. The Price's own currency, which Stripe may list among its
+		// options, is no other.
+		{"in another currency too", func(f *fakeStripe) {
+			f.price["currency_options"] = map[string]any{
+				"usd": map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive"},
+				"eur": map[string]any{"unit_amount": 1900, "tax_behavior": "exclusive"},
+			}
+		}, "it must be priced in usd alone, not also in eur", false},
+		{"in other currencies too", func(f *fakeStripe) {
+			f.price["currency_options"] = map[string]any{
+				"jpy": map[string]any{"unit_amount": 3000, "tax_behavior": "inclusive"},
+				"gbp": map[string]any{"unit_amount": 1600, "tax_behavior": "inclusive"},
+				"eur": map[string]any{"unit_amount": nil, "custom_unit_amount": map[string]any{"minimum": 100}, "tax_behavior": "inclusive"},
+			}
+		}, "it must be priced in usd alone, not also in eur, gbp, jpy", false},
+		{"silent on tax", func(f *fakeStripe) { f.price["tax_behavior"] = "unspecified" }, "with EDUCHAN_STRIPE_AUTOMATIC_TAX on", true},
+		{"no such Price", refused(http.StatusNotFound, "No such price: '"+testPriceID+"'"), byStripe + "404: invalid_request_error: No such price", false},
+		{"key refused", refused(http.StatusUnauthorized, "Invalid API Key provided: sk_test_***key"), byStripe + "401: invalid_request_error: Invalid API Key", false},
+		{"key not allowed", refused(http.StatusForbidden, "The provided key does not have the required permissions"), byStripe + "403: invalid_request_error: The provided key", false},
+		{"request refused", refused(http.StatusBadRequest, "Invalid Stripe API version"), byStripe + "400: invalid_request_error: Invalid Stripe API version", false},
+	} {
+		for _, tax := range []bool{false, true} {
+			if tc.taxOnly && !tax {
+				// Sold with Stripe Tax off (TestPassTaxFollowsThePrice).
+				continue
+			}
+			t.Run(fmt.Sprintf("Stripe Tax %s, %s", map[bool]string{false: "off", true: "on"}[tax], tc.name), func(t *testing.T) {
+				var logs syncBuffer
+				p := passServerLogging(t, func(cfg *Config) {
+					cfg.Pass.StripeAutomaticTax = tax
+					cfg.Pass.CheckoutCooldown = time.Hour
+				}, &logs)
+				p.stripe.mu.Lock()
+				p.stripe.price["tax_behavior"] = "inclusive"
+				tc.set(p.stripe)
+				p.stripe.mu.Unlock()
+				var status passResponse
+				if p.get("/api/pass", &status); !status.Enabled || status.Price != nil {
+					t.Fatalf("GET /api/pass: %+v; want the Pass offered without a price", status)
+				}
+				for try := range 2 {
+					var out passResponse
+					if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable ||
+						out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
+						t.Fatalf("checkout %d: status %d (%s), %d Stripe sessions; want 503 %q and none",
+							try+1, code, out.Error, p.stripe.sessionCount(), passPriceUnsold)
+					}
+				}
+				var told int
+				for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+					var record map[string]any
+					if err := json.Unmarshal([]byte(line), &record); err != nil {
+						t.Fatalf("a log line is not JSON: %q", line)
+					}
+					switch record["msg"] {
+					case "the Pass price in Stripe needs fixing":
+						told++
+						if record["level"] != "ERROR" || !strings.HasPrefix(fmt.Sprint(record["error"]), errPassPriceRefused.Error()+": "+tc.reason) {
+							t.Errorf("the log line does not say what is wrong with the Price: %s", line)
+						}
+					case "could not read the Pass price from Stripe":
+						t.Errorf("a Price Stripe answered with is logged as one it could not be asked for: %s", line)
+					}
+				}
+				if told != 1 {
+					t.Fatalf("%d log lines say what is wrong with the Price, want 1 for a read and two refused checkouts:\n%s", told, logs.String())
+				}
+
+				// Fixed, the Price sells once the refusal has been kept a
+				// minute, and the refused checkouts started no cooldown.
+				p.stripe.mu.Lock()
+				maps.Copy(p.stripe.price, map[string]any{
+					"active": true, "type": "one_time", "unit_amount": 2000, "currency": "usd", "tax_behavior": "inclusive",
+				})
+				delete(p.stripe.price, "custom_unit_amount")
+				delete(p.stripe.price, "currency_options")
+				p.stripe.priceStatus = 0
+				p.stripe.mu.Unlock()
+				p.app.pass.priceMu.Lock()
+				p.app.pass.priceFetchedAt = time.Now().Add(-61 * time.Second)
+				p.app.pass.priceMu.Unlock()
+				var out passResponse
+				if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+					t.Fatalf("checkout once the Price is fixed: status %d (%s)", code, out.Error)
+				}
+			})
+		}
+	}
+
+	// Stripe out of reach, failing, or asking for fewer requests refuses
+	// nothing, with Stripe Tax on or off: it is a read that failed, which
+	// asking again a minute later can mend. Checkout answers 502 before any
+	// cooldown, with nothing opened in Stripe.
+	for _, tax := range []bool{false, true} {
+		for _, status := range []int{0, http.StatusTooManyRequests, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+			what := fmt.Sprintf("status %d", status)
+			if status == 0 {
+				what = "out of reach"
+			}
+			t.Run(fmt.Sprintf("Stripe Tax %s, %s", map[bool]string{false: "off", true: "on"}[tax], what), func(t *testing.T) {
+				var logs syncBuffer
+				p := passServerLogging(t, func(cfg *Config) {
+					cfg.Pass.StripeAutomaticTax = tax
+					cfg.Pass.CheckoutCooldown = time.Hour
+				}, &logs)
+				p.stripe.mu.Lock()
+				p.stripe.price["tax_behavior"] = "inclusive"
+				p.stripe.priceDropped = status == 0
+				p.stripe.priceStatus, p.stripe.priceMessage = status, "try later"
+				p.stripe.mu.Unlock()
+				var out passResponse
+				if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusBadGateway ||
+					out.Error != passStripeUnreachable || p.stripe.sessionCount() != 0 {
+					t.Fatalf("checkout: status %d (%s), %d Stripe sessions; want 502 %q and none",
+						code, out.Error, p.stripe.sessionCount(), passStripeUnreachable)
+				}
+				if n := strings.Count(logs.String(), `"msg":"could not read the Pass price from Stripe"`); n != 1 ||
+					strings.Contains(logs.String(), "needs fixing") {
+					t.Fatalf("%d log lines for one failed read of the Price, want 1 and no refusal:\n%s", n, logs.String())
+				}
+
+				// Stripe back, the Price sells once the failure has been kept
+				// a minute, and the failed checkout started no cooldown.
+				p.stripe.mu.Lock()
+				p.stripe.priceDropped, p.stripe.priceStatus = false, 0
+				p.stripe.mu.Unlock()
+				p.app.pass.priceMu.Lock()
+				p.app.pass.priceFetchedAt = time.Now().Add(-61 * time.Second)
+				p.app.pass.priceMu.Unlock()
+				if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+					t.Fatalf("checkout once Stripe is back: status %d (%s)", code, out.Error)
+				}
+			})
+		}
+	}
+}
+
+// TestPassSellsInThePricesOwnCurrencyAlone holds checkout to charging the
+// Price's own currency at its own amount, with Stripe Tax on or off. The Price
+// is read with its currency options (expand[]=currency_options), which Stripe
+// leaves out unless asked for them, so one priced in other currencies too is
+// seen and refused (TestPassRefusesAPriceItCannotSell), while one whose
+// options hold only its own currency, which Stripe may list, is the Price
+// itself and sells, as one with none does. Every session turns Adaptive
+// Pricing off (checkSessionSent), so Stripe does not convert the price into
+// the buyer's currency either. Options added to the Price in place, keeping
+// its ID, are seen by the first read after the hour a good read is kept, and
+// the Price is refused from then, with Stripe Tax on or off. The refusal names
+// the other currencies in order, whatever order Stripe lists them in.
+func TestPassSellsInThePricesOwnCurrencyAlone(t *testing.T) {
+	own := map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive", "custom_unit_amount": nil}
+	asked := url.Values{"expand[]": {"currency_options"}}
+	for _, tax := range []bool{false, true} {
+		for _, tc := range []struct {
+			name     string
+			currency string
+			// options are the Price's currency options, or none at all if nil.
+			options map[string]any
+		}{
+			{"no currency options", "usd", nil},
+			{"no currency options listed", "usd", map[string]any{}},
+			{"its own currency alone", "usd", map[string]any{"usd": own}},
+			{"its own currency alone, the Price's in capitals", "USD", map[string]any{"usd": own}},
+		} {
+			t.Run(fmt.Sprintf("Stripe Tax %s, %s", map[bool]string{false: "off", true: "on"}[tax], tc.name), func(t *testing.T) {
+				p := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = tax })
+				p.stripe.mu.Lock()
+				p.stripe.price["tax_behavior"] = "inclusive"
+				p.stripe.price["currency"] = tc.currency
+				if tc.options != nil {
+					p.stripe.price["currency_options"] = tc.options
+				}
+				p.stripe.mu.Unlock()
+				var status map[string]any
+				p.get("/api/pass", &status)
+				want := map[string]any{"amount": float64(2000), "currency": "usd", "exponent": float64(2)}
+				if got, _ := status["price"].(map[string]any); !maps.Equal(got, want) {
+					t.Fatalf("GET /api/pass: price %v, want %v", status["price"], want)
+				}
+				var out passResponse
+				if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+					t.Fatalf("checkout: status %d (%s), %d Stripe sessions; want it sold", code, out.Error, p.stripe.sessionCount())
+				}
+				checkSessionSent(t, p.stripe.sessions[0], tax)
+				p.stripe.mu.Lock()
+				queries := slices.Clone(p.stripe.priceQueries)
+				p.stripe.mu.Unlock()
+				if len(queries) != 1 || !maps.EqualFunc(queries[0], asked, slices.Equal[[]string]) {
+					t.Fatalf("the Price was read with %v; want it read once, for the page and checkout both, with %v", queries, asked)
+				}
+			})
+		}
+	}
+
+	for _, tax := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Stripe Tax %s, an option added in place", map[bool]string{false: "off", true: "on"}[tax]), func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = tax }, &logs)
+			p.stripe.mu.Lock()
+			p.stripe.price["tax_behavior"] = "inclusive"
+			p.stripe.mu.Unlock()
+			readAgo := func(age time.Duration) {
+				p.app.pass.priceMu.Lock()
+				p.app.pass.priceFetchedAt = time.Now().Add(-age)
+				p.app.pass.priceMu.Unlock()
+			}
+			shown := func() *passPrice {
+				var out passResponse
+				p.get("/api/pass", &out)
+				return out.Price
+			}
+			if price := shown(); price == nil {
+				t.Fatal("GET /api/pass left out the price of a Price in one currency")
+			}
+			p.stripe.mu.Lock()
+			p.stripe.price["currency_options"] = map[string]any{
+				"usd": own,
+				"eur": map[string]any{"unit_amount": 1900, "tax_behavior": "exclusive"},
+			}
+			p.stripe.mu.Unlock()
+			readAgo(59 * time.Minute)
+			if price := shown(); price == nil {
+				t.Fatal("59 minutes after a good read, the price was read again and left out")
+			}
+			readAgo(61 * time.Minute)
+			if price := shown(); price != nil {
+				t.Fatalf("61 minutes after a good read, the Price given another currency is still shown: %+v", price)
+			}
+			var out passResponse
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable ||
+				out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
+				t.Fatalf("checkout of the Price given another currency: status %d (%s), %d Stripe sessions; want 503 and none",
+					code, out.Error, p.stripe.sessionCount())
+			}
+			if n := strings.Count(logs.String(), "not also in eur"); n != 1 {
+				t.Fatalf("%d log lines name the other currency, want 1:\n%s", n, logs.String())
+			}
+		})
+	}
+
+	// The refusal names the other currencies in order, whatever order the
+	// options come in. Go ranges over the options' map in no set order, and
+	// often in the order they were decoded, which Stripe's sorted keys give
+	// here, so one read in order proves nothing: the Price is read 50 times,
+	// each a fresh map with many currencies, as a missing sort would not
+	// survive.
+	t.Run("other currencies named in order", func(t *testing.T) {
+		f := newFakeStripe(t)
+		codes := []string{"aud", "brl", "cad", "chf", "dkk", "eur", "gbp", "jpy", "nok", "sek", "sgd"}
+		options := map[string]any{"usd": own}
+		for _, code := range codes {
+			options[code] = map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive"}
+		}
+		f.price["currency_options"] = options
+		c := newStripeClient(testPassConfig(f))
+		want := errPassPriceRefused.Error() + ": it must be priced in usd alone, not also in " + strings.Join(codes, ", ")
+		for read := range 50 {
+			if _, err := c.price(context.Background()); err == nil || err.Error() != want {
+				t.Fatalf("read %d: %v; want %q", read+1, err, want)
+			}
+		}
+	})
+}
+
+// TestPassPriceIsKeptForItsTime holds the price read from Stripe to the times
+// passPrice keeps it: a failed read a minute, so that one failure stops
+// checkout, with Stripe Tax on or off, for no longer than that (this test runs
+// with it on), and a good read an hour, so that Stripe is not asked on every
+// page view and checkout, and a Price archived meanwhile is refused within the
+// hour, as one given other currencies is
+// (TestPassSellsInThePricesOwnCurrencyAlone).
+func TestPassPriceIsKeptForItsTime(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
 	p.stripe.mu.Lock()
-	p.stripe.price["type"] = "recurring"
+	p.stripe.price["tax_behavior"] = "inclusive"
+	p.stripe.fail = true
 	p.stripe.mu.Unlock()
-	var out passResponse
-	p.get("/api/pass", &out)
-	if !out.Enabled || out.Price != nil {
-		t.Fatalf("a recurring price must be refused but the page still offered: %+v", out)
+	readAgo := func(age time.Duration) {
+		p.app.pass.priceMu.Lock()
+		p.app.pass.priceFetchedAt = time.Now().Add(-age)
+		p.app.pass.priceMu.Unlock()
+	}
+	checkout := func() (int, passResponse) {
+		var out passResponse
+		code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out)
+		return code, out
+	}
+	// shown is the price GET /api/pass shows, if it shows one.
+	shown := func() *passPrice {
+		var out passResponse
+		p.get("/api/pass", &out)
+		return out.Price
+	}
+	if price := shown(); price != nil {
+		t.Fatalf("GET /api/pass with Stripe down: %+v", price)
+	}
+	reads := p.stripe.priceReadCount()
+	p.stripe.mu.Lock()
+	p.stripe.fail = false
+	p.stripe.mu.Unlock()
+
+	// Stripe is back, and the failure is kept until a minute has passed.
+	readAgo(59 * time.Second)
+	if code, out := checkout(); code != http.StatusBadGateway || out.Error != passStripeUnreachable {
+		t.Fatalf("checkout 59 seconds after a failed read: status %d (%s); want 502", code, out.Error)
+	}
+	if price := shown(); price != nil || p.stripe.priceReadCount() != reads {
+		t.Fatalf("59 seconds after a failed read the price was read again (%d reads, want %d), or shown: %+v",
+			p.stripe.priceReadCount(), reads, price)
+	}
+	readAgo(61 * time.Second)
+	if code, out := checkout(); code != http.StatusOK || p.stripe.priceReadCount() != reads+1 {
+		t.Fatalf("checkout 61 seconds after a failed read: status %d (%s), %d reads; want it sold and the price read again",
+			code, out.Error, p.stripe.priceReadCount()-reads)
+	}
+
+	// A good read is kept an hour: the Price archived meanwhile is still
+	// shown and sold, and refused once the hour is out.
+	reads = p.stripe.priceReadCount()
+	p.stripe.mu.Lock()
+	p.stripe.price["active"] = false
+	p.stripe.mu.Unlock()
+	readAgo(59 * time.Minute)
+	if price := shown(); price == nil || p.stripe.priceReadCount() != reads {
+		t.Fatalf("59 minutes after a good read the price was read again (%d reads, want %d), or left out",
+			p.stripe.priceReadCount(), reads)
+	}
+	if code, out := checkout(); code != http.StatusOK {
+		t.Fatalf("checkout 59 minutes after a good read: status %d (%s)", code, out.Error)
+	}
+	readAgo(61 * time.Minute)
+	if price := shown(); price != nil || p.stripe.priceReadCount() != reads+1 {
+		t.Fatalf("61 minutes after a good read the price was not read again (%d reads, want %d), or the archived Price shown: %+v",
+			p.stripe.priceReadCount(), reads+1, price)
+	}
+	if code, out := checkout(); code != http.StatusServiceUnavailable || out.Error != passPriceUnsold {
+		t.Fatalf("checkout of the Price archived, read again: status %d (%s); want 503", code, out.Error)
+	}
+}
+
+// checkSessionSent holds what checkout sent Stripe to open a session (form)
+// to the one Pass it sells, with automatic_tax[enabled] as Stripe Tax is set
+// (tax), and nothing else, with Stripe Tax on or off. Stripe learns that a
+// Pass was bought and nothing about who on educhan bought it (no metadata,
+// client_reference_id or customer), and is asked for nothing about tax but
+// whether to collect it. Nor is the buyer let change what they pay: no
+// allow_promotion_codes, discounts or adjustable_quantity, and Adaptive
+// Pricing off (adaptive_pricing[enabled]=false), so Stripe does not convert
+// the price into the buyer's currency. So a paid session paid the Price that
+// checkout read, in its own currency at its own amount, and the webhook need
+// not check the amount.
+func checkSessionSent(t *testing.T, form url.Values, tax bool) {
+	t.Helper()
+	sent := map[string]string{
+		"mode":                      "payment",
+		"line_items[0][price]":      testPriceID,
+		"line_items[0][quantity]":   "1",
+		"success_url":               testPublicURL + "/pass?paid",
+		"cancel_url":                testPublicURL + "/pass?cancelled",
+		"submit_type":               "pay",
+		"automatic_tax[enabled]":    strconv.FormatBool(tax),
+		"adaptive_pricing[enabled]": "false",
+	}
+	for key, want := range sent {
+		if got := form.Get(key); got != want {
+			t.Errorf("Stripe got %s=%q, want %q", key, got, want)
+		}
+	}
+	for key := range form {
+		if _, ok := sent[key]; !ok {
+			t.Errorf("Stripe was sent %s=%q", key, form.Get(key))
+		}
 	}
 }
 
@@ -373,26 +1064,9 @@ func TestPassPurchase(t *testing.T) {
 	}
 
 	session := p.checkout("")
-	form := p.stripe.sessions[0]
-	for key, want := range map[string]string{
-		"mode":                    "payment",
-		"line_items[0][price]":    testPriceID,
-		"line_items[0][quantity]": "1",
-		"success_url":             testPublicURL + "/pass?paid",
-		"cancel_url":              testPublicURL + "/pass?cancelled",
-	} {
-		if got := form.Get(key); got != want {
-			t.Errorf("Stripe got %s=%q, want %q", key, got, want)
-		}
-	}
-	// Stripe learns that a Pass was bought and nothing about who on educhan
-	// bought it.
-	for key := range form {
-		if strings.HasPrefix(key, "metadata") || strings.HasPrefix(key, "client_reference_id") ||
-			strings.HasPrefix(key, "customer") || strings.HasPrefix(key, "automatic_tax") {
-			t.Errorf("Stripe was sent %s", key)
-		}
-	}
+	// Stripe Tax is off, and Stripe is told so, since an account can collect
+	// tax by default (TestPassTaxFollowsThePrice).
+	checkSessionSent(t, p.stripe.sessions[0], false)
 	if p.stripe.headers[0].Get("Idempotency-Key") == "" || p.stripe.headers[0].Get("Stripe-Version") != stripeAPIVersion {
 		t.Errorf("checkout headers: %v", p.stripe.headers[0])
 	}
@@ -472,15 +1146,107 @@ func TestPassCheckoutCooldownAndStripeFailure(t *testing.T) {
 		t.Fatalf("second checkout inside the cooldown: status %d", status)
 	}
 
-	q := passServer(t, nil)
+	// A session Stripe fails to open is answered 502 after the cooldown has
+	// started, so asking again at once is told to wait. The Price was read
+	// before Stripe began to fail, and is kept, so it is the session that
+	// fails (TestPassRefusesAPriceItCannotSell has Stripe failing as the
+	// Price is read).
+	q := passServer(t, func(cfg *Config) { cfg.Pass.CheckoutCooldown = time.Minute })
+	var status passResponse
+	if q.get("/api/pass", &status); status.Price == nil {
+		t.Fatalf("GET /api/pass: %+v; want the price read", status)
+	}
 	q.stripe.mu.Lock()
 	q.stripe.fail = true
 	q.stripe.mu.Unlock()
-	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusBadGateway {
-		t.Fatalf("checkout with Stripe down: status %d", status)
+	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusBadGateway ||
+		out.Error != passStripeUnreachable {
+		t.Fatalf("checkout with Stripe down: status %d (%s)", status, out.Error)
 	}
 	if status, _ := q.claim(); status != http.StatusBadRequest {
 		t.Fatalf("a failed checkout left a claim behind: status %d", status)
+	}
+	q.stripe.mu.Lock()
+	q.stripe.fail = false
+	q.stripe.mu.Unlock()
+	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusTooManyRequests ||
+		out.RetryAfter != 60 {
+		t.Fatalf("checkout again at once after Stripe failed to open a session: status %d, %+v; want 429 for 60 seconds", status, out)
+	}
+}
+
+// TestPassCheckoutCalledOffLogsNothing holds a checkout the page calls off, by
+// a forget or by leaving educhan, to what it is: a client gone, which a.fail
+// does not log either, and not a fault. Called off while Stripe is opening its
+// session, or while the Pass tables are pruned, it logs nothing at WARN or
+// ERROR, the request's own line included, and records no order.
+func TestPassCheckoutCalledOffLogsNothing(t *testing.T) {
+	for _, during := range []string{"Stripe opening the session", "the prune"} {
+		t.Run(during, func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, nil, &logs)
+			// held waits until the checkout is held where it is called off.
+			var held func()
+			switch during {
+			case "Stripe opening the session":
+				opening, release := make(chan struct{}, 1), make(chan struct{})
+				defer close(release)
+				p.stripe.mu.Lock()
+				p.stripe.opening = func() {
+					opening <- struct{}{}
+					<-release
+				}
+				p.stripe.mu.Unlock()
+				held = func() {
+					select {
+					case <-opening:
+					case <-time.After(10 * time.Second):
+						t.Fatal("the checkout never asked Stripe for a session")
+					}
+				}
+			case "the prune":
+				lock := p.holdPassLock()
+				defer lock.release()
+				held = func() { lock.queued(1, "the checkout's prune") }
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			answer := p.fire(p.request("/api/pass/checkout", map[string]any{"adult": true}, nil).WithContext(ctx))
+			held()
+			cancel()
+			if got := <-answer; !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("the checkout called off: status %d, %v; want it cancelled", got.status, got.err)
+			}
+			// The request's own line is the last the server writes of it.
+			var lines []map[string]any
+			for deadline := time.Now().Add(10 * time.Second); ; {
+				lines = lines[:0]
+				done := false
+				for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+					var record map[string]any
+					if err := json.Unmarshal([]byte(line), &record); err != nil {
+						t.Fatalf("a log line is not JSON: %q", line)
+					}
+					lines = append(lines, record)
+					done = done || record["msg"] == "request" && record["path"] == "/api/pass/checkout"
+				}
+				if done {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the server never finished the checkout called off:\n%s", logs.String())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			for _, record := range lines {
+				if record["level"] == "WARN" || record["level"] == "ERROR" {
+					t.Errorf("a checkout called off is logged as a fault: %v", record)
+				}
+			}
+			if n := p.count("pass_orders"); n != 0 {
+				t.Fatalf("a checkout called off recorded %d orders", n)
+			}
+		})
 	}
 }
 
@@ -770,10 +1536,10 @@ func TestPassOrderDeadlineIsAMidnight(t *testing.T) {
 }
 
 // TestPassPaidAfterItsDeadlineIsKept holds a paid order to its payment: paid
-// after its deadline, or paid in time and collected late, it is still a Pass.
-// Only an order nobody paid for lapses, and once it has, neither GET /api/pass
-// nor a claim's answer counts it as waiting, though nothing has deleted it
-// yet.
+// after its deadline, or paid in time and collected late, it is still a Pass,
+// and still more to come beside another claim's. Only an order nobody paid for
+// lapses, and once it has, neither GET /api/pass nor a claim's answer counts
+// it as waiting, though nothing has deleted it yet.
 func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	p := passServer(t, nil)
 	session := p.checkout("")
@@ -834,6 +1600,28 @@ func TestPassPaidAfterItsDeadlineIsKept(t *testing.T) {
 	}
 	if lapsed.reportsClaim() {
 		t.Fatal("GET /api/pass tells the page to collect the lapsed order")
+	}
+
+	// A paid order past its deadline under another claim cookie is more to
+	// come, though: the answer that collects the first paid order says so, and
+	// the next claim, with the same nonce, collects it.
+	first := p.otherBrowser()
+	first.paid(first.checkout(""), "pi_first_beside_a_late_one")
+	firstToken, _ := first.claimCookie()
+	late := p.otherBrowser()
+	session = late.checkout("")
+	late.paid(session, "pi_collected_late_beside")
+	lateToken, _ := late.claimCookie()
+	p.exec(`UPDATE pass_orders SET expires_at = $1 WHERE session_hash = $2`, time.Now().Add(-time.Hour), p.app.passSessionHash(session))
+	both := first.sendingClaimCookies(firstToken, lateToken)
+	nonce := both.collectNonce()
+	status, one := both.claimWith(nonce)
+	if status != http.StatusOK || one.Status != "issued" || !one.Claim {
+		t.Fatalf("a paid claim beside one paid and past its deadline: status %d, %+v; want the Pass and more to come", status, one)
+	}
+	status, other := both.claimWith(nonce)
+	if status != http.StatusOK || other.Status != "issued" || other.Claim || other.Pass == one.Pass {
+		t.Fatalf("the paid claim past its deadline, asked for next: status %d, %+v; want another Pass and nothing more", status, other)
 	}
 }
 
@@ -1412,19 +2200,39 @@ func TestPassReissue(t *testing.T) {
 		t.Fatalf("an order collected through a reissue code could be collected again: status %d", status)
 	}
 
-	// A refund cancels a reissue code not yet used, and a refunded payment
-	// gets none.
-	refunded := p.buy("pi_refunded_after_reissue")
-	_, _, code = p.reissueCode("mod-key", "pi_refunded_after_reissue")
-	p.refund("pi_refunded_after_reissue")
-	if status, _ := buyer.redeem(code); status != http.StatusForbidden {
-		t.Fatalf("a reissue code for a refunded payment still works: status %d", status)
-	}
-	if status, _, _ := p.reissueCode("mod-key", "pi_refunded_after_reissue"); status != http.StatusNotFound {
-		t.Fatalf("a reissue code for a refunded payment: status %d", status)
-	}
-	if status, _ := p.activate(refunded.Pass); status != http.StatusForbidden {
-		t.Fatalf("a refunded Pass works: status %d", status)
+	// A refund or a dispute cancels a reissue code not yet used: its row goes
+	// with the payment, rather than waiting out its deadline, and the code
+	// gives nothing. A refunded or disputed payment gets none.
+	for _, revoke := range []struct {
+		name, event string
+		object      map[string]any
+	}{
+		{"refund", stripeChargeRefunded, map[string]any{"object": "charge", "refunded": true}},
+		{"dispute", stripeDisputeCreated, map[string]any{"object": "dispute"}},
+	} {
+		pi := "pi_" + revoke.name + "_after_reissue"
+		revoked := p.buy(pi)
+		_, _, code = p.reissueCode("mod-key", pi)
+		payment := p.app.passPaymentHash(pi)
+		if n := p.rowsContaining("pass_reissues", payment); n != 1 {
+			t.Fatalf("the reissue code made before the %s is in %d pass_reissues rows, want 1", revoke.name, n)
+		}
+		revoke.object["payment_intent"] = pi
+		if status := p.webhook(revoke.event, revoke.object); status != http.StatusOK {
+			t.Fatalf("%s webhook: status %d", revoke.name, status)
+		}
+		if n := p.rowsContaining("pass_reissues", payment); n != 0 {
+			t.Errorf("the %s left the payment's reissue code in %d pass_reissues rows", revoke.name, n)
+		}
+		if status, _ := buyer.redeem(code); status != http.StatusForbidden {
+			t.Fatalf("a reissue code for a payment after a %s still works: status %d", revoke.name, status)
+		}
+		if status, _, _ := p.reissueCode("mod-key", pi); status != http.StatusNotFound {
+			t.Fatalf("a reissue code for a payment after a %s: status %d", revoke.name, status)
+		}
+		if status, _ := p.activate(revoked.Pass); status != http.StatusForbidden {
+			t.Fatalf("a Pass works after a %s: status %d", revoke.name, status)
+		}
 	}
 }
 
@@ -1865,6 +2673,30 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	if !ok {
 		t.Fatalf("the second reissue code %q does not parse", unspent)
 	}
+	// A checkout is forgotten by its order's name, as the page forgets one
+	// that answered after Remove the Pass, Forget this browser or Stop: the
+	// name goes in a body, once with a signature that is not the server's,
+	// which is refused, and once as it was given. While the order waits, its
+	// claim's hash is in pass_orders, which is what the name is made from;
+	// once forgotten, it is nowhere.
+	orderer := p.otherBrowser()
+	orderSession, orderName := orderer.checkoutNamed("")
+	orderToken, _ := orderer.claimCookie()
+	orderBytes, err := base64.RawURLEncoding.DecodeString(orderName)
+	if err != nil || len(orderBytes) != sha256.Size+passOrderTagSize {
+		t.Fatalf("the order's name %q is not a claim hash and a signature: %v", orderName, err)
+	}
+	orderHash := orderBytes[:sha256.Size]
+	if n := p.rowsContaining("pass_orders", orderHash); n != 1 {
+		t.Fatalf("the waiting order's claim hash is in %d pass_orders rows, want 1; the scan cannot be trusted", n)
+	}
+	forgedName := base64.RawURLEncoding.EncodeToString(append(slices.Clone(orderHash), make([]byte, passOrderTagSize)...))
+	if status, _ := orderer.forgetOrder(forgedName); status != http.StatusBadRequest {
+		t.Fatalf("forget by a name the server did not sign: status %d", status)
+	}
+	if status, _ := orderer.forgetOrder(orderName); status != http.StatusOK {
+		t.Fatalf("forget by the order's name: status %d", status)
+	}
 
 	stored := p.app.passTokenHash(newCode)
 	// Positive controls: the scan finds the post body in posts, and the stored
@@ -1916,6 +2748,12 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the buyer's email":           []byte("buyer@example.com"),
 		"the buyer's name":            []byte("Bea Buyer"),
 		"the checkout session id":     []byte("cs_test_1"),
+		"the order's name":            []byte(orderName),
+		"the name's bytes":            orderBytes,
+		"the forgotten claim's hash":  orderHash,
+		"the forgotten claim":         []byte(orderToken),
+		"the forged name":             []byte(forgedName),
+		"the forgotten session id":    []byte(orderSession),
 	} {
 		for _, table := range p.tables() {
 			if table == "passes" && name == "the stored hash" {
@@ -1928,8 +2766,9 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 	}
 
 	out := logs.String()
-	if !strings.Contains(out, `"path":"/api/pass/stripe-webhook"`) || !strings.Contains(out, `"path":"/api/boards/scan/threads"`) {
-		t.Fatalf("expected the webhook and the posts in the log, got:\n%s", out)
+	if !strings.Contains(out, `"path":"/api/pass/stripe-webhook"`) || !strings.Contains(out, `"path":"/api/boards/scan/threads"`) ||
+		!strings.Contains(out, `"path":"/api/pass/claim"`) {
+		t.Fatalf("expected the webhook, the posts and the claims in the log, got:\n%s", out)
 	}
 	for name, needle := range map[string]string{
 		"the code":                    issued.Pass,
@@ -1950,6 +2789,13 @@ func TestPassIsNeverStoredOrLogged(t *testing.T) {
 		"the buyer's email":           "buyer@example.com",
 		"the buyer's name":            "Bea Buyer",
 		"the session id":              "cs_test_1",
+		"the order's name":            orderName,
+		"the name's hex":              hex.EncodeToString(orderBytes),
+		"the name in standard base64": base64.StdEncoding.EncodeToString(orderBytes),
+		"the forgotten claim's hash":  hex.EncodeToString(orderHash),
+		"the forgotten claim":         orderToken,
+		"the forged name":             forgedName,
+		"the forgotten session id":    orderSession,
 	} {
 		if strings.Contains(out, needle) {
 			t.Errorf("the log contains %s:\n%s", name, out)
@@ -2382,7 +3228,7 @@ func TestEveryPassWriteTakesThePassLock(t *testing.T) {
 	})
 	p.buy("pi_reissue")
 	_, _, token := p.reissueCode("mod-key", "pi_reissue")
-	session := p.checkout("")
+	session, order := p.checkoutNamed("")
 	unpaid := map[string]any{"id": session, "object": "checkout.session", "mode": "payment", "payment_status": "unpaid"}
 	request := func(req *http.Request) func() <-chan racedResponse {
 		return func() <-chan racedResponse { return p.fire(req) }
@@ -2402,6 +3248,7 @@ func TestEveryPassWriteTakesThePassLock(t *testing.T) {
 			http.Header{modKeyHeader: {"mod-key"}}))},
 		{"a reissue code redeemed", request(p.request("/api/pass/claim", map[string]any{"reissue": token, "nonce": p.collectNonce()}, nil))},
 		{"a claim forgotten", request(p.request("/api/pass/claim", map[string]any{"forget": true}, nil))},
+		{"a claim forgotten by its order", request(p.request("/api/pass/claim", map[string]any{"forget": true, "order": order}, nil))},
 		{"the sweep", func() <-chan racedResponse {
 			done := make(chan racedResponse, 1)
 			go func() {
@@ -2793,6 +3640,241 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 	// Forgetting with nothing to forget is no error.
 	if status, _ := p.forget(); status != http.StatusOK {
 		t.Fatalf("forget with no claim: status %d", status)
+	}
+}
+
+// forgetOrder drops the one claim whose order a checkout's answer named, as
+// the page does for a checkout that answered after a forget, and returns the
+// claim cookie the answer set, if it set one.
+func (p *passHarness) forgetOrder(name string) (int, *http.Cookie) {
+	p.t.Helper()
+	status, set, _ := p.forgetOrderAnswered(name)
+	return status, set
+}
+
+// forgetOrderAnswered is forgetOrder with the whole answer, every key in it.
+func (p *passHarness) forgetOrderAnswered(name string) (int, *http.Cookie, map[string]any) {
+	p.t.Helper()
+	res, err := p.http.Do(p.request("/api/pass/claim", map[string]any{"forget": true, "order": name}, nil))
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	defer res.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
+		p.t.Fatal(err)
+	}
+	if res.StatusCode == http.StatusOK && out["status"] != "forgotten" {
+		p.t.Fatalf("forget by order: %v", out)
+	}
+	for _, c := range res.Cookies() {
+		if c.Name == passClaimCookie {
+			return res.StatusCode, c, out
+		}
+	}
+	return res.StatusCode, nil, out
+}
+
+// TestPassForgetByOrderDropsThatClaimAlone holds the forget the page sends for
+// a checkout that answered after Remove the Pass, Forget this browser or Stop
+// collecting it here, naming the order the answer gave it, to that checkout's
+// claim and no other. The claim collects nothing, even with a copy of its
+// cookie and once its checkout is paid after all, and the buyer gets that
+// through a reissue. A checkout started after the forget is somebody's
+// purchase, and its cookie can be in the browser by the time the forget of the
+// earlier one arrives, so that forget reads no cookie and clears none, and
+// its answer, {"status":"forgotten"}, says nothing of what else waits. Only
+// the server makes a name: one made from what pass_orders holds drops nothing.
+func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+
+	// The checkout answered after the browser's own forget did, so its
+	// cookie is the browser's when the forget naming it goes.
+	session, name := p.checkoutNamed("")
+	token, _ := p.claimCookie()
+	if name == token {
+		t.Fatal("a checkout's answer named its order by the claim itself, which collects it")
+	}
+	if p.sendingClaimCookies(name).reportsClaim() {
+		t.Fatal("the order's name, sent as a claim cookie, has something to collect")
+	}
+	// The answer is the status and nothing more: no cookie was read, so it
+	// says nothing of what else waits ("claim").
+	if status, set, out := p.forgetOrderAnswered(name); status != http.StatusOK || set != nil ||
+		!maps.Equal(out, map[string]any{"status": "forgotten"}) {
+		t.Fatalf(`forget by order: status %d, setting %v, answer %v; want 200, no cookie set or cleared, and {"status":"forgotten"} alone`,
+			status, set, out)
+	}
+	if left, ok := p.claimCookie(); !ok || left != token {
+		t.Fatal("forgetting by order took the cookie out of the browser")
+	}
+	if p.reportsClaim() {
+		t.Fatal("GET /api/pass still tells the next person at the browser there is a purchase to collect")
+	}
+	// Paid after all, which nothing on the page led to, it is the buyer's
+	// still, by a reissue code from the receipt, and no copy of the claim
+	// collects it.
+	p.paid(session, "pi_forgotten_by_order")
+	if p.reportsClaim() {
+		t.Fatal("the forgotten checkout, paid, is a purchase to collect")
+	}
+	if status, out := p.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("the browser collected the forgotten checkout: status %d, %+v", status, out)
+	}
+	replay := p.otherBrowser()
+	replay.setClaimCookie(token)
+	if status, out := replay.claim(); status != http.StatusBadRequest || out.Pass != "" {
+		t.Fatalf("a copy of the forgotten claim: status %d, %+v", status, out)
+	}
+	_, _, code := p.reissueCode("mod-key", "pi_forgotten_by_order")
+	if status, out := p.otherBrowser().redeem(code); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("reissue of the checkout forgotten by order: status %d, %+v", status, out)
+	}
+
+	// A checkout started after the forget answered before the forgotten one's
+	// forget arrived: its cookie is the browser's, and it is still collected.
+	q := p.otherBrowser()
+	forgotten, forgottenName := q.checkoutNamed("")
+	forgottenToken, _ := q.claimCookie()
+	after := q.checkout("")
+	kept, _ := q.claimCookie()
+	if status, set := q.forgetOrder(forgottenName); status != http.StatusOK || set != nil {
+		t.Fatalf("forget by order beside a later checkout: status %d, setting %v", status, set)
+	}
+	if left, ok := q.claimCookie(); !ok || left != kept {
+		t.Fatal("forgetting the earlier checkout by order took the later one's cookie out of the browser")
+	}
+	if !q.reportsClaim() {
+		t.Fatal("forgetting the earlier checkout by order dropped the later one's claim")
+	}
+	q.paid(forgotten, "pi_forgotten_beside")
+	q.paid(after, "pi_started_after_the_forget")
+	if status, out := q.claim(); status != http.StatusOK || out.Status != "issued" || out.Claim {
+		t.Fatalf("the checkout started after the forget: status %d, %+v; want its Pass and nothing more", status, out)
+	}
+	replay = p.otherBrowser()
+	replay.setClaimCookie(forgottenToken)
+	if replay.reportsClaim() {
+		t.Fatal("a copy of the claim forgotten by order has something to collect")
+	}
+
+	// A name that is not one is refused, and so is a name beside anything but
+	// a forget, from a browser with a checkout waiting, which is left as it
+	// was; a name with nothing under it is nothing to forget, and no error.
+	waiting := p.otherBrowser()
+	waitingSession, waitingName := waiting.checkoutNamed("")
+	waitingToken, _ := waiting.claimCookie()
+	for what, body := range map[string]map[string]any{
+		"a name cut short":         {"forget": true, "order": waitingName[:20]},
+		"a name not in base64url":  {"forget": true, "order": strings.Repeat("!", len(waitingName))},
+		"a claim token for a name": {"forget": true, "order": waitingToken},
+		"a name with no forget":    {"order": waitingName, "nonce": waiting.collectNonce()},
+	} {
+		var out passResponse
+		if status := waiting.post("/api/pass/claim", body, &out); status != http.StatusBadRequest {
+			t.Errorf("%s: status %d, %+v; want 400", what, status, out)
+		}
+	}
+	if !waiting.reportsClaim() {
+		t.Fatal("a refused forget by order dropped the browser's claim")
+	}
+	// Nor does a name made from what the database holds of a claim, which
+	// anyone who can read pass_orders has, drop anything, bare or with a
+	// signature that is not the server's for it, one made under another
+	// secret included: only the server makes a name, so a copy of the table
+	// takes no waiting order from its buyer.
+	rows, err := p.app.pool.Query(context.Background(), `SELECT claim_hash FROM pass_orders`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := pgx.CollectRows(rows, pgx.RowTo[[]byte])
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, _ := base64.RawURLEncoding.DecodeString(waitingName)
+	waitingHash := hashToken(waitingToken)
+	if len(signed) != sha256.Size+passOrderTagSize || !bytes.Equal(signed[:sha256.Size], waitingHash) ||
+		!slices.ContainsFunc(stored, func(h []byte) bool { return bytes.Equal(h, waitingHash) }) {
+		t.Fatalf("the waiting checkout's name %q is not its stored claim hash and a signature", waitingName)
+	}
+	stranger := p.otherBrowser()
+	rotated := p.twin(func(c *PassConfig) { c.Secret = testPassSecret + "-rotated" })
+	for _, hash := range stored {
+		for what, forged := range map[string][]byte{
+			"a stored claim hash":                              hash,
+			"a stored claim hash, signed with zeros":           append(slices.Clone(hash), make([]byte, passOrderTagSize)...),
+			"a stored claim hash, with another's tag":          append(slices.Clone(hash), p.app.passOrderTag(hashToken("another claim"))...),
+			"a stored claim hash, tagged with its hash":        append(slices.Clone(hash), hash[:passOrderTagSize]...),
+			"a stored claim hash, signed under another secret": append(slices.Clone(hash), rotated.app.passOrderTag(hash)...),
+		} {
+			if status, _ := stranger.forgetOrder(base64.RawURLEncoding.EncodeToString(forged)); status != http.StatusBadRequest {
+				t.Errorf("%s as an order's name: status %d; want 400", what, status)
+			}
+		}
+	}
+	if !waiting.reportsClaim() {
+		t.Fatal("a name made from pass_orders dropped a waiting order")
+	}
+	waiting.paid(waitingSession, "pi_named_from_the_table")
+	if status, out := waiting.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the buyer whose order was named from the table: status %d, %+v; want their Pass", status, out)
+	}
+	if status, _ := p.otherBrowser().forgetOrder(p.app.passOrderName("nothing-under-this")); status != http.StatusOK {
+		t.Fatalf("forget by a name with nothing under it: status %d", status)
+	}
+}
+
+// TestPassHashesAreKeyedWithTheSecret holds every hash the Pass tables keep
+// of a code or a Stripe id, the name a checkout's answer gives its order, and
+// the key a Pass's hourly budget is counted under to EDUCHAN_PASS_SECRET. The
+// same deployment started with another secret finds none of them, as the
+// README says of rotating it (every Pass cancelled, every payment record
+// orphaned): a code bought before is no Pass and its payment is not one to
+// reissue, and with them a paid report of a checkout opened before matches no
+// order, and an order's name is not the server's. A hash keyed with anything
+// but the secret would let whoever holds a copy of the tables check a code
+// against them or make an order's name; the server that bought them still
+// finds every one.
+func TestPassHashesAreKeyedWithTheSecret(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_before_the_rotation")
+	buyer := p.otherBrowser()
+	session, name := buyer.checkoutNamed("")
+	q := p.twin(func(c *PassConfig) { c.Secret = testPassSecret + "-rotated" })
+
+	if status, out := q.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a code bought under the old secret, checked under the new: status %d, %+v; want 403 invalid", status, out)
+	}
+	if status, _, _ := q.reissueCode("mod-key", "pi_before_the_rotation"); status != http.StatusNotFound {
+		t.Fatalf("a reissue under the new secret of a payment made under the old: status %d; want 404", status)
+	}
+	q.paid(session, "pi_paid_under_the_new_secret")
+	if status, out := buyer.claim(); status != http.StatusAccepted {
+		t.Fatalf("a checkout opened under the old secret, reported paid under the new: status %d, %+v; want it still waiting", status, out)
+	}
+	if status, _ := q.otherBrowser().forgetOrder(name); status != http.StatusBadRequest {
+		t.Fatalf("forget under the new secret by a name given under the old: status %d; want 400", status)
+	}
+	code, _ := parsePassCode(issued.Pass)
+	if p.app.passBudgetKey(code) == q.app.passBudgetKey(code) {
+		t.Fatal("one Pass's hourly budget is counted under the same key whatever the secret")
+	}
+
+	// Under the secret they were made with, every one is still found.
+	if status, out := p.activate(issued.Pass); status != http.StatusOK || out.Pass != issued.Pass {
+		t.Fatalf("the code under its own secret: status %d, %+v", status, out)
+	}
+	if status, _, _ := p.reissueCode("mod-key", "pi_before_the_rotation"); status != http.StatusOK {
+		t.Fatalf("a reissue under the payment's own secret: status %d", status)
+	}
+	p.paid(session, "pi_paid_under_its_own_secret")
+	if status, out := buyer.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the checkout reported paid under its own secret: status %d, %+v", status, out)
+	}
+	another := p.otherBrowser()
+	_, anotherName := another.checkoutNamed("")
+	if status, _ := p.otherBrowser().forgetOrder(anotherName); status != http.StatusOK || another.reportsClaim() {
+		t.Fatalf("forget by an order's name under its own secret: status %d, or the order still waits", status)
 	}
 }
 
