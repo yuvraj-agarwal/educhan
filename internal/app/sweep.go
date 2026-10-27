@@ -25,6 +25,21 @@ import (
 // at it, and a sweeper that is not looking at the server's media store — a Job
 // with a different backend, bucket, prefix or upload directory — finds the
 // files missing and fails, rather than deleting nothing and reporting success.
+//
+// Last, it deletes the codes that expired unconfirmed and rewrites the
+// verification tables (Store.RewriteCredentials), so that when it ends every
+// credential issued before the rewrite carries the sweep's transaction id
+// rather than its own, which would date its issuance against the posts
+// written around it, the tables' files hold no other version of any row,
+// pg_statistic's files hold none of the samples ANALYZE took of the tables
+// before 0015, and every last-scan time the statistics show for the tables is
+// the sweep's. A code still in flight as it ran keeps its row, with the time
+// it was asked for, in the table's file until the next sweep, whether a
+// confirmation or a delete has removed it by then or not; rows written after
+// the rewrite — a confirmation, a code requested, even while the sweep is
+// still vacuuming — keep their own transaction ids until the next sweep too;
+// and a backup taken meanwhile holds both (the README's "Transaction ids, and
+// the nightly rewrite").
 
 // sweepBatchSize bounds one sweep transaction: how many threads it deletes and
 // how long it holds their row locks.
@@ -44,11 +59,26 @@ type SweepReport struct {
 	BlobsRemoved int
 	BlobFailures int
 	BlobsMissing int
+	// The rows of the credentials table the sweep rewrote: all of them
+	// (Store.RewriteCredentials), expired ones that no confirmation has
+	// pruned yet included, when the rewrite's transaction commits, whatever
+	// fails after it; and 0, whatever the table holds, when it does not,
+	// because the sweep stopped before it or the rewrite failed — its lock
+	// timed out, say (TestSweepFailsWhenTheVerificationTablesAreHeld). Kept
+	// night after night it is a history of the table's size, which the
+	// database does not keep, but for that: a 0 from a sweep that failed
+	// can be a rewrite that did not run, and the sweep's error says which
+	// step failed. It says how many credentials there were and nothing
+	// about any one of them; the log already counts issuances one by one
+	// ("verification issued"). Nothing finer — no label, no expiry —
+	// belongs here.
+	Credentials int
 }
 
 // Sweep deletes every archived thread that has outlived its board's
-// archive_days, in batches of sweepBatchSize, and then removes the files those
-// threads had, along with any an earlier sweep could not.
+// archive_days, in batches of sweepBatchSize, removes the files those threads
+// had, along with any an earlier sweep could not, and then rewrites the
+// verification tables.
 func (a *App) Sweep(ctx context.Context) (SweepReport, error) {
 	return a.sweep(ctx, time.Now(), sweepBatchSize)
 }
@@ -78,20 +108,31 @@ func (a *App) sweep(ctx context.Context, asOf time.Time, batch int) (SweepReport
 	}
 
 	firstFailure, err := a.removeQueuedMedia(ctx, &report)
+	if err == nil {
+		// Whatever became of the files: the rewrite has nothing to do with
+		// them, and a storage outage should not keep credentials dated.
+		report.Credentials, err = a.store.RewriteCredentials(ctx)
+		if err != nil {
+			err = fmt.Errorf("sweep verification tables: %w", err)
+		}
+	}
 	a.logSweep(report)
+	// Every step that failed says so: a verification step that fails every
+	// night, for a role that may not vacuum pg_statistic, must not hide a
+	// media store that is not the server's.
+	errs := []error{err}
 	switch {
-	case err != nil:
-		return report, err
 	case report.BlobsMissing > 0:
-		return report, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
+		errs = append(errs, fmt.Errorf("sweep: %d of the files queued for removal are not in the media store; "+
 			"check that the sweeper has the server's media settings (EDUCHAN_MEDIA_BACKEND, "+
 			"EDUCHAN_GCS_BUCKET, EDUCHAN_GCS_PREFIX, EDUCHAN_UPLOAD_DIR); they stay queued in media_deletions",
-			report.BlobsMissing)
+			report.BlobsMissing))
 	case report.BlobFailures > 0:
-		return report, fmt.Errorf("sweep: %d files could not be removed from the media store (the first: %s); "+
-			"they stay queued in media_deletions for the next sweep", report.BlobFailures, firstFailure)
+		errs = append(errs, fmt.Errorf("sweep: %d files could not be removed from the media store "+
+			"(the first: %s); they stay queued in media_deletions for the next sweep",
+			report.BlobFailures, firstFailure))
 	}
-	return report, nil
+	return report, errors.Join(errs...)
 }
 
 // removeQueuedMedia works through media_deletions once, removing each file and
@@ -169,5 +210,6 @@ func (a *App) logSweep(report SweepReport) {
 		"attachments", report.Attachments,
 		"blobs_removed", report.BlobsRemoved,
 		"blob_failures", report.BlobFailures,
-		"blobs_missing", report.BlobsMissing)
+		"blobs_missing", report.BlobsMissing,
+		"credentials_rewritten", report.Credentials)
 }

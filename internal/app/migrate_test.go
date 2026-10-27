@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -241,5 +242,114 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 	var out map[string]any
 	if status := h.do(http.MethodGet, "/api/boards", nil, &out); status != http.StatusOK {
 		t.Errorf("GET /api/boards on a newer schema: status %d, want the server still serving", status)
+	}
+}
+
+// ANALYZE copies a sample of each column's values into pg_statistic, where
+// pg_stats shows them, and autovacuum runs it by itself after enough writes:
+// for the pending table, email hashes of codes in flight beside expiries to
+// the microsecond, kept after the rows are gone and through every rewrite and
+// vacuum of the verification tables. 0015 deletes what had been gathered
+// before it, stops anything being gathered again, and turns autovacuum off on
+// both tables, since the times it last ran follow the writes that set it off.
+// Its delete leaves the old versions in pg_statistic's files, where no query
+// sees them, so the sweep writes that catalog out anew.
+func TestVerificationTablesKeepNoStatistics(t *testing.T) {
+	pool, url := databaseAt(t, 14)
+	ctx := context.Background()
+	exec := func(query string, args ...any) {
+		t.Helper()
+		if _, err := pool.Exec(ctx, query, args...); err != nil {
+			t.Fatalf("exec %q: %v", query, err)
+		}
+	}
+	// fill writes a few rows into both tables, as requests and
+	// confirmations would, and analyses them.
+	fill := func(from int) {
+		t.Helper()
+		for i := from; i < from+5; i++ {
+			exec(`INSERT INTO verification_pending (email_hash, token_hash, code_hash, label, expires_at)
+				VALUES (int4send($1::int), sha256(int4send($1::int)), '\x00', 'Somewhere',
+				        now() + $1 * interval '1 second')`, i)
+			exec(`INSERT INTO verification_credentials (email_hash, credential_id_hash, label, expires_at)
+				VALUES (int4send($1::int), sha256(int4send($1::int)), 'Somewhere',
+				        date_trunc('day', now()) + interval '181 days')`, i)
+		}
+		exec(`ANALYZE verification_pending, verification_credentials`)
+	}
+	sampled := func() []string {
+		t.Helper()
+		rows, err := pool.Query(ctx, `
+			SELECT tablename || '.' || attname FROM pg_stats
+			WHERE schemaname = current_schema()
+			  AND tablename IN ('verification_pending', 'verification_credentials')
+			ORDER BY 1`)
+		if err != nil {
+			t.Fatalf("read pg_stats: %v", err)
+		}
+		columns, err := pgx.CollectRows(rows, pgx.RowTo[string])
+		if err != nil {
+			t.Fatalf("read pg_stats: %v", err)
+		}
+		return columns
+	}
+
+	// Positive control: before 0015, ANALYZE keeps a sample of every column,
+	// the email hashes of codes in flight among them.
+	fill(0)
+	if columns := sampled(); !slices.Contains(columns, "verification_pending.email_hash") {
+		t.Fatalf("before 0015, pg_stats holds %v and no email hashes; the check cannot be trusted", columns)
+	}
+
+	h := serverOn(t, url)
+	if columns := sampled(); len(columns) != 0 {
+		t.Errorf("after 0015, pg_stats still holds statistics for %v", columns)
+	}
+	fill(100)
+	if columns := sampled(); len(columns) != 0 {
+		t.Errorf("ANALYZE after 0015 gathered statistics for %v", columns)
+	}
+
+	var autovacuumed []string
+	rows, err := h.app.pool.Query(ctx, `
+		SELECT relname FROM pg_class
+		WHERE oid IN ('verification_pending'::regclass, 'verification_credentials'::regclass)
+		  AND NOT ('autovacuum_enabled=false' = ANY (coalesce(reloptions, '{}')))`)
+	if err != nil {
+		t.Fatalf("read reloptions: %v", err)
+	}
+	if autovacuumed, err = pgx.CollectRows(rows, pgx.RowTo[string]); err != nil {
+		t.Fatalf("read reloptions: %v", err)
+	}
+	if len(autovacuumed) != 0 {
+		t.Errorf("autovacuum is still on for %v", autovacuumed)
+	}
+
+	// The samples are out of pg_stats, but 0015 only deleted them: the old
+	// versions, the email hashes' histogram in pg_statistic's TOAST table and
+	// the expiries' in the catalog itself, stay in those files until VACUUM
+	// FULL writes the catalog out anew, and a VACUUM FULL drops them only if
+	// its cutoff has passed the transaction that applied 0015.
+	statistics := func() (heap, toast int64, clean bool) {
+		t.Helper()
+		if err := h.app.pool.QueryRow(ctx, `
+			SELECT pg_relation_filenode(c.oid)::bigint, pg_relation_filenode(c.reltoastrelid)::bigint,
+			       age(c.relfrozenxid) < (SELECT age(m.xmin) FROM schema_migrations m WHERE m.version = 15)
+			FROM pg_class c WHERE c.oid = 'pg_catalog.pg_statistic'::regclass`).Scan(&heap, &toast, &clean); err != nil {
+			t.Fatalf("read pg_statistic's files: %v", err)
+		}
+		return heap, toast, clean
+	}
+	heap, toast, _ := statistics()
+	if _, err := h.app.Sweep(ctx); err != nil {
+		t.Fatalf("sweep: %v", err)
+	}
+	swept, sweptToast, clean := statistics()
+	if swept == heap || sweptToast == toast {
+		t.Errorf("pg_statistic is in files %d and %d after the sweep, as before it: the samples 0015 deleted "+
+			"are still in them", swept, sweptToast)
+	}
+	if !clean {
+		t.Error("the sweep wrote pg_statistic out with a cutoff no newer than 0015, keeping what 0015 deleted")
 	}
 }
