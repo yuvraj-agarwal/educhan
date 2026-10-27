@@ -9869,12 +9869,12 @@ func cutsSomethingElse(text string, m []int, ws, next []string) bool {
 	if len(object) > 1 && cutDets[object[0]] {
 		object = object[1:]
 	}
-	if len(object) > 0 && (cutShort[object[0]] || groomed[object[0]]) {
+	if len(object) > 0 && (cutShort[object[0]] || hairAndNails[object[0]]) {
 		return true
 	}
 	sentence := wordsIn(sentenceAround(text, m[0], m[1]))
 	for i, w := range sentence {
-		if groomed[w] && !anyIn(sentence[max(0, i-3):i], hairIdioms) {
+		if hairAndNails[w] && !anyIn(sentence[max(0, i-3):i], hairIdioms) {
 			return true
 		}
 	}
@@ -9958,10 +9958,10 @@ var (
 	durationUnits = canonSetOf(`day days week weeks month months year years yr yrs`)
 	durationWords = canonSetOf(`a an one two three four five six seven eight nine ten eleven twelve few couple of
 		almost nearly over about around like half whole full`)
-	hangPlaces = canonSetOf(`from on off by`)
-	hangBars   = canonSetOf(`bar bars rings ring monkey pull pullup chinup chin jungle gym trapeze`)
-	cutShort   = canonSetOf(`session sessions nap trip practice`)
-	groomed    = canonSetOf(`hair hairs bangs fringe nails nail beard mullet layers`)
+	hangPlaces   = canonSetOf(`from on off by`)
+	hangBars     = canonSetOf(`bar bars rings ring monkey pull pullup chinup chin jungle gym trapeze`)
+	cutShort     = canonSetOf(`session sessions nap trip practice`)
+	hairAndNails = canonSetOf(`hair hairs bangs fringe nails nail beard mullet layers`)
 	// selfCuts make a cut the poster's; cutDets may come before what is
 	// cut; cutBodyParts are where on themselves; hairIdioms, before hair,
 	// make it no haircut ("tearing my hair out", "under my hair").

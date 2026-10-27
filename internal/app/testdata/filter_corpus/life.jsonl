@@ -329,7 +329,7 @@
 {"id": "life-329", "body": "3 months clean from sh and relapsed", "subject": "", "name": "", "expect": "support", "why": "a relapse after three months clean, the README's own example (R2-relapse)"}
 {"id": "life-330", "body": "6 months clean from sh. relapsed last night", "subject": "", "name": "", "expect": "support", "why": "a relapse after six months clean, in two sentences (R2-relapse)"}
 {"id": "life-331", "body": "i'm ending it tonight with pills", "subject": "", "name": "", "expect": "support", "why": "ending it with pills: a method, not a revision (R2-M4 control)"}
-{"id": "life-332", "body": "i want to cut again, my parents found the scars", "subject": "", "name": "", "expect": "support", "why": "cutting again with nothing groomed named (R2-M3 control)"}
+{"id": "life-332", "body": "i want to cut again, my parents found the scars", "subject": "", "name": "", "expect": "support", "why": "cutting again with no hair or nails named (R2-M3 control)"}
 {"id": "life-333", "body": "i'm going to hang myself from the ceiling fan", "subject": "", "name": "", "expect": "support", "why": "a method, not a bar (R2-M3 control)"}
 {"id": "life-334", "body": "lethal dose of paracetamol for me? i weigh 50kg", "subject": "", "name": "", "expect": "hold", "why": "the poster's own dose asked for (R2P-LETHAL-DOSE-ACADEMIC control)"}
 {"id": "life-335", "body": "whats the lethal dose of ibuprofen", "subject": "", "name": "", "expect": "hold", "why": "a dose asked for with \"what's\" (R2P-LETHAL-DOSE-ACADEMIC control)"}
