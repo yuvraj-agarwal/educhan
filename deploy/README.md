@@ -635,21 +635,23 @@ which moves the image, the Scheduler job and the backup window in one run;
 `make cloud-deploy` moves only the images. Afterwards `gcloud sql instances
 describe educhan-db --format='value(settings.backupConfiguration.startTime)'`
 should print the new start; a re-run leaves alone an instance whose backups were
-turned off (section 2.2). A new `credentialDayStart`
-splits the credential day it is deployed in (the root README's [Transaction ids,
-and the nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite)
-says what that dates), so deploy it soon after the later of the old start and
-the new, once the `verification issued` lines in the server's log (the command
-above prints the latest) show that nobody has verified since the old start. The credentials issued from the deploy
-until the next new start share their expiry with no others, so a later deploy
-dates them to the fewer hours left in between, for as long as they are kept. A
-start moved earlier can instead go out at any time between that day's new start
-and its old one, whether or not anyone has verified, once that night's sweep on
-the old schedule, and its retry if it fails, has finished, and with the deploy
-over before the old start: the credentials issued before the deploy and those
-after it then each span at least a day less the move. A deploy before that sweep
-has finished would have it split the new day, or move the Scheduler job past it
-and leave that night without one.
+turned off (section 2.2). A new `credentialDayStart` splits the credential day
+it is deployed in (the root README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what that
+dates), so deploy it soon after the later of the old start and the new, once the
+`verification issued` lines in the server's log (the command above prints the
+latest) show that nobody has verified since the old start. The credentials
+issued from the deploy until the next new start share their expiry with no
+others, so a later deploy dates them to the fewer hours left in between, for as
+long as they are kept. A credential issued on the old revision while the new one
+rolls out still gets the old expiry, and is dated with those issued before the
+deploy. A start moved earlier can instead go out at any time between that day's
+new start and its old one, whether or not anyone has verified, once that night's
+sweep on the old schedule, and its retry if it fails, has finished, and with the
+deploy over before the old start: the credentials issued before the deploy and
+those after it then each span at least a day less the move. A deploy before that
+sweep has finished would have it split the new day, or move the Scheduler job
+past it and leave that night without one.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
