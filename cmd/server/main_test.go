@@ -207,7 +207,9 @@ func TestServingFailsWhenTheAddressIsTaken(t *testing.T) {
 	if err := run(nil, &logs); err == nil {
 		t.Fatal("a server whose address was taken reported success")
 	}
-	wantOneFatalLine(t, logs.String(), "address already in use")
+	// The address and the call that failed, which Unix and Windows both
+	// write, not the error's own text, which each words its own way.
+	wantOneFatalLine(t, logs.String(), taken.Addr().String()+": bind: ")
 }
 
 // A mistyped flag must not fall through to serving: a Job that started a
@@ -423,10 +425,11 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			stopWith := stopSignal(t)
 			db := sweepEnv(t)
 			sweepURL, waiting := tc.wait(t, db, os.Getenv("DATABASE_URL"))
 
-			sweep := startSweep(t, sweepURL)
+			sweep := startSweep(t, sweepURL, stopWith)
 			started := false
 			for deadline := time.Now().Add(30 * time.Second); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
 				if started = waiting(); started {
@@ -585,6 +588,7 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			stopWith := stopSignal(t)
 			db := sweepEnv(t)
 			ctx := context.Background()
 			if tc.migrated {
@@ -608,7 +612,7 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 				}
 			})
 
-			sweep := startSweep(t, throughProxy(t, databaseURL, proxy, appName))
+			sweep := startSweep(t, throughProxy(t, databaseURL, proxy, appName), stopWith)
 			select {
 			case <-fired:
 			case <-time.After(30 * time.Second):
@@ -667,7 +671,7 @@ func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
 	fired := proxy.on("Q\x00\x00\x00\x0bcommit\x00", 3*time.Second)
 
 	started := time.Now()
-	sweep := startSweep(t, throughProxy(t, databaseURL, proxy, ""))
+	sweep := startSweep(t, throughProxy(t, databaseURL, proxy, ""), nil)
 	var err error
 	select {
 	case err = <-sweep.exited:
@@ -726,7 +730,7 @@ func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
 		}
 	})
 
-	sweep := startSweep(t, throughProxy(t, databaseURL, proxy, appName))
+	sweep := startSweep(t, throughProxy(t, databaseURL, proxy, appName), nil)
 	var sent time.Time
 	select {
 	case <-fired:
@@ -833,6 +837,8 @@ func withApplicationName(t *testing.T, databaseURL, appName string) string {
 // writes kept with the time it came.
 type sweepProcess struct {
 	cmd *exec.Cmd
+	// stopWith is what stop sends it, nil for a sweep left to exit by itself.
+	stopWith os.Signal
 	// logged is read only once exited has said how the process ended.
 	logged []logLine
 	exited chan error
@@ -843,7 +849,10 @@ type logLine struct {
 	at   time.Time
 }
 
-func startSweep(t *testing.T, databaseURL string) *sweepProcess {
+// startSweep starts the sweep. A test that stops it passes stopWith from
+// stopSignal, which it asks for first: where no stop can be sent, the test is
+// skipped before any sweep is started.
+func startSweep(t *testing.T, databaseURL string, stopWith os.Signal) *sweepProcess {
 	t.Helper()
 	cmd := exec.Command(os.Args[0])
 	cmd.Env = append(os.Environ(), mainArgsEnv+"=-sweep", "DATABASE_URL="+databaseURL)
@@ -854,7 +863,7 @@ func startSweep(t *testing.T, databaseURL string) *sweepProcess {
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start the sweep: %v", err)
 	}
-	p := &sweepProcess{cmd: cmd, exited: make(chan error, 1)}
+	p := &sweepProcess{cmd: cmd, stopWith: stopWith, exited: make(chan error, 1)}
 	lines := make(chan logLine, 100)
 	go func() {
 		defer close(lines)
@@ -872,11 +881,11 @@ func startSweep(t *testing.T, databaseURL string) *sweepProcess {
 	return p
 }
 
-// stop sends the process SIGTERM and returns how it ended, failing t if it
-// has not exited 30 seconds later.
+// stop sends the process SIGTERM (stopWith) and returns how it ended, failing
+// t if it has not exited 30 seconds later.
 func (p *sweepProcess) stop(t *testing.T) error {
 	t.Helper()
-	if err := p.cmd.Process.Signal(syscall.SIGTERM); err != nil {
+	if err := p.cmd.Process.Signal(p.stopWith); err != nil {
 		t.Fatalf("stop the sweep: %v", err)
 	}
 	select {
@@ -918,6 +927,7 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 	const pruneBound = 5 * time.Second
 	const cloudRunGrace = 10 * time.Second
 
+	stopWith := stopSignal(t)
 	db := sweepEnv(t)
 	ctx := context.Background()
 	// Migrated here, so the process below has nothing to change before it
@@ -952,7 +962,7 @@ func TestStoppedSweepExitsWhenTheDatabaseStopsAnswering(t *testing.T) {
 		t.Fatalf("find the lock's backend: %v", err)
 	}
 
-	sweep := startSweep(t, sweepURL)
+	sweep := startSweep(t, sweepURL, stopWith)
 
 	// Waiting on this lock, not on any: before it sweeps, the process waits
 	// for the migrations' advisory lock, which every schema in the database
