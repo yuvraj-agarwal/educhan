@@ -89,13 +89,20 @@ func pngGamma(data []byte) (gamma float64, ok bool) {
 	return gamma, true
 }
 
-// maxICCProfile is about the most a PNG's ICC profile may inflate to for
-// Chromium to read it. Its PNG decoder takes a profile from a 64 MiB budget
-// that it takes its own buffers from too, and passes over a profile that
-// does not fit, as it does one that does not inflate; a picture whose
-// buffers then no longer fit beside the profile it does not show at all. The
-// cut here is at 64 MiB, so a profile within a few dozen kilobytes of it, or
-// of what the picture's buffers leave, is not judged as Chromium judges it.
+// maxICCProfile is the most a PNG's ICC profile may inflate to here for
+// Chromium to be taken to read it. Chromium's PNG decoder takes a profile
+// from a 64 MiB budget that it takes its own buffers from too, and passes
+// over a profile that does not fit, as it does one that does not inflate; a
+// picture whose buffers then no longer fit beside the profile it does not
+// show at all. What its buffers left fell short of 64 MiB by more than the
+// compressed chunk in both files Chromium 141 was shown: from a 256×4
+// picture whose iCCP chunk was 291 KB it passed over a profile 472 KiB short
+// of 64 MiB and used one 488 KiB short, and from a 6.5 MB upload whose
+// profile held 6 MiB of random bytes it passed over one of 57 MiB and used
+// one of 56 MiB. The cut here is at 64 MiB, so a profile between Chromium's
+// cut and it, a band of megabytes for a large upload, is taken as used here,
+// where Chromium passes it over and applies the gAMA, or does not show the
+// picture.
 const maxICCProfile = 64 << 20
 
 // iccProfileRead is how much of a PNG's ICC profile pngProfileUsable keeps

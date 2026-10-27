@@ -843,13 +843,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   Chromium uses, one that inflates whole, checksum and all, with no preset dictionary, to
   no more than 64 MiB and that skcms, Chromium's colour engine, would take
   (`pngProfileUsable`, which reads it as `skcms_Parse` does short of its lookup tables).
-  An `sRGB` or `iCCP` chunk Chromium cannot read takes nothing's place there, and the
-  `gAMA` beside it is applied; a `cICP` chunk, which Chromium reads before them all, is
-  not read here. `applyPNGGamma` converts the colour samples, never alpha, to the sRGB
-  values that show the same light, at the picture's own depth, before
-  `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored grey ramp to
-  within a level of what Chromium 141 drew for each tag, and has a case for each of those
-  rules and for a profile broken in each way the reading looks for;
+  Chromium's own cut is lower, by more than the compressed chunk: its decoder takes the
+  profile from a 64 MiB budget its own buffers share, which left about 480 KiB less for
+  a 291 KB chunk and 7 to 8 MiB less for a 6.5 MB upload of random bytes, so a profile
+  within that of 64 MiB is taken as used here, where Chromium applies the `gAMA` or does
+  not show the picture (`maxICCProfile`). An `sRGB` or `iCCP` chunk Chromium cannot read
+  takes nothing's place there, and the `gAMA` beside it is applied; a `cICP` chunk, which
+  Chromium reads before them all, is not read here. `applyPNGGamma` converts the colour
+  samples, never alpha, to the sRGB values that show the same light, at the picture's own
+  depth, before `reduceHiddenColour`. `TestPNGGammaIsShownAsBrowsersShowIt` holds a stored
+  grey ramp to within a level of what Chromium 141 drew for each tag, and has a case for
+  each of those rules and for a profile broken in each way the reading looks for;
   `TestPNGGammaConvertsColourOnly` covers every picture type `image/png` decodes to. A
   change there needs the same browser comparison.
 - **Memory.** `MaxPixels` is 25 megapixels, so that the 24-megapixel photos phones and
