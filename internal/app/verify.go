@@ -282,7 +282,11 @@ func (a *App) handleVerifyConfirm(w http.ResponseWriter, r *http.Request) {
 		// day rather than the second, and still outlives the credential it
 		// revokes. The row's transaction id dates it more closely until the
 		// nightly sweep rewrites the table (Store.RewriteCredentials);
-		// credentialDayEnd says why the day ends when it does.
+		// credentialDayEnd says why the day ends when it does. A change to
+		// the lifetime splits the day it is deployed in, as the credentials
+		// issued before and after it get different expiries; the README's
+		// "What that protects, exactly" says what that dates, and when to
+		// deploy one.
 		ExpiresAt: credentialDayEnd(issued).Add(a.cfg.VerifyCredentialTTL),
 	})
 	switch {

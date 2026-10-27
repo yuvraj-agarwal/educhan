@@ -502,10 +502,25 @@ What that protects, exactly:
   to the hours between the deploy and that 05:00, for as long as they are kept.
   A sweep that runs while either set is being issued splits it as it does any
   day's: until the next sweep, its id dates those of the set issued before it to
-  the hours between the start of the set and the sweep. Times autovacuum
-  recorded before migration `0015` stay in the statistics views until the
-  statistics are reset, which takes a superuser. That is the tables, not the
-  database: see the next point.
+  the hours between the start of the set and the sweep. Changing
+  `EDUCHAN_VERIFY_CREDENTIAL_TTL` splits the day it is deployed in the same way.
+  Credentials issued that day before the deploy keep the old lifetime, counted
+  from the day's end, and those issued after it get the new one, so each set has
+  an expiry of its own, which the sweep's one id does not merge: the first are
+  dated to the hours between 05:00 UTC and the deploy, and the second to the
+  hours between the deploy and the next 05:00, until another day's credentials
+  share their expiry. Cut by a whole number of days, the second set shares its
+  expiry from the start with the credentials issued that many days earlier, if
+  there were any, and the first set shares its with those issued that many days
+  later, once there are any; lengthened, or changed by part of a day, neither
+  set ever does, for as long as it is kept. Cloud Run's revision history
+  records when the deploy was. So change it when nobody has verified since
+  05:00 UTC that day: soon after 05:00, once the `verification issued` lines in
+  the server's log show none since then. A credential issued on the old
+  revision while the new one rolls out is still dated to those minutes. Times
+  autovacuum recorded before migration `0015` stay in the statistics views
+  until the statistics are reset, which takes a superuser. That is the tables,
+  not the database: see the next point.
 - **Not the posts' own transaction ids**, which no sweep touches. Every code
   request that reaches the database, and every attempt at a code in flight, is a
   write and takes the next id, so each leaves a gap in the posts' `xmin` between
@@ -993,7 +1008,7 @@ the build needs, and the rest of the walkthrough.
 | `EDUCHAN_MOD_KEY` | empty | Shared secret for the moderation and board management endpoints; unset means they refuse every request |
 | `EDUCHAN_VERIFY_SECRET` | empty | Keys institutional verification: the address hash, the pending code hash, and the credential signature. **Unset switches the whole feature off**; rotating it revokes every credential |
 | `EDUCHAN_VERIFY_CODE_TTL` | `15m` | How long an emailed code stays usable |
-| `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again |
+| `EDUCHAN_VERIFY_CREDENTIAL_TTL` | `4320h` (180 days) | How long a badge lasts before the holder verifies again. Changing it splits the credential day it is deployed in, dating the credentials issued that day before and after the deploy apart ("What that protects, exactly"): deploy a change soon after 05:00 UTC, before anyone has verified that day |
 | `EDUCHAN_VERIFY_COOLDOWN` | `60` (seconds) | Minimum interval between code requests, per client and per address |
 | `EDUCHAN_VERIFY_DOMAINS` | embedded list | Path to an allowlist file replacing the built-in one |
 | `EDUCHAN_MAIL_DEV` | off | Allow the development mail sender, which prints codes and addresses to stdout. Without it the server refuses to start with verification on and no real sender |
