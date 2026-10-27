@@ -4734,6 +4734,18 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	if threatExcused(text, m, cm, ws, next, sentence) {
 		return false
 	}
+	// A part played in a play, said in the plain present: "In our school
+	// play I'm Brutus, so I stab Caesar in act 3", "I'm Burr in our class
+	// play, so I shoot Hamilton every night".
+	if playedPart(text, m[0], ws, wordsIn(sentence)) {
+		return false
+	}
+	// "chem practical tomorrow, i'm gonna blow up the lab lol", as
+	// threatFrame reads it.
+	if (hasWord(ws, "blow") || hasWord(ws, "blowing") || hasWord(ws, "set") || hasWord(ws, "setting")) &&
+		labMishap(ws, wordsIn(sentence), nextWords(sentenceAfter(text, m[1]), 12)) {
+		return false
+	}
 	switch {
 	case threatThere.MatchString(cm):
 		// No game excuses a shooting or a bomb: "there will be a shooting at
@@ -4862,13 +4874,19 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 			is(last, "stabbed") && len(next) > 2 && is(next[0], "in") && is(next[2], "back"),
 			is(last, "killed") && len(next) > 0 && is(next[0], "off"),
 			habitual(sws), anyIn(sws, storyWords), gamesIn(sws),
+			// "our class is getting killed in the test tomorrow": an exam's
+			// hyperbole, with no weapon named.
+			(is(last, "killed") || is(last, "murdered") || is(last, "slaughtered") || is(last, "massacred")) &&
+				schoolHyperbole(sws),
 			destroyed && !anyIn(before, threatPlaceWords),
 			destroyed && is(last, "fire") && anyIn(sws, stageWords),
 			is(first, "gets") && !relative && !anyIn(next[:min(len(next), 4)], soonWords):
 			return true
 		}
 	case is(last, "coming"), hasWord(ws, "pay"):
-		return mine || anyIn(sws, karmaWords)
+		// "everyone who bullied me will pay": the "me" of a relative clause
+		// is not who pays.
+		return mine && !relative || anyIn(sws, karmaWords)
 	case hasWord(ws, "with") && (hasWord(ws, "end") || hasWord(ws, "ends")):
 		return anyIn(ws, firstPerson) || anyIn(sws, storyWords) || len(next) > 0 && endsWithErrand[next[0]]
 	case is(last, "alive"):
@@ -5239,6 +5257,12 @@ func passiveSubject(before []string) (mine, yours bool) {
 		return true, false
 	case secondPerson[before[k]] || secondPerson[head]:
 		return false, true
+	}
+	// "my phone is getting smashed" is said of the poster's things; "our
+	// school is getting bombed" and "our principal is getting killed" of a
+	// place or a person that is a target whoever owns it.
+	if kind := headKind(head); kind == nounPlace || kind == nounVehicle || kind == nounPerson {
+		return false, false
 	}
 	for j := k - 1; j >= max(0, k-2); j-- {
 		if is(before[j], "my") || is(before[j], "our") {
@@ -6348,6 +6372,9 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		if np := noun(i); np.kind != nounNone || i >= len(ws) {
 			return np
 		}
+		if n := titledName(ws[i:]); n > 0 {
+			return nounPhrase{kind: nounPerson, head: ws[i], n: i + n}
+		}
 		a, b := v.span(at+sp[i][0], at+sp[i][1])
 		name := f.src[a:b]
 		r, _ := utf8.DecodeRuneInString(name)
@@ -6367,6 +6394,13 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			}
 		}
 		return 0, false
+	}
+	// labJoke reports a lab, read as np from word start, blown up, set on
+	// fire or lit up by a mistake at the bench (labMishap), with the words
+	// from end on read for what it is done with.
+	labJoke := func(np nounPhrase, start, end int) bool {
+		return labHeads[np.head] && labMishap(ws[start:min(np.n, len(ws))],
+			wordsIn(sentenceAround(v.text, at, at+len(after))), ws[min(end, len(ws)):])
 	}
 	switch verb {
 	case "kill", "murder", "massacre", "slaughter", "hurt", "injure", "harm", "maim", "attack", "assault", "jump":
@@ -6460,6 +6494,23 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 				return act(w.n)
 			}
 		default:
+			// "I'll hit you tomorrow after school with the details" and "hmu
+			// tmrw, ill hit u after school" are a message.
+			for k := np.n; k+1 < len(ws); k++ {
+				if is(ws[k], "with") {
+					j := k + 1
+					for j < len(ws) && determiners[ws[j]] {
+						j++
+					}
+					if j < len(ws) && messageWords[ws[j]] {
+						return 0, false, false
+					}
+					break
+				}
+			}
+			if anyIn(wordsIn(sentenceAround(v.text, at, at+len(after))), hitMeUp) {
+				return 0, false, false
+			}
 			return act(np.n)
 		}
 	case "punch", "slap", "smack", "batter", "thrash", "kick", "knock", "bash", "whoop":
@@ -6587,15 +6638,15 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			return act(np.n + 1)
 		}
 	case "blow":
-		if np := noun(1); word(0, "up") && np.place() && !np.mine {
+		if np := noun(1); word(0, "up") && np.place() && !np.mine && !labJoke(np, 1, np.n) {
 			return act(np.n)
 		}
-		if np := noun(0); np.place() && !np.mine && word(np.n, "up") {
+		if np := noun(0); np.place() && !np.mine && word(np.n, "up") && !labJoke(np, 0, np.n+1) {
 			return act(np.n + 1)
 		}
 	case "set":
 		if word(0, "fire") && word(1, "to") {
-			if np := object(2); np.place() || np.people(true) {
+			if np := object(2); np.place() && !labJoke(np, 2, np.n) || np.people(true) {
 				return act(np.n)
 			}
 		}
@@ -6606,7 +6657,7 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 				break
 			}
 		}
-		if word(np.n, "on") && word(np.n+1, "fire") || word(np.n, "alight", "ablaze") {
+		if (word(np.n, "on") && word(np.n+1, "fire") || word(np.n, "alight", "ablaze")) && !labJoke(np, 0, np.n+1) {
 			return act(np.n + 2)
 		}
 	case "start", "light":
@@ -6631,11 +6682,11 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		// wornClothes). "With petrol", "with them inside", or a fuel
 		// anywhere in the sentence (fuelWords) still counts, whatever else
 		// the sentence says.
-		np, end := noun(0), 0
+		np, start, end := noun(0), 0, 0
 		if np.place() && word(np.n, "up") {
 			end = np.n + 1
 		} else if np = noun(1); word(0, "up") && np.place() {
-			end = np.n
+			start, end = 1, np.n
 		} else {
 			break
 		}
@@ -6662,7 +6713,7 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 				return 0, false, false
 			}
 		}
-		if labHeads[np.head] && anyIn(sentence, experimentWords) {
+		if labJoke(np, start, end) {
 			return 0, false, false
 		}
 		return act(end)
@@ -6757,6 +6808,117 @@ var (
 		test vaccine vaccination physio physiotherapy dialysis delivery`)
 )
 
+// hitMeUp, "hit me up" in a sentence with "hit you", makes it a message:
+// "hmu tmrw, ill hit u after school".
+var hitMeUp = canonSetOf(`hmu`)
+
+// titledName reports how many words of the start of ws are a person by name
+// and title, a teacher as often: "Mr Sharma", "Dr Rao", "Sharma sir",
+// "Gupta ma'am"; 0 when they are not. The name is a word of letters alone,
+// so "Mr Sharma's argument" names no person but what is his.
+func titledName(ws []string) int {
+	name := func(w string) bool {
+		if n := utf8.RuneCountInString(w); n < 2 || n > 20 || notANameTarget[w] {
+			return false
+		}
+		for _, r := range w {
+			if !unicode.IsLetter(r) {
+				return false
+			}
+		}
+		return true
+	}
+	switch {
+	case len(ws) > 1 && nameTitles[ws[0]] && name(ws[1]):
+		return 2
+	case len(ws) > 1 && name(ws[0]) && !nameTitles[ws[0]] && titlesAfter[ws[1]] && !rolePeople[ws[0]] &&
+		!kinPeople[ws[0]] && headKind(ws[0]) == nounNone:
+		return 2
+	}
+	return 0
+}
+
+var (
+	// nameTitles come before a name, titlesAfter after one: "Mr Sharma",
+	// "Sharma sir".
+	nameTitles  = canonSetOf(`mr mrs ms miss dr mister`)
+	titlesAfter = canonSetOf(`sir maam ma'am madam mam`)
+)
+
+// playedPart reports an act said in the plain present, "I stab" or "we
+// shoot" with nothing between the subject and the verb (ws, the match, at
+// offset at of text, opens on one or the other), in a sentence, or after 160
+// bytes, that name a play or a part in one (namesAPlay), and in a sentence
+// that names no harm outright (explicitHarm): "In
+// the school play I'm Brutus and I stab Caesar", not "I'm going to stab him
+// after the school play" or "I shoot Rahul at school tomorrow".
+func playedPart(text string, at int, ws, sentence []string) bool {
+	plain := len(ws) > 1 && (is(ws[0], "i") || is(ws[0], "we")) && plainActs[ws[1]]
+	if !plain && len(ws) > 0 && plainActs[ws[0]] {
+		if prev := wordsBefore(text, at, 1); len(prev) == 1 && (is(prev[0], "i") || is(prev[0], "we")) {
+			plain = true
+		}
+	}
+	return plain && (namesAPlay(sentence) || namesAPlay(wordsIn(text[max(0, at-160):at]))) && !explicitHarm(sentence)
+}
+
+// namesAPlay reports a play, a musical or a part in one in ws: one of
+// playNouns, or "play" after a word that makes it a noun ("the school play",
+// "our play"), so "then we play football" is none.
+func namesAPlay(ws []string) bool {
+	for i, w := range ws {
+		if playNouns[w] || is(w, "play") && i > 0 && playLeads[ws[i-1]] {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	// plainActs are the acts a part in a play has the actor say in the
+	// plain present: "I shoot Hamilton every night".
+	plainActs = canonSetOf(`shoot stab kill murder poison strangle hang behead slap punch hit attack`)
+	playNouns = canonSetOf(`musical musicals drama dramas skit skits role roles character characters scene scenes
+		rehearsal rehearsals theatre theater pantomime panto nativity script production`)
+	playLeads = canonSetOf(`the a our this that school class annual house drama college my their`)
+)
+
+// labMishap reports a lab, named in the words named, blown up, set on fire
+// or lit up by a mistake at the bench: in a sentence of an experiment or of
+// lab kit (experimentWords, labKit, not counting the lab's own name), "chem
+// practical tomorrow, i'm gonna blow up the lab lol", "if I mix the wrong
+// chemicals I'll blow up the whole lab". A fuel or harm named in the
+// sentence (fuelWords, explicitHarm), or a fuel, a weapon or people after
+// "with" in the words after it ("with everyone in it", "with a pipe bomb"),
+// still counts, and so does "blow up the chem lab tomorrow".
+func labMishap(named, sentence, after []string) bool {
+	if !anyIn(named, labHeads) || anyIn(sentence, fuelWords) || explicitHarm(sentence) {
+		return false
+	}
+	kit := 0
+	for _, w := range sentence {
+		if labKit[w] {
+			kit++
+		}
+	}
+	for _, w := range named {
+		if labKit[w] {
+			kit--
+		}
+	}
+	if !anyIn(sentence, experimentWords) && kit <= 0 {
+		return false
+	}
+	for k, w := range after {
+		if is(w, "with") {
+			if np := readNoun(after[k+1:]); np.kind == nounFuel || np.kind == nounWeapon || np.people(true) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // shootingRange reports a range for shooting in ws: "the shooting range".
 func shootingRange(ws []string) bool {
 	for i, w := range ws {
@@ -6786,6 +6948,11 @@ var (
 	labHeads        = canonSetOf(`lab labs laboratory laboratories`)
 	experimentWords = canonSetOf(`experiment experiments practical practicals demo demonstration reaction fair expo
 		exhibition`)
+	// labKit, in a sentence with a lab and outside the lab's own name, make
+	// it one blown up or set on fire by a mistake at the bench: "in chem
+	// tomorrow", "the wrong chemicals", "a bunsen burner", "knowing my luck".
+	labKit = canonSetOf(`chem chemistry physics bio biology science titration bunsen burner burners chemicals
+		chemical beaker beakers flask flasks pipette burette reagent reagents mixing mix luck clumsy accidentally`)
 	clothesWords = canonSetOf(`outfit outfits fit fits drip jacket jackets dress dresses saree sarees sari
 		lehenga kurta kurti suit blazer hoodie sneakers shoes heels`)
 	wornOwners = canonSetOf(`my our his her their`)
@@ -7007,6 +7174,75 @@ func (f *scannedField) threatComingCheck(v *view, m []int) bool {
 	return f.threatCheck(v, m)
 }
 
+// explodeRuns are a place said to be about to explode, read as
+// threatComingRules are and put to threatComingCheck, which takes the
+// excuses of "blow up" for them: "the school will explode tomorrow", not "my
+// volcano will explode at the science fair" or "the stadium will explode
+// with noise on monday".
+var explodeRuns = runsOf(`will|wil|gonna|gunna finally|definitely|literally|actually|just? explode`,
+	`is|are going|gonna to? finally|definitely|literally|actually|just? explode`)
+
+// payRuns are a reckoning promised, "will pay", "gonna pay", "they'll
+// finally pay", put to payCheck.
+var payRuns = runsOf(`will|wil|gonna|gunna all|finally|definitely|really|surely|literally? pay`,
+	`going to all|finally|definitely|really|surely|literally? pay`,
+	`they'll|you'll|u'll|y'all'll|he'll|she'll|everyone'll all|finally|definitely|really|surely|literally? pay`)
+
+// payCheck reads "will pay" (payRuns) as a reckoning promised: from a group
+// picked out by who it is ("everyone who bullied me", "the people who bullied
+// me", "10B") or said to the reader ("you will pay tomorrow after school"),
+// or from them all or at last ("they will all pay", "they'll finally pay"),
+// with nothing paid after it but "for it" or "for this": "they will all pay
+// tomorrow at school", "10B will pay for it on monday". Money, a fee, a bill,
+// a treat or attention paid ("will pay for the trip", "will pay 500 rs",
+// "will pay attention"), the poster's own group ("we will pay"), and what
+// threatCheck turns down, are no threat.
+func (f *scannedField) payCheck(v *view, m []int) bool {
+	text := v.text
+	ws := wordsIn(text[m[0]:m[1]])
+	if len(ws) < 2 {
+		return false
+	}
+	next := nextWords(clauseAfter(text, m[1]), 8)
+	if len(next) > 1 && is(next[0], "for") && payForWhat[next[1]] {
+		next = next[2:]
+	}
+	if len(next) > 0 && !payTails[next[0]] {
+		return false
+	}
+	if anyIn(wordsIn(sentenceAround(text, m[0], m[1])), moneyWords) {
+		return false
+	}
+	reckoning := hasWord(ws, "all") || hasWord(ws, "finally")
+	if j := strings.Index(ws[0], "'"); j > 0 {
+		who := ws[0][:j]
+		return (is(who, "you") || is(who, "u") || is(who, "y'all") || is(who, "everyone") || reckoning) &&
+			f.threatCheck(v, m)
+	}
+	subject := threatSubject(text, m[0])
+	switch {
+	case subject.mine || !subject.people(false):
+		return false
+	case subject.pronoun && (is(subject.head, "you") || is(subject.head, "u")),
+		subject.picked, subject.quantified, reckoning:
+		return f.threatCheck(v, m)
+	}
+	return false
+}
+
+var (
+	// payForWhat, after "pay for", are what a reckoning is for: "pay for
+	// it", "pay for this".
+	payForWhat = canonSetOf(`it this that what everything all`)
+	// payTails may follow a reckoning promised: a time or a place, or
+	// nothing: "will pay tomorrow", "will pay on monday, just wait".
+	payTails = canonSetOf(`tomorrow tmrw tmr today tonight soon on at after in this next when just mark trust
+		monday tuesday wednesday thursday friday saturday sunday morning evening dearly big time`)
+	// moneyWords, in the sentence, make paying a payment.
+	moneyWords = canonSetOf(`rs rupees inr dollars bucks cash fee fees money bill bills upi gpay paytm card online
+		price amount rent fine deposit ticket tickets treat`)
+)
+
 // prognosis reports an illness, a hospital or a leaving in sentence or just
 // after offset i of text, which make "my grandpa won't see monday" or "our
 // coach won't see monday" a prognosis or a goodbye. The poster's family is
@@ -7043,7 +7279,7 @@ var (
 		notebooks checking result results marks grades report card ptm classes periods lectures lessons`)
 	// ruinWords are what threatComingRules say happens to a place, and
 	// notRuin what makes it a celebration: "blow up with cheers".
-	ruinWords = canonSetOf(`burn burned burnt blow blown blows bombed torched flames fire`)
+	ruinWords = canonSetOf(`burn burned burnt blow blown blows bombed torched flames fire explode`)
 	notRuin   = canonSetOf(`laughter excitement joy cheers cheering noise energy hype love`)
 	// subjectFillers open a clause without being part of its subject.
 	subjectFillers = canonSetOf(`so and but ok okay lol bro yeah yes well also then now just tbh fr ngl honestly
@@ -8750,12 +8986,32 @@ func runsOf(srcs ...string) checkedRuns {
 // anyMatch does for a rule. Each word a run may start at is charged the
 // run's steps, and each run found a check and its length.
 func (f *scannedField) anyRun(at checkedRuns, check matchCheck) bool {
+	return f.anyRunNear(at, check, nil, 0)
+}
+
+// anyRunNear is anyRun for the runs within w reading positions of one of
+// spans, as anyNear is anyMatch's; with no spans it reads every run.
+func (f *scannedField) anyRunNear(at checkedRuns, check matchCheck, spans *nearSpans, w int) bool {
 	v := &f.plain
 	r := f.wordReading()
-	for i, w := range r.ws {
-		for _, run := range at[w] {
+	var pos []int32
+	if spans != nil {
+		pos = f.readingPositions()
+	}
+	for i, word := range r.ws {
+		for _, run := range at[word] {
 			v.work += len(run)
-			if hi := run.match(r.ws, i, r.sentenceEnd[i]); hi > i && v.checked(check, []int{r.sp[i][0], r.sp[hi-1][1]}) {
+			hi := run.match(r.ws, i, r.sentenceEnd[i])
+			if hi <= i {
+				continue
+			}
+			m := []int{r.sp[i][0], r.sp[hi-1][1]}
+			if spans != nil {
+				if a, b := v.span(m[0], m[1]); !spans.near([2]int{int(pos[a]) + f.offset, int(pos[b]) + f.offset}, w) {
+					continue
+				}
+			}
+			if v.checked(check, m) {
 				return true
 			}
 		}
@@ -9623,7 +9879,24 @@ func threatens(fields []*scannedField) bool {
 		return func(*scannedField) matchCheck { return check }
 	}
 	of := func(rules []rule) func() nearSpans { return func() nearSpans { return spansOf(rules) } }
+	// pairRuns is pair for runs read in Go (checkedRuns).
+	pairRuns := func(at checkedRuns, check func(f *scannedField) matchCheck) bool {
+		b := placesAndTimes()
+		if len(b.s) == 0 {
+			return false
+		}
+		for _, f := range fields {
+			c := check(f)
+			own := func(v *view, m []int) bool { return !v.reported(m) && c(v, m) }
+			if f.anyRunNear(at, own, &b, threatWindow) {
+				return true
+			}
+		}
+		return false
+	}
 	return pair(threatIntentRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatCheck }, threatWindow) ||
+		pairRuns(payRuns, func(f *scannedField) matchCheck { return f.payCheck }) ||
+		pairRuns(explodeRuns, func(f *scannedField) matchCheck { return f.threatComingCheck }) ||
 		pair(namedTargetRules, placesAndTimes, func(f *scannedField) matchCheck { return f.namedTargetCheck }, threatWindow) ||
 		pair(threatFrameRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatFrameCheck }, threatWindow) ||
 		pair(threatComingRules, placesAndTimes, func(f *scannedField) matchCheck { return f.threatComingCheck }, threatWindow) ||
@@ -12274,8 +12547,9 @@ func quoteSpeaker(text string, open, end int) speaker {
 		}
 		// "'…' he said", "'…' was what my mum said"; or, put after the
 		// verb, "'…' said my mum", "'…' said I". A passive's subject is
-		// who it was said to: "'…' - you have been warned".
-		passive := k > 0 && passiveLeads[bare(after[k-1])]
+		// who it was said to: "'…' - you have been warned". "Been" or "is"
+		// before an -ing form is no passive: "'…' he's been texting me".
+		passive := k > 0 && passiveLeads[bare(after[k-1])] && participles[w]
 		if who := labelSpeaker(after[:k], true); who != noSpeaker && !passive {
 			return who
 		}
