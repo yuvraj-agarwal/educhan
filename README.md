@@ -410,22 +410,23 @@ here all send it. The page stops any collection under way and drops its nonce
 before it does, and starts none until the server has the request, so a claim
 cannot collect what is being dropped. The browser's other tabs do the same:
 while the request is on its way the page keeps a mark in `localStorage`
-(`educhan:pass-forget:` and a random token, a mark for each forget, holding the
-time it was set), and a tab that sees one appear, or finds one when it is opened
-or brought back from the back-forward cache, stops as the tab it was pressed in
-did, one brought back dropping what it held when it was left, and starts nothing
-until each such mark goes, or for 30 seconds at most, in case the tab that set
-it was closed first, counted from the time the mark holds; it then draws the
-Pass page if it is open, and a tab opened on an older mark removes it. An answer
-to a claim already on its way, in any tab, when one of them is pressed is
-dropped without being stored or shown; a Pass it brought is still the buyer's,
-and a reissue code from its payment gives it a new code. A checkout still on its
-way then is called off, or not followed to Stripe once it answers, and keeps no
-claim past the forget (below). Remove the Pass and Forget this browser go
-further, in every tab: they also drop a reissue code's nonce, and an answer on
-its way to a reissue code or to a check of a Pass code, until the server has the
-request. Stop collecting it here leaves those alone, since it is about a
-checkout, and a reissue it dropped would be spent with nothing to show for it.
+(`educhan:pass-forget:` and a random token, a mark for each forget, holding
+which of them was pressed and the time it was set), and a tab that sees one
+appear, or finds one when it is opened or brought back from the back-forward
+cache, stops as the tab it was pressed in did, one brought back dropping what it
+held when it was left, and starts nothing until each such mark goes, or for 30
+seconds at most, in case the tab that set it was closed first, counted from the
+time the mark holds; it then draws the Pass page if it is open, and a tab opened
+on an older mark removes it. An answer to a claim already on its way, in any
+tab, when one of them is pressed is dropped without being stored or shown; a
+Pass it brought is still the buyer's, and a reissue code from its payment gives
+it a new code. A checkout still on its way then is called off, or not followed
+to Stripe once it answers, and keeps no claim past the forget (below). Remove
+the Pass and Forget this browser go further, in every tab: they also drop a
+reissue code's nonce, and an answer on its way to a reissue code or to a check
+of a Pass code, until the server has the request. Stop collecting it here leaves
+those alone, since it is about a checkout, and a reissue it dropped would be
+spent with nothing to show for it.
 
 A page on another subdomain of the same site can set a cookie of the same name
 for the whole site, at a path the browser sends ahead of the server's own, to
@@ -455,21 +456,28 @@ and clearing would clear that one. So the cookie of a claim dropped this way can
 stay in the browser, with nothing under it, until another checkout replaces it,
 Remove the Pass, Forget this browser or Stop collecting it here clears it, or it
 runs out. If educhan cannot be reached to drop it, the tab says so on whatever
-page it is on. The name is kept in memory for that one request and nowhere else,
-and the drop sets no mark and stops nothing in any tab, since it reaches no
-other claim. Every checkout's answer puts its cookie in the place of the one
-before, whichever checkout started first, so the browser's checkouts go one at a
-time: while one is on its way its tab keeps a mark in `localStorage`
-(`educhan:pass-checkout:` and a random token, holding the time it was set), and
-a checkout waits to go until no other's mark is left, in any tab, each for 30
-seconds at most from the time it holds. A tab that leaves educhan, for another
-site say, calls off a checkout not yet answered and takes its mark off. A
-checkout whose answer reaches its tab in the moment before that tab hears of a
-forget pressed in another is followed to Stripe, as one answered before it, and
-keeps its claim unless its cookie was already in the browser when that forget's
-request went. Every other checkout answered after a forget pressed since its
-request went keeps no claim past it, and a checkout pressed after the forget
-holds the cookie and is never dropped for it.
+page it is on, and says how to drop it once back online with no more than the
+forget that was pressed: Stop collecting it here again after a Stop, Stop
+collecting it here after Remove the Pass, which leaves no Pass to remove, and
+Forget this browser again after a Forget. The name is kept in memory for that
+one request and nowhere else, and the drop sets no mark and stops nothing in any
+tab, since it reaches no other claim. Every checkout's answer puts its cookie in
+the place of the one before, whichever checkout started first, so the browser's
+checkouts go one at a time: while one is on its way its tab keeps a mark in
+`localStorage` (`educhan:pass-checkout:` and a random token, holding the time it
+was set), and a checkout waits to go until no other's mark is left, in any tab,
+each for 30 seconds at most from the time it holds. A tab that leaves educhan,
+for another site say, calls off a checkout not yet answered and takes its mark
+off, and a press still waiting to go then (Buy, Renew, a code or Check it again)
+sends nothing. A mark left by a tab that crashed or was killed before its answer
+is taken off once its 30 seconds are over, by the next page to load, and Forget
+this browser takes every mark off; a tab whose checkout is still on its way puts
+its own back. A checkout whose answer reaches its tab in the moment before that
+tab hears of a forget pressed in another is followed to Stripe, as one answered
+before it, and keeps its claim unless its cookie was already in the browser when
+that forget's request went. Every other checkout answered after a forget pressed
+since its request went keeps no claim past it, and a checkout pressed after the
+forget holds the cookie and is never dropped for it.
 
 An order nobody paid for goes at its deadline, or as soon as Stripe reports
 its checkout expired or its payment failed, or reports it paid with a payment
@@ -972,13 +980,13 @@ not-found view.
   anything else. A badged post sends the credential instead, never both. The Name field
   remembers the last unbadged post's name; ticking the badge empties it, because a
   tripcode on both kinds of post would tie them together. **Forget this browser** on
-  `/verify` drops the key, the name, any badge and any Pass, any Pass purchase still
-  being collected and any note that a Pass was found gone, for a shared computer. The
-  browser's other tabs follow it for the Pass and what goes with it (the purchase being
-  collected, the code box and that note, though a code copied in one of them stays on
-  the clipboard), but a tab already open can keep the key, the name and the badge it
-  has, and a post from it puts the key and the name back in storage, so the Verify page
-  and the FAQ say to close those tabs first.
+  `/verify` drops the key, the name, any badge and any Pass, any Pass purchase still being
+  collected, the marks of checkouts started here and any note that a Pass was found gone,
+  for a shared computer. The browser's other tabs follow it for the Pass and what goes
+  with it (the purchase being collected, the code box and that note, though a code copied
+  in one of them stays on the clipboard), but a tab already open can keep the key, the
+  name and the badge it has, and a post from it puts the key and the name back in storage,
+  so the Verify page and the FAQ say to close those tabs first.
 - **educhan Pass**: the header links to `/pass` only once `GET /api/site` says the server
   has the Pass, on sale or paused, or while this browser holds one, so a holder can still
   show or remove it. `/pass` says what a Pass does and what it costs (with "tax included"
@@ -1056,21 +1064,27 @@ not-found view.
   they wait, in this tab or another, they send nothing, give the button back and say why,
   and only a press made after the Remove goes. They do the same, saying that the browser
   stopped collecting a Pass first, when Stop is pressed meanwhile in another tab, whose
-  Stop is on only once that tab has given up waiting on the request. Remove and Forget
-  also empty the clipboard, whatever is on it by then, when the code was copied with
-  **Copy the code** in the same tab since educhan was last opened there and no copy or cut
-  in that tab has certainly put something there since, unless another tab has removed or
-  replaced the Pass meanwhile. A copy counts when what is selected holds something (a text
-  box's own selection where the box says, the document's for an email or number box, and
-  otherwise text the page itself has selected), and a cut only that way and in a box that
-  can be typed in, or in editable text; one the page cannot be sure of, such as a copy
-  from an email box in some browsers, does not count, so the clipboard is emptied after it
-  too. A code copied any other way, by hand included, stays until something else is
-  copied. Removing the Pass, or forgetting the browser, in another tab takes a code just
-  handed over off this tab's screen. A post whose Pass was no good goes out like any
-  other, and its answer says so: the page forgets an unknown Pass, keeps one that ran out
-  to renew, and says the post was sent. - **Phones**: a single fluid column with the
-  catalog at two tiles across, thumbnails that
+  Stop is on only once that tab has given up waiting on the request, and a Buy or a Renew
+  still waiting on another checkout does so too when Stop is pressed while it waits, in
+  this tab or another. A press still waiting when the tab leaves educhan sends nothing and
+  gives its button back without a word, so a page brought back from the back-forward cache
+  has it ready. Remove and Forget also empty the clipboard, whatever is on it by then,
+  when the code was copied with **Copy the code** in the same tab since educhan was last
+  opened there and no copy or cut in that tab has certainly put something there since,
+  unless another tab has removed or replaced the Pass meanwhile. A copy counts when what
+  is selected holds something (a text box's own selection where the box says, the
+  document's for an email or number box, and otherwise text the page itself has selected),
+  and a cut only that way and in a box that can be typed in, or in editable text; one the
+  page cannot be sure of, such as a copy from an email box in some browsers, does not
+  count, so the clipboard is emptied after it too. A code copied any other way, by hand
+  included, stays until something else is copied. Removing the Pass, or forgetting the
+  browser, in another tab takes a code just handed over off this tab's screen. A post
+  whose Pass was no good goes out like any other, and its answer says so: the page forgets
+  an unknown Pass, keeps one that ran out to renew, and says the post was sent. A notice a
+  press on the Pass page raises, a refusal say, is brought into view when it is out of
+  view, as it is on a phone, where the forms sit far below the notice; focus stays where
+  the press put it.
+- **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
   landmarks that match the layout, live-region announcements for client-side navigation,

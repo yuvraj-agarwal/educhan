@@ -331,6 +331,10 @@ main[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s ease 0.15s; }
   border-radius: var(--radius);
   color: var(--danger);
   font-size: 14px;
+  /* The notice sits just under the sticky header, at the top of the page, so
+     one the Pass page brings into view takes the page to its top, clear of the
+     header at any width. */
+  scroll-margin-top: 160px;
 }
 
 .notice[hidden] { display: none; }
