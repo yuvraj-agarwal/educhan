@@ -378,6 +378,40 @@ func TestPassStatus(t *testing.T) {
 	}
 }
 
+// TestPassPriceCarriesStripesExponent holds the price GET /api/pass sends to
+// Stripe's own amount beside the exponent Stripe keeps it in, from Stripe's
+// table and not the browser's: none for JPY, three for BHD, and two for ISK
+// and UGX, which Stripe still writes in hundredths though the browser gives
+// them no decimals, as for USD. So the page shows 3,000 ISK, not 300,000.
+func TestPassPriceCarriesStripesExponent(t *testing.T) {
+	p := passServer(t, nil)
+	for _, tc := range []struct {
+		currency string
+		amount   int64
+		exponent int
+	}{
+		{"usd", 2000, 2},
+		{"jpy", 3000, 0},
+		{"isk", 300000, 2},
+		{"ugx", 7500000, 2},
+		{"bhd", 7500, 3},
+		{"HUF", 800000, 2},
+	} {
+		p.stripe.mu.Lock()
+		p.stripe.price["currency"], p.stripe.price["unit_amount"] = tc.currency, tc.amount
+		p.stripe.mu.Unlock()
+		p.app.pass.priceMu.Lock()
+		p.app.pass.priceFetchedAt = time.Time{}
+		p.app.pass.priceMu.Unlock()
+		var status map[string]any
+		p.get("/api/pass", &status)
+		want := map[string]any{"amount": float64(tc.amount), "currency": strings.ToLower(tc.currency), "exponent": float64(tc.exponent)}
+		if got, _ := status["price"].(map[string]any); !maps.Equal(got, want) {
+			t.Errorf("GET /api/pass for %s: price %v, want %v", tc.currency, status["price"], want)
+		}
+	}
+}
+
 // TestPassStatusSurvivesStripeTrouble holds GET /api/pass to offering the Pass
 // without its price when Stripe can't be asked for it, refuses the request for
 // the Price, or answers with a Price the Pass can't be sold at: archived,
@@ -461,10 +495,11 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 			if priced != sold || said != (tc.word != "") || said && tax != tc.word {
 				t.Fatalf("GET /api/pass: %v; want the price %t and the tax %q", status, sold, tc.word)
 			}
-			// The price is its amount and currency alone: what the Price says
-			// of tax goes out as "tax", in the server's words, or not at all.
-			if got, _ := status["price"].(map[string]any); sold && !maps.Equal(got, map[string]any{"amount": float64(2000), "currency": "usd"}) {
-				t.Fatalf("GET /api/pass price: %v; want the amount and the currency alone", status["price"])
+			// The price is its amount, currency and exponent alone: what the
+			// Price says of tax goes out as "tax", in the server's words, or
+			// not at all.
+			if got, _ := status["price"].(map[string]any); sold && !maps.Equal(got, map[string]any{"amount": float64(2000), "currency": "usd", "exponent": float64(2)}) {
+				t.Fatalf("GET /api/pass price: %v; want the amount, the currency and its exponent alone", status["price"])
 			}
 
 			var out passResponse

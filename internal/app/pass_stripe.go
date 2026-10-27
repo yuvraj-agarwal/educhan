@@ -130,14 +130,41 @@ func isStripeCheckoutURL(raw string) bool {
 	return err == nil && u.Scheme == "https" && u.Host == stripeCheckoutHost && u.User == nil
 }
 
-// passPrice is what the Pass page shows before anyone clicks: the amount in
-// the currency's smallest unit, as Stripe keeps it, and the currency code.
-// TaxBehavior is the Price's own word on tax, which GET /api/pass passes on
-// as passTaxWords has it.
+// passPrice is what the Pass page shows before anyone clicks: the amount as
+// Stripe keeps it, a whole number of the currency's smallest unit; the
+// currency code; and Exponent, the decimals that unit stands for in Stripe's
+// own table (stripeExponent), so the page shows Amount / 10^Exponent. The page
+// cannot take the decimals from the browser's table of currencies instead:
+// Stripe keeps ISK and UGX in hundredths, for one, where the browser's has
+// them whole. TaxBehavior is the Price's own word on tax, which GET /api/pass
+// passes on as passTaxWords has it.
 type passPrice struct {
 	Amount      int64  `json:"amount"`
 	Currency    string `json:"currency"`
+	Exponent    int    `json:"exponent"`
 	TaxBehavior string `json:"-"`
+}
+
+// stripeDecimals is how many decimals Stripe's amounts carry in each currency
+// that does not have two, after Stripe's page on currencies
+// (docs.stripe.com/currencies): none in its zero-decimal currencies, and three
+// in its three-decimal ones. UGX is on the zero-decimal list and ISK has gone
+// the same way, but Stripe still writes both in hundredths, ending in 00, so
+// 5 ISK is 500, and both are left out here. Every other currency, HUF and TWD
+// among them, is in hundredths too.
+var stripeDecimals = map[string]int{
+	"bif": 0, "clp": 0, "djf": 0, "gnf": 0, "jpy": 0, "kmf": 0, "krw": 0, "mga": 0,
+	"pyg": 0, "rwf": 0, "vnd": 0, "vuv": 0, "xaf": 0, "xof": 0, "xpf": 0,
+	"bhd": 3, "jod": 3, "kwd": 3, "omr": 3, "tnd": 3,
+}
+
+// stripeExponent is how many decimals Stripe's amounts carry in currency, a
+// lower-case code: two, unless stripeDecimals says otherwise.
+func stripeExponent(currency string) int {
+	if n, ok := stripeDecimals[currency]; ok {
+		return n
+	}
+	return 2
 }
 
 // passTaxWords is what GET /api/pass says of tax while Stripe Tax is on, by
@@ -203,7 +230,8 @@ func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	case c.tax && passTaxWords[p.TaxBehavior] == "":
 		return passPrice{}, errPassPriceTax
 	}
-	return passPrice{Amount: *p.UnitAmount, Currency: strings.ToLower(p.Currency), TaxBehavior: p.TaxBehavior}, nil
+	currency := strings.ToLower(p.Currency)
+	return passPrice{Amount: *p.UnitAmount, Currency: currency, Exponent: stripeExponent(currency), TaxBehavior: p.TaxBehavior}, nil
 }
 
 // stripeStatusError is an API request Stripe answered with an error status,
