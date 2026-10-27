@@ -2019,19 +2019,39 @@ func TestPassReissue(t *testing.T) {
 		t.Fatalf("an order collected through a reissue code could be collected again: status %d", status)
 	}
 
-	// A refund cancels a reissue code not yet used, and a refunded payment
-	// gets none.
-	refunded := p.buy("pi_refunded_after_reissue")
-	_, _, code = p.reissueCode("mod-key", "pi_refunded_after_reissue")
-	p.refund("pi_refunded_after_reissue")
-	if status, _ := buyer.redeem(code); status != http.StatusForbidden {
-		t.Fatalf("a reissue code for a refunded payment still works: status %d", status)
-	}
-	if status, _, _ := p.reissueCode("mod-key", "pi_refunded_after_reissue"); status != http.StatusNotFound {
-		t.Fatalf("a reissue code for a refunded payment: status %d", status)
-	}
-	if status, _ := p.activate(refunded.Pass); status != http.StatusForbidden {
-		t.Fatalf("a refunded Pass works: status %d", status)
+	// A refund or a dispute cancels a reissue code not yet used: its row goes
+	// with the payment, rather than waiting out its deadline, and the code
+	// gives nothing. A refunded or disputed payment gets none.
+	for _, revoke := range []struct {
+		name, event string
+		object      map[string]any
+	}{
+		{"refund", stripeChargeRefunded, map[string]any{"object": "charge", "refunded": true}},
+		{"dispute", stripeDisputeCreated, map[string]any{"object": "dispute"}},
+	} {
+		pi := "pi_" + revoke.name + "_after_reissue"
+		revoked := p.buy(pi)
+		_, _, code = p.reissueCode("mod-key", pi)
+		payment := p.app.passPaymentHash(pi)
+		if n := p.rowsContaining("pass_reissues", payment); n != 1 {
+			t.Fatalf("the reissue code made before the %s is in %d pass_reissues rows, want 1", revoke.name, n)
+		}
+		revoke.object["payment_intent"] = pi
+		if status := p.webhook(revoke.event, revoke.object); status != http.StatusOK {
+			t.Fatalf("%s webhook: status %d", revoke.name, status)
+		}
+		if n := p.rowsContaining("pass_reissues", payment); n != 0 {
+			t.Errorf("the %s left the payment's reissue code in %d pass_reissues rows", revoke.name, n)
+		}
+		if status, _ := buyer.redeem(code); status != http.StatusForbidden {
+			t.Fatalf("a reissue code for a payment after a %s still works: status %d", revoke.name, status)
+		}
+		if status, _, _ := p.reissueCode("mod-key", pi); status != http.StatusNotFound {
+			t.Fatalf("a reissue code for a payment after a %s: status %d", revoke.name, status)
+		}
+		if status, _ := p.activate(revoked.Pass); status != http.StatusForbidden {
+			t.Fatalf("a Pass works after a %s: status %d", revoke.name, status)
+		}
 	}
 }
 
