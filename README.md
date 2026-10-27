@@ -1073,14 +1073,16 @@ not-found view.
   until it is renewed, as it came or once a post's answer says so; or, once another code
   has taken its place, typed in here or stored in another tab, or the browser's data has
   been cleared, that the browser no longer has it and it won't be shown again once the
-  reader leaves the page, so they can write it down first. Buy is offered whenever the
-  browser holds no Pass, even beside such a code. A browser that will not store a code is
-  told so, and that it won't be shown again once the reader leaves the page. A code
-  educhan finds no longer valid as the Pass held here, answering Check it again, the check
-  after a reissue code or a renewal, Renew or a post, is worth nothing to write down and
-  goes from its panel at once; only the code of another Pass it took the place of stays
-  there, until the reader leaves the page. A code that arrives while the reader is on
-  another page, or that they leave before it is drawn, is shown when they come back to the
+  reader leaves the page, so they can write it down first. Buy is held back only by
+  a Pass held here or a code shown that the browser could not keep, so it is offered
+  beside such a code. A browser that will not store a code is told so, and that it
+  won't be shown again once the reader leaves the page. A code educhan finds no longer
+  valid as the Pass held here, answering Check it again, the check after a reissue
+  code or a renewal, Renew or a post in the same tab, is worth nothing to write down
+  and goes from its panel at once; only the code of another Pass it took the place
+  of stays there, until the reader leaves the page, and is said to be in this browser
+  again once it is typed back in. A code that arrives while the reader is on another
+  page, or that they leave before it is drawn, is shown when they come back to the
   Pass page, beside any code it took the place of. A code typed in after it ran out,
   within its month of grace, is kept as run out, with its date, to renew. A Pass that has
   run out here can be checked again, in case it was renewed elsewhere. A renewal the page
@@ -1146,7 +1148,9 @@ not-found view.
   included, stays until something else is copied. Removing the Pass, or forgetting the
   browser, in another tab takes a code just handed over off this tab's screen, kept or
   not, as long as the browser stores that tab's mark: one that stores nothing at all tells
-  no other tab, and a code there stays until the reader leaves the Pass page. Another code
+  no other tab, and a code there stays until the reader leaves the Pass page. The Pass
+  removed there any other way, found no longer valid say, takes such a code off too,
+  with any code it took the place of, though that code may still work. Another code
   stored in another tab leaves a code just handed over on screen, kept or not, beside any
   code it took the place of, until the reader leaves the page, and a kept one is then said
   to be no longer in this browser. A post whose Pass was no good goes out like any other,

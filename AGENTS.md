@@ -592,11 +592,12 @@ needs a browser check before the test changes.
   another tab, or the data cleared, the browser no longer has it and it won't be shown
   again once the reader leaves; and one the browser could not keep says so. `has`, which
   holds back Buy, is a Pass held or a code shown that the browser could not keep, so Buy
-  is offered beside a code it no longer holds. When educhan says the held code is no
-  longer valid (Check it again, `recheckPass`, Renew, or a post's `"pass": "invalid"`),
-  `forgetInvalidCode` takes that code off its panel if it is the one just handed over: a
-  code of a different Pass it replaced stays, alone, with no Copy the code, until the
-  reader leaves, and with none `passJustIssued` goes. A renewal's date is never stored
+  is offered beside a code it no longer holds. When educhan tells a tab the held code is
+  no longer valid (Check it again, `recheckPass`, Renew, or a post's `"pass": "invalid"`),
+  `forgetInvalidCode` takes that code off its panel there if it is the one just handed
+  over: a code of a different Pass it replaced stays, alone, with no Copy the code, until
+  the reader leaves, said to be in this browser again once it is typed back in or stored
+  by another tab, and with none `passJustIssued` goes. A renewal's date is never stored
   from the claim's answer, since the Pass it renewed may not be the one held here now:
   `confirmRenewal` checks the held code with `/api/pass/activate` (`recheckPass`, asked
   once more after a `429`'s wait), stores what that says unless the Pass held changed
@@ -710,10 +711,11 @@ needs a browser check before the test changes.
   on a control it draws again, Copy the code or Use this code here say, stays there
   without scrolling the page. Another tab's Remove, Forget or new code reaches this one by
   the `storage` event (`followPassStorage`), which drops a code just handed over once the
-  Pass is removed, kept or not, but leaves it, kept or not, beside any code it took the
-  place of when another code is stored, and draws the Pass page again; Remove and Forget
-  reach such a code by their mark too (`stopForPassForget`). Both need a browser that
-  stores: one that stores nothing at all tells its other tabs nothing, and a code on
+  Pass is removed, for whatever reason, kept or not and with any code it took the place
+  of, though that code may still work, but leaves it, kept or not, beside any code it
+  took the place of when another code is stored, and draws the Pass page again; Remove and
+  Forget reach such a code by their mark too (`stopForPassForget`). Both need a browser
+  that stores: one that stores nothing at all tells its other tabs nothing, and a code on
   screen there stays until the reader leaves the Pass page. A page brought back from the
   back-forward cache is drawn again through `render` (the `pageshow` listener), so the age
   screen still comes first. A post whose Pass was no good is a `201` like any other,

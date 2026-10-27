@@ -2028,12 +2028,13 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 // written down, but the panel no longer says the browser has it or will send
 // it with posts, and says it won't be shown again once the reader leaves the
 // page, as it won't; a code held that has run out is neither ready nor sent
-// with posts until it is renewed, whether it came so or a post's answer
-// marked it so since; and Buy is offered once the browser holds nothing, even
-// beside the code of a Pass it no longer holds. A code educhan says is no
-// longer valid, as the Pass held here, is worth nothing to write down, so it
-// goes, and the panel keeps only the code of a different Pass it took the
-// place of, if any, which may still work and is nowhere else.
+// with posts until it is renewed, whether it came so or a post's answer marked
+// it so since; and Buy is held back only by a Pass held or a code shown that
+// the browser could not keep, so it is offered beside the code of a Pass it no
+// longer holds. A code educhan says is no longer valid, as the Pass held here,
+// is worth nothing to write down, so it goes, and the panel keeps only the
+// code of a different Pass it took the place of, if any, which may still work
+// and be nowhere else, said to be in this browser again once it is.
 func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -2109,6 +2110,19 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 		!strings.Contains(words(left), "Write that code down now if you still need it.") ||
 		!strings.Contains(words(left), "so it won't be shown again once you leave this page.") {
 		t.Error("the panel of a code found no longer valid shows that code, or leaves out the code it took the place of")
+	}
+	// That code is worded for what this browser holds as it is drawn too:
+	// typed back in here, or stored by another tab, it is not said to be gone
+	// from the browser, whose held Pass's panel can show it again.
+	again := strings.Index(left, "const keep = back\n      ? `")
+	other := strings.Index(left, "\n      : `")
+	if !strings.Contains(left, "const back = Boolean(held && held.code === issued.replaced);") || again < 0 || other < again ||
+		!strings.Contains(words(left[again:other]), "<strong>This browser has that code again.</strong> educhan keeps no copy of it, "+
+			"and this browser can show it below only until its data is cleared") ||
+		strings.Contains(left[again:other], "no longer has it") || !strings.Contains(left[other:], "this browser no longer has it") ||
+		!strings.Contains(left, "\n      ${replaced}\n      ${keep}\n    </div>`;") {
+		t.Error("the panel of a code found no longer valid says the code it took the place of is gone from this browser, " +
+			"even when the browser holds it again")
 	}
 }
 
@@ -2657,12 +2671,13 @@ func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 		t.Error("a tab no longer follows the Pass another tab removed or replaced")
 	}
 	// A code just handed over goes from this tab's screen once another tab
-	// removes the Pass, kept or not. Another code written there leaves it be,
-	// kept or not: one this browser kept is drawn as no longer here
-	// (passIssuedHTML), and beside it may be the code of a Pass it took the
-	// place of, still good and nowhere else; one it could not keep was never
-	// the Pass it holds, and may be a spent reissue code's only copy. Both
-	// stay until the reader leaves the page.
+	// removes the Pass, kept or not, with any code it took the place of,
+	// whatever removed it, educhan finding it no longer valid there included.
+	// Another code written there leaves it be, kept or not: one this browser
+	// kept is drawn as no longer here (passIssuedHTML), and beside it may be
+	// the code of a Pass it took the place of, still good and nowhere else; one
+	// it could not keep was never the Pass it holds, and may be a spent reissue
+	// code's only copy. Both stay until the reader leaves the page.
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
 	if !strings.Contains(follow, "const now = storedPass();\n  if (!now) {\n    passJustIssued = null;\n  }") ||
 		strings.Count(follow, "passJustIssued") != 1 ||
