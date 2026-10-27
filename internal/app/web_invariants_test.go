@@ -1366,9 +1366,10 @@ func TestVerifyAnswersBelongToTheStepTheyWereSentFrom(t *testing.T) {
 // What submitVerification waits on once it has taken its turn is the request
 // before, its own request, and renderVerify, which waits only on
 // loadVerification, which waits only on its own request; each of those three
-// requests carries the deadline. And the deadline is longer than the server
-// takes to answer or give up, so a request given up is one whose answer was
-// not coming: given up sooner, a badge the server was issuing would be lost.
+// requests carries the deadline, and api() hands it to fetch with the rest of
+// what the caller passed. And the deadline is longer than the server takes to
+// answer or give up, so a request given up is one whose answer was not coming:
+// given up sooner, a badge the server was issuing would be lost.
 func holdVerifyRequestsToADeadline(t *testing.T, script string) {
 	t.Helper()
 	code := withoutComments(script)
@@ -1432,7 +1433,21 @@ func holdVerifyRequestsToADeadline(t *testing.T, script string) {
 		t.Errorf("unreachableError runs\n\t%s\nwant the refusal a request with no answer is said as:\n\t%s",
 			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
+	// The signal reaches fetch only because api() builds what it hands fetch
+	// by spreading the caller's options. Built field by field, or with signal
+	// left out, it carried no deadline, and every check above still passed
+	// while a Verify request whose answer never came again held every later
+	// one, the step Forget this browser draws included, at Sending… until a
+	// reload. So everything api() runs up to its fetch is held line for line.
 	api := jsLines(jsFunction(t, script, "api"))
+	holdLines(t, "api() up to its fetch", api, "async function api(path, options = {}) {", "res = await fetch(path, init);", []string{
+		"const init = { ...options, headers: { ...(options.headers || {}) } };",
+		"if (init.body !== undefined && !(init.body instanceof FormData)) {",
+		`init.headers["Content-Type"] = "application/json";`,
+		"}",
+		"let res;",
+		"try {",
+	})
 	holdLines(t, "api() when fetch fails", api, "res = await fetch(path, init);", "}", []string{
 		"} catch {",
 		"throw unreachableError();",

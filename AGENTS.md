@@ -509,14 +509,16 @@ needs a browser check before the test changes.
   passed, which `api()` turns into the unreachable refusal: said on its own step, dropped
   on any other. That is longer than `ReadHeaderTimeout` and `WriteTimeout` in
   `cmd/server/main.go` together, so nothing given up was still to be answered; the test
-  reads both, so a change to them changes it too. Without it, one request whose answer
-  never came, over a connection gone silent, held every later one, the step Forget this
-  browser drew included, at Sending… until a reload. Telling answers apart by step needs
-  every change of step to assign a new object: nothing edits one in place, and the places
-  that make one are a list the test holds
-  (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that arrives after the
-  reader has left the page (`onVerifyPage`) only sets `verifyStep`: nothing is drawn over
-  the page they went to, and coming back shows the step it left
+  reads both, so a change to them changes it too. The signal reaches `fetch` only through
+  `api()`'s spread of the caller's options, so `api()` is held line for line up to its
+  fetch: built field by field, it dropped the signal with every other check passing.
+  Without the deadline, one request whose answer never came, over a connection gone
+  silent, held every later one, the step Forget this browser drew included, at Sending…
+  until a reload. Telling answers apart by step needs every change of step to assign a
+  new object: nothing edits one in place, and the places that make one are a list the
+  test holds (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that
+  arrives after the reader has left the page (`onVerifyPage`) only sets `verifyStep`:
+  nothing is drawn over the page they went to, and coming back shows the step it left
   (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
   `render()` draws the page for a reader arriving at it, and how an issued badge is drawn,
   each after one more request; when the page has been drawn in place for another step
