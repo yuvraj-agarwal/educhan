@@ -27,6 +27,27 @@ func TestFilterSearchesAreAllPlanned(t *testing.T) {
 	}
 }
 
+// TestFilterAddressNamesAreRuns holds the rules that read an address from its
+// name on to being planned as runs (filtersearch.go, "run"): found from what
+// follows the name, an "@", an "at" or a spelled "dot", with the match
+// started within the name before it. Planned from the name instead, a rule
+// tries every length of name at every letter, which a post that reads as one
+// long name pays for in full: spelledLocalEmailRule, with its whole name in
+// one group, cost "㏂" over and over ("a.m." each) four times the steps.
+func TestFilterAddressNamesAreRuns(t *testing.T) {
+	prepareSearches()
+	for name, r := range map[string]rule{
+		"emailRule": emailRule, "providerEmailRule": providerEmailRule,
+		"spelledEmailRule": spelledEmailRule, "spelledLocalEmailRule": spelledLocalEmailRule,
+	} {
+		for i, b := range r.plain.branches {
+			if b.kind != runBranch {
+				t.Errorf("%s: branch %d of %d is not planned as a run", name, i+1, len(r.plain.branches))
+			}
+		}
+	}
+}
+
 // TestFilterPlanIsBounded holds the programs planning compiles to a size.
 // Every branch compiles its own copy of what follows its start, so a pattern
 // split many ways in front of a long tail keeps that tail many times over,

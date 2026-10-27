@@ -738,11 +738,16 @@ cost down:
   pattern whose `~` runs straight into a stretch of any characters, `~[^.?!\n]{0,60}?`,
   keeps a copy of the stretch for every space of a run before it, which cost the pill
   questions up to about 300 steps a byte; `window` starts the stretch at a letter or a
-  digit, matches the same text, and keeps one. A step is not a fixed time: `checkWork`
-  charges a check 128 bytes, and the checks that read wider fixed windows (its comment
-  lists them) are not charged the rest, so across those bodies a millisecond is about
-  22,000 to 125,000 steps, and the README's timing is measured, not derived from the
-  bound. What the count cannot see is held otherwise: `appFrame` keeps the words it reads
+  digit, matches the same text, and keeps one. An address rule keeps its name's first
+  piece a group of its own, one character and a bounded run, so that it is planned as a
+  run (filtersearch.go) and looked for from what follows the name; `spelledLocalEmailRule`,
+  with the name's spelled dots inside that group, was tried with every length of name at
+  every letter, which cost a post of "㏂" ("a.m." over and over) four times the steps,
+  inside both bounds, and half as much time again (`TestFilterAddressNamesAreRuns`). A
+  step is not a fixed time: `checkWork` charges a check 128 bytes, and the checks that
+  read wider fixed windows (its comment lists them) are not charged the rest, so across
+  those bodies a millisecond is about 22,000 to 125,000 steps, and the README's timing is
+  measured, not derived from the bound. What the count cannot see is held otherwise: `appFrame` keeps the words it reads
   from one app's name to the next, so a post that names an app every other character
   ("👻Sc" over and over) does not build them anew each time, which took about twice the
   time at the same steps (`TestAppFramesReuseTheirWords` holds it to its allocations). A

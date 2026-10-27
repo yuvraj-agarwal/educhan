@@ -3042,8 +3042,14 @@ var (
 	spelledEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63})` + spelledEmailTail)
 	// A name with its dots spelled too: "madeup dot riya at gmail dot
 	// com". spelledEmailRule's match after "email me at" takes that "at"
-	// for the address's, and goes on to "riya", and so misses it.
-	spelledLocalEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63}(?:[\s_]+d[o0]t[\s_]+[\pL\pN][\pL\pN._%+\-]{0,63})+)` +
+	// for the address's, and goes on to "riya", and so misses it. The
+	// name's first piece is a group of its own, a run before the rest
+	// (filtersearch.go, "run"), so that a match is looked for from a
+	// spelled "dot" after a name, not tried with every length of a name at
+	// every letter: a post of "㏂", which reads as "a.m." over and over, all
+	// one name, cost four times the steps and half as much time again
+	// that way.
+	spelledLocalEmailRule = plainOnly(`\b([\pL\pN][\pL\pN._%+\-]{0,63})((?:[\s_]+d[o0]t[\s_]+[\pL\pN][\pL\pN._%+\-]{0,63})+)` +
 		spelledEmailTail)
 )
 
@@ -13076,14 +13082,18 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		return providerEmail(local, at) || mailNamedBefore(v.text, m[2]) && plainLocalPart(local)
 	})
 	consider(from, to, ok, kindEmail)
-	for _, r := range []rule{spelledEmailRule, spelledLocalEmailRule} {
-		from, to, ok = f.first(r, func(v *view, m []int) bool {
-			text := v.text
-			local, at, domain, dot, tld := spelledDomain(text[m[2]:m[3]]), text[m[4]:m[5]], text[m[6]:m[7]],
-				text[m[8]:m[9]], text[m[10]:m[11]]
+	for _, s := range []struct {
+		r rule
+		// pieces is how many groups the name is in; the rest follow it.
+		pieces int
+	}{{spelledEmailRule, 1}, {spelledLocalEmailRule, 2}} {
+		from, to, ok = f.first(s.r, func(v *view, m []int) bool {
+			text, k := v.text, 2*s.pieces
+			local, at, domain, dot, tld := spelledDomain(text[m[2]:m[k+1]]), text[m[k+2]:m[k+3]], text[m[k+4]:m[k+5]],
+				text[m[k+6]:m[k+7]], text[m[k+8]:m[k+9]]
 			plainDots := dot == "." && !spelledDotPattern.MatchString(domain)
-			return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[11]:]) &&
-				!domainNamed(text, m[2], m[1], local, text[m[3]:m[6]], spelledDomain(domain))
+			return spelledEmail(local, at, spelledDomain(domain), tld, plainDots, text[m[k+9]:]) &&
+				!domainNamed(text, m[2], m[1], local, text[m[k+1]:m[k+4]], spelledDomain(domain))
 		})
 		consider(from, to, ok, kindEmail)
 	}
