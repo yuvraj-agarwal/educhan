@@ -534,8 +534,10 @@ any of them set without the secret (section 2.9).
 
 What a Pass buys is skipping the captcha, so sell it only where the captcha is
 on, which `GET /api/site` shows as `"captcha":true`; a service made before the
-captcha gets its secret first (section 2.4). The block below checks that, and
-that the service runs an image with the Pass, and makes nothing otherwise.
+captcha gets its secret first (section 2.4). The block below checks that, that
+the service runs an image with the Pass, and that the Pass is not on already,
+and makes nothing otherwise. It is for turning the Pass on; a Pass you retired
+comes back another way (below).
 
 **In the Stripe dashboard first.** Under *Settings → Public details*, set a
 support email: it is printed on every receipt, and a buyer who lost their code
@@ -577,8 +579,11 @@ curl -fsS -o /dev/null "${PUBLIC_URL}/api/boards" ||
   { echo "${PUBLIC_URL} does not answer."; exit 1; }
 # Asked before the captcha: an image from before the captcha is also one from
 # before the Pass, and is told here to redeploy rather than sent to 2.4.
-[[ $(curl -fsS "${PUBLIC_URL}/api/pass") == *'"enabled":'* ]] ||
+PASS_STATE=$(curl -fsS "${PUBLIC_URL}/api/pass") || PASS_STATE=
+[[ $PASS_STATE == *'"enabled":'* ]] ||
   { echo "${PUBLIC_URL} runs an image from before the Pass: deploy the current one first (sections 2.5 and 2.6)."; exit 1; }
+[[ $PASS_STATE != *'"enabled":true'* ]] ||
+  { echo "The Pass is on at ${PUBLIC_URL} already: change one setting instead (section 2.10, after this block)."; exit 1; }
 [[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
   { echo "The captcha is off at ${PUBLIC_URL}: give the service its secret first (section 2.4)."; exit 1; }
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
@@ -653,14 +658,19 @@ echo "Done. The service verifies webhook endpoint ${ENDPOINT}, under Product ${P
 )
 ```
 
-Running the block again is safe, but each run that gets past its checks makes
-another Product, Price and webhook endpoint in Stripe. An instance reads the
-newest version of each secret when it starts, so once a run has added its
-versions, instances started from then on verify that run's endpoint, even if
-the run stopped at the update after. So run the block until it prints "Done",
-and only then, under *Developers → Webhooks*, delete every other endpoint whose
-URL ends in `/api/pass/stripe-webhook`, since the server can't verify its
-deliveries, and archive every other "educhan Pass" Product.
+A run that stops can be run again, but each run that gets past its checks makes
+another Product, Price and webhook endpoint in Stripe. Once one prints "Done",
+under *Developers → Webhooks*, delete every other endpoint whose URL ends in
+`/api/pass/stripe-webhook`, since the server can't verify its deliveries, and
+archive every other "educhan Pass" Product.
+
+Once the Pass is on, on sale or paused, the block refuses to run. Its new
+endpoint and signing secret would leave any event Stripe is still retrying to
+the old endpoint unverifiable, so a payment among them would never become a
+Pass, and a refund or dispute would take nothing back. Change only what needs
+changing instead: a new Price as below, or a new restricted key as a new version
+of `educhan-stripe-secret-key` followed by a new revision, the way section 2.4
+rotates the captcha's secret, and only then the old key deleted in Stripe.
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price and no `"tax"`: with `EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server
@@ -712,8 +722,7 @@ export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin, as above
 PUBLIC_URL="${PUBLIC_URL%/}"
 
 read -rsp 'Stripe secret key: ' STRIPE_ADMIN; echo
-# Newest first. Move the one named by the setup run that last printed "Done",
-# with no run stopped part way since (see the cleanup above).
+# Newest first. Move the one the setup block named when it printed "Done".
 curl -fsS 'https://api.stripe.com/v1/webhook_endpoints?limit=100' -u "${STRIPE_ADMIN}:" \
   | python3 -c 'import sys,json;[print(e["id"],e["url"]) for e in sorted(json.load(sys.stdin)["data"],key=lambda e:-e["created"])]'
 read -rp 'Endpoint to move (we_…): ' ENDPOINT
@@ -803,9 +812,22 @@ day), no payment still processing (a bank debit can take a couple of weeks,
 and the server waits 30 days for one; the Dashboard's *Payments* lists any
 still pending), and no refund or dispute pending. Waiting 31 days after the
 pause covers the first two. The tables stay and the sweep keeps
-pruning them; setting the same `educhan-pass-secret` again brings back every
-Pass not yet pruned. Before that, check in the Stripe Dashboard that the
-webhook endpoint is still enabled: Stripe can disable one that keeps failing.
+pruning them. Putting the same settings back brings back every Pass not yet
+pruned, and lets Stripe's retries land, so bring it back that way, not with the
+setup block, whose new endpoint would leave those retries unverifiable. First
+check in the Stripe Dashboard that the webhook endpoint is still enabled, and
+enable it again if Stripe disabled it for failing, then:
+
+```bash
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
+  --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=price_…,EDUCHAN_PUBLIC_URL=https://YOUR-ADDRESS,EDUCHAN_PASS_SALES=paused"
+```
+
+with the Price ID from the "educhan Pass" Product in the Dashboard, the address
+its endpoint points at, and any other Pass setting you had, such as
+`EDUCHAN_STRIPE_AUTOMATIC_TAX=1`. It comes back paused; `EDUCHAN_PASS_SALES=open`
+sells again.
 
 **A rollback can retire it too.** While the Pass is on, on sale or paused,
 rolling the service back to an image from before the Pass (before migration
