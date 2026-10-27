@@ -819,7 +819,8 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 // Pricing off (checkSessionSent), so Stripe does not convert the price into
 // the buyer's currency either. Options added to the Price in place, keeping
 // its ID, are seen by the first read after the hour a good read is kept, and
-// the Price is refused from then.
+// the Price is refused from then, with Stripe Tax on or off. The refusal names
+// the other currencies in order, whatever order Stripe lists them in.
 func TestPassSellsInThePricesOwnCurrencyAlone(t *testing.T) {
 	own := map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive", "custom_unit_amount": nil}
 	asked := url.Values{"expand[]": {"currency_options"}}
@@ -865,44 +866,72 @@ func TestPassSellsInThePricesOwnCurrencyAlone(t *testing.T) {
 		}
 	}
 
-	t.Run("an option added in place", func(t *testing.T) {
-		var logs syncBuffer
-		p := passServerLogging(t, nil, &logs)
-		readAgo := func(age time.Duration) {
-			p.app.pass.priceMu.Lock()
-			p.app.pass.priceFetchedAt = time.Now().Add(-age)
-			p.app.pass.priceMu.Unlock()
-		}
-		shown := func() *passPrice {
+	for _, tax := range []bool{false, true} {
+		t.Run(fmt.Sprintf("Stripe Tax %s, an option added in place", map[bool]string{false: "off", true: "on"}[tax]), func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = tax }, &logs)
+			p.stripe.mu.Lock()
+			p.stripe.price["tax_behavior"] = "inclusive"
+			p.stripe.mu.Unlock()
+			readAgo := func(age time.Duration) {
+				p.app.pass.priceMu.Lock()
+				p.app.pass.priceFetchedAt = time.Now().Add(-age)
+				p.app.pass.priceMu.Unlock()
+			}
+			shown := func() *passPrice {
+				var out passResponse
+				p.get("/api/pass", &out)
+				return out.Price
+			}
+			if price := shown(); price == nil {
+				t.Fatal("GET /api/pass left out the price of a Price in one currency")
+			}
+			p.stripe.mu.Lock()
+			p.stripe.price["currency_options"] = map[string]any{
+				"usd": own,
+				"eur": map[string]any{"unit_amount": 1900, "tax_behavior": "exclusive"},
+			}
+			p.stripe.mu.Unlock()
+			readAgo(59 * time.Minute)
+			if price := shown(); price == nil {
+				t.Fatal("59 minutes after a good read, the price was read again and left out")
+			}
+			readAgo(61 * time.Minute)
+			if price := shown(); price != nil {
+				t.Fatalf("61 minutes after a good read, the Price given another currency is still shown: %+v", price)
+			}
 			var out passResponse
-			p.get("/api/pass", &out)
-			return out.Price
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable ||
+				out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
+				t.Fatalf("checkout of the Price given another currency: status %d (%s), %d Stripe sessions; want 503 and none",
+					code, out.Error, p.stripe.sessionCount())
+			}
+			if n := strings.Count(logs.String(), "not also in eur"); n != 1 {
+				t.Fatalf("%d log lines name the other currency, want 1:\n%s", n, logs.String())
+			}
+		})
+	}
+
+	// The refusal names the other currencies in order, whatever order the
+	// options come in. Go ranges over the options' map in no set order, and
+	// often in the order they were decoded, which Stripe's sorted keys give
+	// here, so one read in order proves nothing: the Price is read 50 times,
+	// each a fresh map with many currencies, as a missing sort would not
+	// survive.
+	t.Run("other currencies named in order", func(t *testing.T) {
+		f := newFakeStripe(t)
+		codes := []string{"aud", "brl", "cad", "chf", "dkk", "eur", "gbp", "jpy", "nok", "sek", "sgd"}
+		options := map[string]any{"usd": own}
+		for _, code := range codes {
+			options[code] = map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive"}
 		}
-		if price := shown(); price == nil {
-			t.Fatal("GET /api/pass left out the price of a Price in one currency")
-		}
-		p.stripe.mu.Lock()
-		p.stripe.price["currency_options"] = map[string]any{
-			"usd": own,
-			"eur": map[string]any{"unit_amount": 1900, "tax_behavior": "exclusive"},
-		}
-		p.stripe.mu.Unlock()
-		readAgo(59 * time.Minute)
-		if price := shown(); price == nil {
-			t.Fatal("59 minutes after a good read, the price was read again and left out")
-		}
-		readAgo(61 * time.Minute)
-		if price := shown(); price != nil {
-			t.Fatalf("61 minutes after a good read, the Price given another currency is still shown: %+v", price)
-		}
-		var out passResponse
-		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable ||
-			out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
-			t.Fatalf("checkout of the Price given another currency: status %d (%s), %d Stripe sessions; want 503 and none",
-				code, out.Error, p.stripe.sessionCount())
-		}
-		if n := strings.Count(logs.String(), "not also in eur"); n != 1 {
-			t.Fatalf("%d log lines name the other currency, want 1:\n%s", n, logs.String())
+		f.price["currency_options"] = options
+		c := newStripeClient(testPassConfig(f))
+		want := errPassPriceRefused.Error() + ": it must be priced in usd alone, not also in " + strings.Join(codes, ", ")
+		for read := range 50 {
+			if _, err := c.price(context.Background()); err == nil || err.Error() != want {
+				t.Fatalf("read %d: %v; want %q", read+1, err, want)
+			}
 		}
 	})
 }

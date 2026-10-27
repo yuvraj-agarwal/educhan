@@ -562,10 +562,12 @@ same order, so whoever holds the live database's files or a physical backup (not
 a `pg_dump`) can place a Pass row between two posts. A `passes` row's `xmin`
 moves with each later write to it, a renewal collected, a reissue code redeemed,
 or a refund or dispute that takes days off the Pass, so it dates the latest of
-those. A refund or dispute that takes none off (of a term already run, or of a
-paid renewal not collected yet, say) leaves the row as it was, and the
-`pass_revocations` row it writes dates it instead. Stripe keeps the exact time
-of every payment anyway.
+those. A refund or dispute that takes none off (of a term already run while a
+later one runs, or of a paid renewal not collected yet, say) leaves the row as
+it was, and the `pass_revocations` row it writes dates it instead. One that
+leaves the Pass no paid time to come, as one of any of its terms does once it
+has run out, deletes the row. Stripe keeps the exact time of every payment
+anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
