@@ -244,7 +244,7 @@ func checkContentCost(in contentInput, supportSeen bool) (contentVerdict, int) {
 	}
 	if !supportSeen {
 		for _, f := range fields {
-			if f.anyMatch(supportRules, f.supportCheck) || f.asksForAMethod() {
+			if f.anyMatch(supportRules, f.supportCheck) || f.anyRun(supportRuns, f.supportCheck) || f.asksForAMethod() {
 				return contentVerdict{Outcome: contentSupport, Message: supportMessage}, cost()
 			}
 		}
@@ -274,8 +274,8 @@ func holdReason(fields []*scannedField, contactCue bool) string {
 		return holdThreat
 	}
 	for _, f := range fields {
-		if f.anyMatch(selfHarmRules, selfHarmCheck) || f.anyMatch(selfHarmUrgeRules, urgeCheck) || f.asksForAMethod() ||
-			f.goads() {
+		if f.anyMatch(selfHarmRules, selfHarmCheck) || f.anyMatch(selfHarmUrgeRules, urgeCheck) ||
+			f.anyRun(urgeRuns, urgeCheck) || f.asksForAMethod() || f.goads() {
 			return holdSelfHarm
 		}
 	}
@@ -538,7 +538,8 @@ type scannedField struct {
 func (f *scannedField) asksForAMethod() bool {
 	if f.method == 0 {
 		f.method = 1
-		if f.anyMatch(selfHarmMethodRules, methodCheck) || f.anyMatch(pillQuestionRules, pillQuestionCheck) {
+		if f.anyMatch(selfHarmMethodRules, methodCheck) || f.anyRun(methodRuns, methodCheck) ||
+			f.anyMatch(pillQuestionRules, pillQuestionCheck) {
 			f.method = 2
 		}
 	}
@@ -585,6 +586,62 @@ func plainView(src string, readings []reading) view {
 		}
 		i = to
 	}
+	return foldSpellings(b.view())
+}
+
+// spellingFolds are words the plain view reads as the words they stand for,
+// whole words only: the commonest misspellings of "suicide" and
+// "committing", and "sh" made a verb with an apostrophe or a hyphen, "sh'd"
+// and "sh-ing", which say "self harmed" and "self harming". The list is
+// closed and short. A word read so still maps back to the characters the
+// poster wrote, as a ligature folded to several letters does. A bare "sh" is
+// left alone ("sh, quiet", "sh build.sh"); supportRuns read it as a verb only
+// where one is wanted.
+var spellingFolds = map[string]string{
+	"sucide": "suicide", "suicde": "suicide", "suiside": "suicide", "suicid": "suicide", "sucidal": "suicidal",
+	"suicdal": "suicidal", "suisidal": "suicidal", "commiting": "committing", "comitting": "committing",
+	"comit": "commit", "sh'd": "self harmed", "sh'ed": "self harmed", "sh-ed": "self harmed",
+	"sh'ing": "self harming", "sh-ing": "self harming",
+}
+
+// foldSpellings reads v's words of spellingFolds as what they stand for. A
+// word is a run of ASCII letters, joined by an apostrophe or a hyphen with a
+// letter after it, with no letter or other character of a word beside it.
+func foldSpellings(v view) view {
+	t := v.text
+	letter := func(c byte) bool { return 'a' <= c && c <= 'z' }
+	var b *viewBuilder
+	copied := 0
+	for i := 0; i < len(t); {
+		if !letter(t[i]) || i > 0 && (letter(t[i-1]) || t[i-1] == '\'' || t[i-1] == '-' || t[i-1] >= utf8.RuneSelf ||
+			isASCIIDigit(t[i-1])) {
+			i++
+			continue
+		}
+		j := i
+		for j < len(t) && (letter(t[j]) || (t[j] == '\'' || t[j] == '-') && j+1 < len(t) && letter(t[j+1])) {
+			j++
+		}
+		if to, ok := spellingFolds[t[i:j]]; ok && !(j < len(t) && (t[j] >= utf8.RuneSelf || isASCIIDigit(t[j]))) {
+			if b == nil {
+				b = newViewBuilder(len(t) + 16)
+			}
+			b.buf = append(b.buf, t[copied:i]...)
+			b.start = append(b.start, v.start[copied:i]...)
+			b.end = append(b.end, v.end[copied:i]...)
+			for _, r := range to {
+				b.add(r, v.start[i], v.end[j-1])
+			}
+			copied = j
+		}
+		i = j
+	}
+	if b == nil {
+		return v
+	}
+	b.buf = append(b.buf, t[copied:]...)
+	b.start = append(b.start, v.start[copied:]...)
+	b.end = append(b.end, v.end[copied:]...)
 	return b.view()
 }
 
@@ -3411,9 +3468,15 @@ var (
 	// myself a reminder", "overdose on caffeine") and routines ("take all my
 	// pills before breakfast").
 	methodActs = words(words(`hang`, `drown`, `poison`, `shoot`, `stab`, `electrocute`)+`~my~self`, `slit~my~wrists?`,
-		`overdose`, `od`, `suicide`, `take~all~(?:of~)?my~`+words(`pills`, `meds`, `tablets`, `medicines?`, `medications?`,
-			`sleeping~pills`), `jump~in~front~of~(?:a|the)~`+words(`train`, `bus`, `car`, `truck`, `lorry`, `metro`))
-	crisisActs = words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `not~wake~up`, `never~wake~up`,
+		`overdose`, `od`, `suicide`, `take~all~(?:of~)?my~(?:sleeping~)?`+words(pillObjects...),
+		`jump~in~front~of~(?:a|the)~`+words(`train`, `bus`, `car`, `truck`, `lorry`, `metro`))
+	// pillObjects are what "take all my …" takes in a crisis statement,
+	// after "sleeping" or not, in methodActs and in supportRuns' plans
+	// alike (TestFilterPlansTakeEveryMethodActsPill).
+	pillObjects = []string{`pills`, `meds`, `tablets`, `medicine`, `medicines`, `medication`, `medications`,
+		`antidepressants`}
+	pillObjectSet = canonSetOf(strings.Join(pillObjects, " "))
+	crisisActs    = words(`die`, `be~dead`, `not~be~alive`, `not~exist`, `not~wake~up`, `never~wake~up`,
 		`(?:go~to~)?sleep~and~`+words(`never`, `not`)+`~wake~up`, `not~be~here`, `disappear`, `end~it~all`, `end~my~life`, `end~it`, `end~myself`,
 		`end~everything`, `kill~my~self`, `stop~existing`, `commit~suicide`, `take~my~(?:own~)?life`, selfHurt, methodActs,
 		`(?:go~to~)?sleep~forever`, `cut`)
@@ -3730,6 +3793,41 @@ var supportRules = []rule{bothViews(`\b` + words(
 	) + `\b`),
 }
 
+// supportRuns are phrasings of supportRules read as runs (checkedRuns) and
+// put to supportCheck as the rules' matches are: "committing suicide", and
+// the Indian English "doing suicide" ("suicide karna"), felt like, thought
+// about, considered, wanted, planned, tried or said to be under way ("i feel
+// like committing suicide", "i will do suicide", "i tried to commit
+// suicide", "i'm committing suicide tonight"); the slang "off myself", "neck
+// myself" and a bare "rope" wanted or planned ("i'm gonna rope", not "rope in
+// my friends", supportCheck); every medicine of methodActs, and
+// antidepressants, in a plan to take or swallow all of them ("going to take
+// all my sleeping pills tonight"); and "sh" said as a verb, wanted ("i want
+// to sh so badly", not "sh script.sh") or as urges ("i have sh urges").
+var supportRuns = func() checkedRuns {
+	const (
+		feel     = `feel|feeling|felt|feels like `
+		think    = `think|thinking|thought|thinks about|of `
+		consider = `consider|considered|considering|contemplate|contemplated|contemplating `
+		want     = `want|wanted|wanting|wanna|wana|need|wish|wished|wishing to|2? `
+		plan     = `i'm|im|i am|m? going|gonna|gunna|finna|about|ready|planning to|on? `
+		planned  = `planning|planned|decided|deciding to|on `
+		suicide  = `committing|doing suicide`
+		slang    = `offing|necking|roping myself`
+	)
+	pills := `take|taking|swallow|swallowing all of? my sleeping? ` + strings.Join(pillObjects, "|")
+	return runsOf(feel+suicide, feel+slang, think+suicide, think+slang, consider+suicide,
+		`consider|considered|contemplate|contemplated suicide`, consider+slang,
+		`having|have|had|get|getting|got these|the|some|serious|constant|bad|dark? thoughts of|about `+suicide,
+		`having|have|had|get|getting|got sh|selfharm urges|urge`, `having|have|had|get|getting|got self harm urges|urge`,
+		`i'm|im|i am|m? `+suicide, `i|i've|ive|i'd have|had? tried|attempted to commit|do suicide`,
+		`i|i'll|ill will|wil|shall|might|may|could? just? do suicide`,
+		want+`do suicide`, want+`off|neck myself`, want+`rope`, want+`sh`,
+		plan+`do|doing suicide`, plan+`off|neck myself`, plan+`rope`, plan+pills,
+		planned+`do|doing suicide`, planned+`off|neck myself`, planned+`rope`,
+		`going|gonna|gunna|planning|planned|decided to? `+pills)
+}()
+
 // selfHarmRules are encouragement to hurt or kill oneself, and pro-eating-
 // disorder content, in English and some Hinglish. They are held, through
 // selfHarmCheck.
@@ -3803,6 +3901,12 @@ var selfHarmRules = []rule{bothViews(`\b` + words(
 	`thinspo`, `thinspiration`, `meanspo`, `bonespo`, `skinnyspo`, `pro~?ana`, `pro~?mia`,
 	words(`ana`, `mia`)+`~`+words(`coach`, `buddy`, `tips?`),
 ) + `\b`)}
+
+// urgeRuns are acts urged read as runs (checkedRuns) and put to urgeCheck
+// as selfHarmUrgeRules' matches are: suicide committed or, in Indian
+// English, done ("just commit suicide", "do us a favour and commit suicide",
+// "go do suicide", "commit suicide you loser").
+var urgeRuns = runsOf(`commit|do suicide`)
 
 // selfHarmUrgeRules read encouragement as two parts, the act and what
 // frames it as said to someone, rather than as phrasings: the act is found
@@ -4050,6 +4154,25 @@ var methods = words(
 	`starve~`+words(`my`, `your`)+`~self`,
 	words(`tie`, `make`)+`~(?:a~)?noose`,
 )
+
+// methodRuns are method questions read as runs (checkedRuns) and put to
+// methodCheck as selfHarmMethodRules' matches are: self harm, or "sh",
+// asked after with "how to", "how do i" or "how can i", or as the best or
+// easiest way ("how to self harm without my parents finding out", "best way
+// to self harm"); and cutting, hurting, burning, poisoning, drowning,
+// shooting, stabbing, suffocating, electrocuting or starving oneself asked
+// after the same way ("how to burn myself with a lighter"; not "how to burn
+// myself a cd" or "how to stop self harming", methodCheck).
+var methodRuns = func() checkedRuns {
+	const (
+		howTo = `how to|2 `
+		howDo = `how do|can|could|should|would i `
+		best  = `best|easiest|easy|painless|quickest|quick|fastest|surest|simplest way|ways|method|methods to? `
+		acts  = `cut|hurt|burn|poison|drown|shoot|stab|suffocate|electrocute|starve myself`
+	)
+	return runsOf(howTo+`sh|selfharm`, howTo+`self harm`, howDo+`sh|selfharm`, howDo+`self harm`, howTo+acts,
+		howDo+acts, best+`sh|selfharm`, best+`self harm`)
+}()
 
 // searchedMethods open what a search for ways, methods or tips asks after:
 // "ways to commit suicide", "methods of suicide", "ways to die painlessly",
@@ -8602,6 +8725,44 @@ func (p wordRun) match(ws []string, i, end int) int {
 	return -1
 }
 
+// checkedRuns are phrasings of a rule written as wordRuns rather than as a
+// pattern, listed by the words that can start them, and read in Go over the
+// plain view's words (anyRun), each run found put to the same check as the
+// rule's matches. A run costs no instructions to plan, and the searches are
+// bounded by theirs (TestFilterPlanIsBounded); it finds what a pattern of the
+// same words would in the plain view, within a sentence, and nothing in the
+// loose one, so a phrasing read only as a run is not read spaced out or in
+// leetspeak.
+type checkedRuns map[string][]wordRun
+
+func runsOf(srcs ...string) checkedRuns {
+	at := checkedRuns{}
+	for _, src := range srcs {
+		run := runOf(src)
+		for w := range run[0].set {
+			at[w] = append(at[w], run)
+		}
+	}
+	return at
+}
+
+// anyRun reports a run of at, in the plain view, that check keeps, as
+// anyMatch does for a rule. Each word a run may start at is charged the
+// run's steps, and each run found a check and its length.
+func (f *scannedField) anyRun(at checkedRuns, check matchCheck) bool {
+	v := &f.plain
+	r := f.wordReading()
+	for i, w := range r.ws {
+		for _, run := range at[w] {
+			v.work += len(run)
+			if hi := run.match(r.ws, i, r.sentenceEnd[i]); hi > i && v.checked(check, []int{r.sp[i][0], r.sp[hi-1][1]}) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // runWords are the sets a wordRun may name with "$".
 var runWords = map[string]map[string]bool{
 	// Someone else as a subject, and with "is" or "are" joined on.
@@ -9790,10 +9951,23 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		(messageWords[next[0]] || shootFillers[next[0]] && len(next) > 1 && messageWords[next[1]] ||
 			is(next[0], "in") && anyIn(next[1:min(len(next), 4)], canonSetOf(`foot feet leg legs`))):
 		return false // "shoot myself a reminder", "shoot myself in the foot"
-	case (is(last, "pills") || is(last, "meds") || is(last, "tablets") || is(last, "medicine") ||
-		is(last, "medicines") || is(last, "medication") || is(last, "medications")) && hasWord(ws, "all"):
-		// "take all my pills before breakfast, doctor said".
-		return !anyIn(wordsIn(sentenceAround(text, m[0], m[1])), medRoutine)
+	case pillObjectSet[last] && hasWord(ws, "all"):
+		// "take all my pills before breakfast, doctor said", "take all my
+		// medicine with me on the trip".
+		return !anyIn(wordsIn(sentenceAround(text, m[0], m[1])), medRoutine) &&
+			!(nextIn(0, canonSetOf(`along`)) || nextIn(0, canonSetOf(`with`)) && nextIn(1, canonSetOf(`me us myself`)))
+	case is(last, "rope"):
+		// "i want to rope", "i'm gonna rope tonight"; not "rope in my
+		// friends" or "rope off the stall".
+		for _, w := range next {
+			if !endItTimes[w] && !trailFillers[w] && !shrugs[w] {
+				return false
+			}
+		}
+		return true
+	case is(last, "sh") && wantWords[first]:
+		// "i want to sh so badly right now", "i keep wanting to sh".
+		return !shellAfter(text, m[1], next)
 	case is(last, "forever") || is(last, "bus") || is(last, "car") || is(last, "truck") || is(last, "train") ||
 		is(last, "lorry"):
 		// "i want to sleep forever after this exam week lol", "hope i get
@@ -9872,7 +10046,11 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 			!anyIn(s, examsSleptAfter) && !anyIn(s, schoolWorkWords) && !anyIn(s, endedThings)
 	case is(last, "me") && hasWord(ws, "without"):
 		// "my family would be better off without me", not "without me
-		// hogging the tv".
+		// hogging the tv" or a place in a team or group: "my class would be
+		// better without me in the quiz team lol".
+		if len(next) > 1 && canonSetOf(`in on at`)[next[0]] && anyIn(next[1:min(len(next), 5)], memberships) {
+			return false
+		}
 		return !(len(next) > 0 && strings.HasSuffix(next[0], "ing"))
 	case is(last, "life") && hasWord(ws, "up"):
 		// "i give up on life", not "i give up on life admin" or "chem
@@ -9885,10 +10063,14 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		// "end it" is the end of something else unless nothing, or a time,
 		// comes after it: "i'm going to end it tonight", not "end it with her"
 		// or "ending it tonight with a final revision of organic chem".
+		// With nothing after it in its own sentence, a relationship named
+		// in what follows makes it a break-up: "I've decided to end it.
+		// He's been cheating for months", "decided to end it. we just want
+		// different things"; not "i've decided to end it tonight".
 		before, after := clausesBeside(text, m[0], m[1])
-		v.work += 2 * besideWindow
+		v.work += 3 * besideWindow
 		return (len(next) == 0 || nextIn(0, endItTimes)) && !endsWithWork(next) && !opensOnAnEnd(before) &&
-			!opensOnAnEnd(after)
+			!opensOnAnEnd(after) && !(len(next) == 0 && endsARelationship(wordsIn(text[m[1]:min(len(text), m[1]+besideWindow)])))
 	case is(last, "things") && hasWord(ws, "ending") && nextIn(0, canonSetOf(`with between`)):
 		// "ending things with my boyfriend", but not "ending things with pills".
 		return !anyIn(next[1:min(len(next), 4)], partnerWords)
@@ -9930,7 +10112,7 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 				return n >= 10
 			}
 		}
-	case is(first, "ending") || is(first, "gonna"):
+	case is(first, "ending") || is(first, "gonna") || is(first, "going"):
 		// "i'm ending it here, the essay is long enough": the clause beside
 		// it opens on what is ended, not "sorry for this post" or "too much
 		// drama at home".
@@ -9955,7 +10137,7 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 		// "having thoughts of suicide is common" says what they are.
 		return false
 	case is(ws[len(ws)-1], "suicidal") && !selfSubjects[first] || planWords[first] || giveUpWords[first] ||
-		thoughtsHad[first] && hasWord(ws, "thoughts"):
+		thoughtsHad[first] && (hasWord(ws, "thoughts") || hasWord(ws, "urges") || hasWord(ws, "urge")):
 		// "feeling suicidal", "planning to end my life", "giving up on
 		// life", "having thoughts of suicide": the poster's only.
 		return ownSubject(text, m[0])
@@ -10397,8 +10579,9 @@ var (
 	pillContainers = canonSetOf(`bottle bottles box boxes packet packets case cases organiser organizer wrapper wrappers strip strips`)
 	ownActs        = canonSetOf(`hurt hurting harmed harming harm cut cutting burned burnt burning burn starved starving starve self`)
 	wantWords      = canonSetOf(`want wanted wanting wanna wana need wish wished wishing`)
-	thinkWords     = canonSetOf(`think thinking thought considering contemplating`)
-	reasonWords    = canonSetOf(`no nothing any a the zero`)
+	thinkWords     = canonSetOf(`think thinking thought considering contemplating consider considered contemplate
+		contemplated`)
+	reasonWords = canonSetOf(`no nothing any a the zero`)
 	// genericVerbs, straight after "suicidal thoughts", make it a statement
 	// about them: "suicidal thoughts are more common than people think".
 	genericVerbs = canonSetOf(`are aren't arent is isn't isnt can can't cant cannot don't dont do does doesn't may might
@@ -10542,7 +10725,7 @@ var (
 	// carriers carry a verb without being its subject: "been",
 	// "started", "still", "honestly".
 	carriers = canonSetOf(`been have has had keep kept keeps still started start starting again just really
-		honestly literally actually also always often sometimes lowkey finally secretly basically even already
+		honestly seriously literally actually also always often sometimes lowkey finally secretly basically even already
 		now today yesterday tonight lately recently back to used am was 'm do did so ngl tbh fr like ok okay
 		anyway anyways yeah well because cause cuz bc but tho though lol idk`)
 )
@@ -10790,21 +10973,29 @@ func gameInClauseBefore(text string, m []int) bool {
 }
 
 var (
-	burnWords     = canonSetOf(`burn burning burned burnt`)
-	partnerWords  = canonSetOf(`her him them boyfriend girlfriend bf gf partner ex crush husband wife friend friends bestie bff us`)
-	dyeThings     = canonSetOf(`hair clothes shirt shirts jeans hoodie tshirt dress`)
-	describes     = canonSetOf(`is isn't isnt was looks look looked sucks so too 's are`)
-	livingWords   = canonSetOf(`live living exist up on`)
-	lifeTopics    = canonSetOf(`admin science sciences skills skill insurance cycle cycles style styles span coach coaching lessons lesson hacks goals choices story stories partner expectancy support`)
-	livingPlaces  = canonSetOf(`in with on at there here near abroad without together alone by like tomorrow today tonight next this until after before during for early late`)
-	livingCues    = []string{"anymore", "any more", "like this", "this world", "this life"}
-	dontWords     = canonSetOf(`don't dont dnt do`)
-	dontSubjects  = canonSetOf(`just really honestly seriously literally so and but lol tbh ngl man bro yaar rn now today tonight anymore okay ok also still kinda like yeah i`)
-	cutIdioms     = canonSetOf(`off a an some slack short loose out free`)
-	simplePast    = canonSetOf(`cut burned burnt hurt`)
-	dieIdioms     = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand shock fright cold heatstroke stress exhaustion tiredness dehydration hypothermia tension`)
-	endItTimes    = canonSetOf(`tonight today now soon all tomorrow already finally forever here this`)
-	dyeObjects    = canonSetOf(`my her his their our your the hair it them clothes shirt`)
+	burnWords    = canonSetOf(`burn burning burned burnt`)
+	partnerWords = canonSetOf(`her him them boyfriend girlfriend bf gf partner ex crush husband wife friend friends bestie bff us`)
+	dyeThings    = canonSetOf(`hair clothes shirt shirts jeans hoodie tshirt dress`)
+	describes    = canonSetOf(`is isn't isnt was looks look looked sucks so too 's are`)
+	livingWords  = canonSetOf(`live living exist up on`)
+	lifeTopics   = canonSetOf(`admin science sciences skills skill insurance cycle cycles style styles span coach coaching lessons lesson hacks goals choices story stories partner expectancy support`)
+	livingPlaces = canonSetOf(`in with on at there here near abroad without together alone by like tomorrow today tonight next this until after before during for early late`)
+	livingCues   = []string{"anymore", "any more", "like this", "this world", "this life"}
+	dontWords    = canonSetOf(`don't dont dnt do`)
+	dontSubjects = canonSetOf(`just really honestly seriously literally so and but lol tbh ngl man bro yaar rn now today tonight anymore okay ok also still kinda like yeah i`)
+	cutIdioms    = canonSetOf(`off a an some slack short loose out free`)
+	simplePast   = canonSetOf(`cut burned burnt hurt`)
+	dieIdioms    = canonSetOf(`laughing laughter embarrassment shame boredom cringe cuteness happiness excitement jealousy envy hunger thirst heat curiosity suspense anticipation secondhand shock fright cold heatstroke stress exhaustion tiredness dehydration hypothermia tension`)
+	endItTimes   = canonSetOf(`tonight today now soon all tomorrow already finally forever here this`)
+	dyeObjects   = canonSetOf(`my her his their our your the hair it them clothes shirt`)
+	// shellWords after "sh" make it a shell's command: "sh the script",
+	// "sh into the server".
+	shellWords = canonSetOf(`the a an this that my into in to script scripts file files command commands install build
+		run setup config c sh bash zsh ssh`)
+	// secondObjects after "cut myself", "burn myself" or "shoot myself"
+	// give it something to make or send: "cut myself a fringe", "burn
+	// myself a cd", "shoot myself a reminder".
+	secondObjects = canonSetOf(`a an some`)
 	suicideTopics = canonSetOf(`prevention awareness essay essays rates rate statistics stats hotline helpline helplines squad bombing bomber bombers attack attacks mission missions doors door run runs research project report article documentary`)
 	kmsQuantity   = canonSetOf(`many few some several couple more less fewer extra total thousand thousands hundred hundreds lakh lakhs million millions of the those these in kitne kitna`)
 	kmsAfter      = canonSetOf(`away per from long far ahead left of an a hai`)
@@ -11235,6 +11426,10 @@ func urgeCheck(v *view, m []int) bool {
 			return false
 		}
 		return settled(0)
+	case is(last, "suicide"):
+		// "just commit suicide", "commit suicide you loser"; not "commit
+		// suicide prevention to memory".
+		return settled(0)
 	case is(first, "do"):
 		// "just do it already": only in a post about dying.
 		return settled(0) && deathAround(text, m)
@@ -11250,7 +11445,7 @@ var (
 	// urgeTails may follow an act urged: "just jump already", "overdose
 	// tonight", "self harm in a corner".
 	urgeTails = canonSetOf(`already now tonight today tomorrow pls please plz asap immediately quickly fast
-		permanently forever bro dude lol lmao man op tbh ffs nobody cares`)
+		permanently forever bro dude lol lmao man op tbh ffs nobody cares loser losers idiot moron clown`)
 	urgePlaces = canonSetOf(`in at somewhere quietly`)
 	// othersWords are who an act is judged for besides "you": "for someone
 	// with your marks", "for people like OP".
@@ -12698,6 +12893,19 @@ func saidFirst(before string) bool {
 	return true
 }
 
+// endsARelationship reports a word of relationshipEnds in ws, or "different
+// things": what the poster's own "decided to end it" ends when one follows it.
+// It takes none of endItOthers' pronouns or jobs and games, which follow a
+// crisis as often ("he won't even notice", "i hate my job").
+func endsARelationship(ws []string) bool {
+	for i, w := range ws {
+		if relationshipEnds[w] || is(w, "different") && i+1 < len(ws) && is(ws[i+1], "things") {
+			return true
+		}
+	}
+	return false
+}
+
 // endsSomethingElse reports a word of endItOthers in ws, what "just end it"
 // may end, unless it judges (endItJudges): "our group chat voted" and "the
 // whole class agrees" are people telling the reader to.
@@ -12821,6 +13029,14 @@ var (
 		convo conversation chat game match series show beef fight drama story subscription streak course courses
 		degree program programme coaching tuition membership internship job`)
 	pillRoutine = canonSetOf(`on with before after daily regularly every at as properly in for together`)
+	// relationshipEnds, after the poster's "decided to end it", make it a
+	// break-up (endsARelationship).
+	relationshipEnds = canonSetOf(`boyfriend girlfriend bf gf relationship partner ex crush friendship marriage
+		situationship cheating cheated cheats cheater dating breakup together`)
+	// memberships, after "better off without me in", are a place in a team
+	// or a group rather than in the world.
+	memberships = canonSetOf(`team group squad project side club band lineup crew gang gc groupchat cast choir
+		orchestra committee eleven relay quiz`)
 	// mentionNouns, after encouragement, make it the name of a kind of post.
 	mentionNouns = canonSetOf(`comments comment jokes joke posts post thing stuff culture spam spammers replies reply
 		messages memes meme trend trolls bots`)
@@ -12829,7 +13045,7 @@ var (
 var (
 	deeperObjects     = canonSetOf(`into in through the a an on with than to`)
 	overworkModals    = canonSetOf(`you'll youll u'll ull will gonna gon`)
-	imperativeFillers = canonSetOf(`just go pls please plz now then lol lmao bro bruh dude man mate honestly seriously ok
+	imperativeFillers = canonSetOf(`just go pls please plz now then lol lmao bro bruh dude man mate op honestly seriously ok
 		okay so and or yeah fr ngl also you u like literally really already oh omg tbh idc well yo hey bhai yaar abe chal`)
 	deathWords   = canonSetOf(`die died dead disappear disappeared vanish vanished gone killed kill kys ended jumped hanged overdosed od`)
 	careFillers  = canonSetOf(`if when you u you're youre ur were was are just simply even all`)
@@ -12973,8 +13189,18 @@ func methodCheck(v *view, m []int) bool {
 		// "can you die from cutting your wrists", not "you can die from
 		// cutting your wrists, so" or "on a tin can".
 		return dieAsked(wordsBefore(text, m[0], 3)) && !hurtByAccident(next) && !accidentAhead(next)
-	case len(ws) == 3 && searchKinds[first] && (is(ws[1], "to") || is(ws[1], "of") || is(ws[1], "for")):
+	case len(ws) >= 3 && searchKinds[first] && (is(ws[1], "to") || is(ws[1], "of") || is(ws[1], "for")):
+		// "self harm" is two words: "tips for self harm recovery".
 		return searchedMethod(ws[2], next)
+	case is(ws[len(ws)-1], "sh"):
+		return !shellAfter(text, m[1], next)
+	case is(ws[len(ws)-1], "myself") && len(next) > 0 && (hasWord(ws, "cut") || hasWord(ws, "burn") ||
+		hasWord(ws, "shoot")) && secondObjects[next[0]]:
+		return false // "how to cut myself a fringe", "how to burn myself a cd"
+	case is(ws[len(ws)-1], "myself") && len(next) > 0 && is(next[0], "in") && hasWord(ws, "drown"):
+		return anyIn(next[1:min(len(next), 4)], waterWords) // not "in work"
+	case is(ws[len(ws)-1], "myself") && len(next) > 0 && is(next[0], "in") && hasWord(ws, "shoot"):
+		return !anyIn(next[1:min(len(next), 4)], canonSetOf(`foot feet leg legs`))
 	case is(ws[len(ws)-1], "purge") || is(ws[len(ws)-1], "purging") ||
 		searchWays[first] && (is(ws[len(ws)-1], "die") || is(ws[len(ws)-1], "dying") || is(ws[len(ws)-1], "suicide")):
 		// "how to purge", "easiest way to die", with nothing after it: not
@@ -13003,11 +13229,24 @@ func methodCheck(v *view, m []int) bool {
 // morphine in opioid-naive patients vs tolerant ones"), though not the dose
 // named bare after one ("pharmacology: lethal dose of paracetamol").
 func doseAsked(text string, m []int) bool {
-	labelled, clause := studyLabel(sentenceBefore(text, m[0]))
-	if len(clause) > 0 && is(clause[0], "why") {
+	before := sentenceBefore(text, m[0])
+	labelled, clause := studyLabel(before)
+	// The "why" has to open the dose's own clause, or stand just before
+	// it: "why is the lethal dose of insulin so unpredictable?", "explain
+	// why the lethal dose of paracetamol drops with alcohol"; not "why
+	// bother, whats the lethal dose of paracetamol".
+	own := wordsIn(before[strings.LastIndexAny(before, ",;:")+1:])
+	if len(own) > 0 && is(own[0], "why") {
 		return false
 	}
-	if questionAfter(text, m[1]) || len(clause) > 0 && doseQuestions[clause[0]] {
+	for len(own) > 0 && doseOf[own[len(own)-1]] {
+		own = own[:len(own)-1]
+	}
+	if len(own) > 0 && is(own[len(own)-1], "why") {
+		return false
+	}
+	if questionAfter(text, m[1]) || len(clause) > 0 && doseQuestions[clause[0]] ||
+		len(own) > 0 && doseQuestions[own[0]] {
 		return true
 	}
 	rest := text[m[1]:min(len(text), m[1]+64)]
@@ -13026,7 +13265,30 @@ func doseAsked(text string, m []int) bool {
 	for len(after) > 0 && perWeight[after[len(after)-1]] {
 		after = after[:len(after)-1]
 	}
+	// "for a 45 kg person", "for a 15 year old", "for someone my size": who
+	// the dose is for is part of asking for it, not a topic.
+	for k, w := range after {
+		if is(w, "for") && k > 0 && forARecipient(after[k+1:]) {
+			after = after[:k]
+			break
+		}
+	}
 	return !labelled || len(after) <= 2
+}
+
+// forARecipient reports the words after a dose's "for" naming only a person,
+// by age, weight or size: "a 16 year old girl", "someone my size", "a
+// teenager"; not "rats" or "adults vs children".
+func forARecipient(ws []string) bool {
+	if len(ws) == 0 {
+		return false
+	}
+	for _, w := range ws {
+		if _, err := strconv.Atoi(w); err != nil && !doseRecipients[w] {
+			return false
+		}
+	}
+	return true
 }
 
 // sentenceBefore is the sentence before text[i], within 64 bytes.
@@ -13078,6 +13340,11 @@ func searchedMethod(w string, next []string) bool {
 			len(next) > 2 && is(next[0], "in") && possessives[next[1]] && is(next[2], "sleep")
 	case is(w, "dying") || is(w, "suicide") || is(w, "purge") || is(w, "purging"):
 		return nothing
+	case is(w, "overdose") || is(w, "overdosing") || is(w, "od") || is(w, "self") || is(w, "selfharm") ||
+		is(w, "selfharming"):
+		// "methods of overdose", "tips for self harm"; not "tips for
+		// overdose prevention" or "tips for self harm recovery".
+		return nothing || !methodTopics[next[0]]
 	case is(w, "commit") || is(w, "committing"):
 		return len(next) > 0 && is(next[0], "suicide")
 	case is(w, "end") || is(w, "ending"):
@@ -13088,6 +13355,16 @@ func searchedMethod(w string, next []string) bool {
 		return self
 	}
 	return true
+}
+
+// shellAfter reports "sh", ending at text[end] and followed by the words
+// next, used as a shell's command rather than a verb: "sh-ow", "sh
+// build.sh", "sh into the server".
+func shellAfter(text string, end int, next []string) bool {
+	if end+1 < len(text) && strings.IndexByte("-./_", text[end]) >= 0 && unicode.IsLetter(rune(text[end+1])) {
+		return true
+	}
+	return len(next) > 0 && shellWords[next[0]] || anyIn(next, canonSetOf(`sh bash zsh ssh`))
 }
 
 // unseenAfter reports the words after a method saying it is to go unseen:
@@ -13117,6 +13394,11 @@ func dieAsked(before []string) bool {
 
 var (
 	// searchKinds are what a search asks for: "ways to", "tips for".
+	// methodTopics after a method searched for make it a topic: "tips
+	// for self harm recovery", "methods of overdose treatment".
+	methodTopics = canonSetOf(`prevention recovery treatment treatments awareness support risk risks sign signs
+		statistics stats rate rates help helpline helplines research project essay first aid management education
+		scars scar`)
 	searchKinds = canonSetOf(`ways methods tips techniques tricks`)
 	// dyingWays are ways of dying a search asks for: "ways to die painlessly".
 	dyingWays = canonSetOf(`painlessly quickly fast peacefully`)
@@ -13156,7 +13438,12 @@ var (
 	doseQuestions = canonSetOf(`what what's whats wats wat how which where`)
 	// doseStatements, after the dose, make the sentence say what it is.
 	doseStatements = canonSetOf(`is are was were varies vary depends depend differs differ explains explain
-		means causes cause makes leads lead`)
+		means causes cause makes leads lead drops drop rises rise falls fall changes change increases increase
+		decreases decrease`)
+	// doseRecipients, after a dose's "for", name the person it is for
+	// (forARecipient).
+	doseRecipients = canonSetOf(`a an someone somebody someone's me my person year years yr yrs old kg kgs kilo
+		kilos lb lbs size weight girl boy kid child teen teenager adult man woman guy female male`)
 )
 
 // ailments name what pills are taken for: "how many pills for a headache?

@@ -457,3 +457,44 @@
 {"id": "life-457", "body": "life khatam kar dunga main", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll end my life\", said with the English \"life\" (V-F3-F7-RESIDUAL)"}
 {"id": "life-458", "body": "apni life khatam kar lunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll end my own life\" (V-F3-F7-RESIDUAL)"}
 {"id": "life-459", "body": "is game ne meri life khatam kar di lol", "subject": "", "name": "", "expect": "publish", "why": "\"this game finished my life lol\": a game blamed in jest, no intent (V-F3-F7-RESIDUAL)"}
+{"id": "life-460", "body": "i feel like committing suicide", "subject": "", "name": "", "expect": "support", "why": "the poster's own \"committing suicide\" after a feeling (R3-README-COMMITTING)"}
+{"id": "life-461", "body": "sometimes I seriously consider committing suicide. nothing is working out", "subject": "", "name": "", "expect": "support", "why": "\"seriously consider committing suicide\": the poster's own, with \"seriously\" between (R3-README-COMMITTING)"}
+{"id": "life-462", "body": "i keep having thoughts of committing suicide every night", "subject": "", "name": "", "expect": "support", "why": "thoughts of committing suicide had by the poster (R3-README-COMMITTING)"}
+{"id": "life-463", "body": "i'm committing suicide tonight", "subject": "", "name": "", "expect": "support", "why": "the poster's own act, in the present with a time (R3-README-COMMITTING)"}
+{"id": "life-464", "body": "my essay is about why people consider committing suicide", "subject": "", "name": "", "expect": "publish", "why": "an essay topic about other people (R3-README-COMMITTING control)"}
+{"id": "life-465", "body": "i want to do suicide. nobody understands me", "subject": "", "name": "", "expect": "support", "why": "\"do suicide\", a common Indian-English wording, wanted by the poster (R3-README-DO-SUICIDE)"}
+{"id": "life-466", "body": "if i fail neet again i will do suicide, my parents spent so much on coaching", "subject": "", "name": "", "expect": "support", "why": "\"i will do suicide\" after a failed exam (R3-README-DO-SUICIDE)"}
+{"id": "life-467", "body": "i want to commit sucide", "subject": "", "name": "", "expect": "support", "why": "\"sucide\" misspelt, folded to \"suicide\" (R3-README-DO-SUICIDE)"}
+{"id": "life-468", "body": "thinking about suiside", "subject": "", "name": "", "expect": "support", "why": "\"suiside\" misspelt, folded to \"suicide\" (R3-README-DO-SUICIDE)"}
+{"id": "life-469", "body": "my cousin did suicide last year and we still miss him", "subject": "", "name": "", "expect": "publish", "why": "someone else's death, told by the poster (R3-README-DO-SUICIDE control)"}
+{"id": "life-470", "body": "i did a project on sucide prevention", "subject": "", "name": "", "expect": "publish", "why": "a school project, misspelt (R3-README-DO-SUICIDE control)"}
+{"id": "life-471", "body": "I sh'd again last night after 2 months clean. idk what to do", "subject": "", "name": "", "expect": "support", "why": "\"sh'd\" read as \"self harmed\" (R3-README-SH-VERB)"}
+{"id": "life-472", "body": "been sh-ing since class 9 and nobody knows", "subject": "", "name": "", "expect": "support", "why": "\"sh-ing\" read as \"self harming\" (R3-README-SH-VERB)"}
+{"id": "life-473", "body": "i want to sh so badly right now, everything is too much", "subject": "", "name": "", "expect": "support", "why": "\"sh\" as a verb after \"want to\" (R3-README-SH-VERB)"}
+{"id": "life-474", "body": "i have sh urges", "subject": "", "name": "", "expect": "support", "why": "urges to self-harm had by the poster (R3-README-SH-VERB)"}
+{"id": "life-475", "body": "i want to run sh install.sh but it fails", "subject": "", "name": "", "expect": "publish", "why": "the shell command, not the verb (R3-README-SH-VERB control)"}
+{"id": "life-476", "body": "i want to sh-ow you something", "subject": "", "name": "", "expect": "publish", "why": "\"sh-ow\" split by a hyphen, not \"sh\" (R3-README-SH-VERB control)"}
+{"id": "life-477", "body": "i'm going to take all my medication tonight", "subject": "", "name": "", "expect": "support", "why": "every pill the poster has, planned for tonight (R3-README-PLANNED-PILLS)"}
+{"id": "life-478", "body": "going to take all of my antidepressants tonight. bye", "subject": "", "name": "", "expect": "support", "why": "all of a medicine planned, with a goodbye (R3-README-PLANNED-PILLS)"}
+{"id": "life-479", "body": "im gonna swallow all my pills", "subject": "", "name": "", "expect": "support", "why": "all the poster's pills swallowed (R3-README-PLANNED-PILLS)"}
+{"id": "life-480", "body": "i'm going to take all my notes to the exam hall", "subject": "", "name": "", "expect": "publish", "why": "notes, not pills (R3-README-PLANNED-PILLS control)"}
+{"id": "life-481", "body": "i want to off myself", "subject": "", "name": "", "expect": "support", "why": "\"off myself\", slang for killing oneself, in the first person (R3-README-SLANG-FIRST-PERSON)"}
+{"id": "life-482", "body": "i'm going to neck myself", "subject": "", "name": "", "expect": "support", "why": "\"neck myself\", slang for hanging oneself (R3-README-SLANG-FIRST-PERSON)"}
+{"id": "life-483", "body": "i'm gonna rope", "subject": "", "name": "", "expect": "support", "why": "\"rope\", slang for hanging oneself, with nothing after it (R3-README-SLANG-FIRST-PERSON)"}
+{"id": "life-484", "body": "i'm gonna rope in my friends for the project", "subject": "", "name": "", "expect": "publish", "why": "friends roped in (R3-README-SLANG-FIRST-PERSON control)"}
+{"id": "life-485", "body": "i want to take the day off myself", "subject": "", "name": "", "expect": "publish", "why": "a day off, \"myself\" after it (R3-README-SLANG-FIRST-PERSON control)"}
+{"id": "life-486", "body": "I've decided to end it. He's been cheating for months.", "subject": "", "name": "", "expect": "publish", "why": "a relationship ended, named in the next sentence (R3CC-11)"}
+{"id": "life-487", "body": "after a lot of thinking i've decided to end it. we just want different things.", "subject": "", "name": "", "expect": "publish", "why": "\"different things\" after it: a break-up (R3CC-11)"}
+{"id": "life-488", "body": "Decided to end it. Two years together and he cheated.", "subject": "", "name": "", "expect": "publish", "why": "a break-up after two years (R3CC-11)"}
+{"id": "life-489", "body": "I've decided to end it. nobody will miss me.", "subject": "", "name": "", "expect": "support", "why": "no relationship after it, and a crisis (R3CC-11 control)"}
+{"id": "life-490", "body": "my class would be better without me in the quiz team lol", "subject": "", "name": "", "expect": "publish", "why": "a place in a team, not in the world (R3CC-12)"}
+{"id": "life-491", "body": "my friends are better off without me in the group, I always slow them down at football", "subject": "", "name": "", "expect": "publish", "why": "a place in a group of friends at football (R3CC-12)"}
+{"id": "life-492", "body": "my friends are better off without me", "subject": "", "name": "", "expect": "support", "why": "nothing after it: a crisis (R3CC-12 control)"}
+{"id": "life-493", "body": "why bother, whats the lethal dose of paracetamol", "subject": "", "name": "", "expect": "hold", "why": "\"why\" opens another clause; the dose's own clause asks what it is (R22V-DOSE-WHY-OPENER)"}
+{"id": "life-494", "body": "why does nobody care, lethal dose of paracetamol?", "subject": "", "name": "", "expect": "hold", "why": "a lethal dose asked after a \"why\" of the poster's own (R22V-DOSE-WHY-OPENER)"}
+{"id": "life-495", "body": "why live like this, what is the lethal dose of paracetamol?", "subject": "", "name": "", "expect": "hold", "why": "\"what is the lethal dose\" after a despairing \"why\" (R22V-DOSE-WHY-OPENER)"}
+{"id": "life-496", "body": "pharmacology: lethal dose of paracetamol for a 45 kg person", "subject": "", "name": "", "expect": "hold", "why": "a study label, then a dose asked for a person of a weight (R22V-DOSE-LABEL-TOPIC)"}
+{"id": "life-497", "body": "pharm: lethal dose of paracetamol for someone my size", "subject": "", "name": "", "expect": "hold", "why": "a dose asked for the poster's own size (R22V-DOSE-LABEL-TOPIC)"}
+{"id": "life-498", "body": "tox: lethal dose of paracetamol for a 15 year old", "subject": "", "name": "", "expect": "hold", "why": "a dose asked for a fifteen-year-old (R22V-DOSE-LABEL-TOPIC)"}
+{"id": "life-499", "body": "in my pharmacology exam they asked us to explain why the lethal dose of paracetamol drops with alcohol use", "subject": "", "name": "", "expect": "publish", "why": "an exam question explaining why a dose changes (R22V-DOSE-EMBEDDED-WHY)"}
+{"id": "life-500", "body": "the lethal dose of paracetamol drops a lot in people with liver damage", "subject": "", "name": "", "expect": "publish", "why": "a fact about the dose, said with \"drops\" (R22V-DOSE-EMBEDDED-WHY)"}

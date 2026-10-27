@@ -3717,6 +3717,33 @@ func TestFilterReadsNoCharacterAsAPhrase(t *testing.T) {
 	}
 }
 
+// TestFilterPlansTakeEveryMethodActsPill shows support for every pill of
+// pillObjects taken all at once, said as methodActs reads it ("i will take
+// all my …") and as supportRuns' plans do ("i'm going to take all of my …",
+// "gonna swallow all my sleeping …"), so the two lists cannot drift apart.
+func TestFilterPlansTakeEveryMethodActsPill(t *testing.T) {
+	for _, pill := range pillObjects {
+		for _, body := range []string{
+			"i will take all my " + pill + " tonight",
+			"i'm going to take all my " + pill + " tonight",
+			"going to take all of my " + pill + " tonight. bye",
+			"im gonna swallow all my sleeping " + pill,
+		} {
+			if v := checkContent(contentInput{Body: normalizeBody(body)}, false); v.Outcome != contentSupport {
+				t.Errorf("%q: got %s (%s %q), want support", body, corpusOutcomes[v.Outcome], v.Rule, v.Match)
+			}
+		}
+		for _, body := range []string{
+			"i'm going to take all my " + pill + " before breakfast, doctor said",
+			"i'm going to take all my " + pill + " with me on the trip",
+		} {
+			if v := checkContent(contentInput{Body: normalizeBody(body)}, false); v.Outcome != contentPublish {
+				t.Errorf("%q: got %s (%s %q), want publish", body, corpusOutcomes[v.Outcome], v.Rule, v.Match)
+			}
+		}
+	}
+}
+
 // corpusItem is one labelled post in testdata/filter_corpus: what was posted,
 // and what the filter should do with it.
 type corpusItem struct {

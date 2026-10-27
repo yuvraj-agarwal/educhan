@@ -503,3 +503,19 @@
 {"id": "risk-503", "body": "grade 9 student here, dm me if you need the bio notes", "subject": "", "name": "", "expect": "publish", "why": "the poster says they are a grade 9 student and offers notes: no one looked for (V-F6-PARTIAL)"}
 {"id": "risk-504", "body": "i'm a class 8 girl dm me for the notes", "subject": "", "name": "", "expect": "publish", "why": "the poster says they are a class 8 girl and offers notes: no one looked for (V-F6-PARTIAL)"}
 {"id": "risk-505", "body": "hey class 8 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "a school year's girls greeted and looked for, then \"dm me\" (V-F6-PARTIAL)"}
+{"id": "risk-506", "body": "just do suicide yaar", "subject": "", "name": "", "expect": "hold", "why": "\"do suicide\" urged on the reader (R3-README-DO-SUICIDE)"}
+{"id": "risk-507", "body": "how to self harm without scars", "subject": "", "name": "", "expect": "hold", "why": "a method of self-harm searched for (R3-README-HOWTO-SELFHARM)"}
+{"id": "risk-508", "body": "how do i cut myself", "subject": "", "name": "", "expect": "hold", "why": "a method asked for, with the poster as its object (R3-README-HOWTO-SELFHARM)"}
+{"id": "risk-509", "body": "easiest way to self harm", "subject": "", "name": "", "expect": "hold", "why": "an easiest way searched for (R3-README-HOWTO-SELFHARM)"}
+{"id": "risk-510", "body": "how to sh without scars", "subject": "", "name": "", "expect": "hold", "why": "\"sh\" for self-harm in a how-to (R3-README-HOWTO-SELFHARM)"}
+{"id": "risk-511", "body": "how to cut myself a fringe", "subject": "", "name": "", "expect": "publish", "why": "a haircut, \"myself\" then a second object (R3-README-HOWTO-SELFHARM control)"}
+{"id": "risk-512", "body": "how to burn myself a cd", "subject": "", "name": "", "expect": "publish", "why": "a cd burned for oneself (R3-README-HOWTO-SELFHARM control)"}
+{"id": "risk-513", "body": "how to stop self harming", "subject": "", "name": "", "expect": "publish", "why": "asking how to stop, not how to do it (R3-README-HOWTO-SELFHARM control)"}
+{"id": "risk-514", "body": "bro just commit suicide", "subject": "", "name": "", "expect": "hold", "why": "\"commit suicide\" urged, the verb before the noun (R3-README-COMMIT-ORDER)"}
+{"id": "risk-515", "body": "do everyone a favor and commit suicide", "subject": "", "name": "", "expect": "hold", "why": "\"do everyone a favor and commit suicide\" (R3-README-COMMIT-ORDER)"}
+{"id": "risk-516", "body": "commit suicide you loser", "subject": "", "name": "", "expect": "hold", "why": "urged, then an insult (R3-README-COMMIT-ORDER)"}
+{"id": "risk-517", "body": "commit suicide prevention to memory", "subject": "", "name": "", "expect": "publish", "why": "\"suicide prevention\" committed to memory (R3-README-COMMIT-ORDER control)"}
+{"id": "risk-518", "body": "Our PSHE project is on methods of self-harm prevention in schools", "subject": "", "name": "", "expect": "publish", "why": "methods of prevention, not of self-harm (R3CC-5)"}
+{"id": "risk-519", "body": "tips for overdose prevention at festivals", "subject": "", "name": "", "expect": "publish", "why": "overdose prevention (R3CC-5)"}
+{"id": "risk-520", "body": "Any tips for self harm recovery? I'm 6 months clean", "subject": "", "name": "", "expect": "publish", "why": "recovery after self-harm (R3CC-5)"}
+{"id": "risk-521", "body": "tips for overdosing", "subject": "", "name": "", "expect": "hold", "why": "tips for an overdose itself (R3CC-5 control)"}
