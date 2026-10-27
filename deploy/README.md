@@ -583,7 +583,7 @@ PASS_STATE=$(curl -fsS "${PUBLIC_URL}/api/pass") || PASS_STATE=
 [[ $PASS_STATE == *'"enabled":'* ]] ||
   { echo "${PUBLIC_URL} runs an image from before the Pass: deploy the current one first (sections 2.5 and 2.6)."; exit 1; }
 [[ $PASS_STATE != *'"enabled":true'* ]] ||
-  { echo "The Pass is on at ${PUBLIC_URL} already: change one setting instead (section 2.10, after this block)."; exit 1; }
+  { echo "The Pass is on at ${PUBLIC_URL} already. If a run stopped at its last step, that step went through; either way, see section 2.10 after this block."; exit 1; }
 [[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
   { echo "The captcha is off at ${PUBLIC_URL}: give the service its secret first (section 2.4)."; exit 1; }
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
@@ -651,6 +651,7 @@ done
 # and the service moves onto them straight away.
 printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
 printf '%s' "$WEBHOOK_SECRET" | gcloud secrets versions add educhan-stripe-webhook-secret --data-file=-
+echo "Moving the service onto webhook endpoint ${ENDPOINT}, under Product ${PRODUCT}."
 gcloud run services update educhan --region "$REGION" \
   --update-secrets "EDUCHAN_PASS_SECRET=educhan-pass-secret:latest,EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest,EDUCHAN_STRIPE_WEBHOOK_SECRET=educhan-stripe-webhook-secret:latest" \
   --update-env-vars "EDUCHAN_STRIPE_PRICE_ID=${PRICE_ID},EDUCHAN_PUBLIC_URL=${PUBLIC_URL}"
@@ -662,15 +663,62 @@ A run that stops can be run again, but each run that gets past its checks makes
 another Product, Price and webhook endpoint in Stripe. Once one prints "Done",
 under *Developers → Webhooks*, delete every other endpoint whose URL ends in
 `/api/pass/stripe-webhook`, since the server can't verify its deliveries, and
-archive every other "educhan Pass" Product.
+archive every other "educhan Pass" Product. A run can also stop in its last
+step, the update, after the update went through; the next run then says the
+Pass is on already. Clean up the same way, keeping the endpoint and Product that
+the stopped run named when it printed "Moving the service onto". If that line
+is gone, the endpoint to keep is the one whose signing secret (*Reveal* on its
+page) is the first line this prints, and the Product to keep is the one with the
+Price on the second:
+
+```bash
+gcloud secrets versions access latest --secret=educhan-stripe-webhook-secret; echo
+gcloud run services describe educhan --region "$REGION" | grep EDUCHAN_STRIPE_PRICE_ID
+```
 
 Once the Pass is on, on sale or paused, the block refuses to run. Its new
 endpoint and signing secret would leave any event Stripe is still retrying to
 the old endpoint unverifiable, so a payment among them would never become a
 Pass, and a refund or dispute would take nothing back. Change only what needs
-changing instead: a new Price as below, or a new restricted key as a new version
-of `educhan-stripe-secret-key` followed by a new revision, the way section 2.4
-rotates the captcha's secret, and only then the old key deleted in Stripe.
+changing instead: a new Price as below, or a new restricted key, made as above.
+The key goes in with this block, which makes the setup block's two calls with it
+before storing it, then moves the service onto it; delete the old key in Stripe
+only once it prints "Done":
+
+```bash
+export REGION="${REGION:-asia-south1}"
+(
+set -euo pipefail
+trap 'echo "Stopped at the step that failed above; keep the old key until a run prints Done." >&2' ERR
+field() { python3 -c "import sys,json;print(json.load(sys.stdin)[\"$1\"])"; }
+SERVICE_JSON=$(gcloud run services describe educhan --region "$REGION" --format=json)
+setting() {
+  python3 -c "import sys,json;print(next((e.get('value','') for e in json.load(sys.stdin)['spec']['template']['spec']['containers'][0].get('env',[]) if e['name']=='$1'),''))" <<<"$SERVICE_JSON"
+}
+PRICE_ID=$(setting EDUCHAN_STRIPE_PRICE_ID)
+PUBLIC_URL=$(setting EDUCHAN_PUBLIC_URL)
+TAX=$(setting EDUCHAN_STRIPE_AUTOMATIC_TAX)
+# Read as the server reads it.
+case ${TAX,,} in 1|true|yes|on) TAX=true ;; *) TAX=false ;; esac
+[[ $PRICE_ID == price_* && -n $PUBLIC_URL ]] ||
+  { echo 'The service has no Pass Price or address set, so the Pass is not on.'; exit 1; }
+read -rsp 'New Stripe restricted key: ' STRIPE_KEY; echo
+[[ $STRIPE_KEY == [rs]k_* ]] || { echo 'That is not a Stripe key (sk_… or rk_…).'; exit 1; }
+curl -fsS "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" >/dev/null ||
+  { echo "The new key can't read the Price: paste it whole, from the same mode (test or live) as the old one, with Prices: Read."; exit 1; }
+SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" \
+  -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
+  -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" \
+  -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. The key needs Checkout Sessions: Write."; exit 1; }
+curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
+  -u "${STRIPE_KEY}:" >/dev/null
+printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
+gcloud run services update educhan --region "$REGION" \
+  --update-secrets EDUCHAN_STRIPE_SECRET_KEY=educhan-stripe-secret-key:latest
+echo "Done. The service uses the new key; delete the old one in Stripe."
+)
+```
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price and no `"tax"`: with `EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server
@@ -722,7 +770,8 @@ export PUBLIC_URL=https://YOUR-DOMAIN   # a bare origin, as above
 PUBLIC_URL="${PUBLIC_URL%/}"
 
 read -rsp 'Stripe secret key: ' STRIPE_ADMIN; echo
-# Newest first. Move the one the setup block named when it printed "Done".
+# Newest first. Move the one the setup block last named, at "Moving the
+# service onto" or "Done" (see the cleanup above).
 curl -fsS 'https://api.stripe.com/v1/webhook_endpoints?limit=100' -u "${STRIPE_ADMIN}:" \
   | python3 -c 'import sys,json;[print(e["id"],e["url"]) for e in sorted(json.load(sys.stdin)["data"],key=lambda e:-e["created"])]'
 read -rp 'Endpoint to move (we_…): ' ENDPOINT
