@@ -630,12 +630,15 @@ server that would refuse what it sends.
   at 128 where it showed at about 188. So its colours are converted to the sRGB values
   that show the same light, as Chromium converts them — unless an `sRGB` chunk or an
   `iCCP` profile takes its place, as it does in a browser (one the browser cannot read
-  takes nothing's place, and the gamma is applied there and here, but a profile that
-  inflates to nearly 64 MiB, which the browser may pass over for its size, is taken as
-  read here and no gamma is applied: see `maxICCProfile` in `internal/media/gamma.go`),
-  or the gamma is within 5% of the usual 1/2.2, which browsers leave alone. The checksum
-  recorded for an attachment is of the stored file, so it does not depend on the metadata
-  an upload arrived with, beyond an orientation that turns the picture.
+  takes nothing's place, and the gamma is applied there and here; the browser also passes
+  over a profile too large for the memory it sets aside, while one that inflates to no
+  more than 64 MiB is taken as read here, with no gamma applied, so the two disagree over
+  a profile that inflates to within about the upload's own size of 64 MiB, a band of tens
+  of MiB for an upload near the 31 MiB limit: see `maxICCProfile` in
+  `internal/media/gamma.go`), or the gamma is within 5% of the usual 1/2.2, which browsers
+  leave alone. The checksum recorded for an attachment is of the stored file, so it does
+  not depend on the metadata an upload arrived with, beyond an orientation that turns the
+  picture.
 - **Files stored before this** keep their metadata: a server that took uploads before
   it rewrote them kept them as they came, and nothing rewrites them now, so they are
   served that way until their posts are deleted. The deployment in `deploy/` has kept
