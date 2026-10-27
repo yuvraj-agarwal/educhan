@@ -7120,10 +7120,14 @@ var (
 		// 13-16 category results".
 		youthNoun+`[ \t]+\d{1,2}(?:~?(?:-|to)~?\d{1,2})?`,
 		// "any 9th graders here", "any 8th class girls".
-		`any~\d{1,2}(?:st|nd|rd|th)~`+words(`graders?`, words(`class`, `grade`, `std`, `standard`)+`~`+youthNoun),
+		// With no "any", ageCheck wants more than one youth and something
+		// asked of them after: "8th class girls dm me", "9th grade girls
+		// hmu", "class 8 girls dm", not "class 8 girls relay results".
+		`(?:any~)?\d{1,2}(?:st|nd|rd|th)~`+words(`graders?`, words(`class`, `grade`, `std`, `standard`)+`~`+
+			youthNoun),
 		words(`any`, `looking~for`, `searching~for`)+`~(?:`+words(`a`, `an`, `some`)+`~)?`+youthNoun+`~\d{1,2}`+
 			`(?:~?(?:-|to)~?\d{1,2})?`,
-		`any~`+words(`class`, `grade`, `std`, `year`)+`~\d{1,2}(?:st|nd|rd|th)?~`+youthNoun,
+		`(?:any~)?`+words(`class`, `grade`, `std`, `standard`, `year`)+`~\d{1,2}(?:st|nd|rd|th)?~`+youthNoun,
 		`any~`+youthNoun+`~(?:here~)?`+words(`in`, `from`)+`~(?:`+words(`class`, `grade`, `std`, `standard`,
 			`year`)+`~\d{1,2}|\d{1,2}(?:st|nd|rd|th)(?:~`+words(`grade`, `class`, `std`, `standard`)+`)?)`,
 		`where~(?:exactly~)?`+words(`is`, `'?s`)+`~`+words(`your`, `ur`)+`~`+readerPlaces,
@@ -7720,6 +7724,21 @@ func ageCheck(v *view, m []int) bool {
 		// results" or "the girls 14+ team".
 		before := wordsIn(clauseBefore(v.text, m[0]))
 		return len(next) == 0 || seekingTails[next[0]] && !(len(before) > 0 && groupLeads[before[len(before)-1]])
+	case len(ws) > 2 && (schoolYearNouns[ws[0]] || ordinalWord.MatchString(ws[0])) && youthWord(ws[len(ws)-1]):
+		// With no "any", a school year's youths, more than one, are looked
+		// for only with something asked of them after: "class 8 girls dm
+		// me", "9th graders hmu", not "class 8 girls relay results are out",
+		// "the class 8 girls dm me every day", "grade 9 student here, dm me"
+		// or "grade 9 student. message me".
+		if !strings.HasSuffix(ws[len(ws)-1], "s") {
+			return false
+		}
+		before := wordsIn(clauseBefore(v.text, m[0]))
+		lead := ""
+		if len(before) > 0 {
+			lead = before[len(before)-1]
+		}
+		return len(next) > 0 && seekingTails[next[0]] && !groupLeads[lead] && !articles[lead]
 	}
 	if readerStatement[strings.TrimRight(ws[0], "'")] || is(ws[0], "you") && len(ws) > 1 && is(ws[1], "are") ||
 		is(ws[0], "u") && len(ws) > 1 && is(ws[1], "r") {
@@ -7754,6 +7773,9 @@ func ageCheck(v *view, m []int) bool {
 	next = nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
 	return len(next) == 0 || !areaTopics[next[0]]
 }
+
+// youthWord reports one of youthNouns, or a grader: "girls", "9th graders".
+func youthWord(w string) bool { return youthNouns[w] || is(w, "grader") || is(w, "graders") }
 
 // ageRuleAfter reports an age limit stated in s: "for 14 and above", "14+
 // only", "under 15 only", "the age limit is 16", "eligible". An adult's age

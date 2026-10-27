@@ -476,3 +476,18 @@
 {"id": "risk-476", "body": "jaa mar kha le kuch, bhookha hai tu", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: \"go eat something, you're hungry\" (R2D-4 control)"}
 {"id": "risk-477", "body": "how old are you? send me what you look like", "subject": "", "name": "", "expect": "hold", "why": "an age question then asking to be sent what the reader looks like (F8, asked another way)"}
 {"id": "risk-478", "body": "how old are you? keep it just us ok", "subject": "", "name": "", "expect": "hold", "why": "an age question then asking to keep it between the two of them (F8, \"just us\" said another way)"}
+{"id": "risk-479", "body": "class 8 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "a school year's girls looked for, then \"dm me\", with no \"any\" before them (V-F6-PARTIAL)"}
+{"id": "risk-480", "body": "8th class girls dm me", "subject": "", "name": "", "expect": "hold", "why": "eighth class girls looked for, then \"dm me\" (V-F6-PARTIAL)"}
+{"id": "risk-481", "body": "class 9 girls dm", "subject": "", "name": "", "expect": "hold", "why": "a school year's girls looked for with a bare \"dm\" (V-F6-PARTIAL)"}
+{"id": "risk-482", "body": "std 8 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "\"std 8\" girls looked for, then \"dm me\" (V-F6-PARTIAL)"}
+{"id": "risk-483", "body": "grade 7 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "seventh grade girls looked for, then \"dm me\" (V-F6-PARTIAL)"}
+{"id": "risk-484", "body": "9th grade girls hmu", "subject": "", "name": "", "expect": "hold", "why": "ninth grade girls looked for, then \"hmu\" (V-F6-PARTIAL)"}
+{"id": "risk-485", "body": "9th graders hmu", "subject": "", "name": "", "expect": "hold", "why": "ninth graders looked for, then \"hmu\" (V-F6-PARTIAL)"}
+{"id": "risk-486", "body": "class 8 girls relay results are out", "subject": "", "name": "", "expect": "publish", "why": "a school year's girls named for their relay results, no one looked for (V-F6-PARTIAL)"}
+{"id": "risk-487", "body": "the class 8 girls dm me every day about the project lol", "subject": "", "name": "", "expect": "publish", "why": "\"the\" class 8 girls, who message the poster about a project: a group the poster knows, not looked for (V-F6-PARTIAL)"}
+{"id": "risk-488", "body": "grade 7 girls basketball tryouts are tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a school year's girls named for their tryouts (V-F6-PARTIAL)"}
+{"id": "risk-489", "body": "9th graders, the field trip form is due friday", "subject": "", "name": "", "expect": "publish", "why": "ninth graders addressed about a form (V-F6-PARTIAL)"}
+{"id": "risk-490", "body": "class 8 girls won the relay, dm me for photos", "subject": "", "name": "", "expect": "publish", "why": "a school year's girls who won a relay, photos offered: no one looked for (V-F6-PARTIAL)"}
+{"id": "risk-503", "body": "grade 9 student here, dm me if you need the bio notes", "subject": "", "name": "", "expect": "publish", "why": "the poster says they are a grade 9 student and offers notes: no one looked for (V-F6-PARTIAL)"}
+{"id": "risk-504", "body": "i'm a class 8 girl dm me for the notes", "subject": "", "name": "", "expect": "publish", "why": "the poster says they are a class 8 girl and offers notes: no one looked for (V-F6-PARTIAL)"}
+{"id": "risk-505", "body": "hey class 8 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "a school year's girls greeted and looked for, then \"dm me\" (V-F6-PARTIAL)"}
