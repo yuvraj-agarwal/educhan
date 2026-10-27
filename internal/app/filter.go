@@ -1303,6 +1303,36 @@ var (
 		average averages tally up predictor poll`)
 )
 
+// mailAskRuns ask for an address in the shapes the ask rules read for an
+// app or a number, as word runs (firstRun): "ur email pls", "email address
+// pls", "may i have your email address?", "can i get your gmail", "pls give
+// ur e-mail", "give me ur mail id".
+var mailAskRuns = runsOf(
+	`your|ur|yo|ya personal|school|college|uni? e|g? email|gmail|mail id|address|addy? pls|plz|please|plox|plis`,
+	`email|gmail id|address|addy pls|plz|please|plox|plis`,
+	`can|could|may i get|have|grab your|ur|ya personal|school|college|uni? e|g? email|gmail|mail id|address|addy?`,
+	`give|gimme|send|drop|share|tell|dm|text me? your|ur|yo|ya personal|school|college|uni? e|g? email|gmail|mail
+		id|address|addy?`,
+)
+
+// mailAskCheck is askCheck for mailAskRuns. A bare "mail" is an address only
+// as "e-mail" or "g-mail" or with "id", "address" or "addy" after it ("give
+// me ur mail id", not "can i get your mail"), and nothing may follow the ask
+// but its end (mailTails): "ur email pls", not "ur email pls proofread it" or
+// "can i get your email draft checked".
+func mailAskCheck(v *view, m []int) bool {
+	ws := wordsIn(v.text[m[0]:m[1]])
+	for k, w := range ws {
+		if w == "mail" && !(k > 0 && (ws[k-1] == "e" || ws[k-1] == "g")) && !(k+1 < len(ws) && mailLabels[ws[k+1]]) {
+			return false
+		}
+	}
+	if next := nextWords(clauseAfter(v.text, m[1]), 1); len(next) > 0 && !mailTails[next[0]] {
+		return false
+	}
+	return askCheck(v, m)
+}
+
 // atAskRule asks for a handle by its "@" alone: "drop ur @", "what's your @".
 // Its check reads what follows, so that the "@" is not the start of one.
 var atAskRule = bothViews(`\b` + whatsYour + `~(?:me~)?` + yours + `[ \t]*@`)
@@ -1647,10 +1677,13 @@ var (
 		words(`is`, `hai`) + `\b)?\s*(@?)([\pL\pN._]{2,30})(#[\pL\pN]{3,5})?`)
 	// A Riot ID after Valorant's or League's name, which needs its tag:
 	// "valo id madeup#1234", "my valorant is madeup#1234", "riot:
-	// madeup#1234", not "val: 3/10" or "valo is in unreal".
-	riotTagHandle = bothViews(`\b` + words(`valorant`, `valo`, `val`, `riot`, `lol`, `league`) + `(?:~` +
+	// madeup#1234", not "val: 3/10" or "valo is in unreal". The name and
+	// the tag are whole words, so a hashtag run is none ("#valentines#love",
+	// "#leagueoflegends#gaming"); riotTagCheck wants a label after "val",
+	// "lol" and "league", which are words too ("lol same#mood").
+	riotTagHandle = bothViews(`\b` + words(`valorant`, `valo`, `val`, `riot`, `lol`, `league`) + `\b(?:~` +
 		words(`id`, `tag`, `username`, `ign`) + `)?\s*(?:` + handleSeparator + `|` + words(`is`, `hai`) +
-		`\b)?\s*(@?)([\pL\pN._]{2,30})(#[\pL\pN]{3,5})`)
+		`\b)?\s*(@?)([\pL\pN._]{2,30})(#[\pL\pN]{3,5})\b`)
 	// The separator before the spaces: a single character and then a run
 	// of spaces would be planned as a sentence boundary (filtersearch.go,
 	// "delimited"), found from the handle after it, and so tried at every
@@ -2083,7 +2116,7 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 	if a, b, ok := talksThere(text, following); ok {
 		return ask(a, b)
 	}
-	if a, ok := announcedOn(before, following); ok {
+	if a, ok := announcedOn(v, before, following); ok {
 		return ask(a, m[1])
 	}
 	return 0, 0, 0, false
@@ -2625,13 +2658,18 @@ var (
 // chat", "im on telegram, dm me", "dm me, im on insta", "i'm on snap every
 // night if u wanna chat", not "i'm on discord too much" or "i'm on insta all
 // day and nobody wants to talk". An offer to talk ("if anyone wants to talk")
-// is turned down where the sentence keeps the talk here ("reply here", "this
-// thread") or where the app is followed by how much the poster is on it and
-// the talk by what it is about ("i'm on insta 6 hours a day, anyone else
-// wanna talk about phone addiction?"): that is a post about the app, not an
+// is turned down where the sentence keeps the talk here ("reply here", "in
+// this thread", not "this thread is dead" or "new here") or where the app is
+// followed by how much the poster is on it and the talk by the app or its use
+// ("i'm on insta 6 hours a day, anyone else wanna talk about phone
+// addiction?", not "… about anything"): that is a post about the app, not an
 // address on it. An invitation to message ("dm me", "hmu", "add me") is
-// never turned down. It returns where the "i'm" starts.
-func announcedOn(before, following []aWord) (int, bool) {
+// never turned down. The "here" may lie past the twelve words read after the
+// app, so the sentence is read on a few words for it ("i'm on telegram only
+// for the class channel, anyone want to talk about the syllabus here?"). It
+// returns where the "i'm" starts.
+func announcedOn(v *view, before, following []aWord) (int, bool) {
+	text := v.text
 	n := len(before)
 	if n < 2 || !is(before[n-1].w, "on") {
 		return 0, false
@@ -2653,7 +2691,7 @@ func announcedOn(before, following []aWord) (int, bool) {
 	case direct || direct2:
 	case !offer && !offer2:
 		return 0, false
-	case talksHere(before) || talksHere(following):
+	case talksHere(text, before) || talksHere(text, following) || talksHereOn(v, following):
 		return 0, false
 	case (topic || topic2) && appUsage(following):
 		return 0, false
@@ -2663,7 +2701,8 @@ func announcedOn(before, following []aWord) (int, bool) {
 
 // invitesTalk reads ws for an invitation to talk: direct, "dm me", "hmu",
 // "add me"; or an offer, "if u wanna chat", "anyone wanna talk", and whether
-// what it is about follows the offer ("anyone wanna talk about the syllabus").
+// the app or its use is what it is about ("anyone wanna talk about phone
+// addiction").
 func invitesTalk(ws []aWord) (direct, offer, topic bool) {
 	asked := false
 	for i, w := range ws {
@@ -2674,24 +2713,81 @@ func invitesTalk(ws []aWord) (direct, offer, topic bool) {
 			return true, false, false
 		case talkInvites[w.w] && i > 0 && talkLeads[ws[i-1].w] && asked:
 			offer = true
-			// "talk about", "chat more about"
-			topic = topic || i+1 < len(ws) && is(ws[i+1].w, "about") ||
-				i+2 < len(ws) && is(ws[i+2].w, "about")
+			// "talk about", "chat more about", with the app or its use
+			// after it: "talk about phone addiction", "chat about how to
+			// quit", not "chat about anything" or "talk about games".
+			for j := i + 1; j < min(len(ws), i+3); j++ {
+				if is(ws[j].w, "about") {
+					topic = topic || aboutUsage(ws[j+1:])
+					break
+				}
+			}
 		}
 		asked = asked || talkAskers[w.w]
 	}
 	return false, offer, topic
 }
 
-// talksHere reports ws keeping a talk on the board: "reply here", "this
-// thread", "on here".
-func talksHere(ws []aWord) bool {
-	for _, w := range ws {
-		if is(w.w, "here") || is(w.w, "thread") {
+// aboutUsage reports the app or how much it is used among the first words of
+// ws, what a talk is about: "it", "phone addiction", "how to cut down",
+// "screen time".
+func aboutUsage(ws []aWord) bool {
+	for _, w := range ws[:min(len(ws), 4)] {
+		if usageTopics[w.w] || accountApp.MatchString(w.w) {
 			return true
 		}
 	}
 	return false
+}
+
+var usageTopics = canonSetOf(`it it's phone phones screen screentime addiction addicted addictive quit quitting
+	cut cutting stop stopping delete deleting detox usage scrolling doomscrolling limit limits uninstall
+	uninstalling break sleep sleeping insomnia`)
+
+// talksHere reports ws, words of text, keeping a talk on the board: a
+// "here" or a "thread" with a verb of posting or a preposition a few words
+// before it in its clause (postingHere): "reply here", "in this thread",
+// "talk about the syllabus here".
+func talksHere(text string, ws []aWord) bool {
+	for i, w := range ws {
+		if !is(w.w, "here") && !is(w.w, "thread") {
+			continue
+		}
+		// Not a place complained about, "this thread is dead", nor one
+		// the poster is new to or where nothing happens: "new here",
+		// "nobody replies here", "chat, too many people here".
+		if i+1 < len(ws) && placeComplaints[ws[i+1].w] {
+			continue
+		}
+		for j := i - 1; j >= max(0, i-5); j-- {
+			if strings.ContainsAny(text[ws[j].to:ws[j+1].from], ",.;:!?\n") {
+				break
+			}
+			if postingHere[ws[j].w] {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// talksHereOn reads on from the last of following, the words read after an
+// app, to the end of its sentence or six more words, and reports a talk kept
+// on the board there (talksHere), with the five words before them for its
+// verb: "… anyone want to talk about the syllabus here?".
+func talksHereOn(v *view, following []aWord) bool {
+	n := len(following)
+	if n == 0 {
+		return false
+	}
+	var more [6]aWord
+	rest, end, _ := readOnInto(more[:0], v.text, following[n-1].to, len(more), 48, 0)
+	v.work += end - following[n-1].to
+	if len(rest) == 0 {
+		return false
+	}
+	var buf [11]aWord
+	return talksHere(v.text, append(append(buf[:0], following[max(0, n-5):]...), rest...))
 }
 
 // appUsage reports how much the poster is on an app, in the words straight
@@ -2718,6 +2814,12 @@ func appUsage(ws []aWord) bool {
 		return is(next, "much") || is(next, "often") || is(next, "long")
 	case is(w, "only") || is(w, "just") || is(w, "mostly"):
 		return is(next, "for") || is(next, "to")
+	case is(w, "a"):
+		// "a lot", "a ton"
+		return is(next, "lot") || is(next, "ton")
+	case is(w, "for"):
+		// "for hours", "for 5 hours"
+		return usageUnits[next] || next != "" && next[0] >= '0' && next[0] <= '9'
 	case w[0] >= '0' && w[0] <= '9':
 		// "6 hours", "5hrs a day", "24/7"
 		return usageUnits[next] || usageUnits[strings.TrimLeft(w, "0123456789+")]
@@ -2749,7 +2851,10 @@ var (
 func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool) (int, bool) {
 	text := v.text
 	j := 0
-	for j < len(after) && j < 3 && (leadWords[isContracted(after[j].w)] || contractedIs(text, after, j, m[1])) {
+	// A lead word is read as written ("it's") or without its "'s" ("my
+	// snap's"), so "it's" before a handle stays a lead word.
+	for j < len(after) && j < 3 && (leadWords[after[j].w] || leadWords[isContracted(after[j].w)] ||
+		contractedIs(text, after, j, m[1])) {
 		j++
 	}
 	// "=", "=>" and ">" after a mail word are code ("email = user.email",
@@ -9167,6 +9272,28 @@ func (f *scannedField) anyRunNear(at checkedRuns, check matchCheck, spans *nearS
 	return false
 }
 
+// firstRun is first for checkedRuns: where the earliest run of at that
+// check keeps is in the source, charged as anyRun is.
+func (f *scannedField) firstRun(at checkedRuns, check matchCheck) (int, int, bool) {
+	v := &f.plain
+	r := f.wordReading()
+	for i, word := range r.ws {
+		for _, run := range at[word] {
+			v.work += len(run)
+			hi := run.match(r.ws, i, r.sentenceEnd[i])
+			if hi <= i {
+				continue
+			}
+			m := []int{r.sp[i][0], r.sp[hi-1][1]}
+			if v.checked(check, m) {
+				a, b := v.span(m[0], m[1])
+				return a, b, true
+			}
+		}
+	}
+	return 0, 0, false
+}
+
 // runWords are the sets a wordRun may name with "$".
 var runWords = map[string]map[string]bool{
 	// Someone else as a subject, and with "is" or "are" joined on.
@@ -14015,6 +14142,8 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 		from, to, ok = f.first(r, askMade(askCheck))
 		consider(from, to, ok, kindAsk)
 	}
+	from, to, ok = f.firstRun(mailAskRuns, askMade(mailAskCheck))
+	consider(from, to, ok, kindAsk)
 	from, to, ok = f.first(numbersAskRule, askMade(numbersCheck))
 	consider(from, to, ok, kindAsk)
 	from, to, ok = f.first(offBoardRule, askMade(offBoardCheck))
@@ -14051,6 +14180,8 @@ func (f *scannedField) firstBlock() (blockFinding, bool) {
 			check = f.handleFirstCheck
 		case appLabelHandle:
 			check = f.labelHandleCheck
+		case riotTagHandle:
+			check = f.riotTagCheck
 		}
 		from, to, ok = f.firstHandle(r, check)
 		consider(from, to, ok, kindHandle)
@@ -14108,8 +14239,12 @@ func askNotMade(v *view, m []int) bool {
 	text := v.text
 	after := text[m[1]:min(len(text), m[1]+askAfterReach)]
 	v.work += len(after)
-	sentence := after
-	if j := strings.IndexAny(sentence, ".!\n,;:"); j >= 0 {
+	whole := after
+	if j := strings.IndexAny(whole, ".!\n"); j >= 0 {
+		whole = whole[:j]
+	}
+	sentence := whole
+	if j := strings.IndexAny(sentence, ",;:"); j >= 0 {
 		sentence = sentence[:j]
 	}
 	ws := wordsIn(sentence)
@@ -14128,8 +14263,9 @@ func askNotMade(v *view, m []int) bool {
 		for i := 0; i+2 < len(rest); i++ {
 			if (is(rest[i], "thing") || is(rest[i], "things")) && is(rest[i+1], "to") && askingVerbs[rest[i+2]] {
 				// "... is a weird thing to ask but pls do" makes it after
-				// all.
-				return !askedAnyway(ws[k+1+i+3:])
+				// all, past a comma too: "a weird thing to ask, but pls
+				// do". The clause's words begin the sentence's.
+				return !askedAnyway(wordsIn(whole)[k+1+i+3:])
 			}
 		}
 	}
@@ -14265,6 +14401,25 @@ func (f *scannedField) handleCheck(v *view, m []int) bool {
 	}
 	return plausibleHandle(handle, at || discriminator)
 }
+
+// riotTagCheck is handleCheck for a Riot ID after a game's name. After
+// "val", "lol" or "league", which are words as well, it wants a label, a
+// separator or "is" between the name and the ID: "val: madeup#1234", "lol
+// id madeup#EUW", not "lol same#mood" or "val day#love".
+func (f *scannedField) riotTagCheck(v *view, m []int) bool {
+	start := m[4]
+	if m[2] >= 0 {
+		start = m[2]
+	}
+	between := v.text[m[0]:start]
+	ws := wordsIn(between)
+	if len(ws) == 1 && riotWords[ws[0]] && strings.TrimSpace(between[len(ws[0]):]) == "" {
+		return false
+	}
+	return f.handleCheck(v, m)
+}
+
+var riotWords = canonSetOf(`val lol league`)
 
 // handleFirstCheck is handleCheck for a handle written before its app,
 // which is not one when it is a tool or an exam with its number:
@@ -14495,7 +14650,11 @@ func domainNamed(text string, start, end int, local, gap, domain string) bool {
 	if nameLike(local) || mailProviders[label] {
 		return false
 	}
-	for _, w := range append(wordsBefore(text, start, 4), nextWords(text[end:], 3)...) {
+	before := wordsBefore(text, start, 4)
+	if len(before) > 1 && is(before[0], "at") && is(before[1], "me") {
+		return false // "find me at riya @madeup.in"
+	}
+	for _, w := range append(before, nextWords(text[end:], 3)...) {
 		if addressCues[w] {
 			return false
 		}
@@ -14503,9 +14662,11 @@ func domainNamed(text string, start, end int, local, gap, domain string) bool {
 	return true
 }
 
-// addressCues, a few words before a name and a domain, say the two are an
-// address: "my email is riya @madeup.com".
-var addressCues = setOf(`email emails mail gmail id address contact reach write`)
+// addressCues, a few words before a name and a domain or after them, say the
+// two are an address: "my email is riya @madeup.com", "msg me at riya
+// @madeup.ac.in", "riya @madeup.ac.in text me there".
+var addressCues = setOf(`email emails mail gmail id address contact reach write msg message text txt dm dms pm
+	ping hmu`)
 
 var mailProviders = setOf(`gmail googlemail yahoo ymail rocketmail outlook hotmail live msn icloud mac aol
 	proton protonmail pm tutanota tuta zoho rediffmail rediff yandex mail gmx qq 163 126 fastmail`)
@@ -15849,9 +16010,25 @@ func reachedNear(v *view, run digitRun) bool {
 		if (i > 0 && appOwners[ws[i-1]] || i+1 < len(ws) && appTags[ws[i+1]]) && accountApp.MatchString(w) {
 			return true
 		}
+		// An app or "msg" used as a verb, straight before "for": "the
+		// answer is 9845012345 whatsapp for steps", "msg for the
+		// working", not "saw this on reddit for the answer".
+		if i+1 < len(ws) && is(ws[i+1], "for") && (bareReachVerbs[w] || accountApp.MatchString(w)) &&
+			!(i > 0 && appPlaceLeads[ws[i-1]]) {
+			return true
+		}
 	}
 	return false
 }
+
+// bareReachVerbs, said bare before "for", ask to be reached; appPlaceLeads
+// before an app make it where something is ("on reddit", "check the
+// reddit").
+var (
+	bareReachVerbs = setOf(`msg message text txt ping pm dm call ring`)
+	appPlaceLeads  = setOf(`on in via from at the my your ur his her their our a check checked saw seen see read
+		posted post open opened`)
+)
 
 // mathsAnswer reports a number given as the answer to a maths question in
 // the words people give one, with no way to reach anyone round it
@@ -15868,13 +16045,37 @@ func reachedNear(v *view, run digitRun) bool {
 // one is found.
 func mathsAnswer(v *view, run digitRun) bool {
 	t := v.text
-	before := windowBefore(t, run.from, 64)
-	wide := before + " " + windowAfter(t, run.to, 64)
-	if !mathsResultWords.matchIn(v, wide) && !powerBefore.matchIn(v, before) &&
+	before, after := windowBefore(t, run.from, 64), windowAfter(t, run.to, 64)
+	wide := before + " " + after
+	// The words of a result are the number's own only in its sentence:
+	// "Lost my calculator near the canteen. 9845012345" gives no answer.
+	own := sinceSentenceEnd(before) + " " + untilSentenceEnd(after)
+	if !mathsResultWords.matchIn(v, own) && !powerBefore.matchIn(v, before) &&
 		!(counting(string(run.digits)) && countingTalk.matchIn(v, wide)) {
 		return false
 	}
 	return !reachedNear(v, run)
+}
+
+// sinceSentenceEnd is the part of s after its last sentence end, a ".", "!"
+// or "?" with a space or a line break after it, or a line break; and
+// untilSentenceEnd the part before its first. A decimal point ends nothing.
+func sinceSentenceEnd(s string) string {
+	for i := len(s) - 1; i >= 0; i-- {
+		if s[i] == '\n' || strings.IndexByte(".!?", s[i]) >= 0 && i+1 < len(s) && (s[i+1] == ' ' || s[i+1] == '\n') {
+			return s[i+1:]
+		}
+	}
+	return s
+}
+
+func untilSentenceEnd(s string) string {
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' || strings.IndexByte(".!?", s[i]) >= 0 && (i+1 == len(s) || s[i+1] == ' ' || s[i+1] == '\n') {
+			return s[:i]
+		}
+	}
+	return s
 }
 
 var (
@@ -15882,10 +16083,15 @@ var (
 	mathsResultWords = newWindowSearch(phrase(`\b(?:` + words(
 		words(`largest`, `smallest`, `biggest`, `greatest`, `least`)+`~(?:\d+~)?`+words(`digit`, `square`,
 			`cube`, `prime`, `number`, `integer`, `palindrome`),
-		`\d+~digits?~`+words(`numbers?`, `integers?`, `answers?`),
+		// "how many 10 digit numbers", not "the 10 digit number for the
+		// warden".
+		`\d+~digits?~`+words(`numbers`, `integers`, `answers?`),
 		`perfect~`+words(`squares?`, `cubes?`, `numbers?`),
-		`answer~key`, words(`came`, `comes`, `come`)+`~out~`+words(`as`, `to`), `for~part`, `pandigital`,
-		`self~descriptive`, `calculator`,
+		// What a calculator or the answer key gives, and a part's answer,
+		// not a calculator for sale, an answer key sold or a part-time job.
+		`answer~key~`+words(`says`, `gives`, `is`, `has`), words(`came`, `comes`, `come`)+`~out~`+words(`as`, `to`),
+		`for~part~(?:[a-h1-9]|i{1,3}|iv)\b`, `pandigital`, `self~descriptive`,
+		`calculator~`+words(`says`, `said`, `gives`, `gave`, `shows`, `showed`),
 		// "the answer to part c is", "the final answer", "according to the
 		// solutions".
 		`final~answers?`, `answers?~`+words(`to`, `for`)+`~(?:the~)?`+words(`part`, `q\d*`, `question`, `qn`,
