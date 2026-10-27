@@ -462,16 +462,20 @@ var storedPNG = png.Encoder{CompressionLevel: png.BestSpeed}
 // transparent. image/gif takes such an index only up to a transparent index
 // that is itself past the table: a frame whose pixels index past their table
 // otherwise is refused here (ErrCorruptImage), as the decoder refuses it,
-// though Chromium shows those pixels black. Two kinds of file image/gif
-// refuses and browsers show are read as browsers read them as well. A file
-// that ends after its last block without a trailer plays in a browser, and
-// is decoded with one put after it; a frame after the first that reaches
-// past the canvas is drawn by a browser only where it overlaps the canvas,
-// which is all playGIF plays of it, and image/gif, which refuses the whole
-// file, is told the logical screen takes in every frame (gifReader). A first
-// frame past the canvas is refused by gifFramePixels, because browsers
-// disagree on what to show for it, and so is a file with an extension
-// Chromium ends somewhere other than image/gif does.
+// though Chromium shows those pixels black. So is a frame with more data
+// after its LZW end code than image/gif takes, which is the rest of the
+// sub-block the code ends in and, when the code ends a sub-block, one more
+// sub-block of one byte, though Chromium shows the frame and reads on from
+// its terminator (TestGIFsImageGIFRefusesAreRefusedOnceDecoded). Two kinds
+// of file image/gif refuses and browsers show are read as browsers read them
+// as well. A file that ends after its last block without a trailer plays in
+// a browser, and is decoded with one put after it; a frame after the first
+// that reaches past the canvas is drawn by a browser only where it overlaps
+// the canvas, which is all playGIF plays of it, and image/gif, which refuses
+// the whole file, is told the logical screen takes in every frame
+// (gifReader). A first frame past the canvas is refused by gifFramePixels,
+// because browsers disagree on what to show for it, and so is a file with an
+// extension Chromium ends somewhere other than image/gif does.
 func sanitizeGIF(ctx context.Context, data []byte, limit int64, frames gifFrames) (sanitized, error) {
 	g, err := gif.DecodeAll(ctxReader{ctx, gifReader(data, frames)})
 	if err != nil {

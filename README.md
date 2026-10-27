@@ -383,12 +383,15 @@ server that would refuse what it sends.
   canvas, or with no picture or two (`image could not be decoded`) — is refused with `400`
   before anything is decoded and before flood control. A GIF that ends after its last
   frame without the closing byte, or whose later frames reach past its canvas, is stored
-  as browsers show it: whole, and with each frame cut to the part on the canvas. The
-  memory depends on the encoding as well as the size, and on the shape: a longer, thinner
-  picture costs more for its pixels, because a JPEG's sides are rounded up to whole
-  blocks and making the thumbnail takes 64 bytes and more for every pixel of the longer
-  side. At the full 25 megapixels, from an upload of up to the default 8 MiB, at any
-  shape the format allows:
+  as browsers show it: whole, and with each frame cut to the part on the canvas. Two
+  kinds of GIF that browsers show are refused only once they are decoded, and so after
+  flood control (`image could not be decoded`), because Go's decoder refuses them: one
+  whose pixels index past their colour table, and one with more data after a frame's end
+  code than Go's decoder takes (*GIF*, below). The memory depends on the encoding as well
+  as the size, and on the shape: a longer, thinner picture costs more for its pixels,
+  because a JPEG's sides are rounded up to whole blocks and making the thumbnail takes 64
+  bytes and more for every pixel of the longer side. At the full 25 megapixels, from an
+  upload of up to the default 8 MiB, at any shape the format allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
     a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or
@@ -527,10 +530,13 @@ server that would refuse what it sends.
     reads it where Go's decoder reads it otherwise: a frame with no graphic control
     extension is left in place, a frame's transparent colour is the one the last extension
     before it names, and an index past the end of a frame's colour table shows opaque
-    black, but for the transparent one — Go's decoder takes such an index only up to a
-    transparent index that is itself past the table, and a GIF whose pixels index past
-    their table otherwise is refused as Go's decoder refuses it, once it is decoded and so
-    after flood control (`image could not be decoded`). A GIF with an extension the two
+    black, but for the transparent one. Two kinds of GIF that browsers show are refused as
+    Go's decoder refuses them, once they are decoded and so after flood control (`image
+    could not be decoded`): one whose pixels index past their table, but for indices up to
+    a transparent index that is itself past it, which Go's decoder takes; and one with more
+    data after a frame's end code than Go's decoder takes, which is the rest of the
+    sub-block the code ends in and, when the code ends a sub-block, one more sub-block of a
+    single byte, where browsers show the frame and read on. A GIF with an extension the two
     end in different places is refused from its header (a plain-text one whose block size
     is not 12, an application one of no bytes, or a loop extension with nothing in it),
     because past it Chromium shows no more frames and Go's decoder reads on. How the

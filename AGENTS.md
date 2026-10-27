@@ -552,12 +552,18 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   the last one's; its transparent index is the last extension's alone, where `image/gif`
   keeps one an earlier extension before the same frame named; and an index past the end of
   its colour table is opaque black but for the transparent one, where `image/gif` makes
-  all of them up to a transparent index past the table transparent. `image/gif` takes such
-  an index only up to a transparent index that is itself past the table: a frame whose
-  pixels index past their table otherwise is refused by the decoder, in `Process` and so
-  after flood control (`image could not be decoded`), though Chromium shows those pixels
-  black. `TestGIFIsReadAsChromiumReadsIt` holds files to the pictures Chromium was seen to
-  show of them, and `chromiumReads` in the tests is that reading.
+  all of them up to a transparent index past the table transparent. Two more kinds of file
+  browsers play and `image/gif` refuses are refused by the decoder, in `Process` and so
+  after flood control (`image could not be decoded`): one with a frame whose pixels index
+  past their table, but for indices up to a transparent index that is itself past it,
+  which `image/gif` takes, where Chromium shows those pixels black; and one with more data
+  after a frame's LZW end code than `image/gif` takes, which is the rest of the sub-block
+  the code ends in and, when the code ends a sub-block, one more sub-block of one byte
+  (golang.org/issue/16146), where Chromium shows the frame and reads on from its
+  terminator (`TestGIFsImageGIFRefusesAreRefusedOnceDecoded`, which also has what
+  `image/gif` takes stored as the file without it). `TestGIFIsReadAsChromiumReadsIt`
+  holds files to the pictures Chromium was seen to show of them, and `chromiumReads` in
+  the tests is that reading.
 - **What is stored is never the upload.** `media.Process` rewrites every image without its
   metadata before `Save` hands it to a backend, so both backends store the same file
   (`internal/media/sanitize.go`). Files stored before this release are the exception: they

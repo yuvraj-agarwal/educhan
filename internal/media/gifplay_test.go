@@ -177,7 +177,8 @@ func pictureRows(pic *image.NRGBA) []string {
 // rawGIF is a GIF written field by field, for files image/gif's encoder
 // cannot make: frames with no graphic control extension or with two, a
 // transparent index past the colour table, a table with its colours in any
-// order or repeated, extensions between a frame's control and its pixels.
+// order or repeated, extensions between a frame's control and its pixels,
+// data after a frame's end code.
 type rawGIF struct {
 	w, h      int
 	global    [][3]byte // the global colour table, or none
@@ -211,6 +212,11 @@ type rawFrame struct {
 	local     [][3]byte // its own colour table, or none
 	interlace bool
 	pix       []uint8 // at.Dx()×at.Dy() indices, row by row
+	// Bytes after its LZW data, which ends with the end code: tail in the
+	// sub-block the end code ends (the data is short enough to share it),
+	// and then sub-blocks of their own before the terminator.
+	tail  []byte
+	after [][]byte
 }
 
 // rawTable appends a colour table, padded with black to a power of two, and
@@ -304,10 +310,13 @@ func (g rawGIF) bytes() []byte {
 		lw.Write(pix)
 		lw.Close()
 		out = append(out, byte(lit))
-		for d := lzwData.Bytes(); len(d) > 0; {
+		for d := append(lzwData.Bytes(), f.tail...); len(d) > 0; {
 			n := min(255, len(d))
 			out = append(append(out, byte(n)), d[:n]...)
 			d = d[n:]
+		}
+		for _, b := range f.after {
+			out = append(append(out, byte(len(b))), b...)
 		}
 		out = append(out, 0)
 	}
@@ -525,6 +534,67 @@ func TestGIFIsReadAsChromiumReadsIt(t *testing.T) {
 			}
 			requireShowsAs(t, tc.name, upload, process(t, upload.bytes()).Data)
 		})
+	}
+}
+
+// Two kinds of GIF that browsers show image/gif refuses, and so they are
+// refused once decoded, after flood control (`image could not be decoded`),
+// as README.md and AGENTS.md say. One has more data after a frame's LZW end
+// code than image/gif takes: the rest of the sub-block the end code ends in,
+// and, when it ends one, one more sub-block of a single byte
+// (golang.org/issue/16146); past that image/gif reports too much image data,
+// where Chromium shows the frame and reads on from its terminator (a reviewer
+// had it show such a file). The other has pixels on an index past the end of
+// their colour table, which Chromium shows black, and image/gif refuses but
+// for indices up to a transparent index that is itself past the table
+// (TestGIFTransparentIndexPastItsTable). Each case is the two-frame GIF the
+// controls are stored as when the data image/gif takes is left out.
+func TestGIFsImageGIFRefusesAreRefusedOnceDecoded(t *testing.T) {
+	table := [][3]byte{{0, 0, 0}, {255, 0, 0}, {0, 255, 0}, {0, 0, 255}}
+	upload := func(first func(*rawFrame)) rawGIF {
+		red := rawFrame{controls: []rawControl{{1, 50, -1}}, at: image.Rect(0, 0, 4, 1), pix: []uint8{1, 1, 1, 1}}
+		green := rawFrame{controls: []rawControl{{1, 60, -1}}, at: image.Rect(1, 0, 3, 1), pix: []uint8{2, 3}}
+		if first != nil {
+			first(&red)
+		}
+		return rawGIF{w: 4, h: 1, global: table, loops: []rawLoop{{"NETSCAPE2.0", 0}}, frames: []rawFrame{red, green}}
+	}
+	filler := func(n int) []byte { return bytes.Repeat([]byte{0xA5}, n) }
+
+	// What image/gif takes after an end code is stored as the file without
+	// it, which is what browsers show.
+	requireStoredAlike(t, "data image/gif takes after an end code", upload(nil),
+		upload(func(f *rawFrame) { f.tail = filler(1) }),
+		upload(func(f *rawFrame) { f.tail = filler(100) }),
+		upload(func(f *rawFrame) { f.after = [][]byte{filler(1)} }),
+	)
+
+	for _, tc := range []struct {
+		name  string
+		first func(*rawFrame)
+		err   string // image/gif's error
+	}{
+		{"a sub-block of two bytes after an end code that ends its sub-block",
+			func(f *rawFrame) { f.after = [][]byte{{0x00, 0x01}} }, "too much image data"},
+		{"a sub-block of 255 bytes after an end code that ends its sub-block",
+			func(f *rawFrame) { f.after = [][]byte{filler(255)} }, "too much image data"},
+		{"two sub-blocks of one byte after an end code that ends its sub-block",
+			func(f *rawFrame) { f.after = [][]byte{filler(1), filler(1)} }, "too much image data"},
+		{"a sub-block of one byte after an end code within its sub-block",
+			func(f *rawFrame) { f.tail, f.after = filler(1), [][]byte{filler(1)} }, "too much image data"},
+		{"a pixel past the colour table, with no transparent index past it",
+			func(f *rawFrame) { f.pix = []uint8{1, 5, 1, 1} }, "invalid pixel value"},
+	} {
+		data := upload(tc.first).bytes()
+		if _, err := gif.DecodeAll(bytes.NewReader(data)); err == nil || !strings.Contains(err.Error(), tc.err) {
+			t.Fatalf("%s: image/gif reads the file with %v, want %q: the case would prove nothing", tc.name, err, tc.err)
+		}
+		if _, err := Inspect(data); err != nil {
+			t.Errorf("%s: Inspect = %v, want nil: the docs say it is refused once decoded, after flood control (change them together)", tc.name, err)
+		}
+		if _, err := Process(context.Background(), data); !errors.Is(err, ErrCorruptImage) {
+			t.Errorf("%s: Process = %v, want ErrCorruptImage", tc.name, err)
+		}
 	}
 }
 
