@@ -3249,8 +3249,9 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	}
 	// Nor does a name made from what the database holds of a claim, which
 	// anyone who can read pass_orders has, drop anything, bare or with a
-	// signature that is not the server's for it: only the server makes a
-	// name, so a copy of the table takes no waiting order from its buyer.
+	// signature that is not the server's for it, one made under another
+	// secret included: only the server makes a name, so a copy of the table
+	// takes no waiting order from its buyer.
 	rows, err := p.app.pool.Query(context.Background(), `SELECT claim_hash FROM pass_orders`)
 	if err != nil {
 		t.Fatal(err)
@@ -3266,12 +3267,14 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 		t.Fatalf("the waiting checkout's name %q is not its stored claim hash and a signature", waitingName)
 	}
 	stranger := p.otherBrowser()
+	rotated := p.twin(func(c *PassConfig) { c.Secret = testPassSecret + "-rotated" })
 	for _, hash := range stored {
 		for what, forged := range map[string][]byte{
-			"a stored claim hash":                       hash,
-			"a stored claim hash, signed with zeros":    append(slices.Clone(hash), make([]byte, passOrderTagSize)...),
-			"a stored claim hash, with another's tag":   append(slices.Clone(hash), p.app.passOrderTag(hashToken("another claim"))...),
-			"a stored claim hash, tagged with its hash": append(slices.Clone(hash), hash[:passOrderTagSize]...),
+			"a stored claim hash":                              hash,
+			"a stored claim hash, signed with zeros":           append(slices.Clone(hash), make([]byte, passOrderTagSize)...),
+			"a stored claim hash, with another's tag":          append(slices.Clone(hash), p.app.passOrderTag(hashToken("another claim"))...),
+			"a stored claim hash, tagged with its hash":        append(slices.Clone(hash), hash[:passOrderTagSize]...),
+			"a stored claim hash, signed under another secret": append(slices.Clone(hash), rotated.app.passOrderTag(hash)...),
 		} {
 			if status, _ := stranger.forgetOrder(base64.RawURLEncoding.EncodeToString(forged)); status != http.StatusBadRequest {
 				t.Errorf("%s as an order's name: status %d; want 400", what, status)
@@ -3287,6 +3290,59 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	}
 	if status, _ := p.otherBrowser().forgetOrder(p.app.passOrderName("nothing-under-this")); status != http.StatusOK {
 		t.Fatalf("forget by a name with nothing under it: status %d", status)
+	}
+}
+
+// TestPassHashesAreKeyedWithTheSecret holds every hash the Pass tables keep
+// of a code or a Stripe id, the name a checkout's answer gives its order, and
+// the key a Pass's hourly budget is counted under to EDUCHAN_PASS_SECRET. The
+// same deployment started with another secret finds none of them, as the
+// README says of rotating it: a code bought before is no Pass, its payment is
+// not one to reissue, a paid report of a checkout opened before matches no
+// order, and an order's name is not the server's. A hash keyed with anything
+// but the secret would let whoever holds a copy of the tables check a code
+// against them or make an order's name; the server that bought them still
+// finds every one.
+func TestPassHashesAreKeyedWithTheSecret(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_before_the_rotation")
+	buyer := p.otherBrowser()
+	session, name := buyer.checkoutNamed("")
+	q := p.twin(func(c *PassConfig) { c.Secret = testPassSecret + "-rotated" })
+
+	if status, out := q.activate(issued.Pass); status != http.StatusForbidden || refusalState(t, out) != passInvalid {
+		t.Fatalf("a code bought under the old secret, checked under the new: status %d, %+v; want 403 invalid", status, out)
+	}
+	if status, _, _ := q.reissueCode("mod-key", "pi_before_the_rotation"); status != http.StatusNotFound {
+		t.Fatalf("a reissue under the new secret of a payment made under the old: status %d; want 404", status)
+	}
+	q.paid(session, "pi_paid_under_the_new_secret")
+	if status, out := buyer.claim(); status != http.StatusAccepted {
+		t.Fatalf("a checkout opened under the old secret, reported paid under the new: status %d, %+v; want it still waiting", status, out)
+	}
+	if status, _ := q.otherBrowser().forgetOrder(name); status != http.StatusBadRequest {
+		t.Fatalf("forget under the new secret by a name given under the old: status %d; want 400", status)
+	}
+	code, _ := parsePassCode(issued.Pass)
+	if p.app.passBudgetKey(code) == q.app.passBudgetKey(code) {
+		t.Fatal("one Pass's hourly budget is counted under the same key whatever the secret")
+	}
+
+	// Under the secret they were made with, every one is still found.
+	if status, out := p.activate(issued.Pass); status != http.StatusOK || out.Pass != issued.Pass {
+		t.Fatalf("the code under its own secret: status %d, %+v", status, out)
+	}
+	if status, _, _ := p.reissueCode("mod-key", "pi_before_the_rotation"); status != http.StatusOK {
+		t.Fatalf("a reissue under the payment's own secret: status %d", status)
+	}
+	p.paid(session, "pi_paid_under_its_own_secret")
+	if status, out := buyer.claim(); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("the checkout reported paid under its own secret: status %d, %+v", status, out)
+	}
+	another := p.otherBrowser()
+	_, anotherName := another.checkoutNamed("")
+	if status, _ := p.otherBrowser().forgetOrder(anotherName); status != http.StatusOK || another.reportsClaim() {
+		t.Fatalf("forget by an order's name under its own secret: status %d, or the order still waits", status)
 	}
 }
 
