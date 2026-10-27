@@ -682,14 +682,14 @@ of forty single letters took about 140 ms. Measured on one core of a shared four
 (`GOMAXPROCS=1` under `taskset`, no race detector, the slower verdict's best of several
 runs, timed as the process's CPU time, with a subject and a name; the machine's load
 about 4 to 6): ordinary posts are the corpus's published posts run together a blank line
-apart and cut into 445 pieces of 500 characters and 27 of the maximum length
-(`ordinaryPieces`), and take about 1.3 ms and about 8.1 ms at the median piece (each
-piece's best of 11: 0.8–2.1 ms, and 6.1–10.7 ms for the long ones). One sentence
+apart and cut into pieces of 500 characters and of the maximum length, as many as the
+corpus makes (`ordinaryPieces`), and take about 1 ms and about 8–9 ms at the median piece
+(each piece's best of 11: 0.4–2.8 ms, and 6.9–13.9 ms for the long ones). One sentence
 repeated to the maximum length, which `BenchmarkCheckContent/sentence` posts, takes
-about 4.7–4.9 ms, since the same words over and over give the rules less to read than
+about 4.7–5.3 ms, since the same words over and over give the rules less to read than
 varied ones. The figures move together with the machine, so the sentence is their
-yardstick: the ordinary pieces take about a quarter of its time and 1.7 times it, and
-the slowest built bodies 6.5 to 7 times it. On the Intel Xeon @ 2.10GHz the earlier
+yardstick: the ordinary pieces take about a fifth of its time and 1.5 to 1.8 times it,
+and the slowest built bodies 5.5 to 7 times it. On the Intel Xeon @ 2.10GHz the earlier
 figures were taken on the sentence took 2.6–3 ms; runs here at a load of 11 to 30 gave
 the same medians as at 4 to 6. Of 29,397 bodies built to be slow — each rule's openings
 and `TestFilterCostIsBounded`'s units alone, in pairs and stacked; method questions with
@@ -700,7 +700,7 @@ slowest 120 again at the best of 15, the slowest take about 29–33 ms: a weapon
 a mark or a letter over and over ("🗡'", "a🪓", "9🔪"; each emoji is a hint of a threat,
 read for the sentence round it and for whose words it is), a weapon named over and over
 beside a day ("gun gun 10k gun gun gun gun sunday "), and method questions stacked
-before an app's tagged name. `TestFilterCostIsBounded`'s 151 bodies take about 0.9 to
+before an app's tagged name. `TestFilterCostIsBounded`'s 153 bodies take about 0.9 to
 31 ms at the best of 11, the most "stacked method questions" and then Snapchat's ghost
 before a short name, about 25 ms (about 47 ms before `appFrame` kept its words). Before
 the searches were planned the typical post, the repeated sentence and a post of `㏂`,
@@ -708,8 +708,10 @@ which folds to `maxFoldRunes`, took about 4 ms, 36 ms and 400–490 ms on the ea
 machine.
 `go test -run - -bench CheckContent ./internal/app` times both kinds of maximum-length
 post as wall time, GC included. Refusals are budgeted all the same; see the API contract.
-Planning takes about 3.5 s of one core, once per process, and keeps about 65 MiB of heap;
-while it runs the heap reaches 270–300 MiB with four cores and 330–370 MiB with one
+Planning takes about 5–5.5 s of one core, once per process (5.0–5.2 s in six fresh
+processes under `taskset` at a load of about 4 to 5, 5.3–6.5 s at 11 to 20), and keeps
+about 65 MiB of heap; while it runs the heap reaches 270–300 MiB with four cores and
+330–370 MiB with one
 (`runtime.MemStats.HeapSys`, three and five runs on a shared machine), and the runtime
 gives the difference back to the system slowly: a server left idle after it started stayed
 at about 350–400 MiB resident for its first two to four minutes and then fell to about
@@ -783,7 +785,7 @@ cost down:
   patterns' subjects, "i will", "someone should", sit in front of the whole list of
   acts), shares one copy of each class's ranges among the programs (`shareRunes`), and
   drops each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded`
-  holds the compiled programs to 800,000 instructions (about 798,000 now; when it
+  holds the compiled programs to 800,000 instructions (about 798,700 now; when it
   was 570,000, the same patterns split without the bound came to 1.4 million). The grammar rules
   keep their patterns small by matching the rarest word, the verb or the harm, and
   reading the speaker and the object in Go (`frameSpeaker`, `threatFrame`,
@@ -816,7 +818,7 @@ joke about dying with no cause or laugh beside it shown the support message). Th
 matched and a hold waits for a person.
 
 **The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
-3,609 made-up posts in three parts, one JSON object a line: `id` (unique across the
+3,817 made-up posts in three parts, one JSON object a line: `id` (unique across the
 files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
 method question that shows support and is then held meets `hold`), `why`, and, only
 together, `known_miss: true` and a `note` saying why the miss is accepted rather than
@@ -861,12 +863,12 @@ still happen to be someone's, as with the unit tests' examples. Label a post by 
 filter should do, not by what it does. A rule change that turns a labelled post wrong is a
 regression to fix, or a label to correct with the reason in `why`; a `known_miss` is for a
 miss whose fix would cost more than it buys, and its `note` says what. **The rules have
-been fitted to all 3,609 posts**, all three parts: the `_2` part was written apart from
+been fitted to all 3,817 posts**, all three parts: the `_2` part was written apart from
 the rules, then used to rewrite the hold rules to read grammar and, after that, the
 contact and support rules to read verb classes, apps with their objects, the poster's own
 voice in any tense, number layouts and quotation; the `_3` part was written apart from
 them too, measured unseen (the README gives the figures), and then used to put right the
-ordinary posts it stopped and to widen each family cause by cause; the last 724 pin what a
+ordinary posts it stopped and to widen each family cause by cause; the last 932 pin what a
 review of the rules found they missed or stopped wrongly, each written beside the change
 that put it right; so the rates `-v` logs describe how closely the rules fit these posts
 and are no measurement of anything else. The README says so, and a claim about how well
