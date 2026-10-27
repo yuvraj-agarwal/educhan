@@ -135,11 +135,14 @@ gcloud storage buckets add-iam-policy-binding "gs://${STAGING_BUCKET}" \
 step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
 # Daily backups, seven kept, in a window opening at 05:00 UTC: after the 03:17
 # sweep (below), so a backup holds as little as possible of what the sweep
-# deletes. Point-in-time recovery stays off, the gcloud default for this
-# edition, and is never changed here. deploy/README.md section 2.2 says what
-# each of these keeps. An existing instance with backups on gets only the start
-# time moved, so a re-run never shortens a retention someone has raised and
-# never turns backups back on where someone turned them off.
+# deletes or rewrites. 05:00 UTC is also when a verification credential's day
+# ends (credentialDayStart in internal/app/verify.go), so none of the three
+# moves alone (deploy/README.md sections 2.2 and 2.9). Point-in-time recovery
+# stays off, the gcloud default for this edition, and is never changed here.
+# deploy/README.md section 2.2 says what each of these keeps. An existing
+# instance with backups on gets only the start time moved, so a re-run never
+# shortens a retention someone has raised and never turns backups back on where
+# someone turned them off.
 if exists gcloud sql instances describe "$DB_INSTANCE"; then
   BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
     --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
@@ -262,7 +265,9 @@ gcloud run jobs add-iam-policy-binding "$SWEEP_JOB" --region "$REGION" \
   --member="serviceAccount:${SCHEDULER_SA}" --role=roles/run.invoker >/dev/null
 SCHEDULE_ARGS=(
   --location "$REGION"
-  # Done, retry included, before the database's backup window opens at 05:00 UTC.
+  # Done, retry included, half an hour or more before 05:00 UTC, when the backup
+  # window opens and a verification credential's day ends; with this retry and
+  # timeout that allows 03:00 to 04:00 (TestCredentialDaysEndAfterTheSweep).
   --schedule "17 3 * * *" --time-zone "Etc/UTC"
   --http-method POST
   --uri "https://run.googleapis.com/v2/projects/${PROJECT_ID}/locations/${REGION}/jobs/${SWEEP_JOB}:run"
@@ -309,8 +314,10 @@ Moderation key (keep it private; it goes in the X-Mod-Key header):
 
 Image uploads and institutional verification are switched off.
 
-Expired archived threads are deleted daily at 03:17 UTC by the ${SWEEP_JOB} Job. To run
-it now and see what it did:
+Expired archived threads are deleted, and the verification tables rewritten,
+daily at 03:17 UTC by the ${SWEEP_JOB} Job. Run it once now: its first run
+also checks that the database role may vacuum pg_statistic, and if it fails,
+deploy/README.md section 2.9 says how to read why.
 
   gcloud run jobs execute ${SWEEP_JOB} --region ${REGION} --wait
 

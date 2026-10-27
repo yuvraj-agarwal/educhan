@@ -223,9 +223,10 @@ in Cloud SQL, and none of the commands here set it. Switched on, it records when
 each transaction committed, and `pg_xact_commit_timestamp(xmin)` turns that into
 the time any row was last written, to well under a second. Anyone holding the
 database could then date every verification credential written while it was on,
-which defeats storing the expiry rounded to a day so that an issuance cannot be
-matched to the posts around it. Never add it to `--database-flags`; this shows
-the instance's flags, and should print nothing about it:
+which defeats storing the expiry rounded to a day, one that runs from 05:00 UTC
+to 05:00 UTC (below), so that an issuance cannot be matched to the posts around
+it. Never add it to `--database-flags`; this shows the instance's flags, and
+should print nothing about it:
 
 ```bash
 gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
@@ -235,11 +236,17 @@ gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)
 backups are kept, rather than leaning on defaults. The instance keeps a daily
 backup, the last seven of them, so a deleted row can sit in a backup for about a
 week. Each backup starts somewhere in a four-hour window opening at 05:00 UTC,
-well after the archive sweeper's run at 03:17 and its one retry (section 2.9). A
-backup therefore holds as little as possible of what the sweep deletes, and if
-you move either time, move the other with it. On an instance that already has
-backups on, re-running `first-deploy.sh` moves the window to 05:00 and changes
-nothing else; it leaves alone an instance whose backups were turned off.
+after the archive sweeper's run at 03:17 and its one retry (section 2.9), so a
+backup holds as little as possible of what the sweep deletes or rewrites. 05:00
+UTC is also when the day a verification credential is dated to ends
+(`credentialDayStart` in `internal/app/verify.go`), and it ends then so that the
+sweep, which rewrites every credential, runs inside it, near its end; the
+root README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says why. So move
+none of the three times without the others: section 2.9 says how far the
+schedule may move. On an instance that already has backups on, re-running
+`first-deploy.sh` moves the window to 05:00 and changes nothing else; it leaves
+alone an instance whose backups were turned off.
 
 Point-in-time recovery is off: `gcloud sql instances create` leaves it off for
 the Enterprise edition, where the Console would have turned it on. It would keep
@@ -492,16 +499,20 @@ the app keeps addresses out of them itself.
 
 A thread that falls off the end of its board is archived, and the sweeper
 deletes it, with its images, once its board's `archive_days` (7 by default)
-have passed. It is the same image run as `educhan -sweep`: one pass, then it
-exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
-because a Cloud Run service only has CPU while it answers a request, so a timer
-inside it would fire whenever it happened to.
+have passed. Each run also rewrites the verification tables, so that no
+credential's row dates it more closely than the day it was issued in. It is the
+same image run as `educhan -sweep`: one pass, then it exits. It runs as a Cloud
+Run **Job**, started once a day by Cloud Scheduler, because a Cloud Run service
+only has CPU while it answers a request, so a timer inside it would fire
+whenever it happened to.
 
-The Job runs as the service's account and needs only what deleting takes: the
+The Job runs as the service's account and needs only what its work takes: the
 database, and `storage.objects.list`, `.get` and `.delete` on the bucket, all
 already in the `roles/storage.objectAdmin` grant from section 2.3 (startup lists
 the bucket to check it is usable, and the sweep checks that each file is there
-before deleting it). It gets neither the moderation key nor
+before deleting it). It connects with the service's `DATABASE_URL`, so as the
+service's database role, which ran the migrations and owns the tables the sweep
+rewrites. It gets neither the moderation key nor
 `EDUCHAN_VERIFY_SECRET`, which it has no use for (and the server refuses to start
 with that secret set and no mail sender). The poster-ID salt is left out too, as
 nothing the sweeper does touches a poster ID.
@@ -537,6 +548,32 @@ gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name=
   --freshness=1h --limit=1 --format='value(jsonPayload)'
 ```
 
+That first run also checks the database role. The sweep runs `VACUUM FULL` on
+the `pg_statistic` catalog, which only the database's owner, or a member of the
+owner's role that inherits its privileges, may vacuum, so a role without that
+fails every sweep. A database made with `gcloud sql databases create`, as in
+section 2.2, should belong to Cloud SQL's `cloudsqlsuperuser` role, and the
+`educhan` user, like every user `gcloud sql users create` makes, is a member of
+it, so the run should pass; but no sweep has run on Cloud SQL yet. If `--wait`
+says the execution failed, this prints why:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="educhan-sweep" AND jsonPayload.msg="fatal"' \
+  --freshness=1h --limit=1 --format='value(timestamp,jsonPayload.error)'
+```
+
+An error saying `VACUUM FULL left pg_catalog.pg_statistic in its old file` is
+the role: it names the query that says whether the role has the owner's
+privileges, and the root README's [archive
+sweeper](../README.md#the-archive-sweeper) says what the role needs. Any other is
+most likely the media settings or the store (below).
+
+Once verification is on, run the sweep by hand only between 03:17 and 05:00 UTC,
+or when nobody has verified since 05:00. A run at any other time splits the day
+it runs in where it runs: until the next night's sweep, and in the backups taken
+meanwhile, its transaction id dates the credentials issued between 05:00 and the
+run to those hours.
+
 Then schedule it. Cloud Scheduler calls the Run API as its own service account,
 which may run this one Job and nothing else:
 
@@ -554,9 +591,16 @@ gcloud scheduler jobs create http educhan-sweep-daily \
   --oauth-service-account-email "$SCHEDULER_SA"
 ```
 
-03:17 UTC leaves the sweep and its one retry time to finish before the
-database's backup window opens at 05:00 (section 2.2). Keep it that way if you
-move either.
+03:17 UTC leaves the sweep and its one retry, up to 15 minutes each, time to
+finish before 05:00 UTC, when the database's backup window opens and a
+verification credential's day ends (section 2.2). The day the sweep runs in has
+to end half an hour or more after the latest the sweep and its retry can still
+be running, and two hours at most after the scheduled time, so with this retry
+and timeout the schedule can move only between 03:00 and 04:00 UTC.
+`TestCredentialDaysEndAfterTheSweep` reads `--schedule`, `--max-retries` and
+`--task-timeout` from this guide and from `first-deploy.sh`, and fails outside
+that. Beyond it, move `credentialDayStart` in `internal/app/verify.go` and the
+backup window with the schedule.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
