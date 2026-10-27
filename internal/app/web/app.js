@@ -3369,12 +3369,15 @@ async function render({ draft = captureDraft() } = {}) {
     // history then holds that page twice, and the first Back from it stays on
     // it (popstate finds the address the page was drawn for and only moves to
     // the fragment); a Back or Forward that will not load leaves the entry it
-    // went to holding the page kept. A link pressed while the redraw loads, the
-    // same one again or a jump within the page, adds an entry, and that is the
-    // one replaced, so the entry for the page that failed is left behind it and
-    // Back loads that page again. The error is a notice above the page, after
-    // anything said since the redraw began, the post's own answer say. The
-    // notice is an alert, so it is heard, and the title stays the page's.
+    // went to holding the page kept. A link pressed while a redraw for another
+    // address loads, the same one again or a jump within the page, adds an
+    // entry, and that is the one replaced, so the entry for the page that
+    // failed is left behind it and Back loads that page again. After Update,
+    // whose page is the one kept, the entry a jump within the page leaves
+    // behind is the kept page's own, and Back stays on it. The error is a
+    // notice above the page, after anything said since the redraw began, the
+    // post's own answer say. The notice is an alert, so it is heard, and the
+    // title stays the page's.
     if (keepPage && draft.held.isConnected) {
       renderedPath = drawnFor.path;
       window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash);

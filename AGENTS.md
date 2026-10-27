@@ -470,11 +470,13 @@ before the test changes.
   history holds the kept page twice and the first Back stays on it (`popstate` finds
   `renderedPath` and only moves to the fragment), and a Back or Forward that will
   not load leaves the entry it went to holding the kept page. A link pressed while
-  the redraw loads, the same one again or a jump within the page, adds an entry, and
-  that is the one replaced, so the entry for the page that failed is left behind it
-  and Back loads that page again. A render a newer one has overtaken draws nothing,
-  loaded or not, and says nothing (`overtaken`, which the board, thread and /verify
-  views ask once their request is answered, /verify drawn again after a confirmation
+  a redraw for another address loads, the same one again or a jump within the page,
+  adds an entry, and that is the one replaced, so the entry for the page that failed
+  is left behind it and Back loads that page again; after Update, whose page is the
+  one kept, the entry a jump within the page leaves behind is the kept page's own,
+  and Back stays on it. A render a newer one has overtaken draws nothing, loaded
+  or not, and says nothing (`overtaken`, which the board, thread and /verify views
+  ask once their request is answered, /verify drawn again after a confirmation
   or a forget too, a forget drawing it only while /verify is the page being drawn),
   so of two redraws only the later one is shown or said to have failed. Either way the
   post goes ahead and is answered on the form on screen, and a success goes to it.
