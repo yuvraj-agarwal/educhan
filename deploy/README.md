@@ -459,8 +459,8 @@ A thread that falls off the end of its board is archived, and the sweeper
 deletes it, with its images, once its board's `archive_days` (7 by default)
 have passed. An archived thread with a held reply is the exception: the sweep
 that would have deleted it takes it out of public view instead (`expired_at`),
-and the first sweep after its last held reply is approved or deleted removes
-it. A held thread is never archived.
+and a later sweep removes it once its last held reply is approved or deleted.
+A held thread is never archived.
 
 The sweeper is the same image run as `educhan -sweep`: one pass, then it
 exits. It runs as a Cloud Run **Job**, started once a day by Cloud Scheduler,
