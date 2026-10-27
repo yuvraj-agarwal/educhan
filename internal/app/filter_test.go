@@ -3494,7 +3494,12 @@ func TestFilterCostIsBounded(t *testing.T) {
 		"arrows far apart":    apart("x", "->", "->"),
 		// Weapon emoji, in a run and spaced, which all stand at one reading
 		// position; and a pill question next to a handle pointed at an app,
-		// whose medicine never ends a word.
+		// whose medicine never ends a word. The two weapon bodies guard the
+		// count rather than reproduce what they were added for: before the
+		// hints were filed by kind, pairing them was quadratic and counted as
+		// nothing, which no bound on the count can see, and these passed;
+		// TestFilterCountsMenacePairing holds the pairing to the count, and
+		// these hold the count to the bound.
 		"knives":             rep("🔪"),
 		"spaced guns":        rep("🔫 "),
 		"pills and a handle": rep("howmany@pills_(snap "),
@@ -3608,10 +3613,15 @@ func TestAppFramesReuseTheirWords(t *testing.T) {
 // by looking at every hint near each one is quadratic, and before the hints
 // were filed by kind and searched by halving it was also counted as nothing,
 // so the step count could not see the 85 ms of CPU 8,000 bytes of them took.
-// The pairing has to cost steps, at least one for each hint, and eight times
-// the hints at most sixteen times the steps (a search by halving costs a few
-// more steps a hint as the hints grow; looking at every pair costs
-// sixty-four times).
+// The count has to be the work done, not an estimate of it: a step for each
+// kind a hint is filed under, and for each search a step for each halving it
+// takes and one to read what it found. The guns are all of one kind, so the
+// search of every other kind's list finds it empty, and the guns' own list
+// is halved to its end, since every gun starts where the others do; an
+// estimate that charged every search the halvings of the longest list (as
+// one did) counts several times that. And eight times the hints cost at most
+// sixteen times the steps (a search by halving costs a few more steps a hint
+// as the hints grow; looking at every pair costs sixty-four times).
 func TestFilterCountsMenacePairing(t *testing.T) {
 	noPlaces := func() nearSpans { return nearSpans{} }
 	pairing := func(guns int) (hints, steps int) {
@@ -3628,14 +3638,27 @@ func TestFilterCountsMenacePairing(t *testing.T) {
 		}
 		return hints, f.plain.work - before - reading
 	}
+	// halvings is how many times a search halves a list of n that it ends
+	// past the end of.
+	halvings := func(n int) int {
+		k := 0
+		for lo, hi := 0, n; lo < hi; k++ {
+			lo = int(uint(lo+hi)>>1) + 1
+		}
+		return k
+	}
 	smallHints, small := pairing(500)
 	hints, full := pairing(4000)
 	if smallHints != 500 || hints != 4000 {
 		t.Fatalf("%d and %d hints from 500 and 4,000 spaced guns, want one a gun", smallHints, hints)
 	}
 	for _, c := range []struct{ hints, steps int }{{smallHints, small}, {hints, full}} {
-		if c.steps < c.hints {
-			t.Errorf("pairing %d hints counted %d steps, fewer than one a hint", c.hints, c.steps)
+		filing := c.hints * (numMenaceKinds + 1)
+		searching := c.hints * (numMenaceKinds + halvings(c.hints))
+		if c.steps != filing+searching {
+			t.Errorf("pairing %d guns counted %d steps, want %d: %d to file them and %d to search, each "+
+				"of the other kinds' lists empty and the guns' halved %d times", c.hints, c.steps,
+				filing+searching, filing, searching, halvings(c.hints))
 		}
 	}
 	if full > 16*small {
