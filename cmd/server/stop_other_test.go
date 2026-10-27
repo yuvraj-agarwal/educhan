@@ -7,12 +7,14 @@ import (
 	"testing"
 )
 
-// stopSignal skips t where os.Process.Signal cannot send SIGTERM, a Unix
-// signal: on windows it sends only os.Kill, and plan9, js and wasip1 have no
-// Unix signals. A test asks for it before it starts the sweep, so none starts
-// one it cannot stop. CI, which fails on a skip, runs on Linux.
+// stopSignal skips t where the sweep cannot be sent the SIGTERM Cloud Run
+// sends a Job it stops: on windows os.Process.Signal sends only os.Kill, js and
+// wasip1 send no signal to another process, and on plan9 syscall.SIGTERM is the
+// "interrupt" note, as SIGINT is, not that signal. A test asks for it before it
+// starts the sweep, so none starts one it cannot stop. CI, which fails on a
+// skip, runs on Linux.
 func stopSignal(t *testing.T) os.Signal {
 	t.Helper()
-	t.Skip("needs SIGTERM sent to the sweep, which os.Process.Signal can send only on Unix")
+	t.Skip("needs the SIGTERM Cloud Run sends, which the sweep can be sent only on Unix")
 	return nil
 }

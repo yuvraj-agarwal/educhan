@@ -2011,8 +2011,9 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// when the address, less its fragment, is the one the page was drawn for
 	// (renderedPath), and only moves to the fragment. The first Back after a
 	// kept link, and every jump within the kept page, rely on it: a popstate
-	// that always rendered would fetch the page that failed again and draw it,
-	// or its error, over the kept page, its draft and its notice.
+	// that always rendered would load the kept page's own address again (after
+	// Update, that of the page that failed too) and, while that will not load,
+	// draw its error over the kept page, its draft and its notice.
 	pop := squash(withoutComments(jsBlock(t, script, `window.addEventListener("popstate", () => {`, "});")))
 	if pop != `window.addEventListener("popstate", () => { if (window.location.pathname + window.location.search === renderedPath) { `+
 		"focusHash(); return; } render(); });" || strings.Count(withoutComments(script), `"popstate"`) != 1 {

@@ -850,8 +850,8 @@ type logLine struct {
 }
 
 // startSweep starts the sweep. A test that stops it passes stopWith from
-// stopSignal, which it asks for first: where no stop can be sent, the test is
-// skipped before any sweep is started.
+// stopSignal, which it asks for first: where the sweep cannot be sent SIGTERM,
+// the test is skipped before any sweep is started.
 func startSweep(t *testing.T, databaseURL string, stopWith os.Signal) *sweepProcess {
 	t.Helper()
 	cmd := exec.Command(os.Args[0])
