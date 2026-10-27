@@ -3795,7 +3795,10 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 		`to~kill~`+words(`me`, `you`, `someone`, `a~person`),
 		`to~overdose`, `to~od`, `overdose`, `be~fatal`, `be~lethal`, `be~deadly`, `is~fatal`, `is~lethal`,
 		`is~deadly`, words(`would`, `will`, `can`, `could`)+`~kill~`+words(`me`, `you`, `someone`, `a~person`),
-		`to~end~it`, `to~end~my~life`),
+		`to~end~it`, `to~end~my~life`,
+		// "how many paracetamol is a lethal dose", "would be a fatal dose"
+		words(`is`, `would~be`, `will~be`)+`~a~`+words(`lethal`, `fatal`, `deadly`)+`~`+words(`dose`, `amount`,
+			`dosage`, `quantity`)),
 	// "will 20 pills kill me"
 	words(`will`, `would`, `could`, `can`, `does`, `do`)+`~(?:\d+~)?`+medicines+`~`+
 		words(`kill~me`, `kill~you`, `kill~someone`, `be~fatal`, `be~lethal`, `be~enough`),
@@ -12727,8 +12730,16 @@ func methodCheck(v *view, m []int) bool {
 	case is(first, "how") && (is(ws[1], "many") || is(ws[1], "much")), is(first, "what") && doseWords[ws[1]]:
 		// The medicine may be named before the question: "paracetamol, how
 		// many to die?"; or a height asked in floors: "how many floors to
-		// die".
+		// die". A lethal dose asked about with no "I" or "me" is studied,
+		// as a lethal dose of a medicine is, where it is asked per weight
+		// or for a pharmacology, nursing or exam question ("for the tox
+		// exam, how many tablets of paracetamol is a lethal dose").
 		sentence := sentenceAround(text, m[0], m[1])
+		if (hasWord(ws, "lethal") || hasWord(ws, "fatal") || hasWord(ws, "deadly")) && !hasFirstPerson(ws) {
+			if sws := wordsIn(sentence); !anyIn(sws, selfWords) && doseStudied(text, m, sentence, sws) {
+				return false
+			}
+		}
 		return namesAMedicine(v, sentence) || hasFirstPerson(ws) ||
 			is(ws[1], "many") && anyIn(wordsIn(sentence), heightUnits) && fallFatal(wordsIn(sentence))
 	case is(first, "lethal") || is(first, "fatal") || is(first, "deadly"):
@@ -12822,10 +12833,7 @@ func methodCheck(v *view, m []int) bool {
 // insulin so unpredictable?", "For my pharmacology viva: lethal dose of
 // morphine").
 func doseAsked(text string, m []int, sentence string, sws []string) bool {
-	if strings.Contains(sentence, "/kg") || strings.Contains(sentence, "per kg") {
-		return false
-	}
-	if anyIn(wordsIn(text[max(0, m[0]-96):m[0]]), studyFrames) || anyIn(sws, studyFrames) {
+	if doseStudied(text, m, sentence, sws) {
 		return false
 	}
 	if len(sws) > 0 && is(sws[0], "why") {
@@ -12839,6 +12847,13 @@ func doseAsked(text string, m []int, sentence string, sws []string) bool {
 		rest = rest[:j]
 	}
 	return !anyIn(wordsIn(rest), doseStatements)
+}
+
+// doseStudied reports a dose given per weight, or a pharmacology, nursing or
+// exam question named in the sentence or just before it.
+func doseStudied(text string, m []int, sentence string, sws []string) bool {
+	return strings.Contains(sentence, "/kg") || strings.Contains(sentence, "per kg") ||
+		anyIn(wordsIn(text[max(0, m[0]-96):m[0]]), studyFrames) || anyIn(sws, studyFrames)
 }
 
 // searchedMethod reads what a search for ways, methods or tips asks after,

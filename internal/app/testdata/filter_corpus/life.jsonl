@@ -425,3 +425,6 @@
 {"id": "life-425", "body": "will i die if i cut my wrist", "subject": "", "name": "", "expect": "hold", "why": "whether the poster would die cutting a wrist (F14)"}
 {"id": "life-426", "body": "you can die from cutting your wrists so be careful with the new knives in lab", "subject": "", "name": "", "expect": "publish", "why": "a warning about lab knives, not a question (F14 control)"}
 {"id": "life-427", "body": "can you die from cutting your finger", "subject": "", "name": "", "expect": "publish", "why": "a cut finger, not a wrist (F14 control)"}
+{"id": "life-431", "body": "how many paracetamol is a lethal dose", "subject": "", "name": "", "expect": "hold", "why": "a lethal dose of a medicine asked for in pills (R2P-LETHAL-DOSE-ACADEMIC, asked another way)"}
+{"id": "life-432", "body": "how many pills would be a lethal dose", "subject": "", "name": "", "expect": "hold", "why": "a lethal dose asked for in pills (R2P-LETHAL-DOSE-ACADEMIC, asked another way)"}
+{"id": "life-433", "body": "how many mg of paracetamol is a safe dose for a 12 year old", "subject": "", "name": "", "expect": "publish", "why": "a safe dose asked for a child (R2P-LETHAL-DOSE-ACADEMIC control)"}
