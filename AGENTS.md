@@ -1052,31 +1052,31 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   every test still passes. So they guard against a term left out, not against every
   under-estimate, as the comment at the top of `cost.go` says, and a new term needs a
   fixture where it is megabytes over the slack, as the comment on `costFixtures` sets out.
-  They are the package's slowest tests, over two minutes under `-race`. A change to a
-  decode path, to `orient`, to the stored buffer or to the thumbnail changes `cost.go` in
-  the same commit. A CMYK JPEG is turned into RGBA where it lies (`rgbaOfCMYK`), not into
-  a second picture. Tests narrow the budget with `narrowBudget`. x/image's VP8L decoder
-  allocates its Huffman groups — a 167.5 MiB backing array at most (one `hGroup` per
-  meta-image index, `vp8lGroupBacking`), plus a node slice per tree — from counts deep
-  inside the compressed bitstream that no header or resolution shows, and it makes every
-  group the meta-image names before it reads any of their trees. A bitstream of a few
-  dozen bytes that names group 65535 and ends makes it set aside all 167.5 MiB and then
-  fail, so `processingCost` is the more of two estimates: decoding run to its end
-  (`completedCost`), and that stop (`vp8lStopCost`: the whole backing, the nodes of the
-  bytes read, the stripped copy, and the predictor, cross-colour and meta-images decoded
-  before the groups and held beside them, up to 12 bytes for every 4×4 tile of the
-  picture; `TestVP8LGroupsNamedButNeverGivenAreCharged` measures it lossless and as a
-  compressed alpha plane, small and at megapixels). Every lossless WebP, and every lossy
-  one whose alpha plane is compressed, is charged at least 171.5 MiB however small it is,
-  so two are never processed at once. A bitstream the decoder reads to its end has given
-  five trees for every group it named, so there the bound is the size of the bitstream it
-  reads — a lossless picture's VP8L chunk, or a VP8L-compressed ALPH chunk with the 5-byte
-  header the decoder puts in front of it, each read through a reader that ends with the
-  chunk (`webpPicture`) — and `vp8lMemory` charges that backing (capped by the bitstream
-  size) plus a per-byte bound on the node slices (`vp8lNodesPerByte`, with margin over the
-  worst encoding) on those bytes, not on the rest of the file. A crafted file at each
-  extreme measures inside it: 160 KiB of one-symbol groups that holds about 170 MiB, and
-  215 KiB of full trees that holds about 43 MiB
+  `TestProcessingCostCoversWhatIsHeld` is the package's slowest test, about five minutes
+  under `-race`. A change to a decode path, to `orient`, to the stored buffer or to the
+  thumbnail changes `cost.go` in the same commit. A CMYK JPEG is turned into RGBA where it
+  lies (`rgbaOfCMYK`), not into a second picture. Tests narrow the budget with
+  `narrowBudget`. x/image's VP8L decoder allocates its Huffman groups — a 167.5 MiB
+  backing array at most (one `hGroup` per meta-image index, `vp8lGroupBacking`), plus a
+  node slice per tree — from counts deep inside the compressed bitstream that no header or
+  resolution shows, and it makes every group the meta-image names before it reads any of
+  their trees. A bitstream of a few dozen bytes that names group 65535 and ends makes it
+  set aside all 167.5 MiB and then fail, so `processingCost` is the more of two estimates:
+  decoding run to its end (`completedCost`), and that stop (`vp8lStopCost`: the whole
+  backing, the nodes of the bytes read, the stripped copy, and the predictor, cross-colour
+  and meta-images decoded before the groups and held beside them, up to 12 bytes for every
+  4×4 tile of the picture; `TestVP8LGroupsNamedButNeverGivenAreCharged` measures it
+  lossless and as a compressed alpha plane, small and at megapixels). Every lossless WebP,
+  and every lossy one whose alpha plane is compressed, is charged at least 171.5 MiB
+  however small it is, so two are never processed at once. A bitstream the decoder reads
+  to its end has given five trees for every group it named, so there the bound is the size
+  of the bitstream it reads — a lossless picture's VP8L chunk, or a VP8L-compressed ALPH
+  chunk with the 5-byte header the decoder puts in front of it, each read through a reader
+  that ends with the chunk (`webpPicture`) — and `vp8lMemory` charges that backing (capped
+  by the bitstream size) plus a per-byte bound on the node slices (`vp8lNodesPerByte`,
+  with margin over the worst encoding) on those bytes, not on the rest of the file. A
+  crafted file at each extreme measures inside it: 160 KiB of one-symbol groups that holds
+  about 170 MiB, and 215 KiB of full trees that holds about 43 MiB
   (`TestVP8LHuffmanMemoryIsHeldWithinTheEstimate`). A bitstream over 224 KiB is refused
   from its header as `ErrImageTooCostly`, before any cooldown, and less in a larger
   picture, about 203 KiB at a megapixel and 128 KiB at nine
