@@ -1029,13 +1029,14 @@ not-found view.
   Pass's panel to write down. A browser that will not store it is told so, and that it
   won't be shown again once the reader leaves the page: it is not drawn again for whoever
   comes back to the page next, by a link or by the Back button from another site. A code
-  typed in after it ran out, within its month of grace, is kept as run out, with its date,
-  to renew. A Pass that has run out here can be checked again, in case it was renewed
-  elsewhere. A renewal the page collects is checked against the Pass it holds
-  (`/api/pass/activate`) before it says that Pass is renewed; one it cannot match to the
-  Pass it holds is reported as a renewal of a Pass, by a payment from this browser or by
-  the reissue code that brought it, with that Pass's new date. An answer about a Pass, to
-  a check or a post, that arrives after the Pass left the browser (removed or replaced,
+  that arrives while the reader is on another page is shown when they come back to the
+  Pass page. A code typed in after it ran out, within its month of grace, is kept as run
+  out, with its date, to renew. A Pass that has run out here can be checked again, in case
+  it was renewed elsewhere. A renewal the page collects is checked against the Pass it
+  holds (`/api/pass/activate`) before it says that Pass is renewed; one it cannot match to
+  the Pass it holds is reported as a renewal of a Pass, by a payment from this browser or
+  by the reissue code that brought it, with that Pass's new date. An answer about a Pass,
+  to a check or a post, that arrives after the Pass left the browser (removed or replaced,
   here or in another tab), or after Remove the Pass or Forget this browser was pressed, is
   dropped, not stored back. An answer to anything the Pass page asked is drawn, focused or
   announced only while the reader is still on the Pass page; one that arrives after they

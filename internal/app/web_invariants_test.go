@@ -875,6 +875,11 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 			"    if (passPageShown()) {\n      refocus(button);\n    }\n    return;\n  }") {
 		t.Error("submitPass drops an answer for a forget, or a checkout called off, and leaves focus on the top of the document")
 	}
+	if !strings.Contains(withoutComments(jsFunction(t, script, "checkHeldPass")),
+		"if (passForgotten(forgets) || !passStillHeld(held)) {\n    button.disabled = false;\n"+
+			"    if (passPageShown()) {\n      refocus(button);\n    }\n    return;\n  }") {
+		t.Error("Check it again drops an answer for a forget and leaves focus on the top of the document")
+	}
 	// A checkout still on its way when Remove the Pass, Forget this browser or
 	// Stop collecting it here is pressed must not leave a claim that outlives
 	// the forget. Pressed in its own tab, the forget calls it off first, if
@@ -1944,20 +1949,34 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	// It goes once the reader leaves the Pass page, kept or not: one this
 	// browser could not keep is nowhere else, and its panel says it won't be
 	// shown again once they leave, so the next person at a shared computer
-	// must not find it by opening the Pass page.
+	// must not find it by opening the Pass page. One the page has not drawn,
+	// because its answer came while the reader was elsewhere or they left
+	// before the drawing came, has had no panel to say so, and stays to be
+	// drawn when they come back: the server hands a code over once, and a
+	// reissue code is spent.
 	render := withoutComments(jsFunction(t, script, "render"))
 	if !strings.Contains(render, "if (state.route.view === \"pass\" && route.view !== \"pass\") {\n"+
-		"    passLost = \"\";\n    forgetTypedCode();\n    passJustIssued = null;\n  }") {
-		t.Error("render no longer drops a code just handed over, kept or not, once the reader leaves the Pass page, and only then")
+		"    passLost = \"\";\n    forgetTypedCode();\n    if (passJustIssued && (passJustIssued.kept || passJustIssued.shown)) {\n"+
+		"      passJustIssued = null;\n    }\n  }") {
+		t.Error("render no longer drops a code just handed over, kept or not, once the reader leaves the Pass page, and only then, " +
+			"or drops one this browser could not keep before the page has drawn it")
+	}
+	// Shown is set as the page draws the code's panel, and only there.
+	view = withoutComments(jsFunction(t, script, "passViewHTML"))
+	if !strings.Contains(view, "if (issued) {\n    parts.push(passIssuedHTML(issued));\n    issued.shown = true;\n  }") ||
+		strings.Count(withoutComments(script), ".shown = true") != 1 ||
+		!strings.Contains(withoutComments(jsFunction(t, script, "keepClaimed")), "      reissued,\n      shown: false,\n    };") {
+		t.Error("a code just handed over is not marked shown as the Pass page draws it, and only then")
 	}
 	// Nor when they leave the document, for another site, and come Back to a
 	// page the back-forward cache kept: that page is shown as it was left
 	// until it is drawn again, so the code's panel goes with it. A code the
-	// browser keeps is drawn again there, as before.
+	// browser keeps is drawn again there, as before, and so is one it could
+	// not keep that the page has not drawn yet.
 	unkept := withoutComments(jsFunction(t, script, "forgetUnkeptCode"))
-	if unkept != "function forgetUnkeptCode() {\n  if (passJustIssued && !passJustIssued.kept) {\n    passJustIssued = null;\n"+
+	if unkept != "function forgetUnkeptCode() {\n  if (passJustIssued && !passJustIssued.kept && passJustIssued.shown) {\n    passJustIssued = null;\n"+
 		"    const panel = document.getElementById(\"pass-issued\");\n    if (panel) {\n      panel.remove();\n    }\n  }\n}" {
-		t.Errorf("forgetUnkeptCode no longer drops a code this browser could not keep, panel and all, and only such a code:\n%s", unkept)
+		t.Errorf("forgetUnkeptCode no longer drops a code this browser could not keep once drawn, panel and all, and only such a code:\n%s", unkept)
 	}
 	hide := withoutComments(jsBlock(t, script, `window.addEventListener("pagehide", () => {`, "});"))
 	if !strings.Contains(hide, "\n  forgetUnkeptCode();\n") || strings.Count(withoutComments(script), "forgetUnkeptCode()") != 2 {
@@ -2878,7 +2897,10 @@ func TestPassPressesTurnTheirButtonOffBeforeTheyWait(t *testing.T) {
 // unit, which the server sends beside it (stripeExponent), not by the
 // browser's own count of the currency's decimals: Stripe keeps ISK and UGX in
 // hundredths, where the browser has them whole, so 300000 is 3,000 ISK, never
-// 300,000. Intl then writes the amount with the currency's usual digits.
+// 300,000. Intl then writes a whole amount with the currency's usual digits,
+// and one with a part of a unit with Stripe's decimals, which the usual digits
+// could round away: the browser has ALL whole too, and 1050 is ALL 10.50,
+// never 11.
 func TestPassPriceIsWrittenWithStripesDecimals(t *testing.T) {
 	script := appScript(t)
 	text := withoutComments(jsFunction(t, script, "passPriceText"))
@@ -2886,21 +2908,37 @@ func TestPassPriceIsWrittenWithStripesDecimals(t *testing.T) {
 	if divided == nil || !strings.Contains(text, "    !Number.isSafeInteger(price."+divided[1]+") ||\n    price."+divided[1]+" < 0\n  ) {\n    return \"\";") {
 		t.Fatalf("passPriceText no longer divides Stripe's amount by ten to the exponent the server sends, or uses one it has not checked:\n%s", text)
 	}
-	if code := withoutComments(script); strings.Contains(code, "FractionDigits") || strings.Contains(code, "resolvedOptions") {
+	code := withoutComments(script)
+	if strings.Contains(code, "resolvedOptions") {
 		t.Error("the page takes a currency's decimals from the browser's own table, which is not Stripe's")
 	}
+	// The only digits the page ever gives Intl are Stripe's, and only for an
+	// amount with a part of a unit.
+	field := "price." + divided[1]
+	if !strings.Contains(text, "\n  const options = { style: \"currency\", currency: price.currency.toUpperCase() };\n"+
+		"  if (price.amount % 10 ** "+field+" !== 0) {\n    options.minimumFractionDigits = "+field+";\n"+
+		"    options.maximumFractionDigits = "+field+";\n  }\n  try {\n    const format = new Intl.NumberFormat(undefined, options);\n") ||
+		strings.Count(code, "FractionDigits") != 2 {
+		t.Errorf("passPriceText no longer writes a part of a unit with Stripe's decimals, or gives Intl other digits:\n%s", text)
+	}
 	// What the page hands Intl, read from the price as GET /api/pass sends it,
-	// is what Stripe charges.
+	// is what Stripe charges, and a part of a unit is written with as many
+	// decimals as Stripe gives it.
 	for _, c := range []struct {
 		currency string
 		amount   int64
 		charged  float64
+		digits   int // -1 for the currency's usual digits
 	}{
-		{"usd", 2000, 20},
-		{"jpy", 2000, 2000},
-		{"isk", 300000, 3000},
-		{"ugx", 7500000, 75000},
-		{"bhd", 20000, 20},
+		{"usd", 2000, 20, -1},
+		{"usd", 2050, 20.5, 2},
+		{"jpy", 2000, 2000, -1},
+		{"isk", 300000, 3000, -1},
+		{"ugx", 7500000, 75000, -1},
+		{"bhd", 20000, 20, -1},
+		{"bhd", 20005, 20.005, 3},
+		{"all", 1050, 10.5, 2},
+		{"rsd", 9999, 99.99, 2},
 	} {
 		sent, err := json.Marshal(passPrice{Amount: c.amount, Currency: c.currency, Exponent: stripeExponent(c.currency)})
 		if err != nil {
@@ -2916,6 +2954,13 @@ func TestPassPriceIsWrittenWithStripesDecimals(t *testing.T) {
 		}
 		if shown := float64(c.amount) / math.Pow(10, exponent); shown != c.charged {
 			t.Errorf("a Pass priced at %d %s in Stripe is written as %v %s; Stripe charges %v", c.amount, c.currency, shown, c.currency, c.charged)
+		}
+		digits := -1
+		if c.amount%int64(math.Pow(10, exponent)) != 0 {
+			digits = int(exponent)
+		}
+		if digits != c.digits {
+			t.Errorf("a Pass priced at %d %s in Stripe is written with %d decimals (-1 for the usual); want %d", c.amount, c.currency, digits, c.digits)
 		}
 	}
 }

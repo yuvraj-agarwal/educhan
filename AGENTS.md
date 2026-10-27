@@ -564,22 +564,24 @@ needs a browser check before the test changes.
   (`render`), kept or not, beside any code it took the place of; one the browser could not
   keep goes, panel and all, when the document is left too (`pagehide`,
   `forgetUnkeptCode`), so a page brought back from the back-forward cache does not show it
-  to whoever uses the browser next. A renewal's date is never stored from the claim's
-  answer, since the Pass it renewed may not be the one held here now: `confirmRenewal`
-  checks the held code with `/api/pass/activate` (`recheckPass`, asked once more after a
-  `429`'s wait), stores what that says unless the Pass held changed meanwhile, and says
-  the Pass is renewed only when the date it checks is the renewal's and later than the
-  one it had; a renewal a reissue code brought is said to come from the code, not from a
-  payment in this browser. A renewal hands over no code, so its claim or reissue code
-  asked again is refused: refused after a retry with a kept nonce, the page checks the
-  held code the same way (`passAfterLostAnswer`) and says only that the Pass is now good
-  until a later date, never where the time came from. A reissue code is typed or pasted
-  into the code box, which takes a Pass code too (`isReissueCode` tells them apart by the
-  server's word and length), and never rides in an address. Pressing the button is the
-  reader's say-so: a Pass held here is replaced at once and its code shown beside the new
-  one, while a Pass code typed over a good one is refused. The code goes once in a
-  claim's body with a nonce of its own (`educhan:pass-reissue-nonce`), the Pass code
-  derived from the two; it is never stored, and stays in the box, in memory
+  to whoever uses the browser next, but only once the page has drawn it (`shown`): one
+  whose answer came while the reader was on another page, or that they left before it was
+  drawn, waits for them to come back, since it is nowhere else. A renewal's date is never
+  stored from the claim's answer, since the Pass it renewed may not be the one held here
+  now: `confirmRenewal` checks the held code with `/api/pass/activate` (`recheckPass`,
+  asked once more after a `429`'s wait), stores what that says unless the Pass held
+  changed meanwhile, and says the Pass is renewed only when the date it checks is the
+  renewal's and later than the one it had; a renewal a reissue code brought is said to
+  come from the code, not from a payment in this browser. A renewal hands over no code, so
+  its claim or reissue code asked again is refused: refused after a retry with a kept
+  nonce, the page checks the held code the same way (`passAfterLostAnswer`) and says only
+  that the Pass is now good until a later date, never where the time came from. A reissue
+  code is typed or pasted into the code box, which takes a Pass code too (`isReissueCode`
+  tells them apart by the server's word and length), and never rides in an address.
+  Pressing the button is the reader's say-so: a Pass held here is replaced at once and its
+  code shown beside the new one, while a Pass code typed over a good one is refused. The
+  code goes once in a claim's body with a nonce of its own (`educhan:pass-reissue-nonce`),
+  the Pass code derived from the two; it is never stored, and stays in the box, in memory
   (`passCodeTyped`), until an answer arrives, so pressing again after a lost answer asks
   with the same nonce. That nonce is dropped only when an answer says the code issued or
   renewed a Pass, or by Remove the Pass and Forget this browser, never on a refusal: an
@@ -686,9 +688,11 @@ needs a browser check before the test changes.
   or the browser holds one (`showPassLink`). The price is Stripe's amount divided by ten
   to the exponent `GET /api/pass` sends beside it, Stripe's own count of the currency's
   decimals and not the browser's, which has ISK and UGX whole where Stripe keeps them in
-  hundredths (`passPriceText`, `TestPassPriceIsWrittenWithStripesDecimals`).
-  `TestOnlyThePostingRequestCarriesThePass` pins the header and every read of the held
-  code; the Pass page's other promises have their own tests beside it.
+  hundredths, and an amount with a part of a unit is written with that many decimals,
+  which the browser's usual digits for the currency could round away (`passPriceText`,
+  `TestPassPriceIsWrittenWithStripesDecimals`). `TestOnlyThePostingRequestCarriesThePass`
+  pins the header and every read of the held code; the Pass page's other promises have
+  their own tests beside it.
 - The remembered name (`educhan:name`) is the unbadged posts' name. Ticking the badge
   empties the Name field (`badgeToggled`), and a badged post's name is never remembered:
   a tripcode on both kinds of post would publicly tie the unbadged ones to the

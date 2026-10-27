@@ -2364,13 +2364,16 @@ const passForgetHeard = new Map();
 
 // passJustIssued is the code a claim or a reissue code has just handed over,
 // as { code, expires, kept, replaced, reissued, shown }: replaced is the code
-// of a different Pass it took the place of in this browser. It is drawn on
-// every drawing of the Pass page, so no redraw or poll loses a code the server
-// will not show again, until the reader leaves the page (render). One this
-// browser could not store goes then too, as its panel says, and when the
-// document is left, for another site say (pagehide), so a page brought back
-// from the back-forward cache does not show it to whoever uses the browser
-// next (forgetUnkeptCode); one it keeps is drawn again on such a page.
+// of a different Pass it took the place of in this browser, and shown is
+// whether the Pass page has drawn it. It is drawn on every drawing of the Pass
+// page, so no redraw or poll loses a code the server will not show again,
+// until the reader leaves the page (render). One this browser could not store
+// goes then too, once drawn, as its panel says, and when the document is left,
+// for another site say (pagehide), so a page brought back from the
+// back-forward cache does not show it to whoever uses the browser next
+// (forgetUnkeptCode); one it keeps is drawn again on such a page. One not yet
+// drawn, its answer having come while the reader was elsewhere, waits for
+// them to come back to the Pass page, since it is nowhere else.
 let passJustIssued = null;
 
 // lastPassInfo is what GET /api/pass said for the drawing on screen, so a
@@ -2898,12 +2901,15 @@ function forgetTypedCode() {
 }
 
 // forgetUnkeptCode drops a code just handed over that this browser could not
-// keep, as its panel promises once the reader leaves, and takes its panel off
-// the page too: a page brought back from the back-forward cache is shown as it
-// was left until it is drawn again (the pageshow listener). A code the browser
-// keeps is left to be drawn again there.
+// keep, once the Pass page has drawn it, as its panel promises once the reader
+// leaves, and takes its panel off the page too: a page brought back from the
+// back-forward cache is shown as it was left until it is drawn again (the
+// pageshow listener). One not yet drawn, its answer having come while the
+// reader was on another page, has made no such promise and is nowhere else, so
+// it is left to be drawn when they come back to the Pass page, as a code the
+// browser keeps is left to be drawn again there.
 function forgetUnkeptCode() {
-  if (passJustIssued && !passJustIssued.kept) {
+  if (passJustIssued && !passJustIssued.kept && passJustIssued.shown) {
     passJustIssued = null;
     const panel = document.getElementById("pass-issued");
     if (panel) {
@@ -3034,8 +3040,10 @@ function passRunOutText() {
 // in the reader's own format. How many decimals that unit stands for is
 // Stripe's to say, and the server sends it beside the amount (exponent): the
 // browser's own table differs, with ISK and UGX whole where Stripe keeps them
-// in hundredths, so 300000 is 3,000 ISK, not 300,000. Intl then writes the
-// amount with the currency's usual digits.
+// in hundredths, so 300000 is 3,000 ISK, not 300,000. Intl then writes a whole
+// amount with the currency's usual digits, and one with a part of a unit with
+// Stripe's decimals, which the usual digits could round away: ALL is whole in
+// the browser's table too, and 1050 is ALL 10.50, not 11.
 function passPriceText(price) {
   if (
     !price ||
@@ -3046,8 +3054,13 @@ function passPriceText(price) {
   ) {
     return "";
   }
+  const options = { style: "currency", currency: price.currency.toUpperCase() };
+  if (price.amount % 10 ** price.exponent !== 0) {
+    options.minimumFractionDigits = price.exponent;
+    options.maximumFractionDigits = price.exponent;
+  }
   try {
-    const format = new Intl.NumberFormat(undefined, { style: "currency", currency: price.currency.toUpperCase() });
+    const format = new Intl.NumberFormat(undefined, options);
     return format.format(price.amount / 10 ** price.exponent);
   } catch {
     return "";
@@ -4097,9 +4110,14 @@ async function checkHeldPass(button) {
     failed = err;
   }
   // Removed, replaced or forgotten while it was asked about, here or in
-  // another tab: nothing is stored back.
+  // another tab: nothing is stored back, and the button that waited, or what
+  // was drawn in its place, has focus back if nothing else took it and the
+  // reader is still on the Pass page.
   if (passForgotten(forgets) || !passStillHeld(held)) {
     button.disabled = false;
+    if (passPageShown()) {
+      refocus(button);
+    }
     return;
   }
   const reason = failed && failed.payload && failed.payload.pass;
@@ -5079,11 +5097,15 @@ async function render({ draft = captureDraft() } = {}) {
   // was typed in its code box and a code just handed over, kept or not: one
   // this browser could not keep is nowhere else, and its panel says it won't
   // be shown again, so the next person at a shared computer can't open the
-  // Pass page to find it.
+  // Pass page to find it. Such a code the page has not drawn yet, because the
+  // reader left before its drawing came, stays to be drawn when they come back,
+  // since the server will not hand it over again.
   if (state.route.view === "pass" && route.view !== "pass") {
     passLost = "";
     forgetTypedCode();
-    passJustIssued = null;
+    if (passJustIssued && (passJustIssued.kept || passJustIssued.shown)) {
+      passJustIssued = null;
+    }
   }
   state.route = route;
   state.thread = null;
@@ -5748,11 +5770,11 @@ window.addEventListener("pageshow", (event) => {
 
 // Leaving the document, for Stripe say, takes what was typed in the Pass page's
 // code box with it, and a code just handed over that this browser could not
-// keep, as leaving the page within the site does (render), so the back-forward
-// cache does not bring them back (forgetUnkeptCode). A checkout still on its
-// way is called off, since the reader has left it (callOffPassCheckouts), and
-// so is a press still waiting to go (passLeft, passForgetsSettled), which would
-// otherwise go once the page is brought back.
+// keep, once drawn, as leaving the page within the site does (render), so the
+// back-forward cache does not bring them back (forgetUnkeptCode). A checkout
+// still on its way is called off, since the reader has left it
+// (callOffPassCheckouts), and so is a press still waiting to go (passLeft,
+// passForgetsSettled), which would otherwise go once the page is brought back.
 window.addEventListener("pagehide", () => {
   passLeft += 1;
   forgetTypedCode();
