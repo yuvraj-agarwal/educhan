@@ -7259,6 +7259,11 @@ var (
 	lureGifts = words(`gifts?`, `presents?`, `phone`, `iphone`, `chocolates?`, `treats?`, `something~nice`, `robux`,
 		`v~?bucks`, `uc`, `diamonds`, `gems`, `skins?`, `money`, `cash`, `paise`, `recharge`, `top~?up`,
 		words(`whatever`, `anything`)+`~`+words(`you`, `u`)+`~`+words(`want`, `like`))
+	// lureAmount is money offered as an amount: "500 rs", "rs 500", "₹500",
+	// "$20", "20 bucks"; privateCue wants a bare number to have its
+	// currency. lureGivers open the offer.
+	lureGivers = canonSetOf(`buy get send give bring`)
+	lureAmount = `(?:rs|[₹$£])?~?\d+(?:~?` + words(`rs`, `rupees`, `bucks`, `dollars`, `pounds`) + `)?`
 	// ageNumber, ageUnit and youthNoun make up an age someone is looked for
 	// at: "14yo girls", "13-15 year old boys".
 	ageNumber = `\d{1,2}(?:~?(?:-|to)~?\d{1,2})?~?`
@@ -7294,10 +7299,10 @@ var (
 			`keep~`+words(`you`, `u`)+`~company`, `be~waiting`, `wait~there`, `walk~(?:with~)?`+words(`you`, `u`),
 			`come~up`, `wait~outside`, `be~outside`,
 			// "I'll buy you a gift", "i want to send you a present", "I'll
-			// get you a new phone", "i can give you free vbucks", "I'll pay
-			// you", "I'll recharge your phone".
+			// get you a new phone", "i can give you free vbucks", "i'll send
+			// you 500 rs", "I'll pay you", "I'll recharge your phone".
 			words(`buy`, `get`, `send`, `give`, `bring`)+`~`+words(`you`, `u`)+`~(?:`+words(`a`, `an`, `some`, `a~new`,
-				`new`, `a~nice`, `nice`, `some~free`, `free`, `more`)+`~)?`+lureGifts,
+				`new`, `a~nice`, `nice`, `some~free`, `free`, `more`)+`~)?`+words(lureGifts, lureAmount),
 			`pay~`+words(`you`, `u`),
 			words(`recharge`, `top~up`, `topup`)+`~`+words(`your`, `ur`)+`~`+words(`phone`, `mobile`, `number`, `sim`,
 				`account`)),
@@ -7464,6 +7469,14 @@ func privateCue(v *view, m []int, openMeetings bool) bool {
 		}
 	}
 	switch {
+	case isASCIIDigit(last[0]) && anyIn(ws, lureGivers):
+		// A number given is money only with its currency: "i'll send you 500
+		// rs", "i can send u rs 500", "give you ₹500", not "i'll send you 2
+		// more notes".
+		if _, err := strconv.Atoi(last); err != nil {
+			return true
+		}
+		return hasWord(ws, "rs") || strings.ContainsAny(text[m[0]:m[1]], "₹$£")
 	case is(last, "know") && (is(first, "do") || is(first, "does")):
 		// "do your parents know about the fee hike?" asks about a thing;
 		// "do your parents know about us", "know you talk to strangers"
