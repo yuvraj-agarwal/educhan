@@ -741,6 +741,20 @@ and only then archive the old one, since an archived Price can't be sold. Three
 more settings have working defaults and need no change: `EDUCHAN_PASS_DAYS`,
 `EDUCHAN_PASS_HOURLY_POSTS` and `EDUCHAN_PASS_COOLDOWN` (section 4).
 
+If the service's log says `the Pass price in Stripe needs fixing`, its `error`
+says why: the Price is archived, recurring or without a fixed amount, or, with
+Stripe Tax on, says neither `inclusive` nor `exclusive`; or Stripe refused the
+key or the Price ID, such as a test-mode Price ID with a live key. Until it is
+fixed, `/api/pass` leaves the price out, and with Stripe Tax on, checkout
+answers `503`. A new Price, made and set as above, mends a fault in the Price or
+its ID, and the key block above puts in a new key. This reads the latest such
+line:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="the Pass price in Stripe needs fixing"' \
+  --freshness=7d --limit=1 --format='value(jsonPayload.error)'
+```
+
 `PUBLIC_URL` is where Stripe sends a buyer back and where it sends its
 webhooks, and it has to be the one address readers use: the cookie that lets a
 browser collect its code belongs to the address the checkout began on, so a
