@@ -1310,7 +1310,11 @@ const vacuumProbeTable = "vacuum_probe"
 // So the credentials are deleted and inserted back from the copy the delete
 // returns, in random order, in one statement: afterwards every row carries
 // this transaction's id, and where a row sits says nothing about when it was
-// issued. The lock is the one that holds back writers and lets readers
+// issued. The id says of a row only that it was issued before the sweep:
+// nothing its expiry does not for one issued on an earlier day, and for one of
+// the day the sweep runs in, which ends after the scheduled sweep
+// (credentialDayEnd), that it came in the 22 hours of that day before the
+// sweep. The lock is the one that holds back writers and lets readers
 // through. The statement after it takes its snapshot once the lock is
 // granted, so a confirmation that committed before then is in the copy; one
 // that arrives after waits for the commit and then writes over the rewritten

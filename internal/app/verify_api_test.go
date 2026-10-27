@@ -524,6 +524,42 @@ func TestAdultAttestationIsNeverKept(t *testing.T) {
 	}
 }
 
+// The credential's row keeps an expiry counted from the end of the credential
+// day it was issued in (credentialDayEnd), which ends after the nightly sweep,
+// rather than from the moment of issuance, so that it dates the issuance to
+// that day; the credential itself carries the exact expiry, which is what
+// stops it badging posts.
+func TestStoredExpiryCountsFromTheEndOfTheIssuanceDay(t *testing.T) {
+	h := verifyServer(t, nil)
+	before := time.Now()
+	issued := h.verify("ana@iitb.ac.in")
+	after := time.Now()
+
+	var stored time.Time
+	if err := h.app.pool.QueryRow(context.Background(),
+		`SELECT expires_at FROM verification_credentials`).Scan(&stored); err != nil {
+		t.Fatalf("read the stored expiry: %v", err)
+	}
+	ttl := h.app.cfg.VerifyCredentialTTL
+	if first, last := credentialDayEnd(before).Add(ttl), credentialDayEnd(after).Add(ttl); !stored.Equal(first) &&
+		!stored.Equal(last) {
+		t.Errorf("stored expiry %s, want %s: the end of the credential day it was issued in, plus %s",
+			stored.UTC().Format(time.RFC3339Nano), first.Format(time.RFC3339Nano), ttl)
+	}
+
+	claims, ok := h.app.parseCredential(issued.Credential)
+	if !ok {
+		t.Fatal("the issued credential does not parse")
+	}
+	exp := time.Unix(claims.Expires, 0)
+	if exp.Before(before.Add(ttl).Truncate(time.Second)) || exp.After(after.Add(ttl)) {
+		t.Errorf("the credential expires at %s, want %s after its issuance", exp.UTC(), ttl)
+	}
+	if !stored.After(exp) {
+		t.Errorf("the stored expiry %s does not outlive the credential's own, %s", stored.UTC(), exp.UTC())
+	}
+}
+
 // The stored row dates an issuance only to the day. The log notes that a
 // credential was issued, as the request log notes the request, but never for
 // which institution: a label stamped to the second would date the row exactly

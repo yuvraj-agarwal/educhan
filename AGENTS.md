@@ -801,8 +801,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   - Never add a column to `verification_pending` or `verification_credentials` that could
     be joined to a post, and never add `created_at` or a "last used" — an issuance or use
     timestamp correlates with the posts around it. `CredentialLabel` is a read and has to
-    stay one. Credential expiry is stored rounded up to a UTC day boundary for the same
-    reason; `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns.
+    stay one. Credential expiry is stored counted from the end of the day the
+    credential was issued in, not from the moment, for the same reason;
+    `TestVerificationTablesCannotBeJoinedToPosts` pins both tables' exact columns. That
+    day runs from 05:00 to 05:00 UTC (`credentialDayEnd`), ending after the nightly
+    sweep and its retry rather than at midnight, because the sweep's transaction id
+    splits the day it runs in: with a midnight day, it and the expiry dated every
+    credential issued between midnight and the sweep to those three hours.
+    `TestCredentialDaysEndAfterTheSweep` reads the schedule and the Job's retry from
+    `deploy/README.md`, so moving the sweep past 05:00 means moving
+    `credentialDayStart` with it.
   - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
     credentials every night.** Every row carries `xmin`, the id of the transaction that
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
@@ -935,13 +943,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `SET STATISTICS 0` in its migration. The README's "Transaction ids, and the
     nightly rewrite" says exactly what this protects — the verification tables of the
     live database after the 03:17 UTC sweep, where nothing dates a credential more
-    closely than its expiry day — and what it does not. Above all, the posts: every code
-    request that reaches the database, and every attempt at a code in flight, is a
-    write, takes the next transaction id, and so leaves a gap in the posts' `xmin`
-    between the two posts written around it, which one plain query on `posts` finds, in
-    the live database and every backup, for as long as those posts exist. That places
-    each issuance between two posts whatever the sweep does; the rewrite takes away only
-    the credential row's own issuance id
+    closely than the day its expiry gives — and what it does not, a sweep run after
+    05:00 UTC among it, which splits the day it runs in until the next sweep. Above
+    all, the posts: every code request that reaches the database, and every attempt at
+    a code in flight, is a write, takes the next transaction id, and so leaves a gap in
+    the posts' `xmin` between the two posts written around it, which one plain query on
+    `posts` finds, in the live database and every backup, for as long as those posts
+    exist. That places each issuance between two posts whatever the sweep does; the
+    rewrite takes away only the credential row's own issuance id
     (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` pins this as a known limit, and
     only verification tables on a PostgreSQL instance of their own would close it). Nor
     does it cover a credential issued since the last sweep, a code in flight as the

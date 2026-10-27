@@ -46,8 +46,9 @@ switched off for the whole server unless `EDUCHAN_VERIFY_SECRET` is set.
   [Verified: IIT Bombay]
 
   The credentials table holds HMAC(secret, address), the SHA-256 of the
-  credential's random id, the label, and an expiry rounded up to the day,
-  and has no path to any post. A code's own row holds the same HMAC and an
+  credential's random id, the label, and an expiry counted from the end of
+  the day it was issued (a day that ends at 05:00 UTC, after the nightly
+  sweep), and has no path to any post. A code's own row holds the same HMAC and an
   expiry to the microsecond, the time it was asked for plus its lifetime,
   and stays in the table's file until the first nightly sweep after the
   code is confirmed or expires. PostgreSQL's transaction ids date the
@@ -187,12 +188,15 @@ can and cannot work out.
 - When a credential was issued: to the interval between two posts, for as long
   as those posts exist, whatever the nightly sweep does. The verification tables
   themselves, once the sweep has run, say only the *day*: the stored expiry is
-  rounded up to a UTC day boundary, the sweep deletes the codes that expired
-  unconfirmed, whose expiries are the only other times in the tables, PostgreSQL
-  keeps no sample of their values, and the sweep rewrites the credentials so
-  that the transaction id PostgreSQL keeps on every row is the sweep's rather
-  than the issuance's. A code still in flight as the sweep ran is the exception,
-  which [Transaction ids, and the nightly
+  counted from the end of the day the credential was issued in, a day that
+  runs from 05:00 UTC to 05:00 UTC, so that it ends after the nightly sweep;
+  the sweep deletes the codes that expired unconfirmed, whose expiries are the
+  only other times in the tables; PostgreSQL keeps no sample of their values;
+  and the sweep rewrites the credentials so that the transaction id PostgreSQL
+  keeps on every row is the sweep's rather than the issuance's, which says of
+  a credential of the day it ran in only that it came before the sweep. A code
+  still in flight as the sweep ran, and a sweep run after 05:00 UTC, are the
+  exceptions, which [Transaction ids, and the nightly
   rewrite](#transaction-ids-and-the-nightly-rewrite) spells out. But requesting
   a code and confirming one are writes, and each takes a transaction id from the
   counter posts take theirs from. Posts keep theirs beside their `created_at`,
@@ -243,7 +247,9 @@ can and cannot work out.
   above. Verification tables carry no `created_at`, and using a credential
   updates nothing, so there is no "last used" to line up against a post; the
   transaction id on a rewritten credential row dates the sweep that rewrote it,
-  not the issuance. But the issuance times above are enough on some days:
+  not the issuance, and says of the issuance only that it came before the
+  sweep, which the day its expiry gives, ending after the sweep, already
+  covers. But the issuance times above are enough on some days:
   neither the gaps among the posts' transaction ids nor the log's lines name an
   institution, but a badged post soon after an issuance does, and that ties the
   post to a single record on a day its institution issued only one credential.
@@ -333,7 +339,11 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
 2. In one transaction, holding a lock that makes writers wait and lets readers
    through, it deletes every credential row and inserts the copy back in random
    order. Every row then carries the sweep's transaction id, and where a row
-   sits says nothing about when it was issued. Badged posts read the table
+   sits says nothing about when it was issued. The id says of a credential only
+   that it was issued before the sweep: nothing its expiry does not for one
+   issued on an earlier day, and for one of the day the sweep runs in, which
+   ends at 05:00 UTC, that it came in the 22 hours of that day before the sweep
+   ("What that protects, exactly", below). Badged posts read the table
    throughout. A confirmation that already has the table is waited for and
    rewritten with the rest; one that arrives during the rewrite waits for it
    and is then written as usual — once either way
@@ -425,13 +435,32 @@ the posts' are still there after the sweep.
 What that protects, exactly:
 
 - **The verification tables of the live database, after the nightly sweep at
-  03:17 UTC.** Nothing in either table dates a credential more closely than its
-  expiry, rounded to the day: no live row and no row version in either table's
-  file, no sample in `pg_statistic` or in its files, and no last-scan time says
-  more — but for a code still in flight as the sweep ran (below). Times
-  autovacuum recorded before migration `0015` stay in the statistics views until
-  the statistics are reset, which takes a superuser. That is the tables, not the
-  database: see the next point.
+  03:17 UTC.** Nothing in either table dates a credential more closely than the
+  day its expiry gives, a day that runs from 05:00 UTC to 05:00 UTC: no live
+  row and no row version in either table's file, no sample in `pg_statistic` or
+  in its files, and no last-scan time says more — but for a code still in
+  flight as the sweep ran and a credential issued since the sweep (both below).
+  The sweep's transaction id, which every credential issued before it carries,
+  says of one of the day the sweep ran in only that it was issued in the 22
+  hours of that day before the sweep; one issued between the sweep and 05:00
+  carries its own id instead, which dates it anyway (below). That is why the
+  day ends at 05:00, after the sweep and the time its one retry may take, and
+  not at midnight: with the sweep in the morning of a day that began at
+  midnight, the sweep's id and the expiry together dated every credential
+  issued between midnight and the sweep to those three hours, morning to
+  afternoon across South and East Asia and Australia, until the next night's
+  sweep (`TestCredentialDaysEndAfterTheSweep` reads the schedule and the retry
+  from the deploy guide). A sweep that runs after 05:00 — by hand, as the deploy
+  guide offers, or a late retry — splits the day it runs in where it runs, so
+  until the next night's sweep, and in the backups taken meanwhile, its id dates
+  the credentials issued between 05:00 and it to those hours. Run it by hand
+  between 03:17 and 05:00 UTC, or when nobody has verified since 05:00. And
+  once, on the day a server first counted expiries this way: credentials issued
+  that day before the deploy kept an expiry rounded up to midnight, which only
+  they have, so it dates them to the hours between midnight and the deploy for
+  as long as they are kept. Times autovacuum recorded before migration `0015` stay in the
+  statistics views until the statistics are reset, which takes a superuser.
+  That is the tables, not the database: see the next point.
 - **Not the posts' own transaction ids**, which no sweep touches. Every code
   request that reaches the database, and every attempt at a code in flight, is a
   write and takes the next id, so each leaves a gap in the posts' `xmin` between

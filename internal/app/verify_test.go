@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -308,21 +310,133 @@ func TestCredentialRoundTrip(t *testing.T) {
 	}
 }
 
-// The stored expiry is deliberately coarse: it dates an issuance to the day
-// rather than the second, and still outlives the credential it revokes.
-func TestNextDayBoundary(t *testing.T) {
-	at := time.Date(2026, 8, 8, 14, 21, 33, 500, time.UTC)
-	got := nextDayBoundary(at)
-	want := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
-	if !got.Equal(want) {
-		t.Errorf("nextDayBoundary(%s) = %s, want %s", at, got, want)
+// The stored expiry is deliberately coarse: it is counted from the end of the
+// credential day an issuance falls in, so it dates the issuance to that day
+// rather than the second, and still outlives the credential it revokes. A day
+// runs from 05:00 UTC to 05:00 UTC, whatever the date and whatever the
+// issuance's time zone.
+func TestCredentialDayEnd(t *testing.T) {
+	india := time.FixedZone("IST", 5*3600+1800)
+	for _, c := range []struct {
+		at, want time.Time
+	}{
+		{time.Date(2026, 8, 8, 14, 21, 33, 500, time.UTC), time.Date(2026, 8, 9, 5, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 8, 8, 4, 59, 59, 999999999, time.UTC), time.Date(2026, 8, 8, 5, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 8, 8, 5, 0, 0, 0, time.UTC), time.Date(2026, 8, 9, 5, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 8, 8, 0, 0, 0, 0, time.UTC), time.Date(2026, 8, 8, 5, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 8, 8, 3, 17, 0, 0, time.UTC), time.Date(2026, 8, 8, 5, 0, 0, 0, time.UTC)},
+		{time.Date(2026, 12, 31, 23, 0, 0, 0, time.UTC), time.Date(2027, 1, 1, 5, 0, 0, 0, time.UTC)},
+		{time.Date(2028, 2, 28, 6, 0, 0, 0, time.UTC), time.Date(2028, 2, 29, 5, 0, 0, 0, time.UTC)},
+		// 09:00 in India is 03:30 UTC, before the day's end that morning.
+		{time.Date(2026, 8, 8, 9, 0, 0, 0, india), time.Date(2026, 8, 8, 5, 0, 0, 0, time.UTC)},
+	} {
+		got := credentialDayEnd(c.at)
+		if !got.Equal(c.want) || got.Location() != time.UTC {
+			t.Errorf("credentialDayEnd(%s) = %s, want %s", c.at, got, c.want)
+		}
+		if !got.After(c.at) {
+			t.Errorf("credentialDayEnd(%s) = %s: the stored expiry must outlive the credential it belongs to", c.at, got)
+		}
+		if got.Sub(c.at) > 24*time.Hour {
+			t.Errorf("credentialDayEnd(%s) added %s, want no more than a day", c.at, got.Sub(c.at))
+		}
 	}
-	if !got.After(at) {
-		t.Error("the stored expiry must outlive the credential it belongs to")
+
+	// Every moment of one day has the same end, and the next day another.
+	start := time.Date(2026, 10, 26, 5, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+	for at := start; at.Before(end); at = at.Add(7 * time.Minute) {
+		if got := credentialDayEnd(at); !got.Equal(end) {
+			t.Fatalf("credentialDayEnd(%s) = %s, want %s like the rest of its day", at, got, end)
+		}
 	}
-	if got.Sub(at) > 24*time.Hour {
-		t.Errorf("rounding added %s, want less than a day", got.Sub(at))
+	if got := credentialDayEnd(end); !got.Equal(end.Add(24 * time.Hour)) {
+		t.Errorf("credentialDayEnd(%s) = %s, want the next day's end", end, got)
 	}
+}
+
+// The nightly sweep gives every credential row its transaction id, and a row
+// issued after it keeps the issuance's until the next night's. So the day a
+// row's expiry gives must end after the sweep, not before it: a day that
+// ended at midnight, with the sweep at 03:17, had its rows from midnight to
+// the sweep carry the sweep's id and the rest their own, and the expiry and
+// the sweep's id together dated the first to those three hours, until the
+// next sweep. The test reads when the sweep is scheduled, and how long it and
+// its retry can run, from the deploy guide's Cloud Scheduler job and Cloud Run
+// Job, and checks that the day the sweep runs in ends after the latest of
+// them, with half an hour to spare for the Job's starts, and within two hours
+// of the scheduled time: then the rows of that day carrying the sweep's id
+// were issued over the 22 hours or more before it, and those issued after it,
+// which carry their own ids anyway, over two hours at most.
+func TestCredentialDaysEndAfterTheSweep(t *testing.T) {
+	guide := repositoryFile(t, "deploy/README.md")
+	schedule := regexp.MustCompile(`--schedule "(\d+) (\d+) \* \* \*" --time-zone "Etc/UTC"`).FindStringSubmatch(guide)
+	job := regexp.MustCompile(`--max-retries (\d+) --task-timeout (\d+)m\b`).FindStringSubmatch(guide)
+	if schedule == nil || job == nil {
+		t.Fatalf("deploy/README.md has no daily UTC schedule (%q) or no Job retries and timeout (%q) "+
+			"for the sweep: the test cannot tell when it runs", schedule, job)
+	}
+	number := func(s string) time.Duration {
+		n, err := strconv.Atoi(s)
+		if err != nil {
+			t.Fatalf("%q: %v", s, err)
+		}
+		return time.Duration(n)
+	}
+	scheduled := number(schedule[2])*time.Hour + number(schedule[1])*time.Minute
+	latest := scheduled + (number(job[1])+1)*number(job[2])*time.Minute
+
+	for _, date := range []time.Time{
+		time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+		time.Date(2028, 2, 29, 0, 0, 0, 0, time.UTC),
+	} {
+		dayEnd := credentialDayEnd(date.Add(scheduled))
+		if spare := dayEnd.Sub(date.Add(latest)); spare < 30*time.Minute {
+			t.Errorf("a credential day ends at %s, %s after the latest a sweep scheduled at %s and retried "+
+				"can still be running (%s): want it to end half an hour or more after that, or the sweep "+
+				"splits it into the credentials issued before it and those after",
+				dayEnd.Format(time.RFC3339), spare, date.Add(scheduled).Format(time.RFC3339),
+				date.Add(latest).Format(time.RFC3339))
+		}
+		if after := dayEnd.Sub(date.Add(scheduled)); after > 2*time.Hour {
+			t.Errorf("the day the sweep scheduled at %s runs in ends %s after it: want two hours at most, so "+
+				"that the credentials of that day carrying its id are those issued over the rest of the day",
+				date.Add(scheduled).Format(time.RFC3339), after)
+		}
+		// Each moment a scheduled sweep or its retry may run in falls in that day.
+		for at := date.Add(scheduled); !at.After(date.Add(latest)); at = at.Add(time.Minute) {
+			if got := credentialDayEnd(at); !got.Equal(dayEnd) {
+				t.Fatalf("credentialDayEnd(%s) = %s, want %s: a day ends while the sweep can be running",
+					at.Format(time.RFC3339), got.Format(time.RFC3339), dayEnd.Format(time.RFC3339))
+			}
+		}
+	}
+}
+
+// repositoryFile reads a file of the repository by its path from the root,
+// which is the directory above the test's that holds go.mod.
+func repositoryFile(t *testing.T, path string) string {
+	t.Helper()
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("working directory: %v", err)
+	}
+	for {
+		if _, err := os.Stat(filepath.Join(root, "go.mod")); err == nil {
+			break
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			t.Fatal("no go.mod above the test's directory")
+		}
+		root = parent
+	}
+	body, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(body)
 }
 
 func TestVerificationCodeShape(t *testing.T) {
