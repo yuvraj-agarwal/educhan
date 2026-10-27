@@ -358,24 +358,28 @@ deadline a week on, rounded up to the next midnight UTC. Changing
 already paid for, whether it is collected, renewed or reissued later.
 
 Every checkout gives the browser a new claim with only its own order under it,
-and an order is collected only through the claim its checkout set. A claim
-token copied off a shared computer, or planted in the browser, before somebody
-buys there collects nothing of what they buy. It also means a browser collects
-only its latest checkout: a Stripe tab left open from an earlier one and paid
-after all is not collected there. The page says so where it shows a checkout
-being collected, beside Start again, beside a checkout not collected yet, and
-under the forms drawn again over a checkout left behind (Start again, back from
+and an order is collected only through the claim its checkout set. A claim token
+copied off a shared computer, or planted in the browser, before somebody buys
+there collects nothing of what they buy. It also means a browser collects only
+its latest checkout: a Stripe tab left open from an earlier one and paid after
+all is not collected there. The page says so where it shows a checkout being
+collected, beside Start again, beside a checkout not collected yet, and under
+the forms drawn again over a checkout left behind (Start again, back from
 Stripe's cancel link, or a checkout whose answer came after the reader left the
-Pass page or after the Pass held changed meanwhile, in another tab say, which
-is not followed to Stripe), each with Stop collecting it here, but not in a
-tab drawn before the other checkout started. That payment is still the buyer's,
-and the owner reissues it from the payment on the receipt (see **Lost codes**).
-The cookie is set at checkout to outlast its order's deadline, and 30 days past
+Pass page or after the Pass held changed meanwhile, in another tab say, which is
+not followed to Stripe), each with Stop collecting it here, but not in a tab
+drawn before the other checkout started. That payment is still the buyer's, and
+the owner reissues it from the payment on the receipt (see **Lost codes**). The
+cookie is set at checkout to outlast its order's deadline, and 30 days past
 Stripe's 24-hour checkout, which is as long as a slow payment holds its order
 (below) when Stripe reports the checkout completed as it happens. Nothing else
 sets the cookie, and only forgetting the claim clears it. A paid order nobody
-has collected by the time the cookie runs out is kept longer, and is collected
-with a reissue code.
+has collected is kept for its own term past its deadline, or past a slow
+payment's hold (below), and the cookie runs out 24 days after the deadline. So
+with a term of 25 days or more, the default year included, an order paid by its
+deadline outlasts the cookie, and is collected then with a reissue code; with 24
+days or less it can be pruned by the time the cookie runs out, and once it is,
+it cannot be reissued.
 
 Collecting takes the order under the claim once it is paid: a renewal renews
 its Pass by the order's own term, and anything else makes a new Pass, as does
@@ -556,8 +560,12 @@ of the transaction that wrote it (Postgres's `xmin`), drawn from the same
 counter as the posts', which carry their time, and the write-ahead log keeps the
 same order, so whoever holds the live database's files or a physical backup (not
 a `pg_dump`) can place a Pass row between two posts. A `passes` row's `xmin`
-moves with each renewal, refund, dispute or redeemed reissue code, so it dates
-the latest of them. Stripe keeps the exact time of every payment anyway.
+moves with each later write to it, a renewal collected, a reissue code redeemed,
+or a refund or dispute that takes days off the Pass, so it dates the latest of
+those. A refund or dispute that takes none off (of a term already run, or of a
+paid renewal not collected yet, say) leaves the row as it was, and the
+`pass_revocations` row it writes dates it instead. Stripe keeps the exact time
+of every payment anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
