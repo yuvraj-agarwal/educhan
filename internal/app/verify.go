@@ -557,11 +557,13 @@ const credentialDayStart = 5 * time.Hour
 // run past 04:30. With one retry of a fifteen-minute task, that is a sweep
 // scheduled from 03:00 to 04:00. A change to the schedule, the retries or the
 // timeout that leaves that window means moving credentialDayStart with it,
-// not only a move past 05:00: a sweep at 04:40, whose retry can run until
-// 05:10, splits the day as surely as one at 05:30, and the day of a sweep at
-// 02:30 ends two and a half hours after it. A sweep run after 05:00 — by
-// hand, or late — still splits the day it runs in at the time it runs, and
-// the README says what that leaves.
+// not only a move past 05:00. A sweep at 04:40 that succeeds at once falls in
+// the same day as one at 03:17, and splits it no more; but its retry can run
+// until 05:10, and a retry that rewrites after 05:00 splits the next day, as
+// a sweep at 05:30 always does, which is why the test rejects it. And the day
+// of a sweep at 02:30 ends two and a half hours after it. A sweep run after
+// 05:00 — by hand, or late — still splits the day it runs in at the time it
+// runs, and the README says what that leaves.
 //
 // It is not all an operator can see. The code request and the confirmation
 // each took a transaction id from the counter the posts take theirs from, and
