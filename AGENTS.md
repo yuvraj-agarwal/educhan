@@ -778,7 +778,7 @@ cost down:
   patterns' subjects, "i will", "someone should", sit in front of the whole list of
   acts), shares one copy of each class's ranges among the programs (`shareRunes`), and
   drops each pattern's tree once it is planned (`forget`). `TestFilterPlanIsBounded`
-  holds the compiled programs to 800,000 instructions (about 797,000 now; when it
+  holds the compiled programs to 800,000 instructions (about 798,000 now; when it
   was 570,000, the same patterns split without the bound came to 1.4 million). The grammar rules
   keep their patterns small by matching the rarest word, the verb or the harm, and
   reading the speaker and the object in Go (`frameSpeaker`, `threatFrame`,
@@ -811,7 +811,7 @@ joke about dying with no cause or laugh beside it shown the support message). Th
 matched and a hold waits for a person.
 
 **The corpus** (`testdata/filter_corpus/{academic,life,contact,risk}{,_2,_3}.jsonl`) is
-3,578 made-up posts in three parts, one JSON object a line: `id` (unique across the
+3,609 made-up posts in three parts, one JSON object a line: `id` (unique across the
 files), `body`, `subject`, `name`, `expect` (`publish`, `block`, `support` or `hold`; a
 method question that shows support and is then held meets `hold`), `why`, and, only
 together, `known_miss: true` and a `note` saying why the miss is accepted rather than
@@ -856,12 +856,12 @@ still happen to be someone's, as with the unit tests' examples. Label a post by 
 filter should do, not by what it does. A rule change that turns a labelled post wrong is a
 regression to fix, or a label to correct with the reason in `why`; a `known_miss` is for a
 miss whose fix would cost more than it buys, and its `note` says what. **The rules have
-been fitted to all 3,578 posts**, all three parts: the `_2` part was written apart from
+been fitted to all 3,609 posts**, all three parts: the `_2` part was written apart from
 the rules, then used to rewrite the hold rules to read grammar and, after that, the
 contact and support rules to read verb classes, apps with their objects, the poster's own
 voice in any tense, number layouts and quotation; the `_3` part was written apart from
 them too, measured unseen (the README gives the figures), and then used to put right the
-ordinary posts it stopped and to widen each family cause by cause; the last 693 pin what a
+ordinary posts it stopped and to widen each family cause by cause; the last 724 pin what a
 review of the rules found they missed or stopped wrongly, each written beside the change
 that put it right; so the rates `-v` logs describe how closely the rules fit these posts
 and are no measurement of anything else. The README says so, and a claim about how well
