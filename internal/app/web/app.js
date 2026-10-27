@@ -1580,7 +1580,9 @@ function pressedWithoutBadge(form, key) {
 
 // What a posting form on screen says when the server refuses its badged post
 // as expired or revoked while storage holds another badge, verified since in
-// another tab of this browser.
+// another tab of this browser, and the browser was not forgotten since the
+// press: a badge stored after a forget is someone else's, so the form is then
+// told the server's words (submit).
 const BADGE_REPLACED = "The badge this post carried was replaced by one verified since in this browser, so nothing was posted.";
 
 // badgeReplacedNotice is that form's notice, in place of the server's, which
@@ -3618,9 +3620,9 @@ function restoreDraft(draft) {
     // Otherwise it is read for its values, and as of the newest forget it has
     // had: one answered while away missed any forget since, so its Name, the
     // one forgotten, is not restored, nor its badge (below), while a Name
-    // typed after a forget it had on screen is. A ticked badge the server
-    // refused while it was away is read from the note the refusal left
-    // (submit), so the new form is noted as for any badge gone (below).
+    // typed after a forget it had on screen is. A ticked badge refused as
+    // expired or revoked while it was away is read from the note the refusal
+    // left (submit), so the new form is noted as for any badge gone (below).
     answered = heldForms.has(held) ? null : held;
     draft = { key: draft.key, ...formDraft(held), forgets };
   }
@@ -4879,12 +4881,12 @@ el.main.addEventListener("submit", async (event) => {
     // again reads the note with its values (formDraft) and notes the form it
     // draws (restoreDraft), whose next press is refused once, rather than
     // posting without the badge unsaid. When storage holds another badge, which
-    // the page keeps, a form on screen is told so in its own words
-    // (badgeReplacedNotice), not the server's, and that notice is its one
-    // refusal for the badge: a note left on it while the post was on its way,
-    // by another tab's change or a redraw that put it back
-    // (followCredentialStorage, restoreDraft), goes, so the next press posts
-    // without a badge, as the notice says.
+    // the page keeps, and the browser was not forgotten meanwhile, a form on
+    // screen is told so in its own words (badgeReplacedNotice), not the
+    // server's, and that notice is its one refusal for the badge: a note left
+    // on it while the post was on its way, by another tab's change or a redraw
+    // that put it back (followCredentialStorage, restoreDraft), goes, so the
+    // next press posts without a badge, as the notice says.
     const reason = err.payload && err.payload.credential;
     let replaced = false;
     if (held && (reason === "expired" || reason === "revoked")) {

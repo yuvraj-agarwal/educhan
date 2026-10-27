@@ -1577,12 +1577,13 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 // another, is noted instead, so a badge verified in another tab meanwhile never
 // goes out unticked by the reader. And a badged post refused as expired or
 // revoked forgets that credential only if storage still holds it: one another
-// tab stored meanwhile is not the one refused, and a form on screen is told
-// that its badge was replaced by one verified since in this browser, not the
-// server's "verify again", which would cost another code and replace the badge
-// the browser holds. That notice is the form's one refusal for the badge, so a
-// note left on it while the post was on its way goes, and it says what the
-// next press does and how to post with the new badge.
+// tab stored meanwhile is not the one refused, and, unless the browser was
+// forgotten since the press, a form on screen is told that its badge was
+// replaced by one verified since in this browser, not the server's "verify
+// again", which would cost another code and replace the badge the browser
+// holds. That notice is the form's one refusal for the badge, so a note left on
+// it while the post was on its way goes, and it says what the next press does
+// and how to post with the new badge.
 func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1672,10 +1673,11 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	// the form a redraw draws in its place refuses its next press once: without
 	// the note, that press posts the reply without its badge, unsaid, under the
 	// ID the reader's other posts there without one share. A form on screen
-	// whose badge storage has replaced since the press is told so in place of
-	// the server's wording, which says to verify again, and a note left on it
-	// while the post was on its way, by another tab's change or a redraw that
-	// put it back, goes, so its next press posts as that notice says.
+	// whose badge storage has replaced since the press, the browser not
+	// forgotten meanwhile, is told so in place of the server's wording, which
+	// says to verify again, and a note left on it while the post was on its
+	// way, by another tab's change or a redraw that put it back, goes, so its
+	// next press posts as that notice says.
 	refused := submit[max(strings.Index(submit, "} catch (err) {"), 0):]
 	if !strings.Contains(refused, `if (held && (reason === "expired" || reason === "revoked")) { `+
 		"if (forgets === browserForgets && storedCredential() === held.token) { const pageBadge = state.verification.badge; "+
