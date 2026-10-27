@@ -574,7 +574,8 @@ gcloud run services describe educhan --region "$REGION" --format='value(metadata
   { echo "PUBLIC_URL must be a bare https:// origin, not ${PUBLIC_URL}."; exit 1; }
 SITE=$(curl -fsS "${PUBLIC_URL}/api/site") ||
   { echo "${PUBLIC_URL} does not answer."; exit 1; }
-# An image from before the Pass is also one from before the captcha.
+# Asked before the captcha: an image from before the captcha is also one from
+# before the Pass, and is told here to redeploy rather than sent to 2.4.
 [[ $(curl -fsS "${PUBLIC_URL}/api/pass") == *'"enabled":'* ]] ||
   { echo "${PUBLIC_URL} runs an image from before the Pass: deploy the current one first (sections 2.5 and 2.6)."; exit 1; }
 [[ $SITE == *'"captcha":true'* ]] ||
