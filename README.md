@@ -199,10 +199,11 @@ can and cannot work out.
 - When a credential was issued: in the database, only to the *day*, because the
   stored expiry is rounded up to a UTC day boundary and nothing else in the
   verification tables is timestamped (the spent [captcha](#captcha) a code
-  request leaves behind stores only the day the same way); in the application's
-  log, for as long as it is kept, to the second, because the request line for
-  `POST /api/verify/confirm` and a bare `verification issued` line each carry a
-  time. Neither line says which institution or address the credential was for
+  request leaves behind stores only a day too: its challenge's expiry rounded up
+  to the next UTC midnight); in the application's log, for as long as it is
+  kept, to the second, because the request line for `POST /api/verify/confirm`
+  and a bare `verification issued` line each carry a time. Neither line says
+  which institution or address the credential was for
   (`TestIssuanceIsLoggedWithoutTheInstitution`), but a badged post made soon
   after an issuance does name the institution, and its time is kept to the
   second too. So an issuance followed by a badged post ties that post to its
