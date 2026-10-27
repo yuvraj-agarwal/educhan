@@ -221,12 +221,16 @@ connections; section 3 covers how the pool size and `maxScale` add up.
 **Leave `track_commit_timestamp` off.** It is off by default, in PostgreSQL and
 in Cloud SQL, and none of the commands here set it. Switched on, it records when
 each transaction committed, and `pg_xact_commit_timestamp(xmin)` turns that into
-the time any row was last written, to well under a second. Anyone holding the
-database could then date every verification credential written while it was on,
-which defeats storing the expiry rounded to a day, one that runs from 05:00 UTC
-to 05:00 UTC (below), so that an issuance cannot be matched to the posts around
-it. Never add it to `--database-flags`; this shows the instance's flags, and
-should print nothing about it:
+the time any row was last written, to well under a second. A verification
+credential issued while it was on could then be dated to that moment rather than
+to its day, one that runs from 05:00 UTC to 05:00 UTC (below), until the next
+sweep rewrites it; and so could each committed transaction id missing from the
+posts' sequence, for as long as PostgreSQL keeps its commit time, which turns
+the gap a code request or confirmation leaves among the posts' ids from the
+minutes between two posts into the moment of the write. The root README's
+[Transaction ids, and the nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite)
+has the rest. Never add it to `--database-flags`; this shows the instance's
+flags, and should print nothing about it:
 
 ```bash
 gcloud sql instances describe educhan-db --format='value(settings.databaseFlags)'
@@ -498,13 +502,15 @@ the app keeps addresses out of them itself.
 ### 2.9 The archive sweeper
 
 A thread that falls off the end of its board is archived, and the sweeper
-deletes it, with its images, once its board's `archive_days` (7 by default)
-have passed. Each run also rewrites the verification tables, so that no
-credential's row dates it more closely than the day it was issued in. It is the
-same image run as `educhan -sweep`: one pass, then it exits. It runs as a Cloud
-Run **Job**, started once a day by Cloud Scheduler, because a Cloud Run service
-only has CPU while it answers a request, so a timer inside it would fire
-whenever it happened to.
+deletes it, with its images, once its board's `archive_days` (7 by default) have
+passed. Each run also rewrites the verification tables, so that every credential
+issued before it carries the run's transaction id rather than its own; the root
+README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says how closely
+that still dates it. It is the same image run as `educhan -sweep`: one pass,
+then it exits. It runs as a Cloud Run **Job**, started once a day by Cloud
+Scheduler, because a Cloud Run service only has CPU while it answers a request,
+so a timer inside it would fire whenever it happened to.
 
 The Job runs as the service's account and needs only what its work takes: the
 database, and `storage.objects.list`, `.get` and `.delete` on the bucket, all
@@ -558,19 +564,27 @@ it, so the run should pass; but no sweep has run on Cloud SQL yet. If `--wait`
 says the execution failed, this prints why:
 
 ```bash
-gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="educhan-sweep" AND jsonPayload.msg="fatal"' \
-  --freshness=1h --limit=1 --format='value(timestamp,jsonPayload.error)'
+gcloud logging read 'resource.type="cloud_run_job" AND resource.labels.job_name="educhan-sweep" AND (jsonPayload.msg="fatal" OR textPayload:"ERROR fatal")' \
+  --freshness=1h --limit=1 --format='value(timestamp,jsonPayload.error,textPayload)'
 ```
 
 An error saying `VACUUM FULL left pg_catalog.pg_statistic in its old file` is
 the role: it names the query that says whether the role has the owner's
 privileges, and the root README's [archive
-sweeper](../README.md#the-archive-sweeper) says what the role needs. Any other is
-most likely the media settings or the store (below).
+sweeper](../README.md#the-archive-sweeper) says what the role needs. Any other
+is most likely the media settings or the store (below). An error in the Job's
+own settings comes before the image starts logging JSON, so it is printed as
+plain text at the end of the line. If it prints nothing, the execution ended
+without a word from the image, killed for want of memory, say, or before it
+started: `gcloud run jobs executions describe NAME --region "$REGION"`, with the
+failed execution's name from `gcloud run jobs executions list --job
+educhan-sweep --region "$REGION"`, says how.
 
-Once verification is on, run the sweep by hand only between 03:17 and 05:00 UTC,
-or when nobody has verified since 05:00. A run at any other time splits the day
-it runs in where it runs: until the next night's sweep, and in the backups taken
+Once verification is on, start the sweep by hand only after that night's
+scheduled run has finished and no later than 04:00 UTC, which leaves it and its
+one retry the half hour to spare before 05:00 that the schedule has (below), or
+when nobody has verified since 05:00. A run at any other time splits the day it
+runs in where it runs: until the next night's sweep, and in the backups taken
 meanwhile, its transaction id dates the credentials issued between 05:00 and the
 run to those hours.
 
@@ -600,7 +614,12 @@ and timeout the schedule can move only between 03:00 and 04:00 UTC.
 `TestCredentialDaysEndAfterTheSweep` reads `--schedule`, `--max-retries` and
 `--task-timeout` from this guide and from `first-deploy.sh`, and fails outside
 that. Beyond it, move `credentialDayStart` in `internal/app/verify.go` and the
-backup window with the schedule.
+backup window with the schedule. A new `credentialDayStart` splits the
+credential day it is deployed in, as a change to `EDUCHAN_VERIFY_CREDENTIAL_TTL`
+does (the root README's [Transaction ids, and the nightly
+rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what that
+dates), so deploy it once that day has passed both the old start and the new,
+while nobody has verified since the old one.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
