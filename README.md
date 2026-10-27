@@ -395,20 +395,20 @@ Every rule that reads the poster's own voice — crisis language, encouragement,
 threats, grooming cues, questions about a method, and asks to talk elsewhere —
 reads quoted and reported speech the same way. Words the post gives to someone
 else ("people under my art post said 'kys'", "'…' — some guy in my class",
-"teacher: '…'"), or says came to the poster ("my bf told me to go kill myself",
-"got a message saying "you won't see monday"", "someone wrote 'kys' on my
-desk", "I was told to kys"), or names as a kind of post ("the 'add me on snap'
-guys") are someone else's, so a student reporting a threat, a grooming attempt
-or being told to kill themselves is not held for it. Words the poster gives
-themselves are theirs however they are wrapped ("'I'm bringing a gun tomorrow'
-- me", "I told him 'kys'", "me: '…'", "note to my bully: '…'", "you heard me"), and
-so is a quotation that no one, or only a source such as "news" or "police", is
-named as saying, and a greentext story the poster opens with "be me", reply link
-or not. A report that
-makes the poster the subject of crisis language ("my therapist says I'm
-suicidal"), or gives the words to the poster's own mind ("my head keeps telling
-me to kill myself"), is still the poster's. Contact details are blocked whoever
-the post says they belong to.
+"teacher: '…'", "a stranger sent me this after i posted: '…'"), or says came to
+the poster ("my bf told me to go kill myself", "got a message saying "you won't
+see monday"", "someone wrote 'kys' on my desk", "I was told to kys"), or names
+as a kind of post ("the 'add me on snap' guys") are someone else's, so a student
+reporting a threat, a grooming attempt or being told to kill themselves is not
+held for it. Words the poster gives themselves are theirs however they are
+wrapped ("'I'm bringing a gun tomorrow' - me", "I told him 'kys'", "i sent him
+this after he posted: '…'", "me: '…'", "note to my bully: '…'", "you heard me"),
+and so is a quotation that no one, or only a source such as "news" or "police",
+is named as saying, and a greentext story the poster opens with "be me", reply
+link or not. A report that makes the poster the subject of crisis language ("my
+therapist says I'm suicidal"), or gives the words to the poster's own mind ("my
+head keeps telling me to kill myself"), is still the poster's. Contact details
+are blocked whoever the post says they belong to.
 
 Blocks come first, then support (unless `support_seen`), then holds, with one
 exception: contact details in a post that also asks the reader's age, year,

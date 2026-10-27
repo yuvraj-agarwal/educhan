@@ -12027,6 +12027,7 @@ func quoteSpeaker(text string, open, end int) speaker {
 		// said to me:", "some guy messaged me this at 2am:".
 		ws := wordsIn(t)
 		if k := lastSayingVerb(ws); k >= 0 {
+			k = framingVerb(ws, k)
 			return speakerOf(ws[:k], bare(ws[k]), ws[k+1:])
 		}
 		ws = ws[max(0, len(ws)-4):]
@@ -12154,6 +12155,39 @@ func lastSayingVerb(ws []string) int {
 	}
 	return -1
 }
+
+// framingVerb is the verb of saying among a label's words ws that gives the
+// quotation after it, from k, the last: an earlier one that has "this" or
+// "these" for its object does, when k is in a clause of time or cause after
+// it, "a stranger sent me this yesterday after i posted:" (the stranger's
+// words), "i sent him this after he posted:" (the poster's). Not "he sent me
+// this and i replied:" or "he messaged me after i posted:", the poster's.
+func framingVerb(ws []string, k int) int {
+	for j := k - 1; j > 0; j-- {
+		if !laterClauseLeads[bare(ws[j])] {
+			continue
+		}
+		for i := j - 1; i >= 0; i-- {
+			w := bare(ws[i])
+			if (sayingVerbs[w] || heardVerbs[w] || receivedVerbs[w]) && !sayingNoun(ws, i) {
+				if anyIn(ws[i+1:min(j, i+4)], aheadWords) {
+					return i
+				}
+				break
+			}
+		}
+		break
+	}
+	return k
+}
+
+// laterClauseLeads open a clause of time or cause, which says when or why
+// and gives no words: "after i posted", "when i blocked him". aheadWords,
+// for an object, point at what follows: "sent me this:".
+var (
+	laterClauseLeads = canonSetOf(`after before when whenever since once while because cause coz cuz bc till until`)
+	aheadWords       = canonSetOf(`this these following`)
+)
 
 // namesSomeoneElse reports a person among ws, or something sent that is
 // said to be someone's: "my bully", "his message", "kabir's note".

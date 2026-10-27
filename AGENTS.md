@@ -637,8 +637,10 @@ feet and inches, "5'10\"" (`inchMark`), open nothing), whose speaker `quoteSpeak
 finds to be someone else — a label ("teacher:", "his dm:", "my bully to me:"; whoever
 comes after "to" or "dear" in a label is spoken to, so "note to my bully:" is the
 poster's, and a label with a verb of saying in it, "he messaged me:", is read for its
-verb), an attribution after a dash that names a person (`attributionSpeaker`: "— some
-guy in my class", not "— should I tell someone?"), or a verb of saying, writing,
+verb, the last one unless it is in a clause of time or cause after an earlier one with
+"this" for its object, `framingVerb`: "a stranger sent me this after i posted:" is the
+stranger's), an attribution after a dash that names a person (`attributionSpeaker`:
+"— some guy in my class", not "— should I tell someone?"), or a verb of saying, writing,
 asking, sending or coming across within four words before it or six after it, whose
 subject `speakerOf` reads back to (`otherSpeakers`, `messageNouns`, any word not in
 `subjectSkips`), or that was said to the poster ("told me '…'", "was told",
