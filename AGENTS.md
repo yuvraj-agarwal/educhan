@@ -265,7 +265,8 @@ on as usual. With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, the Price's own `tax_behavi
 decides what the page says of tax: `GET /api/pass` adds `"tax": "included"` for an
 `inclusive` Price and `"added"` for an `exclusive` one (the page's "tax included" and
 "plus any tax"), and a Price with neither is not sold: the status leaves the price
-out and checkout answers `503` (`TestPassTaxFollowsThePrice`). Checkout always sends
+out and checkout answers `503`, as it answers `502` while Stripe can't be asked for the
+Price, which might say neither (`TestPassTaxFollowsThePrice`). Checkout always sends
 Stripe `automatic_tax[enabled]`, `false` with the setting off, so an account that
 collects tax by default adds none the page did not show. A real checkout uses Stripe's
 test mode: test keys, a test Price (one with a tax behavior, for Stripe Tax), and

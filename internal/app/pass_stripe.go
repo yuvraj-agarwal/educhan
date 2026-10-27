@@ -143,8 +143,10 @@ var passTaxWords = map[string]string{"inclusive": "included", "exclusive": "adde
 // errPassPriceTax is price's refusal, while Stripe Tax is on, of a Price that
 // does not say whether its amount includes tax. Stripe would settle that by a
 // default in the account that the Pass page cannot know, so the page could
-// show a price the buyer does not pay.
-var errPassPriceTax = errors.New("stripe: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, the Pass price must have a tax behavior, inclusive or exclusive")
+// show a price the buyer does not pay. passPrice logs it each time it reads
+// the Price, at most once a minute while it lasts, and nothing else does, so
+// it says what to fix.
+var errPassPriceTax = errors.New("stripe: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, the Pass price must have a tax behavior, inclusive or exclusive: set one on the Price, or make a new Price with one and set EDUCHAN_STRIPE_PRICE_ID to it")
 
 // price reads the Pass's Price. A recurring Price is refused, because the
 // Pass is bought by hand for each term, as 4chan's is, and never renews

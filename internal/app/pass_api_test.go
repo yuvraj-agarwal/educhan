@@ -372,9 +372,10 @@ func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
 // or was made before Prices said, is not sold, since Stripe would settle it by
 // a default in the account that the page cannot know: the status leaves the
 // price out, and checkout refuses before Stripe opens anything or a cooldown
-// starts, with an answer and a log line of its own that say what to fix and
-// nothing of the buyer. Given a behavior, the Price sells. With Stripe Tax
-// off, no tax is collected and nothing is said of it, whatever the Price says.
+// starts, saying what is wrong, and the log says what to fix once, where the
+// Price is read, and nothing of the buyer. Nor is anything sold while the
+// Price can't be read. Given a behavior, the Price sells. With Stripe Tax off,
+// no tax is collected and nothing is said of it, whatever the Price says.
 func TestPassTaxFollowsThePrice(t *testing.T) {
 	// absent is a Price without the field; nil is one where Stripe has it null.
 	type absent struct{}
@@ -416,6 +417,11 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 			if priced != sold || said != (tc.word != "") || said && tax != tc.word {
 				t.Fatalf("GET /api/pass: %v; want the price %t and the tax %q", status, sold, tc.word)
 			}
+			// The price is its amount and currency alone: what the Price says
+			// of tax goes out as "tax", in the server's words, or not at all.
+			if got, _ := status["price"].(map[string]any); sold && !maps.Equal(got, map[string]any{"amount": float64(2000), "currency": "usd"}) {
+				t.Fatalf("GET /api/pass price: %v; want the amount and the currency alone", status["price"])
+			}
 
 			var out passResponse
 			code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out)
@@ -432,24 +438,28 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 				t.Fatalf("checkout of a Price that does not say whether tax is in it: status %d (%s), %d Stripe sessions; want 503 and none",
 					code, out.Error, p.stripe.sessionCount())
 			}
-			var refusals int
+			// What to fix is logged where the Price is read, once while the
+			// refusal is kept, and not again for each checkout it refuses.
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable {
+				t.Fatalf("a second checkout of that Price: status %d (%s)", code, out.Error)
+			}
+			var told int
 			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				if !strings.Contains(line, "EDUCHAN_STRIPE_AUTOMATIC_TAX") {
+					continue
+				}
+				told++
 				var record map[string]any
 				if err := json.Unmarshal([]byte(line), &record); err != nil {
 					t.Fatalf("a log line is not JSON: %q", line)
 				}
-				msg, _ := record["msg"].(string)
-				if !strings.HasPrefix(msg, "refused a Pass checkout: ") {
-					continue
-				}
-				refusals++
-				if len(record) != 3 || !strings.Contains(msg, "EDUCHAN_STRIPE_AUTOMATIC_TAX") ||
-					!strings.Contains(msg, "inclusive nor exclusive") || !strings.Contains(msg, "EDUCHAN_STRIPE_PRICE_ID") {
-					t.Errorf("the refusal's log line does not say what to fix, or carries more than its words: %s", line)
+				if len(record) != 4 || record["msg"] != "could not read the Pass price from Stripe" || record["error"] != errPassPriceTax.Error() ||
+					!strings.Contains(errPassPriceTax.Error(), "EDUCHAN_STRIPE_PRICE_ID") {
+					t.Errorf("the log line does not say what to fix, or carries more than its words: %s", line)
 				}
 			}
-			if refusals != 1 {
-				t.Fatalf("%d refusal lines in the log, want 1:\n%s", refusals, logs.String())
+			if told != 1 {
+				t.Fatalf("%d log lines say what to fix, want 1 for a read and two refused checkouts:\n%s", told, logs.String())
 			}
 
 			// Given a behavior, the Price sells once the cached refusal runs
@@ -470,6 +480,57 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 			}
 		})
 	}
+
+	// While Stripe can't be asked for the Price, it may be one that says
+	// neither, so with Stripe Tax on nothing is sold: checkout answers 502
+	// for as long as the failed read is kept, with nothing opened in Stripe,
+	// no cooldown started and nothing logged past the failed read itself.
+	t.Run("Stripe Tax on, the Price not read", func(t *testing.T) {
+		var logs syncBuffer
+		p := passServerLogging(t, func(cfg *Config) {
+			cfg.Pass.StripeAutomaticTax = true
+			cfg.Pass.CheckoutCooldown = time.Hour
+		}, &logs)
+		p.stripe.mu.Lock()
+		p.stripe.price["tax_behavior"] = "unspecified"
+		p.stripe.fail = true
+		p.stripe.mu.Unlock()
+		var status map[string]any
+		if p.get("/api/pass", &status); status["price"] != nil {
+			t.Fatalf("GET /api/pass with Stripe down: %v", status)
+		}
+		p.stripe.mu.Lock()
+		p.stripe.fail = false
+		p.stripe.mu.Unlock()
+		var out passResponse
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusBadGateway ||
+			out.Error != passStripeUnreachable || p.stripe.sessionCount() != 0 {
+			t.Fatalf("checkout while the Price's failed read is kept: status %d (%s), %d Stripe sessions; want 502 and none",
+				code, out.Error, p.stripe.sessionCount())
+		}
+		if n := strings.Count(logs.String(), `"msg":"could not read the Pass price from Stripe"`); n != 1 {
+			t.Fatalf("%d log lines for one failed read of the Price, want 1:\n%s", n, logs.String())
+		}
+
+		// Read again once the failure runs out, the Price is refused for what
+		// it says, and given a behavior it sells.
+		refresh := func() {
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Time{}
+			p.app.pass.priceMu.Unlock()
+		}
+		refresh()
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable || out.Error != passPriceTaxUnset {
+			t.Fatalf("checkout once the Price is read: status %d (%s)", code, out.Error)
+		}
+		p.stripe.mu.Lock()
+		p.stripe.price["tax_behavior"] = "inclusive"
+		p.stripe.mu.Unlock()
+		refresh()
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+			t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
+		}
+	})
 }
 
 func TestPassPurchase(t *testing.T) {

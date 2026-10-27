@@ -463,11 +463,12 @@ func (a *App) handlePassStatus(w http.ResponseWriter, r *http.Request) {
 		out["paused"] = true
 	} else if price, err := a.passPrice(r.Context()); err == nil {
 		// The price is shown when Stripe could be asked for it. Without it the
-		// page still sells: Stripe's own page always shows the price before
-		// anyone pays. With Stripe Tax on, the Price says whether the tax is
-		// in it or added to it, and the page says which (passTaxWords); one
-		// that says neither is not shown, and checkout refuses it
-		// (passPriceTaxUnset).
+		// page still offers the Pass, and with Stripe Tax off checkout still
+		// sells it: Stripe's own page always shows the price before anyone
+		// pays. With Stripe Tax on, the Price says whether the tax is in it or
+		// added to it, and the page says which (passTaxWords); one that says
+		// neither is not shown, and checkout refuses it (passPriceTaxUnset),
+		// as it refuses any checkout while the Price can't be read.
 		out["price"] = price
 		if a.cfg.Pass.StripeAutomaticTax {
 			out["tax"] = passTaxWords[price.TaxBehavior]
@@ -509,6 +510,11 @@ func (a *App) passPrice(ctx context.Context) (passPrice, error) {
 // first, and the log says how to fix it.
 const passPriceTaxUnset = "the Pass can't be bought right now: its price in Stripe doesn't say whether tax is included"
 
+// passStripeUnreachable answers a checkout Stripe could not be asked about:
+// the session could not be opened or, with Stripe Tax on, the Price could not
+// be read.
+const passStripeUnreachable = "could not reach the payment page, try again in a moment"
+
 // passAdultRequired refuses a checkout that does not say its buyer is 18 or
 // over, in the badge's words, because it is the same rule.
 const passAdultRequired = "the Pass is sold only to people aged 18 and over; you can still read and post without one"
@@ -543,14 +549,21 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, passAdultRequired)
 		return
 	}
-	// A Price that does not say whether tax is in it is not sold while Stripe
-	// Tax is on, since the page could not say what the buyer pays. Nothing is
-	// opened in Stripe, and no cooldown starts for a fault that is not the
-	// buyer's.
+	// While Stripe Tax is on, the Pass is sold only at a Price read from
+	// Stripe and found to say whether tax is in it, since the page could not
+	// otherwise say what the buyer pays: one that says neither is refused, and
+	// so is every checkout while the Price can't be read, which a failure
+	// keeps for a minute (passPrice). passPrice logged why as it read the
+	// Price, so a refusal logs nothing more. Nothing is opened in Stripe, and
+	// no cooldown starts for a fault that is not the buyer's.
 	if a.cfg.Pass.StripeAutomaticTax {
-		if _, err := a.passPrice(r.Context()); errors.Is(err, errPassPriceTax) {
-			a.log.Error("refused a Pass checkout: EDUCHAN_STRIPE_AUTOMATIC_TAX is on and the Stripe Price's tax behavior is neither inclusive nor exclusive; set one on the Price, or make a new Price with one and set EDUCHAN_STRIPE_PRICE_ID to it")
+		_, err := a.passPrice(r.Context())
+		switch {
+		case errors.Is(err, errPassPriceTax):
 			writeError(w, http.StatusServiceUnavailable, passPriceTaxUnset)
+			return
+		case err != nil:
+			writeError(w, http.StatusBadGateway, passStripeUnreachable)
 			return
 		}
 	}
@@ -613,7 +626,7 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	session, err := a.pass.stripe.createCheckout(r.Context(), base+"/pass?paid", base+"/pass?cancelled")
 	if err != nil {
 		a.log.Error("could not create a Stripe checkout", "error", err)
-		writeError(w, http.StatusBadGateway, "could not reach the payment page, try again in a moment")
+		writeError(w, http.StatusBadGateway, passStripeUnreachable)
 		return
 	}
 
