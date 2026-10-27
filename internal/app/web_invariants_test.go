@@ -2588,6 +2588,7 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		"verifyRefusal = {",
 		"step: sentFrom,",
 		`message: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }),`,
+		`redrawn: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code", kept: false }),`,
 		`about: refusedForAge ? "adult" : requesting ? "email" : "code",`,
 		"invalid: err.status === 400,",
 		"select: !requesting && err.status === 400,",
@@ -2596,13 +2597,13 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 		"if (!shown) return;",
 		`for (const b of shown.querySelectorAll("button")) b.disabled = false;`,
 		`shown.querySelector('button[type="submit"]').textContent = label;`,
-		"sayVerifyRefusal(shown);",
+		"sayVerifyRefusal(shown, shown === form);",
 	})
 	if got, want := jsLines(jsFunction(t, script, "sayVerifyRefusal")), []string{
-		"function sayVerifyRefusal(form) {",
+		"function sayVerifyRefusal(form, sentIt = false) {",
 		"const refused = verifyRefusal;",
 		"if (!refused || refused.step !== verifyStep) return;",
-		"refuseVerification(form, refused.message, field(form, refused.about), refused);",
+		"refuseVerification(form, sentIt ? refused.message : refused.redrawn, field(form, refused.about), refused);",
 		"}",
 	}; !slices.Equal(got, want) {
 		t.Errorf("sayVerifyRefusal runs\n\t%s\nwant it to say the refusal kept with the step the page is on, and "+
@@ -2655,6 +2656,81 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 	handler := verifyClickHandler(t, script, `if (event.target.closest('[data-action="forget-browser"]')) {`)
 	if strings.Contains(handler, "showNotice(") || !strings.Contains(handler, "confirmBrowserForgotten();") {
 		t.Errorf("Forget this browser is not confirmed under its button:%s", handler)
+	}
+}
+
+// A Verify step can be drawn again while its request is out: the reader
+// presses Verify in the header, or goes to a board and comes back. The step
+// drawn again starts with its fields empty, since nothing typed is kept with
+// the step (the address least of all), and the refusal kept with the step is
+// said there. Said as the form that sent the request says it, a request that
+// got no answer — a dropped connection, or one given up after
+// VERIFY_TIMEOUT_MS — told the reader "What you wrote is still in the box."
+// under an empty address field or code box, with the focus in it. So that
+// sentence is said only in the form that sent the request, which still holds
+// what was typed, and every other form is told the refusal without it.
+func TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere(t *testing.T) {
+	script := appScript(t)
+	code := withoutComments(script)
+
+	// errorMessage says what was written is still in the box only when it is
+	// told so (kept), which it is by default, for the posting forms that
+	// stay on screen whatever is refused; and nothing else in app.js says it.
+	errMsg := jsLines(jsFunction(t, script, "errorMessage"))
+	if want := `function errorMessage(err, { hasText = true, action = "post", kept = true } = {}) {`; errMsg[0] != want {
+		t.Errorf("errorMessage starts\n\t%s\nwant\n\t%s", errMsg[0], want)
+	}
+	holdLines(t, "errorMessage, for a request that got no answer", errMsg, "if (err.unreachable) {", "}", []string{
+		"return kept ? `${UNREACHABLE} What you wrote is still in the box.` : UNREACHABLE;",
+	})
+	if n := strings.Count(code, "What you wrote is still in the box"); n != 1 {
+		t.Errorf("app.js says what was written is still in the box %d times; want once, in errorMessage, when told "+
+			"it is", n)
+	}
+
+	// The refusal kept with the step holds what each form is told: message for
+	// the one that sent the request, redrawn, with kept false, for any other
+	// (held line for line by TestVerifyRefusalsAreSaidInTheForm). Nothing else
+	// tells errorMessage the text has gone.
+	submit := withoutComments(jsFunction(t, script, "submitVerification"))
+	redrawn := `redrawn: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code", kept: false }),`
+	if !strings.Contains(submit, "\n      "+redrawn+"\n") {
+		t.Errorf("the refusal kept with a Verify step has no redrawn message without the box's sentence (%s):\n%s",
+			redrawn, submit)
+	}
+	if n := strings.Count(code, "kept: false"); n != 1 {
+		t.Errorf("app.js tells errorMessage %d times that what was written has gone; want once, for a Verify step "+
+			"drawn again", n)
+	}
+
+	// sayVerifyRefusal says redrawn unless told the form sent the request, and
+	// one call tells it so: the catch in submitVerification, about the form
+	// that sent it, when that is the form on screen. renderVerify draws the
+	// step afresh before it says the refusal, so its form never sent anything;
+	// it does that after the sending form has said its own when Verify in the
+	// header was pressed just before the answer came.
+	say := withoutComments(jsFunction(t, script, "sayVerifyRefusal"))
+	if !strings.Contains(say, "function sayVerifyRefusal(form, sentIt = false) {") ||
+		!strings.Contains(say, "sentIt ? refused.message : refused.redrawn") {
+		t.Errorf("sayVerifyRefusal does not tell a form that did not send the request the refusal without the box's "+
+			"sentence:\n%s", say)
+	}
+	var calls []string
+	for _, m := range regexp.MustCompile(`[^\w$.]sayVerifyRefusal\(([^()]*)\)`).FindAllStringSubmatch(code, -1) {
+		calls = append(calls, m[1])
+	}
+	slices.Sort(calls)
+	if want := []string{"form", "form, sentIt = false", "shown, shown === form"}; !slices.Equal(calls, want) {
+		t.Errorf("sayVerifyRefusal is declared and called as %q; want %q: only the form that sent the request is "+
+			"told it did", calls, want)
+	}
+	if !strings.Contains(submit, `const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");`) ||
+		!strings.Contains(submit, "sayVerifyRefusal(shown, shown === form);") {
+		t.Errorf("submitVerification does not tell the form it says its refusal in whether that form sent it:\n%s", submit)
+	}
+	render := withoutComments(jsFunction(t, script, "renderVerify"))
+	if !strings.Contains(render, "drawVerifyStep();\n  const form = el.main.querySelector(\"form[data-verify]\");\n  if (form) sayVerifyRefusal(form);") {
+		t.Errorf("renderVerify says the refusal kept with the step other than in the step it has just drawn:\n%s", render)
 	}
 }
 

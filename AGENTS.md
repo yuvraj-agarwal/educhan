@@ -482,12 +482,18 @@ needs a browser check before the test changes.
   it is about, a wrong code selected. A refusal is kept with its step for the rest of the
   visit (`verifyRefusal`, put away by `render()` and by sending again), so the step drawn
   again says it: one that came in while `render()` was still asking before it drew the
-  step had no form to be said in, and was lost. Forget this browser's confirmation is said
-  under its button (`confirmBrowserForgotten`). `submitVerification` says its refusals in
-  the form, never in the notice (`TestVerifyRefusalsAreSaidInTheForm`, which follows its
-  calls down). Two calls on an issued badge can raise one: `storeCredential`'s, when the
-  browser will not store it, and `offerHeldBadge`'s, on a page with a posting form whose
-  ticked badge box it unticked. An answer belongs to the step it was sent from:
+  step had no form to be said in, and was lost. The step drawn again starts with its
+  fields empty, since nothing typed is kept with it, so it says the refusal without "What
+  you wrote is still in the box", which only the form that sent the request, still holding
+  what was typed, says (`sayVerifyRefusal`'s `sentIt`, the refusal's `redrawn`,
+  `TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere`): said there, a request with no
+  answer told the reader their address or code was in the empty field the focus was put
+  in. Forget this browser's confirmation is said under its button
+  (`confirmBrowserForgotten`). `submitVerification` says its refusals in the form, never
+  in the notice (`TestVerifyRefusalsAreSaidInTheForm`, which follows its calls down). Two
+  calls on an issued badge can raise one: `storeCredential`'s, when the browser will not
+  store it, and `offerHeldBadge`'s, on a page with a posting form whose ticked badge box
+  it unticked. An answer belongs to the step it was sent from:
   `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
   answer, storing, setting and drawing nothing, once the page has moved to another step.
   Forget this browser is the button that can do that while a request is out, and it has to

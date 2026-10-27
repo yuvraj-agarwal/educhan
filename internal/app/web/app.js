@@ -167,10 +167,12 @@ async function api(path, options = {}) {
 // What is being sent stays in its form after a refusal, so these say so.
 // action is what was refused — "post", or "code" for a verification code
 // request — so a cooldown tells the reader to do that again, not something
-// they were not doing.
-function errorMessage(err, { hasText = true, action = "post" } = {}) {
+// they were not doing. kept is false for a refusal said over a form that was
+// not the one sent, and so does not hold what was written: a Verify step drawn
+// again while its request was out (sayVerifyRefusal).
+function errorMessage(err, { hasText = true, action = "post", kept = true } = {}) {
   if (err.unreachable) {
-    return `${UNREACHABLE} What you wrote is still in the box.`;
+    return kept ? `${UNREACHABLE} What you wrote is still in the box.` : UNREACHABLE;
   }
   if (err.status === 413) {
     return imageTooLargeMessage();
@@ -2447,11 +2449,16 @@ function verifyStepOnScreen() {
 }
 
 // sayVerifyRefusal says the refusal kept with the step (verifyRefusal) in the
-// step's form, when there is one for the step the page is on.
-function sayVerifyRefusal(form) {
+// step's form, when there is one for the step the page is on. sentIt says the
+// form is the one that sent the request, which still holds what was typed in
+// it. Any other is the step drawn again, its fields empty, since nothing typed
+// is kept with the step, so it is told the refusal without "What you wrote is
+// still in the box" (redrawn): said there, under an empty field with the focus
+// in it, that told the reader their address or code was where it was not.
+function sayVerifyRefusal(form, sentIt = false) {
   const refused = verifyRefusal;
   if (!refused || refused.step !== verifyStep) return;
-  refuseVerification(form, refused.message, field(form, refused.about), refused);
+  refuseVerification(form, sentIt ? refused.message : refused.redrawn, field(form, refused.about), refused);
 }
 
 // renderVerify draws the Verify page once it has asked the server whether
@@ -4205,26 +4212,34 @@ async function submitVerification(form) {
     // under the field it is about (refuseVerification): a wrong code puts the
     // reader back in the code box with the code selected, to be typed again.
     // It is kept with the step (verifyRefusal), so the step drawn again says
-    // it too. The server's refusal of a request without the attestation reads
-    // the same as the page's own.
+    // it too, as it is said there (redrawn): that step's fields are empty, so
+    // only this form, which still holds what was typed, is told a request
+    // with no answer left it in the box (sayVerifyRefusal). The server's
+    // refusal of a request without the attestation reads the same as the
+    // page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
     verifyRefusal = {
       step: sentFrom,
       message: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }),
+      redrawn: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code", kept: false }),
       about: refusedForAge ? "adult" : requesting ? "email" : "code",
       invalid: err.status === 400,
       select: !requesting && err.status === 400,
     };
     // The form on screen is this one, or, for a reader who went to another
     // page and came back while the answer was on its way, the same step drawn
-    // again, waiting as this one was. Its buttons are live again either way.
-    // With neither on screen the step is still to be drawn for that reader:
-    // renderVerify draws it, its buttons live by then, and says the refusal.
+    // again, waiting as this one was, with its fields empty. Its buttons are
+    // live again either way. With neither on screen the step is still to be
+    // drawn for that reader: renderVerify draws it, its buttons live by then,
+    // and says the refusal as the step drawn again. It can do that after this
+    // form has said it, too: Verify in the header, pressed just before the
+    // answer came, leaves this form up while render() asks the server, then
+    // draws the step afresh.
     const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
     if (!shown) return;
     for (const b of shown.querySelectorAll("button")) b.disabled = false;
     shown.querySelector('button[type="submit"]').textContent = label;
-    sayVerifyRefusal(shown);
+    sayVerifyRefusal(shown, shown === form);
   } finally {
     // The answer is in, kept or dropped. A request sent since from another
     // step — after Forget this browser — is still out, and keeps its wait;
