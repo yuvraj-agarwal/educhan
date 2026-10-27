@@ -3352,15 +3352,18 @@ async function render({ draft = captureDraft() } = {}) {
     // route are put back as the page was drawn for them (drawnFor), however
     // many redraws of it have failed, and so is its thread, which a refusal
     // answered meanwhile has updated; the image open on it stays open. The
-    // address bar goes back by replacing the history entry the redraw was for,
+    // address bar goes back by replacing the history entry the reader is on,
     // the fragment kept, so a jump within the page or a reload stays on the
-    // page kept. After a link the history then holds that page twice, and the
-    // first Back from it stays on it (popstate finds the address the page was
-    // drawn for and only moves to the fragment); a Back or Forward that will
-    // not load leaves the entry it went to holding the page kept. The error is
-    // a notice above the page, after anything said since the redraw began, the
-    // post's own answer say. The notice is an alert, so it is heard, and the
-    // title stays the page's.
+    // page kept. After a link, with nothing pressed while the redraw loads, the
+    // history then holds that page twice, and the first Back from it stays on
+    // it (popstate finds the address the page was drawn for and only moves to
+    // the fragment); a Back or Forward that will not load leaves the entry it
+    // went to holding the page kept. A link pressed while the redraw loads, the
+    // same one again or a jump within the page, adds an entry, and that is the
+    // one replaced, so the entry for the page that failed is left behind it and
+    // Back loads that page again. The error is a notice above the page, after
+    // anything said since the redraw began, the post's own answer say. The
+    // notice is an alert, so it is heard, and the title stays the page's.
     if (keepPage && draft.held.isConnected) {
       renderedPath = drawnFor.path;
       window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash);

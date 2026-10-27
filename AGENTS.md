@@ -429,20 +429,19 @@ before the test changes.
   (`CAPTCHA_UNAVAILABLE` otherwise); a `429` from `/api/captcha` says too many checks
   were started from the reader's network, with its wait (`captchaBusy`), never a post's
   or a code request's cooldown. Every copy is terminated when the puzzle ends, a throw
-  while starting them included. A copy that runs out of time answers `null`, and the
-  puzzle is said to have taken too long (`CAPTCHA_TOO_SLOW`) only when every copy did,
-  failed (`CAPTCHA_FAILED`) otherwise. The answer is kept in the `captcha` object
-  in memory only, never in storage or a draft, and read only by `captchaAnswer`,
-  `takeCaptcha`, `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post
-  or a code request, solving first when needed, and only from a form still on
-  screen (`formOnScreen`: in the document, and on the page it was pressed on,
-  by `routeKey` for a posting form, which a redraw of its page carries, and by
-  the render that drew it for a `/verify` form, which none does) in a browser
-  not forgotten since the press. Each request takes its answer out of the page
-  as it is handed over (`takeCaptcha`), so a second press while one is on its
-  way solves a fresh puzzle, and puts it back (`keepCaptcha`: only into an empty
-  place, only while good) only when it left it unspent, or brought no response,
-  which may have spent it: the next request is then refused as used and solves
+  while starting them included. A copy that times out answers `null`, and the puzzle
+  is said to have taken too long (`CAPTCHA_TOO_SLOW`) only when every copy did, failed
+  (`CAPTCHA_FAILED`) otherwise. The answer is kept in the `captcha` object in memory
+  only, never in storage or a draft, and read only by `captchaAnswer`, `takeCaptcha`,
+  `keepCaptcha` and `solveCaptcha`. `sendWithCaptcha` sends a post or a code request,
+  solving first when needed, and only from a form still on screen (`formOnScreen`: in
+  the document, and on the page it was pressed on, by `routeKey` for a posting form,
+  which a redraw of its page carries, and by the render that drew it for a `/verify`
+  form, which none does) in a browser not forgotten since the press. Each request takes
+  its answer out of the page as it is handed over (`takeCaptcha`), so a second press
+  while one is on its way solves a fresh puzzle, and puts it back (`keepCaptcha`: only
+  into an empty place, only while good) only when it left it unspent, or brought no
+  response, which may have spent it: the next request is then refused as used and solves
   a fresh one. One whose form has left the screen is dropped unsent with its answer put
   back, and, sent or not, is not navigated from and says nothing on the page the reader
   went to; a post that did go still empties and releases its form, wherever it is. From
@@ -466,15 +465,18 @@ before the test changes.
   all, with the address bar, `renderedPath`, `state.route` and `state.thread` put back
   as that page was drawn for them (`drawnFor`, noted by the render that drew it, however
   many redraws of it have failed since) and the error in a notice. The address bar goes
-  back by replacing the history entry the redraw was for (`history.replaceState`),
-  so after a link the history holds the kept page twice and the first Back stays
-  on it (`popstate` finds `renderedPath` and only moves to the fragment), and
-  a Back or Forward that will not load leaves the entry it went to holding the
-  kept page. A render a newer one has overtaken draws nothing, loaded or not,
-  and says nothing (`overtaken`, which the board, thread and /verify views ask
-  once their request is answered, /verify drawn again after a confirmation or a
-  forget too, a forget drawing it only while /verify is the page being drawn), so
-  of two redraws only the later one is shown or said to have failed. Either way the
+  back (`history.replaceState`) by replacing the history entry the reader is on when
+  the redraw fails, so after a link, with nothing pressed while the redraw loads, the
+  history holds the kept page twice and the first Back stays on it (`popstate` finds
+  `renderedPath` and only moves to the fragment), and a Back or Forward that will
+  not load leaves the entry it went to holding the kept page. A link pressed while
+  the redraw loads, the same one again or a jump within the page, adds an entry, and
+  that is the one replaced, so the entry for the page that failed is left behind it
+  and Back loads that page again. A render a newer one has overtaken draws nothing,
+  loaded or not, and says nothing (`overtaken`, which the board, thread and /verify
+  views ask once their request is answered, /verify drawn again after a confirmation
+  or a forget too, a forget drawing it only while /verify is the page being drawn),
+  so of two redraws only the later one is shown or said to have failed. Either way the
   post goes ahead and is answered on the form on screen, and a success goes to it.
   The loading state, the dimming and the skeleton that may follow it, is the latest
   render's (`rendersBegun`): every render begun, whatever its view, ends any before it

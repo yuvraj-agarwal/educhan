@@ -881,9 +881,13 @@ to send to write something instead. Every page of a board's index carries the
 same new-thread form, so going to another page of the index keeps a new thread
 going as Update does: the page is drawn around the held form, and the thread is
 posted from there or, if that page will not load, from the page still on screen,
-whose address goes back into the address bar. After a link, the history then
-holds that page twice, so one Back press stays on it; after Back or Forward, the
-entry gone to now holds the page kept.
+whose address goes back into the address bar, in the history entry the reader is
+on. With nothing pressed while the new page loads, that is the entry the link,
+Back or Forward led to: after a link the history then holds the page kept twice,
+so one Back press stays on it, and after Back or Forward the entry gone to now
+holds the page kept. A link pressed during the load, the same one again or a
+jump within the page, adds an entry of its own, which then holds the page kept,
+and Back from it loads the page that failed again.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then twice the work for each further 60, to at

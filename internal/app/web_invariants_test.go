@@ -1913,7 +1913,7 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// as a notice, never in place of the page: after two redraws that fail, the
 	// page is still the one drawn, not the first redraw's half-begun one. The
 	// address bar goes back to that page's address too, the history entry the
-	// redraw was for replaced, or a jump within the page afterwards would find
+	// reader is on replaced, or a jump within the page afterwards would find
 	// an address the page was not drawn for and draw the page that failed.
 	// Every render begun, the age screen's and the rules' included, ends the
 	// loading state of any before it (below). A post link's lookup goes on to
