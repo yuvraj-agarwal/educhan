@@ -375,6 +375,11 @@ gcloud run services update educhan --region "$REGION" \
   --update-secrets EDUCHAN_CAPTCHA_SECRET=educhan-captcha-secret:latest
 ```
 
+`service.yaml` and the long form in section 2.6 already mount
+`educhan-captcha-secret`, so if you deploy with either, run everything above
+but the closing `services update` before them: a revision whose secret is
+missing or can't be read does not start.
+
 How much work a challenge asks for is `EDUCHAN_CAPTCHA_WORK` (section 4), which
 needs no deploy change at its default. The captcha needs nothing else from the
 platform: its worker is served from the site itself under the existing CSP, so
