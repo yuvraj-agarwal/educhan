@@ -602,6 +602,13 @@ more than the server needs; the server refuses to start with anything but an
 and set up no custom domain for Checkout: the server sends buyers only to
 `https://checkout.stripe.com` and refuses any other address Stripe hands back.
 
+Then, in the Dashboard of that same account (and sandbox) and mode, switch
+Adaptive Pricing off. With it on, Stripe may show a buyer abroad the price
+converted into their own currency, at Stripe's exchange rate and with any fee
+Stripe adds for the conversion, and charge them that rather than USD 20.00. The
+server does not switch it off for its checkouts: the parameter that does came in
+a later Stripe API version than the `2024-06-20` the server pins.
+
 In Cloud Shell. Past its first lines the block runs in a subshell that stops at
 the first step that fails, so a run either finishes or says where it stopped,
 and the keys, read with `read`, stay out of your shell and its history:
@@ -667,9 +674,9 @@ PRICE_JSON=$(curl -sS --fail-with-body -G "https://api.stripe.com/v1/prices/${PR
   { echo "$PRICE_JSON"; echo "The restricted key can't read the new Price: paste it whole, made with Prices: Read in the same Stripe account (and sandbox) and mode (test or live) as the secret key."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
-  -d submit_type=pay -d "automatic_tax[enabled]=false" -d "adaptive_pricing[enabled]=false" \
+  -d submit_type=pay -d "automatic_tax[enabled]=false" \
   -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
-  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above. If it is about adaptive_pricing, Stripe would refuse the server's checkouts the same way, and the server needs a change before the Pass can be sold; otherwise it says what to fix, most often a key without Checkout Sessions: Write or an account without a public business name (above)."; exit 1; }
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above and says what to fix, most often a key without Checkout Sessions: Write or an account without a public business name (above)."; exit 1; }
 curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
   -u "${STRIPE_KEY}:" >/dev/null
 [[ $(field url <<<"$SESSION_JSON") == https://checkout.stripe.com/* ]] ||
@@ -772,9 +779,9 @@ PRICE_JSON=$(curl -sS --fail-with-body -G "https://api.stripe.com/v1/prices/${PR
   { echo "$PRICE_JSON"; echo "The new key can't read ${PRICE_ID}: paste it whole, made with Prices: Read in the old key's Stripe account (and sandbox). If it was, and the service's log says the Pass price needs fixing (below), fix the Price first."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
-  -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" -d "adaptive_pricing[enabled]=false" \
+  -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" \
   -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
-  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. If it is about the Price (inactive, recurring or tax), fix the Price first (below); if it is about adaptive_pricing, Stripe refuses the server's checkouts the same way, and the server needs a change; otherwise it says what to fix, most often a key without Checkout Sessions: Write."; exit 1; }
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. If it is about the Price (inactive, recurring or tax), fix the Price first (below); otherwise it says what to fix, most often a key without Checkout Sessions: Write."; exit 1; }
 curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
   -u "${STRIPE_KEY}:" >/dev/null
 printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
@@ -788,30 +795,30 @@ Once the setup block has printed "Done", `curl -s "${PUBLIC_URL}/api/pass"`
 should answer `"enabled":true` with the price and no `"tax"`: with
 `EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server tells Stripe to collect no tax
 (`automatic_tax[enabled]=false`), even if the account collects it by default, so
-every buyer pays USD 20.00 and the Pass page says nothing about tax. Every
-checkout is in USD alone: the server turns Stripe's Adaptive Pricing off for it
-(`adaptive_pricing[enabled]=false`), so Stripe neither shows nor charges a buyer
-abroad an amount converted into their currency, and a Price with prices in other
-currencies too (currency options) is not sold. Stripe lets currency options be
-added to a Price in place, keeping its ID, and the server sees them only at its
-next read of the Price, within the hour, so a checkout before then may charge a
-buyer placed in one of those currencies that option's amount: give the Price on
-sale none. To have Stripe Tax collect sales
-tax, VAT or GST, switch Stripe Tax on in the account and add
-`EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars: Stripe then takes any tax out
-of the USD 20.00 rather than adding it, and asks each buyer for a billing
-address to work it out; `/api/pass` then answers `"tax":"included"` beside the
-price, and the Pass page says "tax included". While it is on, a Price that says
-neither `inclusive` nor `exclusive`, such as one made without `tax_behavior`, is
-not sold: `/api/pass` leaves the price out, checkout answers `503`, and the
-service's log says what to fix. Such a Price can still be given
-`tax_behavior=inclusive` once, but one made tax-exclusive, which the page shows
-as "plus any tax", can't be changed: make a new Price the way the setup block
-does, with `tax_behavior=inclusive`, set its id with `gcloud run services update
-educhan --region "$REGION" --update-env-vars EDUCHAN_STRIPE_PRICE_ID=price_…`,
-and only then archive the old one, since an archived Price can't be sold. Three
-more settings have working defaults and need no change: `EDUCHAN_PASS_DAYS`,
-`EDUCHAN_PASS_HOURLY_POSTS` and `EDUCHAN_PASS_COOLDOWN` (section 4).
+the Pass page says nothing about tax, and, with Adaptive Pricing off (above),
+every buyer pays USD 20.00. The server does not switch Adaptive Pricing off
+itself, so with it on Stripe may show and charge a buyer abroad an amount
+converted into their currency. A Price with prices in other currencies too
+(currency options) is not sold. Stripe lets currency options be added to a Price
+in place, keeping its ID, and the server sees them only at its next read of the
+Price, within the hour, so a checkout before then may charge a buyer placed in
+one of those currencies that option's amount: give the Price on sale none. To
+have Stripe Tax collect sales tax, VAT or GST, switch Stripe Tax on in the
+account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars: Stripe then
+takes any tax out of the USD 20.00 rather than adding it, and asks each buyer
+for a billing address to work it out; `/api/pass` then answers
+`"tax":"included"` beside the price, and the Pass page says "tax included".
+While it is on, a Price that says neither `inclusive` nor `exclusive`, such as
+one made without `tax_behavior`, is not sold: `/api/pass` leaves the price out,
+checkout answers `503`, and the service's log says what to fix. Such a Price can
+still be given `tax_behavior=inclusive` once, but one made tax-exclusive, which
+the page shows as "plus any tax", can't be changed: make a new Price the way the
+setup block does, with `tax_behavior=inclusive`, set its id with `gcloud run
+services update educhan --region "$REGION" --update-env-vars
+EDUCHAN_STRIPE_PRICE_ID=price_…`, and only then archive the old one, since an
+archived Price can't be sold. Three more settings have working defaults and need
+no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
+`EDUCHAN_PASS_COOLDOWN` (section 4).
 
 If the service's log says `the Pass price in Stripe needs fixing`, its `error`
 says why: the Price is archived, recurring, without a fixed amount (one whose
@@ -1079,7 +1086,7 @@ ones whose value differs between a development machine and Cloud Run:
 | `EDUCHAN_PASS_SECRET` | unset unless testing the Pass | from Secret Manager, once the Pass is on sale | Unset switches the Pass off, and any other Pass setting given without it refuses to start. Set together with the four below (section 2.10). Never on the sweeper Job, nor is any Pass setting (section 2.9) |
 | `EDUCHAN_STRIPE_SECRET_KEY` / `_WEBHOOK_SECRET` | unset | from Secret Manager | The restricted API key and the webhook endpoint's `whsec_…` signing secret |
 | `EDUCHAN_STRIPE_PRICE_ID` / `EDUCHAN_PUBLIC_URL` | unset | the `price_…` id of a one-time Price in one currency, with no currency options / the `https://` origin readers use | Plain env; the public URL is where Stripe sends a buyer back, a bare origin (any path refuses to start), and the only one a checkout can be collected on (section 2.10) |
-| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe works out the tax at checkout, from the billing address it then asks for, and takes it out of the tax-inclusive Price, so every buyer still pays its amount and the Pass page says "tax included". A Price without `tax_behavior` is not sold while it is on: `/api/pass` shows no price and checkout answers `503`. Unset, checkout tells Stripe to collect no tax, whatever the account's default (section 2.10) |
+| `EDUCHAN_STRIPE_AUTOMATIC_TAX` | unset | unset, or `1` with Stripe Tax on | Stripe works out the tax at checkout, from the billing address it then asks for, and takes it out of the tax-inclusive Price, so every buyer still pays its amount (in USD, with Adaptive Pricing off: section 2.10) and the Pass page says "tax included". A Price without `tax_behavior` is not sold while it is on: `/api/pass` shows no price and checkout answers `503`. Unset, checkout tells Stripe to collect no tax, whatever the account's default (section 2.10) |
 | `EDUCHAN_PASS_DAYS` | `365` (default) | `365` (default) | How long a Pass lasts, from `1` to `36500`. Each order keeps the term it was sold with, so a change applies only to checkouts started after it |
 | `EDUCHAN_PASS_HOURLY_POSTS` | `30` (default) | `30` (default) | Posts in one clock hour that skip the captcha; at least `1` |
 | `EDUCHAN_PASS_COOLDOWN` | `30` (default) | `30` (default) | Seconds between checkouts from one client; not negative |
