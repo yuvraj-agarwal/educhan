@@ -756,13 +756,17 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// and revealClearOfHeader under it, checked for a line and a few words: a
 	// gate on a held badge in either took the code form out of the page, and a
 	// badge holder who sent a code had nowhere to type it, with every check
-	// here passing. The box is drawn by drawVerifyStep (of verifyViewHTML, only
-	// the part up to the code step's return runs), shown by showVerifyField
-	// once a code is sent, and, drawn for a reader arriving (renderVerify) or
-	// refused a wrong code, given its refusal by sayVerifyRefusal. Every
-	// top-level function those reach is found by following the calls down,
-	// not listed by hand, and each is held whole, here or by the test named,
-	// so a function new to that path fails here until it is held too.
+	// here passing. The box is drawn in two places. The answer to Send code
+	// draws it with drawVerifyStep (of verifyViewHTML, only the part up to the
+	// code step's return runs) and shows it with showVerifyField. renderVerify
+	// draws whichever step the page is on by the time the server has answered,
+	// for a reader arriving (render()) among others, and gives it its refusal
+	// with sayVerifyRefusal (one for a wrong code, say); what its callers run
+	// on what it drew is followed too: focusHash in render(), showHeldBadge
+	// after Verify, and confirmBrowserForgotten after Forget this browser.
+	// Every top-level function those reach is found by following the calls
+	// down, not listed by hand, and each is held whole, here or by the test
+	// named, so a function new to that path fails here until it is held too.
 	graph := jsCallGraph(t, script)
 	if end := strings.Index(view[start:], "`;\n"); end < 0 {
 		t.Error("the code step's return does not end where this test can find it")
@@ -771,19 +775,23 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		delete(graph["verifyViewHTML"], "verifyViewHTML")
 	}
 	heldBy := map[string]string{
-		"drawVerifyStep":      "TestVerifyStepIsDrawnForAReaderArriving",
-		"verifyViewHTML":      "this test, up to the code step and the step's template",
-		"badgeLostHTML":       "TestAGoneBadgeIsSaidToHaveGone",
-		"sayVerifyRefusal":    "TestVerifyRefusalsAreSaidInTheForm",
-		"showVerifyField":     "this test",
-		"revealClearOfHeader": "this test",
-		"refuseVerification":  "this test",
-		"field":               "this test",
-		"verifiedBadgeHTML":   "this test",
-		"esc":                 "this test",
-		"forgetBrowserHTML":   "this test, as fixed markup",
+		"drawVerifyStep":          "TestVerifyStepIsDrawnForAReaderArriving",
+		"verifyViewHTML":          "this test, up to the code step and the step's template",
+		"badgeLostHTML":           "TestAGoneBadgeIsSaidToHaveGone",
+		"sayVerifyRefusal":        "TestVerifyRefusalsAreSaidInTheForm",
+		"showHeldBadge":           "TestAGoneBadgeIsSaidToHaveGone",
+		"showVerifyField":         "this test",
+		"revealClearOfHeader":     "this test",
+		"refuseVerification":      "this test",
+		"field":                   "this test",
+		"verifiedBadgeHTML":       "this test",
+		"esc":                     "this test",
+		"focusHash":               "this test",
+		"confirmBrowserForgotten": "this test",
+		"forgetBrowserHTML":       "this test, as fixed markup",
 	}
-	reached := jsReached(t, graph, "drawVerifyStep", "showVerifyField", "sayVerifyRefusal")
+	reached := jsReached(t, graph, "drawVerifyStep", "showVerifyField", "sayVerifyRefusal",
+		"focusHash", "showHeldBadge", "confirmBrowserForgotten")
 	for _, name := range reached {
 		if heldBy[name] == "" {
 			t.Errorf("%s runs on a pending code's box once it is drawn, and nothing holds it whole: a gate on a held "+
@@ -856,6 +864,31 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			`return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);`,
 			"}",
 		}},
+		{"focusHash", []string{
+			"function focusHash() {",
+			"if (!window.location.hash) {",
+			"return;",
+			"}",
+			"const target = document.getElementById(window.location.hash.slice(1));",
+			"if (target) {",
+			`target.scrollIntoView({ block: "center" });`,
+			`target.classList.add("flash");`,
+			`if (target.hasAttribute("tabindex")) {`,
+			"target.focus({ preventScroll: true });",
+			"}",
+			"}",
+			"}",
+		}},
+		{"confirmBrowserForgotten", []string{
+			"function confirmBrowserForgotten() {",
+			`const done = document.getElementById("forget-browser-done");`,
+			"if (!done) return;",
+			"done.textContent = BROWSER_FORGOTTEN;",
+			"done.hidden = false;",
+			"revealClearOfHeader(done);",
+			"done.focus({ preventScroll: true });",
+			"}",
+		}},
 	} {
 		if got := jsLines(jsFunction(t, script, f.name)); !slices.Equal(got, f.want) {
 			t.Errorf("%s runs\n\t%s\nwant exactly\n\t%s\nIt runs on a pending code's box once the box is drawn, and a "+
@@ -871,6 +904,167 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		strings.Count(all, "`") != 2 || strings.Contains(all, "${") {
 		t.Errorf("forgetBrowserHTML runs\n\t%s\nwant it to return one template of fixed markup and do nothing else: it "+
 			"is drawn into a pending code's box", strings.Join(forget, "\n\t"))
+	}
+
+	// Following the calls down from those functions finds none of what runs
+	// once each call that drew the box returns, up to the browser: the rest of
+	// each function waiting on it, and of each listener. Code there is in no
+	// top-level function, or in one the calls lead up to rather than down to,
+	// and a gate on a held badge in either of two places took the box away
+	// with every check here passing: in the page's submit listener after
+	// submitVerification, the path that hid the box first, for a badge holder
+	// who pressed Send code; and in what render() ran after drawing the Verify
+	// page, for one who came back to it. So what follows each drawing is held
+	// too, line for line, up to where the browser takes over.
+	//
+	// The answer to Send code ends where it draws (held above), and
+	// submitVerification's finally is held by
+	// TestVerifyAnswersBelongToTheStepTheyWereSentFrom. The page's submit
+	// listener, which waits on it, is held up to the end of its Verify branch,
+	// and it is the one listener for a Verify form's submit: the age screen's
+	// is the only other.
+	holdLines(t, "the page's submit listener up to the end of its Verify branch", jsLines(submitHandler(t, script)),
+		`el.main.addEventListener("submit", async (event) => {`, "}", []string{
+			"event.preventDefault();",
+			"const form = event.target;",
+			"if (form.dataset.verify) {",
+			"await submitVerification(form);",
+			"return;",
+		})
+	if n := len(regexp.MustCompile(`addEventListener\("submit"|\bonsubmit\b`).FindAllString(code, -1)); n != 2 {
+		t.Errorf("app.js listens for a submit %d times; want twice, the age screen and the page, whose listener sends "+
+			"a Verify form and is held here", n)
+	}
+
+	// renderVerify is called from four places, and what each runs once it
+	// returns is held: the answer to Verify (held above, with showHeldBadge
+	// whole), the two forget buttons, whose callbacks are held here whole, and
+	// render(), below.
+	if n := strings.Count(code, "renderVerify()"); n != 5 {
+		t.Errorf("app.js names renderVerify() %d times; want five: its definition, render(), the answer to Verify, and "+
+			"the two forget buttons, each held from where it returns", n)
+	}
+	for _, then := range []string{
+		"renderVerify().then((drawn) => {\n" +
+			"      const lost = drawn && document.getElementById(\"badge-lost\");\n" +
+			"      if (lost) {\n" +
+			"        revealClearOfHeader(lost);\n" +
+			"        lost.focus({ preventScroll: true });\n" +
+			"      }\n" +
+			"    });\n" +
+			"    return;\n",
+		"renderVerify().then((drawn) => {\n" +
+			"      if (drawn) confirmBrowserForgotten();\n" +
+			"    });\n" +
+			"    return;\n",
+	} {
+		if strings.Count(code, then) != 1 {
+			t.Errorf("app.js does not run exactly this once a forget button's renderVerify returns:\n%s", then)
+		}
+	}
+
+	// render() leaves the Verify page once it is drawn, with focusHash alone
+	// run on it, after finish, which beginLoading hands it; both are held
+	// whole. What render() runs after drawing any other page — enhancePosts,
+	// restoreDraft and what they reach — serves every page, so it is not run
+	// on this one.
+	renderLines := jsLines(jsFunction(t, script, "render"))
+	holdLines(t, "render() once the Verify page is drawn", renderLines, "} finally {", "if (resolved !== null) {",
+		[]string{
+			"finish();",
+			"}",
+			`if (route.view === "verify") {`,
+			"focusHash();",
+			"return;",
+			"}",
+		})
+	if !slices.Contains(renderLines, "const finish = beginLoading();") ||
+		len(regexp.MustCompile(`\bfinish\b`).FindAllString(strings.Join(renderLines, "\n"), -1)) != 2 {
+		t.Error("render() does not take finish from beginLoading and call it in its finally alone")
+	}
+	if got, want := jsLines(jsFunction(t, script, "beginLoading")), []string{
+		"function beginLoading() {",
+		`el.main.setAttribute("aria-busy", "true");`,
+		"const dimmed = el.main.firstChild;",
+		"const timer = setTimeout(() => {",
+		"if (el.main.firstChild !== dimmed) return;",
+		`el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div>` +
+			`<div class="skeleton-row"></div></div>';`,
+		"}, 250);",
+		"return () => {",
+		"clearTimeout(timer);",
+		`el.main.removeAttribute("aria-busy");`,
+		"};",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("beginLoading runs\n\t%s\nwant exactly\n\t%s\nWhat it hands render() runs once the Verify page is "+
+			"drawn, a pending code's box included", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+
+	// navigate waits on render(), and is held whole: nothing runs after it.
+	if got, want := jsLines(jsFunction(t, script, "navigate")), []string{
+		"async function navigate(href, { replace = false } = {}) {",
+		"const url = new URL(href, window.location.origin);",
+		"if (replace) {",
+		`window.history.replaceState(null, "", url);`,
+		"} else {",
+		`window.history.pushState(null, "", url);`,
+		"}",
+		"await render();",
+		"}",
+	}; !slices.Equal(got, want) {
+		t.Errorf("navigate runs\n\t%s\nwant exactly\n\t%s\nIt waits on render(), which can draw a pending code's box, "+
+			"so nothing may run after it", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+	}
+	// And nothing else waits on either. Every other call of render() or
+	// navigate() is a statement of its own, with nothing waiting on it or
+	// chained to it, so its caller has run to its end before the Verify page
+	// is drawn: render() draws it only once the server has answered. The two
+	// other waits are render's own for a post number and a new post's for its
+	// thread, and each draws a thread.
+	waits := []string{
+		"await render();",
+		"await render({ draft });",
+		"await navigate(`${threadPath(created.board, created.thread_no)}#p${created.no}`);",
+	}
+	waited := map[string]int{}
+	named := regexp.MustCompile(`(?:^|[^.\w$])(?:render|navigate)\b`)
+	alone := regexp.MustCompile(`^(?:render|navigate)\((.*)\);$`)
+	for _, line := range jsLines(script) {
+		if !named.MatchString(line) ||
+			strings.HasPrefix(line, "async function render(") || strings.HasPrefix(line, "async function navigate(") {
+			continue
+		}
+		if slices.Contains(waits, line) {
+			waited[line]++
+			continue
+		}
+		// A call alone on its line: what is in its parentheses never closes
+		// them early, so nothing is chained to the call or follows it.
+		if m := alone.FindStringSubmatch(line); m != nil {
+			depth := 0
+			for _, c := range m[1] {
+				if c == '(' {
+					depth++
+				} else if c == ')' {
+					depth--
+				}
+				if depth < 0 {
+					break
+				}
+			}
+			if depth == 0 {
+				continue
+			}
+		}
+		t.Errorf("app.js names render or navigate in %q; want each call a statement of its own, with nothing waiting "+
+			"on it or chained to it, or one of %q, each once", line, waits)
+	}
+	for _, line := range waits {
+		if waited[line] > 1 {
+			t.Errorf("app.js runs %q %d times; want once: what follows another such wait runs on a page render() "+
+				"drew, a pending code's box among them", line, waited[line])
+		}
 	}
 }
 

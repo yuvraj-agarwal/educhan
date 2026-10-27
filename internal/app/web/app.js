@@ -3115,7 +3115,9 @@ function emptyStateHTML(message, slug = null) {
 // The skeleton stands in for the view it dims, and for nothing drawn since: a
 // Verify step that an answer drew in place while the page was loading stays
 // as it was drawn, with the field it put the reader in, rather than going
-// under a skeleton to be drawn again without it (renderVerify).
+// under a skeleton to be drawn again without it (renderVerify). What it hands
+// back runs once the page is drawn, a pending code's box included, so it is
+// held whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
 function beginLoading() {
   el.main.setAttribute("aria-busy", "true");
   const dimmed = el.main.firstChild;
@@ -3241,6 +3243,17 @@ async function render({ draft = captureDraft() } = {}) {
     finish();
   }
 
+  // The Verify page has no posts to finish and no posting form to give a
+  // draft back to, so once it is drawn the jump to a fragment is all that
+  // runs on it: the FAQ links to /verify#forget-browser. What runs on a
+  // pending code's box once it is drawn is held whole
+  // (TestVerifyCodeBoxShowsWhileACodeIsPending), and the rest of render()
+  // serves every page: a gate on a held badge there could take the box away
+  // from a badge holder coming back to the page with every check passing.
+  if (route.view === "verify") {
+    focusHash();
+    return;
+  }
   if (resolved !== null) {
     // The history entry is replaced rather than added: /post/N is an address,
     // not a page, and Back should not land on it only to bounce forward again.
@@ -3257,7 +3270,8 @@ async function render({ draft = captureDraft() } = {}) {
 }
 
 // focusHash highlights the post referenced by the URL fragment, which is where
-// quote links point.
+// quote links point. It runs on the Verify page too, a pending code's box
+// included, so it is held whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
 function focusHash() {
   if (!window.location.hash) {
     return;
@@ -3274,6 +3288,8 @@ function focusHash() {
   }
 }
 
+// navigate waits on render(), which can draw a pending code's box, so it ends
+// there (TestVerifyCodeBoxShowsWhileACodeIsPending).
 async function navigate(href, { replace = false } = {}) {
   const url = new URL(href, window.location.origin);
   if (replace) {
@@ -3847,6 +3863,9 @@ function posterKey() {
 el.main.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
+  // A Verify form's answer can draw a pending code's box, so nothing runs
+  // here once submitVerification is done with it
+  // (TestVerifyCodeBoxShowsWhileACodeIsPending).
   if (form.dataset.verify) {
     await submitVerification(form);
     return;
