@@ -415,12 +415,12 @@ before the test changes.
   badge out of a form with something written or attached (`withdrawBadgeOption`, for
   the badge changed in another tab or in this one, and a refusal of the badge as
   expired or revoked on a form still on screen; never Forget this browser, which sends
-  nothing), the press that is then refused once to say so, on a form with something
-  written or attached (`submit`), an image picked or dropped on it
-  (`captchaImageAttached`; not one a re-render puts back), a refusal that spent the
-  answer while its form is on screen, and a press with no good answer held. Ticking
-  the badge stops it unless a request is waiting for it (`stopCaptcha`, which says
-  whether it stopped one). It runs ALTCHA's vendored worker in up to
+  nothing, nor `/verify` loading over the form), the press that is then refused once to
+  say so, on a form with something written or attached (`submit`), an image picked or
+  dropped on it (`captchaImageAttached`; not one a re-render puts back), a refusal that
+  spent the answer while its form is on screen, and a press with no good answer held.
+  Ticking the badge stops it unless a request is waiting for it (`stopCaptcha`, which
+  says whether it stopped one). It runs ALTCHA's vendored worker in up to
   `CAPTCHA_MAX_WORKERS` copies with interleaved counters (side by side where the browser
   allows; Chromium runs their Web Crypto on one thread), and only in a secure context
   (`CAPTCHA_INSECURE` otherwise) with `Worker` and `crypto.subtle` (`CAPTCHA_FAILED`
@@ -623,12 +623,13 @@ before the test changes.
   taken from under the form, refused once with the note. Wherever the page's badge
   changes while a posting form may be on screen, the option goes from the forms there as
   for another tab's change: a confirmation answered after the reader left `/verify`, the
-  feature switched off or the badge run out as `/verify` loads (`loadVerification`), and
-  a badged post refused as expired or revoked, for a form on the page the reader went to
-  meanwhile (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). Forget this browser takes the
-  option out without a word and drops the note: a word would tell whoever presses next
-  that the browser held a badge, and with the poster key gone the post shares an ID with
-  none made before. A badged post refused as expired or revoked forgets the credential
+  feature switched off or the badge run out as `/verify` loads (`loadVerification`,
+  which starts no puzzle, as drawing a page never does), and a badged post refused as
+  expired or revoked, for a form on the page the reader went to meanwhile
+  (`TestAFormSendsOnlyTheBadgeItWasDrawnFor`). Forget this browser takes the option out
+  without a word and drops the note: a word would tell whoever presses next that the
+  browser held a badge, and with the poster key gone the post shares an ID with none
+  made before. A badged post refused as expired or revoked forgets the credential
   it sent only while storage still holds it, so a badge verified in another tab
   meanwhile stays, and its form, still on screen with something written or attached,
   starts the puzzle the post it goes on to needs.

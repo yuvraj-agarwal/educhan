@@ -112,8 +112,10 @@ const verifyOvertaken = `else if ( state.route.view === "verify" && ageStatus() 
 	`el.main.querySelector('form[data-verify="confirm"], [data-action="forget-verification"]') ) { `
 
 // overtakenDrawn is that confirmation drawing /verify again for the badge it
-// earned, and taking away what the page said about the step it overtook.
-const overtakenDrawn = "renderVerify(state.route).then((drawn) => { if (drawn) { clearNotice(); } });"
+// earned, and taking away what the page said about the step it overtook, but
+// not what it said itself: that storage refused the badge.
+const overtakenDrawn = "renderVerify(state.route).then((drawn) => { if (drawn) { clearNotice(); " +
+	"if (!stored) { showNotice(BADGE_NOT_STORED); } } });"
 
 // inOrder fails the test unless every one of steps occurs in src, each after
 // the one before it.
@@ -537,10 +539,10 @@ func TestCaptchaAnswerStaysInMemory(t *testing.T) {
 // something written or attached, the page taking a ticked badge out of a form
 // with something written or attached (its badge changed in another tab or in
 // this one, or refused as expired or revoked on a form still on screen, never
-// by Forget this browser), the press refused once for that, of a form with
-// something written or attached, and a post or code request refused after the
-// server spent its answer, which the reader, still on its form, is about to
-// send again.
+// by Forget this browser, nor as /verify is drawn over the form), the press
+// refused once for that, of a form with something written or attached, and a
+// post or code request refused after the server spent its answer, which the
+// reader, still on its form, is about to send again.
 func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -589,7 +591,7 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 		!strings.Contains(send, `=== "spent")) { keepCaptcha(taken); } else if (answer && needsIt() && onScreen()) { prepareCaptcha(); }`) ||
 		!strings.Contains(toggled, `if (captchaFormNeedsIt(form) && (stopped || captchaFormHasWriting(form))) { prepareCaptcha(); }`) ||
 		!strings.Contains(attached, `if (captchaFormNeedsIt(form) && image && image.files && image.files.length) { prepareCaptcha(); }`) ||
-		!strings.Contains(withdrawn, `dropBadgeOption(form); if (ticked && !forgotten && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) ||
+		!strings.Contains(withdrawn, `dropBadgeOption(form); if (ticked && !startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) ||
 		!strings.Contains(submitted, `dropBadgeOption(form); if (shown && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }`) ||
 		!strings.Contains(submitted, `showNotice(badgeWithdrawnNotice(form, withdrawn)); `+
 			`if (captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } return; }`) {
@@ -618,6 +620,14 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 		strings.Count(code, `storageSet(CREDENTIAL_STORAGE_KEY, "")`) != 1 || strings.Count(code, `event.newValue === ""`) != 1 {
 		t.Error("a tab that hears the badge go as an emptied credential, the browser forgotten in another tab, " +
 			"may start a puzzle for it, or the credential is emptied somewhere besides forgetBrowser")
+	}
+	// Nor does /verify, drawn over a posting form whose badge went as it
+	// loads (switched off, or run out): that is drawing a page. The form,
+	// noted, starts it at the press the note refuses, if a later render draws
+	// it again.
+	if load := squash(withoutComments(jsFunction(t, script, "loadVerification"))); strings.Count(load, "withdrawBadgeOption(") != 1 ||
+		!strings.Contains(load, `for (const form of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(form, offered, true); }`) {
+		t.Error("loadVerification starts a puzzle for the forms /verify is being drawn over")
 	}
 	// An image counts once it is attached, picked or dropped; one a re-render
 	// puts back (restoreDraft, through setFile) is part of drawing a page, and
@@ -1164,7 +1174,7 @@ func TestForgettingTheBrowserCancelsWhatIsOnItsWay(t *testing.T) {
 		"onScreen, ); if (forgotten()) { return; } verifyStep = { step: \"code\"",
 		`await api("/api/verify/confirm", { method: "POST", body: JSON.stringify({ code: String(data.get("code") || "") }), }); `+
 			"} finally { step.confirming -= 1; } if (forgotten()) { return; } const offered = state.verification.badge; "+
-			"storeCredential(issued.credential);",
+			"const stored = storeCredential(issued.credential);",
 	)
 	if strings.Count(verify, "verifyStep =") != 2 || strings.Count(verify, "storeCredential(") != 1 || strings.Count(verify, "readBadge(") != 1 {
 		t.Error("submitVerification keeps what a request brings back somewhere this test does not read")
@@ -1379,12 +1389,19 @@ func TestForgettingTheBadgeReachesEveryTab(t *testing.T) {
 	// drawing shows what the success has overtaken, a code step or the panel
 	// for another badge, as the form, had it stayed, would have been, and takes
 	// off any notice about the step it overtook, a later confirmation's refusal
-	// say; an address step, which may be half filled in, is left as it is.
+	// say, but not its own, that storage refused the badge, which stays as it
+	// does over its form; an address step, which may be half filled in, is
+	// left as it is.
 	inOrder(t, "submitVerification", verify,
 		`const step = verifyStep; step.confirming = (step.confirming || 0) + 1; let issued; try { issued = await api("/api/verify/confirm",`,
 		"} finally { step.confirming -= 1; } if (forgotten()) { return; }",
+		"const stored = storeCredential(issued.credential);",
 		`verifyStep = { step: "email", label: "" }; if (onScreen()) { await renderVerify(route); } `+verifyOvertaken+overtakenDrawn+" }",
 	)
+	if store := squash(withoutComments(jsFunction(t, script, "storeCredential"))); !strings.HasSuffix(store,
+		"storedHere.set(CREDENTIAL_STORAGE_KEY, token); return true; } catch { showNotice(BADGE_NOT_STORED); return false; } }") {
+		t.Errorf("storeCredential no longer says whether it stored the badge, and says so on the page when it could not: %s", store)
+	}
 	if strings.Count(code, ".confirming") != 4 {
 		t.Error("a confirmation on its way is counted somewhere besides submitVerification, or the count is read " +
 			"somewhere besides codeSpentElsewhere")
@@ -1442,9 +1459,9 @@ func TestABadgeTakenFromUnderAFormIsSaidAtItsNextPress(t *testing.T) {
 	}
 	// The puzzle it then starts is TestCaptchaIsAskedForOnlyWhenSomeoneWrites'.
 	withdraw := squash(withoutComments(jsFunction(t, script, "withdrawBadgeOption")))
-	if withdraw != `function withdrawBadgeOption(form, offered, forgotten) { const box = field(form, "badge"); const ticked = Boolean(box && box.checked); `+
+	if withdraw != `function withdrawBadgeOption(form, offered, startNothing) { const box = field(form, "badge"); const ticked = Boolean(box && box.checked); `+
 		`if (ticked) { badgeWithdrawn.set(form, { token: offered.token, key: storageGet(POSTER_KEY_STORAGE_KEY) || "" }); } `+
-		`dropBadgeOption(form); if (ticked && !forgotten && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }` {
+		`dropBadgeOption(form); if (ticked && !startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) { prepareCaptcha(); } }` {
 		t.Errorf("withdrawBadgeOption no longer notes a ticked box, with the badge it was drawn for and the poster key "+
 			"storage holds, before it takes the option out, or starts the puzzle the form then needs: %s", withdraw)
 	}
@@ -1582,7 +1599,7 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 
 	// Every change of the page's badge while a form may be on screen.
 	verify := squash(withoutComments(jsFunction(t, script, "submitVerification")))
-	if !strings.Contains(verify, "const offered = state.verification.badge; storeCredential(issued.credential); "+
+	if !strings.Contains(verify, "const offered = state.verification.badge; const stored = storeCredential(issued.credential); "+
 		"state.verification.badge = readBadge(); const held = state.verification.badge; "+
 		"if (offered && !(held && held.token === offered.token)) { "+
 		`for (const posting of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(posting, offered, false); } } `+
@@ -1593,7 +1610,7 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 	if !strings.Contains(load, "const offered = state.verification.badge; "+
 		"state.verification = { enabled, badge: enabled ? readBadge() : null }; const held = state.verification.badge; "+
 		"if (offered && !(held && held.token === offered.token)) { "+
-		`for (const form of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(form, offered, false); } }`) {
+		`for (const form of el.main.querySelectorAll("form[data-kind]")) { withdrawBadgeOption(form, offered, true); } }`) {
 		t.Error("loadVerification no longer takes a badge switched off or run out out of the forms on screen")
 	}
 	if strings.Count(code, "state.verification.badge = ") != 4 || strings.Count(code, "state.verification = ") != 1 ||

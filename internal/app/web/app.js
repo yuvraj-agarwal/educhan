@@ -1525,17 +1525,19 @@ function noteBadgeOffered() {
 // the form in badgeWithdrawn if its box was ticked. A ticked box taken out of
 // a form with some of the post in it also starts the puzzle the form now
 // needs, as the reader's own untick would (captchaBadgeToggled), so the press
-// after the one the note refuses usually finds it solved; but not when the
-// badge went with the browser forgotten in another tab (forgotten), which
-// starts nothing here.
-function withdrawBadgeOption(form, offered, forgotten) {
+// after the one the note refuses usually finds it solved; but not with
+// startNothing: when the badge went with the browser forgotten in another tab,
+// which starts nothing here, or as /verify is drawn over the form
+// (loadVerification), since drawing a page starts nothing. A form noted then
+// starts it at the press the note refuses (submit).
+function withdrawBadgeOption(form, offered, startNothing) {
   const box = field(form, "badge");
   const ticked = Boolean(box && box.checked);
   if (ticked) {
     badgeWithdrawn.set(form, { token: offered.token, key: storageGet(POSTER_KEY_STORAGE_KEY) || "" });
   }
   dropBadgeOption(form);
-  if (ticked && !forgotten && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
+  if (ticked && !startNothing && captchaFormNeedsIt(form) && captchaFormHasWriting(form)) {
     prepareCaptcha();
   }
 }
@@ -2043,12 +2045,19 @@ function storedCredential() {
   }
 }
 
+// BADGE_NOT_STORED is what the page says when storage refuses a badge just
+// earned.
+const BADGE_NOT_STORED = "This browser will not let the page store your badge, so it cannot be used here.";
+
+// storeCredential stores a badge just earned, and says whether it could.
 function storeCredential(token) {
   try {
     localStorage.setItem(CREDENTIAL_STORAGE_KEY, token);
     storedHere.set(CREDENTIAL_STORAGE_KEY, token);
+    return true;
   } catch {
-    showNotice("This browser will not let the page store your badge, so it cannot be used here.");
+    showNotice(BADGE_NOT_STORED);
+    return false;
   }
 }
 
@@ -2338,11 +2347,14 @@ async function loadVerification() {
   // A posting form still on screen, the page before /verify while it is
   // drawn, offers the badge it was drawn for: switched off on the server, or
   // run out, that badge goes from it as for one gone in another tab
-  // (followCredentialStorage).
+  // (followCredentialStorage), but starts no puzzle: this is /verify being
+  // drawn over the form, and drawing a page never starts one. A form noted
+  // here and drawn again by a later render starts it at the press the note
+  // refuses.
   const held = state.verification.badge;
   if (offered && !(held && held.token === offered.token)) {
     for (const form of el.main.querySelectorAll("form[data-kind]")) {
-      withdrawBadgeOption(form, offered, false);
+      withdrawBadgeOption(form, offered, true);
     }
   }
   if (el.verifyFooter) {
@@ -4062,13 +4074,13 @@ function posterKey() {
 // form whose tick stopped a puzzle, or that already has something written or
 // attached, and the page taking a ticked badge out of a form with something
 // written or attached, the badge having gone from the browser or given way to
-// another, in another tab or in this one, by anything but Forget this browser,
-// or been refused as expired or revoked, and the press then refused once to say
-// so, of a form with something written or attached; a refusal that spent the
-// answer, while the form is on screen; and a press with no good answer held and
-// none being solved. By the time a post is written its puzzle is usually
-// solved. The answer is kept in memory only, never in storage or a draft, and
-// is good for one request.
+// another, in another tab or in this one, by anything but Forget this browser
+// or /verify being drawn over the form, or been refused as expired or revoked,
+// and the press then refused once to say so, of a form with something written
+// or attached; a refusal that spent the answer, while the form is on screen;
+// and a press with no good answer held and none being solved. By the time a
+// post is written its puzzle is usually solved. The answer is kept in memory
+// only, never in storage or a draft, and is good for one request.
 const CAPTCHA_WORKER_SRC = "/lib/altcha/pbkdf2.js";
 // The server sets this header, to "spent", on any response to a request whose
 // answer it has used up, a refusal included (captchaSpentHeader in captcha.go).
@@ -4611,7 +4623,8 @@ el.main.addEventListener("submit", async (event) => {
   // That post needs the puzzle the badge would have skipped, which starts now
   // if it has not: the page taking the badge out starts it only for a form on
   // screen as it goes (withdrawBadgeOption), and a redraw that carries the
-  // note (restoreDraft) starts none, since drawing a page never does.
+  // note (restoreDraft), or /verify drawn over the form (loadVerification),
+  // starts none, since drawing a page never does.
   if (badgeWithdrawn.has(form)) {
     const withdrawn = badgeWithdrawn.get(form);
     badgeWithdrawn.delete(form);
@@ -4926,7 +4939,7 @@ async function submitVerification(form) {
       return;
     }
     const offered = state.verification.badge;
-    storeCredential(issued.credential);
+    const stored = storeCredential(issued.credential);
     // Offered from now on, on every posting form drawn, so a reader who has
     // left /verify, or leaves before it is drawn again, has it on the next one.
     // Drawing /verify again withdraws nothing if its GET /api/verify fails
@@ -4960,11 +4973,16 @@ async function submitVerification(form) {
       // request's, cleared the cookie; or the panel, for a badge this one
       // replaces. It is drawn again for the badge just earned, as this form
       // would have been, and what the page said about the step it overtook,
-      // a later confirmation of it refused say, goes with the step. The
-      // address step, which the reader may be filling in, is left as it is.
+      // a later confirmation of it refused say, goes with the step; what this
+      // answer said itself, that storage refused the badge, stays, as it does
+      // over this form. The address step, which the reader may be filling in,
+      // is left as it is.
       renderVerify(state.route).then((drawn) => {
         if (drawn) {
           clearNotice();
+          if (!stored) {
+            showNotice(BADGE_NOT_STORED);
+          }
         }
       });
     }
