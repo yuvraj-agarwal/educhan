@@ -7205,7 +7205,7 @@ var (
 		`we~`+words(`could`, `can`, `will`, `'?ll`)+`~meet`,
 		`just~`+words(`us~two`, `us~2`, `the~two~of~us`, `you~and~me`, `u~and~me`, `you~and~i`, `u~and~i`),
 		`keep~`+words(`this`, `it`)+`~`+words(`quiet`, `on~the~down~low`, `on~the~dl`, `hush~hush`, `to~yourself`,
-			`to~urself`, `private`),
+			`to~urself`, `private`, `just~us`),
 		words(`i'?ll`, `i~will`, `i~can`, `i~could`, `ill`, `i'?d`, `lemme`, `let~me`, `i'?m~gonna`, `i~am~going~to`,
 			`i~wanna`, `i~want~to`)+`~`+words(`come~by`, `come~over`, `come~round`, `come~around`, `drop~by`,
 			words(`visit`, `meet`, `come~(?:and~)?`+words(`meet`, `see`, `visit`, `get`, `find`))+`~`+words(`you`, `u`),
@@ -7220,9 +7220,9 @@ var (
 			`pay~`+words(`you`, `u`),
 			words(`recharge`, `top~up`, `topup`)+`~`+words(`your`, `ur`)+`~`+words(`phone`, `mobile`, `number`, `sim`,
 				`account`)),
-		// "can i see what you look like", "do your parents let you go out
-		// alone".
-		words(`see`, `know`)+`~what~`+words(`you`, `u`)+`~`+words(`look`, `looks`)+`~like`,
+		// "can i see what you look like", "send me what you look like", "do
+		// your parents let you go out alone".
+		words(`see`, `know`, `send~me`, `show~me`)+`~what~`+words(`you`, `u`)+`~`+words(`look`, `looks`)+`~like`,
 		words(`go`, `going`, `goes`)+`~out~`+words(`alone`, `by~yourself`, `by~urself`, `on~your~own`, `on~ur~own`),
 		// "I fit come pick you after lesson", "do u walk home alone?".
 		`come~pick~`+words(`you`, `u`),

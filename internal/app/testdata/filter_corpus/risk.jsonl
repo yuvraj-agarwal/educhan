@@ -474,3 +474,5 @@
 {"id": "risk-474", "body": "jaa mar khatam ho ja", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: \"go die, be finished\" told to someone (R2D-4)"}
 {"id": "risk-475", "body": "jaa mar khaai mein", "subject": "", "name": "", "expect": "hold", "why": "Hinglish: \"go die in a ditch\" (R2D-4)"}
 {"id": "risk-476", "body": "jaa mar kha le kuch, bhookha hai tu", "subject": "", "name": "", "expect": "publish", "why": "Hinglish: \"go eat something, you're hungry\" (R2D-4 control)"}
+{"id": "risk-477", "body": "how old are you? send me what you look like", "subject": "", "name": "", "expect": "hold", "why": "an age question then asking to be sent what the reader looks like (F8, asked another way)"}
+{"id": "risk-478", "body": "how old are you? keep it just us ok", "subject": "", "name": "", "expect": "hold", "why": "an age question then asking to keep it between the two of them (F8, \"just us\" said another way)"}
