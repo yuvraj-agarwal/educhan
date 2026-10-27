@@ -406,3 +406,54 @@
 {"id": "risk-406", "body": "how old are you? do your parents let you go out alone?", "subject": "", "name": "", "expect": "hold", "why": "an age question then whether the reader goes out alone (F8)"}
 {"id": "risk-407", "body": "what time does the exam finish? i'll wait outside the hall for my friends", "subject": "", "name": "", "expect": "publish", "why": "waiting for friends outside an exam hall (F8 control)"}
 {"id": "risk-408", "body": "the whole team went, not just us", "subject": "", "name": "", "expect": "publish", "why": "\"not just us\" (F8 control)"}
+{"id": "risk-409", "body": "i'm going to hurt Priya at school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named classmate to be hurt, with a place and time (F4)"}
+{"id": "risk-410", "body": "i'll attack Rohan tomorrow", "subject": "", "name": "", "expect": "hold", "why": "a named person to be attacked tomorrow (F4)"}
+{"id": "risk-411", "body": "i'm going to hit Rohan tomorrow at school", "subject": "", "name": "", "expect": "hold", "why": "a named person to be hit at school (F4)"}
+{"id": "risk-412", "body": "i will assault him tomorrow at school", "subject": "", "name": "", "expect": "hold", "why": "an assault on him at school (F4)"}
+{"id": "risk-413", "body": "i'm going to hurt my ex tomorrow", "subject": "", "name": "", "expect": "hold", "why": "the poster's ex to be hurt tomorrow (F4)"}
+{"id": "risk-414", "body": "i'm going to hit him with a bat after school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "hitting him with a bat (F4)"}
+{"id": "risk-415", "body": "i'm going to hit Rohan up tomorrow about the notes", "subject": "", "name": "", "expect": "publish", "why": "\"hit up\" is messaging (F4 control)"}
+{"id": "risk-416", "body": "i'm going to attack Rohan's argument in the debate tomorrow", "subject": "", "name": "", "expect": "publish", "why": "an argument attacked in a debate (F4 control)"}
+{"id": "risk-417", "body": "i'll hurt Priya's feelings if i tell her tomorrow", "subject": "", "name": "", "expect": "publish", "why": "feelings hurt (F4 control)"}
+{"id": "risk-418", "body": "i'm going to hit Rohan with the ball in dodgeball tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a game of dodgeball (F4 control)"}
+{"id": "risk-419", "body": "i'm going to hit the gym tomorrow after school", "subject": "", "name": "", "expect": "publish", "why": "\"hit the gym\" (F4 control)"}
+{"id": "risk-420", "body": "imma tell him \"i'm going to stab you tomorrow after school\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat to be told; \"imma\" is the poster (C2-3)"}
+{"id": "risk-421", "body": "gonna text her \"you're dead after school tomorrow\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat to be texted (C2-3)"}
+{"id": "risk-422", "body": "imma tell them all \"i'm bringing a gun to school tomorrow\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat to be told (C2-3)"}
+{"id": "risk-423", "body": "imma dm him \"kys loser\" tonight", "subject": "", "name": "", "expect": "hold", "why": "the poster's own goad to be sent (C2-3)"}
+{"id": "risk-424", "body": "he told me \"i'm going to stab you tomorrow after school\" should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, reported (C2-3 control)"}
+{"id": "risk-425", "body": "my friend is gonna tell him \"i'm going to stab you tomorrow after school\" lol what do i do", "subject": "", "name": "", "expect": "publish", "why": "a friend's threat, reported (C2-3 control)"}
+{"id": "risk-426", "body": "my ex sent me this after we broke up: \"i'm going to stab you tomorrow after school\"", "subject": "", "name": "", "expect": "publish", "why": "a threat received, the saying verb five words back (C2-4)"}
+{"id": "risk-427", "body": "got this message last night: \"just kys already nobody likes you\" should i report it?", "subject": "", "name": "", "expect": "publish", "why": "a goad received, reported (C2-4)"}
+{"id": "risk-428", "body": "an anon account commented this on my post: \"kill yourself, nobody would care\"", "subject": "", "name": "", "expect": "publish", "why": "a goad received, reported (C2-4)"}
+{"id": "risk-429", "body": "this guy sent me:\n\"how old are you? don't tell your parents we talked\"\nwhat do i do", "subject": "", "name": "", "expect": "publish", "why": "a grooming message received, its label on the line before (C2-4)"}
+{"id": "risk-430", "body": "someone dmed me this:\n\"i'm going to stab you tomorrow after school\"\nshould i tell a teacher?", "subject": "", "name": "", "expect": "publish", "why": "a threat received, its label on the line before (C2-4)"}
+{"id": "risk-431", "body": "me to him:\n\"i'm going to stab you tomorrow after school\"", "subject": "", "name": "", "expect": "hold", "why": "the poster's own threat, labelled on the line before (C2-4 control)"}
+{"id": "risk-432", "body": ">>4521\n>just kys already nobody likes you\nreported. same guy posted this in the other thread too", "subject": "", "name": "", "expect": "publish", "why": "\"same\" names the same person, not agreement (C2-8)"}
+{"id": "risk-433", "body": ">>4521\n>just kys already nobody likes you\nsomeone said the same thing to me last week, ignore them", "subject": "", "name": "", "expect": "publish", "why": "abuse quoted and reported (C2-8)"}
+{"id": "risk-434", "body": ">>4521\n>just kys already nobody likes you\nthis happened to me too, just report and ignore", "subject": "", "name": "", "expect": "publish", "why": "\"me too\" of being targeted, not agreement (C2-8)"}
+{"id": "risk-435", "body": ">>4521\n>i'm bringing a knife to school tomorrow\nsame guy as yesterday, reported to the mods", "subject": "", "name": "", "expect": "publish", "why": "a threat quoted and reported (C2-8)"}
+{"id": "risk-436", "body": ">>4521\n>just kys already nobody likes you\nsame", "subject": "", "name": "", "expect": "hold", "why": "\"same\" alone agrees with the goad (C2-8 control)"}
+{"id": "risk-437", "body": "you're getting stabbed tomorrow after school", "subject": "", "name": "", "expect": "hold", "why": "the reader to be stabbed at school (C2-9)"}
+{"id": "risk-438", "body": "ur getting stabbed after school tmrw", "subject": "", "name": "", "expect": "hold", "why": "the reader to be stabbed after school (C2-9)"}
+{"id": "risk-439", "body": "you are getting jumped after school tomorrow", "subject": "", "name": "", "expect": "hold", "why": "the reader to be jumped after school (C2-9)"}
+{"id": "risk-440", "body": "i swear he's getting stabbed tomorrow after school", "subject": "", "name": "", "expect": "hold", "why": "a sworn threat in the passive (C2-9)"}
+{"id": "risk-441", "body": "i'm getting stabbed tomorrow at school lol it's the vaccine day", "subject": "", "name": "", "expect": "publish", "why": "a vaccine (C2-9 control)"}
+{"id": "risk-442", "body": "i'm scared i'll get stabbed at school tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a fear, not a threat (C2-9 control)"}
+{"id": "risk-443", "body": "you'll get hurt if you climb that wall at school tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a warning about a wall (C2-9 control)"}
+{"id": "risk-444", "body": "for the teachers: \"i'm bringing my dad's gun to school tomorrow\"", "subject": "", "name": "", "expect": "hold", "why": "\"for the teachers\" names who it is for (C2-10)"}
+{"id": "risk-445", "body": "psa for everyone: \"i'm bringing my dad's gun to school tomorrow\"", "subject": "", "name": "", "expect": "hold", "why": "a notice for everyone, the poster's own threat (C2-10)"}
+{"id": "risk-446", "body": "\"you're all dead tomorrow at school\" - you know who you are", "subject": "", "name": "", "expect": "hold", "why": "\"you\" after the dash is who it is for (C2-10)"}
+{"id": "risk-447", "body": "\"i'm bringing my dad's gun to school tomorrow\" - nobody is safe", "subject": "", "name": "", "expect": "hold", "why": "\"nobody\" after the dash is no speaker (C2-10)"}
+{"id": "risk-448", "body": "\"i'm bringing my dad's gun to school tomorrow\" - some kid in my class, reported him", "subject": "", "name": "", "expect": "publish", "why": "a speaker named after the dash, reported (C2-10 control)"}
+{"id": "risk-449", "body": "\"i'm bringing a knife to school tomorrow\" guys this is not a joke", "subject": "", "name": "", "expect": "hold", "why": "\"guys\" is who it is said to (C2-11)"}
+{"id": "risk-450", "body": "\"i'm bringing a knife to school tomorrow\" people, i'm not joking", "subject": "", "name": "", "expect": "hold", "why": "\"people\" is who it is said to (C2-11)"}
+{"id": "risk-451", "body": "the \"add me on snap\" guys are so annoying", "subject": "", "name": "", "expect": "publish", "why": "a kind of person named by what they say (C2-11 control)"}
+{"id": "risk-452", "body": "the whole class agrees, just end it already", "subject": "", "name": "", "expect": "hold", "why": "the class is the classmates, not a lesson (C2-13)"}
+{"id": "risk-453", "body": "just end it already, the class would be better off", "subject": "", "name": "", "expect": "hold", "why": "the class is the classmates (C2-13)"}
+{"id": "risk-454", "body": "a random guy messaged me 'sup, how old are u? wanna meet up after school? dont tell ur parents' wtf", "subject": "", "name": "", "expect": "publish", "why": "a message received, opening on 'sup (C2-14)"}
+{"id": "risk-455", "body": "a random guy messaged me 'kay, how old are u? wanna meet up after school? dont tell ur parents' wtf", "subject": "", "name": "", "expect": "publish", "why": "a message received, opening on 'kay (C2-14)"}
+{"id": "risk-456", "body": "he said 'ello, i'm going to stab you tomorrow after school' should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, opening on 'ello (C2-14)"}
+{"id": "risk-457", "body": "he said ''i'm going to stab you tomorrow after school'' should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, in doubled apostrophes (C2-15)"}
+{"id": "risk-458", "body": "he said ″i'm going to stab you tomorrow after school″ should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, in double primes (C2-15)"}
+{"id": "risk-459", "body": "he said ``i'm going to stab you tomorrow after school'' should i tell someone", "subject": "", "name": "", "expect": "publish", "why": "a threat received, in TeX quotes (C2-15)"}

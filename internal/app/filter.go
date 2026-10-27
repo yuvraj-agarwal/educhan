@@ -4039,8 +4039,8 @@ var (
 		bothViews(`\b` + words(
 			words(`gets`, `getting`, `will~get`, `'?ll~get`, `gonna~get`, `going~to~get`, `will~be`, `'?ll~be`,
 				`gonna~be`, `going~to~be`)+`~(?:`+words(`finally`, `definitely`, `literally`, `actually`, `all`,
-				`really`)+`~)?`+words(`stabbed`, `shot`, `knifed`, `killed`, `murdered`, `gunned~down`, `slaughtered`,
-				`massacred`, `beaten~to~death`, `blown~up`, `bombed`, `burn(?:ed|t)~down`, `torched`, `set~on~fire`,
+				`really`)+`~)?`+words(`stabbed`, `shot`, `knifed`, `jumped`, `killed`, `murdered`, `gunned~down`,
+				`slaughtered`, `massacred`, `beaten~to~death`, `blown~up`, `bombed`, `burn(?:ed|t)~down`, `torched`, `set~on~fire`,
 				`on~fire`),
 			words(`gets`, `get`, `will~get`, `'?ll~get`, `gonna~get`, `going~to~get`)+`~what'?s~coming`,
 			words(`will`, `'?ll`, `going~to`, `gonna`)+`~end~with~`+harmEnding, `ends~with~`+harmEnding,
@@ -4492,6 +4492,11 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 		nearest = before[len(before)-1]
 	}
 	mine := firstPerson[nearest] || len(before) > 0 && firstPerson[before[0]] && !relative
+	// A passive is said of its own subject, not the clause's first word: "i
+	// swear he's getting stabbed" is said of him, "you're getting stabbed"
+	// of the reader, and only "I'll get killed" or "my phone is getting
+	// blown up" of the poster.
+	passiveMine, passiveYou := passiveSubject(before)
 	// "tujhe kal cricket mein dho dunga", "match mein peet dunga": beating
 	// someone in a game, with no blade or gun in it.
 	if anyIn(ws, hindiBeatWords) && !anyIn(ws, hindiBladeWords) && hindiGameNamed(sws) {
@@ -4501,11 +4506,16 @@ func threatExcused(text string, m []int, cm string, ws, next []string, sentence 
 	case passiveHarm.MatchString(cm):
 		destroyed := passiveRuin.MatchString(cm)
 		switch {
-		case is(first, "getting") && !progressiveBe[prev],
-			mine || secondPerson[prev] || secondPerson[nearest],
+		case is(first, "getting") && !progressiveBe[prev] && !secondPerson[prev],
+			passiveMine && !relative, passiveYou && harmlessCondition(sentence),
+			// A fear, a belief or a rumour about it: "i'm scared he's getting
+			// jumped", "i heard he's getting jumped", not "i swear he's
+			// getting stabbed".
+			anyIn(before, worryWords),
 			len(next) > 1 && is(next[0], "by") && !is(next[1], "me") && !is(next[1], "us") && !soonWords[next[1]] &&
 				!byTime[next[1]],
 			is(last, "shot") && len(next) > 0 && shotNotThreat[next[0]],
+			is(last, "jumped") && len(next) > 0 && jumpedNotHarm[next[0]],
 			is(last, "stabbed") && len(next) > 2 && is(next[0], "in") && is(next[2], "back"),
 			is(last, "killed") && len(next) > 0 && is(next[0], "off"),
 			habitual(sws), anyIn(sws, storyWords), gamesIn(sws),
@@ -4617,7 +4627,7 @@ var (
 	// place.
 	passiveHarm = regexp.MustCompile(canon(`^'?(?:gets|getting|will|ll|gonna|going)` +
 		`(?:[^\pL\pN]+(?:get|be|to|finally|definitely|literally|actually|all|really))*[^\pL\pN]+` +
-		`(?:stabbed|shot|knifed|killed|murdered|gunned[^\pL\pN]+down|slaughtered|massacred|` +
+		`(?:stabbed|shot|knifed|jumped|killed|murdered|gunned[^\pL\pN]+down|slaughtered|massacred|` +
 		`beaten[^\pL\pN]+to[^\pL\pN]+death|blown[^\pL\pN]+up|bombed|burn(?:ed|t)[^\pL\pN]+down|torched|` +
 		`set[^\pL\pN]+on[^\pL\pN]+fire|on[^\pL\pN]+fire)$`))
 	passiveRuin = regexp.MustCompile(canon(`(?:blown|bombed|burn|torched|fire)`))
@@ -4652,8 +4662,15 @@ var (
 	secondPerson    = canonSetOf(`you u ya yall y'all you're youre ur`)
 	progressiveBe   = canonSetOf(`is s are re am m`)
 	shotNotThreat   = canonSetOf(`down on for`)
-	habitualWords   = canonSetOf(`everyday daily always often usually sometimes regularly constantly whenever`)
-	habitualUnits   = canonSetOf(`day night week month year time single`)
+	// jumpedNotHarm, after "getting jumped", is a leap or a place in a
+	// queue: "jumped into the crew", "jumped over", "jumped ahead".
+	jumpedNotHarm = canonSetOf(`into over through off ahead across up`)
+	// worryWords, in the clause before a passive harm, make it a fear or a
+	// rumour told rather than a threat: "i'm worried you're getting jumped".
+	worryWords = canonSetOf(`scared afraid worried worry worrying fear feared terrified nervous concerned think thought
+		heard hear hearing rumour rumor rumours rumors apparently hope hoping pray praying guess suspect wonder`)
+	habitualWords = canonSetOf(`everyday daily always often usually sometimes regularly constantly whenever`)
+	habitualUnits = canonSetOf(`day night week month year time single`)
 	// storyWords make a death one in a story: "he gets killed in season 3".
 	storyWords = canonSetOf(`episode episodes season seasons movie movies film films show shows series book books
 		novel novels chapter chapters anime manga scene scenes character characters ending finale spoiler spoilers
@@ -4855,6 +4872,37 @@ func gameAfterAPreposition(next []string) bool {
 		}
 	}
 	return false
+}
+
+// passiveSubject reads who a passive harm is said of from the clause
+// before it: the word in front of its auxiliaries ("he's", "you will",
+// "my phone is"), with its contraction cut ("he's" is "he"). It is the
+// poster's for a first-person subject or one owned by the poster ("my
+// phone", "our new car"), and the reader's for a second-person one.
+func passiveSubject(before []string) (mine, yours bool) {
+	k := len(before) - 1
+	for k >= 0 && (auxWords[before[k]] || auxWords[strings.TrimLeft(before[k], "'")]) {
+		k--
+	}
+	if k < 0 {
+		return false, false
+	}
+	head := before[k]
+	if i := strings.IndexByte(head, '\''); i > 0 {
+		head = head[:i]
+	}
+	switch {
+	case firstPerson[before[k]] || firstPerson[head]:
+		return true, false
+	case secondPerson[before[k]] || secondPerson[head]:
+		return false, true
+	}
+	for j := k - 1; j >= max(0, k-2); j-- {
+		if is(before[j], "my") || is(before[j], "our") {
+			return true, false
+		}
+	}
+	return false, false
 }
 
 // harmlessCondition reports an "if" in a sentence whose condition is not a
@@ -5255,6 +5303,10 @@ var (
 		aunt aunty auntie grandma grandpa grandmother grandfather nana nani dada dadi family parents stepdad stepmom
 		stepfather stepmother friend friends bestie bff ex crush girlfriend boyfriend gf bf neighbour neighbours
 		neighbor neighbors husband wife son daughter`)
+	// partnerKin are the kin that hurting or attacking is no banter about:
+	// "hurt my ex tomorrow".
+	partnerKin = canonSetOf(`ex crush girlfriend boyfriend gf bf husband wife stepdad stepfather stepmom stepmother
+		neighbour neighbours neighbor neighbors`)
 	// bareTitles name someone with no determiner: "throw coach off the
 	// roof".
 	bareTitles = canonSetOf(`coach sir maam ma'am madam mam principal warden dean dad mom mum papa mummy`)
@@ -5476,6 +5528,7 @@ var threatVerbForms = func() map[string]string {
 // threatVerbList is each verb's forms, the verb first.
 const threatVerbList = `kill killing kills, murder murdering murders, massacre massacring, slaughter slaughtering,
 	attack attacking attacks, hurt hurting hurts, injure injuring, harm harming, maim maiming,
+	assault assaulting assaults, hit hitting hits,
 	stab stabbing stabs, shoot shooting shoots, knife knifing, shank shanking, slash slashing, behead beheading,
 	glass glassing,
 	strangle strangling, choke choking, drown drowning, poison poisoning, gun gunning, mow mowing,
@@ -5491,6 +5544,7 @@ const threatVerbList = `kill killing kills, murder murdering murders, massacre m
 
 var (
 	threatVerbBase = words(`kill`, `murder`, `massacre`, `slaughter`, `attack`, `hurt`, `injure`, `harm`, `maim`,
+		`assault`, `hit`,
 		`stab`, `shoot`, `knife`, `shank`, `slash`, `behead`, `glass`, `strangle`, `choke`, `drown`, `poison`, `gun`,
 		`mow`,
 		`beat`, `jump`, `run`, `throw`, `push`, `shove`, `toss`, `punch`, `slap`, `smack`, `batter`, `thrash`,
@@ -5499,6 +5553,7 @@ var (
 		`crack`, `burn`, `torch`, `bomb`, `blow`, `set`, `start`, `light`, `open`, `take`, `bring`, `carry`, `pack`,
 		`hide`, `keep`, `have`, `come`, `show`, `turn`, `walk`, `go`, `head`, `hunt`, `plant`, `detonate`)
 	threatVerbIng = words(`killing`, `murdering`, `massacring`, `slaughtering`, `attacking`, `hurting`,
+		`assaulting`, `hitting`,
 		`injuring`, `harming`, `maiming`, `stabbing`, `shooting`, `knifing`, `shanking`, `slashing`, `beheading`,
 		`glassing`,
 		`strangling`, `choking`, `drowning`, `poisoning`, `gunning`, `mowing`, `beating`, `jumping`, `running`,
@@ -5971,8 +6026,17 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 		return 0, false
 	}
 	switch verb {
-	case "kill", "murder", "massacre", "slaughter", "hurt", "injure", "harm", "maim", "attack", "jump":
-		if np := object(0); np.people(false) && !np.mine {
+	case "kill", "murder", "massacre", "slaughter", "hurt", "injure", "harm", "maim", "attack", "assault", "jump":
+		np := object(0)
+		if np.people(false) && !np.mine {
+			return act(np.n)
+		}
+		// Someone by name, or a partner, is hurt, attacked or assaulted as
+		// a threat ("hurt Priya after school", "hurt my ex tomorrow"); a
+		// brother or a mum "killed" is banter as often, and "kill" with a
+		// name is namedTargetRules'.
+		if np.kind == nounKin && verb != "kill" && verb != "murder" && verb != "jump" &&
+			(!kinPeople[np.head] || partnerKin[np.head]) {
 			return act(np.n)
 		}
 		if np := noun(0); (verb == "attack" || verb == "massacre") && np.place() && !np.mine {
@@ -6038,6 +6102,22 @@ func (f *scannedField) threatFrame(v *view, verb, after string, at int) (end int
 			if w := noun(j + 1); w.kind == nounWeapon || w.kind == nounBlunt {
 				return act(w.n)
 			}
+		}
+	case "hit":
+		// "hit him tomorrow", "hit Rohan with a bat"; not "hit you up", "hit
+		// him with the ball in dodgeball" or "with the hard questions".
+		np := object(0)
+		if !np.people(true) || np.mine || np.pronoun && (is(np.head, "me") || is(np.head, "us")) {
+			break
+		}
+		switch {
+		case word(np.n, "up", "on", "back"):
+		case word(np.n, "with"):
+			if w := noun(np.n + 1); w.kind == nounWeapon || w.kind == nounBlunt {
+				return act(w.n)
+			}
+		default:
+			return act(np.n)
 		}
 	case "punch", "slap", "smack", "batter", "thrash", "kick", "knock", "bash", "whoop":
 		// "punch his teeth out", "kick his head in", "whoop his ass".
@@ -11206,18 +11286,65 @@ func (v *view) firstReplyLink() int {
 // agrees reports a reply that takes a quote up as the poster's own: "same",
 // "me too", "mood", "this is me".
 func agrees(ws []string) bool {
-	for k, w := range ws {
-		if agreement[w] || k > 0 && is(ws[k-1], "me") && (is(w, "too") || is(w, "2") || is(w, "as")) ||
-			k > 0 && is(w, "me") && (is(ws[k-1], "literally") || is(ws[k-1], "is")) {
-			return true
+	k := 0
+	for k < len(ws) && k < 2 && agreeFillers[ws[k]] {
+		k++
+	}
+	if k == len(ws) {
+		return false
+	}
+	at := func(j int, w string) bool { return j < len(ws) && is(ws[j], w) }
+	switch w := ws[k]; {
+	case agreement[w]:
+		// "same", "same tbh", "mood": not "same guy", "the same thing".
+		return k+1 == len(ws) || agreeTails[ws[k+1]] || allAgreeing(ws[k:])
+	case is(w, "me"):
+		return at(k+1, "too") || at(k+1, "2") || at(k+1, "as") && at(k+2, "well")
+	case is(w, "i"):
+		j := k + 1
+		if at(j, "can") || at(j, "do") || at(j, "really") || at(j, "so") {
+			j++
 		}
+		return at(j, "relate") || at(j, "felt") && (at(j+1, "that") || at(j+1, "this"))
+	case is(w, "literally"):
+		return at(k+1, "me")
+	case is(w, "this") || is(w, "that") || is(w, "thats") || is(w, "that's"):
+		j := k + 1
+		if is(w, "this") || is(w, "that") {
+			if !at(j, "is") {
+				return false
+			}
+			j++
+		}
+		if at(j, "literally") || at(j, "so") {
+			j++
+		}
+		return at(j, "me") && (j+1 == len(ws) || agreeTails[ws[j+1]] || is(ws[j+1], "every") ||
+			is(ws[j+1], "rn"))
 	}
 	return false
 }
 
+// allAgreeing reports a line made only of agreement: "same same lol".
+func allAgreeing(ws []string) bool {
+	for _, w := range ws {
+		if !agreement[w] && !agreeTails[w] && !agreeFillers[w] {
+			return false
+		}
+	}
+	return true
+}
+
 var (
 	narration = canonSetOf(`tfw mfw mrw be`)
-	agreement = canonSetOf(`same samee sameee mood relatable relate felt ditto metoo`)
+	// agreement opens a reply that takes up the post it quotes as the
+	// poster's own: "same", "mood", "felt". It is agreement only as the
+	// reply itself, alone or with one of agreeTails after it ("same tbh",
+	// "same here"), after at most two of agreeFillers ("lol same", "ngl
+	// mood"); "same guy as yesterday" and "happened to me too" report.
+	agreement    = canonSetOf(`same samee sameee mood relatable relate felt ditto metoo`)
+	agreeTails   = canonSetOf(`tbh fr lol lmao lmfao here bro sis tho though honestly ngl af fam dude man rn`)
+	agreeFillers = canonSetOf(`lol lmao lmfao ngl fr tbh honestly deadass ok okay yeah ya yea bro real so ugh omg`)
 )
 
 // reported reports words the post passes on rather than says: someone
@@ -11312,30 +11439,43 @@ const (
 // saying", "'…' I said", "'…' said my mum", "'…' was what his message said").
 func quoteSpeaker(text string, open, end int) speaker {
 	lead := text[max(0, open-64):open]
-	lead = lead[quotationBreak(lead)+1:]
-	if t := strings.TrimRight(lead, " "); strings.HasSuffix(t, ":") {
-		// A label names who speaks, and whoever comes after "to" or "dear"
-		// in it is spoken to: "me to him:", "my bully to me:", "note to my
-		// bully:", "dear class 10B:" (the last two the poster's, named by no
-		// one). A verb of saying makes it a clause, which the verbs below
-		// read: "he messaged me:", "she said to me:".
+	b := quotationBreak(lead)
+	if strings.TrimSpace(lead[b+1:]) == "" && b >= 0 && lead[b] == '\n' {
+		// A label on a line of its own, the message pasted under it: "this
+		// guy sent me:\n'…'".
+		i := open - len(lead) + b
+		prev := text[max(0, i-64):i]
+		if p := prev[quotationBreak(prev)+1:]; strings.HasSuffix(strings.TrimRight(p, " \t"), ":") {
+			lead = p
+			b = -1
+		}
+	}
+	lead = lead[b+1:]
+	if t := strings.TrimRight(lead, " \t"); strings.HasSuffix(t, ":") {
+		// A label names who speaks, and whoever comes after "to", "for" or
+		// "dear" in it is spoken to: "me to him:", "my bully to me:", "note
+		// to my bully:", "psa for everyone:", "dear class 10B:" (the last
+		// three the poster's, named by no one). A verb of saying makes it a
+		// clause, read wherever the verb is in it: "he messaged me:", "she
+		// said to me:", "some guy messaged me this at 2am:".
 		ws := wordsIn(t)
-		if !hasSayingVerb(ws) {
-			ws = ws[max(0, len(ws)-4):]
-			addressed := false
-			for k, w := range ws {
-				if is(bare(w), "to") || is(bare(w), "dear") {
-					ws, addressed = ws[:k], true
-					break
-				}
+		if k := lastSayingVerb(ws); k >= 0 {
+			return speakerOf(ws[:k], bare(ws[k]), ws[k+1:])
+		}
+		ws = ws[max(0, len(ws)-4):]
+		addressed := false
+		for k, w := range ws {
+			if is(bare(w), "to") || is(bare(w), "for") || is(bare(w), "dear") {
+				ws, addressed = ws[:k], true
+				break
 			}
-			who := labelSpeaker(ws, true)
-			if addressed && who == otherSpeaks && !namesSomeoneElse(ws) {
-				who = noSpeaker // "note to my bully:", a note no one else is said to have sent
-			}
-			if who != noSpeaker {
-				return who
-			}
+		}
+		who := labelSpeaker(ws, true)
+		if addressed && who == otherSpeaks && !namesSomeoneElse(ws) {
+			who = noSpeaker // "note to my bully:", a note no one else is said to have sent
+		}
+		if who != noSpeaker {
+			return who
 		}
 	}
 	var after []string
@@ -11370,8 +11510,10 @@ func quoteSpeaker(text string, open, end int) speaker {
 			continue
 		}
 		// "'…' he said", "'…' was what my mum said"; or, put after the
-		// verb, "'…' said my mum", "'…' said I".
-		if who := labelSpeaker(after[:k], true); who != noSpeaker {
+		// verb, "'…' said my mum", "'…' said I". A passive's subject is
+		// who it was said to: "'…' - you have been warned".
+		passive := k > 0 && passiveLeads[bare(after[k-1])]
+		if who := labelSpeaker(after[:k], true); who != noSpeaker && !passive {
 			return who
 		}
 		if who := labelSpeaker(after[k+1:min(len(after), k+3)], false); who != noSpeaker {
@@ -11434,15 +11576,16 @@ func labelSpeaker(ws []string, last bool) speaker {
 	return noSpeaker
 }
 
-// hasSayingVerb reports a verb of saying, hearing or receiving among ws, as
-// a verb rather than a noun ("his reply" is a noun).
-func hasSayingVerb(ws []string) bool {
-	for k, w := range ws {
-		if w = bare(w); (sayingVerbs[w] || heardVerbs[w] || receivedVerbs[w]) && !sayingNoun(ws, k) {
-			return true
+// lastSayingVerb is the index of the last verb of saying, hearing or
+// receiving among ws, as a verb rather than a noun ("his reply" is a
+// noun), or -1.
+func lastSayingVerb(ws []string) int {
+	for k := len(ws) - 1; k >= 0; k-- {
+		if w := bare(ws[k]); (sayingVerbs[w] || heardVerbs[w] || receivedVerbs[w]) && !sayingNoun(ws, k) {
+			return k
 		}
 	}
-	return false
+	return -1
 }
 
 // namesSomeoneElse reports a person among ws, or something sent that is
@@ -11467,13 +11610,19 @@ var articles = canonSetOf(`a an the this that`)
 // first, after at most a word or two that only say which ("my", "some",
 // "a random"). Anything else after a dash is the poster going on, not an
 // attribution: "— should I tell someone?", "- I reported it", "— am I
-// overreacting?".
+// overreacting?", and so is the reader or everyone ("- you know who you
+// are", "- nobody is safe") and a pronoun that a verb follows ("- they
+// know what they did", "- he's next").
 func attributionSpeaker(ws []string) speaker {
 	for k, w := range ws[:min(len(ws), 3)] {
 		w = bare(w)
 		switch {
 		case posterLabels[w] && (!is(w, "i") || len(ws) == 1):
 			return posterSpeaks
+		case notSources[w]:
+			return noSpeaker
+		case otherPronouns[w] && (strings.Contains(w, "'") || k+1 < len(ws) && pronounVerbs[bare(ws[k+1])]):
+			return noSpeaker
 		case otherSpeakers[w] || messageNouns[w]:
 			return otherSpeaks
 		case k < 2 && (nounLeads[w] || posterOwners[w] || attributionLeads[w]):
@@ -11515,8 +11664,8 @@ func speakerOf(before []string, verb string, rest []string) speaker {
 	for k := n - 1; k >= max(0, n-8); k-- {
 		w := bare(before[k])
 		switch {
-		case posterSubjects[w] || mindWords[w]:
-			return posterSpeaks // "I said"; "my head keeps telling me to"
+		case posterSubjects[w] || posterLeads[w] || mindWords[w]:
+			return posterSpeaks // "I said"; "imma tell him"; "my head keeps telling me to"
 		case otherSpeakers[w] || messageNouns[w]:
 			return otherSpeaks
 		case !subjectSkips[w] && w != "":
@@ -11561,8 +11710,26 @@ func reportedClause(text string, from, i int) (who speaker, ofPoster bool) {
 // 'dm me'".
 func namedAsAKind(text string, open, end int) bool {
 	before := wordsBefore(text, open, 1)
-	after := nextWords(text[end:min(len(text), end+32)], 1)
-	return len(before) > 0 && quoteLeads[bare(before[0])] || len(after) > 0 && quoteKinds[after[0]]
+	if len(before) > 0 && quoteLeads[bare(before[0])] {
+		return true
+	}
+	after := nextWords(text[end:min(len(text), end+32)], 2)
+	if len(after) == 0 || !quoteKinds[after[0]] {
+		return false
+	}
+	// "guys" and "people" after a quotation are as often the poster
+	// calling to the readers ("'…' guys this is not a joke", "'…' people,
+	// i'm serious"): they name a kind only going on into a clause about
+	// it, "'add me on snap' guys are so annoying".
+	if !quoteVocatives[after[0]] {
+		return true
+	}
+	rest := text[end:min(len(text), end+32)]
+	rest = rest[max(0, strings.IndexFunc(rest, func(r rune) bool { return unicode.IsLetter(r) })):]
+	if j := strings.IndexFunc(rest, func(r rune) bool { return !wordRune(r) }); j >= 0 {
+		rest = rest[j:]
+	}
+	return len(after) > 1 && kindClauses[after[1]] && !strings.HasPrefix(strings.TrimLeft(rest, " "), ",")
 }
 
 // mentionedAsAKind reports words named as a kind of post by the word after
@@ -11634,6 +11801,9 @@ var (
 	posterSubjects = canonSetOf(`i i'm im i've ive i'd i'll we we're we've we'll we'd maine mene mainne humne hamne`)
 	posterLabels   = canonSetOf(`me i myself mine moi`)
 	posterOwners   = canonSetOf(`my our mera meri mere`)
+	// posterLeads carry the poster as their subject: "imma tell him",
+	// "lemme text her".
+	posterLeads = canonSetOf(`imma ima i'ma lemme`)
 	// otherSpeakers are someone other than the poster: people, by pronoun,
 	// role or relation.
 	otherSpeakers = canonSetOf(`he she they he's she's they're hes shes theyre he'd she'd they'd he'll she'll
@@ -11660,7 +11830,8 @@ var (
 		after before for me us mujhe mere mera meri roz hamesha bhi ne ko phir fir aur ki ke ka hai tha thi the
 		haha hahaha omg oh yo hey well like legit lowkey highkey deadass fucking even why how what
 		already seriously totally definitely def finally recently today yesterday earlier apparently openly
-		publicly clearly officially proudly casually calmly quietly loudly simply`)
+		publicly clearly officially proudly casually calmly quietly loudly simply
+		gonna gunna gon finna tryna wanna going to tomorrow tmrw tmr tonight later now up`)
 	// reportedLinks are the words a report puts between a verb of saying and
 	// what was said: "told me to go", "said that you should all", "said
 	// he'll", "bolta hai ki tu".
@@ -11672,11 +11843,26 @@ var (
 	// attributionLeads say which person an attribution after a dash names
 	// before it names them: "— some random guy", "- one of the teachers".
 	attributionLeads = canonSetOf(`some random one certain other another of`)
+	// notSources are never who a quotation is from: the reader, everyone
+	// and no one. otherPronouns are a source only on their own ("- him"),
+	// not as the subject of one of pronounVerbs ("- they know who they
+	// are").
+	notSources    = canonSetOf(`you u ya y'all yall nobody noone everyone everybody anyone anybody`)
+	otherPronouns = canonSetOf(`he she they him her them hes shes theyre he's she's they're he'd she'd they'd
+		he'll she'll they'll`)
+	pronounVerbs = canonSetOf(`is are was were will has have had can could should would must might may know knows
+		knew think thinks did does do don't dont doesn't doesnt didn't didnt can't cant won't wont deserve
+		deserves better never always gonna`)
 	// quoteLeads, before a quotation, and quoteKinds, after it, make it the
 	// name of a kind of post.
 	quoteLeads = canonSetOf(`the a those these every all like`)
 	quoteKinds = canonSetOf(`guys people posts post thing stuff spam bots comments comment crowd requests
 		messages types kind kinds replies`)
+	// quoteVocatives are the quoteKinds that are also a call to the reader,
+	// and kindClauses what goes on to say something about a kind.
+	quoteVocatives = canonSetOf(`guys people`)
+	kindClauses    = canonSetOf(`are r is were was who that which keep keeps always never get gets need should
+		deserve can't cant won't wont don't dont do make makes have has`)
 )
 
 // quotationAround finds the quotation offset i is in, within 120 bytes
@@ -11716,6 +11902,11 @@ func quotationAround(text string, i int) (int, int) {
 			next, _ := utf8.DecodeRuneInString(text[j+size:])
 			if j > 0 && unicode.IsDigit(prev) || elided(text, j) {
 				continue
+			}
+			if j > 0 && prev == '\'' {
+				// A doubled mark, '' or `` (and ″, which the view folds to
+				// two): the quotation opens at the first of the two.
+				return j - 1, closingMark(text, i, r)
 			}
 			if j == 0 || !alnum(prev) {
 				return j, closingMark(text, i, r)
@@ -11767,7 +11958,33 @@ func elided(text string, j int) bool {
 	if len(w) >= 2 && w[0] >= '0' && w[0] <= '9' && w[1] >= '0' && w[1] <= '9' {
 		return len(w) == 2 || w[2:] == "s"
 	}
-	return elisions[w]
+	// "'sup, how old are u? … dont tell ur parents'" opens a quotation
+	// that a mark further on the line closes: only an apostrophe with no
+	// closing one after it is an elision ("tell 'em i said hi").
+	return elisions[w] && !closedOnLine(text, k)
+}
+
+// closedOnLine reports that the first quotation apostrophe from offset k of
+// text on its line, within 120 bytes, closes a quotation: a letter or a
+// digit before it and none after ("parents' wtf"). An apostrophe inside a
+// word ("dont", "i'm") is passed over, and one that opens another
+// quotation, or none at all, closes nothing.
+func closedOnLine(text string, k int) bool {
+	hi := min(len(text), k+120)
+	for p := k; p < hi; p++ {
+		switch text[p] {
+		case '\n':
+			return false
+		case '\'':
+			prev, _ := utf8.DecodeLastRuneInString(text[:p])
+			next, _ := utf8.DecodeRuneInString(text[p+1:])
+			if alnum(prev) && alnum(next) {
+				continue
+			}
+			return alnum(prev)
+		}
+	}
+	return false
 }
 
 // elisions are words that begin with an apostrophe, for what was left out.
@@ -11786,6 +12003,9 @@ func closingMark(text string, i int, open rune) int {
 		}
 		if strings.ContainsRune(closes, r) && !(r == '"' && inchMark(text, j)) {
 			next, _ := utf8.DecodeRuneInString(text[j+size:])
+			if r == '\'' && next == '\'' {
+				return j + 2 // a doubled close: ''
+			}
 			if r != '\'' || j+size >= len(text) || !alnum(next) {
 				return j + size
 			}
@@ -11856,6 +12076,18 @@ func saidFirst(before string) bool {
 	return true
 }
 
+// endsSomethingElse reports a word of endItOthers in ws, what "just end it"
+// may end, unless it judges (endItJudges): "our group chat voted" and "the
+// whole class agrees" are people telling the reader to.
+func endsSomethingElse(ws []string) bool {
+	for i, w := range ws {
+		if endItOthers[w] && !(i+1 < len(ws) && endItJudges[ws[i+1]]) {
+			return true
+		}
+	}
+	return false
+}
+
 // namesWhatIsEnded reports that the clause next to "just end it" or "you
 // should end it" opens on what is being ended, and it is a lecture, an essay
 // or a season rather than a life: "just end it already, this lecture is 3
@@ -11907,18 +12139,38 @@ func opensOnEnded(ws []string) bool {
 		return false
 	}
 	if endItThings[ws[0]] {
-		return true
+		return endedClass(ws, ws[0])
 	}
 	for k := 0; k < min(len(ws), 5); k++ {
 		if !endItDeterminers[ws[k]] || k > 0 && !is(ws[k-1], "of") {
 			continue
 		}
-		return anyIn(ws[k+1:min(len(ws), k+4)], endItThings)
+		for _, w := range ws[k+1 : min(len(ws), k+4)] {
+			if endItThings[w] {
+				return endedClass(ws, w)
+			}
+		}
+		return false
 	}
 	return false
 }
 
+// endedClass reports a clause opening on thing as about the thing ended. A
+// class is a lesson only said to go on ("the class is 3 hours long", "this
+// class never ends"); judged or feeling ("the whole class agrees", "the
+// class would be better off") it is the people in it.
+func endedClass(ws []string, thing string) bool {
+	if !is(thing, "class") && !is(thing, "classes") {
+		return true
+	}
+	return anyIn(ws, lessonLengths)
+}
+
 var (
+	// lessonLengths say a class goes on: "is 3 hours", "never ends", "is
+	// dragging".
+	lessonLengths = canonSetOf(`hours hour hrs hr minutes mins long longer forever endless never ends ending
+		dragging drags dragged boring over overtime`)
 	// endItThings are what "just end it" may be said of on a student board
 	// when the clause beside it names them: a class, a piece of work, a
 	// meeting, something watched or read.
@@ -11940,6 +12192,8 @@ var (
 	jumpVerbs           = canonSetOf(`jump leap dive flip backflip do swan`)
 	// endItOthers, before "just end it", make it a relationship, an
 	// argument or a game.
+	endItJudges = canonSetOf(`voted votes vote agrees agree agreed says said say thinks think decided decides
+		reckons reckon laughed laughs`)
 	endItOthers = canonSetOf(`her him she he they them boyfriend girlfriend bf gf relationship partner ex crush
 		friendship marriage situationship cheating cheated cheats dating breakup thread debate argument discussion
 		convo conversation chat game match series show beef fight drama story subscription streak course courses
