@@ -961,7 +961,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   14 times larger, so a PNG the default level stored near `storedLimit` can now be refused
   `ErrStoredTooLarge`) — a 25-megapixel 16-bit PNG takes 4 to 5 s of CPU on one core, an
   8-bit transparent one 2 to 3, the slowest GIF about 4 (25 frames of a 2000×2000 canvas
-  each with a table of its own and a pixel to clear), and a JPEG is held to
+  each with a table of its own and a pixel to clear), a lossless WebP of 25 megapixels,
+  which a crafted file of a few dozen bytes can be, 4 to 6.5, and a JPEG is held to
   `maxJPEGScanRevisits` passes' work over its blocks (`jpegScanBlockVisits`, which weighs
   a baseline scan's visit at six first-pass visits and an AC refinement scan's at two, for
   what the decoder does on each), so the worst admitted one, a 25-megapixel baseline file
