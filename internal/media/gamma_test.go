@@ -176,6 +176,11 @@ func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 	curve := iccPara(3, 2.4, 1/1.055, 0.055/1.055, 1/12.92, 0.04045)
 	iccp := func(p []byte) []byte { return iCCPChunk("x", 0, deflated(p)) }
 	grey := func(edit func([]byte), tags ...iccTag) []byte { return iccp(iccProfile("GRAY", edit, tags...)) }
+	// rgb is an RGB profile of the tags given, which are sRGBProfile's.
+	rgb := func(tags ...iccTag) []byte { return iccp(iccProfile("RGB ", nil, tags...)) }
+	rTRC, gTRC, bTRC := iccTag{"rTRC", curve}, iccTag{"gTRC", curve}, iccTag{"bTRC", curve}
+	rXYZ, gXYZ := iccTag{"rXYZ", iccXYZ(0.4361, 0.2225, 0.0139)}, iccTag{"gXYZ", iccXYZ(0.3851, 0.7169, 0.0971)}
+	bXYZ, wtpt := iccTag{"bXYZ", iccXYZ(0.1431, 0.0606, 0.7141)}, iccTag{"wtpt", iccXYZ(0.9642, 1, 0.8249)}
 	for _, tc := range []struct {
 		name string
 		data []byte
@@ -241,9 +246,20 @@ func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 		{"gamma 1.0 beside a profile of a negative gamma", beside(iccp(sRGBProfile(iccPara(0, -2.2)))), linear},
 		{"gamma 1.0 beside a profile of a curve of type 5", beside(iccp(sRGBProfile(iccPara(5, 2.2)))), linear},
 		{"gamma 1.0 beside a profile of a curve with a of 0", beside(iccp(sRGBProfile(iccPara(1, 2.2, 0, 0)))), linear},
-		{"gamma 1.0 beside a profile of a colourant of 16 bytes", beside(iccp(iccProfile("RGB ", nil, iccTag{"rTRC", curve}, iccTag{"gTRC", curve}, iccTag{"bTRC", curve}, iccTag{"rXYZ", iccXYZ(0.4361, 0.2225, 0.0139)}, iccTag{"gXYZ", iccXYZ(0.3851, 0.7169, 0.0971)}, iccTag{"bXYZ", iccXYZ(0.1431, 0.0606, 0.7141)[:16]}))), linear},
+		{"gamma 1.0 beside a profile of a curve with a below 0", beside(iccp(sRGBProfile(iccPara(1, 2.2, -1, 0)))), linear},
+		// sRGB's curve with one of its parameters changed.
+		{"gamma 1.0 beside a profile of a curve with c below 0", beside(iccp(sRGBProfile(iccPara(3, 2.4, 1/1.055, 0.055/1.055, -1/12.92, 0.04045)))), linear},
+		{"gamma 1.0 beside a profile of a curve with d below 0", beside(iccp(sRGBProfile(iccPara(3, 2.4, 1/1.055, 0.055/1.055, 1/12.92, -0.04045)))), linear},
+		{"gamma 1.0 beside a profile of a curve with a*d + b below 0", beside(iccp(sRGBProfile(iccPara(3, 2.4, 1/1.055, -0.5, 1/12.92, 0.04045)))), linear},
+		{"gamma 1.0 beside a profile of a curve short of its parameters", beside(iccp(sRGBProfile(iccPara(3, 2.4)))), linear},
+		{"gamma 1.0 beside a profile of a curve of 8 bytes", beside(iccp(sRGBProfile([]byte("curv\x00\x00\x00\x00")))), linear},
+		{"gamma 1.0 beside a profile of a curve of another type", beside(iccp(sRGBProfile(iccXYZ(0.5, 0.5, 0.5)))), linear},
+		{"gamma 1.0 beside a profile of a colourant of 16 bytes", beside(rgb(rTRC, gTRC, bTRC, rXYZ, gXYZ, iccTag{"bXYZ", bXYZ.data[:16]})), linear},
 		// Its rXYZ tag, the fourth, of the type XYZX.
 		{"gamma 1.0 beside a profile of a colourant of another type", beside(iccp(edited(profile, func(p []byte) { copy(p[binary.BigEndian.Uint32(p[132+12*3+4:]):], "XYZX") }))), linear},
+		{"gamma 1.0 beside an RGB profile of every curve and colourant", beside(rgb(rTRC, gTRC, bTRC, rXYZ, gXYZ, bXYZ, wtpt)), untouched},
+		{"gamma 1.0 beside an RGB profile with no bTRC", beside(rgb(rTRC, gTRC, rXYZ, gXYZ, bXYZ, wtpt)), linear},
+		{"gamma 1.0 beside an RGB profile with no bXYZ", beside(rgb(rTRC, gTRC, bTRC, rXYZ, gXYZ, wtpt)), linear},
 		{"gamma 1.0 beside a profile with a cicp tag", beside(iccp(sRGBProfile(nil, iccTag{"cicp", []byte("cicp\x00\x00\x00\x00\x01\x0d\x00\x01")}))), untouched},
 		{"gamma 1.0 beside a profile with a cicp tag of 8 bytes", beside(iccp(sRGBProfile(nil, iccTag{"cicp", []byte("cicp\x00\x00\x00\x00")}))), linear},
 		{"gamma 1.0 beside a profile with a cicp tag of another type", beside(iccp(sRGBProfile(nil, iccTag{"cicp", []byte("xxxx\x00\x00\x00\x00\x01\x0d\x00\x01")}))), linear},
