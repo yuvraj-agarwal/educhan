@@ -664,6 +664,81 @@ func TestPassCheckoutCooldownAndStripeFailure(t *testing.T) {
 	}
 }
 
+// TestPassCheckoutCalledOffLogsNothing holds a checkout the page calls off, by
+// a forget or by leaving educhan, to what it is: a client gone, which a.fail
+// does not log either, and not a fault. Called off while Stripe is opening its
+// session, or while the Pass tables are pruned, it logs nothing at WARN or
+// ERROR, the request's own line included, and records no order.
+func TestPassCheckoutCalledOffLogsNothing(t *testing.T) {
+	for _, during := range []string{"Stripe opening the session", "the prune"} {
+		t.Run(during, func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, nil, &logs)
+			// held waits until the checkout is held where it is called off.
+			var held func()
+			switch during {
+			case "Stripe opening the session":
+				opening, release := make(chan struct{}, 1), make(chan struct{})
+				defer close(release)
+				p.stripe.mu.Lock()
+				p.stripe.opening = func() {
+					opening <- struct{}{}
+					<-release
+				}
+				p.stripe.mu.Unlock()
+				held = func() {
+					select {
+					case <-opening:
+					case <-time.After(10 * time.Second):
+						t.Fatal("the checkout never asked Stripe for a session")
+					}
+				}
+			case "the prune":
+				lock := p.holdPassLock()
+				defer lock.release()
+				held = func() { lock.queued(1, "the checkout's prune") }
+			}
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			answer := p.fire(p.request("/api/pass/checkout", map[string]any{"adult": true}, nil).WithContext(ctx))
+			held()
+			cancel()
+			if got := <-answer; !errors.Is(got.err, context.Canceled) {
+				t.Fatalf("the checkout called off: status %d, %v; want it cancelled", got.status, got.err)
+			}
+			// The request's own line is the last the server writes of it.
+			var lines []map[string]any
+			for deadline := time.Now().Add(10 * time.Second); ; {
+				lines = lines[:0]
+				done := false
+				for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+					var record map[string]any
+					if err := json.Unmarshal([]byte(line), &record); err != nil {
+						t.Fatalf("a log line is not JSON: %q", line)
+					}
+					lines = append(lines, record)
+					done = done || record["msg"] == "request" && record["path"] == "/api/pass/checkout"
+				}
+				if done {
+					break
+				}
+				if time.Now().After(deadline) {
+					t.Fatalf("the server never finished the checkout called off:\n%s", logs.String())
+				}
+				time.Sleep(5 * time.Millisecond)
+			}
+			for _, record := range lines {
+				if record["level"] == "WARN" || record["level"] == "ERROR" {
+					t.Errorf("a checkout called off is logged as a fault: %v", record)
+				}
+			}
+			if n := p.count("pass_orders"); n != 0 {
+				t.Fatalf("a checkout called off recorded %d orders", n)
+			}
+		})
+	}
+}
+
 func TestPassActivationIsPaced(t *testing.T) {
 	p := passServer(t, nil)
 	p.app.pass.activateLimiter = newCooldownLimiter(passActivateCooldown)

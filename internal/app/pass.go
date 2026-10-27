@@ -604,7 +604,11 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	// Orders past their deadline, refunds past their month and Passes past
 	// their grace month go here as well as in the sweep, so a busy server
 	// keeps nothing past its time between two sweeps.
-	if err := a.store.prunePasses(r.Context(), now); err != nil {
+	//
+	// A client gone meanwhile, a checkout the page called off by a forget or
+	// by leaving, is no fault, so it is not logged, here or below, as a.fail
+	// logs nothing for it.
+	if err := a.store.prunePasses(r.Context(), now); err != nil && r.Context().Err() == nil {
 		a.log.Warn("could not prune Pass tables", "error", err)
 	}
 
@@ -624,6 +628,11 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 	}
 	base := a.cfg.Pass.PublicURL
 	session, err := a.pass.stripe.createCheckout(r.Context(), base+"/pass?paid", base+"/pass?cancelled")
+	if err != nil && r.Context().Err() != nil {
+		// Nobody is left to answer, and Stripe's session, if it opened one, is
+		// left to expire unpaid.
+		return
+	}
 	if err != nil {
 		a.log.Error("could not create a Stripe checkout", "error", err)
 		writeError(w, http.StatusBadGateway, passStripeUnreachable)
