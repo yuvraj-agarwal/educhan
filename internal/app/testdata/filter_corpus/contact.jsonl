@@ -352,3 +352,8 @@
 {"id": "contact-352", "body": "join https://meet.google.com/qvxtrmkhpd", "subject": "", "name": "", "expect": "block", "why": "a Meet code written without hyphens (R2D-6)"}
 {"id": "contact-353", "body": "meet.google.com/new opens a new meeting", "subject": "", "name": "", "expect": "publish", "why": "Meet's own page for a new meeting, no room (R2D-6 control)"}
 {"id": "contact-354", "body": "https://meet.google.com/landing is the home page", "subject": "", "name": "", "expect": "publish", "why": "Meet's landing page (R2D-6 control)"}
+{"id": "contact-355", "body": "telegram id same as here, search “madeupkotafactory”", "subject": "", "name": "", "expect": "block", "why": "Telegram username to search in curly quotes, which the word reader took for quoted only in straight ones (ROB2-2, read while making the frames cheaper)"}
+{"id": "contact-356", "body": "my insta account, search “madeupkid” on it", "subject": "", "name": "", "expect": "block", "why": "Instagram account to search in curly quotes (ROB2-2)"}
+{"id": "contact-357", "body": "insta id hai, search karo “madeupgirl”", "subject": "", "name": "", "expect": "block", "why": "Hinglish: Instagram ID to search in curly quotes (ROB2-2)"}
+{"id": "contact-358", "body": "snap username - search “madeupsnaps”", "subject": "", "name": "", "expect": "block", "why": "Snapchat username to search in curly quotes (ROB2-2)"}
+{"id": "contact-359", "body": "search “madeup study tips” on youtube, the first video helps", "subject": "", "name": "", "expect": "publish", "why": "a video searched for in curly quotes, no account named (ROB2-2 control)"}

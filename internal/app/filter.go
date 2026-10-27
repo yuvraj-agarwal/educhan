@@ -1860,9 +1860,12 @@ func makeWord(text string, from, to int) (aWord, bool) {
 		for strings.HasSuffix(w.w, "'") {
 			w.w, w.to = w.w[:len(w.w)-1], w.to-1
 		}
-		if w.from > 0 && w.to < len(text) && strings.ContainsRune(`"“`, rune(text[w.from-1])) &&
-			strings.ContainsRune(`"”`, rune(text[w.to])) {
-			w.quoted = true
+		// A straight or curly quotation mark each side, compared as bytes
+		// rather than decoded: the word readers make every word of the
+		// frames round an app's name.
+		if w.from > 0 && w.to < len(text) {
+			w.quoted = (text[w.from-1] == '"' || strings.HasSuffix(text[:w.from], "“")) &&
+				(text[w.to] == '"' || strings.HasPrefix(text[w.to:], "”"))
 		}
 	}
 	return w, w.w != ""
