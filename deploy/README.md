@@ -590,6 +590,11 @@ PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
 PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
   -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 -d tax_behavior=inclusive \
   | field id)
+# The server reads the Price with the restricted key, so read it that way now:
+# a key pasted short, made in the other mode, or without Prices: Read stops
+# the run here, before anything is stored.
+curl -fsS "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" >/dev/null ||
+  { echo "The restricted key can't read the new Price: paste it whole, from the same mode (test or live) as the secret key, with Prices: Read."; exit 1; }
 
 # The webhook endpoint, pinned to the API version the server is written
 # against. Its signing secret is returned by this call and no other.
