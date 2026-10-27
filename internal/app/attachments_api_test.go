@@ -595,6 +595,28 @@ func animatedWebP(t *testing.T, frames, pad int) []byte {
 	return out
 }
 
+// webpOnAWiderCanvas is internal/media's lossy.webp under a VP8X whose canvas
+// is two pixels wider than its picture: a file whose chunks do not make one
+// picture, which nothing here decodes, and which is known from its chunks.
+func webpOnAWiderCanvas(t *testing.T) []byte {
+	t.Helper()
+	still, err := os.ReadFile(filepath.Join("..", "media", "testdata", "lossy.webp"))
+	if err != nil {
+		t.Fatalf("read fixture: %v", err)
+	}
+	if string(still[12:16]) != "VP8 " {
+		t.Fatal("lossy.webp is not a simple-format lossy WebP")
+	}
+	w := int(binary.LittleEndian.Uint16(still[26:28]) & 0x3FFF)
+	h := int(binary.LittleEndian.Uint16(still[28:30]) & 0x3FFF)
+	put24 := func(b []byte, v int) []byte { return append(b, byte(v), byte(v>>8), byte(v>>16)) }
+	vp8x := put24(put24([]byte{0, 0, 0, 0}, w+2-1), h-1)
+	out := append([]byte("RIFF\x00\x00\x00\x00WEBPVP8X"), binary.LittleEndian.AppendUint32(nil, uint32(len(vp8x)))...)
+	out = append(append(out, vp8x...), still[12:]...)
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out
+}
+
 // losslessWebPClaiming is the header of a lossless WebP of w×h and n bytes of
 // bitstream, which Go's decoder would hold Huffman tables for out of all
 // proportion to the picture (see the README's Formats).
@@ -611,7 +633,8 @@ func losslessWebPClaiming(w, h, n int) []byte {
 // A file whose header shows it cannot be used, because it is not an accepted
 // image, has too many pixels, is encoded in a way that would take more
 // memory to decode than the server has for it, or is an animated WebP, which
-// nothing here can decode, is refused before flood control, so the poster
+// nothing here can decode, or a WebP whose chunks do not make one picture of
+// its canvas, is refused before flood control, so the poster
 // can send the text on its own at once. Each gets an answer that says which:
 // a picture of too many pixels is too large a resolution, one dear to decode
 // for its encoding is too large to process, and an animated WebP cannot be
@@ -648,6 +671,9 @@ func TestImagesRefusedByTheirHeaderStartNoCooldown(t *testing.T) {
 		{"an animated WebP cut short", "moving-cut.webp", cutShort(animatedWebP(t, 2, 0)), "image could not be decoded"},
 		{"a long animated WebP cut short", "longer-cut.webp", cutShort(animatedWebP(t, 6, 50<<10)), "image could not be decoded"},
 		{"a WebP cut short", "still-cut.webp", cutShort(lossyWebP), "image could not be decoded"},
+		// Chunks that do not make one picture, which a decoder reading no
+		// further than the VP8X does not see.
+		{"a WebP on a canvas wider than its picture", "wider.webp", webpOnAWiderCanvas(t), "image could not be decoded"},
 	}
 
 	const poster = "198.51.100.21"

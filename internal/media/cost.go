@@ -1119,11 +1119,12 @@ const vp8lAlphaHeader = 5
 // otherwise nothing. The decoder reads each chunk through a reader that ends
 // with the chunk, so the rest of the file — a lossy bitstream, a colour
 // profile, EXIF — is never part of it. These are the first such chunks, which
-// are the ones stripWebP keeps and the decoder takes: a file with a second is
-// refused before it is decoded. An alpha plane under a VP8X whose alpha flag
-// is clear is dropped before it (stripExtended), so it is no alpha plane here.
-// A file it cannot follow is costed as lossless, the dearer kind, with the
-// whole file as its bitstream; the decoder will have the last word. An
+// are the ones stripWebP keeps and the decoder takes: an extended file with a
+// second is refused from its chunks (webpKept), and a simple-format file's
+// second is dropped. An alpha plane under a VP8X whose alpha flag is clear is
+// dropped before it (stripExtended), so it is no alpha plane here. A file it
+// cannot follow, which Inspect refuses before asking (webpKept), is costed
+// as lossless, the dearer kind, with the whole file as its bitstream. An
 // animated WebP, which has frames (ANMF) where a still has its picture, never
 // gets here: Inspect refuses it from its chunks first (webpAnimated), so it is
 // not charged as one long lossless picture.

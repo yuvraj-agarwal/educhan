@@ -2497,25 +2497,37 @@ func TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill(t *testing.T) {
 }
 
 // A WebP whose structure does not hold together is refused, whatever a
-// lenient decoder would have made of it.
+// lenient decoder would have made of it. Every such fault is in its chunks,
+// which Inspect reads as stripWebP does (webpKept), so each is refused there,
+// before any cooldown, as it would be once processed. Some used to pass
+// Inspect, whose decoder reads no further than a VP8X, and were refused only
+// after flood control had charged the poster's cooldowns.
 func TestMalformedWebPIsRefused(t *testing.T) {
-	bitstream := sampleBitstream(t)
+	bitstream := sampleBitstream(t) // 320×200
 	clean := sampleWebP(t)
 	longer := append([]byte(nil), clean...)
 	binary.LittleEndian.PutUint32(longer[4:8], uint32(len(clean)))
 	chunkPastEnd := append([]byte(nil), clean...)
 	binary.LittleEndian.PutUint32(chunkPastEnd[16:20], uint32(len(clean)))
+	// A chunk after the picture whose header claims 100 bytes, followed by
+	// 10, inside a RIFF that covers them.
+	brokenAfter := append(append(append([]byte(nil), clean...), "EXIF"...), 100, 0, 0, 0)
+	brokenAfter = append(brokenAfter, make([]byte, 10)...)
+	binary.LittleEndian.PutUint32(brokenAfter[4:8], uint32(len(brokenAfter)-8))
 
 	cases := map[string][]byte{
 		"RIFF size past the end": longer,
 		"chunk past the end":     chunkPastEnd,
 		// The canvas says 10×10 and the bitstream 320×200; decoders size
 		// their buffers from one or the other.
-		"canvas and bitstream disagree": webpFile(vp8xChunk(0, 10, 10), bitstream),
-		"VP8X of the wrong length":      webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
-		"two bitstreams":                webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
-		"no bitstream":                  webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
-		"alpha in the simple format":    webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
+		"canvas and bitstream disagree":       webpFile(vp8xChunk(0, 10, 10), bitstream),
+		"canvas two pixels wider":             webpFile(vp8xChunk(0, 322, 200), bitstream),
+		"VP8X of the wrong length":            webpFile(riffChunk{id: "VP8X", payload: make([]byte, 9)}, bitstream),
+		"two bitstreams":                      webpFile(vp8xChunk(0, 320, 200), bitstream, bitstream),
+		"extended, no bitstream":              webpFile(vp8xChunk(0, 320, 200)),
+		"no bitstream":                        webpFile(riffChunk{id: "EXIF", payload: []byte("x")}),
+		"alpha in the simple format":          webpFile(riffChunk{id: "ALPH", payload: []byte{0}}, bitstream),
+		"a malformed chunk after the picture": brokenAfter,
 		"frame outside the canvas": webpFile(vp8xChunk(vp8xFlagAnimation, 320, 200),
 			riffChunk{id: "ANIM", payload: make([]byte, 6)}, anmfChunk(2, 0, 320, 200, bitstream)),
 	}
@@ -2524,27 +2536,29 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 			if _, _, err := stripWebP(upload); !errors.Is(err, ErrCorruptImage) {
 				t.Errorf("stripWebP = %v, want ErrCorruptImage", err)
 			}
-			if _, err := Process(context.Background(), upload); err == nil {
-				t.Error("Process accepted it")
+			if _, err := Inspect(upload); !errors.Is(err, ErrCorruptImage) {
+				t.Errorf("Inspect = %v, want ErrCorruptImage before any cooldown", err)
+			}
+			if _, err := Process(context.Background(), upload); !errors.Is(err, ErrCorruptImage) {
+				t.Errorf("Process = %v, want ErrCorruptImage", err)
 			}
 		})
-	}
-	// A RIFF that runs past the end is known from the header, so it is
-	// refused before any cooldown, as it would be once processed.
-	if _, err := Inspect(longer); !errors.Is(err, ErrCorruptImage) {
-		t.Errorf("Inspect(RIFF size past the end) = %v, want ErrCorruptImage", err)
 	}
 
 	huge := webpFile(vp8xChunk(0, 10000, 10000), bitstream)
 	if _, _, err := stripWebP(huge); !errors.Is(err, ErrImageTooLarge) {
 		t.Errorf("stripWebP(10000x10000 canvas) = %v, want ErrImageTooLarge", err)
 	}
+	if _, err := Inspect(huge); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("Inspect(10000x10000 canvas) = %v, want ErrImageTooLarge", err)
+	}
 }
 
 // Whatever the bytes, the rewrite does not panic, and what it accepts it
-// would accept again unchanged: stripping is idempotent. The seeds are
-// lossless and lossy, simple and extended, with and without an alpha plane,
-// metadata or animation.
+// would accept again unchanged: stripping is idempotent. What it refuses,
+// Inspect refuses too, so no WebP is refused for its chunks only after flood
+// control. The seeds are lossless and lossy, simple and extended, with and
+// without an alpha plane, metadata or animation.
 func FuzzStripWebP(f *testing.F) {
 	sample, err := os.ReadFile(filepath.Join("testdata", "sample.webp"))
 	if err != nil {
@@ -2553,6 +2567,8 @@ func FuzzStripWebP(f *testing.F) {
 	f.Add(sample)
 	f.Add(webpFile(vp8xChunk(vp8xFlagEXIF, 320, 200), riffChunk{id: "VP8L", payload: sample[20:]},
 		riffChunk{id: "EXIF", payload: []byte("Exif")}))
+	// A canvas two pixels wider than its picture, which stripWebP refuses.
+	f.Add(webpFile(vp8xChunk(0, 322, 200), riffChunk{id: "VP8L", payload: sample[20:]}))
 	// lossy.webp is a VP8 chunk alone, and lossy-alpha.webp VP8X, ALPH and
 	// VP8, both 64×48.
 	lossy, lossyAlpha := readTestdata(f, "lossy.webp"), readTestdata(f, "lossy-alpha.webp")
@@ -2577,6 +2593,9 @@ func FuzzStripWebP(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		out, info, err := stripWebP(data)
 		if err != nil {
+			if _, ierr := Inspect(data); ierr == nil {
+				t.Fatalf("stripWebP refuses the file (%v) and Inspect admits it", err)
+			}
 			return
 		}
 		if int64(info.Width)*int64(info.Height) > MaxPixels {

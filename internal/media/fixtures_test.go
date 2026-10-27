@@ -327,6 +327,25 @@ func vp8xChunk(flags byte, w, h int) riffChunk {
 	return riffChunk{id: "VP8X", payload: p}
 }
 
+// vp8Stub and vp8lStub are the first n bytes of a lossy and a lossless
+// bitstream of w×h, at least the header that says its size, which is all
+// stripWebP and Inspect read of one (bitstreamSize), and zeros after it:
+// a stand-in for a picture that is never decoded.
+func vp8Stub(w, h, n int) []byte {
+	b := make([]byte, max(n, 10))
+	copy(b[3:], []byte{0x9d, 0x01, 0x2a}) // a key frame's tag, then its start code
+	binary.LittleEndian.PutUint16(b[6:], uint16(w))
+	binary.LittleEndian.PutUint16(b[8:], uint16(h))
+	return b
+}
+
+func vp8lStub(w, h, n int) []byte {
+	b := make([]byte, max(n, 5))
+	b[0] = 0x2f
+	binary.LittleEndian.PutUint32(b[1:], uint32(w-1)|uint32(h-1)<<14)
+	return b
+}
+
 // anmfChunk is one animation frame at (x, y), w×h, holding chunks.
 func anmfChunk(x, y, w, h int, chunks ...riffChunk) riffChunk {
 	p := make([]byte, anmfHeaderLen)

@@ -8,7 +8,9 @@ import (
 // decodes, so a WebP upload is stored as a PNG or a JPEG made from its pixels
 // (sanitizeWebP). Before it is decoded it is stripped here at the chunk level,
 // so the decoder is handed only the chunks that make the picture, and only
-// once their sizes have been checked to agree.
+// once their sizes have been checked to agree. Inspect makes the same checks
+// without writing the file (webpKept), so a WebP the rewrite refuses is
+// refused before any cooldown.
 //
 // The rewrite keeps the chunks that make the picture and drops every other one:
 // EXIF and XMP (where a camera's GPS position and an editor's history live),
@@ -60,6 +62,30 @@ type riffChunk struct {
 // ErrImageTooLarge for a canvas over MaxPixels; the structure has to be sound
 // enough that what is decoded is what was checked.
 func stripWebP(data []byte) ([]byte, webpInfo, error) {
+	kept, info, err := webpKept(data)
+	if err != nil {
+		return nil, webpInfo{}, err
+	}
+	out := make([]byte, 12, len(data))
+	copy(out, "RIFF\x00\x00\x00\x00WEBP")
+	for _, c := range kept {
+		out = appendChunk(out, c)
+	}
+	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
+	return out, info, nil
+}
+
+// webpKept is stripWebP short of writing the file: it reads a WebP's
+// structure as stripWebP does, refusing what it refuses with the same errors,
+// and returns the chunks it keeps and what it learned of the picture. Of a
+// still picture it copies nothing but the ten bytes of the VP8X it rewrites,
+// the chunks it returns aliasing data, so Inspect runs it to refuse, before
+// any cooldown, every still that stripWebP would refuse once processed: one
+// whose canvas and bitstream disagree, with no bitstream or two, or with a
+// chunk anywhere that does not hold together. An animation's frames it
+// copies as it strips them (stripFrame), which Inspect never asks of it,
+// since it refuses an animation first (webpAnimated).
+func webpKept(data []byte) ([]riffChunk, webpInfo, error) {
 	if len(data) < 12 || string(data[:4]) != "RIFF" || string(data[8:12]) != "WEBP" {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
@@ -77,27 +103,10 @@ func stripWebP(data []byte) ([]byte, webpInfo, error) {
 	if !ok {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
-	var (
-		kept []riffChunk
-		info webpInfo
-		err  error
-	)
 	if first.id == "VP8X" {
-		kept, info, err = stripExtended(first, rest)
-	} else {
-		kept, info, err = stripSimple(region)
+		return stripExtended(first, rest)
 	}
-	if err != nil {
-		return nil, webpInfo{}, err
-	}
-
-	out := make([]byte, 12, len(data))
-	copy(out, "RIFF\x00\x00\x00\x00WEBP")
-	for _, c := range kept {
-		out = appendChunk(out, c)
-	}
-	binary.LittleEndian.PutUint32(out[4:8], uint32(len(out)-8))
-	return out, info, nil
+	return stripSimple(region)
 }
 
 // stripSimple handles the simple format: one lossy or lossless bitstream and,
@@ -304,7 +313,7 @@ func stripFrame(payload []byte, canvas webpInfo) ([]byte, bool) {
 // "WEBP" tag, up to the end its header declares. It is false for a file whose
 // declared size cannot hold the tag or runs past the end of the file, as a
 // file cut short in transfer does; stripWebP refuses such a file, and so
-// Inspect refuses it before any cooldown.
+// Inspect refuses it before any cooldown (webpKept).
 func webpRegion(data []byte) ([]byte, bool) {
 	if len(data) < 12 {
 		return nil, false
@@ -342,7 +351,10 @@ func webpAnimated(data []byte) bool {
 		if !ok {
 			return false
 		}
-		if first && c.id == "VP8X" {
+		if first {
+			if c.id != "VP8X" {
+				return false // a simple-format still, whatever follows
+			}
 			if len(c.payload) > 0 && c.payload[0]&vp8xFlagAnimation != 0 {
 				return true
 			}

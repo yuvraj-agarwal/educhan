@@ -180,17 +180,17 @@ func adversarialLosslessWebP(groups int, full bool) []byte {
 // lossy one whose alpha plane is compressed with VP8L ("calpha") — made up to
 // an upload of size bytes, when that is more, by what else such a file
 // carries: an EXIF chunk after the lossless picture, a larger lossy
-// bitstream after the alpha plane. Nothing past the header is read before
-// decoding, so the bytes are zero.
+// bitstream after the alpha plane. Nothing past a bitstream's header is read
+// before decoding, so the bytes after it are zero (vp8Stub, vp8lStub).
 func webpOfBitstream(kind string, w, h, n, size int) []byte {
 	var chunks []riffChunk
 	switch kind {
 	case "lossless":
-		chunks = []riffChunk{vp8xChunk(vp8xFlagEXIF, w, h), {id: "VP8L", payload: make([]byte, n)}, {id: "EXIF"}}
+		chunks = []riffChunk{vp8xChunk(vp8xFlagEXIF, w, h), {id: "VP8L", payload: vp8lStub(w, h, n)}, {id: "EXIF"}}
 	case "calpha":
 		alph := make([]byte, n)
 		alph[0] = 1 // compressed with VP8L
-		chunks = []riffChunk{vp8xChunk(vp8xFlagAlpha, w, h), {id: "ALPH", payload: alph}, {id: "VP8 ", payload: make([]byte, 10)}}
+		chunks = []riffChunk{vp8xChunk(vp8xFlagAlpha, w, h), {id: "ALPH", payload: alph}, {id: "VP8 ", payload: vp8Stub(w, h, 10)}}
 	default:
 		panic("webpOfBitstream: unknown kind " + kind)
 	}

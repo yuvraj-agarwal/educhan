@@ -378,15 +378,17 @@ server that would refuse what it sends.
   memory to process than the server sets aside for all of them at once (`image too large
   to process`), and a GIF whose blocks cannot be read through to its end or whose first
   frame reaches past its canvas (browsers disagree on how to show that one), an animated
-  WebP, or a WebP cut short, its RIFF running past the end of the file (`image could not
-  be decoded`), is refused with `400` before anything is decoded and before flood control.
-  A GIF that ends after its last frame without the closing byte, or whose later frames
-  reach past its canvas, is stored as browsers show it: whole, and with each frame cut to
-  the part on the canvas. The memory depends on the encoding as well as the size, and on
-  the shape: a longer, thinner picture costs more for its pixels, because a JPEG's sides
-  are rounded up to whole blocks and making the thumbnail takes 64 bytes and more for
-  every pixel of the longer side. At the full 25 megapixels, from an upload of up to the
-  default 8 MiB, at any shape the format allows:
+  WebP, or a WebP whose chunks do not make one picture of the size its header gives — cut
+  short, its RIFF running past the end of the file, its picture a different size from its
+  canvas, or with no picture or two (`image could not be decoded`) — is refused with `400`
+  before anything is decoded and before flood control. A GIF that ends after its last
+  frame without the closing byte, or whose later frames reach past its canvas, is stored
+  as browsers show it: whole, and with each frame cut to the part on the canvas. The
+  memory depends on the encoding as well as the size, and on the shape: a longer, thinner
+  picture costs more for its pixels, because a JPEG's sides are rounded up to whole
+  blocks and making the thumbnail takes 64 bytes and more for every pixel of the longer
+  side. At the full 25 megapixels, from an upload of up to the default 8 MiB, at any
+  shape the format allows:
   - *accepted*: every baseline JPEG, in colour at any chroma subsampling or in grey,
     whether or not it has to be turned upright, and progressive ones whose colour is at
     a quarter resolution or less (4:2:0, 4:1:1, 4:1:0) or grey, but for a 4:2:0 or

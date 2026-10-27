@@ -735,9 +735,16 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   as one lossless bitstream of its whole length and refused as too large
   (`TestAnimatedWebPIsRefusedFromItsHeader`). A simple-format file is a still to
   `stripWebP` and to browsers whatever follows its picture, so a frame there does not
-  count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also refuses
-  any WebP whose RIFF runs past the end of the file (`webpRegion`), which `stripWebP`
-  would refuse once processed. A WebP stored before this change stays a `.webp` and is
+  count (`TestWebPStillWithAFrameAfterItsPictureIsStoredAsAStill`). `Inspect` also reads
+  every other WebP's chunks as `stripWebP` does, without writing the file (`webpKept`),
+  and refuses whatever `stripWebP` would refuse once processed: a RIFF that runs past the
+  end of the file or a chunk that does, a canvas its bitstream disagrees with, no
+  bitstream or two. x/image's `DecodeConfig` reads no further than a VP8X, so before that
+  these passed `Inspect` and were refused after flood control
+  (`TestMalformedWebPIsRefused`, whose cases `Inspect` must refuse, and `FuzzStripWebP`,
+  which holds `Inspect` to refusing whatever `stripWebP` refuses). Test fixtures that
+  stand in for a picture never decoded still need a bitstream header of the canvas's size
+  (`vp8Stub`, `vp8lStub`). A WebP stored before this change stays a `.webp` and is
   served as `image/webp` (`ContentTypeForExt`). `Processed.Data` is the stored file,
   `Width`/`Height` are the upright picture's, the thumbnail is made from the upright
   pixels, and `StoredImage.Checksum` and `Size` are of the stored bytes — the plan's
@@ -1275,13 +1282,14 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   poster key, the body, a badge the poster cannot have, uploads switched off, a file its
   header shows to be unusable (`media.Inspect` in `parseSubmission`: not an accepted
   format, more than `media.MaxPixels`, a GIF whose frames come to too many pixels or whose
-  blocks do not reach the end, an animated WebP or one cut short, or one whose processing
-  would hold more than the whole budget — which turns on how it is encoded, not its size
-  alone), and a reply the thread would refuse (`ReplyRefusal`). Decoding the pixels is not
-  up front, because it is the cost the upload cooldown limits, so an image that fails to
-  decode, whose re-encoded file would pass `storedLimit` (`ErrStoredTooLarge`), or, for a
-  GIF, that cannot be stored one frame to a picture (`ErrImageTooCostly` from `playGIF`),
-  is refused by `storeUpload` after `allow`, its cooldown kept
+  blocks do not reach the end, an animated WebP or one whose chunks do not make one
+  picture (one cut short among them), or one whose processing would hold more than the
+  whole budget — which turns on how it is encoded, not its size alone), and a reply the
+  thread would refuse (`ReplyRefusal`). Decoding the pixels is not up front, because it
+  is the cost the upload cooldown limits, so an image that fails to decode, whose
+  re-encoded file would pass `storedLimit` (`ErrStoredTooLarge`), or, for a GIF, that
+  cannot be stored one frame to a picture (`ErrImageTooCostly` from `playGIF`), is
+  refused by `storeUpload` after `allow`, its cooldown kept
   (`TestImagesRefusedByTheirHeaderStartNoCooldown` pins both sides, `ErrStoredTooLarge`
   among them). The exception is a post the server turns away as busy after `allow`
   (`tooBusy`: no room to process its image in time, or its deadline passing before the

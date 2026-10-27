@@ -1252,21 +1252,21 @@ func gifHeaderUpload(w, h, frameH, frames, size int, many bool) []byte {
 	return append(b, 0x3B)
 }
 
-// webpHeader is a VP8X WebP of the given size with a stub bitstream: lossy,
-// lossy with an alpha plane (uncompressed, or VP8L-compressed with "calpha"),
-// or lossless.
+// webpHeader is a VP8X WebP of the given size with a stub bitstream of that
+// size (vp8Stub, vp8lStub): lossy, lossy with an alpha plane (uncompressed,
+// or VP8L-compressed with "calpha"), or lossless.
 func webpHeader(kind string, w, h int) []byte {
 	switch kind {
 	case "lossy":
-		return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+		return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8 ", payload: vp8Stub(w, h, 10)})
 	case "alpha":
 		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: make([]byte, 10)},
-			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+			riffChunk{id: "VP8 ", payload: vp8Stub(w, h, 10)})
 	case "calpha": // an alpha plane compressed with VP8L (method 1 in the low bits)
 		return webpFile(vp8xChunk(vp8xFlagAlpha, w, h), riffChunk{id: "ALPH", payload: []byte{1, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
-			riffChunk{id: "VP8 ", payload: make([]byte, 10)})
+			riffChunk{id: "VP8 ", payload: vp8Stub(w, h, 10)})
 	}
-	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: make([]byte, 10)})
+	return webpFile(vp8xChunk(0, w, h), riffChunk{id: "VP8L", payload: vp8lStub(w, h, 10)})
 }
 
 // headJPEG, headRGBJPEG, headPNG, headPNGWithTRNS and headWebP make the
@@ -1309,8 +1309,8 @@ func headWebP(kind string) func(w, h int) []byte {
 // the default 8 MiB limit, whose stored file may be the largest; a square is
 // not the dearest shape of every kind, and TestEncodingsAreJudgedAtEveryShape
 // takes all the others. What is refused is refused at its cheapest: a wide
-// picture from a small upload. At a quarter of the size, everything is
-// accepted as a square.
+// picture from a small upload, as wide as its format allows (largestSide). At
+// a quarter of the size, everything is accepted as a square.
 func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 	type kind struct {
 		name string
@@ -1389,7 +1389,11 @@ func TestCostlyEncodingsAreRefusedFromTheirHeader(t *testing.T) {
 		check(k, side, side, large, nil)
 	}
 	for _, k := range refused {
-		check(k, 4*side, side/4, small, ErrImageTooCostly)
+		w := 4 * side
+		if f, _ := DetectFormat(k.head(1, 1)); w > largestSide(f) {
+			w = largestSide(f) // a lossy WebP's bitstream stops at 16,383
+		}
+		check(k, w, MaxPixels/w, small, ErrImageTooCostly)
 		check(k, side/2, side/2, large, nil)
 	}
 	// The "either" kinds: a 16-bit colour PNG that is neither interlaced nor

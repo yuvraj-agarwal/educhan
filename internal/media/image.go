@@ -135,8 +135,10 @@ type Processed struct {
 // cooldown. For a GIF it also walks the block structure to add up the frames
 // (gifFramePixels), and refuses a file that walk cannot follow to its end. An
 // animated WebP, which nothing here decodes, is refused as ErrCorruptImage
-// from its chunks (webpAnimated), whatever its size, and so is a WebP cut
-// short, whose RIFF runs past the end of the file (webpRegion). A file whose
+// from its chunks (webpAnimated), whatever its size, and so is any WebP whose
+// chunks stripWebP would refuse (webpKept): one cut short, whose RIFF runs
+// past the end of the file, one with a chunk that does, and a still whose
+// canvas and bitstream disagree or that has no bitstream or two. A file whose
 // processing would hold more than the whole processing budget
 // (processingCost) is refused as ErrImageTooCostly: that depends on how it is
 // encoded as well as on its resolution, which ErrImageTooLarge is kept for.
@@ -163,11 +165,16 @@ func inspect(data []byte) (inspection, error) {
 		return inspection{}, ErrUnsupportedFormat
 	}
 	// Nothing here decodes an animated WebP, whatever its size, and stripWebP
-	// refuses a WebP whose RIFF runs past the end of the file, so either is
-	// refused as it would be once processed, but from its header.
+	// refuses a still whose chunks do not make one picture of its canvas, so
+	// either is refused as it would be once processed, but from its chunks.
+	// The animation is looked for first, because the walk that checks a
+	// still's chunks would copy an animation's frames.
 	if format == FormatWebP {
-		if _, whole := webpRegion(data); !whole || webpAnimated(data) {
+		if webpAnimated(data) {
 			return inspection{}, ErrCorruptImage
+		}
+		if _, _, err := webpKept(data); err != nil {
+			return inspection{}, err
 		}
 	}
 
