@@ -224,11 +224,12 @@ each transaction committed, and `pg_xact_commit_timestamp(xmin)` turns that into
 the time any row was last written, to well under a second. A verification
 credential issued while it was on could then be dated to that moment, not just
 placed between the two posts its own transaction id falls between, until the
-next sweep rewrites it and gives it the sweep's id; and so could each committed
-transaction id missing from the posts' sequence, for as long as PostgreSQL keeps
-its commit time, which turns the gap a code request or confirmation leaves among
-the posts' ids from the minutes between two posts into the moment of the write.
-The root README's [Transaction ids, and the nightly
+next sweep rewrites it and gives it the sweep's id, and in a backup taken before
+then for as long as that backup is kept; and so could each committed transaction
+id missing from the posts' sequence, for as long as PostgreSQL keeps its commit
+time, which turns the gap a code request or confirmation leaves among the posts'
+ids from the minutes between two posts into the moment of the write. The root
+README's [Transaction ids, and the nightly
 rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) has the rest.
 Never add it to `--database-flags`; this shows the instance's flags, and should
 print nothing about it:
@@ -622,8 +623,11 @@ backup window with the schedule. A new `credentialDayStart` splits the
 credential day it is deployed in, as a change to `EDUCHAN_VERIFY_CREDENTIAL_TTL`
 does (the root README's [Transaction ids, and the nightly
 rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what that
-dates), so deploy it once that day has passed both the old start and the new,
-while nobody has verified since the old one.
+dates), so deploy it soon after the later of the old start and the new, once the
+`verification issued` lines in the server's log show that nobody has verified
+since the old start. The credentials issued from the deploy until the next new
+start share their expiry with no others, so a later deploy dates them to the
+fewer hours left in between, for as long as they are kept.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
