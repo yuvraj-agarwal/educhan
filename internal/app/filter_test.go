@@ -3181,8 +3181,111 @@ func TestFilterSaysWhichCopyItRefused(t *testing.T) {
 		{"no copy before", 3, "copy", 0},
 		{"   ", 0, "", 0},
 	} {
-		if got := matchOccurrence(c.src, c.from, c.searched); got != c.want {
+		if got, _ := matchOccurrence(c.src, c.from, c.searched); got != c.want {
 			t.Errorf("matchOccurrence(%q, %d, %q) = %d, want %d", c.src, c.from, c.searched, got, c.want)
+		}
+	}
+}
+
+// jsSpaceRun is a run of what \s matches in the page's JavaScript (isJSSpace).
+const jsSpaceRun = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+`
+
+// pageSearchCount counts copies the way the page finds them (pointAtMatch):
+// the quote's words joined by any run of whitespace, searched for again one
+// character on from each place found.
+func pageSearchCount(src string, from int, searched string) int {
+	words := strings.FieldsFunc(searched, isJSSpace)
+	if len(words) == 0 {
+		return 0
+	}
+	for i, word := range words {
+		words[i] = regexp.QuoteMeta(word)
+	}
+	search := regexp.MustCompile(strings.Join(words, jsSpaceRun))
+	start := len(src) - len(strings.TrimLeftFunc(src[from:], unicode.IsSpace))
+	n := 0
+	for at := 0; at < start; {
+		loc := search.FindStringIndex(src[at:])
+		if loc == nil || at+loc[0] >= start {
+			break
+		}
+		n++
+		_, size := utf8.DecodeRuneInString(src[at+loc[0]:])
+		at += loc[0] + size
+	}
+	return n
+}
+
+// TestFilterCountsCopiesAsThePageSearches holds matchOccurrence, which reads
+// the field once, to the count the page's own search gives, on fields made of
+// a few words and whitespace of each kind, so that copies overlap, run across
+// lines and stand inside longer words.
+func TestFilterCountsCopiesAsThePageSearches(t *testing.T) {
+	pieces := []string{"a", "a", "b", "ab", "ba", "é", " ", " ", "  ", "\n", "\u00a0", "\u3000", "\u2028"}
+	rnd := rand.New(rand.NewSource(1))
+	runeStarts := func(s string) []int {
+		var at []int
+		for i := range s {
+			at = append(at, i)
+		}
+		return append(at, len(s))
+	}
+	for range 20000 {
+		var b strings.Builder
+		for range rnd.Intn(24) {
+			b.WriteString(pieces[rnd.Intn(len(pieces))])
+		}
+		src := b.String()
+		at := runeStarts(src)
+		from := at[rnd.Intn(len(at))]
+		i, j := at[rnd.Intn(len(at))], at[rnd.Intn(len(at))]
+		searched := src[min(i, j):max(i, j)]
+		if rnd.Intn(4) == 0 {
+			searched = strings.Repeat(pieces[rnd.Intn(5)]+" ", 1+rnd.Intn(4))
+		}
+		got, _ := matchOccurrence(src, from, searched)
+		if want := pageSearchCount(src, from, searched); got != want {
+			t.Fatalf("matchOccurrence(%q, %d, %q) = %d, the page finds %d", src, from, searched, got, want)
+		}
+	}
+}
+
+// TestFilterCountsWhichCopyCost holds the count of copies to a pass over the
+// field. A spelled-out address is quoted up to its first 79 characters, so a
+// name of forty single letters quotes forty "a"s, and a run of "a"s before it
+// holds a copy at nearly every character: searched for again after each one,
+// as the page does, that cost 140 ms and more of one core for a post, about
+// thirty times the yardstick sentence, none of it counted.
+func TestFilterCountsWhichCopyCost(t *testing.T) {
+	const mostPerByte = 4
+	tail := "\nemail me " + strings.Repeat("a ", 44) + "a @ g m a i l . c o m"
+	for _, unit := range []string{"a ", "a  ", "a\n", "a\u00a0"} {
+		for _, length := range []int{maxBodyLen / 8, maxBodyLen} {
+			runs := (length - utf8.RuneCountInString(tail)) / utf8.RuneCountInString(unit)
+			body := strings.Repeat(unit, runs) + tail
+			v, total := checkContentCost(contentInput{Body: body}, false)
+			// What checkContentCost counts is the search for the block, the
+			// question whether the post places the reader, and the count of
+			// copies.
+			f := scanField(fieldBody, body, markupReadings(body))
+			found, ok := f.firstBlock()
+			if !ok || v.Outcome != contentBlock {
+				t.Fatalf("%q × %d: %+v, want the address blocked", unit, runs, v)
+			}
+			placesTheReader([]*scannedField{f})
+			_, searched := quoteSource(body, found.from, found.to)
+			n, work := matchOccurrence(body, found.from, searched)
+			if n != v.Occurrence || n < runs-40 {
+				t.Errorf("%q × %d: copy %d counted, want the block's own %d, nearly one a run", unit, runs, n, v.Occurrence)
+			}
+			if work > mostPerByte*len(body) {
+				t.Errorf("%q × %d: %d steps to count the copies in %d bytes, more than %d a byte", unit, runs,
+					work, len(body), mostPerByte)
+			}
+			if total != f.work()+work {
+				t.Errorf("%q × %d: %d steps counted for the post, want %d searching and %d counting the copies",
+					unit, runs, total, f.work(), work)
+			}
 		}
 	}
 }
@@ -3316,6 +3419,10 @@ func TestFilterCostIsBounded(t *testing.T) {
 			}
 			return strings.Join(pieces, strings.Repeat(" ", gap/(len(pieces)-1)))
 		}
+	}
+	// then puts tail after a line of the unit's copies, at the end.
+	then := func(unit, tail string) func(n int) string {
+		return func(n int) string { return rep(unit)(n-utf8.RuneCountInString(tail)-1) + "\n" + tail }
 	}
 	bodies := map[string]func(n int) string{
 		"digits":       rep("9 "),
@@ -3544,6 +3651,12 @@ func TestFilterCostIsBounded(t *testing.T) {
 		// Asks named or taken back, each read on for what follows it.
 		"ask named":      rep("snap me is what she said "),
 		"ask taken back": rep("snap me jk post it here "),
+		// An address spelled out after a line of the letter its name is
+		// made of, quoted forty letters long, so that nearly every letter
+		// before it starts a copy of the quote, and the copy refused is
+		// counted among them (matchOccurrence).
+		"copies before an address": then("a ", "email me "+strings.Repeat("a ", 44)+"a @ g m a i l . c o m"),
+		"copies two spaces apart":  then("a  ", "email me "+strings.Repeat("a ", 44)+"a @ g m a i l . c o m"),
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.

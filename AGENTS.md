@@ -674,7 +674,11 @@ for a hint of a threat told by implication or a goad (whose nudges and finishers
 read once for the post), and the threat pairing finds the places and times first and
 looks each intent up among them by binary search (`nearSpans`, `anyNear`), so an intent
 with no place or time near it is never put to its check, which is where the grammar's
-reading costs. Measured on one core of a shared four-vCPU Intel Xeon @ 2.80GHz
+reading costs. Which copy of its quote a block is about (`matchOccurrence`) is counted in
+one pass over the field, the quote's words matched as a sequence of the field's runs
+of words, and those steps are counted with the rest; searched for again one character
+on from each copy, as the page does, a line of "a a a …" before a spelled-out address
+of forty single letters took about 140 ms. Measured on one core of a shared four-vCPU Intel Xeon @ 2.80GHz
 (`GOMAXPROCS=1` under `taskset`, no race detector, the slower verdict's best of several
 runs, timed as the process's CPU time, with a subject and a name; the machine's load
 about 4 to 6): ordinary posts are the corpus's published posts run together a blank line

@@ -232,14 +232,15 @@ func checkContentCost(in contentInput, supportSeen bool) (contentVerdict, int) {
 				}
 			}
 			match, searched := quoteSource(f.src, found.from, found.to)
+			occurrence, counted := matchOccurrence(f.src, found.from, searched)
 			return contentVerdict{
 				Outcome:    contentBlock,
 				Rule:       found.kind.rule(),
 				Field:      f.field,
 				Match:      match,
-				Occurrence: matchOccurrence(f.src, found.from, searched),
+				Occurrence: occurrence,
 				Message:    blockMessage(found.kind, f.field),
-			}, cost()
+			}, cost() + counted
 		}
 	}
 	if !supportSeen {
@@ -341,10 +342,8 @@ func quoteSource(src string, from, to int) (quote, searched string) {
 	return cut + "…", cut
 }
 
-// jsSpaceRun is a run of what \s matches in the page's JavaScript, which is
-// more than Go's \s matches; isJSSpace is the same set.
-const jsSpaceRun = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+`
-
+// isJSSpace reports what \s matches in the page's JavaScript, which is more
+// than Go's \s matches.
 func isJSSpace(r rune) bool {
 	switch r {
 	case '\t', '\n', '\v', '\f', '\r', ' ', 0xa0, 0x1680, 0x2028, 0x2029, 0x202f, 0x205f, 0x3000, 0xfeff:
@@ -358,35 +357,143 @@ func isJSSpace(r rune) bool {
 // allowed: a number in [math], say, before the same number after "call". It
 // counts the places the page's own search finds searched before the copy at
 // from: the text's words in order with any run of whitespace between them,
-// each search starting one character on from the last. The page's field
-// differs from src only in what normalizeBody tidies, which is whitespace at
-// the ends of lines and of the post, and in a name's tripcode secret, which
-// comes after the displayed part; neither adds or takes away a copy before
-// the one the block is about.
-func matchOccurrence(src string, from int, searched string) int {
+// each search starting one character on from the last, so copies that
+// overlap each count. The page's field differs from src only in what
+// normalizeBody tidies, which is whitespace at the ends of lines and of the
+// post, and in a name's tripcode secret, which comes after the displayed part;
+// neither adds or takes away a copy before the one the block is about.
+//
+// It reads src once, and returns what that cost in searchIndex's steps, which
+// checkContentCost counts. Searching for the quote again from one character
+// on after every copy, as the page does, costs the length of the rest of the
+// post for each copy, and a post can hold a copy at nearly every character
+// ("a a a … a @ g m a i l . c o m" quotes forty "a"s).
+//
+// A quote of more than one word is found only where its first word ends a
+// run of src's words (src split at whitespace, as the page's \s splits it),
+// its last word starts the run that many on, and the words between are the
+// runs between, so at most one copy starts in each run: the runs between are
+// matched as one sequence (Knuth-Morris-Pratt), and the first and the last
+// word are checked round each place they match.
+func matchOccurrence(src string, from int, searched string) (n, work int) {
 	words := strings.FieldsFunc(searched, isJSSpace)
 	if len(words) == 0 {
-		return 0
-	}
-	for i, word := range words {
-		words[i] = regexp.QuoteMeta(word)
-	}
-	search, err := regexp.Compile(strings.Join(words, jsSpaceRun))
-	if err != nil {
-		return 0
+		return 0, 0
 	}
 	start := len(src) - len(strings.TrimLeftFunc(src[from:], unicode.IsSpace))
-	n := 0
-	for at := 0; at < start; {
-		loc := search.FindStringIndex(src[at:])
-		if loc == nil || at+loc[0] >= start {
+	if len(words) == 1 {
+		return substringsBefore(src, words[0], start)
+	}
+	first, middle, last := words[0], words[1:len(words)-1], words[len(words)-1]
+	// fail[k] is how many words of middle still match after a mismatch
+	// once k+1 of them have.
+	fail := make([]int, len(middle))
+	for i, k := 1, 0; i < len(middle); i++ {
+		for k > 0 && middle[i] != middle[k] {
+			k = fail[k-1]
+		}
+		if middle[i] == middle[k] {
+			k++
+		}
+		fail[i] = k
+	}
+	// The last len(middle)+2 runs read, by their number: the one the first
+	// word ends, the middle ones and the one the last word starts.
+	runs := make([][2]int, len(middle)+2)
+	matched, ended := 0, false
+	t := 0
+	for i := 0; i < len(src); t++ {
+		// The next run of src's words.
+		for i < len(src) {
+			r, size := utf8.DecodeRuneInString(src[i:])
+			if !isJSSpace(r) {
+				break
+			}
+			i += size
+		}
+		if i == len(src) {
 			break
 		}
-		n++
-		_, size := utf8.DecodeRuneInString(src[at+loc[0]:])
-		at += loc[0] + size
+		j := i
+		for j < len(src) {
+			r, size := utf8.DecodeRuneInString(src[j:])
+			if isJSSpace(r) {
+				break
+			}
+			j += size
+		}
+		work += j - i
+		runs[t%len(runs)] = [2]int{i, j}
+		run := src[i:j]
+		i = j
+		// A copy that ends in this run starts in the run len(middle)+1
+		// before it, and none that starts there or later comes before the
+		// one at from. Where the runs between held the middle words, the
+		// one before them must end in the first word and this one start
+		// with the last.
+		if t > len(middle) {
+			head := runs[(t-len(middle)-1)%len(runs)]
+			if head[0] >= start {
+				break
+			}
+			if ended {
+				work += len(first) + len(last)
+				if strings.HasSuffix(src[head[0]:head[1]], first) && strings.HasPrefix(run, last) &&
+					head[1]-len(first) < start {
+					n++
+				}
+			}
+		}
+		if len(middle) == 0 {
+			ended = true
+			continue
+		}
+		for matched > 0 && run != middle[matched] {
+			matched = fail[matched-1]
+			work++
+		}
+		if run == middle[matched] {
+			matched++
+		}
+		work++
+		ended = matched == len(middle)
+		if ended {
+			matched = fail[matched-1]
+		}
 	}
-	return n
+	return n, work
+}
+
+// substringsBefore counts the places word starts in s before end, those that
+// overlap included, in one pass (Knuth-Morris-Pratt), and what that cost in
+// searchIndex's steps.
+func substringsBefore(s, word string, end int) (n, work int) {
+	fail := make([]int, len(word))
+	for i, k := 1, 0; i < len(word); i++ {
+		for k > 0 && word[i] != word[k] {
+			k = fail[k-1]
+		}
+		if word[i] == word[k] {
+			k++
+		}
+		fail[i] = k
+	}
+	limit := min(len(s), end+len(word)-1)
+	for i, k := 0, 0; i < limit; i++ {
+		for k > 0 && s[i] != word[k] {
+			k = fail[k-1]
+			work++
+		}
+		if s[i] == word[k] {
+			k++
+		}
+		work++
+		if k == len(word) {
+			n++
+			k = fail[k-1]
+		}
+	}
+	return n, work
 }
 
 // reading says what a stretch of the source reads as in the plain view, in
