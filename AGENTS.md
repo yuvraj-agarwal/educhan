@@ -544,8 +544,15 @@ needs a browser check before the test changes.
   (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
   `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
   gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
-  with every other check passing. `replacing` puts the badge panel away for "Verify
-  another address", and both steps then offer "Keep my badge" back to it
+  with every other check passing. So does one in what runs on the box once it is drawn:
+  `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, and every top-level function
+  they call, however far down (`revealClearOfHeader`, `refuseVerification` and the
+  helpers the code step's template interpolates). The test finds that set by following
+  the calls rather than from a list, and holds each function in it whole, so a function
+  new to the path fails it until it is held too: holding the answer alone left
+  `showVerifyField` and `revealClearOfHeader` checked for a few words, and a gate in
+  either took the code form out of the page. `replacing` puts the badge panel away for
+  "Verify another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
   draws, so one that ran out, or was forgotten in another tab, while the page was on
   another step does not come back as if live: the address step is drawn instead, saying

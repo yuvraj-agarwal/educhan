@@ -98,27 +98,74 @@ func holdLines(t *testing.T, what string, got []string, after, until string, wan
 	}
 }
 
+// jsCallees lists the names code calls, comments left out: each name followed
+// by an opening parenthesis. A method call (x.name()) is not a call of a
+// top-level function and is left out. A call in another's arguments, f(g()),
+// is found as well as the call around it.
+func jsCallees(code string) map[string]bool {
+	code = withoutComments(code)
+	named := map[string]bool{}
+	for _, m := range regexp.MustCompile(`[A-Za-z_$][\w$]*\(`).FindAllStringIndex(code, -1) {
+		if m[0] > 0 && code[m[0]-1] == '.' {
+			continue
+		}
+		named[code[m[0]:m[1]-1]] = true
+	}
+	return named
+}
+
+// jsCallGraph maps each top-level function of app.js to the names it calls,
+// itself left out.
+func jsCallGraph(t *testing.T, script string) map[string]map[string]bool {
+	t.Helper()
+	callees := map[string]map[string]bool{}
+	for _, m := range regexp.MustCompile(`(?m)^(?:async )?function ([A-Za-z_$][\w$]*)\(`).FindAllStringSubmatch(script, -1) {
+		callees[m[1]] = jsCallees(jsFunction(t, script, m[1]))
+		delete(callees[m[1]], m[1])
+	}
+	if len(callees) < 100 {
+		t.Fatalf("read %d top-level functions from app.js; this test reads them", len(callees))
+	}
+	return callees
+}
+
+// jsReached lists, sorted, the top-level functions in graph that roots name,
+// and every one they call, however far down.
+func jsReached(t *testing.T, graph map[string]map[string]bool, roots ...string) []string {
+	t.Helper()
+	reached := map[string]bool{}
+	for next := roots; len(next) > 0; next = next[1:] {
+		name := next[0]
+		if graph[name] == nil {
+			t.Fatalf("app.js has no top-level function %s; this test follows its calls", name)
+		}
+		if reached[name] {
+			continue
+		}
+		reached[name] = true
+		for callee := range graph[name] {
+			if graph[callee] != nil && !reached[callee] {
+				next = append(next, callee)
+			}
+		}
+	}
+	var got []string
+	for name := range reached {
+		got = append(got, name)
+	}
+	slices.Sort(got)
+	return got
+}
+
 // noticeCallees lists, sorted, the top-level functions of app.js that src
 // calls and that say something in the notice: they call showNotice, or call a
 // function that does, however far down. A method call (x.name()) is not a call
 // of a top-level function and is left out.
 func noticeCallees(t *testing.T, script, src string) []string {
 	t.Helper()
-	call := regexp.MustCompile(`(?:^|[^.\w$])([A-Za-z_$][\w$]*)\(`)
-	calls := func(code string) map[string]bool {
-		named := map[string]bool{}
-		for _, m := range call.FindAllStringSubmatch(withoutComments(code), -1) {
-			named[m[1]] = true
-		}
-		return named
-	}
-	callees := map[string]map[string]bool{}
-	for _, m := range regexp.MustCompile(`(?m)^(?:async )?function ([A-Za-z_$][\w$]*)\(`).FindAllStringSubmatch(script, -1) {
-		callees[m[1]] = calls(jsFunction(t, script, m[1]))
-		delete(callees[m[1]], m[1])
-	}
-	if _, ok := callees["showNotice"]; !ok || len(callees) < 100 {
-		t.Fatalf("read %d top-level functions from app.js, showNotice among them: %t; this test reads them", len(callees), ok)
+	callees := jsCallGraph(t, script)
+	if _, ok := callees["showNotice"]; !ok {
+		t.Fatal("app.js has no top-level function showNotice; this test reads it")
 	}
 	says := map[string]bool{"showNotice": true}
 	for grew := true; grew; {
@@ -136,7 +183,7 @@ func noticeCallees(t *testing.T, script, src string) []string {
 		}
 	}
 	var got []string
-	for callee := range calls(src) {
+	for callee := range jsCallees(src) {
 		// A function's own declaration is not a call of it.
 		if strings.Contains(src, "function "+callee+"(") {
 			continue
@@ -702,6 +749,129 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"if (!onVerifyPage()) return;",
 		"if (await renderVerify()) showHeldBadge();",
 	})
+
+	// And what runs on the code box from the moment it is drawn is held whole,
+	// however far down it calls. Holding the answer statement for statement
+	// left the two functions it runs on the box just drawn, showVerifyField
+	// and revealClearOfHeader under it, checked for a line and a few words: a
+	// gate on a held badge in either took the code form out of the page, and a
+	// badge holder who sent a code had nowhere to type it, with every check
+	// here passing. The box is drawn by drawVerifyStep (of verifyViewHTML, only
+	// the part up to the code step's return runs), shown by showVerifyField
+	// once a code is sent, and, drawn for a reader arriving (renderVerify) or
+	// refused a wrong code, given its refusal by sayVerifyRefusal. Every
+	// top-level function those reach is found by following the calls down,
+	// not listed by hand, and each is held whole, here or by the test named,
+	// so a function new to that path fails here until it is held too.
+	graph := jsCallGraph(t, script)
+	if end := strings.Index(view[start:], "`;\n"); end < 0 {
+		t.Error("the code step's return does not end where this test can find it")
+	} else {
+		graph["verifyViewHTML"] = jsCallees(view[:start+end])
+		delete(graph["verifyViewHTML"], "verifyViewHTML")
+	}
+	heldBy := map[string]string{
+		"drawVerifyStep":      "TestVerifyStepIsDrawnForAReaderArriving",
+		"verifyViewHTML":      "this test, up to the code step and the step's template",
+		"badgeLostHTML":       "TestAGoneBadgeIsSaidToHaveGone",
+		"sayVerifyRefusal":    "TestVerifyRefusalsAreSaidInTheForm",
+		"showVerifyField":     "this test",
+		"revealClearOfHeader": "this test",
+		"refuseVerification":  "this test",
+		"field":               "this test",
+		"verifiedBadgeHTML":   "this test",
+		"esc":                 "this test",
+		"forgetBrowserHTML":   "this test, as fixed markup",
+	}
+	reached := jsReached(t, graph, "drawVerifyStep", "showVerifyField", "sayVerifyRefusal")
+	for _, name := range reached {
+		if heldBy[name] == "" {
+			t.Errorf("%s runs on a pending code's box once it is drawn, and nothing holds it whole: a gate on a held "+
+				"badge in it can take the box away with every check passing; hold it here", name)
+		}
+	}
+	var listed []string
+	for name := range heldBy {
+		listed = append(listed, name)
+	}
+	slices.Sort(listed)
+	for _, name := range listed {
+		if !slices.Contains(reached, name) {
+			t.Errorf("%s no longer runs on a pending code's box once it is drawn; this test's list of what does is out "+
+				"of date (it reaches %v)", name, reached)
+		}
+	}
+	for _, f := range []struct {
+		name string
+		want []string
+	}{
+		{"showVerifyField", []string{
+			"function showVerifyField(id) {",
+			"const input = document.getElementById(id);",
+			"if (!input) return;",
+			"revealClearOfHeader(input.form);",
+			"input.focus({ preventScroll: true });",
+			"}",
+		}},
+		{"revealClearOfHeader", []string{
+			"function revealClearOfHeader(el) {",
+			"const gap = 12;",
+			`const header = document.querySelector(".site-header");`,
+			"const top = Math.max(0, header ? header.getBoundingClientRect().bottom : 0) + gap;",
+			"const bottom = window.innerHeight - gap;",
+			"const box = el.getBoundingClientRect();",
+			"if (box.top < top || box.height > bottom - top) {",
+			"window.scrollBy(0, box.top - top);",
+			"} else if (box.bottom > bottom) {",
+			"window.scrollBy(0, box.bottom - bottom);",
+			"}",
+			"}",
+		}},
+		{"refuseVerification", []string{
+			"function refuseVerification(form, message, target, { invalid = false, select = false } = {}) {",
+			`const why = form.querySelector(".verify-refused");`,
+			"why.textContent = message;",
+			"why.hidden = false;",
+			"revealClearOfHeader(form);",
+			"if (!target) return;",
+			`if (invalid) target.setAttribute("aria-invalid", "true");`,
+			"target.focus({ preventScroll: true });",
+			"if (select) target.select();",
+			"}",
+		}},
+		{"field", []string{
+			"function field(form, name) {",
+			"const node = form.elements.namedItem(name);",
+			"return node instanceof Element ? node : null;",
+			"}",
+		}},
+		{"verifiedBadgeHTML", []string{
+			"function verifiedBadgeHTML(label) {",
+			"return `<span class=\"badge verified\" title=\"Institutional email verified; not linked to this poster\">" +
+				"Verified: ${esc(label)}</span>`;",
+			"}",
+		}},
+		{"esc", []string{
+			"function esc(value) {",
+			`return String(value ?? "").replace(/[&<>"']/g, (c) => ESCAPES[c]);`,
+			"}",
+		}},
+	} {
+		if got := jsLines(jsFunction(t, script, f.name)); !slices.Equal(got, f.want) {
+			t.Errorf("%s runs\n\t%s\nwant exactly\n\t%s\nIt runs on a pending code's box once the box is drawn, and a "+
+				"gate on a held badge in it takes the box away with every other check passing",
+				f.name, strings.Join(got, "\n\t"), strings.Join(f.want, "\n\t"))
+		}
+	}
+	// Forget this browser's block is fixed markup, whatever it says: one
+	// template, nothing interpolated into it, and nothing else run.
+	forget := jsLines(jsFunction(t, script, "forgetBrowserHTML"))
+	if all := strings.Join(forget, "\n"); len(forget) < 4 || forget[0] != "function forgetBrowserHTML() {" ||
+		forget[1] != "return `" || !strings.HasSuffix(forget[len(forget)-2], "`;") || forget[len(forget)-1] != "}" ||
+		strings.Count(all, "`") != 2 || strings.Contains(all, "${") {
+		t.Errorf("forgetBrowserHTML runs\n\t%s\nwant it to return one template of fixed markup and do nothing else: it "+
+			"is drawn into a pending code's box", strings.Join(forget, "\n\t"))
+	}
 }
 
 // verifyStepSet finds each place app.js moves the Verify page to a step, and
@@ -1715,6 +1885,11 @@ func TestVerifyRefusalsAreSaidInTheForm(t *testing.T) {
 func TestVerifyStepsAreShownClearOfTheHeader(t *testing.T) {
 	script := appScript(t)
 
+	// What this test asks of revealClearOfHeader, showVerifyField and
+	// refuseVerification is why each is written as it is. Each also runs on a
+	// pending code's box, so TestVerifyCodeBoxShowsWhileACodeIsPending holds
+	// all three whole: checked here for a line or a few words alone, a gate on
+	// a held badge in showVerifyField or revealClearOfHeader took the box away.
 	reveal := withoutComments(jsFunction(t, script, "revealClearOfHeader"))
 	for _, want := range []string{`document.querySelector(".site-header")`, ".getBoundingClientRect().bottom",
 		"window.innerHeight", "window.scrollBy("} {
