@@ -425,8 +425,9 @@ number, a hall ticket, "ISBN-10:", "PNR status for …", "the ISBN on my copy
 is …"), a number of one digit over and over ("9999999999"), digit runs inside longer numbers and a number
 given as a maths answer ("the largest 10-digit number with distinct digits is
 9876543210", "Answer for Q4 came out as 7364181325", "Got 8247301956 for part
-(b)", "How many digits does 2^33 have? It's 8589934592"), unless a call or "my
-number" is beside it, pass, and so do Ofcom's, ACMA's and the NANP's numbers
+(b)", "How many digits does 2^33 have? It's 8589934592"), unless a call, a message
+or an account ("text me", "dm me", "add me", "my insta", a handle) or "my
+number" is near it, pass, and so do Ofcom's, ACMA's and the NANP's numbers
 for drama and the crisis lines whose numbers look like phone numbers (iCall,
 the Vandrevala Foundation, AASRA and Tele-MANAS in India; the old National
 Suicide Prevention Lifeline, the Trevor Project, the National Domestic Violence
@@ -467,10 +468,10 @@ cost of moving a conversation off educhan; it does not prevent it, and nothing
 about it makes educhan safe for anyone.
 
 What it does with posts like the ones it is written for is pinned by a corpus:
-3,566 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
+3,578 made-up posts in `internal/app/testdata/filter_corpus`, in twelve files,
 three for each kind of post: `academic.jsonl`, `academic_2.jsonl` and
 `academic_3.jsonl` (770 posts), the same three for `life` (943, student life),
-for `contact` (886, contact details) and for `risk` (967, risky posts), each
+for `contact` (898, contact details) and for `risk` (967, risky posts), each
 labelled with what the filter should do. Every address, username and profile in
 them says "madeup" or is at a reserved domain, so none is a real person's
 (`TestFilterCorpusDetailsAreMadeUp`); a number meant to be blocked is ordinary
@@ -481,7 +482,7 @@ assigned, so it is no one's.
 wrong, except those marked as known misses, each with a note saying why the
 miss is accepted, and logs how many ordinary posts were stopped and how much of
 each kind was caught (`go test -run TestFilterCorpus -v ./internal/app`).
-**The rules were fitted to all 3,566 posts.** They were first written against
+**The rules were fitted to all 3,578 posts.** They were first written against
 the files without `_2` or `_3`; the `_2` files were written apart from them and
 then used to rewrite the threat, self-harm and grooming rules (which first held
 55 of their 135 risky posts) and then the contact and support rules (which
@@ -493,7 +494,7 @@ posts, blocked 146 of their 183 contact details, showed support for 24 of their
 41 crisis posts and held 85 of their 172 risky posts. They were then used to
 put those wrong stops right and to widen every kind of rule, cause by cause,
 and three posts whose numbers the filter passes on purpose (two drama numbers
-and a voided SSN) were given ordinary digits. The last 681 were written to pin
+and a voided SSN) were given ordinary digits. The last 693 were written to pin
 what a review of the rules found they missed or stopped wrongly, each beside
 the change that put it right, so they were fitted too. So the rates the test
 logs — no ordinary post stopped, and all but three contact details, all but one

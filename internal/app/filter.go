@@ -14299,6 +14299,19 @@ var (
 		words(`my`, `mera`, `meri`)+`~(?:`+words(`phone`, `mobile`, `cell`, `whatsapp`, `contact`)+`~)?`+
 			words(`number`, `no`, `num`, `nmbr`)+`(?:~`+words(`is`, `hai`)+`)?`,
 	)) + `[^\pL\pN]*$`)
+	// reachCue, anywhere in the words round a number, asks for the poster to
+	// be reached: "dm me", "add me", "find me", "dm for more", "hmu", "@x_y".
+	// A number given as a maths answer, or about which a maths question is
+	// asked, has none round it (reachedNear).
+	reachCue = newWindowSearch(`\b` + phrase(words(
+		words(`call`, `text`, `txt`, `ring`, `dial`, `sms`, `contact`, `msg`, `message`, `ping`, `dm`, `pm`,
+			`reach`, `add`, `inbox`, `hit`, `find`)+`~`+words(`me`, `us`),
+		`dm`, `dms`, `hmu`,
+	)) + `\b|(?:^|[ \t\n,;:(])@[\pL\pN_][\pL\pN_.]{2,}`)
+	// appOwners, before an accountApp, and appTags, after one, make it an
+	// account: "my insta", "snap me", "telegram id".
+	appOwners = setOf(`my mera meri mere your ur`)
+	appTags   = setOf(`me us id handle username acc account`)
 	// phoneLabel, with nothing but punctuation between it and a number, names
 	// the line it is: "Google Voice: 2954820174", "cell no. 2954820174".
 	phoneLabel = newWindowSearch(`\b` + phrase(words(`phone`, `ph`, `cell`, `mobile`, `mob`, `tel`, `voice`,
@@ -15015,15 +15028,44 @@ func standsAlone(v *view, run digitRun) (alone, cued bool) {
 		return false, false
 	}
 	near := windowBefore(t, run.from, 32)
-	if !cued && (mathsResult.matchIn(v, near) || mathsContext.matchIn(v, near+" "+windowAfter(t, run.to, 32))) {
+	if !cued && mathsResult.matchIn(v, near) {
+		return false, false
+	}
+	// A number a maths question is about, or given as an answer, is none,
+	// unless a way to reach the poster is near it: "is 9999999967 prime?",
+	// not "the answer is 9845012345 dm me" or "text me, the final answer is
+	// 9845012345".
+	if !cued && mathsContext.matchIn(v, near+" "+windowAfter(t, run.to, 32)) && !reachedNear(v, run) {
 		return false, false
 	}
 	return true, cued
 }
 
+// reachedNear reports a way to reach someone within 64 bytes of a run on
+// either side: a call or a number said to be someone's (callCue,
+// ownNumber), a message asked for or a handle (reachCue), or an account on
+// an app, an accountApp with one of appOwners before it or appTags after it
+// ("my insta is in bio", "telegram id in bio"); not an app named for itself,
+// "saw this on reddit: is 9845012345 prime?".
+func reachedNear(v *view, run digitRun) bool {
+	wide := windowBefore(v.text, run.from, 64) + " " + windowAfter(v.text, run.to, 64)
+	if callCue.matchIn(v, wide) || ownNumber.matchIn(v, wide) || reachCue.matchIn(v, wide) {
+		return true
+	}
+	v.work += len(wide)
+	ws := wordsIn(wide)
+	for i, w := range ws {
+		if (i > 0 && appOwners[ws[i-1]] || i+1 < len(ws) && appTags[ws[i+1]]) && accountApp.MatchString(w) {
+			return true
+		}
+	}
+	return false
+}
+
 // mathsAnswer reports a number given as the answer to a maths question in
-// the words people give one, with nothing round it asking for a call or
-// saying whose it is: a largest or smallest number of some kind ("the
+// the words people give one, with no way to reach anyone round it
+// (reachedNear: a call or a message asked for, "dm me", "add me", an app, a
+// handle, or a number said to be someone's): a largest or smallest number of some kind ("the
 // largest 10-digit number with distinct digits is 9876543210"), a result
 // that "came out as" or was got "for part (b)", the answer key's, a final
 // answer or the answer to a part or a question, one "according to the
@@ -15031,8 +15073,8 @@ func standsAlone(v *view, run digitRun) (alone, cued bool) {
 // ("How many digits does 2^33 have? It's 8589934592"); and digits that count
 // up or down by one (0123456789, 9876543210) beside talk of digits, examples
 // or a program's input and output. A phone number is given with none of
-// these, so they are looked for first, and a call or an owner only once one
-// is found.
+// these, so they are looked for first, and a way to reach anyone only once
+// one is found.
 func mathsAnswer(v *view, run digitRun) bool {
 	t := v.text
 	before := windowBefore(t, run.from, 64)
@@ -15041,7 +15083,7 @@ func mathsAnswer(v *view, run digitRun) bool {
 		!(counting(string(run.digits)) && countingTalk.matchIn(v, wide)) {
 		return false
 	}
-	return !callCue.matchIn(v, wide) && !ownNumber.matchIn(v, wide)
+	return !reachedNear(v, run)
 }
 
 var (
