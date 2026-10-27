@@ -1953,6 +1953,17 @@ const VERIFY_MOVES = [
   '[data-action="verify-restart"]',
 ].join(", ");
 
+// VERIFY_ATTESTATION is the 18+ attestation, the one box the Verify page
+// draws. Its label holds the box and the sentence, so a press anywhere on it
+// ticks the box. The box is ticked by the reader alone and starts unticked on
+// every drawing (build plan 2.14), and a step drawn in place can put it where
+// the button just pressed was, so it lets a press go for VERIFY_SETTLE_MS as
+// the buttons do. Before, a double click on Use a different address ticked it
+// on a wide screen, where the address step, brought clear of the header,
+// moved the label under the pointer; and a double tap on Verify another
+// address could land on it on a phone.
+const VERIFY_ATTESTATION = "label.attest";
+
 // A refusal of the request sent from a step, as its form says it: what it
 // says, the field it is about, and how (refuseVerification). It is kept with
 // the step so that the step drawn again says it again. The page can be drawn
@@ -3581,11 +3592,14 @@ function isInternalLink(anchor) {
 }
 
 // pressedTooSoon says whether a press is on one of the Verify page's own
-// buttons within VERIFY_SETTLE_MS of a step being drawn: aimed at what the
-// drawing replaced, and let go. The event's time is when the reader pressed,
-// which is before the drawing when the press was waiting behind it.
+// buttons, or on its attestation, within VERIFY_SETTLE_MS of a step being
+// drawn: aimed at what the drawing replaced, and let go. A click let go on
+// the attestation leaves the box as it was, unticked. The event's time is
+// when the reader pressed, which is before the drawing when the press was
+// waiting behind it.
 function pressedTooSoon(event) {
-  return !!event.target.closest(VERIFY_MOVES) && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;
+  const aimed = event.target.closest(VERIFY_MOVES) || event.target.closest(VERIFY_ATTESTATION);
+  return !!aimed && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;
 }
 
 // A press let go leaves the focus where the step just drawn put it. The

@@ -608,7 +608,11 @@ needs a browser check before the test changes.
   it. Before, the second tap of a double tap on Use a different address pressed Keep my
   badge, drawn in its place on a phone, and a double click on Verify another address
   pressed Forget this browser, which the shorter address step brought up into its place
-  on a wide screen, and took the badge, the post key and the name
+  on a wide screen, and took the badge, the post key and the name. The 18+ attestation,
+  the one box the page draws, lets a press go the same way (`VERIFY_ATTESTATION`, its
+  label, which holds the box): it is ticked by the reader alone, and a double click on
+  Use a different address ticked it on a wide screen, where the address step brought
+  clear of the header moved its label under the pointer
   (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
 
 ### Child safety

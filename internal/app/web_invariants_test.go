@@ -1717,10 +1717,14 @@ func TestVerifyStepButtonsClearTheNotice(t *testing.T) {
 // press go for VERIFY_SETTLE_MS once a step has been drawn: drawVerifyStep,
 // which every drawing of a step goes through, notes when
 // (TestVerifyStepIsDrawnForAReaderArriving holds it whole), and the page's
-// click listener lets the press go before any of their handlers runs. CI runs
-// no browser, so the time is held to a span that covers a double tap and a
-// second tap from a reader who saw nothing change, and no more than a second,
-// which a reader who meant to press a button just drawn need not wait out.
+// click listener lets the press go before any of their handlers runs. So does
+// the 18+ attestation, the one box the page draws, which the reader alone
+// ticks (TestBadgeAttestationIsNeverPreselectedOrKept): a double click on Use
+// a different address ticked it, the address step having been brought clear
+// of the header and its label moved under the pointer. CI runs no browser, so
+// the time is held to a span that covers a double tap and a second tap from a
+// reader who saw nothing change, and no more than a second, which a reader
+// who meant to press a button just drawn need not wait out.
 func TestVerifyButtonsLetGoAPressAimedAtTheStepBefore(t *testing.T) {
 	script := appScript(t)
 	code := withoutComments(script)
@@ -1775,22 +1779,71 @@ func TestVerifyButtonsLetGoAPressAimedAtTheStepBefore(t *testing.T) {
 		}
 	}
 
+	// The attestation is the one box the page draws, wherever its markup comes
+	// from, and it sits inside the label VERIFY_ATTESTATION names, with no
+	// other label naming it: a press anywhere on the box or its sentence is
+	// then a press on that label, which pressedTooSoon lets go. A box drawn
+	// outside it, or ticked through another label, could be ticked by a press
+	// aimed at the step before.
+	if !strings.Contains(code, "\nconst VERIFY_ATTESTATION = \"label.attest\";\n") {
+		t.Error(`app.js has no VERIFY_ATTESTATION = "label.attest", the attestation's label, as this test reads it`)
+	}
+	markup := ""
+	for _, f := range []string{"verifyViewHTML", "forgetBrowserHTML", "badgeLostHTML"} {
+		markup += withoutComments(jsFunction(t, script, f))
+	}
+	for _, s := range jsTopLevel(code) {
+		if strings.HasPrefix(s.first, "const VERIFY_INTRO = ") || strings.HasPrefix(s.first, "const VERIFY_REFUSED_HTML = ") {
+			markup += s.text
+		}
+	}
+	boxes := regexp.MustCompile(`<input[^>]*\btype="(?:checkbox|radio)"[^>]*>`).FindAllStringIndex(markup, -1)
+	if len(boxes) != 1 {
+		t.Errorf("the Verify page draws %d boxes; this test knows one, the 18+ attestation", len(boxes))
+	}
+	for _, at := range boxes {
+		box := markup[at[0]:at[1]]
+		open := strings.LastIndex(markup[:at[0]], "<label")
+		var label string
+		if open >= 0 && !strings.Contains(markup[open:at[0]], "</label>") {
+			label = markup[open : open+strings.Index(markup[open:], ">")+1]
+		}
+		if !regexp.MustCompile(`^<label class="attest"[\s>]`).MatchString(label) {
+			t.Errorf("the Verify page draws %s outside a label.attest, so a press aimed at the step before can tick it", box)
+			continue
+		}
+		id := regexp.MustCompile(`\bid="([\w-]+)"`).FindStringSubmatch(box)
+		if id == nil {
+			t.Errorf("the Verify page draws %s with no id, as this test reads it", box)
+			continue
+		}
+		if n := strings.Count(code, `for="`+id[1]+`"`) - strings.Count(label, `for="`+id[1]+`"`); n != 0 {
+			t.Errorf("app.js names %s in %d labels besides the label.attest around it; a press on one of them "+
+				"ticks it without being let go", id[1], n)
+		}
+	}
+
 	// A press on one of them that soon is one pressedTooSoon says yes to, by
 	// when the reader pressed, and the page's click listener lets it go, doing
-	// nothing else, before it handles any of them. Its mousedown is let go
-	// too, so the focus stays where the step just drawn put it: the button
-	// the press landed on took it otherwise, and on a wide screen that was
-	// Forget this browser, for the reader's next Enter to press.
+	// nothing else, before it handles any of them; let go on the attestation,
+	// a click leaves the box as it was. Its mousedown is let go too, so the
+	// focus stays where the step just drawn put it: the button the press
+	// landed on took it otherwise, and on a wide screen that was Forget this
+	// browser, for the reader's next Enter to press.
 	if got, want := jsLines(jsFunction(t, script, "pressedTooSoon")), []string{
 		"function pressedTooSoon(event) {",
-		"return !!event.target.closest(VERIFY_MOVES) && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;",
+		"const aimed = event.target.closest(VERIFY_MOVES) || event.target.closest(VERIFY_ATTESTATION);",
+		"return !!aimed && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;",
 		"}",
 	}; !slices.Equal(got, want) {
-		t.Errorf("pressedTooSoon runs\n\t%s\nwant it to say whether a press is on one of the Verify page's buttons "+
-			"within VERIFY_SETTLE_MS of a step being drawn:\n\t%s", strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
+		t.Errorf("pressedTooSoon runs\n\t%s\nwant it to say whether a press is on one of the Verify page's buttons, "+
+			"or on its attestation, within VERIFY_SETTLE_MS of a step being drawn:\n\t%s",
+			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
-	if n := strings.Count(code, "VERIFY_MOVES"); n != 2 {
-		t.Errorf("app.js names VERIFY_MOVES %d times; want two, its declaration and pressedTooSoon's", n)
+	for _, name := range []string{"VERIFY_MOVES", "VERIFY_ATTESTATION"} {
+		if n := strings.Count(code, name); n != 2 {
+			t.Errorf("app.js names %s %d times; want two, its declaration and pressedTooSoon's", name, n)
+		}
 	}
 	listener := pageClickListener(t, script)
 	const guard = "if (pressedTooSoon(event)) {"
