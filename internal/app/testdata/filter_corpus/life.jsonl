@@ -425,8 +425,15 @@
 {"id": "life-425", "body": "will i die if i cut my wrist", "subject": "", "name": "", "expect": "hold", "why": "whether the poster would die cutting a wrist (F14)"}
 {"id": "life-426", "body": "you can die from cutting your wrists so be careful with the new knives in lab", "subject": "", "name": "", "expect": "publish", "why": "a warning about lab knives, not a question (F14 control)"}
 {"id": "life-427", "body": "can you die from cutting your finger", "subject": "", "name": "", "expect": "publish", "why": "a cut finger, not a wrist (F14 control)"}
+{"id": "life-428", "body": "i deserve to die for what i did", "subject": "", "name": "", "expect": "support", "why": "the poster saying they deserve to die for something (F2, \"die for\" read as a death owed)"}
+{"id": "life-429", "body": "i should just die for being this stupid", "subject": "", "name": "", "expect": "support", "why": "the poster saying they should die for something (F2, \"die for\" read as a death owed)"}
+{"id": "life-430", "body": "i would die for this band, best concert ever", "subject": "", "name": "", "expect": "publish", "why": "dying for a band, an idiom (F2 control)"}
 {"id": "life-431", "body": "how many paracetamol is a lethal dose", "subject": "", "name": "", "expect": "hold", "why": "a lethal dose of a medicine asked for in pills (R2P-LETHAL-DOSE-ACADEMIC, asked another way)"}
 {"id": "life-432", "body": "how many pills would be a lethal dose", "subject": "", "name": "", "expect": "hold", "why": "a lethal dose asked for in pills (R2P-LETHAL-DOSE-ACADEMIC, asked another way)"}
 {"id": "life-433", "body": "how many mg of paracetamol is a safe dose for a 12 year old", "subject": "", "name": "", "expect": "publish", "why": "a safe dose asked for a child (R2P-LETHAL-DOSE-ACADEMIC control)"}
 {"id": "life-434", "body": "whats the easiest way to purge", "subject": "", "name": "", "expect": "hold", "why": "the easiest way to purge, asked with nothing after it (F13)"}
 {"id": "life-435", "body": "best way to purge after a binge", "subject": "", "name": "", "expect": "hold", "why": "the best way to purge after a binge (F13)"}
+{"id": "life-436", "body": "i scratch my arms till they bleed", "subject": "", "name": "", "expect": "support", "why": "scratching their arms until they bleed (F16, a part of the body named)"}
+{"id": "life-437", "body": "i punch my legs until they bruise", "subject": "", "name": "", "expect": "support", "why": "punching their legs until they bruise (F16, a part of the body named)"}
+{"id": "life-438", "body": "i scratched my legs till they bled, these mosquito bites are killing me", "subject": "", "name": "", "expect": "publish", "why": "scratching mosquito bites (F16 control)"}
+{"id": "life-439", "body": "i hit my arm on the door and it's bleeding", "subject": "", "name": "", "expect": "publish", "why": "an arm hit on a door by accident (F16 control)"}

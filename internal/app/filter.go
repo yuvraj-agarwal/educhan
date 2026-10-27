@@ -3554,12 +3554,14 @@ var supportRules = []rule{bothViews(`\b` + words(
 	words(`cut`, `cutting`)+`~my~`+words(`wrists?`, `arms?`, `thighs?`, `legs?`,
 		`skin`, `veins?`, `stomach`, `hips?`, `forearms?`, `ankles?`),
 	// "i scratch myself till i bleed", "i bang my head against the wall till
-	// it bleeds", "i hit myself when i'm stressed": supportCheck wants
-	// bleeding, bruises or distress in the sentence and no accident.
+	// it bleeds", "i hit myself when i'm stressed", "i scratch my arms till
+	// they bleed": supportCheck wants bleeding, bruises or distress in the
+	// sentence (bleeding or bruises for a part of the body, and no itch) and
+	// no accident.
 	`i~(?:`+words(`'?ve~been`, `have~been`, `been`, `keep`, `kept`, `still`, `sometimes`, `always`, `often`, `just`,
 		`started`, `start`)+`~)?`+words(`scratch`, `scratched`, `scratching`, `hit`, `hitting`, `punch`, `punched`,
 		`punching`, `bang`, `banged`, `banging`, `slap`, `slapped`, `slapping`)+`~`+words(`my~self`, `myself`,
-		`my~head`),
+		`my~head`, `my~`+words(`arms?`, `wrists?`, `legs?`, `thighs?`, `skin`, `stomach`, `face`)),
 	// "i make myself throw up after meals".
 	words(`make`, `made`, `making`)+`~my~self~`+words(`throw~up`, `vomit`, `puke`, `sick`)+`(?:~after~`+
 		words(`meals?`, `eating`, `food`, `dinner`, `lunch`, `breakfast`, `i~eat`)+`)?`,
@@ -9716,18 +9718,26 @@ func (f *scannedField) supportCheck(v *view, m []int) bool {
 		return false
 	case is(last, "myself") && anyIn(ws, burnWords) && nextIn(0, canonSetOf(`out`)):
 		return false // "burning myself out studying"
-	case anyIn(ws, hitSelfWords) && (is(last, "myself") || is(last, "self") || is(last, "head")):
+	case anyIn(ws, hitSelfWords) && (is(last, "myself") || is(last, "self") || is(last, "head") || hitBodyParts[last]):
 		// "i hit myself when i'm stressed", "till i bleed"; not "i hit
 		// myself on the door frame lol" or "i scratch myself when
 		// mosquitoes bite". Banging one's head is an idiom of frustration
 		// unless it bleeds or bruises: "banging my head against the wall
-		// over this proof, so stressed".
+		// over this proof, so stressed"; and a part of the body is
+		// scratched or hit as often for an itch or by accident, so it
+		// wants bleeding or bruises too, and no itch: "i scratch my arms
+		// till they bleed", not "i scratched my legs till they bled, these
+		// mosquito bites".
 		s := wordsIn(sentenceAround(text, m[0], m[1]))
-		return (anyIn(s, bleedSigns) || !is(last, "head") && anyIn(s, hurtSigns)) && !hurtByAccident(next) &&
-			!accidentAhead(next) && !(len(next) > 0 && (is(next[0], "on") || is(next[0], "into")))
+		part := is(last, "head") || hitBodyParts[last]
+		return (anyIn(s, bleedSigns) || !part && anyIn(s, hurtSigns)) && !(hitBodyParts[last] && anyIn(s, itchSigns)) &&
+			!hurtByAccident(next) && !accidentAhead(next) && !(len(next) > 0 && (is(next[0], "on") || is(next[0], "into")))
 	case is(last, "die"):
-		// "ready to die for my country"; not "want to die for real".
-		if len(next) > 0 && is(next[0], "for") && !(len(next) > 1 && (is(next[1], "real") || is(next[1], "good"))) {
+		// "ready to die for my country"; not "want to die for real", or a
+		// death owed for something: "i deserve to die for what i did", "i
+		// should just die for being this stupid".
+		if len(next) > 0 && is(next[0], "for") && !(len(next) > 1 && (is(next[1], "real") || is(next[1], "good"))) &&
+			!hasWord(ws, "deserve") && !hasWord(ws, "should") && !hasWord(ws, "shud") && !hasWord(ws, "shld") {
 			return false
 		}
 		return !dieIdiom(next) && !hillToDieOn(text, m, next) && !dyesSomething(next)
@@ -9885,7 +9895,12 @@ var (
 	hurtSigns = canonSetOf(`bleed bleeds bleeding bled blood bloody bruise bruises bruised bruising marks scars stress
 		stressed anxious anxiety angry upset panic panicking overwhelmed hate punish punishment numb`)
 	bleedSigns = canonSetOf(`bleed bleeds bleeding bled blood bloody bruise bruises bruised bruising marks scars`)
-	makeWords  = canonSetOf(`make made making`)
+	// hitBodyParts are the parts of the body the self-hitting phrasings
+	// name besides the head, and itchSigns what scratches them otherwise.
+	hitBodyParts = canonSetOf(`arm arms wrist wrists leg legs thigh thighs skin stomach face`)
+	itchSigns    = canonSetOf(`itch itches itchy itching mosquito mosquitoes mosquitos mozzie bite bites rash rashes
+		eczema allergy allergic hives sunburn`)
+	makeWords = canonSetOf(`make made making`)
 	// secondSubjects are the reader as the subject of a clause.
 	secondSubjects = canonSetOf(`you u ya yall y'all you're youre ur you'd youd u'd you'll youll r`)
 	giveUpWords    = canonSetOf(`give gave given giving`)
