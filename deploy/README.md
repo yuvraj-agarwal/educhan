@@ -589,7 +589,8 @@ the service runs an image with the Pass, and that the Pass is not on already,
 and makes nothing otherwise. It is for turning the Pass on; a Pass you retired
 comes back another way (below).
 
-**In the Stripe dashboard first.** Under *Settings → Public details*, set a
+**In the Stripe dashboard first.** Under *Settings → Public details*, set the
+public business name, which Checkout shows buyers and won't start without, and a
 support email: it is printed on every receipt, and a buyer who lost their code
 writes there to have it reissued. Then, in the same Stripe account (and
 sandbox) and mode (test or live) as the secret key the block below asks for,
@@ -646,7 +647,10 @@ read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
 # is in the currency's smallest unit (2000 = USD 20.00), and any tax is part of
 # it, not added on top (below). A new price later is a new Price and a new
 # EDUCHAN_STRIPE_PRICE_ID, not a code change. Give it no prices in other
-# currencies (currency options): the server does not sell a Price that has them.
+# currencies (currency options), now or once it is on sale: the server does not
+# sell a Price that has them, but sees options added to it only when it next
+# reads it, up to an hour later, and a checkout before then may charge a buyer
+# placed in one of those currencies that option's amount.
 PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
   -d name="educhan Pass" | field id)
 PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
@@ -658,14 +662,14 @@ PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
 # permission stops the run here, before anything is stored. The closed checkout
 # needs no cleanup, and its expiry, if an earlier run's endpoint hears of it,
 # matches no order and changes nothing.
-curl -fsS -G "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
-  -d "expand[]=currency_options" >/dev/null ||
-  { echo "The restricted key can't read the new Price: paste it whole, made with Prices: Read in the same Stripe account (and sandbox) and mode (test or live) as the secret key."; exit 1; }
+PRICE_JSON=$(curl -sS --fail-with-body -G "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
+  -d "expand[]=currency_options") ||
+  { echo "$PRICE_JSON"; echo "The restricted key can't read the new Price: paste it whole, made with Prices: Read in the same Stripe account (and sandbox) and mode (test or live) as the secret key."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
   -d submit_type=pay -d "automatic_tax[enabled]=false" -d "adaptive_pricing[enabled]=false" \
   -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
-  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above. If it is about adaptive_pricing, Stripe would refuse the server's checkouts the same way, and the server needs a change before the Pass can be sold; otherwise the key needs Checkout Sessions: Write."; exit 1; }
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above. If it is about adaptive_pricing, Stripe would refuse the server's checkouts the same way, and the server needs a change before the Pass can be sold; otherwise it says what to fix, most often a key without Checkout Sessions: Write or an account without a public business name (above)."; exit 1; }
 curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
   -u "${STRIPE_KEY}:" >/dev/null
 [[ $(field url <<<"$SESSION_JSON") == https://checkout.stripe.com/* ]] ||
@@ -763,14 +767,14 @@ read -rsp 'New Stripe restricted key: ' STRIPE_KEY; echo
 OLD_KEY=$(gcloud secrets versions access latest --secret=educhan-stripe-secret-key)
 [[ ${STRIPE_KEY:3:5} == "${OLD_KEY:3:5}" ]] ||
   { echo "That key is from the other mode (test or live) than the old one: make it in the old one's, where the webhook endpoint is."; exit 1; }
-curl -fsS -G "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
-  -d "expand[]=currency_options" >/dev/null ||
-  { echo "The new key can't read ${PRICE_ID}: paste it whole, made with Prices: Read in the old key's Stripe account (and sandbox). If it was, and the service's log says the Pass price needs fixing (below), fix the Price first."; exit 1; }
+PRICE_JSON=$(curl -sS --fail-with-body -G "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
+  -d "expand[]=currency_options") ||
+  { echo "$PRICE_JSON"; echo "The new key can't read ${PRICE_ID}: paste it whole, made with Prices: Read in the old key's Stripe account (and sandbox). If it was, and the service's log says the Pass price needs fixing (below), fix the Price first."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" -H 'Stripe-Version: 2024-06-20' \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
   -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" -d "adaptive_pricing[enabled]=false" \
   -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
-  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. If it is about the Price (inactive, recurring or tax), fix the Price first (below); if it is about adaptive_pricing, Stripe refuses the server's checkouts the same way, and the server needs a change; otherwise the key needs Checkout Sessions: Write."; exit 1; }
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the new key; its answer is above. If it is about the Price (inactive, recurring or tax), fix the Price first (below); if it is about adaptive_pricing, Stripe refuses the server's checkouts the same way, and the server needs a change; otherwise it says what to fix, most often a key without Checkout Sessions: Write."; exit 1; }
 curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
   -u "${STRIPE_KEY}:" >/dev/null
 printf '%s' "$STRIPE_KEY" | gcloud secrets versions add educhan-stripe-secret-key --data-file=-
@@ -788,7 +792,11 @@ every buyer pays USD 20.00 and the Pass page says nothing about tax. Every
 checkout is in USD alone: the server turns Stripe's Adaptive Pricing off for it
 (`adaptive_pricing[enabled]=false`), so Stripe neither shows nor charges a buyer
 abroad an amount converted into their currency, and a Price with prices in other
-currencies too (currency options) is not sold. To have Stripe Tax collect sales
+currencies too (currency options) is not sold. Stripe lets currency options be
+added to a Price in place, keeping its ID, and the server sees them only at its
+next read of the Price, within the hour, so a checkout before then may charge a
+buyer placed in one of those currencies that option's amount: give the Price on
+sale none. To have Stripe Tax collect sales
 tax, VAT or GST, switch Stripe Tax on in the account and add
 `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars: Stripe then takes any tax out
 of the USD 20.00 rather than adding it, and asks each buyer for a billing
