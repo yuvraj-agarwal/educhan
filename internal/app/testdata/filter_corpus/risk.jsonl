@@ -376,3 +376,33 @@
 {"id": "risk-376", "body": "failed the exam again lol, just end it", "subject": "", "name": "", "expect": "hold", "why": "an exam failed, not ended: the clause opens on the failing (R2-M19 control)"}
 {"id": "risk-377", "body": "this exam was easy and you still failed, just end it", "subject": "", "name": "", "expect": "hold", "why": "the clause naming the exam speaks to the reader, so it names nothing ended (R2-M19 control)"}
 {"id": "risk-378", "body": "just end it already, this life is pointless", "subject": "", "name": "", "expect": "hold", "why": "a life is not one of the things a lecture or an essay is (R2-M19 control)"}
+{"id": "risk-379", "body": "what age are you? dm me", "subject": "", "name": "", "expect": "hold", "why": "an age question then a private chat (F5)"}
+{"id": "risk-380", "body": "what age are you? are your parents home?", "subject": "", "name": "", "expect": "hold", "why": "an age question then whether parents are home (F5)"}
+{"id": "risk-381", "body": "umar kya hai tumhari? dm karo", "subject": "", "name": "", "expect": "hold", "why": "Hinglish age question then a private chat (F5)"}
+{"id": "risk-382", "body": "age kya hai? dm karo", "subject": "", "name": "", "expect": "hold", "why": "Hinglish age question then a private chat (F5)"}
+{"id": "risk-383", "body": "what year were you born? dm me", "subject": "", "name": "", "expect": "hold", "why": "the birth year asked then a private chat (F5)"}
+{"id": "risk-384", "body": "are you still in school? dm me", "subject": "", "name": "", "expect": "hold", "why": "whether the reader is still at school, then a private chat (F5)"}
+{"id": "risk-385", "body": "what age are u? snap me", "subject": "", "name": "", "expect": "hold", "why": "an age question then Snapchat: held, not only sent back (F5)"}
+{"id": "risk-386", "body": "what age are you supposed to start jee prep?", "subject": "", "name": "", "expect": "publish", "why": "the age to start exam prep (F5 control)"}
+{"id": "risk-387", "body": "what year were you born? trying to see who's in the 2008 batch here", "subject": "", "name": "", "expect": "publish", "why": "a batch year asked about openly (F5 control)"}
+{"id": "risk-388", "body": "girls 13-16 dm me", "subject": "", "name": "", "expect": "hold", "why": "children sought by age with a private chat (F6)"}
+{"id": "risk-389", "body": "girls 14+ dm me", "subject": "", "name": "", "expect": "hold", "why": "girls sought by age with a private chat (F6)"}
+{"id": "risk-390", "body": "13-15 yo girls dm", "subject": "", "name": "", "expect": "hold", "why": "the README's example with a bare \"dm\" (F6)"}
+{"id": "risk-391", "body": "any 9th graders here? dm me", "subject": "", "name": "", "expect": "hold", "why": "ninth graders sought with a private chat (F6)"}
+{"id": "risk-392", "body": "any 8th class girls here? dm", "subject": "", "name": "", "expect": "hold", "why": "eighth class girls sought with a bare \"dm\" (F6)"}
+{"id": "risk-393", "body": "girls 13-16 category results are out", "subject": "", "name": "", "expect": "publish", "why": "an age category's results (F6 control)"}
+{"id": "risk-394", "body": "the girls 14+ team won the district final", "subject": "", "name": "", "expect": "publish", "why": "an age group's team (F6 control)"}
+{"id": "risk-395", "body": "any 9th graders here? how is the new syllabus", "subject": "", "name": "", "expect": "publish", "why": "ninth graders asked about the syllabus (F6 control)"}
+{"id": "risk-396", "body": "how old are you? want some free robux?", "subject": "", "name": "", "expect": "hold", "why": "game currency offered after an age question (F7)"}
+{"id": "risk-397", "body": "how old are you? i can give you free vbucks", "subject": "", "name": "", "expect": "hold", "why": "game currency offered after an age question (F7)"}
+{"id": "risk-398", "body": "how old are you? i'll send you money", "subject": "", "name": "", "expect": "hold", "why": "money offered after an age question (F7)"}
+{"id": "risk-399", "body": "how old are you? i'll recharge your phone", "subject": "", "name": "", "expect": "hold", "why": "a phone recharge offered after an age question (F7)"}
+{"id": "risk-400", "body": "how old are you? i'll pay you", "subject": "", "name": "", "expect": "hold", "why": "payment offered after an age question (F7)"}
+{"id": "risk-401", "body": "how old are you supposed to be to buy robux?", "subject": "", "name": "", "expect": "publish", "why": "the age to buy game currency (F7 control)"}
+{"id": "risk-402", "body": "how old is your brother? i'll pay you back for the book tomorrow", "subject": "", "name": "", "expect": "publish", "why": "paying back a debt (F7 control)"}
+{"id": "risk-403", "body": "what time does your school finish? i'll wait outside", "subject": "", "name": "", "expect": "hold", "why": "waiting outside the reader's school (F8)"}
+{"id": "risk-404", "body": "how old are you? can i see what you look like", "subject": "", "name": "", "expect": "hold", "why": "an age question then asking to see the reader (F8)"}
+{"id": "risk-405", "body": "how old are you? lets be friends, just us", "subject": "", "name": "", "expect": "hold", "why": "an age question then \"just us\" (F8)"}
+{"id": "risk-406", "body": "how old are you? do your parents let you go out alone?", "subject": "", "name": "", "expect": "hold", "why": "an age question then whether the reader goes out alone (F8)"}
+{"id": "risk-407", "body": "what time does the exam finish? i'll wait outside the hall for my friends", "subject": "", "name": "", "expect": "publish", "why": "waiting for friends outside an exam hall (F8 control)"}
+{"id": "risk-408", "body": "the whole team went, not just us", "subject": "", "name": "", "expect": "publish", "why": "\"not just us\" (F8 control)"}

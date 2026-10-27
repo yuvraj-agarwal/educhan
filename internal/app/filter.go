@@ -6785,6 +6785,14 @@ var (
 	ageQuestionRules = []rule{bothViews(`\b` + words(
 		`how~old~(?:`+words(`are`, `r`, `is`)+`~)?`+words(`you`, `u`, `ya`, `yu`),
 		`what'?s?~(?:is~)?`+words(`your`, `ur`, `yr`)+`~age`,
+		// "what age are you", "you are what age", "what year were you
+		// born", "are you still in school": ageCheck turns down "what age
+		// are you supposed to start".
+		`what~age~`+words(`are`, `r`)+`~`+words(`you`, `u`),
+		words(`you`, `u`)+`~`+words(`are`, `r`)+`~what~age`,
+		words(`what`, `which`)+`~year~were~`+words(`you`, `u`)+`~born`,
+		words(`are`, `r`)+`~`+words(`you`, `u`)+`~still~in~`+words(`school`, `high~school`, `middle~school`,
+			`secondary~school`, words(`class`, `grade`, `year`, `std`)+`~\d{1,2}`),
 		words(`what`, `which`)+`~`+words(`year`, `grade`, `class`, `standard`, `std`, `form`, `school~year`,
 			`year~\d{1,2}~form`, `j?ss`, `sss`, `js`)+`~(?:of~`+words(`school`, `college`, `uni`)+`~)?`+
 			words(`are`, `r`)+`~`+words(`you`, `u`),
@@ -6810,6 +6818,12 @@ var (
 		// "girls under 16", "any girls aged 14", "looking for a girl
 		// 13-15", "any class 9 girls".
 		youthNoun+`~(?:here~)?`+words(`under`, `below`, `aged?`)+`~\d{1,2}`,
+		// "girls 13-16 dm me", "girls 14+": ageCheck wants nothing after
+		// the age but who is wanted or how to reach the poster, not "girls
+		// 13-16 category results".
+		youthNoun+`[ \t]+\d{1,2}(?:~?(?:-|to)~?\d{1,2})?`,
+		// "any 9th graders here", "any 8th class girls".
+		`any~\d{1,2}(?:st|nd|rd|th)~`+words(`graders?`, words(`class`, `grade`, `std`, `standard`)+`~`+youthNoun),
 		words(`any`, `looking~for`, `searching~for`)+`~(?:`+words(`a`, `an`, `some`)+`~)?`+youthNoun+`~\d{1,2}`+
 			`(?:~?(?:-|to)~?\d{1,2})?`,
 		`any~`+words(`class`, `grade`, `std`, `year`)+`~\d{1,2}(?:st|nd|rd|th)?~`+youthNoun,
@@ -6872,6 +6886,10 @@ var (
 		// Hinglish: "kitne saal ke ho", "kahan rehte ho", "kaunsa school".
 		words(`kitne`, `kitni`)+`~saal~`+words(`ke`, `ki`)+`~`+words(`ho`, `hai`, `h`),
 		words(`kitni`, `kya`)+`~`+words(`umar`, `umr`, `age`)+`~`+words(`hai`, `h`),
+		// "umar kya hai", "age kya hai tumhari": ageCheck wants nobody
+		// else's age before or after it ("uski age kya hai", "jee ke liye
+		// age kya hai").
+		words(`umar`, `umr`, `age`)+`~kya~`+words(`hai`, `h`),
 		words(`tumhari`, `teri`, `aapki`, `apki`)+`~`+words(`umar`, `umr`, `age`),
 		words(`kahan`, `kaha`, `kahaan`)+`~`+words(`rehte`, `rehti`, `rahte`, `rahti`, `padhte`, `padhti`)+`~`+
 			words(`ho`, `hai`, `h`),
@@ -6932,6 +6950,11 @@ var (
 	// coaching centre are you at", "which uni do you go to".
 	readerAreas = words(`uni`, `city`, `town`, `area`, `place`, `locality`, `suburb`, `estate`, `neighbou?rhood`,
 		`village`, `hall`, `(?:coaching~|tuition~|exam~)?cent(?:re|er)`)
+	// lureGifts are what a stranger offers a child: a gift, a phone, game
+	// currency, money or a recharge.
+	lureGifts = words(`gifts?`, `presents?`, `phone`, `iphone`, `chocolates?`, `treats?`, `something~nice`, `robux`,
+		`v~?bucks`, `uc`, `diamonds`, `gems`, `skins?`, `money`, `cash`, `paise`, `recharge`, `top~?up`,
+		words(`whatever`, `anything`)+`~`+words(`you`, `u`)+`~`+words(`want`, `like`))
 	// ageNumber, ageUnit and youthNoun make up an age someone is looked for
 	// at: "14yo girls", "13-15 year old boys".
 	ageNumber = `\d{1,2}(?:~?(?:-|to)~?\d{1,2})?~?`
@@ -6965,12 +6988,19 @@ var (
 			words(`visit`, `meet`, `come~(?:and~)?`+words(`meet`, `see`, `visit`, `get`, `find`))+`~`+words(`you`, `u`),
 			`pick~`+words(`you`, `u`)+`~up`, `wait~for~`+words(`you`, `u`), `be~waiting~for~`+words(`you`, `u`),
 			`keep~`+words(`you`, `u`)+`~company`, `be~waiting`, `wait~there`, `walk~(?:with~)?`+words(`you`, `u`),
-			`come~up`,
+			`come~up`, `wait~outside`, `be~outside`,
 			// "I'll buy you a gift", "i want to send you a present", "I'll
-			// get you a new phone".
+			// get you a new phone", "i can give you free vbucks", "I'll pay
+			// you", "I'll recharge your phone".
 			words(`buy`, `get`, `send`, `give`, `bring`)+`~`+words(`you`, `u`)+`~(?:`+words(`a`, `an`, `some`, `a~new`,
-				`new`, `a~nice`, `nice`)+`~)?`+words(`gifts?`, `presents?`, `phone`, `iphone`, `chocolates?`, `treats?`,
-				`something~nice`)),
+				`new`, `a~nice`, `nice`, `some~free`, `free`, `more`)+`~)?`+lureGifts,
+			`pay~`+words(`you`, `u`),
+			words(`recharge`, `top~up`, `topup`)+`~`+words(`your`, `ur`)+`~`+words(`phone`, `mobile`, `number`, `sim`,
+				`account`)),
+		// "can i see what you look like", "do your parents let you go out
+		// alone".
+		words(`see`, `know`)+`~what~`+words(`you`, `u`)+`~`+words(`look`, `looks`)+`~like`,
+		words(`go`, `going`, `goes`)+`~out~`+words(`alone`, `by~yourself`, `by~urself`, `on~your~own`, `on~ur~own`),
 		// "I fit come pick you after lesson", "do u walk home alone?".
 		`come~pick~`+words(`you`, `u`),
 		words(`you`, `u`)+`~(?:`+words(`usually`, `always`, `ever`, `often`, `still`)+`~)?`+words(`walk`, `go`, `get`,
@@ -7073,13 +7103,20 @@ var (
 		// "pic?": a request for one that ends in its "?"; "alone" where it
 		// ends a sentence, which privateCue reads.
 		bothViews(`\b` + words(`pics?`, `pictures?`, `photos?`, `selfies?`) + `[^\pL\pN?]*\?`),
+		// "want a gift?", "want some free robux?": an offer asked.
+		bothViews(`\b(?:` + words(`do`, `d`) + `~)?(?:` + words(`you`, `u`) + `~)?` + words(`want`, `wanna`, `need`) +
+			`~(?:` + words(`a`, `an`, `some`, `some~free`, `free`, `more`, `a~new`, `new`) + `~)?` + lureGifts +
+			`[^\pL\pN?]*\?`),
 		bothViews(`\balone[^\pL\pN]*(?:[.!?\n]|$)`),
 		// "let's meet at the metro station, just you", where it ends.
-		bothViews(`\bjust~` + words(`you`, `u`) + `[^\pL\pN]*(?:[.!?\n]|$)`),
+		bothViews(`\bjust~` + words(`you`, `u`, `us`) + `[^\pL\pN]*(?:[.!?\n]|$)`),
 		// "age? dm", "how old are you? pm pls": a bare "dm" said as a
 		// sentence of its own.
 		bothViews(`(?:^|[.!?\n,;:])[^\pL\pN]*(?:` + words(`pls`, `plz`, `please`, `just`) + `~)?` +
 			words(`dm`, `pm`, `inbox`, `dms`) + `(?:~` + words(`pls`, `plz`, `please`, `me`) + `)?[^\pL\pN]*(?:[.!?\n]|$)`),
+		// "girls 13-15 dm": a bare "dm" ending the post after its words,
+		// which privateCue reads where it stands, not "I asked in dm".
+		bothViews(`\b` + words(`dm`, `pm`, `dms`) + `(?:~` + words(`pls`, `plz`, `please`) + `)?[^\pL\pN]*$`),
 		// "I can train you privately", "I can help with your project
 		// privately": cueCheck wants the poster offering it to the reader.
 		bothViews(`\b` + words(`privately`, `in~private`) + `\b`),
@@ -7139,6 +7176,20 @@ func privateCue(v *view, m []int, openMeetings bool) bool {
 		return !(nextIn(0, setOf(`for`)) && len(next) > 1 && !secondPerson[next[1]] && !is(next[1], "you"))
 	case is(first, "call") && is(last, "me"):
 		return !nextIn(0, callMeIdioms)
+	case hasWord(ws, "pay") && (is(last, "you") || is(last, "u")):
+		// "I'll pay you", not "I'll pay you back".
+		return !nextIn(0, setOf(`back`))
+	case bareDMs[first] && !is(last, "me") && unicode.IsLetter(rune(text[m[0]])):
+		// "girls 13-15 dm", not "I asked in dm" or "check your dms".
+		return !(len(prev) > 0 && dmLeads[prev[len(prev)-1]])
+	case hasWord(ws, "out") && (is(first, "go") || is(first, "going") || is(first, "goes")):
+		// "do your parents let you go out alone", not "is it safe for
+		// girls to go out alone".
+		return anyIn(wordsIn(sentenceAround(text, m[0], m[1])), secondPerson)
+	case is(first, "just") && is(last, "us"):
+		// "let's be friends, just us", "we could hang out just us", not
+		// "everyone or just us".
+		return len(prev) == 0 || justUsLeads[prev[len(prev)-1]]
 	case is(first, "just"):
 		// "it's not just you."
 		return !(len(prev) > 0 && canonSetOf(`not isnt isn't aint`)[prev[len(prev)-1]])
@@ -7302,7 +7353,17 @@ var (
 	firstPersonSe = setOf(`mere mujh hum humare hamare mera meri apne`)
 	hindiIn       = setOf(`mein me main mai`)
 	pictureWords  = canonSetOf(`pic pics picture pictures photo photos selfie selfies`)
-	picLeads      = canonSetOf(`any ur your yo a send share got have u you ya can i see get more some pls plz please
+	// bareDMs are a bare "dm" at the end of a post, and dmLeads make it
+	// where something was said or seen, not a cue: "I asked in dm",
+	// "check your dms".
+	bareDMs = canonSetOf(`dm dms pm`)
+	// justUsLeads may come before a "just us" that ends a sentence in its
+	// clause: "we could hang out just us".
+	justUsLeads = canonSetOf(`out over alone together meet chat talk hang private privately tonight today tomorrow
+		weekend sometime`)
+	dmLeads = canonSetOf(`in via by over through on into the my your ur his her their our a check checked sent
+		send slide slid open opened see saw read`)
+	picLeads = canonSetOf(`any ur your yo a send share got have u you ya can i see get more some pls plz please
 		hey hi so ok and face body full mirror cute new recent latest ek apni apna teri tumhari koi achhi achi acchi
 		nayi naya`)
 )
@@ -7341,6 +7402,28 @@ func ageCheck(v *view, m []int) bool {
 	if len(ws) == 0 {
 		return true
 	}
+	next := nextWords(clauseAfter(v.text, m[1]), 1)
+	switch {
+	case len(ws) > 1 && is(ws[0], "what") && is(ws[1], "age"):
+		// "what age are you supposed to start", "if anyone asks what age
+		// are you": an age in general, or a question reported.
+		before := wordsBefore(v.text, m[0], 1)
+		return !(len(next) > 0 && generalAgeNext[next[0]] || len(before) > 0 && askedWords[before[0]])
+	case len(ws) > 1 && is(ws[1], "kya") && hinglishAge[ws[0]]:
+		// "umar kya hai tumhari", not "uski age kya hai" or "jee ke liye age
+		// kya hai".
+		for _, w := range wordsIn(clauseBefore(v.text, m[0])) {
+			if !hinglishAgeLeads[w] {
+				return false
+			}
+		}
+		return len(next) == 0 || hinglishAgeTails[next[0]]
+	case len(ws) > 1 && youthNouns[ws[0]] && isASCIIDigit(ws[1][0]):
+		// "girls 13-16 dm me", "girls 14+ here?", not "girls 13-16 category
+		// results" or "the girls 14+ team".
+		before := wordsIn(clauseBefore(v.text, m[0]))
+		return len(next) == 0 || seekingTails[next[0]] && !(len(before) > 0 && groupLeads[before[len(before)-1]])
+	}
 	if readerStatement[strings.TrimRight(ws[0], "'")] || is(ws[0], "you") && len(ws) > 1 && is(ws[1], "are") ||
 		is(ws[0], "u") && len(ws) > 1 && is(ws[1], "r") {
 		// "when you're in 12th you'll get it" says when, not who; "you're
@@ -7371,7 +7454,7 @@ func ageCheck(v *view, m []int) bool {
 	if !is(ws[len(ws)-1], "area") && !is(ws[len(ws)-1], "location") {
 		return true
 	}
-	next := nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
+	next = nextWords(v.text[m[1]:min(len(v.text), m[1]+32)], 1)
 	return len(next) == 0 || !areaTopics[next[0]]
 }
 
@@ -7427,6 +7510,28 @@ var (
 		percent marks mark points point rank km kms kg kgs times x`)
 	areaTopics = canonSetOf(`of preference preferences expertise interest`)
 	askedWords = canonSetOf(`asks asked ask asking know knows wonder wondering tell tells told says said`)
+	// generalAgeNext, after "what age are you", make it an age in general:
+	// "what age are you supposed to start", "what age are you allowed to
+	// drive".
+	generalAgeNext = canonSetOf(`supposed meant allowed expected required likely when if usually generally typically
+		normally gonna going able eligible considered legally once until till before after`)
+	// hinglishAge is the age asked in "umar kya hai"; hinglishAgeLeads may
+	// come before it in its clause and hinglishAgeTails after it, so it is
+	// the reader's.
+	hinglishAge      = canonSetOf(`umar umr age`)
+	hinglishAgeLeads = canonSetOf(`tumhari tumhaari teri aapki apki bhai yaar yar sis di didi beta baby babu hey hi
+		hello hii toh to waise btw aur and so acha accha achha ok okay ur your`)
+	hinglishAgeTails = canonSetOf(`tumhari tumhaari teri aapki apki bhai yaar yar beta baby babu btw na abhi exactly
+		sach sachi pls plz please batao bata bolo`)
+	// youthNouns are youthNoun's words; seekingTails may follow an age
+	// they are looked for at ("girls 13-16 dm me", "girls 14+ here?"),
+	// and groupLeads make it a group's ("the girls 14+ team").
+	youthNouns = canonSetOf(`girl girls boy boys guy guys kid kids gf bf girlfriend boyfriend female females
+		male males teen teens student students`)
+	seekingTails = canonSetOf(`here only pls plz please needed wanted dm dms pm inbox msg message text hmu snap add
+		wanna want interested single online around near nearby who u you any hit reply ping call chat lets let's
+		looking`)
+	groupLeads = canonSetOf(`the our their his her my these those with vs versus and both all for of in`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
