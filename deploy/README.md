@@ -588,10 +588,12 @@ says how.
 Once verification is on, start the sweep by hand only after that night's
 scheduled run has finished and no later than 04:00 UTC, which leaves it and its
 one retry the half hour to spare before 05:00 that the schedule has (below), or
-when nobody has verified since 05:00. A run at any other time splits the day it
-runs in where it runs: until the next night's sweep, and in the backups taken
-meanwhile, its transaction id dates the credentials issued between 05:00 and the
-run to those hours.
+when nobody has verified since 05:00. Started after 05:00, it also needs nobody
+to verify until it, and its retry if it fails, has finished: a credential issued
+before the last of their rewrites is dated to the hours between 05:00 and that
+rewrite. A run at any other time splits the day it runs in where it runs: until
+the next night's sweep, and in the backups taken meanwhile, its transaction id
+dates the credentials issued between 05:00 and the run to those hours.
 
 Then schedule it. Cloud Scheduler calls the Run API as its own service account,
 which may run this one Job and nothing else:
@@ -620,14 +622,16 @@ and timeout the schedule can move only between 03:00 and 04:00 UTC.
 `--task-timeout` from this guide and from `first-deploy.sh`, and fails outside
 that. Beyond it, move `credentialDayStart` in `internal/app/verify.go` and the
 backup window with the schedule. A new `credentialDayStart` splits the
-credential day it is deployed in, as a change to `EDUCHAN_VERIFY_CREDENTIAL_TTL`
-does (the root README's [Transaction ids, and the nightly
-rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what that
-dates), so deploy it soon after the later of the old start and the new, once the
-`verification issued` lines in the server's log show that nobody has verified
-since the old start. The credentials issued from the deploy until the next new
-start share their expiry with no others, so a later deploy dates them to the
-fewer hours left in between, for as long as they are kept.
+credential day it is deployed in (the root README's [Transaction ids, and the
+nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite) says what
+that dates), so deploy it soon after the later of the old start and the new,
+once the `verification issued` lines in the server's log show that nobody has
+verified since the old start. The credentials issued from the deploy until the
+next new start share their expiry with no others, so a later deploy dates them
+to the fewer hours left in between, for as long as they are kept. A start moved
+earlier can instead go out at any time between that day's new start and its old
+one, whether or not anyone has verified, since the credentials issued before the
+deploy and those after it then each span at least a day less the move.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
