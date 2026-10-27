@@ -214,8 +214,12 @@ fi
 
 # Organisations created since May 2024 enforce a policy that refuses allUsers
 # as an invoker. There, skip the invoker check instead: the service is still
-# public, and ingress is what limits who can reach it.
-if [[ "$(gcloud projects describe "$PROJECT_ID" --format='value(parent.type)')" == "organization" ]]; then
+# public, and ingress is what limits who can reach it. The whole ancestry, not
+# just the parent: a project in a folder has the organisation further up. If
+# the ancestry can't be read, allUsers is tried, and the check at the end says
+# whether the service answers.
+ancestors="$(gcloud projects get-ancestors "$PROJECT_ID" --format='value(type)' || true)"
+if grep -qx organization <<<"$ancestors"; then
   PUBLIC_ACCESS=(--no-invoker-iam-check)
 else
   PUBLIC_ACCESS=(--allow-unauthenticated)
@@ -274,14 +278,28 @@ URL="$(gcloud run services describe "$SERVICE" --region "$REGION" --format='valu
 # Not /healthz: Cloud Run reserves some paths ending in "z" on run.app URLs.
 # The board list also reads the database, so it proves the same thing.
 step "Checking ${URL}/api/boards"
+answered=""
 for _ in 1 2 3 4 5 6; do
-  if curl -fsS -o /dev/null "${URL}/api/boards"; then echo "ok"; break; fi
+  if curl -fsS -o /dev/null "${URL}/api/boards"; then answered=1; echo "ok"; break; fi
   sleep 5
 done
+HEADING="educhan is live at:"
+if [[ -z "$answered" ]]; then
+  HEADING="educhan is deployed, but did not answer (see the warning above), at:"
+  cat >&2 <<EOF
+
+WARNING: ${URL}/api/boards did not answer in six tries. A 403 above means the
+service is not public: run
+  gcloud run services update ${SERVICE} --region ${REGION} --no-invoker-iam-check
+Anything else, read what the service logged, newest first:
+  gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="${SERVICE}"' \\
+    --freshness=1h --limit=20 --format='value(timestamp,severity,jsonPayload,textPayload)'
+EOF
+fi
 
 cat <<EOF
 
-educhan is live at:
+${HEADING}
 
   ${URL}
 
