@@ -142,13 +142,15 @@ step "Cloud SQL instance ${DB_INSTANCE} (creating one takes 5 to 10 minutes)"
 # deploy/README.md section 2.2 says what each of these keeps. An existing
 # instance with backups on gets only the start time moved, so a re-run never
 # shortens a retention someone has raised and never turns backups back on where
-# someone turned them off.
+# someone turned them off. BACKUP_START is the window's start for the check,
+# the move and the create alike, so changing it here changes all three.
+BACKUP_START=05:00
 if exists gcloud sql instances describe "$DB_INSTANCE"; then
   BACKUP_STATE="$(gcloud sql instances describe "$DB_INSTANCE" \
     --format='value(settings.backupConfiguration.enabled,settings.backupConfiguration.startTime)')"
-  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *05:00 ]]; then
-    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time=05:00 >/dev/null ||
-      echo "Could not move the backup window to 05:00 UTC; see deploy/README.md section 2.2." >&2
+  if [[ "$BACKUP_STATE" == True* && "$BACKUP_STATE" != *"$BACKUP_START" ]]; then
+    gcloud sql instances patch "$DB_INSTANCE" --quiet --backup-start-time="$BACKUP_START" >/dev/null ||
+      echo "Could not move the backup window to ${BACKUP_START} UTC; see deploy/README.md section 2.2." >&2
   fi
 else
   gcloud sql instances create "$DB_INSTANCE" \
@@ -157,7 +159,7 @@ else
     --tier=db-f1-micro \
     --region="$REGION" \
     --storage-size=10GB \
-    --backup --backup-start-time=05:00 --retained-backups-count=7
+    --backup --backup-start-time="$BACKUP_START" --retained-backups-count=7
 fi
 gcloud sql databases describe educhan --instance="$DB_INSTANCE" >/dev/null 2>&1 ||
   gcloud sql databases create educhan --instance="$DB_INSTANCE"

@@ -593,7 +593,15 @@ and its retry if it fails, has finished, since its rewrite comes last and takes
 in every credential issued before it. Otherwise its last rewrite splits the day
 it falls in: until the next night's sweep, and in the backups taken meanwhile,
 its transaction id dates the credentials issued between 05:00 and that rewrite
-to those hours.
+to those hours. The server logs a `verification issued` line, and nothing about
+whose, for each credential it hands out, so this prints when the latest one in
+the past day was; nothing, or a time before the last 05:00 UTC, means nobody has
+verified since:
+
+```bash
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="verification issued"' \
+  --freshness=1d --limit=1 --format='value(timestamp)'
+```
 
 Then schedule it. Cloud Scheduler calls the Run API as its own service account,
 which may run this one Job and nothing else:
@@ -622,14 +630,17 @@ and timeout the schedule can move only between 03:00 and 04:00 UTC.
 `--task-timeout` from this guide and from `first-deploy.sh`, and fails outside
 that. Beyond it, move `credentialDayStart` in `internal/app/verify.go` and the
 backup window with the schedule, and ship the three together by re-running
-`first-deploy.sh` with its schedule and its `05:00` backup times edited to
-match, which moves the image, the Scheduler job and the backup window in one
-run; `make cloud-deploy` moves only the images. A new `credentialDayStart`
+`first-deploy.sh` with its `--schedule` and its `BACKUP_START` edited to match,
+which moves the image, the Scheduler job and the backup window in one run;
+`make cloud-deploy` moves only the images. Afterwards `gcloud sql instances
+describe educhan-db --format='value(settings.backupConfiguration.startTime)'`
+should print the new start; a re-run leaves alone an instance whose backups were
+turned off (section 2.2). A new `credentialDayStart`
 splits the credential day it is deployed in (the root README's [Transaction ids,
 and the nightly rewrite](../README.md#transaction-ids-and-the-nightly-rewrite)
 says what that dates), so deploy it soon after the later of the old start and
-the new, once the `verification issued` lines in the server's log show that
-nobody has verified since the old start. The credentials issued from the deploy
+the new, once the `verification issued` lines in the server's log (the command
+above prints the latest) show that nobody has verified since the old start. The credentials issued from the deploy
 until the next new start share their expiry with no others, so a later deploy
 dates them to the fewer hours left in between, for as long as they are kept. A
 start moved earlier can instead go out at any time between that day's new start
