@@ -195,7 +195,8 @@ can and cannot work out.
   and the sweep rewrites the credentials so that the transaction id PostgreSQL
   keeps on every row is the sweep's rather than the issuance's, which says of
   a credential of the day it ran in only that it came before the sweep. A code
-  still in flight as the sweep ran, and a sweep run after 05:00 UTC, are the
+  still in flight as the sweep ran, a sweep run after 05:00 UTC, and the day a
+  server first counted expiries from 05:00 rather than midnight are the
   exceptions, which [Transaction ids, and the nightly
   rewrite](#transaction-ids-and-the-nightly-rewrite) spells out. But requesting
   a code and confirming one are writes, and each takes a transaction id from the
@@ -248,8 +249,10 @@ can and cannot work out.
   updates nothing, so there is no "last used" to line up against a post; the
   transaction id on a rewritten credential row dates the sweep that rewrote it,
   not the issuance, and says of the issuance only that it came before the
-  sweep, which the day its expiry gives, ending after the sweep, already
-  covers. But the issuance times above are enough on some days:
+  sweep: of a credential issued on an earlier day, nothing its expiry does
+  not, and of one issued on the day the sweep ran in, which ends after it, that
+  it came in the 22 hours of that day before the sweep. But the issuance times
+  above are enough on some days:
   neither the gaps among the posts' transaction ids nor the log's lines name an
   institution, but a badged post soon after an issuance does, and that ties the
   post to a single record on a day its institution issued only one credential.
@@ -468,12 +471,19 @@ What that protects, exactly:
   until the next night's sweep, and in the backups taken meanwhile, its id dates
   the credentials issued between 05:00 and it to those hours. Run it by hand
   between 03:17 and 05:00 UTC, or when nobody has verified since 05:00. And
-  once, on the day a server first counted expiries this way: credentials issued
-  that day before the deploy kept an expiry rounded up to midnight, which only
-  they have, so it dates them to the hours between midnight and the deploy for
-  as long as they are kept. Times autovacuum recorded before migration `0015` stay in the
-  statistics views until the statistics are reset, which takes a superuser.
-  That is the tables, not the database: see the next point.
+  once, on the day a server first counts expiries this way, the deploy splits
+  the days around it. Credentials issued that day before the deploy keep an
+  expiry rounded up to midnight, and those issued after it until the next
+  05:00 UTC an expiry counted from that 05:00, the first of the new kind;
+  neither set shares its expiry with any credential outside it, so the first
+  are dated to the hours between midnight and the deploy, and the second to
+  the hours between the deploy and that 05:00, for as long as they are kept.
+  A sweep that runs while either set is being issued splits it as it does any
+  day's: until the next sweep, its id dates those of the set issued before it
+  to the hours between the start of the set and the sweep. Times autovacuum
+  recorded before migration `0015` stay in the statistics views until the
+  statistics are reset, which takes a superuser. That is the tables, not the
+  database: see the next point.
 - **Not the posts' own transaction ids**, which no sweep touches. Every code
   request that reaches the database, and every attempt at a code in flight, is a
   write and takes the next id, so each leaves a gap in the posts' `xmin` between
