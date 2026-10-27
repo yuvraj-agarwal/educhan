@@ -12755,16 +12755,11 @@ func methodCheck(v *view, m []int) bool {
 	case is(first, "how") && (is(ws[1], "many") || is(ws[1], "much")), is(first, "what") && doseWords[ws[1]]:
 		// The medicine may be named before the question: "paracetamol, how
 		// many to die?"; or a height asked in floors: "how many floors to
-		// die". A lethal dose asked about with no "I" or "me" is studied,
-		// as a lethal dose of a medicine is, where it is asked per weight
-		// or for a pharmacology, nursing or exam question ("for the tox
-		// exam, how many tablets of paracetamol is a lethal dose").
+		// die". A lethal dose asked for is asked for whatever weight or
+		// study label is round it: "how many mg/kg of paracetamol is a
+		// lethal dose?", "for the tox exam, how many tablets of paracetamol
+		// is a lethal dose".
 		sentence := sentenceAround(text, m[0], m[1])
-		if (hasWord(ws, "lethal") || hasWord(ws, "fatal") || hasWord(ws, "deadly")) && !hasFirstPerson(ws) {
-			if sws := wordsIn(sentence); !anyIn(sws, selfWords) && doseStudied(text, m, sentence, sws) {
-				return false
-			}
-		}
 		return namesAMedicine(v, sentence) || hasFirstPerson(ws) ||
 			is(ws[1], "many") && anyIn(wordsIn(sentence), heightUnits) && fallFatal(wordsIn(sentence))
 	case is(first, "lethal") || is(first, "fatal") || is(first, "deadly"):
@@ -12773,7 +12768,7 @@ func methodCheck(v *view, m []int) bool {
 		if anyIn(sws, selfWords) {
 			return true
 		}
-		return namesAMedicine(v, text[m[1]:min(len(text), m[1]+48)]) && doseAsked(text, m, sentence, sws)
+		return namesAMedicine(v, text[m[1]:min(len(text), m[1]+48)]) && doseAsked(text, m)
 	case is(first, "how") && is(ws[1], "deep"):
 		// "how deep do you have to cut", not "the dovetail joint".
 		return len(next) == 0 || deepCutTargets[next[0]]
@@ -12848,37 +12843,75 @@ func methodCheck(v *view, m []int) bool {
 	return true
 }
 
-// doseAsked reports a lethal dose of a medicine asked for, as a question
-// ("what's a lethal dose of paracetamol", "lethal dose of paracetamol?") or
-// on its own as a search is ("lethal dose of ibuprofen"), and not a fact
-// about the world: a statement with its verb ("the lethal dose of paracetamol
-// is about 150 mg/kg", "the fatal dose varies with liver health"), a figure
-// per weight, a "why" asked about it, or a pharmacology, nursing or exam
-// question named just before it ("Nursing exam: why is the lethal dose of
-// insulin so unpredictable?", "For my pharmacology viva: lethal dose of
-// morphine").
-func doseAsked(text string, m []int, sentence string, sws []string) bool {
-	if doseStudied(text, m, sentence, sws) {
+// doseAsked reports a lethal dose of a medicine asked for, whatever weight or
+// study word is near it: as a question ("what's a lethal dose of
+// paracetamol", "lethal dose of paracetamol per kg?", "pharmacology
+// question: lethal dose of paracetamol?"), or on its own as a search is
+// ("lethal dose of ibuprofen"); and not a fact about the world: a statement
+// with its verb ("the lethal dose of paracetamol is about 150 mg/kg", "the
+// fatal dose varies with liver health"), a "why" asked about it ("Nursing
+// exam: why is the lethal dose of insulin so unpredictable?"), or a topic
+// named after a studyLabel ("For my pharmacology viva: lethal dose of
+// morphine in opioid-naive patients vs tolerant ones"), though not the dose
+// named bare after one ("pharmacology: lethal dose of paracetamol").
+func doseAsked(text string, m []int) bool {
+	labelled, clause := studyLabel(sentenceBefore(text, m[0]))
+	if len(clause) > 0 && is(clause[0], "why") {
 		return false
 	}
-	if len(sws) > 0 && is(sws[0], "why") {
-		return false
-	}
-	if questionAfter(text, m[1]) || len(sws) > 0 && doseQuestions[sws[0]] {
+	if questionAfter(text, m[1]) || len(clause) > 0 && doseQuestions[clause[0]] {
 		return true
 	}
 	rest := text[m[1]:min(len(text), m[1]+64)]
 	if j := strings.IndexAny(rest, ".!?\n"); j >= 0 {
 		rest = rest[:j]
 	}
-	return !anyIn(wordsIn(rest), doseStatements)
+	after := wordsIn(rest)
+	if anyIn(after, doseStatements) {
+		return false
+	}
+	// "of paracetamol", "of my mum's medicine", "of sleeping pills per kg":
+	// the dose, what it is of and a weight, and nothing about it.
+	for len(after) > 0 && (doseOf[after[0]] || possessives[after[0]] || strings.HasSuffix(after[0], "'s")) {
+		after = after[1:]
+	}
+	for len(after) > 0 && perWeight[after[len(after)-1]] {
+		after = after[:len(after)-1]
+	}
+	return !labelled || len(after) <= 2
 }
 
-// doseStudied reports a dose given per weight, or a pharmacology, nursing or
-// exam question named in the sentence or just before it.
-func doseStudied(text string, m []int, sentence string, sws []string) bool {
-	return strings.Contains(sentence, "/kg") || strings.Contains(sentence, "per kg") ||
-		anyIn(wordsIn(text[max(0, m[0]-96):m[0]]), studyFrames) || anyIn(sws, studyFrames)
+// sentenceBefore is the sentence before text[i], within 64 bytes.
+func sentenceBefore(text string, i int) string {
+	before := text[max(0, i-64):i]
+	return before[strings.LastIndexAny(before, ".!?\n")+1:]
+}
+
+// studyLabel reads the start of a sentence, before a lethal dose, for a label
+// naming the subject it is studied for: a few words with one of studyFrames
+// among them and a colon or a dash after them ("Nursing exam:", "Pharmacology
+// -"), or a few opening on "for" and closed by a comma ("for the tox exam,").
+// It returns whether there is one and the words after it, or all the words
+// when there is none. A study word anywhere else is no label: "failed my
+// exam. what's the lethal dose", "after these exam results, what's the lethal
+// dose", "lethal dose of my medicine".
+func studyLabel(before string) (bool, []string) {
+	j, k := strings.IndexAny(before, ":\u2013\u2014"), 0
+	if j >= 0 {
+		_, k = utf8.DecodeRuneInString(before[j:])
+	} else if j = strings.Index(before, " - "); j >= 0 {
+		k = 3
+	} else if ws := wordsIn(before); len(ws) > 0 && is(ws[0], "for") {
+		if j = strings.IndexByte(before, ','); j >= 0 {
+			k = 1
+		}
+	}
+	if j >= 0 {
+		if label := wordsIn(before[:j]); len(label) <= 5 && anyIn(label, studyFrames) {
+			return true, wordsIn(before[j+k:])
+		}
+	}
+	return false, wordsIn(before)
 }
 
 // searchedMethod reads what a search for ways, methods or tips asks after,
@@ -12961,10 +12994,16 @@ var (
 	// selfWords are the poster as a subject or an object, not as an owner:
 	// "lethal dose for me", not "my pharm notes".
 	selfWords = canonSetOf(`i i'm im i'll i'd i've ive me myself`)
-	// studyFrames name the subject or the task a dose is studied for.
-	studyFrames = canonSetOf(`pharmacology pharmacy pharm pharma toxicology tox nursing nurse medicine medical mbbs
-		physiology biochem biochemistry exam exams viva lecture lectures module modules notes textbook syllabus
-		assignment mechanism mechanisms ld50 antidote`)
+	// studyFrames name the subject a dose is studied for, in a studyLabel:
+	// not a word as plain as "exam", "notes" or "medicine", which a post
+	// about the poster's own exam or medicine has as often.
+	studyFrames = canonSetOf(`pharmacology pharmacy pharm pharma pharmacokinetics toxicology tox nursing mbbs
+		physiology biochem biochemistry viva ld50`)
+	// doseOf are the words between a dose and the medicine it is of: "lethal
+	// dose of this medicine", "of my mums pills"; perWeight, after it, give
+	// it per weight: "per kg", "in mg/kg".
+	doseOf    = canonSetOf(`of the a an this that these those his her their mums moms dads`)
+	perWeight = canonSetOf(`per in kg kgs mg g mcg ml body weight bodyweight`)
 	// doseQuestions open a question for the dose: "what's a lethal dose of".
 	doseQuestions = canonSetOf(`what what's whats wats wat how which where`)
 	// doseStatements, after the dose, make the sentence say what it is.
