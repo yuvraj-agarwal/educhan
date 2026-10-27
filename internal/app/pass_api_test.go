@@ -382,7 +382,9 @@ func TestPassStatus(t *testing.T) {
 // Stripe's own amount beside the exponent Stripe keeps it in, from Stripe's
 // table and not the browser's: none for JPY, three for BHD, and two for ISK
 // and UGX, which Stripe still writes in hundredths though the browser gives
-// them no decimals, as for USD. So the page shows 3,000 ISK, not 300,000.
+// them no decimals, as for USD and HUF. So the page shows 3,000 ISK, not
+// 300,000. The currency is sent in lower case, and looked up in the table so,
+// whatever case Stripe writes it in.
 func TestPassPriceCarriesStripesExponent(t *testing.T) {
 	p := passServer(t, nil)
 	for _, tc := range []struct {
@@ -395,7 +397,8 @@ func TestPassPriceCarriesStripesExponent(t *testing.T) {
 		{"isk", 300000, 2},
 		{"ugx", 7500000, 2},
 		{"bhd", 7500, 3},
-		{"HUF", 800000, 2},
+		{"huf", 800000, 2},
+		{"BHD", 7500, 3},
 	} {
 		p.stripe.mu.Lock()
 		p.stripe.price["currency"], p.stripe.price["unit_amount"] = tc.currency, tc.amount
@@ -443,17 +446,18 @@ func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
 // TestPassTaxFollowsThePrice holds what GET /api/pass says of tax to the
 // Price's own tax behavior, and checkout to telling Stripe whether to collect
 // tax either way, so an account that collects it by default adds none the page
-// did not show. With Stripe Tax on, an inclusive Price has the tax "included"
+// did not show, and to sending nothing else, with Stripe Tax on as with it off
+// (checkSessionSent): nothing that lets the buyer change what they pay is added
+// for Stripe Tax. With Stripe Tax on, an inclusive Price has the tax "included"
 // and an exclusive one has it "added" at checkout. A Price that says neither,
 // or was made before Prices said, is not sold, since Stripe would settle it by
 // a default in the account that the page cannot know: the status leaves the
 // price out, and checkout refuses before Stripe opens anything or a cooldown
 // starts, as it refuses every Price it can't sell
-// (TestPassRefusesAPriceItCannotSell), and the log says what to fix once,
-// where the Price is read, and nothing of the buyer. Nor is anything sold
-// while the Price can't be read. Given a behavior, the Price sells. With
-// Stripe Tax off, no tax is collected and nothing is said of it, whatever the
-// Price says.
+// (TestPassRefusesAPriceItCannotSell), and the log says what to fix once, where
+// the Price is read, and nothing of the buyer. Nor is anything sold while the
+// Price can't be read. Given a behavior, the Price sells. With Stripe Tax off,
+// no tax is collected and nothing is said of it, whatever the Price says.
 func TestPassTaxFollowsThePrice(t *testing.T) {
 	// absent is a Price without the field; nil is one where Stripe has it null.
 	type absent struct{}
@@ -508,9 +512,7 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 				if code != http.StatusOK {
 					t.Fatalf("checkout: status %d (%s)", code, out.Error)
 				}
-				if got, want := p.stripe.sessions[0].Get("automatic_tax[enabled]"), strconv.FormatBool(tc.tax); got != want {
-					t.Fatalf("Stripe got automatic_tax[enabled]=%q, want %q", got, want)
-				}
+				checkSessionSent(t, p.stripe.sessions[0], tc.tax)
 				return
 			}
 			if code != http.StatusServiceUnavailable || out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
@@ -553,10 +555,10 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 			if status["tax"] != "included" || status["price"] == nil {
 				t.Fatalf("GET /api/pass once the Price is inclusive: %v", status)
 			}
-			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK ||
-				p.stripe.sessions[0].Get("automatic_tax[enabled]") != "true" {
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK {
 				t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
 			}
+			checkSessionSent(t, p.stripe.sessions[0], true)
 		})
 	}
 
@@ -609,6 +611,7 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
 			t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
 		}
+		checkSessionSent(t, p.stripe.sessions[0], true)
 	})
 }
 
@@ -840,6 +843,38 @@ func TestPassPriceIsKeptForItsTime(t *testing.T) {
 	}
 }
 
+// checkSessionSent holds what checkout sent Stripe to open a session (form)
+// to the one Pass it sells, with automatic_tax[enabled] as Stripe Tax is set
+// (tax), and nothing else, with Stripe Tax on or off. Stripe learns that a
+// Pass was bought and nothing about who on educhan bought it (no metadata,
+// client_reference_id or customer), and is asked for nothing about tax but
+// whether to collect it. Nor is the buyer let change what they pay: no
+// allow_promotion_codes, discounts or adjustable_quantity, so a paid session
+// paid the Price that checkout read, and the webhook need not check the
+// amount.
+func checkSessionSent(t *testing.T, form url.Values, tax bool) {
+	t.Helper()
+	sent := map[string]string{
+		"mode":                    "payment",
+		"line_items[0][price]":    testPriceID,
+		"line_items[0][quantity]": "1",
+		"success_url":             testPublicURL + "/pass?paid",
+		"cancel_url":              testPublicURL + "/pass?cancelled",
+		"submit_type":             "pay",
+		"automatic_tax[enabled]":  strconv.FormatBool(tax),
+	}
+	for key, want := range sent {
+		if got := form.Get(key); got != want {
+			t.Errorf("Stripe got %s=%q, want %q", key, got, want)
+		}
+	}
+	for key := range form {
+		if _, ok := sent[key]; !ok {
+			t.Errorf("Stripe was sent %s=%q", key, form.Get(key))
+		}
+	}
+}
+
 func TestPassPurchase(t *testing.T) {
 	p := passServer(t, nil)
 
@@ -857,35 +892,9 @@ func TestPassPurchase(t *testing.T) {
 	}
 
 	session := p.checkout("")
-	form := p.stripe.sessions[0]
-	sent := map[string]string{
-		"mode":                    "payment",
-		"line_items[0][price]":    testPriceID,
-		"line_items[0][quantity]": "1",
-		"success_url":             testPublicURL + "/pass?paid",
-		"cancel_url":              testPublicURL + "/pass?cancelled",
-		"submit_type":             "pay",
-		// Stripe Tax is off, and Stripe is told so, since an account can
-		// collect tax by default (TestPassTaxFollowsThePrice).
-		"automatic_tax[enabled]": "false",
-	}
-	for key, want := range sent {
-		if got := form.Get(key); got != want {
-			t.Errorf("Stripe got %s=%q, want %q", key, got, want)
-		}
-	}
-	// Stripe is sent that and nothing else. It learns that a Pass was bought
-	// and nothing about who on educhan bought it (no metadata,
-	// client_reference_id or customer), and is asked for nothing about tax but
-	// whether to collect it. Nor is the buyer let change what they pay: no
-	// allow_promotion_codes, discounts or adjustable_quantity, so a paid
-	// session paid the Price that checkout read, and the webhook need not
-	// check the amount.
-	for key := range form {
-		if _, ok := sent[key]; !ok {
-			t.Errorf("Stripe was sent %s=%q", key, form.Get(key))
-		}
-	}
+	// Stripe Tax is off, and Stripe is told so, since an account can collect
+	// tax by default (TestPassTaxFollowsThePrice).
+	checkSessionSent(t, p.stripe.sessions[0], false)
 	if p.stripe.headers[0].Get("Idempotency-Key") == "" || p.stripe.headers[0].Get("Stripe-Version") != stripeAPIVersion {
 		t.Errorf("checkout headers: %v", p.stripe.headers[0])
 	}

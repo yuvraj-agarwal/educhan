@@ -271,13 +271,13 @@ refuses the request for the Price (a key or Price ID it does not take, say)
 (`TestPassRefusesAPriceItCannotSell`). Its `502` before any cooldown comes only while
 Stripe is out of reach or failing, with Stripe Tax on or off. Checkout reads the Price
 either way because the webhook does not check what was paid: the session sells one of
-that Price, with no promotion codes, discounts or adjustable quantity
-(`TestPassPurchase`). A failed read or a refused Price is kept a minute and a good read
-an hour (`TestPassPriceIsKeptForItsTime`); Stripe never changes a Price's amount, so a
-new amount takes a new Price ID and a restart. Checkout always sends Stripe
-`automatic_tax[enabled]`, `false` with the setting off, so an account that collects tax
-by default adds none the page did not show. A real checkout uses Stripe's test mode: test
-keys, a test Price (one with a tax behavior, for Stripe Tax), and
+that Price, with no promotion codes, discounts or adjustable quantity (`TestPassPurchase`,
+and `TestPassTaxFollowsThePrice` with Stripe Tax on). A failed read or a refused Price is
+kept a minute and a good read an hour (`TestPassPriceIsKeptForItsTime`); Stripe never
+changes a Price's amount, so a new amount takes a new Price ID and a restart. Checkout
+always sends Stripe `automatic_tax[enabled]`, `false` with the setting off, so an account
+that collects tax by default adds none the page did not show. A real checkout uses
+Stripe's test mode: test keys, a test Price (one with a tax behavior, for Stripe Tax), and
 `stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook, with
 `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued, behind
 `EDUCHAN_MOD_KEY`, with `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …'

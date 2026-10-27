@@ -553,11 +553,11 @@ There is no `created_at` anywhere, and every date in these tables is rounded up
 to a UTC midnight, so their columns date a purchase, a refund or a reissue only
 to the day. The rows can be dated more closely all the same: each holds the id
 of the transaction that wrote it (Postgres's `xmin`), drawn from the same
-counter as the posts', which carry their time, and the write-ahead log keeps
-the same order, so whoever holds the live database's files or a physical backup
-(not a `pg_dump`) can place a Pass row between two posts. A `passes` row's
-`xmin` moves with each renewal, refund or reissue, so it dates the latest of
-them. Stripe keeps the exact time of every payment anyway.
+counter as the posts', which carry their time, and the write-ahead log keeps the
+same order, so whoever holds the live database's files or a physical backup (not
+a `pg_dump`) can place a Pass row between two posts. A `passes` row's `xmin`
+moves with each renewal, refund, dispute or redeemed reissue code, so it dates
+the latest of them. Stripe keeps the exact time of every payment anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
