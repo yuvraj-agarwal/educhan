@@ -879,9 +879,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     request on the same server connection could reach the statistics after the first
     read, with the time of the next request that connection served, and date the last
     issuance before the sweep to within ten seconds
-    (`TestSweepLeavesNoScanTimeFromBeforeIt` sweeps from an `App` of its own, as the
-    Job does, and waits the 65 seconds out; the harness sets the wait to zero for every
-    other test). Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
+    (`TestSweepLeavesNoScanTimeFromBeforeIt`, which fails without the second read: it
+    holds the server's next request on a lock until the statistics have the first
+    read, since a connection hands nothing over while a statement of its runs, and
+    fails if the confirmation's counts were in by then; it sweeps from an `App` of its
+    own, as the Job does, and waits the 65 seconds out; the harness sets the wait to
+    zero for every other test). Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
     outside the transaction, writes both tables to new files without the dead versions
     — or the deleted pending rows, with their email hash and an expiry to the
     microsecond — and drops the old files, which are not wiped (the README's

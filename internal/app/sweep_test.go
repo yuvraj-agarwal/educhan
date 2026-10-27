@@ -2664,9 +2664,11 @@ func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 // sweep's: those the statistics had before it, and those of a confirmation
 // whose counts the server's connection still kept as the sweep began, which
 // reach the statistics later, with a later time (statsHandOver). Here the
-// server's connection hands them over with the next query it runs, after the
-// statistics have the sweep's first read. The sweep runs as the Job runs it,
-// from an App of its own, which waits as long as the Job does.
+// server's connection hands them over as the next request it serves ends,
+// which is after the statistics have the sweep's first read: the request
+// waits for a lock the test holds until then, and a connection hands nothing
+// over while a statement of its runs. The sweep runs as the Job runs it, from
+// an App of its own, which waits as long as the Job does.
 func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 	// One connection, so that the server's read just before the
 	// confirmation and the confirmation run on the same one.
@@ -2722,13 +2724,21 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 	}
 	// The pending rows deleted, which only a confirmation deletes here: the
 	// sign that the server's connection has handed its counts over.
+	const deletedQuery = `SELECT n_tup_del FROM pg_stat_user_tables
+		WHERE schemaname = current_schema() AND relname = 'verification_pending'`
 	deleted := func() int64 {
 		var n int64
-		if err := watch.QueryRow(ctx, `SELECT n_tup_del FROM pg_stat_user_tables
-			WHERE schemaname = current_schema() AND relname = 'verification_pending'`).Scan(&n); err != nil {
+		if err := watch.QueryRow(ctx, deletedQuery).Scan(&n); err != nil {
 			t.Fatalf("read the pending rows deleted: %v", err)
 		}
 		return n
+	}
+	// The lock the server's next request waits for, which the test holds on
+	// its own connection until the statistics have the sweep's first read.
+	// The test's schema is its own, so no other test takes the same lock.
+	const lockKey = `hashtext(current_schema())`
+	if _, err := watch.Exec(ctx, `SELECT pg_advisory_lock(`+lockKey+`)`); err != nil {
+		t.Fatalf("take the lock the server's next request waits for: %v", err)
 	}
 
 	// Every table and index scanned once before the sweep, as restampScans
@@ -2802,21 +2812,46 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 		t.Logf("attempt %d: the confirmation's counts were handed over at once", attempt)
 	}
 
+	// The server's connection serves its next request straight away, one
+	// that waits for the test's lock, as a request can wait for a row another
+	// holds. Its snapshot, from before the rewrite, also keeps the sweep's
+	// vacuum off the tables until it ends, as any request in flight does.
+	served := make(chan error, 1)
+	go func() {
+		_, err := h.app.pool.Exec(ctx, `SELECT pg_advisory_xact_lock(`+lockKey+`)`)
+		served <- err
+	}()
+	waitUntil(t, "the server's next request waits for the test's lock", func() bool {
+		var waits bool
+		if err := watch.QueryRow(ctx, `SELECT EXISTS (SELECT FROM pg_stat_activity
+			WHERE pg_backend_pid() = ANY (pg_blocking_pids(pid)))`).Scan(&waits); err != nil {
+			t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return waits
+	})
+
 	var sweepStart time.Time
 	if err := watch.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&sweepStart); err != nil {
 		t.Fatalf("read the clock: %v", err)
 	}
 	// Once the statistics have the sweep's first read, which an index that
-	// nothing else here reads shows, the server's connection runs a query of
-	// its own, as it would for the next request. The confirmation's counts
-	// reach the statistics with it, and with its time or a later one: later
-	// than the first read's. The watch connection is the goroutine's until
-	// it is done, which a failing test waits for too.
+	// nothing else here reads shows, and still lack the confirmation's
+	// counts, the test lets the server's request go. The confirmation's
+	// counts reach the statistics as it ends, with its time: later than the
+	// first read's. The watch connection is the goroutine's until it is done,
+	// which a failing test waits for too; it lets the request go whatever
+	// happens, so that the sweep is not left waiting for it.
 	nudgeCtx, stopNudge := context.WithCancel(ctx)
 	nudged := make(chan struct{})
 	var nudgeErr error
 	go func() {
 		defer close(nudged)
+		defer func() {
+			_, err := watch.Exec(ctx, `SELECT pg_advisory_unlock(`+lockKey+`)`)
+			if err != nil && nudgeErr == nil {
+				nudgeErr = fmt.Errorf("let the server's request go: %w", err)
+			}
+		}()
 		deadline := time.Now().Add(2 * time.Minute)
 		for {
 			var read bool
@@ -2837,7 +2872,16 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 			}
 			time.Sleep(20 * time.Millisecond)
 		}
-		_, nudgeErr = h.app.pool.Exec(nudgeCtx, `SELECT FROM boards`)
+		var n int64
+		if err := watch.QueryRow(nudgeCtx, deletedQuery).Scan(&n); err != nil {
+			nudgeErr = fmt.Errorf("read the pending rows deleted: %w", err)
+			return
+		}
+		if n != before {
+			nudgeErr = fmt.Errorf("the statistics had the confirmation's counts (%d pending rows deleted, %d "+
+				"before it) by the time they had the sweep's first read, so nothing came after that read "+
+				"for the second to cover: the test cannot see what it is for", n, before)
+		}
 	}()
 	defer func() {
 		stopNudge()
@@ -2855,7 +2899,10 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 	closeJob()
 	<-nudged
 	if nudgeErr != nil {
-		t.Fatalf("the server's next query: %v", nudgeErr)
+		t.Fatalf("the server's next request: %v", nudgeErr)
+	}
+	if err := await(t, "the server's next request", served); err != nil {
+		t.Fatalf("the server's next request: %v", err)
 	}
 
 	// Every time is the sweep's last read's, the confirmation's counts in.
