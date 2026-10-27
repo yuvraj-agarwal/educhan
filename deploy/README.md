@@ -572,13 +572,14 @@ gcloud run services describe educhan --region "$REGION" --format='value(metadata
   { echo "No service educhan in ${REGION}: export REGION with the service's region."; exit 1; }
 [[ $PUBLIC_URL =~ ^https://[^/?#]+$ ]] ||
   { echo "PUBLIC_URL must be a bare https:// origin, not ${PUBLIC_URL}."; exit 1; }
-SITE=$(curl -fsS "${PUBLIC_URL}/api/site") ||
+# Every image answers /api/boards.
+curl -fsS -o /dev/null "${PUBLIC_URL}/api/boards" ||
   { echo "${PUBLIC_URL} does not answer."; exit 1; }
 # Asked before the captcha: an image from before the captcha is also one from
 # before the Pass, and is told here to redeploy rather than sent to 2.4.
 [[ $(curl -fsS "${PUBLIC_URL}/api/pass") == *'"enabled":'* ]] ||
   { echo "${PUBLIC_URL} runs an image from before the Pass: deploy the current one first (sections 2.5 and 2.6)."; exit 1; }
-[[ $SITE == *'"captcha":true'* ]] ||
+[[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
   { echo "The captcha is off at ${PUBLIC_URL}: give the service its secret first (section 2.4)."; exit 1; }
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
