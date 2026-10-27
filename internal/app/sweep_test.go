@@ -666,9 +666,10 @@ func (h *harness) watchFiles(tables ...string) *fileWatch {
 		defer close(w.done)
 		defer conn.Close(ctx)
 		for {
+			stopped := false
 			select {
 			case <-w.stop:
-				return
+				stopped = true
 			case <-time.After(time.Millisecond):
 			}
 			seen, err := read()
@@ -683,6 +684,9 @@ func (h *harness) watchFiles(tables ...string) *fileWatch {
 				}
 			}
 			w.mu.Unlock()
+			if stopped {
+				return
+			}
 		}
 	}()
 	h.t.Cleanup(w.close)
@@ -696,7 +700,8 @@ func (w *fileWatch) runs(table string) int {
 	return len(w.files[table]) - 1
 }
 
-// close stops the watch and waits for its last poll; it may be called more
+// close stops the watch after one last poll, so that a run that ended after
+// the poll before is counted, and waits for that poll; it may be called more
 // than once.
 func (w *fileWatch) close() {
 	select {
