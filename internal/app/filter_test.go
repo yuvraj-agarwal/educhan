@@ -3187,6 +3187,40 @@ func TestFilterSaysWhichCopyItRefused(t *testing.T) {
 	}
 }
 
+// TestFilterReadsFoldedQuotesAndDashes holds what the views fold to what is
+// written straight: a curly apostrophe is read as "'" and every dash as "-"
+// (foldRune), so isContracted, contractedIs and studyLabel read "’s" and a
+// label's "–" or "—" with no branches of their own.
+func TestFilterReadsFoldedQuotesAndDashes(t *testing.T) {
+	for _, c := range []struct {
+		want            contentOutcome
+		straight, other string
+	}{
+		{contentBlock, "my insta's madeup_riya22", "my insta’s madeup_riya22"},
+		{contentBlock, "ig handle's madeup_riya22", "ig handle’s madeup_riya22"},
+		{contentPublish, "Nursing exam - why is the lethal dose of insulin so unpredictable?",
+			"Nursing exam – why is the lethal dose of insulin so unpredictable?"},
+		{contentPublish, "Nursing exam - why is the lethal dose of insulin so unpredictable?",
+			"Nursing exam — why is the lethal dose of insulin so unpredictable?"},
+		{contentPublish, "For my pharmacology viva - lethal dose of morphine in opioid-naive patients vs tolerant ones",
+			"For my pharmacology viva – lethal dose of morphine in opioid-naive patients vs tolerant ones"},
+		{contentHold, "pharmacology - lethal dose of paracetamol", "pharmacology — lethal dose of paracetamol"},
+		{contentHold, "why bother - whats the lethal dose of paracetamol", "why bother – whats the lethal dose of paracetamol"},
+	} {
+		for _, body := range []string{c.straight, c.other} {
+			if v := checkContent(contentInput{Body: body}, true); v.Outcome != c.want {
+				t.Errorf("%q: %+v, want %v", body, v, c.want)
+			}
+		}
+		for _, seen := range []bool{false, true} {
+			a, b := checkContent(contentInput{Body: c.straight}, seen), checkContent(contentInput{Body: c.other}, seen)
+			if a.Outcome != b.Outcome || a.Rule != b.Rule || a.Hold != b.Hold {
+				t.Errorf("%q: %+v, but %q: %+v", c.straight, a, c.other, b)
+			}
+		}
+	}
+}
+
 // jsSpaceRun is a run of what \s matches in the page's JavaScript (isJSSpace).
 const jsSpaceRun = `[\t\n\v\f\r \x{a0}\x{1680}\x{2000}-\x{200a}\x{2028}\x{2029}\x{202f}\x{205f}\x{3000}\x{feff}]+`
 

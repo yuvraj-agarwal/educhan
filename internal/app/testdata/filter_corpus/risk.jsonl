@@ -605,3 +605,5 @@
 {"id": "risk-605", "body": "looking for 8th class girls, dm me", "subject": "", "name": "", "expect": "hold", "why": "an ordinal year after \"looking for\" (R22V-F6-LOOKING-FOR)"}
 {"id": "risk-606", "body": "class 8 girl dm me", "subject": "", "name": "", "expect": "hold", "why": "one girl of a school year asked to get in touch (R22V-F6-LOOKING-FOR)"}
 {"id": "risk-607", "body": "class 8 girl here, dm me if you want my notes", "subject": "", "name": "", "expect": "publish", "why": "the poster's own year, with notes offered (R22V-F6-LOOKING-FOR control)"}
+{"id": "risk-608", "body": "Nursing exam – why is the lethal dose of insulin so unpredictable?", "subject": "", "name": "", "expect": "publish", "why": "a study label set off by a dash, then a \"why\" opening the dose's own clause, as after a colon (R22V-DOSE-WHY-OPENER follow-up; the views read \"–\" as \"-\", R3CC-15)"}
+{"id": "risk-609", "body": "why bother – whats the lethal dose of paracetamol", "subject": "", "name": "", "expect": "hold", "why": "\"why\" opens a clause the dash ends; the dose's own clause asks what it is (R22V-DOSE-WHY-OPENER)"}

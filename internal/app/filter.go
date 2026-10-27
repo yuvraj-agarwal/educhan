@@ -3030,19 +3030,17 @@ func (f *scannedField) handleAfterApp(v *view, after []aWord, m []int, mail bool
 }
 
 // isContracted is w without the "'s" of "is" on it: "handle's" is
-// "handle".
+// "handle". The views read "’" as "'" (foldRune), so "handle’s" is too.
 func isContracted(w string) string {
 	if s, ok := strings.CutSuffix(w, "'s"); ok {
-		return s
-	}
-	if s, ok := strings.CutSuffix(w, "’s"); ok {
 		return s
 	}
 	return w
 }
 
 // contractedIs reports after[j] as the "'s" of "is" on the word before it
-// (or on the app, which ends at end): "my insta's @x", "ig handle's x".
+// (or on the app, which ends at end): "my insta's @x", "ig handle's x", and
+// with "’", which the views read as "'".
 func contractedIs(text string, after []aWord, j, end int) bool {
 	if !is(after[j].w, "s") {
 		return false
@@ -3050,8 +3048,7 @@ func contractedIs(text string, after []aWord, j, end int) bool {
 	if j > 0 {
 		end = after[j-1].to
 	}
-	gap := text[end:after[j].from]
-	return gap == "'" || gap == "’"
+	return text[end:after[j].from] == "'"
 }
 
 var (
@@ -13890,8 +13887,13 @@ func doseAsked(text string, m []int) bool {
 	// The "why" has to open the dose's own clause, or stand just before
 	// it: "why is the lethal dose of insulin so unpredictable?", "explain
 	// why the lethal dose of paracetamol drops with alcohol"; not "why
-	// bother, whats the lethal dose of paracetamol".
-	own := wordsIn(before[strings.LastIndexAny(before, ",;:")+1:])
+	// bother, whats the lethal dose of paracetamol". A dash between spaces
+	// ends a clause as a colon does: "Nursing exam – why is …".
+	cut := strings.LastIndexAny(before, ",;:") + 1
+	if d := strings.LastIndex(before, " - "); d >= 0 {
+		cut = max(cut, d+3)
+	}
+	own := wordsIn(before[cut:])
 	if len(own) > 0 && is(own[0], "why") {
 		return false
 	}
@@ -13960,16 +13962,15 @@ func sentenceBefore(text string, i int) string {
 // It returns whether there is one and the words after it, or all the words
 // when there is none. A study word anywhere else is no label: "failed my
 // exam. what's the lethal dose", "after these exam results, what's the lethal
-// dose", "lethal dose of my medicine".
+// dose", "lethal dose of my medicine". The views read every dash as "-"
+// (foldRune), so "Pharmacology – " is read as "Pharmacology - ".
 func studyLabel(before string) (bool, []string) {
-	j, k := strings.IndexAny(before, ":\u2013\u2014"), 0
-	if j >= 0 {
-		_, k = utf8.DecodeRuneInString(before[j:])
-	} else if j = strings.Index(before, " - "); j >= 0 {
-		k = 3
-	} else if ws := wordsIn(before); len(ws) > 0 && is(ws[0], "for") {
-		if j = strings.IndexByte(before, ','); j >= 0 {
-			k = 1
+	j, k := strings.IndexByte(before, ':'), 1
+	if j < 0 {
+		if j = strings.Index(before, " - "); j >= 0 {
+			k = 3
+		} else if ws := wordsIn(before); len(ws) > 0 && is(ws[0], "for") {
+			j = strings.IndexByte(before, ',')
 		}
 	}
 	if j >= 0 {
