@@ -260,28 +260,36 @@ all set (`pass_config.go`). A whole purchase needs Stripe to call the webhook, s
 end-to-end checks live in `pass_api_test.go` against a fake Stripe (`fakeStripe`) rather
 than in curl, and they cover `EDUCHAN_PASS_SALES=paused` beside the default `open`
 (`TestPassSalesPaused`). Paused, checkout answers `403 the Pass is not on sale right now`
-and `GET /api/pass` says `"paused": true`; every other Pass endpoint and the webhook go
-on as usual. With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, the Price's own `tax_behavior`
-decides what the page says of tax: `GET /api/pass` adds `"tax": "included"` for an
-`inclusive` Price and `"added"` for an `exclusive` one (the page's "tax included" and
-"plus any tax"), and a Price with neither is not sold: the status leaves the price out
-and checkout answers `503 the Pass can't be bought right now`, as it does, with Stripe
-Tax on or off, for a Price archived, recurring or without a fixed amount and when Stripe
-refuses the request for the Price (a key or Price ID it does not take, say)
+and `GET /api/pass` says `"paused": true`; every other Pass endpoint and the webhook go on
+as usual. With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, the Price's own `tax_behavior` decides
+what the page says of tax: `GET /api/pass` adds `"tax": "included"` for an `inclusive`
+Price and `"added"` for an `exclusive` one (the page's "tax included" and "plus any tax"),
+and a Price with neither is not sold: the status leaves the price out and checkout answers
+`503 the Pass can't be bought right now`, as it does, with Stripe Tax on or off, for a
+Price archived, recurring, without a fixed amount or priced in other currencies too, and
+when Stripe refuses the request for the Price (a key or Price ID it does not take, say)
 (`TestPassRefusesAPriceItCannotSell`). Its `502` before any cooldown comes only while
 Stripe is out of reach or failing, with Stripe Tax on or off. Checkout reads the Price
-either way because the webhook does not check what was paid: the session sells one of
-that Price, with no promotion codes, discounts or adjustable quantity (`TestPassPurchase`,
-and `TestPassTaxFollowsThePrice` with Stripe Tax on). A failed read or a refused Price is
+either way because the webhook does not check what was paid: the session sells one of that
+Price, in its own currency at its own amount, with no promotion codes, discounts or
+adjustable quantity and with Stripe's Adaptive Pricing off
+(`adaptive_pricing[enabled]=false`), so Stripe does not convert the price into the buyer's
+currency (`TestPassPurchase`, and `TestPassTaxFollowsThePrice` with Stripe Tax on). The
+Price is read with its currency options (`expand[]=currency_options`), which Stripe leaves
+out unless asked for, and one with an option in any currency but its own is refused, since
+Checkout would charge a buyer in that currency the option's amount under its own tax
+behavior (`TestPassSellsInThePricesOwnCurrencyAlone`). A failed read or a refused Price is
 kept a minute and a good read an hour (`TestPassPriceIsKeptForItsTime`); Stripe never
-changes a Price's amount, so a new amount takes a new Price ID and a restart. Checkout
-always sends Stripe `automatic_tax[enabled]`, `false` with the setting off, so an account
-that collects tax by default adds none the page did not show. A real checkout uses
-Stripe's test mode: test keys, a test Price (one with a tax behavior, for Stripe Tax), and
-`stripe listen --forward-to localhost:8080/api/pass/stripe-webhook` for the webhook, with
+changes a Price's own amount or currency, so a new amount takes a new Price ID and a
+restart, but currency options can be added to a Price in place, and the first read after,
+within the hour, refuses it. Checkout always sends Stripe `automatic_tax[enabled]`,
+`false` with the setting off, so an account that collects tax by default adds none the
+page did not show. A real checkout uses Stripe's test mode: test keys, a test Price in one
+currency alone (one with a tax behavior, for Stripe Tax), and for the webhook
+`stripe listen --forward-to localhost:8080/api/pass/stripe-webhook`, with
 `EDUCHAN_PUBLIC_URL=http://localhost:8080`. A lost Pass is reissued, behind
-`EDUCHAN_MOD_KEY`, with `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …'
--H 'Content-Type: application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a
+`EDUCHAN_MOD_KEY`, with `curl -X POST localhost:8080/api/pass/reissue -H 'X-Mod-Key: …' -H
+'Content-Type: application/json' -d '{"payment_intent":"pi_…"}'`, which answers with a
 one-time reissue code (`REISSUE-` and seven groups of four) for the owner to send the
 buyer, never a Pass code and never a link; `POST /api/pass/claim` takes it in its body,
 with a nonce of its own (`{"reissue","nonce"}`).

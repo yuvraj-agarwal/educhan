@@ -82,11 +82,13 @@ const (
 	// 100 random bits, so this is courtesy to the database, not a defence.
 	passActivateCooldown = 2 * time.Second
 	// passPriceTTL is how long the price read from Stripe is kept before it is
-	// read again. Stripe never changes a Price's amount or currency, so a new
-	// price is a new Price, set in EDUCHAN_STRIPE_PRICE_ID, and a restart. What
-	// a read picks up is the Price archived, within the hour, or, after a
-	// refusal (kept a minute), brought back or given a tax behavior where it
-	// had none, which Stripe allows once.
+	// read again. Stripe never changes a Price's own amount or currency, so a
+	// new price is a new Price, set in EDUCHAN_STRIPE_PRICE_ID, and a restart.
+	// What a read picks up is the Price archived, or given currency options in
+	// other currencies, which Stripe allows on the Price in place, within the
+	// hour, or, after a refusal (kept a minute), brought back, rid of those
+	// options, or given a tax behavior where it had none, which Stripe allows
+	// once.
 	passPriceTTL = time.Hour
 )
 
@@ -560,18 +562,19 @@ func (a *App) handlePassCheckout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// The Pass is sold only at a Price read from Stripe and found to be one it
-	// can be sold at, with Stripe Tax on or off: one-time, not archived, with
-	// a fixed amount, so not one whose buyer chooses what to pay, and, while
-	// Stripe Tax is on, saying whether tax is in it, since the page could not
-	// otherwise say what the buyer pays. The session sells one of it and
-	// nothing the buyer can change (createCheckout), so the webhook need not
-	// check what was paid. A Price the Pass can't be sold at, and a request
-	// for the Price Stripe refuses (a key or Price ID it does not take, say),
-	// are refused as the fault in the setup that they are (503), and every
-	// checkout while Stripe is out of reach or failing as just that (502).
-	// passPrice keeps either a minute, and logged why as it read the Price, so
-	// a refusal logs nothing more. Nothing is opened in Stripe, and no
-	// cooldown starts for a fault that is not the buyer's.
+	// can be sold at, with Stripe Tax on or off: one-time, not archived, with a
+	// fixed amount, so not one whose buyer chooses what to pay, in its own
+	// currency alone, and, while Stripe Tax is on, saying whether tax is in it,
+	// since the page could not otherwise say what the buyer pays. The session
+	// sells one of it, in its own currency, and nothing the buyer can change
+	// (createCheckout), so the webhook need not check what was paid. A Price
+	// the Pass can't be sold at, and a request for the Price Stripe refuses (a
+	// key or Price ID it does not take, say), are refused as the fault in the
+	// setup that they are (503), and every checkout while Stripe is out of
+	// reach or failing as just that (502). passPrice keeps either a minute, and
+	// logged why as it read the Price, so a refusal logs nothing more. Nothing
+	// is opened in Stripe, and no cooldown starts for a fault that is not the
+	// buyer's.
 	switch _, err := a.passPrice(r.Context()); {
 	case errors.Is(err, errPassPriceRefused):
 		writeError(w, http.StatusServiceUnavailable, passPriceUnsold)

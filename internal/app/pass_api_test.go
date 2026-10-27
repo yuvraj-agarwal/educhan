@@ -43,9 +43,13 @@ type fakeStripe struct {
 	mu       sync.Mutex
 	sessions []url.Values
 	headers  []http.Header
-	price    map[string]any
-	// priceReads counts the times the price was asked for.
-	priceReads int
+	// price is the Price as Stripe keeps it; its "currency_options" are sent
+	// only when asked for, as Stripe sends them.
+	price map[string]any
+	// priceReads counts the times the price was asked for, and priceQueries
+	// holds the query each time.
+	priceReads   int
+	priceQueries []url.Values
 	// priceStatus, when set, is the error status the price is read with, and
 	// priceMessage Stripe's message for it, as for a Price ID or key Stripe
 	// refuses or a read that fails.
@@ -106,6 +110,7 @@ func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": id, "url": page})
 	case r.Method == http.MethodGet && r.URL.Path == "/v1/prices/"+testPriceID:
 		f.priceReads++
+		f.priceQueries = append(f.priceQueries, r.URL.Query())
 		if f.priceDropped {
 			conn, _, err := w.(http.Hijacker).Hijack()
 			if err != nil {
@@ -124,7 +129,11 @@ func (f *fakeStripe) serve(w http.ResponseWriter, r *http.Request) {
 			_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{"type": kind, "message": f.priceMessage}})
 			return
 		}
-		_ = json.NewEncoder(w).Encode(f.price)
+		price := maps.Clone(f.price)
+		if !slices.Contains(r.URL.Query()["expand[]"], "currency_options") {
+			delete(price, "currency_options")
+		}
+		_ = json.NewEncoder(w).Encode(price)
 	default:
 		w.WriteHeader(http.StatusNotFound)
 		fmt.Fprint(w, `{"error":{"type":"invalid_request_error","message":"no such route"}}`)
@@ -562,10 +571,12 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 		})
 	}
 
-	// While Stripe can't be asked for the Price, it may be one that says
-	// neither, so with Stripe Tax on nothing is sold: checkout answers 502
-	// for as long as the failed read is kept, with nothing opened in Stripe,
-	// no cooldown started and nothing logged past the failed read itself.
+	// While Stripe can't be asked for the Price, it may be one the Pass can't
+	// be sold at (with Stripe Tax on, one that says neither, as here), so
+	// nothing is sold, with Stripe Tax on or off
+	// (TestPassRefusesAPriceItCannotSell): checkout answers 502 for as long
+	// as the failed read is kept, with nothing opened in Stripe, no cooldown
+	// started and nothing logged past the failed read itself.
 	t.Run("Stripe Tax on, the Price not read", func(t *testing.T) {
 		var logs syncBuffer
 		p := passServerLogging(t, func(cfg *Config) {
@@ -617,8 +628,9 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 
 // TestPassRefusesAPriceItCannotSell holds a Price that Stripe answers with but
 // the Pass can't be sold at, archived, recurring, without a fixed amount (one
-// whose buyer chooses what to pay among them) or, with Stripe Tax on, silent
-// on tax, and a request for the Price Stripe refuses (a 400, 401, 403 or 404),
+// whose buyer chooses what to pay among them), priced in other currencies too
+// (TestPassSellsInThePricesOwnCurrencyAlone) or, with Stripe Tax on, silent on
+// tax, and a request for the Price Stripe refuses (a 400, 401, 403 or 404),
 // to the fault in the setup that it is, with Stripe Tax on or off. Checkout
 // refuses it with 503 and words of its own, never the 502 that says to try
 // again in a moment, which is for Stripe out of reach or failing (a 5xx, or a
@@ -648,6 +660,23 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 		}, "it has no fixed amount", false},
 		{"zero amount", func(f *fakeStripe) { f.price["unit_amount"] = 0 }, "it has no fixed amount", false},
 		{"no currency", func(f *fakeStripe) { f.price["currency"] = "" }, "it has no fixed amount", false},
+		// Checkout would charge a buyer it places in another currency that
+		// option's amount, under its own tax behavior, or what they choose
+		// to pay. The Price's own currency, which Stripe may list among its
+		// options, is no other.
+		{"in another currency too", func(f *fakeStripe) {
+			f.price["currency_options"] = map[string]any{
+				"usd": map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive"},
+				"eur": map[string]any{"unit_amount": 1900, "tax_behavior": "exclusive"},
+			}
+		}, "it must be priced in usd alone, not also in eur", false},
+		{"in other currencies too", func(f *fakeStripe) {
+			f.price["currency_options"] = map[string]any{
+				"jpy": map[string]any{"unit_amount": 3000, "tax_behavior": "inclusive"},
+				"gbp": map[string]any{"unit_amount": 1600, "tax_behavior": "inclusive"},
+				"eur": map[string]any{"unit_amount": nil, "custom_unit_amount": map[string]any{"minimum": 100}, "tax_behavior": "inclusive"},
+			}
+		}, "it must be priced in usd alone, not also in eur, gbp, jpy", false},
 		{"silent on tax", func(f *fakeStripe) { f.price["tax_behavior"] = "unspecified" }, "with EDUCHAN_STRIPE_AUTOMATIC_TAX on", true},
 		{"no such Price", refused(http.StatusNotFound, "No such price: '"+testPriceID+"'"), byStripe + "404: invalid_request_error: No such price", false},
 		{"key refused", refused(http.StatusUnauthorized, "Invalid API Key provided: sk_test_***key"), byStripe + "401: invalid_request_error: Invalid API Key", false},
@@ -708,6 +737,7 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 					"active": true, "type": "one_time", "unit_amount": 2000, "currency": "usd", "tax_behavior": "inclusive",
 				})
 				delete(p.stripe.price, "custom_unit_amount")
+				delete(p.stripe.price, "currency_options")
 				p.stripe.priceStatus = 0
 				p.stripe.mu.Unlock()
 				p.app.pass.priceMu.Lock()
@@ -769,11 +799,111 @@ func TestPassRefusesAPriceItCannotSell(t *testing.T) {
 	}
 }
 
+// TestPassSellsInThePricesOwnCurrencyAlone holds checkout to charging the
+// Price's own currency at its own amount, with Stripe Tax on or off. The Price
+// is read with its currency options (expand[]=currency_options), which Stripe
+// leaves out unless asked for them, so one priced in other currencies too is
+// seen and refused (TestPassRefusesAPriceItCannotSell), while one whose
+// options hold only its own currency, which Stripe may list, is the Price
+// itself and sells, as one with none does. Every session turns Adaptive
+// Pricing off (checkSessionSent), so Stripe does not convert the price into
+// the buyer's currency either. Options added to the Price in place, keeping
+// its ID, are seen by the first read after the hour a good read is kept, and
+// the Price is refused from then.
+func TestPassSellsInThePricesOwnCurrencyAlone(t *testing.T) {
+	own := map[string]any{"unit_amount": 2000, "tax_behavior": "inclusive", "custom_unit_amount": nil}
+	asked := url.Values{"expand[]": {"currency_options"}}
+	for _, tax := range []bool{false, true} {
+		for _, tc := range []struct {
+			name     string
+			currency string
+			// options are the Price's currency options, or none at all if nil.
+			options map[string]any
+		}{
+			{"no currency options", "usd", nil},
+			{"no currency options listed", "usd", map[string]any{}},
+			{"its own currency alone", "usd", map[string]any{"usd": own}},
+			{"its own currency alone, the Price's in capitals", "USD", map[string]any{"usd": own}},
+		} {
+			t.Run(fmt.Sprintf("Stripe Tax %s, %s", map[bool]string{false: "off", true: "on"}[tax], tc.name), func(t *testing.T) {
+				p := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = tax })
+				p.stripe.mu.Lock()
+				p.stripe.price["tax_behavior"] = "inclusive"
+				p.stripe.price["currency"] = tc.currency
+				if tc.options != nil {
+					p.stripe.price["currency_options"] = tc.options
+				}
+				p.stripe.mu.Unlock()
+				var status map[string]any
+				p.get("/api/pass", &status)
+				want := map[string]any{"amount": float64(2000), "currency": "usd", "exponent": float64(2)}
+				if got, _ := status["price"].(map[string]any); !maps.Equal(got, want) {
+					t.Fatalf("GET /api/pass: price %v, want %v", status["price"], want)
+				}
+				var out passResponse
+				if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+					t.Fatalf("checkout: status %d (%s), %d Stripe sessions; want it sold", code, out.Error, p.stripe.sessionCount())
+				}
+				checkSessionSent(t, p.stripe.sessions[0], tax)
+				p.stripe.mu.Lock()
+				queries := slices.Clone(p.stripe.priceQueries)
+				p.stripe.mu.Unlock()
+				if len(queries) != 1 || !maps.EqualFunc(queries[0], asked, slices.Equal[[]string]) {
+					t.Fatalf("the Price was read with %v; want it read once, for the page and checkout both, with %v", queries, asked)
+				}
+			})
+		}
+	}
+
+	t.Run("an option added in place", func(t *testing.T) {
+		var logs syncBuffer
+		p := passServerLogging(t, nil, &logs)
+		readAgo := func(age time.Duration) {
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Now().Add(-age)
+			p.app.pass.priceMu.Unlock()
+		}
+		shown := func() *passPrice {
+			var out passResponse
+			p.get("/api/pass", &out)
+			return out.Price
+		}
+		if price := shown(); price == nil {
+			t.Fatal("GET /api/pass left out the price of a Price in one currency")
+		}
+		p.stripe.mu.Lock()
+		p.stripe.price["currency_options"] = map[string]any{
+			"usd": own,
+			"eur": map[string]any{"unit_amount": 1900, "tax_behavior": "exclusive"},
+		}
+		p.stripe.mu.Unlock()
+		readAgo(59 * time.Minute)
+		if price := shown(); price == nil {
+			t.Fatal("59 minutes after a good read, the price was read again and left out")
+		}
+		readAgo(61 * time.Minute)
+		if price := shown(); price != nil {
+			t.Fatalf("61 minutes after a good read, the Price given another currency is still shown: %+v", price)
+		}
+		var out passResponse
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable ||
+			out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
+			t.Fatalf("checkout of the Price given another currency: status %d (%s), %d Stripe sessions; want 503 and none",
+				code, out.Error, p.stripe.sessionCount())
+		}
+		if n := strings.Count(logs.String(), "not also in eur"); n != 1 {
+			t.Fatalf("%d log lines name the other currency, want 1:\n%s", n, logs.String())
+		}
+	})
+}
+
 // TestPassPriceIsKeptForItsTime holds the price read from Stripe to the times
 // passPrice keeps it: a failed read a minute, so that one failure stops
-// checkout, with Stripe Tax on, for no longer than that, and a good read an
-// hour, so that Stripe is not asked on every page view and checkout, and a
-// Price archived meanwhile is refused within the hour.
+// checkout, with Stripe Tax on or off, for no longer than that (this test runs
+// with it on), and a good read an hour, so that Stripe is not asked on every
+// page view and checkout, and a Price archived meanwhile is refused within the
+// hour, as one given other currencies is
+// (TestPassSellsInThePricesOwnCurrencyAlone).
 func TestPassPriceIsKeptForItsTime(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
 	p.stripe.mu.Lock()
@@ -849,19 +979,22 @@ func TestPassPriceIsKeptForItsTime(t *testing.T) {
 // Pass was bought and nothing about who on educhan bought it (no metadata,
 // client_reference_id or customer), and is asked for nothing about tax but
 // whether to collect it. Nor is the buyer let change what they pay: no
-// allow_promotion_codes, discounts or adjustable_quantity, so a paid session
-// paid the Price that checkout read, and the webhook need not check the
-// amount.
+// allow_promotion_codes, discounts or adjustable_quantity, and Adaptive
+// Pricing off (adaptive_pricing[enabled]=false), so Stripe does not convert
+// the price into the buyer's currency. So a paid session paid the Price that
+// checkout read, in its own currency at its own amount, and the webhook need
+// not check the amount.
 func checkSessionSent(t *testing.T, form url.Values, tax bool) {
 	t.Helper()
 	sent := map[string]string{
-		"mode":                    "payment",
-		"line_items[0][price]":    testPriceID,
-		"line_items[0][quantity]": "1",
-		"success_url":             testPublicURL + "/pass?paid",
-		"cancel_url":              testPublicURL + "/pass?cancelled",
-		"submit_type":             "pay",
-		"automatic_tax[enabled]":  strconv.FormatBool(tax),
+		"mode":                      "payment",
+		"line_items[0][price]":      testPriceID,
+		"line_items[0][quantity]":   "1",
+		"success_url":               testPublicURL + "/pass?paid",
+		"cancel_url":                testPublicURL + "/pass?cancelled",
+		"submit_type":               "pay",
+		"automatic_tax[enabled]":    strconv.FormatBool(tax),
+		"adaptive_pricing[enabled]": "false",
 	}
 	for key, want := range sent {
 		if got := form.Get(key); got != want {
