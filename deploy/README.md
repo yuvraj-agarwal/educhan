@@ -590,11 +590,22 @@ PRODUCT=$(curl -fsS https://api.stripe.com/v1/products -u "${STRIPE_ADMIN}:" \
 PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
   -d product="$PRODUCT" -d currency=usd -d unit_amount=2000 -d tax_behavior=inclusive \
   | field id)
-# The server reads the Price with the restricted key, so read it that way now:
-# a key pasted short, made in the other mode, or without Prices: Read stops
-# the run here, before anything is stored.
+# The server reads the Price and starts checkouts with the restricted key, so
+# do both with it now, as the server does, and close the checkout at once: a
+# key pasted short, made in the other mode, or missing either permission stops
+# the run here, before anything is stored. The closed checkout needs no
+# cleanup, and its expiry, if an earlier run's endpoint hears of it, matches no
+# order and changes nothing.
 curl -fsS "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" >/dev/null ||
   { echo "The restricted key can't read the new Price: paste it whole, from the same mode (test or live) as the secret key, with Prices: Read."; exit 1; }
+SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" \
+  -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
+  -d submit_type=pay -d success_url="${PUBLIC_URL}/pass?paid" -d cancel_url="${PUBLIC_URL}/pass?cancelled") ||
+  { echo "$SESSION_JSON"; echo "Stripe would not start a checkout with the restricted key; its answer is above. The key needs Checkout Sessions: Write."; exit 1; }
+curl -fsS -X POST "https://api.stripe.com/v1/checkout/sessions/$(field id <<<"$SESSION_JSON")/expire" \
+  -u "${STRIPE_KEY}:" >/dev/null
+[[ $(field url <<<"$SESSION_JSON") == https://checkout.stripe.com/* ]] ||
+  { echo "Stripe sends its checkouts to a custom domain, which the server refuses: remove it (see above)."; exit 1; }
 
 # The webhook endpoint, pinned to the API version the server is written
 # against. Its signing secret is returned by this call and no other.
