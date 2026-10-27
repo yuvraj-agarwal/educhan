@@ -808,14 +808,20 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     sweep and its retry rather than at midnight, because the sweep's transaction id
     splits the day it runs in: with a midnight day, it and the expiry dated every
     credential issued between midnight and the sweep to those three hours.
-    `TestCredentialDaysEndAfterTheSweep` reads the schedule and the Job's retry from
-    `deploy/README.md` and `deploy/first-deploy.sh`, so moving the sweep past 05:00
-    means moving `credentialDayStart` with it. Moving where the day ends is itself a
-    leak, once: the credentials issued between the last old boundary and the deploy
-    share an expiry with no other credential, and so do those issued between the deploy
-    and the first new boundary, which dates each set to those hours for as long as it is
-    kept (the README's "What that protects, exactly" says this of the move from midnight
-    to 05:00).
+    `TestCredentialDaysEndAfterTheSweep` reads the schedule and the Job's retries and
+    timeout from `deploy/README.md` and `deploy/first-deploy.sh`, and wants the day to
+    end half an hour or more after the latest the sweep and its retry can run, and two
+    hours at most after the scheduled time: a sweep scheduled at 03:00 UTC or later
+    whose retry cannot run past 04:30 (03:00 to 04:00, with one retry of a
+    fifteen-minute task). So a change to the schedule, the retries or the timeout that
+    leaves that window means moving `credentialDayStart` with it, not only a move past
+    05:00: a sweep at 04:40 has its retry running until 05:10, across the day's end,
+    and the day of one at 02:30 ends two and a half hours after it. Moving where the
+    day ends is itself a leak, once: the credentials issued between the last old
+    boundary and the deploy share an expiry with no other credential, and so do those
+    issued between the deploy and the first new boundary, which dates each set to those
+    hours for as long as it is kept (the README's "What that protects, exactly" says
+    this of the move from midnight to 05:00).
   - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
     credentials every night.** Every row carries `xmin`, the id of the transaction that
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
@@ -960,32 +966,34 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     `SET STATISTICS 0` in its migration. The README's "Transaction ids, and the
     nightly rewrite" says exactly what this protects — the verification tables of the
     live database after the 03:17 UTC sweep, where nothing dates a credential more
-    closely than the day its expiry gives — and what it does not, a sweep run after
-    05:00 UTC among it, which splits the day it runs in until the next sweep. Above
-    all, the posts: every code request that reaches the database, and every attempt at
-    a code in flight, is a write, takes the next transaction id, and so leaves a gap in
-    the posts' `xmin` between the two posts written around it, which one plain query on
-    `posts` finds, in the live database and every backup, for as long as those posts
-    exist. That places each issuance between two posts whatever the sweep does; the
-    rewrite takes away only the credential row's own issuance id
-    (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` pins this as a known limit, and
-    only verification tables on a PostgreSQL instance of their own would close it). Nor
-    does it cover a credential issued since the last sweep, a code in flight as the
-    sweep ran (its row keeps the time it was asked for, and once a confirmation, or the
-    delete of the expired code, removes the row, its dead version keeps that time in the
-    table's file until the next sweep's `VACUUM FULL`; its email hash joins its
-    address's credential if there is one; and the hour was chosen for the backup window,
-    not for quiet — 03:17 UTC is morning to afternoon across South and East Asia and
-    Australia — so expect one on any weekday), backups (taken from 05:00 UTC, up to
-    09:00, seven kept), a night the sweep failed, autovacuum times recorded before
-    `0015`, or the write-ahead log the server keeps for crash recovery, which dates a
-    credential until PostgreSQL deletes or reuses the newest segment holding its row.
-    With full-page writes on, the log since the checkpoint before the sweep holds every
-    credentials page as it stood before the rewrite, issuance ids and all — the sweep's
-    own delete logs the image of each page no change since that checkpoint already had —
-    so that segment is the sweep's or close to it, not the issuance's. Point-in-time
-    recovery stays off and `track_commit_timestamp` stays off (`deploy/README.md`
-    section 2.2); changing either means changing that README section in the same commit.
+    closely than the day its expiry gives but the sweep's own id, which says of one of
+    the day the sweep ran in that it came in the 22 hours of that day before the sweep —
+    and what it does not, a sweep run after 05:00 UTC among it, which splits the day it
+    runs in until the next sweep. Above all, the posts: every code request that reaches
+    the database, and every attempt at a code in flight, is a write, takes the next
+    transaction id, and so leaves a gap in the posts' `xmin` between the two posts
+    written around it, which one plain query on `posts` finds, in the live database and
+    every backup, for as long as those posts exist. That places each issuance between
+    two posts whatever the sweep does; the rewrite takes away only the credential row's
+    own issuance id (`TestIssuanceLeavesGapsAmongThePostsTransactionIDs` pins this as a
+    known limit, and only verification tables on a PostgreSQL instance of their own
+    would close it). Nor does it cover a credential issued since the last sweep, a code
+    in flight as the sweep ran (its row keeps the time it was asked for, and once a
+    confirmation, or the delete of the expired code, removes the row, its dead version
+    keeps that time in the table's file until the next sweep's `VACUUM FULL`; its email
+    hash joins its address's credential if there is one; and the hour was chosen for the
+    backup window, not for quiet — 03:17 UTC is morning to afternoon across South and
+    East Asia and Australia — so expect one on any weekday), backups (taken from 05:00
+    UTC, up to 09:00, seven kept), a night the sweep failed, autovacuum times recorded
+    before `0015`, or the write-ahead log the server keeps for crash recovery, which
+    dates a credential until PostgreSQL deletes or reuses the newest segment holding its
+    row. With full-page writes on, the log since the checkpoint before the sweep holds
+    every credentials page as it stood before the rewrite, issuance ids and all — the
+    sweep's own delete logs the image of each page no change since that checkpoint
+    already had — so that segment is the sweep's or close to it, not the issuance's.
+    Point-in-time recovery stays off and `track_commit_timestamp` stays off
+    (`deploy/README.md` section 2.2); changing either means changing that README section
+    in the same commit.
     `TestSweepTakesIssuanceTimeOutOfCredentials`,
     `TestSweepDeletesCodesThatExpiredUnconfirmed`,
     `TestSweepDeletesExpiredCodesWithoutHoldingTheCredentialsTable`,

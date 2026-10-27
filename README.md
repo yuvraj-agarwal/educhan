@@ -454,11 +454,13 @@ What that protects, exactly:
   03:17 UTC.** Nothing in either table dates a credential more closely than the
   day its expiry gives, a day that runs from 05:00 UTC to 05:00 UTC: no live
   row and no row version in either table's file, no sample in `pg_statistic` or
-  in its files, and no last-scan time says more — but for a code still in
-  flight as the sweep ran and a credential issued since the sweep (both below).
-  The sweep's transaction id, which every credential issued before it carries,
-  says of one of the day the sweep ran in only that it was issued in the 22
-  hours of that day before the sweep; one issued between the sweep and 05:00
+  in its files, and no last-scan time says more — but for the sweep's own
+  transaction id on a credential of the day the sweep ran in, a code still in
+  flight as the sweep ran, and a credential issued since the sweep (the last
+  two below). The sweep's id, which every credential issued before it carries,
+  says nothing the expiry does not of one of an earlier day, but of one of the
+  day the sweep ran in it says that it was issued in the 22 hours of that day
+  before the sweep, not just in that day; one issued between the sweep and 05:00
   carries its own id instead, which dates it anyway (below). That is why the
   day ends at 05:00, after the sweep and the time its one retry may take, and
   not at midnight: with the sweep in the morning of a day that began at

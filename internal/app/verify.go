@@ -549,11 +549,19 @@ const credentialDayStart = 5 * time.Hour
 // nothing the expiry does not, and on those of the day it runs in that were
 // issued in the 22 hours before it; one issued between the sweep and 05:00
 // carries its own id, which dates it anyway until the next sweep.
-// TestCredentialDaysEndAfterTheSweep reads the schedule from the deploy guide
-// and first-deploy.sh and holds the two together, so moving the sweep past
-// 05:00 means moving this with it. A sweep run after 05:00 — by hand, or late
-// — still splits the day it runs in at the time it runs, and the README says
-// what that leaves.
+// TestCredentialDaysEndAfterTheSweep reads the schedule, and the Job's retries
+// and task timeout, from the deploy guide and first-deploy.sh, and wants the
+// day the sweep runs in to end half an hour or more after the latest the
+// sweep and its retry can still be running, and two hours at most after the
+// scheduled time: a sweep scheduled at 03:00 UTC or later, whose retry cannot
+// run past 04:30. With one retry of a fifteen-minute task, that is a sweep
+// scheduled from 03:00 to 04:00. A change to the schedule, the retries or the
+// timeout that leaves that window means moving credentialDayStart with it,
+// not only a move past 05:00: a sweep at 04:40, whose retry can run until
+// 05:10, splits the day as surely as one at 05:30, and the day of a sweep at
+// 02:30 ends two and a half hours after it. A sweep run after 05:00 — by
+// hand, or late — still splits the day it runs in at the time it runs, and
+// the README says what that leaves.
 //
 // It is not all an operator can see. The code request and the confirmation
 // each took a transaction id from the counter the posts take theirs from, and
