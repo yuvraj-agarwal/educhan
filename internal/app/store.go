@@ -1612,7 +1612,8 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 	if _, err := conn.Exec(ctx, `SELECT set_config('lock_timeout', $1, false)`, vacuumLockTimeout); err != nil {
 		return fmt.Errorf("set the vacuum's lock timeout: %w", err)
 	}
-	deadline := time.Now().Add(s.vacuumPatience)
+	start := time.Now()
+	deadline := start.Add(s.vacuumPatience)
 	wait := vacuumFirstWait
 	left := slices.Concat(verificationTables[:], []string{statisticsCatalog})
 	for {
@@ -1653,9 +1654,12 @@ func (s *Store) vacuumVerificationTables(ctx context.Context, conn *pgx.Conn, no
 			}
 			left = held
 		}
+		// It stops once the next pause would take it past its patience, which
+		// can be seconds before the patience is up, so it says how long it
+		// tried rather than how long it might have.
 		if time.Until(deadline) < wait {
 			return fmt.Errorf("%s; tried for %s, and the next sweep tries again",
-				strings.Join(why, "; "), s.vacuumPatience)
+				strings.Join(why, "; "), time.Since(start).Truncate(100*time.Millisecond))
 		}
 		timer := time.NewTimer(wait)
 		select {

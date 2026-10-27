@@ -1580,6 +1580,42 @@ func TestSweepFailsWhenTheVerificationTablesAreHeld(t *testing.T) {
 	}
 }
 
+// A sweep whose vacuum runs out of patience says how long it tried, which is
+// not its patience: it gives up once the next pause would take it past
+// vacuumPatience, and with the pauses doubling up to vacuumMaxWait that is
+// about four seconds early on the minute it has in production. With three
+// seconds of patience and nothing else slow, it pauses for 0.1, 0.2, 0.4 and
+// 0.8 seconds, and gives up at 1.5 seconds rather than pause 1.6 more; the
+// error must give a time no shorter than those pauses and no longer than the
+// sweep took.
+func TestSweepSaysHowLongItTriedToVacuum(t *testing.T) {
+	h := testServer(t, nil)
+	h.app.store.vacuumPatience = 3 * time.Second
+	h.holdOpen(`SELECT count(*) FROM verification_pending`)
+
+	start := time.Now()
+	_, err := h.app.Sweep(context.Background())
+	took := time.Since(start)
+	if err == nil {
+		t.Fatal("a sweep held off the pending table succeeded")
+	}
+	_, rest, found := strings.Cut(err.Error(), "; tried for ")
+	tried, _, ended := strings.Cut(rest, ", and the next sweep tries again")
+	if !found || !ended {
+		t.Fatalf("a sweep whose vacuum ran out of patience returned %q, want it to say how long it tried", err)
+	}
+	said, err := time.ParseDuration(tried)
+	if err != nil {
+		t.Fatalf("the sweep says it tried for %q: %v", tried, err)
+	}
+	const paused = 1500 * time.Millisecond
+	if said < paused || said > took {
+		t.Errorf("the sweep says it tried for %s, want the time it spent: no less than the %s it paused "+
+			"between tries, and no more than the %s the whole sweep took", said, paused,
+			took.Round(time.Millisecond))
+	}
+}
+
 // tableSize is the size of a table's file, which holds every row version
 // VACUUM FULL kept, live or not.
 func (h *harness) tableSize(table string) int64 {
