@@ -29,9 +29,9 @@ type PassConfig struct {
 	// StripeWebhookSecret is the signing secret of the webhook endpoint
 	// pointed at /api/pass/stripe-webhook ("whsec_…").
 	StripeWebhookSecret string
-	// StripePriceID is the one-time Price a Pass sells for ("price_…"). The
-	// amount and currency live in Stripe, so changing the price needs no
-	// deploy.
+	// StripePriceID is the one-time Price a Pass sells for ("price_…"). Its
+	// amount and currency are read from Stripe, which never changes them on a
+	// Price, so a new price is a new Price, set here, and a restart.
 	StripePriceID string
 	// StripeAutomaticTax asks Stripe Tax to work out and collect sales tax,
 	// VAT or GST. It needs Stripe Tax switched on in the Stripe account first,

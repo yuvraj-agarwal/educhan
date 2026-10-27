@@ -1326,8 +1326,8 @@ func TestPassPageDetails(t *testing.T) {
 			": info.tax === \"added\" ? `${price} plus any tax for ${term}` : `${price} for ${term}`;") {
 			t.Error("the price no longer says whether tax is in it, or says so without the server's word")
 		}
-		// Without a price from the server (Stripe could not be asked, the
-		// Price says nothing of tax while Stripe Tax is on, or sales are
+		// Without a price from the server (Stripe could not be asked, or
+		// answered with a Price the Pass can't be sold at, or sales are
 		// paused) no cost is drawn at all, though priced always has words.
 		if !strings.Contains(intro, "const cost = price ? `<p class=\"verify-note\"><strong>${esc(priced)}</strong>, paid once. "+
 			"It doesn't renew by itself.</p>` : \"\";") {
@@ -1343,7 +1343,7 @@ func TestPassPageDetails(t *testing.T) {
 		}
 	})
 	t.Run("a refusal no other branch knows is said in the server's words, and its button given back", func(t *testing.T) {
-		// Checkout's 503 for a Price that says nothing of tax, and its 502
+		// Checkout's 503 for a Price the Pass can't be sold at, and its 502
 		// while Stripe can't be asked, reach the reader only this way, so
 		// passErrorText says something else only for a server that did not
 		// answer and a cooldown's wait, and nothing is left pressed.
@@ -1357,8 +1357,8 @@ func TestPassPageDetails(t *testing.T) {
 			"const text = said.charAt(0).toUpperCase() + said.slice(1); return /[.!?]$/.test(text) ? text : `${text}.`; }") {
 			t.Error("passErrorText says something other than the server's own words for some refusals")
 		}
-		if strings.Contains(withoutComments(script), "whether tax is included") {
-			t.Error("the page has its own copy of the server's refusal of a Price that says nothing of tax")
+		if strings.Contains(withoutComments(script), passPriceUnsold) {
+			t.Error("the page has its own copy of the server's refusal of a Price the Pass can't be sold at")
 		}
 	})
 }

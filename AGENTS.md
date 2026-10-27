@@ -264,9 +264,13 @@ and `GET /api/pass` says `"paused": true`; every other Pass endpoint and the web
 on as usual. With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, the Price's own `tax_behavior`
 decides what the page says of tax: `GET /api/pass` adds `"tax": "included"` for an
 `inclusive` Price and `"added"` for an `exclusive` one (the page's "tax included" and
-"plus any tax"), and a Price with neither is not sold: the status leaves the price
-out and checkout answers `503`, as it answers `502` while Stripe can't be asked for the
-Price, which might say neither (`TestPassTaxFollowsThePrice`). Checkout always sends
+"plus any tax"), and a Price with neither is not sold: the status leaves the price out
+and checkout answers `503 the Pass can't be bought right now`, as it does for a Price
+archived, recurring or without a fixed amount (`TestPassRefusesAPriceItCannotSell`). Its
+`502` before any cooldown comes only while the Price can't be read, which might say
+neither (`TestPassTaxFollowsThePrice`). A failed read or a refused Price is kept a minute
+and a good read an hour (`TestPassPriceIsKeptForItsTime`); Stripe never changes a Price's
+amount, so a new amount takes a new Price ID and a restart. Checkout always sends
 Stripe `automatic_tax[enabled]`, `false` with the setting off, so an account that
 collects tax by default adds none the page did not show. A real checkout uses Stripe's
 test mode: test keys, a test Price (one with a tax behavior, for Stripe Tax), and

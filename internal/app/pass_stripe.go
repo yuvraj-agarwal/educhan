@@ -140,18 +140,27 @@ type passPrice struct {
 // nothing is said of it.
 var passTaxWords = map[string]string{"inclusive": "included", "exclusive": "added"}
 
+// errPassPriceRefused is price's refusal of the Price Stripe answered with, as
+// against a read that failed: one archived, recurring or without a fixed
+// amount, or, while Stripe Tax is on, one that does not say whether its amount
+// includes tax (errPassPriceTax). Asking again changes none of these until the
+// owner fixes the Price or EDUCHAN_STRIPE_PRICE_ID, so checkout refuses it as
+// a fault in the setup (passPriceUnsold), not as Stripe out of reach.
+// passPrice logs each refusal as it reads the Price, at most once a minute
+// while it lasts, and nothing else does, so it says what to fix.
+var errPassPriceRefused = errors.New("stripe: the Pass price can't be sold")
+
 // errPassPriceTax is price's refusal, while Stripe Tax is on, of a Price that
 // does not say whether its amount includes tax. Stripe would settle that by a
 // default in the account that the Pass page cannot know, so the page could
-// show a price the buyer does not pay. passPrice logs it each time it reads
-// the Price, at most once a minute while it lasts, and nothing else does, so
-// it says what to fix.
-var errPassPriceTax = errors.New("stripe: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, the Pass price must have a tax behavior, inclusive or exclusive: set one on the Price, or make a new Price with one and set EDUCHAN_STRIPE_PRICE_ID to it")
+// show a price the buyer does not pay.
+var errPassPriceTax = fmt.Errorf("%w: with EDUCHAN_STRIPE_AUTOMATIC_TAX on, it must have a tax behavior, inclusive or exclusive: set one on the Price, or make a new Price with one and set EDUCHAN_STRIPE_PRICE_ID to it", errPassPriceRefused)
 
 // price reads the Pass's Price. A recurring Price is refused, because the
 // Pass is bought by hand for each term, as 4chan's is, and never renews
-// itself. So, while Stripe Tax is on, is a Price that does not say whether tax
-// is in its amount (errPassPriceTax).
+// itself, and so are an archived one, one without a fixed amount and, while
+// Stripe Tax is on, one that does not say whether tax is in its amount
+// (errPassPriceRefused).
 func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	var p struct {
 		Active      bool   `json:"active"`
@@ -165,11 +174,11 @@ func (c *stripeClient) price(ctx context.Context) (passPrice, error) {
 	}
 	switch {
 	case !p.Active:
-		return passPrice{}, errors.New("stripe: the Pass price is archived")
+		return passPrice{}, fmt.Errorf("%w: it is archived", errPassPriceRefused)
 	case p.Type != "one_time":
-		return passPrice{}, fmt.Errorf("stripe: the Pass price must be one-time, not %q", p.Type)
+		return passPrice{}, fmt.Errorf("%w: it must be one-time, not %q", errPassPriceRefused, p.Type)
 	case p.UnitAmount == nil || *p.UnitAmount <= 0 || p.Currency == "":
-		return passPrice{}, errors.New("stripe: the Pass price has no fixed amount")
+		return passPrice{}, fmt.Errorf("%w: it has no fixed amount", errPassPriceRefused)
 	case c.tax && passTaxWords[p.TaxBehavior] == "":
 		return passPrice{}, errPassPriceTax
 	}

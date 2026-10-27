@@ -352,15 +352,25 @@ func TestPassStatus(t *testing.T) {
 	}
 }
 
+// TestPassStatusSurvivesStripeTrouble holds GET /api/pass to offering the Pass
+// without its price when Stripe can't be asked for it, or answers with a Price
+// the Pass can't be sold at: archived, recurring or without a fixed amount.
 func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
-	p := passServer(t, nil)
-	p.stripe.mu.Lock()
-	p.stripe.price["type"] = "recurring"
-	p.stripe.mu.Unlock()
-	var out passResponse
-	p.get("/api/pass", &out)
-	if !out.Enabled || out.Price != nil {
-		t.Fatalf("a recurring price must be refused but the page still offered: %+v", out)
+	for what, trouble := range map[string]func(f *fakeStripe){
+		"Stripe down":       func(f *fakeStripe) { f.fail = true },
+		"archived":          func(f *fakeStripe) { f.price["active"] = false },
+		"recurring":         func(f *fakeStripe) { f.price["type"] = "recurring" },
+		"without an amount": func(f *fakeStripe) { f.price["unit_amount"] = nil },
+	} {
+		p := passServer(t, nil)
+		p.stripe.mu.Lock()
+		trouble(p.stripe)
+		p.stripe.mu.Unlock()
+		var out passResponse
+		p.get("/api/pass", &out)
+		if !out.Enabled || out.Price != nil {
+			t.Errorf("%s: %+v; want the Pass offered without a price", what, out)
+		}
 	}
 }
 
@@ -372,10 +382,12 @@ func TestPassStatusSurvivesStripeTrouble(t *testing.T) {
 // or was made before Prices said, is not sold, since Stripe would settle it by
 // a default in the account that the page cannot know: the status leaves the
 // price out, and checkout refuses before Stripe opens anything or a cooldown
-// starts, saying what is wrong, and the log says what to fix once, where the
-// Price is read, and nothing of the buyer. Nor is anything sold while the
-// Price can't be read. Given a behavior, the Price sells. With Stripe Tax off,
-// no tax is collected and nothing is said of it, whatever the Price says.
+// starts, as it refuses every Price it can't sell
+// (TestPassRefusesAPriceItCannotSell), and the log says what to fix once,
+// where the Price is read, and nothing of the buyer. Nor is anything sold
+// while the Price can't be read. Given a behavior, the Price sells. With
+// Stripe Tax off, no tax is collected and nothing is said of it, whatever the
+// Price says.
 func TestPassTaxFollowsThePrice(t *testing.T) {
 	// absent is a Price without the field; nil is one where Stripe has it null.
 	type absent struct{}
@@ -434,7 +446,7 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 				}
 				return
 			}
-			if code != http.StatusServiceUnavailable || out.Error != passPriceTaxUnset || p.stripe.sessionCount() != 0 {
+			if code != http.StatusServiceUnavailable || out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
 				t.Fatalf("checkout of a Price that does not say whether tax is in it: status %d (%s), %d Stripe sessions; want 503 and none",
 					code, out.Error, p.stripe.sessionCount())
 			}
@@ -453,7 +465,7 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 				if err := json.Unmarshal([]byte(line), &record); err != nil {
 					t.Fatalf("a log line is not JSON: %q", line)
 				}
-				if len(record) != 4 || record["msg"] != "could not read the Pass price from Stripe" || record["error"] != errPassPriceTax.Error() ||
+				if len(record) != 4 || record["msg"] != "the Pass price in Stripe needs fixing" || record["error"] != errPassPriceTax.Error() ||
 					!strings.Contains(errPassPriceTax.Error(), "EDUCHAN_STRIPE_PRICE_ID") {
 					t.Errorf("the log line does not say what to fix, or carries more than its words: %s", line)
 				}
@@ -520,7 +532,7 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 			p.app.pass.priceMu.Unlock()
 		}
 		refresh()
-		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable || out.Error != passPriceTaxUnset {
+		if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable || out.Error != passPriceUnsold {
 			t.Fatalf("checkout once the Price is read: status %d (%s)", code, out.Error)
 		}
 		p.stripe.mu.Lock()
@@ -531,6 +543,160 @@ func TestPassTaxFollowsThePrice(t *testing.T) {
 			t.Fatalf("checkout once the Price is inclusive: status %d (%s)", code, out.Error)
 		}
 	})
+}
+
+// TestPassRefusesAPriceItCannotSell holds a Price that Stripe answers with but
+// the Pass can't be sold at, archived, recurring, without a fixed amount or,
+// with Stripe Tax on, silent on tax, to the fault in the setup that it is.
+// With Stripe Tax on, checkout refuses it with 503 and words of its own,
+// never the 502 that says to try again in a moment, which is for a Price that
+// could not be read; it opens nothing in Stripe and starts no cooldown, and
+// the log says what is wrong once, where the Price is read. The refusal is
+// kept a minute, as a failed read is, so the Price fixed sells once that has
+// run out.
+func TestPassRefusesAPriceItCannotSell(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		set    func(price map[string]any)
+		reason string
+	}{
+		{"archived", func(price map[string]any) { price["active"] = false }, "it is archived"},
+		{"recurring", func(price map[string]any) { price["type"] = "recurring" }, `it must be one-time, not "recurring"`},
+		{"without an amount", func(price map[string]any) { price["unit_amount"] = nil }, "it has no fixed amount"},
+		{"silent on tax", func(price map[string]any) { price["tax_behavior"] = "unspecified" }, "with EDUCHAN_STRIPE_AUTOMATIC_TAX on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs syncBuffer
+			p := passServerLogging(t, func(cfg *Config) {
+				cfg.Pass.StripeAutomaticTax = true
+				cfg.Pass.CheckoutCooldown = time.Hour
+			}, &logs)
+			p.stripe.mu.Lock()
+			p.stripe.price["tax_behavior"] = "inclusive"
+			tc.set(p.stripe.price)
+			p.stripe.mu.Unlock()
+			var status passResponse
+			if p.get("/api/pass", &status); !status.Enabled || status.Price != nil {
+				t.Fatalf("GET /api/pass: %+v; want the Pass offered without a price", status)
+			}
+			for try := range 2 {
+				var out passResponse
+				if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusServiceUnavailable ||
+					out.Error != passPriceUnsold || p.stripe.sessionCount() != 0 {
+					t.Fatalf("checkout %d: status %d (%s), %d Stripe sessions; want 503 %q and none",
+						try+1, code, out.Error, p.stripe.sessionCount(), passPriceUnsold)
+				}
+			}
+			var told int
+			for _, line := range strings.Split(strings.TrimSpace(logs.String()), "\n") {
+				var record map[string]any
+				if err := json.Unmarshal([]byte(line), &record); err != nil {
+					t.Fatalf("a log line is not JSON: %q", line)
+				}
+				switch record["msg"] {
+				case "the Pass price in Stripe needs fixing":
+					told++
+					if record["level"] != "ERROR" || !strings.HasPrefix(fmt.Sprint(record["error"]), errPassPriceRefused.Error()+": "+tc.reason) {
+						t.Errorf("the log line does not say what is wrong with the Price: %s", line)
+					}
+				case "could not read the Pass price from Stripe":
+					t.Errorf("a Price Stripe answered with is logged as one it could not be asked for: %s", line)
+				}
+			}
+			if told != 1 {
+				t.Fatalf("%d log lines say what is wrong with the Price, want 1 for a read and two refused checkouts:\n%s", told, logs.String())
+			}
+
+			// Fixed, the Price sells once the refusal has been kept a minute,
+			// and the refused checkouts started no cooldown.
+			p.stripe.mu.Lock()
+			maps.Copy(p.stripe.price, map[string]any{
+				"active": true, "type": "one_time", "unit_amount": 2000, "currency": "usd", "tax_behavior": "inclusive",
+			})
+			p.stripe.mu.Unlock()
+			p.app.pass.priceMu.Lock()
+			p.app.pass.priceFetchedAt = time.Now().Add(-61 * time.Second)
+			p.app.pass.priceMu.Unlock()
+			var out passResponse
+			if code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out); code != http.StatusOK || p.stripe.sessionCount() != 1 {
+				t.Fatalf("checkout once the Price is fixed: status %d (%s)", code, out.Error)
+			}
+		})
+	}
+}
+
+// TestPassPriceIsKeptForItsTime holds the price read from Stripe to the times
+// passPrice keeps it: a failed read a minute, so that one failure stops
+// checkout, with Stripe Tax on, for no longer than that, and a good read an
+// hour, so that Stripe is not asked on every page view and checkout, and a
+// Price archived meanwhile is refused within the hour.
+func TestPassPriceIsKeptForItsTime(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.Pass.StripeAutomaticTax = true })
+	p.stripe.mu.Lock()
+	p.stripe.price["tax_behavior"] = "inclusive"
+	p.stripe.fail = true
+	p.stripe.mu.Unlock()
+	readAgo := func(age time.Duration) {
+		p.app.pass.priceMu.Lock()
+		p.app.pass.priceFetchedAt = time.Now().Add(-age)
+		p.app.pass.priceMu.Unlock()
+	}
+	checkout := func() (int, passResponse) {
+		var out passResponse
+		code := p.post("/api/pass/checkout", map[string]any{"adult": true}, &out)
+		return code, out
+	}
+	// shown is the price GET /api/pass shows, if it shows one.
+	shown := func() *passPrice {
+		var out passResponse
+		p.get("/api/pass", &out)
+		return out.Price
+	}
+	if price := shown(); price != nil {
+		t.Fatalf("GET /api/pass with Stripe down: %+v", price)
+	}
+	reads := p.stripe.priceReadCount()
+	p.stripe.mu.Lock()
+	p.stripe.fail = false
+	p.stripe.mu.Unlock()
+
+	// Stripe is back, and the failure is kept until a minute has passed.
+	readAgo(59 * time.Second)
+	if code, out := checkout(); code != http.StatusBadGateway || out.Error != passStripeUnreachable {
+		t.Fatalf("checkout 59 seconds after a failed read: status %d (%s); want 502", code, out.Error)
+	}
+	if price := shown(); price != nil || p.stripe.priceReadCount() != reads {
+		t.Fatalf("59 seconds after a failed read the price was read again (%d reads, want %d), or shown: %+v",
+			p.stripe.priceReadCount(), reads, price)
+	}
+	readAgo(61 * time.Second)
+	if code, out := checkout(); code != http.StatusOK || p.stripe.priceReadCount() != reads+1 {
+		t.Fatalf("checkout 61 seconds after a failed read: status %d (%s), %d reads; want it sold and the price read again",
+			code, out.Error, p.stripe.priceReadCount()-reads)
+	}
+
+	// A good read is kept an hour: the Price archived meanwhile is still
+	// shown and sold, and refused once the hour is out.
+	reads = p.stripe.priceReadCount()
+	p.stripe.mu.Lock()
+	p.stripe.price["active"] = false
+	p.stripe.mu.Unlock()
+	readAgo(59 * time.Minute)
+	if price := shown(); price == nil || p.stripe.priceReadCount() != reads {
+		t.Fatalf("59 minutes after a good read the price was read again (%d reads, want %d), or left out",
+			p.stripe.priceReadCount(), reads)
+	}
+	if code, out := checkout(); code != http.StatusOK {
+		t.Fatalf("checkout 59 minutes after a good read: status %d (%s)", code, out.Error)
+	}
+	readAgo(61 * time.Minute)
+	if price := shown(); price != nil || p.stripe.priceReadCount() != reads+1 {
+		t.Fatalf("61 minutes after a good read the price was not read again (%d reads, want %d), or the archived Price shown: %+v",
+			p.stripe.priceReadCount(), reads+1, price)
+	}
+	if code, out := checkout(); code != http.StatusServiceUnavailable || out.Error != passPriceUnsold {
+		t.Fatalf("checkout of the Price archived, read again: status %d (%s); want 503", code, out.Error)
+	}
 }
 
 func TestPassPurchase(t *testing.T) {
@@ -652,15 +818,25 @@ func TestPassCheckoutCooldownAndStripeFailure(t *testing.T) {
 		t.Fatalf("second checkout inside the cooldown: status %d", status)
 	}
 
-	q := passServer(t, nil)
+	// A session Stripe fails to open is answered 502 after the cooldown has
+	// started, so asking again at once is told to wait.
+	q := passServer(t, func(cfg *Config) { cfg.Pass.CheckoutCooldown = time.Minute })
 	q.stripe.mu.Lock()
 	q.stripe.fail = true
 	q.stripe.mu.Unlock()
-	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusBadGateway {
-		t.Fatalf("checkout with Stripe down: status %d", status)
+	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusBadGateway ||
+		out.Error != passStripeUnreachable {
+		t.Fatalf("checkout with Stripe down: status %d (%s)", status, out.Error)
 	}
 	if status, _ := q.claim(); status != http.StatusBadRequest {
 		t.Fatalf("a failed checkout left a claim behind: status %d", status)
+	}
+	q.stripe.mu.Lock()
+	q.stripe.fail = false
+	q.stripe.mu.Unlock()
+	if status := q.post("/api/pass/checkout", map[string]any{"adult": true}, &out); status != http.StatusTooManyRequests ||
+		out.RetryAfter != 60 {
+		t.Fatalf("checkout again at once after Stripe failed to open a session: status %d, %+v; want 429 for 60 seconds", status, out)
 	}
 }
 
