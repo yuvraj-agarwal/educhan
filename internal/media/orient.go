@@ -47,12 +47,14 @@ const (
 const maxEXIFEntries = 2 * 0xFFFF
 
 // jpegOrientation reads the Orientation tag from the first Exif APP1 segment
-// of a JPEG, and returns 1, upright, when no Orientation entry there holds a
-// value from 1 to 8 (an entry outside that range is passed over for a later
-// one, as Chromium passes it over: tiffOrientation) or when it cannot read the
-// data. A wrong guess here can only leave a picture turned the way it was
-// stored; whether the file is an image at all is for the decoder to say, so
-// this never fails.
+// of a JPEG that holds anything past its six-byte header, and returns 1,
+// upright, when no Orientation entry it reads is a single SHORT from 1 to 8
+// (tiffOrientation, which passes others over as Chromium does and stops after
+// maxEXIFEntries), or when it cannot read the data. Chromium passes over a
+// segment of the header alone for a later one, but takes the first that holds
+// more, readable or not, and so does this. A wrong guess here can only leave
+// a picture turned the way it was stored; whether the file is an image at all
+// is for the decoder to say, so this never fails.
 //
 // It walks the segments before the first scan as image/jpeg's decoder reads
 // them (jpegNextSegment), which is also how libjpeg, and so Chromium, reads
@@ -79,7 +81,7 @@ func jpegOrientation(data []byte) int {
 			// scan: the metadata segments are behind us.
 			return 1
 		}
-		if marker == 0xE1 && len(segment) >= 6 && string(segment[:5]) == "Exif\x00" {
+		if marker == 0xE1 && len(segment) > 6 && string(segment[:5]) == "Exif\x00" {
 			return tiffOrientation(segment[6:])
 		}
 		i = next
@@ -91,7 +93,9 @@ func jpegOrientation(data []byte) int {
 // or one it cannot read. Only an eXIf chunk before the first IDAT counts:
 // that is where the PNG specification puts it, and the only place browsers
 // read it from, so one further on never turned the picture on screen. The
-// chunk holds the TIFF structure itself, with no "Exif" prefix.
+// chunk holds the TIFF structure itself, with no "Exif" prefix, and as with a
+// JPEG's segments, Chromium passes over an empty one for a later one, but
+// takes the first that holds a byte or more, readable or not.
 func pngOrientation(data []byte) int {
 	i := 8 // the signature
 	for i+8 <= len(data) {
@@ -101,7 +105,9 @@ func pngOrientation(data []byte) int {
 		}
 		switch string(data[i+4 : i+8]) {
 		case "eXIf":
-			return tiffOrientation(data[i+8 : i+8+int(n)])
+			if n > 0 {
+				return tiffOrientation(data[i+8 : i+8+int(n)])
+			}
 		case "IDAT":
 			return 1
 		}

@@ -615,6 +615,53 @@ func TestOrientationIsReadAsChromiumReadsIt(t *testing.T) {
 	}
 }
 
+// Chromium reads the orientation from the first EXIF block in a file that
+// holds anything: it passes over a JPEG's Exif segment of the six-byte header
+// alone, whatever its sixth byte, and a PNG's empty eXIf chunk, for a later
+// one, but takes the first that holds a byte more, even one too short to read,
+// and reads no other. Each want is what Chromium 141 did with the file.
+func TestEmptyEXIFBlocksArePassedOver(t *testing.T) {
+	le := binary.LittleEndian
+	o6, o3 := orientationTIFF(le, 6), orientationTIFF(le, 3)
+	app1 := func(payload string) []byte { return jpegSegment(0xE1, []byte(payload)) }
+	exif := func(tiff []byte) []byte { return pngChunk("eXIf", tiff) }
+	pic := quadrants(64, 32)
+	jpg, pngFile := encodeJPEGImage(t, pic), pngOf(t, pic)
+	cases := []struct {
+		name   string
+		upload []byte
+		want   int
+	}{
+		{"JPEG: an Exif header alone, then orientation 6", withSegments(jpg, app1("Exif\x00\x00"), exifSegment(o6)), 6},
+		{"JPEG: two Exif headers alone, then orientation 6", withSegments(jpg, app1("Exif\x00\x00"), app1("Exif\x00\x00"), exifSegment(o6)), 6},
+		{"JPEG: an Exif header ending in X alone, then orientation 6", withSegments(jpg, app1("Exif\x00X"), exifSegment(o6)), 6},
+		{"JPEG: orientation 6 after an Exif header ending in X", withSegments(jpg, app1("Exif\x00X"+string(o6))), 6},
+		{"JPEG: an Exif block of one byte, then orientation 6", withSegments(jpg, app1("Exif\x00\x00I"), exifSegment(o6)), 1},
+		{"JPEG: an Exif block of one byte after an X, then orientation 6", withSegments(jpg, app1("Exif\x00XI"), exifSegment(o6)), 1},
+		{"JPEG: a TIFF header alone after an X, then orientation 6", withSegments(jpg, app1("Exif\x00XII*\x00"), exifSegment(o6)), 1},
+		{"PNG: an empty eXIf, then orientation 6", withPNGChunks(pngFile, exif(nil), exif(o6)), 6},
+		{"PNG: two empty eXIfs, then orientation 6", withPNGChunks(pngFile, exif(nil), exif(nil), exif(o6)), 6},
+		{"PNG: an eXIf of one byte, then orientation 6", withPNGChunks(pngFile, exif([]byte("I")), exif(o6)), 1},
+		{"PNG: orientation 6, then 3", withPNGChunks(pngFile, exif(o6), exif(o3)), 6},
+	}
+	for _, c := range cases {
+		read := jpegOrientation
+		if strings.HasPrefix(c.name, "PNG") {
+			read = pngOrientation
+		}
+		if got := read(c.upload); got != c.want {
+			t.Errorf("%s: orientation read = %d, want %d", c.name, got, c.want)
+		}
+		wantW, wantH := 64, 32
+		if c.want >= 5 {
+			wantW, wantH = 32, 64
+		}
+		if got := process(t, c.upload); got.Width != wantW || got.Height != wantH {
+			t.Errorf("%s: stored %dx%d, want %dx%d", c.name, got.Width, got.Height, wantW, wantH)
+		}
+	}
+}
+
 // Chromium follows every Exif sub-IFD entry in IFD0, each into a scan of
 // the sub-IFD it names, so an IFD0 of 65535 entries that each name IFD0 is
 // 4.3 billion entries to read: a PNG of 768 KB that took ~26-27 s of CPU
