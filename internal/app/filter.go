@@ -3835,7 +3835,11 @@ var selfHarmMethodRules = []rule{bothViews(`\b` + words(
 	words(`painless`, `easiest`, `easy`, `quickest`, `quick`, `best`, `fastest`, `surest`, `least~painful`)+
 		`~`+words(`way`, `ways`, `method`, `methods`)+`~(?:for~`+words(`me`, `someone`, `a~person`)+`~)?(?:to~)?`+
 		words(`die`, `kill~`+words(`my`, `your`, `ur`, `one`)+`~self`, `commit~suicide`,
-			`end~`+words(`my`, `your`, `one'?s`)+`~life`, `od`, `overdose`, `end~it(?:~all)?`, `go`),
+			`end~`+words(`my`, `your`, `one'?s`)+`~life`, `od`, `overdose`, `end~it(?:~all)?`, `go`,
+			// "easiest way to purge", which methodCheck wants with nothing
+			// after it, or unseen; "best way to purge after a binge".
+			`purge(?:~after~(?:a~)?`+words(`eating`, `meals?`, `food`, `dinner`, `lunch`, `breakfast`, `binge`,
+				`binging`, `bingeing`)+`)?`),
 	`suicide~`+words(`method`, `methods`, `guide`, `instructions`, `tips`),
 	// Asked the way a search is: "ways to commit suicide", "methods of
 	// suicide", "easiest ways to die", "tips for purging". methodCheck
