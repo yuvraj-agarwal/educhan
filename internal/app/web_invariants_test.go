@@ -777,7 +777,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// What runs on the box with no call from any of these — the page's
 	// listeners and timers, and the answers to other requests — is not
 	// followed; TestOnlyKnownPlacesTellWhetherABadgeIsHeld holds every place
-	// that can tell whether a badge is held instead.
+	// that names what can tell whether a badge is held instead.
 	graph := jsCallGraph(t, script)
 	if end := strings.Index(view[start:], "`;\n"); end < 0 {
 		t.Error("the code step's return does not end where this test can find it")
@@ -1176,24 +1176,74 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 // badge in announce, hideQuotePreview or isInternalLink took the box out of
 // the page with every other check passing. So what can tell whether a badge
 // is held is named only where this test lists, top-level block by block, each
-// as often as it lists: state.verification, or a .badge read off anything;
-// readBadge and storedCredential; localStorage, and the key the credential is
-// kept under; and the markup a held badge alone draws — Keep my badge, the
-// badge panel's #verify-badge, a posting form's badge box and the number its
-// slot carries. A gate on a held badge, wherever it is put, has to name one of
-// them, and fails here. It is a floor, like the rest of this file: change a
-// count only with the reason the new place cannot take a step off the page.
+// as often as it lists: the verification state or a badge, read as a property
+// (state.verification, .badge off anything), destructured or bound under its
+// own name ({ verification: { badge } } = state), or named in a string; the
+// state's reader loadVerification, and readBadge and storedCredential;
+// localStorage, and the key the credential is kept under; and the markup a
+// held badge alone draws — Keep my badge, the badge panel's #verify-badge, a
+// posting form's badge box and the number its slot carries. Bare names are
+// counted in the code alone: the copy that says "badge" on every page is
+// left out (jsCodeText). A gate on a held badge that names any of them,
+// wherever it is put, fails here; a destructured read in hideQuotePreview
+// took the code box away while this test counted property reads alone. What
+// it cannot see is a name made at run time — state[k] for a k computed, the
+// page's text read back for its wording — which review has to catch. It is a
+// floor, like the rest of this file: change a count only with the reason the
+// new place cannot take a step off the page.
 func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
+	script := appScript(t)
+	// Read in the source, strings included, since markup and a key are
+	// strings: the property reads, the readers, the storage, and the markup.
 	tells := regexp.MustCompile(`\.verification\b|\.badge\b|\breadBadge\(|\bstoredCredential\(|\blocalStorage\b|` +
 		`\bCREDENTIAL_STORAGE_KEY\b|educhan:credential|verify-keep|verify-badge|data-badge-option|\bbadgeOffered\(|` +
-		`\bbadgeNumbers?\b|["']badge["']`)
+		"\\bbadgeNumbers?\\b|[\"'`](?:badge|verification)[\"'`]")
+	// Read in the code alone: the state and a badge by their bare names, as a
+	// destructuring, a binding or a key names them, and the state's reader.
+	// A name read as a property (.badge) is counted above, not again here.
+	names := regexp.MustCompile(`(?:^|[^.\w$])(?:verification|badge)\b|\bloadVerification\(`)
+	// Line for line: a comment line is emptied, not taken out.
+	source := strings.Split(regexp.MustCompile(`(?m)^[ \t]*//.*$`).ReplaceAllString(script, ""), "\n")
+	code := strings.Split(jsCodeText(script), "\n")
+	if len(source) != len(code) {
+		t.Fatalf("app.js has %d lines and its code %d; jsCodeText keeps every line", len(source), len(code))
+	}
+	// The code is app.js with what is not code blanked, and nothing else: its
+	// function declarations read as app.js's do, the copy is gone, and what a
+	// template interpolates, or follows a regular expression holding quotes,
+	// is still there.
+	for i, line := range source {
+		if strings.HasPrefix(line, "function ") || strings.HasPrefix(line, "async function ") {
+			if !strings.Contains(line, `"`) && code[i] != line {
+				t.Fatalf("jsCodeText reads app.js line %d, %q, as %q; it has lost its place in the source", i+1, line, code[i])
+			}
+		}
+	}
+	codeText := strings.Join(code, "\n")
+	for _, words := range []string{"Institutional verification", "Keep my badge", "data-action"} {
+		if strings.Contains(codeText, words) {
+			t.Errorf("jsCodeText leaves %q, from app.js's strings, in its code", words)
+		}
+	}
+	for _, kept := range []string{"${esc(badgeLost)}", "${verifiedBadgeHTML(v.badge.label)}", "state.verification = {",
+		"(c) => ESCAPES[c]"} {
+		if !strings.Contains(codeText, kept) {
+			t.Errorf("jsCodeText takes %q, which is code, out of app.js's code", kept)
+		}
+	}
 	got := map[string]int{}
-	for _, s := range jsTopLevel(withoutComments(appScript(t))) {
-		if n := len(tells.FindAllString(s.text, -1)); n > 0 {
+	for _, s := range jsTopLevel(strings.Join(source, "\n")) {
+		n := len(tells.FindAllString(s.text, -1))
+		for _, line := range code[s.line : s.line+strings.Count(s.text, "\n")] {
+			n += len(names.FindAllString(line, -1))
+		}
+		if n > 0 {
 			got[s.first] += n
 		}
 	}
 	want := map[string]int{
+		// The page's state, which starts with no badge known of.
+		"const state = {": 2,
 		// Where the credential is kept, read, stored and forgotten, and the
 		// badge read off it and numbered.
 		`const CREDENTIAL_STORAGE_KEY = "educhan:credential";`: 2,
@@ -1215,22 +1265,27 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 		// A posting form, which the Verify page never has: its badge box and
 		// what it offers, a draft carried across a re-render, the badge box
 		// ticked, and the post sent.
-		"function formHTML({ kind, slug, thread = null, open = false }) {": 3,
+		"function formHTML({ kind, slug, thread = null, open = false }) {": 5,
 		"function badgeOptionHTML(held) {":                                 1,
 		"function badgeOffered(form) {":                                    2,
 		"function offerHeldBadge() {":                                      5,
 		"function sayBadgeUnticked() {":                                    2,
-		"function captureDraft() {":                                        2,
-		"function restoreDraft(draft) {":                                   4,
+		"function captureDraft() {":                                        6,
+		"function restoreDraft(draft) {":                                   7,
 		`el.main.addEventListener("change", (event) => {`:                  1,
-		`el.main.addEventListener("submit", async (event) => {`:            11,
+		`el.main.addEventListener("submit", async (event) => {`:            12,
+		// Asking the server whether verification is on, for the posting
+		// forms, when the first page past the age screen loads.
+		"async function loadSite() {": 1,
 		// The Verify page, held where a pending code's box is concerned by
 		// TestVerifyCodeBoxShowsWhileACodeIsPending and the tests it names:
-		// whether verification is on and the badge held, the page's steps,
-		// the answer to Verify, the badge shown once kept or issued, Keep my
-		// badge in the page's click listener, and the buttons a press aimed
-		// at the step before is let go on.
-		"async function loadVerification() {":             5,
+		// whether verification is on and the badge held, the page drawn once
+		// the server has said, the page's steps, the answer to Verify, the
+		// badge shown once kept or issued, Keep my badge in the page's click
+		// listener, and the buttons a press aimed at the step before is let
+		// go on.
+		"async function loadVerification() {":             7,
+		"async function renderVerify() {":                 1,
 		"function verifyViewHTML() {":                     7,
 		"async function submitVerification(form) {":       3,
 		"function showHeldBadge() {":                      1,
@@ -1259,18 +1314,160 @@ func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
 // jsTopLevel splits code into its top-level statements by the first column:
 // each runs from a line that starts there to the next such line, and a line
 // there that only closes a statement (with }, ) or ]) belongs to the one it
-// closes. It returns each statement's first line and its text, in order.
-func jsTopLevel(code string) []struct{ first, text string } {
-	var statements []struct{ first, text string }
-	for _, line := range strings.Split(code, "\n") {
+// closes. It returns each statement's first line, its text and the number of
+// its first line in code (from 0), in order.
+func jsTopLevel(code string) []struct {
+	first, text string
+	line        int
+} {
+	var statements []struct {
+		first, text string
+		line        int
+	}
+	for i, line := range strings.Split(code, "\n") {
 		if line != "" && !strings.ContainsAny(line[:1], " \t})]") {
-			statements = append(statements, struct{ first, text string }{line, ""})
+			statements = append(statements, struct {
+				first, text string
+				line        int
+			}{line, "", i})
 		}
 		if n := len(statements); n > 0 {
 			statements[n-1].text += line + "\n"
 		}
 	}
 	return statements
+}
+
+// jsCodeText is src with all that is not code in it blanked to spaces:
+// comments, the text of string and template literals, and regular expression
+// literals. Quotes and backticks stay, and so does a template's ${...}, read
+// as code. Newlines stay too, so its lines are src's lines. A name found in it
+// is a name the code uses, not a word in the copy a page shows.
+func jsCodeText(src string) string {
+	out := []byte(src)
+	blank := func(i int) {
+		if out[i] != '\n' {
+			out[i] = ' '
+		}
+	}
+	isWord := func(c byte) bool {
+		return c == '_' || c == '$' || c >= '0' && c <= '9' || c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z'
+	}
+	// A slash starts a regular expression where a value is expected — at the
+	// start, after an operator, an opening bracket or a keyword that takes a
+	// value — and divides after a name, a number or a closing bracket.
+	takesValue := []string{"return", "typeof", "case", "do", "else", "in", "of", "new", "delete", "void", "throw",
+		"instanceof", "yield", "await"}
+	valueNext := true
+	inText := false  // in a template literal's text
+	var opened []int // the brace depth each open ${ of a template started at
+	depth := 0
+	for i := 0; i < len(src); {
+		c := src[i]
+		if inText {
+			switch {
+			case c == '\\':
+				blank(i)
+				if i+1 < len(src) {
+					blank(i + 1)
+				}
+				i += 2
+			case c == '`':
+				inText, valueNext = false, false
+				i++
+			case c == '$' && i+1 < len(src) && src[i+1] == '{':
+				inText, valueNext = false, true
+				opened = append(opened, depth)
+				depth++
+				i += 2
+			default:
+				blank(i)
+				i++
+			}
+			continue
+		}
+		switch {
+		case strings.HasPrefix(src[i:], "//"):
+			for ; i < len(src) && src[i] != '\n'; i++ {
+				blank(i)
+			}
+		case strings.HasPrefix(src[i:], "/*"):
+			stop := len(src)
+			if end := strings.Index(src[i+2:], "*/"); end >= 0 {
+				stop = i + 2 + end + 2
+			}
+			for ; i < stop; i++ {
+				blank(i)
+			}
+		case c == '\'' || c == '"':
+			for i++; i < len(src) && src[i] != c && src[i] != '\n'; i++ {
+				if src[i] == '\\' && i+1 < len(src) {
+					blank(i)
+					i++
+				}
+				blank(i)
+			}
+			i++
+			valueNext = false
+		case c == '`':
+			inText = true
+			i++
+		case c == '/' && valueNext:
+			// Up to the slash that closes it, which a slash in a class [...]
+			// does not, and then its flags.
+			blank(i)
+			class := false
+			for i++; i < len(src) && src[i] != '\n'; i++ {
+				if src[i] == '\\' && i+1 < len(src) {
+					blank(i)
+					i++
+				} else if src[i] == '[' {
+					class = true
+				} else if src[i] == ']' {
+					class = false
+				} else if src[i] == '/' && !class {
+					break
+				}
+				blank(i)
+			}
+			if i < len(src) && src[i] == '/' {
+				blank(i)
+				i++
+			}
+			for ; i < len(src) && isWord(src[i]); i++ {
+				blank(i)
+			}
+			valueNext = false
+		case c == '{':
+			depth++
+			valueNext = true
+			i++
+		case c == '}':
+			depth--
+			if n := len(opened); n > 0 && opened[n-1] == depth {
+				opened = opened[:n-1]
+				inText = true
+			}
+			valueNext = true
+			i++
+		case isWord(c):
+			j := i
+			for j < len(src) && isWord(src[j]) {
+				j++
+			}
+			valueNext = slices.Contains(takesValue, src[i:j])
+			i = j
+		case c == ')' || c == ']':
+			valueNext = false
+			i++
+		case c == ' ' || c == '\t' || c == '\n' || c == '\r':
+			i++
+		default:
+			valueNext = true
+			i++
+		}
+	}
+	return string(out)
 }
 
 // verifyStepSet finds each place app.js moves the Verify page to a step, and

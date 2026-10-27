@@ -572,13 +572,20 @@ needs a browser check before the test changes.
   pointers, hovers and drags have theirs), its timers, and the answers to requests sent
   from other pages. Down their calls lie `render()` and every page, more than a test can
   hold whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took
-  the box away with every check passing. So what can tell whether a badge is held —
-  `state.verification` or a `.badge` read off anything, `readBadge`, `storedCredential`,
-  `localStorage` and the credential's key, and the markup only a held badge draws (Keep
-  my badge, `#verify-badge`, a posting form's badge box and its number) — is named only
-  in the places `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by
-  block, so a gate on a held badge cannot be put anywhere, a listener included, without
-  failing it. `replacing` puts the badge panel away for
+  the box away with every check passing. So what can tell whether a badge is held — the
+  verification state or a badge, read as a property (`state.verification`, a `.badge`
+  off anything), destructured or bound under its own name (`{ verification: { badge } }
+  = state`), or named in a string; `loadVerification`, which returns the state,
+  `readBadge`, `storedCredential`, `localStorage` and the credential's key; and the
+  markup only a held badge draws (Keep my badge, `#verify-badge`, a posting form's badge
+  box and its number) — is named only in the places
+  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It counts
+  names in the code alone, not in the copy every page shows (`jsCodeText`), so a gate on
+  a held badge that names any of them fails it wherever it is put, a listener included;
+  counting property reads alone, it let a destructured read in `hideQuotePreview` take
+  the box away. A name made at run time — `state[k]` for a computed `k`, or the page's
+  text read back for its wording — is past what counting names can see, and is for
+  review to catch. `replacing` puts the badge panel away for
   "Verify another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
   draws, so one that ran out, or was forgotten in another tab, while the page was on
