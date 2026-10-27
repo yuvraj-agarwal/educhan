@@ -562,3 +562,46 @@
 {"id": "risk-562", "body": "\"kys\" she is commenting on all my posts. what do i do", "subject": "", "name": "", "expect": "publish", "why": "\"kys\" someone else keeps commenting, \"she is commenting\" after the quote (R3CC-1)"}
 {"id": "risk-563", "body": "\"kys\" - she's been commenting this under all my posts. i'm not okay", "subject": "", "name": "", "expect": "publish", "why": "after a dash, \"she's been commenting\" says whose the words are (R3CC-1)"}
 {"id": "risk-564", "body": "\"how old are you? dont tell your parents, add me on snap\" this guy has been messaging me this every day", "subject": "", "name": "", "expect": "publish", "why": "a grooming message the poster got, quoted to ask for help; it names no account (R3CC-1)"}
+{"id": "risk-565", "body": "age and location? dm me if u wanna chat", "subject": "", "name": "", "expect": "hold", "why": "\"age and location\" opening what is said is an age question, beside a dm cue (R3-README-AGE-AND-LOCATION)"}
+{"id": "risk-566", "body": "F here? age and city? dm me", "subject": "", "name": "", "expect": "hold", "why": "\"age and city\" after a greeting of its own (R3-README-AGE-AND-LOCATION)"}
+{"id": "risk-567", "body": "age/location? i'm 24 btw, dm", "subject": "", "name": "", "expect": "hold", "why": "\"age/location\" with a slash, and a bare dm (R3-README-AGE-AND-LOCATION)"}
+{"id": "risk-568", "body": "any girls online? age & location? snap me", "subject": "", "name": "", "expect": "hold", "why": "an age question with an app cue is held as grooming, not sent back for the \"snap me\" (R3-README-AGE-AND-LOCATION)"}
+{"id": "risk-569", "body": "age and location of the exam centre? dm me if you know", "subject": "", "name": "", "expect": "publish", "why": "the age limit and the place of an exam centre, asked about the exam (R3-README-AGE-AND-LOCATION control)"}
+{"id": "risk-570", "body": "how old are you? lets vc", "subject": "", "name": "", "expect": "hold", "why": "\"lets vc\" asks for a video call, beside an age question (R3-README-VC-CUE)"}
+{"id": "risk-571", "body": "how old are you? vc?", "subject": "", "name": "", "expect": "hold", "why": "a \"vc\" said on its own (R3-README-VC-CUE)"}
+{"id": "risk-572", "body": "what grade are you in? wanna vc", "subject": "", "name": "", "expect": "hold", "why": "\"wanna vc\" after a grade question (R3-README-VC-CUE)"}
+{"id": "risk-573", "body": "how old are you? turn on your camera", "subject": "", "name": "", "expect": "hold", "why": "a camera turned on for the poster (R3-README-VC-CUE)"}
+{"id": "risk-574", "body": "what grade are you in? our vc club needs new members", "subject": "", "name": "", "expect": "publish", "why": "a vc club is no call asked for (R3-README-VC-CUE control)"}
+{"id": "risk-575", "body": "what grade are you in? turn on your camera for the zoom class", "subject": "", "name": "", "expect": "publish", "why": "a camera turned on for a class (R3-README-VC-CUE control)"}
+{"id": "risk-576", "body": "which school are you from? we can vc on the group call with the whole class tomorrow", "subject": "", "name": "", "expect": "publish", "why": "a call with the whole class is not a private one (R3-README-VC-CUE control)"}
+{"id": "risk-577", "body": "your parents don't need to know. how old are you? dm me", "subject": "", "name": "", "expect": "hold", "why": "the secrecy sentence ends in \"know\"; the age question after it is asked, not reported (R3DOCS-1)"}
+{"id": "risk-578", "body": "nobody has to know. what age are you? we could meet", "subject": "", "name": "", "expect": "hold", "why": "\"what age are you\" after a sentence ending in \"know\" (R3DOCS-1)"}
+{"id": "risk-579", "body": "keep this between us, no one else has to know. how old are you?", "subject": "", "name": "", "expect": "hold", "why": "a secrecy cue whose last word is \"know\", then the age question (R3DOCS-1)"}
+{"id": "risk-580", "body": "don't worry nobody will know! how old are you?", "subject": "", "name": "", "expect": "hold", "why": "\"nobody will know\" is secrecy promised, and the question after the \"!\" is asked (R3DOCS-1)"}
+{"id": "risk-581", "body": "promise you won't tell. how old are you?", "subject": "", "name": "", "expect": "hold", "why": "\"promise you won't tell\" ends in \"tell\" and is secrecy asked for (R3DOCS-1)"}
+{"id": "risk-582", "body": "nobody has to know. how old are you? add me on snap", "subject": "", "name": "", "expect": "hold", "why": "held as grooming rather than sent back for the snap ask (R3DOCS-1)"}
+{"id": "risk-583", "body": "she wanted to know how old are you, so i told her you're 14", "subject": "", "name": "", "expect": "publish", "why": "a question reported in its own sentence (R3DOCS-1 control)"}
+{"id": "risk-584", "body": "how old are you? nobody will know the answer lol", "subject": "", "name": "", "expect": "publish", "why": "nobody knowing an answer keeps nothing secret (R3DOCS-1 control)"}
+{"id": "risk-585", "body": "9th graders who went on the trip, any pics?", "subject": "", "name": "", "expect": "publish", "why": "\"9th graders\" said of those who went on a trip is no age asked for (R3CC-3)"}
+{"id": "risk-586", "body": "the 9th graders are going on the trip without teachers, just us. so excited", "subject": "", "name": "", "expect": "publish", "why": "\"the 9th graders\" are a group, named (R3CC-3)"}
+{"id": "risk-587", "body": "I tutor 9th graders in maths, whatsapp me on 9845012345", "subject": "", "name": "", "expect": "block", "why": "a phone number is sent back; \"9th graders\" taught is no age asked, so it is not held (R3CC-3)"}
+{"id": "risk-588", "body": "I'm a 9th grader, my snap is madeup_riya22", "subject": "", "name": "", "expect": "block", "why": "a handle is sent back; the poster's own year places no reader (R3CC-3)"}
+{"id": "risk-589", "body": "9th graders hmu", "subject": "", "name": "", "expect": "hold", "why": "a school year's youths asked to get in touch, with no \"any\" (R3CC-3 control)"}
+{"id": "risk-590", "body": "Which school are you from? The inter-school quiz starts at 3 pm", "subject": "", "name": "", "expect": "publish", "why": "the \"pm\" of a time is no private message (R3CC-4)"}
+{"id": "risk-591", "body": "what grade are you in? the bus leaves at 4 pm", "subject": "", "name": "", "expect": "publish", "why": "\"4 pm\", a time (R3CC-4)"}
+{"id": "risk-592", "body": "how old are you? the movie is rated 13+ and starts at 7 pm.", "subject": "", "name": "", "expect": "publish", "why": "\"7 pm.\" at the end, a time (R3CC-4)"}
+{"id": "risk-593", "body": "how old are you? pm", "subject": "", "name": "", "expect": "hold", "why": "a \"pm\" on its own is a cue (R3CC-4 control)"}
+{"id": "risk-594", "body": "U-14 trials: boys 13, girls 14. Meet me at the gym at 4.", "subject": "", "name": "", "expect": "publish", "why": "a tally of ages for trials, not an age looked for (R3CC-8)"}
+{"id": "risk-595", "body": "class strength: boys 22, girls 14. my number 9845012345", "subject": "", "name": "", "expect": "block", "why": "a tally places no reader, so the number is sent back (R3CC-8)"}
+{"id": "risk-596", "body": "girls 13-16 dm me", "subject": "", "name": "", "expect": "hold", "why": "an age looked for, with a cue after it (R3CC-8 control)"}
+{"id": "risk-597", "body": "class 12 students dm me for jee notes", "subject": "", "name": "", "expect": "publish", "why": "a school year's students offered notes (R22V-F6-STUDENTS-PRECISION)"}
+{"id": "risk-598", "body": "class 10 students text me for the pdf", "subject": "", "name": "", "expect": "publish", "why": "a pdf offered to a year's students (R22V-F6-STUDENTS-PRECISION)"}
+{"id": "risk-599", "body": "year 12 students message me for the ucas guide", "subject": "", "name": "", "expect": "publish", "why": "a guide offered (R22V-F6-STUDENTS-PRECISION)"}
+{"id": "risk-600", "body": "grade 11 students hmu for the study group", "subject": "", "name": "", "expect": "publish", "why": "a study group (R22V-F6-STUDENTS-PRECISION)"}
+{"id": "risk-601", "body": "class 12 kids dm me for physics notes", "subject": "", "name": "", "expect": "publish", "why": "\"kids\" of a school year, offered notes (R22V-F6-STUDENTS-PRECISION)"}
+{"id": "risk-602", "body": "class 8 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "a school year's girls asked to get in touch (R22V-F6-STUDENTS-PRECISION control)"}
+{"id": "risk-603", "body": "looking for class 8 girls dm me", "subject": "", "name": "", "expect": "hold", "why": "\"looking for\" a school year's girls, with a cue (R22V-F6-LOOKING-FOR)"}
+{"id": "risk-604", "body": "searching for class 9 girls dm", "subject": "", "name": "", "expect": "hold", "why": "\"searching for\" with a bare dm (R22V-F6-LOOKING-FOR)"}
+{"id": "risk-605", "body": "looking for 8th class girls, dm me", "subject": "", "name": "", "expect": "hold", "why": "an ordinal year after \"looking for\" (R22V-F6-LOOKING-FOR)"}
+{"id": "risk-606", "body": "class 8 girl dm me", "subject": "", "name": "", "expect": "hold", "why": "one girl of a school year asked to get in touch (R22V-F6-LOOKING-FOR)"}
+{"id": "risk-607", "body": "class 8 girl here, dm me if you want my notes", "subject": "", "name": "", "expect": "publish", "why": "the poster's own year, with notes offered (R22V-F6-LOOKING-FOR control)"}

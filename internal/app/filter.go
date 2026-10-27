@@ -259,7 +259,8 @@ func checkContentCost(in contentInput, supportSeen bool) (contentVerdict, int) {
 // age, a school year, a school or where they live.
 func placesTheReader(fields []*scannedField) bool {
 	for _, f := range fields {
-		if f.anyMatch(ageQuestionRules, ageCheck) || f.anyMatch(aslRules, aslCheck) {
+		if f.anyMatch(ageQuestionRules, ageCheck) || f.anyMatch(aslRules, aslCheck) ||
+			f.anyRun(ageAndPlaceRuns, ageAndPlaceCheck) {
 			return true
 		}
 	}
@@ -283,7 +284,7 @@ func holdReason(fields []*scannedField, contactCue bool) string {
 	// private-contact or meet-up cue, anywhere in the same post.
 	cues := contactCue
 	for _, f := range fields {
-		cues = cues || f.anyMatch(privateCueRules, cueCheck)
+		cues = cues || f.anyMatch(privateCueRules, cueCheck) || f.anyRun(groomingCueRuns, groomingCueCheck)
 	}
 	if cues && placesTheReader(fields) {
 		return holdGrooming
@@ -306,7 +307,7 @@ func holdReason(fields []*scannedField, contactCue bool) string {
 // 14?", "any 14yo girls".
 func asksTheAge(fields []*scannedField) bool {
 	for _, f := range fields {
-		if f.anyMatch(ageQuestionRules, ageAsked) {
+		if f.anyMatch(ageQuestionRules, ageAsked) || f.anyRun(ageAndPlaceRuns, ageAndPlaceCheck) {
 			return true
 		}
 	}
@@ -7856,7 +7857,11 @@ func privateCue(v *view, m []int, openMeetings bool) bool {
 		// "I'll pay you", not "I'll pay you back".
 		return !nextIn(0, setOf(`back`))
 	case bareDMs[first] && !is(last, "me") && unicode.IsLetter(rune(text[m[0]])):
-		// "girls 13-15 dm", not "I asked in dm" or "check your dms".
+		// "girls 13-15 dm", not "I asked in dm" or "check your dms", nor
+		// the "pm" of a time: "the quiz starts at 3 pm".
+		if len(prev) > 0 && is(first, "pm") && (isASCIIDigit(prev[len(prev)-1][0]) || hourWords[prev[len(prev)-1]]) {
+			return false
+		}
 		return !(len(prev) > 0 && dmLeads[prev[len(prev)-1]])
 	case hasWord(ws, "out") && (is(first, "go") || is(first, "going") || is(first, "goes")):
 		// "do your parents let you go out alone", not "is it safe for
@@ -8033,6 +8038,8 @@ var (
 	// where something was said or seen, not a cue: "I asked in dm",
 	// "check your dms".
 	bareDMs = canonSetOf(`dm dms pm`)
+	// hourWords are an hour said in words, before the "pm" of a time.
+	hourWords = canonSetOf(`one two three four five six seven eight nine ten eleven twelve`)
 	// justUsLeads may come before a "just us" that ends a sentence in its
 	// clause: "we could hang out just us".
 	justUsLeads = canonSetOf(`out over alone together meet chat talk hang private privately tonight today tomorrow
@@ -8060,6 +8067,92 @@ func aslCheck(v *view, m []int) bool {
 	return len(next) == 0 || !aslNouns[next[0]]
 }
 
+// ageAndPlaceRuns are an age asked together with where the reader is, "asl"
+// spelled out: "age and location?", "age/city?", "age, sex, location?".
+var ageAndPlaceRuns = runsOf(`age and|n|&? sex|gender? and|n|&? location|loc|city|area|place|school|class|grade|
+	country|state|from`)
+
+// ageAndPlaceCheck takes an age and a place where they open what is said,
+// as aslCheck takes "asl", and end it: "F here? age and city? dm me", not
+// "age and location of the exam centre?" or "the age and school
+// requirements".
+func ageAndPlaceCheck(v *view, m []int) bool {
+	if v.reported(m) {
+		return false
+	}
+	for _, w := range wordsIn(clauseBefore(v.text, m[0])) {
+		if !aslLeads[w] {
+			return false
+		}
+	}
+	next := nextWords(clauseAfter(v.text, m[1]), 1)
+	return len(next) == 0 || ageAndPlaceTails[next[0]]
+}
+
+// groomingCueRuns are cues read as word runs: a video call asked for with no
+// app named ("lets vc", "can we vc", "turn on your camera"), a "vc" said on
+// its own ("vc?"), and secrecy promised ("nobody will know", "promise you
+// won't tell", "you won't tell anyone"). Like every cue, each counts only in
+// a post that places the reader, since "vc" is also a voice chat and a
+// venture capitalist.
+var groomingCueRuns = runsOf(
+	`lets|let's|lemme|wanna|gonna vc|videocall`,
+	`can|could|shall|should|wanna we|u|you vc|videocall`,
+	`we|u|you can|could|should vc|videocall`,
+	`vc`,
+	`turn|switch|put on your|ur cam|camera|webcam|video`,
+	`turn|switch|put your|ur cam|camera|webcam|video on`,
+	`nobody|noone will|would|wil ever? know|find`,
+	`no one will|would|wil ever? know|find`,
+	`promise|swear you|u|ya won't|wont|wouldn't|wouldnt|never tell|say`,
+	`promise|swear not to tell|say`,
+	`you|u won't|wont|wouldn't|wouldnt tell anyone|anybody|any1|nobody|your|ur`,
+)
+
+// groomingCueCheck reads a run of groomingCueRuns: a "vc" on its own with
+// only "pls" or "now" round it, not "our vc club needs members"; a call
+// asked for with no group in it; a camera
+// turned on outside a lesson, not "turn on your camera for the zoom class";
+// and secrecy with nothing after it but whom it is kept from, not "nobody
+// will know the answer".
+func groomingCueCheck(v *view, m []int) bool {
+	if v.reported(m) {
+		return false
+	}
+	ws := wordsIn(v.text[m[0]:m[1]])
+	sentence := wordsIn(sentenceAround(v.text, m[0], m[1]))
+	switch {
+	case len(ws) == 1:
+		for _, w := range sentence {
+			if !vcAlone[w] {
+				return false
+			}
+		}
+		return true
+	case anyIn(ws, cameraWords):
+		return !anyIn(sentence, lessonWords)
+	case anyIn(ws, secrecyVerbs):
+		next := nextWords(clauseAfter(v.text, m[1]), 1)
+		return len(next) == 0 || secrecyTails[next[0]]
+	}
+	// A call with a group is no private one: "we can vc with the whole
+	// class".
+	return !anyIn(sentence, groupCallWords)
+}
+
+var (
+	ageAndPlaceTails = setOf(`pls plz please u you ya bro sis btw quick first`)
+	vcAlone          = setOf(`vc pls plz please now rn tonight later then so ok okay quick`)
+	cameraWords      = setOf(`cam camera webcam video`)
+	lessonWords      = canonSetOf(`class classes lesson lessons lecture lectures zoom meet teams exam exams test tests
+		proctor proctored proctoring attendance teacher sir maam ma'am webinar session sessions presentation
+		interview viva tuition coaching`)
+	groupCallWords = canonSetOf(`group everyone everybody all whole class team squad gang guys`)
+	secrecyVerbs   = setOf(`know find tell say`)
+	secrecyTails   = canonSetOf(`right ok okay lol haha trust promise pls plz please anyway anyways ever out anyone
+		anybody any1 your ur parents mum mom dad mummy papa family`)
+)
+
 var (
 	aslLeads = setOf(`hi hey hello helo hii heyy yo so ok okay um umm hmm pls plz please bro sis and ur your u ya
 		what what's whats wats tell me send drop give quick first`)
@@ -8083,8 +8176,7 @@ func ageCheck(v *view, m []int) bool {
 	case len(ws) > 1 && is(ws[0], "what") && is(ws[1], "age"):
 		// "what age are you supposed to start", "if anyone asks what age
 		// are you": an age in general, or a question reported.
-		before := wordsBefore(v.text, m[0], 1)
-		return !(len(next) > 0 && generalAgeNext[next[0]] || len(before) > 0 && askedWords[before[0]])
+		return !(len(next) > 0 && generalAgeNext[next[0]] || askedBefore(v.text, m[0]))
 	case len(ws) > 1 && is(ws[1], "kya") && hinglishAge[ws[0]]:
 		// "umar kya hai tumhari", not "uski age kya hai" or "jee ke liye age
 		// kya hai".
@@ -8096,24 +8188,41 @@ func ageCheck(v *view, m []int) bool {
 		return len(next) == 0 || hinglishAgeTails[next[0]]
 	case len(ws) > 1 && youthNouns[ws[0]] && isASCIIDigit(ws[1][0]):
 		// "girls 13-16 dm me", "girls 14+ here?", not "girls 13-16 category
-		// results" or "the girls 14+ team".
+		// results", "the girls 14+ team" or a tally, "boys 13, girls 14".
 		before := wordsIn(clauseBefore(v.text, m[0]))
+		if tallied(wordsIn(sentenceAround(v.text, m[0], m[1]))) {
+			return false
+		}
 		return len(next) == 0 || seekingTails[next[0]] && !(len(before) > 0 && groupLeads[before[len(before)-1]])
-	case len(ws) > 2 && (schoolYearNouns[ws[0]] || ordinalWord.MatchString(ws[0])) && youthWord(ws[len(ws)-1]):
-		// With no "any", a school year's youths, more than one, are looked
-		// for only with something asked of them after: "class 8 girls dm
-		// me", "9th graders hmu", not "class 8 girls relay results are out",
-		// "the class 8 girls dm me every day", "grade 9 student here, dm me"
-		// or "grade 9 student. message me".
-		if !strings.HasSuffix(ws[len(ws)-1], "s") {
+	case len(ws) > 1 && (schoolYearNouns[ws[0]] || ordinalWord.MatchString(ws[0])) && youthWord(ws[len(ws)-1]):
+		// With no "any", a school year's girls or boys are looked for when
+		// someone says so ("looking for class 8 girls") or asks something
+		// of them after: "class 8 girls dm me", "9th graders hmu", "class 8
+		// girl dm me". Not its students, kids or guys, who are offered notes
+		// ("class 12 students dm me for jee notes"), and not "class 8 girls
+		// relay results are out", "the class 8 girls dm me every day", "9th
+		// graders who went on the trip", "grade 9 student here, dm me" or
+		// "class 8 girl here".
+		noun := ws[len(ws)-1]
+		if !soughtYouths[noun] {
 			return false
 		}
 		before := wordsIn(clauseBefore(v.text, m[0]))
+		if n := len(before); n > 1 && is(before[n-1], "for") && seekingVerbs[before[n-2]] {
+			return true
+		}
 		lead := ""
 		if len(before) > 0 {
 			lead = before[len(before)-1]
 		}
-		return len(next) > 0 && seekingTails[next[0]] && !groupLeads[lead] && !articles[lead]
+		if groupLeads[lead] || articles[lead] {
+			return false
+		}
+		next := nextWords(clauseAfter(v.text, m[1]), 3)
+		if !strings.HasSuffix(noun, "s") {
+			return len(next) > 0 && reachTails[next[0]]
+		}
+		return len(next) > 0 && seekingTails[next[0]] && (!is(next[0], "who") || whoSought(next[1:]))
 	}
 	if readerStatement[strings.TrimRight(ws[0], "'")] || is(ws[0], "you") && len(ws) > 1 && is(ws[1], "are") ||
 		is(ws[0], "u") && len(ws) > 1 && is(ws[1], "r") {
@@ -8133,9 +8242,7 @@ func ageCheck(v *view, m []int) bool {
 	// are you supposed to be to go out alone" asks an age in general.
 	if is(ws[0], "how") && !is(ws[len(ws)-1], "old") {
 		next := nextWords(clauseAfter(v.text, m[1]), 1)
-		before := wordsBefore(v.text, m[0], 1)
-		if len(next) > 0 && (is(next[0], "are") || generalOldNext[next[0]]) ||
-			len(before) > 0 && askedWords[before[0]] {
+		if len(next) > 0 && (is(next[0], "are") || generalOldNext[next[0]]) || askedBefore(v.text, m[0]) {
 			return false
 		}
 	}
@@ -8153,6 +8260,38 @@ func ageCheck(v *view, m []int) bool {
 
 // youthWord reports one of youthNouns, or a grader: "girls", "9th graders".
 func youthWord(w string) bool { return youthNouns[w] || is(w, "grader") || is(w, "graders") }
+
+// askedBefore reports one of askedWords as the last word before i in its
+// sentence, so the question after it is reported: "she wanted to know how
+// old are you". A sentence that ends in one ("your parents don't need to
+// know. how old are you?") reports nothing.
+func askedBefore(text string, i int) bool {
+	ws := wordsIn(sentenceBefore(text, i))
+	return len(ws) > 0 && askedWords[ws[len(ws)-1]]
+}
+
+// tallied reports a sentence that counts youths by number more than once,
+// a tally rather than an age asked for: "boys 13, girls 14", "class
+// strength: boys 22, girls 14".
+func tallied(ws []string) bool {
+	n := 0
+	for k := 0; k+1 < len(ws); k++ {
+		if youthNouns[ws[k]] && isASCIIDigit(ws[k+1][0]) || isASCIIDigit(ws[k][0]) && youthNouns[ws[k+1]] {
+			n++
+		}
+	}
+	return n > 1
+}
+
+// whoSought reports what follows "who" after a school year's youths as
+// asked of them: "class 8 girls who wanna chat", "who are single", not "who
+// went on the trip".
+func whoSought(ws []string) bool {
+	if len(ws) > 0 && (is(ws[0], "are") || is(ws[0], "r")) {
+		ws = ws[1:]
+	}
+	return len(ws) > 0 && soughtWho[ws[0]]
+}
 
 // ageRuleAfter reports an age limit stated in s: "for 14 and above", "14+
 // only", "under 15 only", "the age limit is 16", "eligible". An adult's age
@@ -8233,6 +8372,15 @@ var (
 		wanna want interested single online around near nearby who u you any hit reply ping call chat lets let's
 		looking`)
 	groupLeads = canonSetOf(`the our their his her my these those with vs versus and both all for of in`)
+	// soughtYouths are the youths of a school year looked for with no
+	// "any"; reachTails, after one of them, say how to reach the poster;
+	// seekingVerbs before "for" look for them; and soughtWho, after "who",
+	// say what they are wanted for.
+	soughtYouths = canonSetOf(`girl girls boy boys gf bf girlfriend boyfriend female females male males teen teens
+		grader graders`)
+	reachTails   = canonSetOf(`dm dms pm inbox msg message text hmu snap add ping call chat`)
+	seekingVerbs = canonSetOf(`looking searching look search lookin`)
+	soughtWho    = canonSetOf(`want wants wanna interested single online free lonely bored up down like likes`)
 )
 
 // canonSetOf is setOf for words looked up in the loose view as well.
