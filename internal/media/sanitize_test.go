@@ -1951,12 +1951,14 @@ func TestWebPIsStrippedChunkByChunk(t *testing.T) {
 	requireSamePixels(t, want, decodeStored(t, got.Data))
 }
 
-// A VP8X's alpha flag is a hint: libwebp, and so every browser, shows what
-// the chunks hold whatever it says. libwebp writes a lossless picture with
+// A VP8X's alpha flag decides whether Chromium shows a lossy picture's alpha
+// plane: without the flag the picture shows opaque, the plane ignored, and so
+// it is stored. Otherwise the flag is a hint, and Chromium shows what the
+// chunks hold whatever it says. libwebp writes a lossless picture with
 // transparency and metadata under it, though the lossless bitstream carries
 // its own alpha and golang.org/x/image refuses the flag beside one, as it
-// refuses the flag over a lossy picture with no alpha plane and a plane
-// without the flag. Each is stored as the same picture with the flag right.
+// refuses the flag over a lossy picture with no alpha plane. Each is stored as
+// the picture Chromium 141 showed, and costed as it is decoded.
 func TestWebPAlphaFlagFollowsTheChunks(t *testing.T) {
 	lossless := webpChunks(t, readTestdata(t, "hidden-lossless.webp")) // VP8L, half transparent
 	lossy := webpChunks(t, readTestdata(t, "lossy.webp"))              // VP8, opaque
@@ -1982,9 +1984,13 @@ func TestWebPAlphaFlagFollowsTheChunks(t *testing.T) {
 			webpFile(lossy[0])},
 		{"an alpha plane without the flag",
 			webpFile(vp8xChunk(0, 64, 48), lossyAlpha[1], lossyAlpha[2]),
-			webpFile(lossyAlpha...)},
+			webpFile(lossyAlpha[2])},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			_, gotAlpha, _ := webpPicture(tc.upload)
+			if _, wantAlpha, _ := webpPicture(tc.as); gotAlpha != wantAlpha {
+				t.Errorf("costed with an alpha plane: %v, want %v", gotAlpha, wantAlpha)
+			}
 			want := process(t, tc.as)
 			got, err := Process(context.Background(), tc.upload)
 			if err != nil {

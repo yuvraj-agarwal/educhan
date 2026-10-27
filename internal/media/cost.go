@@ -1120,17 +1120,20 @@ const vp8lAlphaHeader = 5
 // with the chunk, so the rest of the file — a lossy bitstream, a colour
 // profile, EXIF — is never part of it. These are the first such chunks,
 // which are the ones stripWebP keeps and the decoder takes: a file with a
-// second is refused before it is decoded. A file it cannot follow is costed as
-// lossless, the dearer kind, with the whole file as its bitstream; the decoder
-// will have the last word. An animated WebP, which has frames (ANMF) where a
-// still has its picture, never gets here: Inspect refuses it from its chunks
-// first (webpAnimated), so it is not charged as one long lossless picture.
+// second is refused before it is decoded. An alpha plane under a VP8X whose
+// alpha flag is clear is dropped before it (stripExtended), so it is no alpha
+// plane here. A file it cannot follow is costed as lossless, the dearer kind,
+// with the whole file as its bitstream; the decoder will have the last word.
+// An animated WebP, which has frames (ANMF) where a still has its picture,
+// never gets here: Inspect refuses it from its chunks first (webpAnimated), so
+// it is not charged as one long lossless picture.
 func webpPicture(data []byte) (lossless, alpha bool, vp8l int64) {
 	unknown := func() (bool, bool, int64) { return true, false, int64(len(data)) }
 	if len(data) < 12 {
 		return unknown()
 	}
 	b := data[12:]
+	dropped := len(b) > 8 && string(b[:4]) == "VP8X" && b[8]&vp8xFlagAlpha == 0
 	for len(b) >= 8 {
 		n := uint64(binary.LittleEndian.Uint32(b[4:8]))
 		payload := int64(min(n, uint64(len(b)-8)))
@@ -1138,7 +1141,7 @@ func webpPicture(data []byte) (lossless, alpha bool, vp8l int64) {
 		case "VP8L":
 			return true, false, payload
 		case "ALPH":
-			if !alpha {
+			if !alpha && !dropped {
 				alpha = true
 				// A plane too short to say how it is compressed is costed
 				// as compressed, the dearer kind.

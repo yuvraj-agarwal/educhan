@@ -214,12 +214,17 @@ func stripExtended(head riffChunk, rest []byte) ([]riffChunk, webpInfo, error) {
 	if !ok {
 		return nil, webpInfo{}, ErrCorruptImage
 	}
-	// The alpha flag is set when an alpha plane is kept, and only then.
-	// libwebp, and with it every browser, takes the flag as a hint and shows
-	// what the chunks hold, but golang.org/x/image refuses a file where the
-	// two disagree: a lossless picture, which carries its own alpha, under the
-	// flag, as libwebp itself writes one with transparency and metadata; a
-	// lossy one under it with no plane; or a plane without it.
+	// Chromium shows a lossy picture's alpha plane only under the alpha flag,
+	// and the picture opaque without it, so a plane without the flag is
+	// dropped. Otherwise it shows what the chunks hold, whatever the flag
+	// says, but golang.org/x/image refuses a file where the two disagree: a
+	// lossless picture, which carries its own alpha, under the flag, as
+	// libwebp itself writes one with transparency and metadata; or a lossy
+	// one under it with no plane. So the flag is set when an alpha plane is
+	// kept, and only then.
+	if picture[0].id == "ALPH" && flags&vp8xFlagAlpha == 0 {
+		picture = picture[1:]
+	}
 	vp8x[0] &^= vp8xFlagAlpha
 	if picture[0].id == "ALPH" {
 		vp8x[0] |= vp8xFlagAlpha
