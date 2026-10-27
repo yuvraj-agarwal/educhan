@@ -20,7 +20,15 @@
 --     transaction that wrote it, comes from the same counter as the posts',
 --     which carry their time, and the WAL keeps the same order, so whoever
 --     holds the live database files or a physical backup can place a row
---     between two posts. Stripe keeps the exact time of every payment anyway.
+--     between two posts. A passes row's xmin dates the latest write to it: its
+--     purchase, a renewal collected, a reissue code redeemed, or a refund or
+--     dispute that takes days off it. Nothing else marks the row. Only a
+--     transaction that writes it locks it (inserting a payment's row, which
+--     references it, takes its lock), so its xmax, the last transaction to
+--     lock it, holds nothing its xmin does not, and a renewal's checkout, paid
+--     or not, leaves it as it was until the renewal is collected. That is why
+--     pass_orders.renew_pass_id is not a foreign key. Stripe keeps the exact
+--     time of every payment anyway.
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
 -- there lives from checkout until the Pass is collected, and is deleted the
@@ -89,8 +97,11 @@ CREATE TABLE IF NOT EXISTS pass_orders (
     -- buyer has not paid yet, or the webhook has not arrived.
     payment_hash  BYTEA UNIQUE,
     -- The Pass this purchase renews, when the checkout was sent its code. NULL
-    -- buys a new Pass, and so does a renewal whose Pass has gone since.
-    renew_pass_id BIGINT REFERENCES passes (id) ON DELETE SET NULL,
+    -- buys a new Pass, and so does a renewal whose Pass has gone since, which
+    -- names no Pass any more: a Pass's id is never given to another. It is not
+    -- a foreign key, whose check would lock the Pass's row and leave the
+    -- checkout's transaction id on it (above).
+    renew_pass_id BIGINT,
     -- The term the order buys, in days: EDUCHAN_PASS_DAYS when the checkout
     -- started. Collecting, renewing and pruning the order all use this, so a
     -- change to the setting never changes what was already sold.

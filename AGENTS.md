@@ -772,7 +772,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   is treated as no Pass, never refused with a status of its own, because a request-log
   line only a Pass can cause would tie its holder to the thread
   (`TestPassNoGoodOnPostsIsNoPass`). The Pass skips the captcha only, never the rules, a
-  refusal limit or a cooldown. `TestPassIsNeverStoredOrLogged`,
+  refusal limit or a cooldown. Only a transaction that writes a `passes` row locks it, so
+  its `xmax` dates nothing its `xmin` does not: `pass_orders.renew_pass_id` is no foreign
+  key, whose check would leave every renewal checkout's transaction id on the Pass's row
+  (`TestPassRowIsDatedOnlyByItsWrites`). `TestPassIsNeverStoredOrLogged`,
   `TestPassTablesCannotBeJoinedToPosts` and `TestPassSharesOneHourlyBudget` hold it
   there.
 - **Bump order only.** The index and the catalog list stickies, then threads by their

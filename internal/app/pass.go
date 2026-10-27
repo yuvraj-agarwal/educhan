@@ -17,7 +17,6 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // The educhan Pass, after 4chan's: a term (a year by default) of posting
@@ -1441,11 +1440,15 @@ var errPassGone = errors.New("the Pass to renew is gone")
 // the checkout was given and with the same grace limit as its own lookup, so
 // a refund, a prune, or a reissue that gave the Pass another code, landing in
 // between while Stripe was being asked for a session, answers errPassGone
-// rather than failing on the foreign key or renewing a Pass whose code the
-// browser no longer holds. A Pass reissued from a right that moved to a
-// renewal (moveOrigin) would otherwise be handed over with this renewal still
-// to land on it, past the check that stops a reissue while one is under way
-// (renewalUnderWay).
+// rather than renewing a Pass whose code the browser no longer holds. A Pass
+// reissued from a right that moved to a renewal (moveOrigin) would otherwise
+// be handed over with this renewal still to land on it, past the check that
+// stops a reissue while one is under way (renewalUnderWay).
+//
+// The order names the Pass it renews with no foreign key, whose check would
+// lock the Pass's row and leave this transaction's id on it (0012). A Pass
+// that goes once the order is written leaves the order naming no Pass, and
+// collecting it then makes a new one (collectPassOrder).
 func (s *Store) createPassOrder(ctx context.Context, o passOrder, now time.Time) error {
 	return s.passTx(ctx, func(tx pgx.Tx) error {
 		var renewID *int64
@@ -1462,22 +1465,8 @@ func (s *Store) createPassOrder(ctx context.Context, o passOrder, now time.Time)
 		_, err := tx.Exec(ctx, `
 			INSERT INTO pass_orders (claim_hash, session_hash, renew_pass_id, days, expires_at)
 			VALUES ($1, $2, $3, $4, $5)`, o.ClaimHash, o.SessionHash, renewID, o.Days, o.ExpiresAt)
-		if isForeignKeyViolation(err) {
-			return errPassGone
-		}
 		return err
 	})
-}
-
-// foreignKeyViolation is the PostgreSQL SQLSTATE for a reference to a row
-// that does not exist.
-const foreignKeyViolation = "23503"
-
-// isForeignKeyViolation reports whether err is a PostgreSQL foreign key
-// failure.
-func isForeignKeyViolation(err error) bool {
-	var pgErr *pgconn.PgError
-	return errors.As(err, &pgErr) && pgErr.Code == foreignKeyViolation
 }
 
 // What a "paid" event came to.
@@ -2032,7 +2021,8 @@ func (s *Store) revokePassPayment(ctx context.Context, paymentHash []byte, now t
 			res = revokedOrder
 			// A paid renewal not collected yet counts as a term to come of
 			// the Pass it renews, so taking it back is applied as a payment
-			// of that Pass would be.
+			// of that Pass would be. A Pass gone since has no payments left,
+			// and nothing moves.
 			if renewID != nil {
 				if err := moveOrigin(ctx, tx, *renewID, now); err != nil {
 					return err

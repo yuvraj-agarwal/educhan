@@ -1853,12 +1853,23 @@ func TestPassRenewalOfAPassThatIsGone(t *testing.T) {
 		t.Fatalf("a renewal of a lapsed Pass left %d orders", n)
 	}
 
-	// The foreign key itself is read as the same refusal.
-	_, err := p.app.pool.Exec(context.Background(), `
-		INSERT INTO pass_orders (claim_hash, session_hash, renew_pass_id, days, expires_at)
-		VALUES ('\x00', '\x00', 999999999, 365, now())`)
-	if !isForeignKeyViolation(err) {
-		t.Fatalf("an order for a missing Pass: %v, want a foreign key violation", err)
+	// An order naming a Pass that is not there, as one would whose Pass went
+	// after the lookup, is a renewal of nothing: paid, it makes a new Pass,
+	// as one whose Pass is refunded after its order does
+	// (TestPassRenewalRacingARefund), and the Pass it was opened for is left
+	// as it was.
+	kept := p.buy("pi_kept")
+	keptExpiry, _ := p.passExpiresAt(kept.Pass)
+	session := p.checkout(kept.Pass)
+	p.exec(`UPDATE pass_orders SET renew_pass_id = 999999999`)
+	p.paid(session, "pi_renewing_nothing")
+	if status, made := p.claim(); status != http.StatusOK || made.Status != "issued" || made.Pass == "" {
+		t.Fatalf("a paid order for a missing Pass: status %d, %+v", status, made)
+	} else if status, _ := p.activate(made.Pass); status != http.StatusOK {
+		t.Fatalf("the Pass made for an order whose Pass was missing: status %d", status)
+	}
+	if got, ok := p.passExpiresAt(kept.Pass); !ok || !got.Equal(keptExpiry) {
+		t.Fatalf("the Pass the order was opened for runs to %v (kept: %v), want %v", got, ok, keptExpiry)
 	}
 }
 
@@ -1972,6 +1983,82 @@ func TestPassRenewal(t *testing.T) {
 	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
 		t.Fatalf("the code after renewing an expired Pass: status %d", status)
 	}
+}
+
+// TestPassRowIsDatedOnlyByItsWrites holds a passes row to what the README
+// says dates it: its xmin, the transaction that last wrote it. A renewal's
+// checkout neither writes the row nor locks it, left unpaid, or paid and
+// refunded before it is collected. A lock would leave the checkout's
+// transaction id in the row's xmax, dating the checkout for whoever holds the
+// database's files, as the foreign key pass_orders once had on the row did.
+// The payments that reference the row lock it only in the transaction that
+// writes it, so after every write its xmax is nothing or its own xmin.
+func TestPassRowIsDatedOnlyByItsWrites(t *testing.T) {
+	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
+	issued := p.buy("pi_bought")
+	var id int64
+	if err := p.app.pool.QueryRow(context.Background(), `SELECT id FROM passes WHERE token_hash = $1`,
+		p.app.passTokenHash(strings.ReplaceAll(issued.Pass, "-", ""))).Scan(&id); err != nil {
+		t.Fatal(err)
+	}
+	stamps := func(when string) [2]string {
+		t.Helper()
+		var xmin, xmax string
+		if err := p.app.pool.QueryRow(context.Background(),
+			`SELECT xmin::text, xmax::text FROM passes WHERE id = $1`, id).Scan(&xmin, &xmax); err != nil {
+			t.Fatalf("%s: %v", when, err)
+		}
+		if xmax != "0" && xmax != xmin {
+			t.Fatalf("%s: the row's xmax is %s and its xmin %s, so a transaction that did not write it locked it",
+				when, xmax, xmin)
+		}
+		return [2]string{xmin, xmax}
+	}
+	last := stamps("bought")
+	written := func(when string) {
+		t.Helper()
+		if got := stamps(when); got[0] == last[0] {
+			t.Fatalf("%s: the row's xmin is %s still", when, got[0])
+		} else {
+			last = got
+		}
+	}
+	unchanged := func(when string) {
+		t.Helper()
+		if got := stamps(when); got != last {
+			t.Fatalf("%s: the row's xmin and xmax are %v, want %v as they were", when, got, last)
+		}
+	}
+
+	session := p.checkout(issued.Pass)
+	unchanged("a renewal checkout opened")
+	p.webhook(stripeCheckoutExpired, map[string]any{"id": session, "object": "checkout.session", "mode": "payment", "payment_status": "unpaid"})
+	if n := p.count("pass_orders"); n != 0 {
+		t.Fatalf("the expired renewal left %d orders", n)
+	}
+	unchanged("a renewal checkout left unpaid")
+	p.paid(p.checkout(issued.Pass), "pi_refunded_renewal")
+	unchanged("a renewal paid and not collected yet")
+	p.refund("pi_refunded_renewal")
+	unchanged("a renewal refunded before it was collected")
+	if status, _ := p.activate(issued.Pass); status != http.StatusOK {
+		t.Fatalf("activating the Pass: status %d", status)
+	}
+	unchanged("the Pass activated")
+
+	p.renew(issued.Pass, "pi_renewal")
+	written("a renewal collected")
+	p.refund("pi_renewal")
+	written("a refund that takes days off")
+	status, _, token := p.reissueCode("mod-key", "pi_bought")
+	if status != http.StatusOK {
+		t.Fatalf("reissue code: status %d", status)
+	}
+	unchanged("a reissue code made")
+	if status, out := p.otherBrowser().redeem(token); status != http.StatusOK || out.Status != "issued" {
+		t.Fatalf("redeeming the reissue code: status %d, %+v", status, out)
+	}
+	written("a reissue code redeemed")
 }
 
 // passExpiresAt reads a Pass's stored expiry by its code.
