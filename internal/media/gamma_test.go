@@ -222,7 +222,16 @@ func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 		{"gamma 1.0 beside a profile of version 5", beside(grey(func(h []byte) { h[8] = 5 }, iccTag{"kTRC", curve})), linear},
 		{"gamma 1.0 beside a profile not lit by D50", beside(grey(func(h []byte) { copy(h[68:], iccFixed(0.95)) }, iccTag{"kTRC", curve})), linear},
 		{"gamma 1.0 beside a profile in Lab", beside(grey(func(h []byte) { copy(h[20:], "Lab ") }, iccTag{"kTRC", curve})), linear},
+		{"gamma 1.0 beside a profile whose connection space is RGB", beside(iccp(edited(profile, func(p []byte) { copy(p[20:], "RGB ") }))), linear},
 		{"gamma 1.0 beside a profile larger than it is", beside(grey(func(h []byte) { binary.BigEndian.PutUint32(h, binary.BigEndian.Uint32(h)+4) }, iccTag{"kTRC", curve})), linear},
+		// Its seven tags, told as 39: the table runs past the profile's 392
+		// bytes. The entries past the seven read its tags' data, which
+		// points past the profile as well (TestICCTagTableMustFitTheProfile
+		// has one only the table's length refuses).
+		{"gamma 1.0 beside a profile whose tag table runs past it", beside(iccp(edited(profile, func(p []byte) { binary.BigEndian.PutUint32(p[128:], 39) }))), linear},
+		// Its last tag, the white point, told as 24 bytes, ends 4 bytes past
+		// the profile.
+		{"gamma 1.0 beside a profile with a tag that ends past it", beside(iccp(edited(profile, func(p []byte) { binary.BigEndian.PutUint32(p[132+12*6+8:], 24) }))), linear},
 		{"gamma 1.0 beside a profile with a tag of 3 bytes", beside(grey(nil, iccTag{"kTRC", curve}, iccTag{"desc", []byte("abc")})), linear},
 		{"gamma 1.0 beside a grey profile with no curve", beside(grey(nil, iccTag{"wtpt", iccXYZ(0.9642, 1, 0.8249)})), linear},
 		{"gamma 1.0 beside a profile whose curve is cut short", beside(iccp(sRGBProfile([]byte("curv\x00\x00\x00\x00\x00\x00\x00\x03\x00\x00\x00\x80")))), linear},
@@ -241,6 +250,35 @@ func TestPNGGammaIsShownAsBrowsersShowIt(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// skcms_Parse refuses a profile whose tag table runs past its size however
+// the entries read, and so does iccProfileUsable: here every entry of the
+// longer table reads as a tag inside the profile, so only the table's length
+// refuses it, and a count too large to read is refused without reading past
+// the profile. The profile Chromium was shown with too long a table, in
+// TestPNGGammaIsShownAsBrowsersShowIt, is refused by its tags' bounds too.
+func TestICCTagTableMustFitTheProfile(t *testing.T) {
+	// A grey profile of 164 bytes: one tag, a curve of four entries. Told
+	// as three tags, the table takes 36 bytes and ends 4 bytes past the
+	// profile, whose curve reads as a tag of 4 bytes at its start and then
+	// as the start of another, which the 4 bytes after the profile end the
+	// same way.
+	curve := []byte("curv\x00\x00\x00\x00\x00\x00\x00\x04\x00\x01\x00\x02\x00\x00\x00\x00")
+	sound := iccProfile("GRAY", nil, iccTag{"kTRC", curve})
+	if !iccProfileUsable(sound, int64(len(sound))) {
+		t.Fatal("the profile as written is not usable: the test would show nothing")
+	}
+	told := func(tags uint32) []byte {
+		p := append(append([]byte(nil), sound...), 0, 0, 0, 4)
+		binary.BigEndian.PutUint32(p[128:], tags)
+		return p
+	}
+	for _, tags := range []uint32{3, 1 << 30} {
+		if p := told(tags); iccProfileUsable(p, int64(len(p))) {
+			t.Errorf("a profile of %d bytes told as holding %d tags is taken as usable", len(sound), tags)
+		}
 	}
 }
 
