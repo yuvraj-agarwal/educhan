@@ -3348,15 +3348,22 @@ async function render({ draft = captureDraft() } = {}) {
     // A redraw that kept the page for a post on its way leaves the page there,
     // with the form the post went from, when the new one will not load: the
     // post goes ahead and is answered on its form, and a success goes to the
-    // new post, as without the redraw. The address and the route are put back
-    // as the page was drawn for them (drawnFor), however many redraws of it
-    // have failed, and so is its thread, which a refusal answered meanwhile
-    // has updated; the image open on it stays open. The error is a notice
-    // above the page, after anything said since the redraw began, the post's
-    // own answer say. The notice is an alert, so it is heard, and the title
-    // stays the page's.
+    // new post, as without the redraw. The address bar, renderedPath and the
+    // route are put back as the page was drawn for them (drawnFor), however
+    // many redraws of it have failed, and so is its thread, which a refusal
+    // answered meanwhile has updated; the image open on it stays open. The
+    // address bar goes back by replacing the history entry the redraw was for,
+    // the fragment kept, so a jump within the page or a reload stays on the
+    // page kept. After a link the history then holds that page twice, and the
+    // first Back from it stays on it (popstate finds the address the page was
+    // drawn for and only moves to the fragment); a Back or Forward that will
+    // not load leaves the entry it went to holding the page kept. The error is
+    // a notice above the page, after anything said since the redraw began, the
+    // post's own answer say. The notice is an alert, so it is heard, and the
+    // title stays the page's.
     if (keepPage && draft.held.isConnected) {
       renderedPath = drawnFor.path;
+      window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash);
       state.route = drawnFor.route;
       state.thread = drawnFor.thread;
       const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent;
@@ -3895,7 +3902,7 @@ let renderedPath = null;
 // What the page on screen was drawn for, noted by the render that drew it: its
 // address, less the fragment, its route, and the thread its controls read. A
 // redraw that keeps the page for a post on its way, and then will not load,
-// puts them back (render).
+// puts them back, the address in the address bar too (render).
 let drawnFor = { path: null, route: null, thread: null };
 
 // A same-page quote link or backlink only moves the fragment, and the browser

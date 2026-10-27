@@ -458,13 +458,18 @@ before the test changes.
   page on screen (`drawnFor` in `captureDraft`), never by a render begun since that has
   not drawn yet, so the second of a double click neither carries the form into the page
   it goes to nor keeps the page on screen under that page's address. A redraw that
-  fails to load leaves the kept page on screen, held form and all, with `renderedPath`,
-  `state.route` and `state.thread` put back as that page was drawn for them (`drawnFor`,
-  noted by the render that drew it, however many redraws of it have failed since)
-  and the error in a notice. A render a newer one has overtaken draws nothing, loaded
-  or not, and says nothing (`overtaken`, which the board, thread and /verify views
-  ask once their request is answered, /verify drawn again after a confirmation or
-  a forget too, a forget drawing it only while /verify is the page being drawn), so
+  fails to load leaves the kept page on screen, held form and all, with the address
+  bar, `renderedPath`, `state.route` and `state.thread` put back as that page
+  was drawn for them (`drawnFor`, noted by the render that drew it, however many
+  redraws of it have failed since) and the error in a notice. The address bar goes
+  back by replacing the history entry the redraw was for (`history.replaceState`),
+  so after a link the history holds the kept page twice and the first Back stays
+  on it (`popstate` finds `renderedPath` and only moves to the fragment), and
+  a Back or Forward that will not load leaves the entry it went to holding the
+  kept page. A render a newer one has overtaken draws nothing, loaded or not,
+  and says nothing (`overtaken`, which the board, thread and /verify views ask
+  once their request is answered, /verify drawn again after a confirmation or a
+  forget too, a forget drawing it only while /verify is the page being drawn), so
   of two redraws only the later one is shown or said to have failed. Either way the
   post goes ahead and is answered on the form on screen, and a success goes to it.
   The loading state, the dimming and the skeleton that may follow it, is the latest

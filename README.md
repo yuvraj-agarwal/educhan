@@ -880,7 +880,10 @@ all (archived, locked or gone), says why and tells a post left with nothing
 to send to write something instead. Every page of a board's index carries the
 same new-thread form, so going to another page of the index keeps a new thread
 going as Update does: the page is drawn around the held form, and the thread is
-posted from there or, if that page will not load, from the page still on screen.
+posted from there or, if that page will not load, from the page still on screen,
+whose address goes back into the address bar. After a link, the history then
+holds that page twice, so one Back press stays on it; after Back or Forward, the
+entry gone to now holds the page kept.
 
 An address that asks for challenges faster than people post gets harder ones: up
 to 60 a minute at the base work, then twice the work for each further 60, to at

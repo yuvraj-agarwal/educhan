@@ -1875,10 +1875,13 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 	// or not, and one that draws notes what the page was drawn for (drawnFor),
 	// which a kept page whose redraw will not load gets back, with the error
 	// as a notice, never in place of the page: after two redraws that fail, the
-	// page is still the one drawn, not the first redraw's half-begun one. Every
-	// render begun, the age screen's and the rules' included, ends the loading
-	// state of any before it (below). A post link's lookup goes on to the
-	// thread unless the reader went somewhere else meanwhile, which a jump
+	// page is still the one drawn, not the first redraw's half-begun one. The
+	// address bar goes back to that page's address too, the history entry the
+	// redraw was for replaced, or a jump within the page afterwards would find
+	// an address the page was not drawn for and draw the page that failed.
+	// Every render begun, the age screen's and the rules' included, ends the
+	// loading state of any before it (below). A post link's lookup goes on to
+	// the thread unless the reader went somewhere else meanwhile, which a jump
 	// within the page, moving only the fragment, is not: the address is
 	// compared less its fragment, or a skip link pressed during the lookup
 	// would leave the skeleton on screen for good.
@@ -1895,7 +1898,9 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		"await loadSite();",
 		"if (overtaken(route)) { return; } renderNav(route);",
 		"} catch (err) { if (overtaken(route)) { return; }",
-		"if (keepPage && draft.held.isConnected) { renderedPath = drawnFor.path; state.route = drawnFor.route; "+
+		"if (keepPage && draft.held.isConnected) { renderedPath = drawnFor.path; "+
+			`window.history.replaceState(window.history.state, "", drawnFor.path + window.location.hash); `+
+			"state.route = drawnFor.route; "+
 			`state.thread = drawnFor.thread; const said = el.notice.hidden ? "" : el.notice.querySelector(".notice-text").textContent; `+
 			"showNotice(said ? `${said} ${message}` : message); return; }",
 		"expandedLink = null; el.main.innerHTML = emptyStateHTML(message, board);",
@@ -1917,9 +1922,9 @@ func TestAHeldFormSurvivesARedrawOfItsPage(t *testing.T) {
 		t.Errorf("overtaken no longer says whether a newer render has begun: %s", over)
 	}
 	if code := withoutComments(script); !strings.Contains(code, "\nlet drawnFor = { path: null, route: null, thread: null };\n") ||
-		strings.Count(code, "drawnFor") != 6 {
-		t.Error("drawnFor is no longer only declared, noted by a render that draws, read by captureDraft and put back by a " +
-			"kept page's failed redraw")
+		strings.Count(code, "drawnFor") != 7 {
+		t.Error("drawnFor is no longer only declared, noted by a render that draws, read by captureDraft and put back, " +
+			"with the address bar, by a kept page's failed redraw")
 	}
 	for _, view := range []string{"renderIndex", "renderCatalog", "renderArchive", "renderThread", "renderVerify"} {
 		fn := squash(withoutComments(jsFunction(t, script, view)))
