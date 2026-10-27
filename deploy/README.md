@@ -587,13 +587,13 @@ says how.
 
 Once verification is on, start the sweep by hand only after that night's
 scheduled run has finished and no later than 04:00 UTC, which leaves it and its
-one retry the half hour to spare before 05:00 that the schedule has (below), or
-when nobody has verified since 05:00. Started after 05:00, it also needs nobody
-to verify until it, and its retry if it fails, has finished: a credential issued
-before the last of their rewrites is dated to the hours between 05:00 and that
-rewrite. A run at any other time splits the day it runs in where it runs: until
-the next night's sweep, and in the backups taken meanwhile, its transaction id
-dates the credentials issued between 05:00 and the run to those hours.
+one retry the half hour to spare before 05:00 that the schedule has (below); or
+else when nobody has verified since the last 05:00 UTC and nobody will until it,
+and its retry if it fails, has finished, since its rewrite comes last and takes
+in every credential issued before it. Otherwise its last rewrite splits the day
+it falls in: until the next night's sweep, and in the backups taken meanwhile,
+its transaction id dates the credentials issued between 05:00 and that rewrite
+to those hours.
 
 Then schedule it. Cloud Scheduler calls the Run API as its own service account,
 which may run this one Job and nothing else:
@@ -633,9 +633,12 @@ nobody has verified since the old start. The credentials issued from the deploy
 until the next new start share their expiry with no others, so a later deploy
 dates them to the fewer hours left in between, for as long as they are kept. A
 start moved earlier can instead go out at any time between that day's new start
-and its old one, whether or not anyone has verified, since the credentials
-issued before the deploy and those after it then each span at least a day less
-the move.
+and its old one, whether or not anyone has verified, once that night's sweep on
+the old schedule, and its retry if it fails, has finished, and with the deploy
+over before the old start: the credentials issued before the deploy and those
+after it then each span at least a day less the move. A deploy before that sweep
+has finished would have it split the new day, or move the Scheduler job past it
+and leave that night without one.
 
 A sweep that could not remove a file exits non-zero, so the execution shows as
 failed in the console (`gcloud run jobs executions list --job educhan-sweep
