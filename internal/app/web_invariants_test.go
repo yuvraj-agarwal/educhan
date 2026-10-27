@@ -590,15 +590,21 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 
 	// Nor can what the view reads before the code step stand in for a held
 	// badge, so everything up to the step is held line for line: v is the
-	// state as loaded, the one page drawn before the step is the
-	// not-configured one, and busy, wait and keep say only whether a request
-	// is out and whether to offer Keep my badge. A v worked out from the held
-	// badge, saying verification was off while a code was pending, once put
-	// "not configured" in place of the box with every check above passing.
-	// And v.enabled is the server's answer and nothing else: loadVerification,
-	// which sets it, is held whole, nothing else in app.js sets
-	// state.verification, and enabled is named nowhere but there, here and in
-	// the state the page starts with.
+	// state as loaded, the one page drawn before the step is the one for
+	// verification off or not known to be on, which says it is not configured
+	// only once the server has said so (answered), and busy, wait and keep say
+	// only whether a request is out and whether to offer Keep my badge. A v
+	// worked out from the held badge, saying verification was off while a code
+	// was pending, once put "not configured" in place of the box with every
+	// check above passing.
+	// And v.enabled and v.answered are the server's answers and nothing else:
+	// loadVerification, which sets them, is held whole, nothing else in app.js
+	// sets state.verification, and neither is named anywhere but there, here
+	// and in the state the page starts with. A request that gets no answer
+	// changes neither. Taken as an answer of "off", the GET given up after a
+	// Verify drew "not configured" where the badge just stored belonged, focus
+	// fell to the page, and the badge was taken off every posting form, and the
+	// footer's Verify link away, for the rest of the visit.
 	holdLines(t, "verifyViewHTML before the code step", jsLines(view), "function verifyViewHTML() {", "if ("+codeStep+") {",
 		[]string{
 			"const v = state.verification;",
@@ -606,7 +612,7 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			"return `",
 			`<div class="board-head"><h1>Institutional verification</h1></div>`,
 			"${VERIFY_INTRO}",
-			`<p class="empty">Verification is not configured on this server.</p>`,
+			`<p class="empty">${v.answered ? "Verification is not configured on this server." : esc(UNREACHABLE)}</p>`,
 			"${forgetBrowserHTML()}`;",
 			"}",
 			"const busy = verifyBusy === verifyStep;",
@@ -618,35 +624,40 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	load := jsFunction(t, script, "loadVerification")
 	if got, want := jsLines(load), []string{
 		"async function loadVerification() {",
-		"let enabled = false;",
+		"let answer = null;",
 		"try {",
-		`enabled = !!(await api("/api/verify", { signal: verifyDeadline() })).enabled;`,
+		`answer = await api("/api/verify", { signal: verifyDeadline() });`,
 		"} catch {",
-		"enabled = false;",
 		"}",
-		"state.verification = { enabled, badge: enabled ? readBadge() : null };",
+		"const answered = !!answer || state.verification.answered;",
+		"const enabled = answer ? !!answer.enabled : state.verification.enabled;",
+		"state.verification = { answered, enabled, badge: enabled ? readBadge() : null };",
 		"if (el.verifyFooter) {",
 		"el.verifyFooter.hidden = !enabled;",
 		"}",
 		"return state.verification;",
 		"}",
 	}; !slices.Equal(got, want) {
-		t.Errorf("loadVerification runs\n\t%s\nwant it to take whether verification is on from the server alone:\n\t%s",
+		t.Errorf("loadVerification runs\n\t%s\nwant it to take whether verification is on from the server's answers "+
+			"alone, and to keep what the server said last when a request gets none:\n\t%s",
 			strings.Join(got, "\n\t"), strings.Join(want, "\n\t"))
 	}
 	code := withoutComments(script)
 	if n := len(regexp.MustCompile(`\bstate\.verification\s*=[^=]`).FindAllString(code, -1)); n != 1 {
 		t.Errorf("app.js sets state.verification %d times; want once, in loadVerification", n)
 	}
-	const initial = "\n  verification: { enabled: false, badge: null },\n"
+	const initial = "\n  verification: { answered: false, enabled: false, badge: null },\n"
 	if !strings.Contains(code, initial) {
 		t.Errorf("the state the page starts with no longer holds %q", strings.TrimSpace(initial))
 	}
-	enabled := regexp.MustCompile(`\benabled\b`)
 	held := withoutComments(load) + view[:start] + initial
-	if extra := len(enabled.FindAllString(code, -1)) - len(enabled.FindAllString(held, -1)); extra != 0 {
-		t.Errorf("app.js names enabled %d times outside loadVerification, verifyViewHTML before the code step, and "+
-			"the state the page starts with; whether verification is on is the server's answer, and nothing else may set it", extra)
+	for _, name := range []string{"enabled", "answered"} {
+		named := regexp.MustCompile(`\b` + name + `\b`)
+		if extra := len(named.FindAllString(code, -1)) - len(named.FindAllString(held, -1)); extra != 0 {
+			t.Errorf("app.js names %s %d times outside loadVerification, verifyViewHTML before the code step, and "+
+				"the state the page starts with; what the server said about verification is its answer, and nothing "+
+				"else may set it", name, extra)
+		}
 	}
 
 	// And the code step is what a sent code leads to, and what is drawn, and

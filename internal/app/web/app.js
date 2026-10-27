@@ -78,9 +78,11 @@ const state = {
   route: { view: "home" },
   // The thread on screen, in the thread view.
   thread: null,
-  // enabled comes from the server; badge is read out of the credential this
-  // browser holds, which the server is never asked about outside of using it.
-  verification: { enabled: false, badge: null },
+  // enabled comes from the server, and answered says whether it has said yet:
+  // until it has, enabled is false only for want of an answer
+  // (loadVerification). badge is read out of the credential this browser
+  // holds, which the server is never asked about outside of using it.
+  verification: { answered: false, enabled: false, badge: null },
   // What this server takes, from GET /api/site: whether it accepts images at
   // all, and the largest it accepts. Until that answers, or if it never does,
   // the picker is offered as it always was and the size limit is unknown (0);
@@ -1897,12 +1899,15 @@ let verifyBusy = null;
 let verifyRequest = Promise.resolve();
 
 // VERIFY_TIMEOUT_MS is how long a Verify request is given before the page gives
-// it up and says it couldn't reach educhan (UNREACHABLE). It is longer than the
-// server takes to answer or give up — ten seconds to read a request's headers
-// and thirty to write its answer, in cmd/server/main.go — so a request given up
-// is one whose answer was not coming. Giving it up cancels it: an answer that
-// comes after is not taken, the pending-code cookie with it, so the request
-// that goes next still sets the cookie the browser keeps.
+// it up. Send code and Verify then say they couldn't reach educhan
+// (UNREACHABLE); the GET that asks whether verification is on leaves the page
+// with what the server said last (loadVerification), so a badge just issued is
+// still drawn and offered. It is longer than the server takes to answer or give
+// up — ten seconds to read a request's headers and thirty to write its answer,
+// in cmd/server/main.go — so a request given up is one whose answer was not
+// coming. Giving it up cancels it: an answer that comes after is not taken, the
+// pending-code cookie with it, so the request that goes next still sets the
+// cookie the browser keeps.
 const VERIFY_TIMEOUT_MS = 45000;
 
 // verifyDeadline is the signal a Verify request is sent with, which fires once
@@ -2103,19 +2108,33 @@ function readBadge() {
   }
 }
 
+// loadVerification asks the server whether verification is on here, and reads
+// the badge this browser holds when it is. Only an answer changes what the
+// page holds about the server. A request that got none — given up
+// (verifyDeadline), unreachable, or refused — says nothing about whether
+// verification is on, so what the server said last stands, and the badge is
+// read as it is after that answer; a body that could not be read is no answer
+// either. Taken as "off", the GET given up after a Verify drew "not
+// configured" where the badge just stored belonged, and took that badge off
+// every posting form, and the footer's Verify link away, for the rest of the
+// visit. With no answer yet, the page says it couldn't reach educhan rather
+// than that verification is not configured (verifyViewHTML).
 async function loadVerification() {
-  let enabled = false;
+  let answer = null;
   try {
     // The only thing worth asking the server: whether the feature exists here.
     // What this browser holds is a local question with a local answer. An
     // issued badge is drawn after this request, while the next Verify request
     // waits, so it is given up in time like the others (verifyDeadline).
-    enabled = !!(await api("/api/verify", { signal: verifyDeadline() })).enabled;
+    answer = await api("/api/verify", { signal: verifyDeadline() });
   } catch {
     // Verification is an extra; the board works without knowing about it.
-    enabled = false;
   }
-  state.verification = { enabled, badge: enabled ? readBadge() : null };
+  // What the server said last is read once the request is over, not before
+  // it: another request to ask can have had its answer meanwhile.
+  const answered = !!answer || state.verification.answered;
+  const enabled = answer ? !!answer.enabled : state.verification.enabled;
+  state.verification = { answered, enabled, badge: enabled ? readBadge() : null };
   if (el.verifyFooter) {
     el.verifyFooter.hidden = !enabled;
   }
@@ -2252,11 +2271,15 @@ function badgeLostHTML(then) {
 function verifyViewHTML() {
   const v = state.verification;
 
+  // Off here, or not known to be on: the server said it is off, or every time
+  // the page asked it got no answer (loadVerification), and then it says it
+  // couldn't reach educhan, not that the server is not configured for it.
+  // Forget this browser is local, and stays on offer either way.
   if (!v.enabled) {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
-      <p class="empty">Verification is not configured on this server.</p>
+      <p class="empty">${v.answered ? "Verification is not configured on this server." : esc(UNREACHABLE)}</p>
       ${forgetBrowserHTML()}`;
   }
 
@@ -3998,8 +4021,10 @@ el.main.addEventListener("submit", async (event) => {
 // they were asked for and the newest one's is the cookie the browser keeps; if
 // the reader moves the page to yet another step while it waits, it is never
 // sent. That wait ends, because every request is given up once its time is out
-// (verifyDeadline), and one given up is refused as unreachable on its own step
-// and dropped on any other: one whose answer never came once held every later
+// (verifyDeadline): a Send code or Verify given up is refused as unreachable on
+// its own step and dropped on any other, and the GET renderVerify asks once a
+// badge is issued leaves the page with what it knew, that badge drawn
+// (loadVerification). One whose answer never came once held every later
 // request, from any step, until a reload.
 //
 // What an answer draws is brought into view clear of the sticky header — the

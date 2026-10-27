@@ -506,8 +506,16 @@ needs a browser check before the test changes.
   address asked for before. That wait ends: each Verify request — the address, the code,
   and the `GET /api/verify` that `renderVerify` asks before an issued badge is drawn —
   goes with `verifyDeadline()`'s signal and is given up once `VERIFY_TIMEOUT_MS` has
-  passed, which `api()` turns into the unreachable refusal: said on its own step, dropped
-  on any other. That is longer than `ReadHeaderTimeout` and `WriteTimeout` in
+  passed, which `api()` turns into the unreachable refusal. Send code and Verify say it
+  on their own step and drop it on any other. The GET only asks whether verification is
+  on, and `loadVerification` takes nothing from a request that got no answer, given up,
+  unreachable or refused: what the server said last stands, so a badge just issued is
+  drawn, focused and offered on posting forms all the same. Taken as "off", the GET
+  given up after a Verify drew "not configured" in the badge's place and took the badge
+  off every posting form, and the footer's Verify link away, for the rest of the visit.
+  Only an answer says verification is off (`answered`); until there is one, the page
+  says it couldn't reach educhan rather than that the server is not configured for it.
+  The deadline is longer than `ReadHeaderTimeout` and `WriteTimeout` in
   `cmd/server/main.go` together, so nothing given up was still to be answered; the test
   reads both, so a change to them changes it too. The signal reaches `fetch` only through
   `api()`'s spread of the caller's options, so `api()` is held line for line up to its
@@ -532,7 +540,8 @@ needs a browser check before the test changes.
   the page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). What runs
   once each answer is in is held statement for statement, and so are `onVerifyPage`,
   `verifyViewHTML` up to its code step, and `loadVerification`, the one place that sets
-  whether verification is on (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
+  whether verification is on and whether the server has said
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
   `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
   gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
   with every other check passing. `replacing` puts the badge panel away for "Verify
