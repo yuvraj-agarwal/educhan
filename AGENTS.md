@@ -275,10 +275,11 @@ Price, with no promotion codes, discounts or adjustable quantity (`TestPassPurch
 `TestPassTaxFollowsThePrice` with Stripe Tax on). It sends no `adaptive_pricing`, which
 came in a later Stripe API version than the pinned `2024-06-20` and which Stripe may
 refuse under it (`checkSessionSent`). Adaptive Pricing is the Stripe account's setting:
-with it off, the buyer pays the Price's own amount in its own currency; with it on, Stripe
-may show a buyer abroad the price converted into their own currency, at Stripe's exchange
-rate and with any fee Stripe adds for the conversion, and charge them that, so the README
-says to switch it off in the Stripe Dashboard. The Price is read with its currency options
+with it off, the buyer pays the Price's own amount in its own currency, with any tax
+Stripe adds to an exclusive Price; with it on, Stripe may show a buyer abroad the price
+converted into their own currency, at Stripe's exchange rate and with any fee Stripe adds
+for the conversion, and charge them that, so the README says to switch it off in the
+Stripe Dashboard. The Price is read with its currency options
 (`expand[]=currency_options`), which Stripe leaves out unless asked for, and one with an
 option in any currency but its own is refused, since Checkout would charge a buyer in that
 currency the option's amount under its own tax behavior
