@@ -1613,8 +1613,9 @@ function isAcceptedImage(file) {
 }
 
 // setFile puts a dropped file into the form's file input, and says whether it
-// took it. Assigning a FileList needs a DataTransfer, which is also how the
-// draft is carried across a re-render.
+// took it, for the caller to show it (updateFileField). Assigning a FileList
+// needs a DataTransfer, which is also how the draft is carried across a
+// re-render.
 function setFile(field, file) {
   const input = field.querySelector(".file-input");
   if (!input || !file) {
@@ -1640,7 +1641,6 @@ function setFile(field, file) {
   } catch {
     return false;
   }
-  updateFileField(field);
   return true;
 }
 
@@ -3696,6 +3696,7 @@ function restoreDraft(draft) {
     const kept = { hasText: Boolean(draft.body.trim()), isThread: form.dataset.kind === "thread" };
     showNotice(notice && said === notice("") ? notice(refusal) : said ? imageTakenOff(said, refusal, kept) : refusal);
   } else if (fileField && draft.file && setFile(fileField, draft.file)) {
+    updateFileField(fileField);
     // Only alongside the file it was ticked for.
     const spoiler = field(form, "spoiler");
     if (spoiler) spoiler.checked = draft.spoiler;
@@ -4148,11 +4149,15 @@ document.addEventListener("drop", (event) => {
     return;
   }
   field.classList.remove("dragging");
-  clearNotice();
-  // Only a file the form took starts the puzzle: a held form's own image is
-  // its pending post's, which already has its answer or is waiting on the
-  // puzzle being solved for it.
+  // A file the form took is shown as a picked one is, in place of whatever
+  // was said before it. One it refused says why in its place (setFile), but
+  // a picker switched off only while its post is pending says nothing, and
+  // what is on screen stays. Only a file the form took starts the puzzle: a
+  // held form's own image is its pending post's, which already has its answer
+  // or is waiting on the puzzle being solved for it.
   if (setFile(field, event.dataTransfer.files[0])) {
+    clearNotice();
+    updateFileField(field);
     captchaImageAttached(field.closest("form"));
   }
 });

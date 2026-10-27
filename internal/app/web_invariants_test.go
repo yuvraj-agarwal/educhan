@@ -648,11 +648,12 @@ func TestCaptchaIsAskedForOnlyWhenSomeoneWrites(t *testing.T) {
 	drop := squash(withoutComments(jsBlock(t, script, `document.addEventListener("drop", (event) => {`, "});")))
 	if strings.Count(code, "captchaImageAttached(") != 3 ||
 		!strings.Contains(change, "clearNotice(); updateFileField(field); captchaImageAttached(event.target.form); }") ||
-		!strings.Contains(drop, `if (setFile(field, event.dataTransfer.files[0])) { captchaImageAttached(field.closest("form")); }`) {
+		!strings.Contains(drop, `if (setFile(field, event.dataTransfer.files[0])) { clearNotice(); updateFileField(field); `+
+			`captchaImageAttached(field.closest("form")); }`) {
 		t.Error("an image picked or dropped no longer starts the puzzle, once it is attached, or something else calls captchaImageAttached")
 	}
 	if set := squash(withoutComments(jsFunction(t, script, "setFile"))); strings.Count(set, "return true;") != 1 ||
-		!strings.HasSuffix(set, "input.files = transfer.files; } catch { return false; } updateFileField(field); return true; }") {
+		!strings.HasSuffix(set, "input.files = transfer.files; } catch { return false; } return true; }") {
 		t.Error("setFile no longer says whether it took the file, which is what a drop starts the puzzle on")
 	}
 	// Unticking starts the puzzle again only where the tick stopped one, which
@@ -1832,8 +1833,8 @@ func TestAFormSendsOnlyTheBadgeItWasDrawnFor(t *testing.T) {
 // that switching off took back to the form's button, unless the reader has
 // put it somewhere since, without scrolling a reader who has scrolled away
 // from the form back to it; nothing writes into a held form from outside it:
-// not a quote, not a dropped image; and app.css shows the held controls
-// switched off.
+// not a quote, not a dropped image, whose drop leaves the notice on screen as
+// it was; and app.css shows the held controls switched off.
 func TestAPendingFormIsHeld(t *testing.T) {
 	script := appScript(t)
 	hold := squash(withoutComments(jsFunction(t, script, "holdForm")))
@@ -1906,6 +1907,23 @@ func TestAPendingFormIsHeld(t *testing.T) {
 	if set := squash(withoutComments(jsFunction(t, script, "setFile"))); !strings.Contains(set,
 		`if (input.disabled) { if (field.classList.contains("blocked")) { showNotice(field.querySelector(".file-blocked").textContent); } return false; }`) {
 		t.Error("setFile takes a file into a picker held while its post is pending, or says nothing for a blocked one")
+	}
+	// A drop clears what was said before it only once the form has taken the
+	// file, so a drop a held picker refuses, which says nothing, leaves the
+	// notice on screen, and one refused for a reason says it in its place.
+	// setFile takes the file and nothing else: the field is shown by the drop
+	// handler, as by the picker's own change, and by restoreDraft putting a
+	// draft's image back, neither of which clears a notice before the take.
+	dropped := squash(withoutComments(jsBlock(t, script, `document.addEventListener("drop", (event) => {`, "});")))
+	inOrder(t, "the drop handler", dropped, `field.classList.remove("dragging");`,
+		`if (setFile(field, event.dataTransfer.files[0])) { clearNotice(); updateFileField(field); `)
+	if set := squash(withoutComments(jsFunction(t, script, "setFile"))); strings.Count(dropped, "clearNotice(") != 1 ||
+		strings.Contains(set, "clearNotice(") || strings.Contains(set, "updateFileField(") ||
+		strings.Count(withoutComments(script), "updateFileField(") != 5 ||
+		!strings.Contains(squash(withoutComments(jsFunction(t, script, "restoreDraft"))),
+			"else if (fileField && draft.file && setFile(fileField, draft.file)) { updateFileField(fileField);") {
+		t.Error("a drop clears the notice before the form has taken its file, or setFile shows the field itself, " +
+			"or the field is shown somewhere besides clearFileField, the picker's change, the drop and restoreDraft")
 	}
 	drag := squash(withoutComments(jsBlock(t, script, `document.addEventListener("dragover", (event) => {`, "});")))
 	if !strings.Contains(drag, `if (field && !field.querySelector(".file-input").disabled) { field.classList.add("dragging"); }`) {
