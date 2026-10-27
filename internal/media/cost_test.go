@@ -970,6 +970,117 @@ func TestPNGEncoderRowsAreChargedAsItBegins(t *testing.T) {
 	}
 }
 
+// blankPNG is a w×h PNG of the given colour type and bit depth, Adam7
+// interlaced or not, whose every row is filtered with None and every sample is
+// zero: a strip as wide as Inspect admits, from a file of kilobytes.
+func blankPNG(t *testing.T, w, h int, colour, depth byte, interlaced bool) []byte {
+	t.Helper()
+	bits := int64(map[byte]int{0: 1, 2: 3, 3: 1, 4: 2, 6: 4}[colour]) * int64(depth)
+	passes := adam7[:]
+	if !interlaced {
+		passes = []struct{ x0, y0, dx, dy int64 }{{0, 0, 1, 1}}
+	}
+	zero := make([]byte, 1+(bits*int64(w)+7)/8)
+	var idat bytes.Buffer
+	zw, _ := zlib.NewWriterLevel(&idat, zlib.BestSpeed)
+	for _, p := range passes {
+		pw := (int64(w) - p.x0 + p.dx - 1) / p.dx
+		if pw <= 0 {
+			continue
+		}
+		for y := p.y0; y < int64(h); y += p.dy {
+			if _, err := zw.Write(zero[:1+(bits*pw+7)/8]); err != nil {
+				t.Fatalf("compress: %v", err)
+			}
+		}
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	out := append(pngHeader(w, h, colour, depth, interlaced), pngChunk("IDAT", idat.Bytes())...)
+	return append(out, pngChunk("IEND", nil)...)
+}
+
+// image/png reads a PNG that is not interlaced through two rows of it, the row
+// and the one before it, and an interlaced one through two rows of each of
+// Adam7's seven passes, which it allocates anew for every pass, each as wide as
+// its pass: five and a half rows of the picture's width in a picture five rows
+// tall or more, four in one of two rows (pngPassRows). In a strip as wide as
+// Inspect admits they come to tens of megabytes, all of which a collection that
+// runs through the decode keeps, though each pass lets its own go as it ends,
+// so they are charged to the decode. The measures of what is held at the
+// collector's usual pace (TestProcessingCostCoversWhatIsHeld) see only the rows
+// of the pass being read, so they would not show the rest left out; what the
+// decode allocates, which is the same on every run, is held to what its phase
+// is charged instead, with no more beyond it than the decoder's own tables and
+// the allocator's rounding, which processingSlack covers. Each strip is about
+// the widest Inspect admits at its height, of the kind whose rows are widest
+// for their pixels, 16-bit RGBA, and of 8-bit grey, an eighth as wide. Each
+// interlaced one of two rows or more allocates more than processingSlack over
+// what one pair of rows of its width would charge: that is checked too, so the
+// strips are ones that show the passes' rows.
+func TestPNGDecoderRowsAreCharged(t *testing.T) {
+	// The decoder's own tables, and the allocator's rounding of each of
+	// its rows and pictures up to whole pages.
+	const unitemised = 512 << 10
+	for _, k := range []struct {
+		name          string
+		colour, depth byte
+		interlaced    bool
+		h             int
+	}{
+		{"interlaced 16-bit RGBA", 6, 16, true, 1},
+		{"interlaced 16-bit RGBA", 6, 16, true, 2},
+		{"interlaced 16-bit RGBA", 6, 16, true, 5},
+		{"interlaced 16-bit RGBA", 6, 16, true, 8},
+		{"interlaced 16-bit RGBA", 6, 16, true, 16},
+		{"interlaced 8-bit grey", 0, 8, true, 8},
+		{"16-bit RGBA", 6, 16, false, 8},
+	} {
+		// The widest strip of this height whose header Inspect admits,
+		// less a hundredth for the IDAT the file adds to the upload.
+		admitted := func(w int) bool {
+			head := pngHeader(w, k.h, k.colour, k.depth, k.interlaced)
+			return processingCost(FormatPNG, head, image.Config{Width: w, Height: k.h}, gifFrames{}) <= processingBudget
+		}
+		lo, hi := 1, MaxPixels/k.h
+		for lo < hi {
+			if mid := (lo + hi + 1) / 2; admitted(mid) {
+				lo = mid
+			} else {
+				hi = mid - 1
+			}
+		}
+		w := lo * 99 / 100
+		name := fmt.Sprintf("%s %dx%d", k.name, w, k.h)
+		data := blankPNG(t, w, k.h, k.colour, k.depth, k.interlaced)
+		in, err := inspect(data)
+		if err != nil {
+			t.Fatalf("%s: inspect = %v, want it admitted", name, err)
+		}
+		cfg := image.Config{Width: w, Height: k.h}
+		charged := decodingPhases(in.format, data, cfg, in.frames)[0].alloc
+
+		runtime.GC()
+		before := heapAllocs()
+		if _, err := png.Decode(bytes.NewReader(data)); err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		allocated := heapAllocs() - before
+		mib := func(n int64) float64 { return float64(n) / (1 << 20) }
+		t.Logf("%-34s decoding allocated %6.2f MiB, charged %6.2f", name, mib(allocated), mib(charged))
+		if allocated > charged+unitemised {
+			t.Errorf("%s: decoding allocated %d bytes, %d over the %d its decode phase is charged", name, allocated, allocated-charged, charged)
+		}
+		if k.interlaced && k.h >= 2 {
+			pictures := 2 * pngBytesPerPixel(data) * int64(w) * int64(k.h)
+			if onePair := pictures + 2*pngRowBytes(data, int64(w)); allocated <= onePair+processingSlack {
+				t.Errorf("%s: decoding allocated %d bytes, within processingSlack of the %d one pair of rows charges: the strip does not show the passes' rows", name, allocated, onePair)
+			}
+		}
+	}
+}
+
 // What image/gif keeps of each frame besides its pixels fits in
 // gifFrameOverhead, for the frames that keep the most for the fewest bytes
 // of file (each with its own copy of a 256-colour palette) and for frames

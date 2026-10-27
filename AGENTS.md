@@ -839,7 +839,9 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   APP0 and Adobe segments of the whole file, after its scans too (`readJPEGFrame`,
   `TestJPEGColourModelIsReadAsTheDecoderReadsIt`); a 16-bit PNG to 8, or to 2 when it is
   grey with no transparency, as `pngBytesPerPixel` reads its header, and every PNG through
-  two rows of the file beside its picture (`pngRowBytes`), tens of megabytes in a strip;
+  two rows of the file beside its picture (`pngRowBytes`), or an interlaced one through
+  two rows of each of its seven passes, which come to five and a half rows of its width
+  (`pngPassRows`, `TestPNGDecoderRowsAreCharged`), tens of megabytes in a strip;
   `image/gif` keeps `gifFrameOverhead` for every frame besides its pixels, so a GIF of
   thousands of empty frames is not free, and `playGIF` four bytes and two bits a pixel of
   the canvas, and four bytes more for an animation whose tables give more than 255

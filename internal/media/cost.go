@@ -30,15 +30,18 @@ import (
 // to the end (completedCost), and against its decoding phases alone
 // (decodingPhases), at sizes where each term charged for decoding comes to
 // megabytes; TestThumbScratchCoversTheScaler measures the thumbnail's scratch,
-// and TestGIFFrameOverheadCoversWhatDecodingKeeps what image/gif keeps of each
-// frame. A term dropped is caught when it is larger than processingSlack — as
-// each is in some file — but a partial under-charge smaller than the slack it
-// absorbs and does not: the turn term, only a couple of megabytes above the
-// slack in the largest file that turns, can be cut by more than half unseen. So
-// the tests guard against a term left out, not against every under-estimate.
-// Even a term left out goes unnoticed where another term charged for the same
-// moment is at least as large in every file they measure; a few are, the alpha
-// plane and the NRGBA copy of a transparent lossy WebP among them.
+// TestGIFFrameOverheadCoversWhatDecodingKeeps what image/gif keeps of each
+// frame, and TestPNGDecoderRowsAreCharged what image/png's decoder allocates
+// for the rows of a strip, most of which it lets go before a measure of what is
+// held can see them. A term dropped is caught when it is larger than
+// processingSlack — as each is in some file — but a partial under-charge
+// smaller than the slack it absorbs and does not: the turn term, only a couple
+// of megabytes above the slack in the largest file that turns, can be cut by
+// more than half unseen. So the tests guard against a term left out, not
+// against every under-estimate. Even a term left out goes unnoticed where
+// another term charged for the same moment is at least as large in every file
+// they measure; a few are, the alpha plane and the NRGBA copy of a transparent
+// lossy WebP among them.
 
 // processingBudget is the memory every upload being processed at once may
 // hold between them, by their estimates, from when it starts to be decoded
@@ -84,8 +87,9 @@ const cheapestRest int64 = 1 << 20
 // and what a phase allocates while a collection runs. Rows as wide as the
 // picture are not in it, because a strip as wide as Inspect admits makes them
 // tens of megabytes: image/png's decoder reads through two rows of the file
-// (pngRowBytes) and its encoder writes through six of the stored picture
-// (pngEncoderRows), and each is charged to its phase.
+// (pngRowBytes), or two for each pass of an interlaced one, five and a half of
+// the picture's width in all (pngPassRows), and its encoder writes through six
+// of the stored picture (pngEncoderRows); each is charged to its phase.
 const processingSlack int64 = 4 << 20
 
 // gifFrameOverhead is what image/gif keeps for each frame of a GIF besides
@@ -275,13 +279,13 @@ func decodingPhases(format Format, data []byte, cfg image.Config, frames gifFram
 		// image/png reads the file a row at a time into two buffers beside
 		// the picture, the row and the one before it, which a strip as wide
 		// as the pixel cap allows makes tens of megabytes.
-		rows := 2 * pngRowBytes(data, w)
-		decode := phase{first: d, alloc: d + rows, after: d}
+		decode := phase{first: d, alloc: d + 2*pngRowBytes(data, w), after: d}
 		if pngInterlaced(data) {
 			// Each of the seven passes is decoded into a picture of its own
-			// and merged into the whole; the last pass is half of it. Its
-			// rows are no wider than the picture's.
-			decode.alloc = 2*d + rows
+			// and merged into the whole; the last pass is half of it. Each
+			// pass is read through two rows of its own, as wide as the pass
+			// (pngPassRows): up to five and a half of the picture's rows.
+			decode.alloc = 2*d + pngPassRows(data, w, h)
 		}
 		phases := []phase{decode}
 		if pngOrientation(data) >= 2 {
@@ -877,9 +881,10 @@ func pngHasTRNS(data []byte) bool {
 
 // pngRowBytes is a row of a PNG w pixels wide as its image data holds it, a
 // filter byte and the row's samples at the channels and bit depth its IHDR
-// gives, which is what image/png reads each row into (readImagePass), two of
-// them at once. A header too short to say is costed as 16-bit RGBA, the
-// widest kind.
+// gives, which is what image/png reads each row into (readImagePass): two of
+// them at once, the row and the one before it, for a picture that is not
+// interlaced, and two for each pass of one that is (pngPassRows). A header too
+// short to say is costed as 16-bit RGBA, the widest kind.
 func pngRowBytes(data []byte, w int64) int64 {
 	bits := int64(64)
 	if len(data) >= 29 {
@@ -900,6 +905,32 @@ func pngRowBytes(data []byte, w int64) int64 {
 
 func pngInterlaced(data []byte) bool {
 	return len(data) < 29 || data[28] != 0
+}
+
+// adam7 is where each of Adam7's seven passes starts in the picture and how
+// far apart its pixels are, across and down, as image/png lists them
+// (interlacing).
+var adam7 = [7]struct{ x0, y0, dx, dy int64 }{
+	{0, 0, 8, 8}, {4, 0, 8, 8}, {0, 4, 4, 8}, {2, 0, 4, 4}, {0, 2, 2, 4}, {1, 0, 2, 2}, {0, 1, 1, 2},
+}
+
+// pngPassRows is what image/png reads an interlaced PNG of w×h pixels through
+// besides its pictures: for each pass that has a pixel, a row of the pass and
+// the one before it (pngRowBytes), which readImagePass allocates anew for every
+// pass. The passes are an eighth, an eighth, a quarter, a quarter, a half, a
+// half and the whole of the picture wide, rounded up, so for a picture five
+// rows tall or more that is five and a half rows of its width and at most a few
+// dozen bytes more; for one of two rows, which the third and fifth passes miss,
+// four; and for one of a row, which the seventh misses too, two.
+func pngPassRows(data []byte, w, h int64) int64 {
+	var rows int64
+	for _, p := range adam7 {
+		pw, ph := (w-p.x0+p.dx-1)/p.dx, (h-p.y0+p.dy-1)/p.dy
+		if pw > 0 && ph > 0 {
+			rows += 2 * pngRowBytes(data, pw)
+		}
+	}
+	return rows
 }
 
 // webpPhases models golang.org/x/image/webp and what sanitizeWebP does after
