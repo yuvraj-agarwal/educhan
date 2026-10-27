@@ -566,8 +566,8 @@ that deletes the threads archived alongside it sets the thread's `expired_at`
 instead, and from then on it answers `404`, is gone from the archive, post
 resolution and every quote and backlink, and its images answer as a held
 post's do. How long a thread stays readable therefore says nothing about a
-held post in it. The first sweep after its last held reply is decided deletes
-it.
+held post in it. Once its last held reply is approved or deleted, the next
+sweep that finds it past its board's `archive_days` deletes it.
 
 A held image stays at its ordinary storage key, and its URL is never published
 while the post is held. Its file answers `404`, with `Cache-Control: no-store`,
@@ -855,7 +855,7 @@ The JSON API (`-d '{"body":"…"}'`) still works for text-only posts.
 | Content rules | Posts with contact details or ID numbers are sent back with what to take out; possible threats, self-harm encouragement and grooming cues are held for a moderator; crisis language is answered once with a support message. Keyword patterns, with the gaps that implies |
 | Moderation | Sticky, lock, and delete a post or a whole thread, approve held posts, plus creating and reconfiguring boards, behind a shared moderation key |
 | Archive | Threads pushed past a board's thread limit are archived rather than deleted: they leave the index and the catalog, refuse replies, and still load by number |
-| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed — except one with a held reply, which leaves public view then and is deleted by the first sweep after the reply is decided; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
+| Housekeeping | `educhan -sweep` deletes archived threads, media included, once their board's `archive_days` have passed — except one with a held reply, which leaves public view then and is deleted by a later sweep once the reply is decided; per-client cooldowns limit new threads, replies, and uploads, and forget each address within a minute of its cooldown ending while the process has CPU between requests (see Flood control for an idle Cloud Run instance) |
 
 ## Front end
 
@@ -1544,8 +1544,9 @@ It loads the usual configuration, connects, applies any pending migrations,
 deletes every archived thread whose board's `archive_days` have passed — posts,
 attachment rows, and then the images and thumbnails in the media store — and
 exits. The exception is a thread with a held reply: that one leaves public view
-instead (`expired_at`; see [Held posts](#held-posts)) and is deleted by the
-first sweep after the reply is approved or deleted. It works in batches of 100 threads, one transaction each. Each batch
+instead (`expired_at`; see [Held posts](#held-posts)) and is deleted by a
+later sweep once the reply is approved or deleted: the first that finds it past
+the board's `archive_days`. It works in batches of 100 threads, one transaction each. Each batch
 records the storage keys of its threads' files in the `media_deletions` table in
 the same transaction as it deletes the rows; once the batches are done the
 sweep removes each queued file and forgets its key. A file the store refuses to

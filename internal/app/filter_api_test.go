@@ -1146,6 +1146,62 @@ func TestHeldReplyKeepsItsThreadFromTheSweep(t *testing.T) {
 	}
 }
 
+// A thread kept by a held reply is deleted by a later sweep once the reply is
+// decided: the first that finds it past its board's archive_days, which may
+// have been raised since the sweep that expired it. Raised, they keep it,
+// still out of public view, until it is past the new period; it is not the
+// first sweep after the decision that deletes it.
+func TestARaisedArchivePeriodKeepsADecidedExpiredThread(t *testing.T) {
+	h := modServer(t)
+	h.addBoard("raise")
+	h.exec(`UPDATE boards SET archive_days = 1 WHERE slug = 'raise'`)
+	thread := h.createThread("raise", "", "", "kept by a held reply")
+	if status, _ := h.postJSON(repliesPath("raise", thread.ThreadNo), map[string]any{"body": "go die"}); status != http.StatusAccepted {
+		t.Fatalf("held reply: status %d", status)
+	}
+	held := h.heldQueue()[0]
+	day := 24 * time.Hour
+	h.archiveThread("raise", thread.ThreadNo, 30*day)
+	rows := func() int {
+		t.Helper()
+		var n int
+		if err := h.app.pool.QueryRow(context.Background(), `SELECT count(*) FROM threads
+			WHERE no = $1 AND board_id = (SELECT id FROM boards WHERE slug = 'raise')`, thread.ThreadNo).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	sweep := func() int {
+		t.Helper()
+		report, err := h.app.Sweep(context.Background())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return report.Threads
+	}
+
+	if n := sweep(); n != 0 || rows() != 1 || h.threadStatus("raise", thread.ThreadNo) != http.StatusNotFound {
+		t.Fatalf("the first sweep deleted %d threads and left %d rows; want the thread kept and expired", n, rows())
+	}
+	h.exec(`UPDATE boards SET archive_days = 60 WHERE slug = 'raise'`)
+	if status, out := h.approve("raise", thread.ThreadNo, held.No); status != http.StatusOK {
+		t.Fatalf("approve: %d %v", status, out)
+	}
+	// Archived 30 days ago, inside the 60 the board now keeps: the next sweep
+	// leaves it, and it stays out of public view.
+	if n := sweep(); n != 0 || rows() != 1 {
+		t.Fatalf("the sweep after the decision deleted %d threads and left %d rows; want it kept to 60 days", n, rows())
+	}
+	if status := h.threadStatus("raise", thread.ThreadNo); status != http.StatusNotFound {
+		t.Fatalf("the kept thread after the decision: status %d, want 404", status)
+	}
+	// Past the new period, the next sweep deletes it.
+	h.archiveThread("raise", thread.ThreadNo, 61*day)
+	if n := sweep(); n != 1 || rows() != 0 {
+		t.Fatalf("the sweep past 60 days deleted %d threads and left %d rows; want the thread gone", n, rows())
+	}
+}
+
 // A file whose rows are gone is served to nobody but a moderator. A sweep
 // deletes a swept thread's rows and removes its files afterwards, and a store
 // that refuses a removal leaves the file until the next sweep; served all that

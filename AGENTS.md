@@ -909,8 +909,9 @@ with it in public, or its lasting would say a held post was in it: the sweep fir
 is about to skip, and every public read filters `expired_at IS NULL` as it filters
 `held_at` — `Archive`, `Thread`, `ThreadByID`, `PostThreadNo`, `ReplyRefusal`,
 `CreateReply` (both `404`), both directions of `attachQuotes`, and `MediaPublic`.
-Approval does not bring it back; the next sweep deletes it
-(`TestHeldReplyKeepsItsThreadFromTheSweep`). The image cap counts published posts only, so
+Approval does not bring it back; a later sweep deletes it, the first that finds it past
+its board's `archive_days`, which may have been raised since it expired
+(`TestHeldReplyKeepsItsThreadFromTheSweep`, `TestARaisedArchivePeriodKeepsADecidedExpiredThread`). The image cap counts published posts only, so
 approval can take a thread past it. `TestHeldPostsAppearInNoPublicView` walks every
 public endpoint with a positive control (published text is found, and the held text is
 found once approved); a new public query has to decide whether it means held posts, and

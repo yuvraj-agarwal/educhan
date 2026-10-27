@@ -14,11 +14,13 @@ import (
 
 // The sweeper deletes archived threads once their board's archive_days have
 // passed, media included. A thread with a held reply is the exception: it
-// leaves public view then (ExpireHeld sets expired_at) and is deleted by the
-// first sweep after the reply is decided. It runs as `educhan -sweep`, a one-shot mode Cloud
-// Scheduler starts as a Cloud Run Job: Cloud Run gives a service CPU only
-// while it answers a request, so an in-process timer would fire whenever it
-// happened to, and a Job leaves no sweep endpoint to protect.
+// leaves public view then (ExpireHeld sets expired_at) and is deleted by a
+// later sweep once the reply is decided: the first that finds it past its
+// board's archive_days, which may have been raised since. It runs as
+// `educhan -sweep`, a one-shot mode Cloud Scheduler starts as a Cloud Run
+// Job: Cloud Run gives a service CPU only while it answers a request, so an
+// in-process timer would fire whenever it happened to, and a Job leaves no
+// sweep endpoint to protect.
 //
 // Rows go first, and the storage keys of their files are queued in
 // media_deletions in the same transaction; the files go after, each key
