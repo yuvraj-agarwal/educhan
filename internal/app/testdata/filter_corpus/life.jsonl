@@ -453,3 +453,7 @@
 {"id": "life-453", "body": "tox exam: lethal dose of paracetamol in children vs adults", "subject": "", "name": "", "expect": "publish", "why": "a study label opening the sentence, then a topic named, not the dose asked (V-DOSE-STUDIED-REGRESSION control)"}
 {"id": "life-454", "body": "failed my exam: lethal dose of paracetamol in adults", "subject": "", "name": "", "expect": "hold", "why": "\"exam\" in a clause of the poster's, not a label naming a subject (V-DOSE-STUDIED-REGRESSION)"}
 {"id": "life-455", "body": "pharmacology: why is the lethal dose of paracetamol lower in people who drink?", "subject": "", "name": "", "expect": "publish", "why": "a \"why\" asked about a lethal dose after a study label (V-DOSE-STUDIED-REGRESSION control)"}
+{"id": "life-456", "body": "ab jeene ka mann nahi", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I don't feel like living anymore\", with no verb after \"nahi\" (V-F3-F7-RESIDUAL)"}
+{"id": "life-457", "body": "life khatam kar dunga main", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll end my life\", said with the English \"life\" (V-F3-F7-RESIDUAL)"}
+{"id": "life-458", "body": "apni life khatam kar lunga", "subject": "", "name": "", "expect": "support", "why": "Hinglish: \"I'll end my own life\" (V-F3-F7-RESIDUAL)"}
+{"id": "life-459", "body": "is game ne meri life khatam kar di lol", "subject": "", "name": "", "expect": "publish", "why": "\"this game finished my life lol\": a game blamed in jest, no intent (V-F3-F7-RESIDUAL)"}

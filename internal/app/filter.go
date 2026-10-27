@@ -3436,10 +3436,11 @@ var (
 		words(`hang(?:ing)?`, `drown(?:ing)?`, `poison(?:ing)?`, `shoot(?:ing)?`, `stab(?:bing)?`)+`~my~self`,
 		`slit(?:ting)?~my~wrists?`, `tak(?:e|ing)~all~my~`+words(`pills`, `meds`, `tablets`), `od`)
 	// hinglishActs are ending one's life, and hinglishIntents wanting, meaning
-	// or being about to do it: "apni life end kar dunga", "zindagi khatam
-	// karna chahta hu", "suicide kar lu", "khudkushi karne ka mann hai".
-	hinglishActs = words(`(?:apni~)?life~end`, `(?:apni~)?`+words(`zindagi`, `zindgi`, `jindagi`)+`~`+
-		words(`khatam`, `khatm`, `khtm`, `end`), `suicide`, `khud~?kushi`, `khud~?khushi`)
+	// or being about to do it: "apni life end kar dunga", "life khatam kar
+	// dunga", "zindagi khatam karna chahta hu", "suicide kar lu", "khudkushi
+	// karne ka mann hai".
+	hinglishActs = words(`(?:apni~)?life~`+words(`end`, `khatam`, `khatm`, `khtm`), `(?:apni~)?`+words(`zindagi`,
+		`zindgi`, `jindagi`)+`~`+words(`khatam`, `khatm`, `khtm`, `end`), `suicide`, `khud~?kushi`, `khud~?khushi`)
 	hinglishIntents = words(words(`kar`, `kr`)+`~`+words(`dunga`, `dungi`, `doonga`, `doongi`, `lunga`, `lungi`,
 		`loonga`, `loongi`, `lu`, `loon`, `lun`, `lena~hai`), words(`karna`, `krna`)+`~`+words(`chahta`, `chahti`,
 		`chahte`, `hai`, `h`), words(`karne`, `krne`)+`~`+words(`ka`, `ki`)+`~`+words(`mann`, `man`, `dil`,
@@ -3652,8 +3653,10 @@ var supportRules = []rule{bothViews(`\b` + words(
 	// khatam karne ka soch raha hoon", "khud ko hurt karta hoon".
 	`mujhe~(?:`+words(`sach~(?:mein|me|mai)`, `bas`, `ab`, `really`, `seriously`, `bhi`, `toh`, `to`)+`~){0,2}`+
 		words(`marna`, `mar~jana`, `mar~jaana`)+`~(?:hai|h)`,
-	words(`jeene`, `jine`)+`~ka~`+words(`mann`, `man`, `dil`)+`~`+words(`nahi`, `nhi`)+`~`+
-		words(`karta`, `karti`, `krta`, `krti`, `hota`, `hai`, `h`),
+	// "ab jeene ka mann nahi", with or without its verb (with none,
+	// supportSaid wants nothing after it but a time or a filler).
+	words(`jeene`, `jine`)+`~ka~`+words(`mann`, `man`, `dil`)+`~`+words(`nahi`, `nhi`)+`(?:~`+
+		words(`karta`, `karti`, `krta`, `krti`, `hota`, `hai`, `h`)+`)?`,
 	// "khud ko khatam karna chahta hu", "suicide karne wala hoon", "mujhe mar
 	// jana chahiye", "fansi laga lunga", "apni jaan de dunga" (not "tere
 	// liye", supportCheck), "neend ki goliyan kha lungi", "mann karta hai
@@ -9951,9 +9954,12 @@ func (f *scannedField) supportSaid(v *view, m []int, ws, next []string) bool {
 			return false // "in the play, suicide is the only option left for the heroine"
 		}
 		return !anyIn(s, secondPerson) && !anyIn(s, readerWords) && (hasFirstPerson(s) || !anyIn(s, otherPeople) && !anyIn(s, otherSubjects))
-	case is(first, "nahi") || is(first, "nhi"):
-		// "mujhe nahi jeena", not "mujhe nahi jeena aise boring life mein
-		// bina chai ke lol".
+	case is(first, "nahi") || is(first, "nhi"),
+		(is(first, "jeene") || is(first, "jine")) && len(ws) == 4 && is(ws[1], "ka") && (is(ws[2], "mann") ||
+			is(ws[2], "man") || is(ws[2], "dil")):
+		// "mujhe nahi jeena", "ab jeene ka mann nahi", not "mujhe nahi jeena
+		// aise boring life mein bina chai ke lol" or "jeene ka mann nahi
+		// bharta is gaane se".
 		for _, w := range next {
 			if !hindiLifeTails[w] {
 				return false
