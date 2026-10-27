@@ -479,16 +479,6 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 	// The two seconds after the stop, and some to spare.
 	const quickly = 3 * time.Second
 
-	// locked says whether a connection named appName holds an advisory lock.
-	locked := func(t *testing.T, db *pgxpool.Pool, appName string) bool {
-		var held bool
-		if err := db.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a USING (pid)
-			WHERE l.locktype = 'advisory' AND a.application_name = $1)`, appName).Scan(&held); err != nil {
-			t.Fatalf("look for the migrations' lock: %v", err)
-		}
-		return held
-	}
-
 	for _, tc := range []struct {
 		name string
 		// migrated has the schema migrated before the sweep starts, so the
@@ -704,6 +694,101 @@ func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
 	if applied == 0 {
 		t.Errorf("no migration recorded after the sweep whose commit was answered slowly")
 	}
+}
+
+// The release of the migrations' lock is waited on for two seconds at most
+// from when it is sent, and no later than two seconds after a stop. A sweep
+// whose database never answers the unlock, with no stop, gives it up two
+// seconds after sending it, closes its connection, which takes the lock with
+// it, and sweeps. Bounded only from the stop, the unlock would be waited on
+// until two seconds after startup's thirty-second bound, and the sweep would
+// fail then, as a server's startup would, 32 seconds after the unlock was sent.
+func TestAnUnansweredUnlockIsGivenUpWithoutAStop(t *testing.T) {
+	// The two seconds from the unlock, and some to spare.
+	const quickly = 3 * time.Second
+	// Well inside startup's thirty seconds, which the unlock would wait out
+	// were it bounded only from a stop.
+	const wellInside = 10 * time.Second
+
+	db := sweepEnv(t)
+	// Migrated here, so the sweep's last statement under the lock is the
+	// unlock.
+	if err := run([]string{"-sweep"}, io.Discard); err != nil {
+		t.Fatalf("migrate the schema: %v", err)
+	}
+	databaseURL := os.Getenv("DATABASE_URL")
+	proxy := startStallingProxy(t, databaseURL)
+	fired := proxy.on("pg_advisory_unlock", 0)
+	appName := fmt.Sprintf("educhan_unlocking_sweep_%d", time.Now().UnixNano())
+	t.Cleanup(func() {
+		if _, err := db.Exec(context.Background(), `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = $1`, appName); err != nil {
+			t.Errorf("end the sweep's connections: %v", err)
+		}
+	})
+
+	sweep := startSweep(t, throughProxy(t, databaseURL, proxy, appName))
+	var sent time.Time
+	select {
+	case <-fired:
+		sent = time.Now()
+	case <-time.After(30 * time.Second):
+		sweep.kill()
+		t.Fatalf("the sweep never sent the unlock; its log:\n%s", sweep.log(time.Now()))
+	}
+	if !locked(t, db, appName) {
+		t.Errorf("the migrations' lock is not held while its release waits")
+	}
+	var err error
+	select {
+	case err = <-sweep.exited:
+	case <-time.After(60 * time.Second):
+		sweep.kill()
+		t.Fatalf("the sweep had not exited a minute after it sent the unlock; its log:\n%s", sweep.log(sent))
+	}
+	took := time.Since(sent)
+	text := sweep.log(sent)
+
+	if err != nil {
+		t.Errorf("the sweep whose unlock went unanswered ended with %v, want exit status 0; its log:\n%s", err, text)
+	}
+	if took >= wellInside {
+		t.Errorf("the sweep whose unlock went unanswered exited %v after sending it, want under %v", took, wellInside)
+	}
+	// Timed from when the proxy saw the unlock, not from the exit, which
+	// comes after the sweep.
+	var warned *logLine
+	for i, l := range sweep.logged {
+		if strings.Contains(l.text, "could not release migration lock") {
+			warned = &sweep.logged[i]
+		}
+	}
+	if warned == nil {
+		t.Errorf("the unanswered unlock was not reported; its log:\n%s", text)
+	} else if after := warned.at.Sub(sent); after < 1500*time.Millisecond || after >= quickly {
+		t.Errorf("the unanswered unlock was given up %v after it was sent, want two seconds; its log:\n%s", after, text)
+	}
+	if strings.Contains(text, "msg=fatal") || !strings.Contains(text, "msg=sweep ") {
+		t.Errorf("the sweep whose unlock went unanswered did not sweep; its log:\n%s", text)
+	}
+	held := true
+	for deadline := time.Now().Add(5 * time.Second); held && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+		held = locked(t, db, appName)
+	}
+	if held {
+		t.Errorf("the migrations' lock was still held five seconds after the sweep exited")
+	}
+	t.Logf("exited %v after the unlock was sent; its log:\n%s", took.Round(10*time.Millisecond), text)
+}
+
+// locked says whether a connection named appName holds an advisory lock.
+func locked(t *testing.T, db *pgxpool.Pool, appName string) bool {
+	t.Helper()
+	var held bool
+	if err := db.QueryRow(context.Background(), `SELECT EXISTS (SELECT 1 FROM pg_locks l JOIN pg_stat_activity a USING (pid)
+		WHERE l.locktype = 'advisory' AND a.application_name = $1)`, appName).Scan(&held); err != nil {
+		t.Fatalf("look for the migrations' lock: %v", err)
+	}
+	return held
 }
 
 // migrateLockID is the app package's own, the advisory lock its migrations

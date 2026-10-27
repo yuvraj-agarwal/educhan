@@ -916,15 +916,17 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   whatever the stop, both within `migrateAnswerTimeout` (two seconds) of the stop: a
   migration's COMMIT once sent, so a stop as it commits leaves the migration applied and
   recorded and the next not begun, rather than reported as failed, and the migrations'
-  lock given back, which also has two seconds at most from when it is sent. A commit no
-  stop has come to is not cut short, its two seconds starting at the stop or at
-  startup's bound (`TestASlowCommitIsWaitedOnWithoutAStop`). `New` looks at its context
-  after `migrate` (`TestSweepStoppedAsMigrateFinishesEndsThere`: an unlock the database
-  never answers, one it answers slowly with a spent answer past its day left in place, a
-  commit it answers slowly, one it never answers, and one answered 1.8 seconds after the
-  stop with the unlock after it never answered, which ends two seconds after the stop
-  rather than two after it was sent); after the domain file, whose read the stop does
-  not cut short and which can wait, on a slow mount say
+  lock given back, which also has two seconds at most from when it is sent
+  (`TestAnUnansweredUnlockIsGivenUpWithoutAStop`: an unlock never answered, with no
+  stop, is given up two seconds after it is sent, and the sweep goes on and exits 0). A
+  commit no stop has come to is not cut short, its two seconds starting at the stop or
+  at startup's bound (`TestASlowCommitIsWaitedOnWithoutAStop`). `New` looks at its
+  context after `migrate` (`TestSweepStoppedAsMigrateFinishesEndsThere`: an unlock the
+  database never answers, one it answers slowly with a spent answer past its day left in
+  place, a commit it answers slowly, one it never answers, and one answered 1.8 seconds
+  after the stop with the unlock after it never answered, which ends two seconds after
+  the stop rather than two after it was sent); after the domain file, whose read the
+  stop does not cut short and which can wait, on a slow mount say
   (`TestSweepStoppedWhileStartingUpWritesItsError`, a domain file that is a FIFO written
   to only after the stop); and after the media store, for one that answers just as the
   stop comes, which no test reaches: making the local upload directory does not wait,
