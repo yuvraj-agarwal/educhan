@@ -2556,9 +2556,10 @@ func TestMalformedWebPIsRefused(t *testing.T) {
 
 // Whatever the bytes, the rewrite does not panic, and what it accepts it
 // would accept again unchanged: stripping is idempotent. What it refuses,
-// Inspect refuses too, so no WebP is refused for its chunks only after flood
-// control. The seeds are lossless and lossy, simple and extended, with and
-// without an alpha plane, metadata or animation.
+// Inspect does not admit as a WebP, so no WebP is refused for its chunks
+// only after flood control; any other format it refuses, and Inspect may
+// admit as what it is. The seeds are lossless and lossy, simple and
+// extended, with and without an alpha plane, metadata or animation.
 func FuzzStripWebP(f *testing.F) {
 	sample, err := os.ReadFile(filepath.Join("testdata", "sample.webp"))
 	if err != nil {
@@ -2593,8 +2594,8 @@ func FuzzStripWebP(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		out, info, err := stripWebP(data)
 		if err != nil {
-			if _, ierr := Inspect(data); ierr == nil {
-				t.Fatalf("stripWebP refuses the file (%v) and Inspect admits it", err)
+			if format, ierr := Inspect(data); ierr == nil && format == FormatWebP {
+				t.Fatalf("stripWebP refuses the file (%v) and Inspect admits it as a WebP", err)
 			}
 			return
 		}
