@@ -394,9 +394,7 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 			// A FIFO stands in for a file on a mount that is slow to answer:
 			// the sweep's read of it waits until something is written.
 			fifo := filepath.Join(t.TempDir(), "verify_domains.txt")
-			if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-				t.Fatalf("make the domain file: %v", err)
-			}
+			makeFIFO(t, fifo)
 			t.Setenv("EDUCHAN_VERIFY_DOMAINS", fifo)
 			return databaseURL, func() bool {
 				// Opened without waiting, it opens only once the sweep has it
