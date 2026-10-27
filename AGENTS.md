@@ -834,7 +834,10 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     credentials share its expiry: for a lifetime cut by whole days, those issued that
     many days earlier (the later set, at once) or later (the earlier set); for one
     lengthened, or changed by part of a day, never. The README says to deploy such a
-    change soon after 05:00 UTC, before anyone has verified that day.
+    change soon after 05:00 UTC, before anyone has verified that day. A new
+    `credentialDayStart` splits the day it is deployed in the same way, so it goes out
+    once that day has passed both the old start and the new, while nobody has verified
+    since the old one.
   - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
     credentials every night.** Every row carries `xmin`, the id of the transaction that
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
