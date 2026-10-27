@@ -534,8 +534,8 @@ any of them set without the secret (section 2.9).
 
 What a Pass buys is skipping the captcha, so sell it only where the captcha is
 on, which `GET /api/site` shows as `"captcha":true`; a service made before the
-captcha gets its secret first (section 2.4). The block below checks it, and
-makes nothing otherwise.
+captcha gets its secret first (section 2.4). The block below checks that, and
+that the service runs an image with the Pass, and makes nothing otherwise.
 
 **In the Stripe dashboard first.** Under *Settings → Public details*, set a
 support email: it is printed on every receipt, and a buyer who lost their code
@@ -574,6 +574,8 @@ gcloud run services describe educhan --region "$REGION" --format='value(metadata
   { echo "PUBLIC_URL must be a bare https:// origin, not ${PUBLIC_URL}."; exit 1; }
 [[ $(curl -fsS "${PUBLIC_URL}/api/site") == *'"captcha":true'* ]] ||
   { echo "${PUBLIC_URL} does not answer, or its captcha is off (section 2.4)."; exit 1; }
+[[ $(curl -fsS "${PUBLIC_URL}/api/pass") == *'"enabled":'* ]] ||
+  { echo "${PUBLIC_URL} runs an image from before the Pass: deploy the current one first (sections 2.5 and 2.6)."; exit 1; }
 read -rsp 'Stripe restricted key: ' STRIPE_KEY; echo
 read -rsp 'Stripe secret key (for the setup calls only): ' STRIPE_ADMIN; echo
 [[ $STRIPE_KEY == [rs]k_* && $STRIPE_ADMIN == [rs]k_* ]] ||
@@ -602,9 +604,14 @@ ENDPOINT_JSON=$(curl -fsS https://api.stripe.com/v1/webhook_endpoints -u "${STRI
 ENDPOINT=$(field id <<<"$ENDPOINT_JSON")
 WEBHOOK_SECRET=$(field secret <<<"$ENDPOINT_JSON")
 
-# Made once and never replaced: every stored Pass is a hash under it.
+# Made once and never replaced: every stored Pass is a hash under it. It gets
+# its one version in a step of its own, so a run stopped between the two
+# finishes the job next time.
 gcloud secrets describe educhan-pass-secret >/dev/null 2>&1 ||
-  openssl rand -hex 32 | gcloud secrets create educhan-pass-secret --replication-policy=automatic --data-file=-
+  gcloud secrets create educhan-pass-secret --replication-policy=automatic
+PASS_VERSIONS=$(gcloud secrets versions list educhan-pass-secret --limit=1 --format='value(name)')
+[[ -n $PASS_VERSIONS ]] ||
+  openssl rand -hex 32 | gcloud secrets versions add educhan-pass-secret --data-file=-
 for secret in educhan-stripe-secret-key educhan-stripe-webhook-secret; do
   gcloud secrets describe "$secret" >/dev/null 2>&1 ||
     gcloud secrets create "$secret" --replication-policy=automatic
@@ -629,9 +636,9 @@ another Product, Price and webhook endpoint in Stripe. An instance reads the
 newest version of each secret when it starts, so once a run has added its
 versions, instances started from then on verify that run's endpoint, even if
 the run stopped at the update after. So run the block until it prints "Done",
-and only then delete every endpoint but the one it named (*Developers →
-Webhooks*), whose deliveries the server can't verify, and archive every Product
-but its own.
+and only then, under *Developers → Webhooks*, delete every other endpoint whose
+URL ends in `/api/pass/stripe-webhook`, since the server can't verify its
+deliveries, and archive every other "educhan Pass" Product.
 
 `curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
 price. The Price is tax-inclusive, so every buyer pays USD 20.00. To have Stripe
