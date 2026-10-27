@@ -1225,16 +1225,16 @@ sweep is still starting up (connecting, waiting for, running or finishing
 migrations, or checking the bucket) ends it before it is under way: it writes
 the stop as its error and exits non-zero with nothing deleted, the spent answers
 included. A migration the stop lands in is rolled back, unless the stop came as
-it committed: a commit once sent is waited on, for two seconds at most, so that
-migration is applied first and the next is not begun. The migrations' lock is
-given back however the sweep ends, waited on for two seconds at most as well. So
-the error is written at once, or once that commit or the lock's release is
-answered, unless the database stops answering while the sweep is connected to
-it: then the error waits until the connection is given up, fifteen seconds
-later, or seventeen if what went unanswered was a commit or the lock's release,
-which is longer than Cloud Run waits. A commit left unanswered is reported as
-failed, though the database may have applied it: the next start finds it
-recorded, or applies it.
+it committed: a commit once sent is waited on for up to two seconds after the
+stop, so that migration is applied first and the next is not begun. The
+migrations' lock is given back however the sweep ends, waited on for two seconds
+at most as well. So the error is written at once, or once that commit or the
+lock's release is answered, unless the database stops answering while the sweep
+is connected to it: then the error waits until the connection is given up,
+fifteen seconds later, or seventeen if what went unanswered was a commit or the
+lock's release, which is longer than Cloud Run waits. A commit left unanswered
+is reported as failed, though the database may have applied it: the next start
+finds it recorded, or applies it.
 
 A file the media store does not hold also keeps its key and fails the sweep.
 Every queued key is a file the server stored, so a store without it is almost

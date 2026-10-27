@@ -902,28 +902,31 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   on one that outlives it (`TestSweepStoppedWhileStartingUpWritesItsError`, connecting
   to a proxy that answers nothing, waiting on the migrations' lock, and checking a
   bucket that never answers), and while `migrate` waits for the two answers it waits for
-  whatever the stop, for `migrateAnswerTimeout` (two seconds) at most: a migration's
-  COMMIT once sent, so a stop as it commits leaves the migration applied and recorded
-  and the next not begun, rather than reported as failed, and the migrations' lock given
-  back. `New` looks at its context after `migrate`, and after the local media store and
-  the domain file, which wait on nothing (`TestSweepStoppedAsMigrateFinishesEndsThere`:
-  an unlock the database never answers, one it answers slowly with a spent answer past
-  its day left in place, and a commit it answers slowly). The error is written at once,
-  or once that answer comes, unless the database stops answering while the sweep is
-  connected to it, when `New` first gives up the connection, which pgx allows fifteen
-  seconds, seventeen after a commit or an unlock left unanswered. Every error `run` ends
-  on is written once, as `msg=fatal` (`TestSweepModeFailsWithoutADatabase`,
-  `TestServingFailsWhenTheAddressIsTaken` and the stopped sweeps above), and a flag or a
-  setting it cannot read is then the only line written: the flag set writes nothing of
-  its own, and the usage only for `-h` (`TestRunRefusesWhatItDoesNotUnderstand` and
-  `TestRunWritesTheUsageWhenAsked`, which run the whole process and read all it writes).
-  It builds its App with `New` like the server, and runs without the salt, the
-  moderation key, the verification secret and the captcha secret on purpose, so `New`
-  warns about none of them: those warnings are `WarnServingSettings`, which only `serve`
-  in `cmd/server` calls (`TestSweepModeLogsNoServerWarnings`,
-  `TestServingWarningsAreTheServersAlone`). A new warning about a server-only setting
-  goes there, not in `New`. **Legal holds (build plan 2.10) are not built**; when they
-  are, `SweepArchived` must skip held threads, and its comment says so.
+  whatever the stop, for `migrateAnswerTimeout` (two seconds) at most after the stop: a
+  migration's COMMIT once sent, so a stop as it commits leaves the migration applied and
+  recorded and the next not begun, rather than reported as failed, and the migrations'
+  lock given back. A commit no stop has come to is not cut short, its two seconds
+  starting at the stop or at startup's bound (`TestASlowCommitIsWaitedOnWithoutAStop`).
+  `New` looks at its context after `migrate`, and after the local media store and the
+  domain file, which wait on nothing (`TestSweepStoppedAsMigrateFinishesEndsThere`: an
+  unlock the database never answers, one it answers slowly with a spent answer past its
+  day left in place, a commit it answers slowly, and one it never answers). The error is
+  written at once, or once that answer comes, unless the database stops answering while
+  the sweep is connected to it, when `New` first gives up the connection, which pgx
+  allows fifteen seconds, seventeen after a commit or an unlock left unanswered. Every
+  error `run` ends on is written once, as `msg=fatal`
+  (`TestSweepModeFailsWithoutADatabase`, `TestServingFailsWhenTheAddressIsTaken` and the
+  stopped sweeps above), and a flag or a setting it cannot read is then the only line
+  written: the flag set writes nothing of its own, and the usage only for `-h`
+  (`TestRunRefusesWhatItDoesNotUnderstand` and `TestRunWritesTheUsageWhenAsked`, which
+  run the whole process and read all it writes). It builds its App with `New` like the
+  server, and runs without the salt, the moderation key, the verification secret and the
+  captcha secret on purpose, so `New` warns about none of them: those warnings are
+  `WarnServingSettings`, which only `serve` in `cmd/server` calls
+  (`TestSweepModeLogsNoServerWarnings`, `TestServingWarningsAreTheServersAlone`). A new
+  warning about a server-only setting goes there, not in `New`. **Legal holds (build
+  plan 2.10) are not built**; when they are, `SweepArchived` must skip held threads, and
+  its comment says so.
 - **Poster IDs** are `posterID(salt, source, thread id)`, and `posterSourceFor` in
   `identity.go` picks the source: on a badged post the credential's random id, otherwise
   the browser's poster key, otherwise the client address. The poster key is 16 random

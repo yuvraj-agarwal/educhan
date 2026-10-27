@@ -413,14 +413,14 @@ func TestSweepStoppedWhileStartingUpWritesItsError(t *testing.T) {
 	}
 }
 
-// migrate waits for two answers whatever the stop: a migration's COMMIT once it
-// is sent, and the release of the migrations' lock, each for two seconds at
-// most (the app's migrateAnswerTimeout). A sweep stopped while it waits on one
-// still ends with the stop, written as its one fatal line, and deletes
-// nothing: New looks at the stop once migrate is done. Before, an unlock that
-// the database did not answer held the stop until the process was killed, a
-// slow one let the sweep go on to prune, and a commit cut short was written
-// as a failure though the migration had been applied.
+// migrate waits for two answers whatever the stop, for two seconds at most
+// (the app's migrateAnswerTimeout): a migration's COMMIT once it is sent,
+// counted from the stop, and the release of the migrations' lock. A sweep
+// stopped while it waits on one still ends with the stop, written as its one
+// fatal line, and deletes nothing: New looks at the stop once migrate is done.
+// Before, an unlock that the database did not answer held the stop until the
+// process was killed, a slow one let the sweep go on to prune, and a commit
+// cut short was written as a failure though the migration had been applied.
 func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 	// The unlock's two seconds, and some to spare.
 	const quickly = 5 * time.Second
@@ -495,6 +495,22 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 				t.Errorf("schema_migrations holds %v, want [1]: the migration committing applied, and no other begun", versions)
 			}
 		}},
+		// Frozen before it is forwarded, the COMMIT never reaches the
+		// database: given up two seconds after the stop, it is reported as
+		// failed, and its connection closed takes the lock with it.
+		{"committing a migration, unanswered", false, "Q\x00\x00\x00\x0bcommit\x00", 0, func(t *testing.T, db *pgxpool.Pool, appName, text string) {
+			wantOneFatalLine(t, text, "commit migration 0001_init.sql")
+			if strings.Contains(text, "msg=\"applied migration\"") {
+				t.Errorf("a migration whose commit went unanswered was logged as applied; its log:\n%s", text)
+			}
+			held := true
+			for deadline := time.Now().Add(5 * time.Second); held && time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+				held = locked(t, db, appName)
+			}
+			if held {
+				t.Errorf("the migrations' lock was still held five seconds after the stopped sweep exited")
+			}
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			db := sweepEnv(t)
@@ -551,6 +567,49 @@ func TestSweepStoppedAsMigrateFinishesEndsThere(t *testing.T) {
 			tc.check(t, db, appName, text)
 			t.Logf("exited %v after SIGTERM; its log:\n%s", took.Round(10*time.Millisecond), text)
 		})
+	}
+}
+
+// A migration's COMMIT is waited on as long as the database takes until a
+// stop comes: the two seconds a stop allows it are counted from the stop. A
+// sweep whose database answers a commit slowly, with no stop, migrates and
+// sweeps. Before, the two seconds ran from the commit, so a commit answered
+// later failed the sweep, written as a failed migration though it was applied,
+// and the server's startup the same way.
+func TestASlowCommitIsWaitedOnWithoutAStop(t *testing.T) {
+	db := sweepEnv(t)
+	databaseURL := os.Getenv("DATABASE_URL")
+	proxy := startStallingProxy(t, databaseURL)
+	// Longer than the two seconds a stop allows: 0001's COMMIT, the first.
+	fired := proxy.on("Q\x00\x00\x00\x0bcommit\x00", 3*time.Second)
+
+	started := time.Now()
+	sweep := startSweep(t, throughProxy(t, databaseURL, proxy, ""))
+	var err error
+	select {
+	case err = <-sweep.exited:
+	case <-time.After(60 * time.Second):
+		sweep.kill()
+		t.Fatalf("the sweep had not exited a minute after it started; its log:\n%s", sweep.log(started))
+	}
+	text := sweep.log(started)
+	select {
+	case <-fired:
+	default:
+		t.Fatalf("the sweep never sent its first COMMIT; its log:\n%s", text)
+	}
+	if err != nil {
+		t.Errorf("the sweep whose commit was answered slowly ended with %v, want exit status 0; its log:\n%s", err, text)
+	}
+	if strings.Contains(text, "msg=fatal") || !strings.Contains(text, `msg="applied migration" version=1 `) || !strings.Contains(text, "msg=sweep ") {
+		t.Errorf("the sweep whose commit was answered slowly did not migrate and sweep; its log:\n%s", text)
+	}
+	var applied int
+	if err := db.QueryRow(context.Background(), `SELECT count(*) FROM schema_migrations`).Scan(&applied); err != nil {
+		t.Fatalf("count applied migrations: %v", err)
+	}
+	if applied == 0 {
+		t.Errorf("no migration recorded after the sweep whose commit was answered slowly")
 	}
 }
 

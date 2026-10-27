@@ -255,10 +255,11 @@ func TestSchemaFromANewerReleaseStopsTheSweeper(t *testing.T) {
 
 // The migrations' lock is the session's, so a connection whose unlock failed
 // still holds it, and handed back to the pool it would keep every other
-// instance waiting in migrate for as long as this one runs. migrate closes it
-// instead, and the lock goes with its session. Here the unlock is refused as
-// an operator's pg_cancel_backend would refuse it, by a proxy that answers it
-// in the database's place, which leaves the connection otherwise sound.
+// instance waiting in migrate until the pool retires it, up to an hour later
+// by pgxpool's default lifetime. migrate closes it instead, and the lock goes
+// with its session. Here the unlock is refused as an operator's
+// pg_cancel_backend would refuse it, by a proxy that answers it in the
+// database's place, which leaves the connection otherwise sound.
 func TestAnUnlockThatFailsClosesItsConnection(t *testing.T) {
 	ctx := context.Background()
 	databaseURL := testDatabaseURL(t)
@@ -307,8 +308,8 @@ func TestAnUnlockThatFailsClosesItsConnection(t *testing.T) {
 	}
 }
 
-// The docs say that migrate waits two seconds at most for a migration's
-// COMMIT, or for the migrations' lock to be given back, whatever the stop.
+// The docs say that migrate waits two seconds at most for the migrations'
+// lock to be given back, and for a migration's COMMIT after a stop.
 func TestMigrateWaitsTwoSecondsForWhatItOwes(t *testing.T) {
 	if migrateAnswerTimeout != 2*time.Second {
 		t.Errorf("migrate waits %v for a commit or the lock's release, want the two seconds the docs quote", migrateAnswerTimeout)
