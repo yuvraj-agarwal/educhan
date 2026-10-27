@@ -466,21 +466,21 @@ What that protects, exactly:
   issued between midnight and the sweep to those three hours, morning to
   afternoon across South and East Asia and Australia, until the next night's
   sweep (`TestCredentialDaysEndAfterTheSweep` reads the schedule and the retry
-  from the deploy guide). A sweep that runs after 05:00 — by hand, as the deploy
-  guide offers, or a late retry — splits the day it runs in where it runs, so
-  until the next night's sweep, and in the backups taken meanwhile, its id dates
-  the credentials issued between 05:00 and it to those hours. Run it by hand
-  between 03:17 and 05:00 UTC, or when nobody has verified since 05:00. And
-  once, on the day a server first counts expiries this way, the deploy splits
-  the days around it. Credentials issued that day before the deploy keep an
-  expiry rounded up to midnight, and those issued after it until the next
-  05:00 UTC an expiry counted from that 05:00, the first of the new kind;
-  neither set shares its expiry with any credential outside it, so the first
-  are dated to the hours between midnight and the deploy, and the second to
-  the hours between the deploy and that 05:00, for as long as they are kept.
+  from the deploy guide and `first-deploy.sh`). A sweep that runs after 05:00
+  — by hand, as the deploy guide offers, or a late retry — splits the day it
+  runs in where it runs, so until the next night's sweep, and in the backups
+  taken meanwhile, its id dates the credentials issued between 05:00 and it to
+  those hours. Run it by hand between 03:17 and 05:00 UTC, or when nobody has
+  verified since 05:00. And once, on the day a server first counts expiries this
+  way, the deploy splits the days around it. Credentials issued that day before
+  the deploy keep an expiry rounded up to midnight, and those issued after it
+  until the next 05:00 UTC an expiry counted from that 05:00, the first of the
+  new kind; neither set shares its expiry with any credential outside it, so the
+  first are dated to the hours between midnight and the deploy, and the second
+  to the hours between the deploy and that 05:00, for as long as they are kept.
   A sweep that runs while either set is being issued splits it as it does any
-  day's: until the next sweep, its id dates those of the set issued before it
-  to the hours between the start of the set and the sweep. Times autovacuum
+  day's: until the next sweep, its id dates those of the set issued before it to
+  the hours between the start of the set and the sweep. Times autovacuum
   recorded before migration `0015` stay in the statistics views until the
   statistics are reset, which takes a superuser. That is the tables, not the
   database: see the next point.

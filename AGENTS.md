@@ -809,13 +809,13 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     splits the day it runs in: with a midnight day, it and the expiry dated every
     credential issued between midnight and the sweep to those three hours.
     `TestCredentialDaysEndAfterTheSweep` reads the schedule and the Job's retry from
-    `deploy/README.md`, so moving the sweep past 05:00 means moving
-    `credentialDayStart` with it. Moving where the day ends is itself a leak, once: the
-    credentials issued between the last old boundary and the deploy share an expiry
-    with no other credential, and so do those issued between the deploy and the first
-    new boundary, which dates each set to those hours for as long as it is kept (the
-    README's "What that protects, exactly" says this of the move from midnight to
-    05:00).
+    `deploy/README.md` and `deploy/first-deploy.sh`, so moving the sweep past 05:00
+    means moving `credentialDayStart` with it. Moving where the day ends is itself a
+    leak, once: the credentials issued between the last old boundary and the deploy
+    share an expiry with no other credential, and so do those issued between the deploy
+    and the first new boundary, which dates each set to those hours for as long as it is
+    kept (the README's "What that protects, exactly" says this of the move from midnight
+    to 05:00).
   - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
     credentials every night.** Every row carries `xmin`, the id of the transaction that
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'

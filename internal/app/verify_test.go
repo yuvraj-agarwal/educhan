@@ -362,55 +362,61 @@ func TestCredentialDayEnd(t *testing.T) {
 // the sweep carry the sweep's id and the rest their own, and the expiry and
 // the sweep's id together dated the first to those three hours, until the
 // next sweep. The test reads when the sweep is scheduled, and how long it and
-// its retry can run, from the deploy guide's Cloud Scheduler job and Cloud Run
-// Job, and checks that the day the sweep runs in ends after the latest of
-// them, with half an hour to spare for the Job's starts, and within two hours
-// of the scheduled time: then the rows of that day carrying the sweep's id
-// were issued over the 22 hours or more before it, and those issued after it,
-// which carry their own ids anyway, over two hours at most.
+// its retry can run, from the Cloud Scheduler job and Cloud Run Job that the
+// deploy guide and first-deploy.sh each set up, and checks that the day the
+// sweep runs in ends after the latest of them, with half an hour to spare for
+// the Job's starts, and within two hours of the scheduled time: then the rows
+// of that day carrying the sweep's id were issued over the 22 hours or more
+// before it, and those issued after it, which carry their own ids anyway,
+// over two hours at most.
 func TestCredentialDaysEndAfterTheSweep(t *testing.T) {
-	guide := repositoryFile(t, "deploy/README.md")
-	schedule := regexp.MustCompile(`--schedule "(\d+) (\d+) \* \* \*" --time-zone "Etc/UTC"`).FindStringSubmatch(guide)
-	job := regexp.MustCompile(`--max-retries (\d+) --task-timeout (\d+)m\b`).FindStringSubmatch(guide)
-	if schedule == nil || job == nil {
-		t.Fatalf("deploy/README.md has no daily UTC schedule (%q) or no Job retries and timeout (%q) "+
-			"for the sweep: the test cannot tell when it runs", schedule, job)
-	}
-	number := func(s string) time.Duration {
-		n, err := strconv.Atoi(s)
-		if err != nil {
-			t.Fatalf("%q: %v", s, err)
-		}
-		return time.Duration(n)
-	}
-	scheduled := number(schedule[2])*time.Hour + number(schedule[1])*time.Minute
-	latest := scheduled + (number(job[1])+1)*number(job[2])*time.Minute
-
-	for _, date := range []time.Time{
-		time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC),
-		time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
-		time.Date(2028, 2, 29, 0, 0, 0, 0, time.UTC),
-	} {
-		dayEnd := credentialDayEnd(date.Add(scheduled))
-		if spare := dayEnd.Sub(date.Add(latest)); spare < 30*time.Minute {
-			t.Errorf("a credential day ends at %s, %s after the latest a sweep scheduled at %s and retried "+
-				"can still be running (%s): want it to end half an hour or more after that, or the sweep "+
-				"splits it into the credentials issued before it and those after",
-				dayEnd.Format(time.RFC3339), spare, date.Add(scheduled).Format(time.RFC3339),
-				date.Add(latest).Format(time.RFC3339))
-		}
-		if after := dayEnd.Sub(date.Add(scheduled)); after > 2*time.Hour {
-			t.Errorf("the day the sweep scheduled at %s runs in ends %s after it: want two hours at most, so "+
-				"that the credentials of that day carrying its id are those issued over the rest of the day",
-				date.Add(scheduled).Format(time.RFC3339), after)
-		}
-		// Each moment a scheduled sweep or its retry may run in falls in that day.
-		for at := date.Add(scheduled); !at.After(date.Add(latest)); at = at.Add(time.Minute) {
-			if got := credentialDayEnd(at); !got.Equal(dayEnd) {
-				t.Fatalf("credentialDayEnd(%s) = %s, want %s: a day ends while the sweep can be running",
-					at.Format(time.RFC3339), got.Format(time.RFC3339), dayEnd.Format(time.RFC3339))
+	for _, path := range []string{"deploy/README.md", "deploy/first-deploy.sh"} {
+		t.Run(path, func(t *testing.T) {
+			setup := repositoryFile(t, path)
+			schedule := regexp.MustCompile(`--schedule "(\d+) (\d+) \* \* \*" --time-zone "Etc/UTC"`).
+				FindStringSubmatch(setup)
+			job := regexp.MustCompile(`--max-retries (\d+) --task-timeout (\d+)m\b`).FindStringSubmatch(setup)
+			if schedule == nil || job == nil {
+				t.Fatalf("%s has no daily UTC schedule (%q) or no Job retries and timeout (%q) for the sweep: "+
+					"the test cannot tell when it runs", path, schedule, job)
 			}
-		}
+			number := func(s string) time.Duration {
+				n, err := strconv.Atoi(s)
+				if err != nil {
+					t.Fatalf("%q: %v", s, err)
+				}
+				return time.Duration(n)
+			}
+			scheduled := number(schedule[2])*time.Hour + number(schedule[1])*time.Minute
+			latest := scheduled + (number(job[1])+1)*number(job[2])*time.Minute
+
+			for _, date := range []time.Time{
+				time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC),
+				time.Date(2026, 12, 31, 0, 0, 0, 0, time.UTC),
+				time.Date(2028, 2, 29, 0, 0, 0, 0, time.UTC),
+			} {
+				dayEnd := credentialDayEnd(date.Add(scheduled))
+				if spare := dayEnd.Sub(date.Add(latest)); spare < 30*time.Minute {
+					t.Errorf("a credential day ends at %s, %s after the latest a sweep scheduled at %s and "+
+						"retried can still be running (%s): want it to end half an hour or more after that, or "+
+						"the sweep splits it into the credentials issued before it and those after",
+						dayEnd.Format(time.RFC3339), spare, date.Add(scheduled).Format(time.RFC3339),
+						date.Add(latest).Format(time.RFC3339))
+				}
+				if after := dayEnd.Sub(date.Add(scheduled)); after > 2*time.Hour {
+					t.Errorf("the day the sweep scheduled at %s runs in ends %s after it: want two hours at "+
+						"most, so that the credentials of that day carrying its id are those issued over the "+
+						"rest of the day", date.Add(scheduled).Format(time.RFC3339), after)
+				}
+				// Each moment a scheduled sweep or its retry may run in falls in that day.
+				for at := date.Add(scheduled); !at.After(date.Add(latest)); at = at.Add(time.Minute) {
+					if got := credentialDayEnd(at); !got.Equal(dayEnd) {
+						t.Fatalf("credentialDayEnd(%s) = %s, want %s: a day ends while the sweep can be running",
+							at.Format(time.RFC3339), got.Format(time.RFC3339), dayEnd.Format(time.RFC3339))
+					}
+				}
+			}
+		})
 	}
 }
 

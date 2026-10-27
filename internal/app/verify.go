@@ -550,9 +550,10 @@ const credentialDayStart = 5 * time.Hour
 // issued in the 22 hours before it; one issued between the sweep and 05:00
 // carries its own id, which dates it anyway until the next sweep.
 // TestCredentialDaysEndAfterTheSweep reads the schedule from the deploy guide
-// and holds the two together, so moving the sweep past 05:00 means moving this
-// with it. A sweep run after 05:00 — by hand, or late — still splits the day
-// it runs in at the time it runs, and the README says what that leaves.
+// and first-deploy.sh and holds the two together, so moving the sweep past
+// 05:00 means moving this with it. A sweep run after 05:00 — by hand, or late
+// — still splits the day it runs in at the time it runs, and the README says
+// what that leaves.
 //
 // It is not all an operator can see. The code request and the confirmation
 // each took a transaction id from the counter the posts take theirs from, and
