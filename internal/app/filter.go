@@ -7754,11 +7754,13 @@ func ageCheck(v *view, m []int) bool {
 		}
 	}
 	// "if someone asks how old you are": a question reported, not asked.
-	// Only its own clause: "how old are you? are you alone?" asks.
+	// Only its own clause: "how old are you? are you alone?" asks. "how old
+	// are you supposed to be to go out alone" asks an age in general.
 	if is(ws[0], "how") && !is(ws[len(ws)-1], "old") {
 		next := nextWords(clauseAfter(v.text, m[1]), 1)
 		before := wordsBefore(v.text, m[0], 1)
-		if len(next) > 0 && is(next[0], "are") || len(before) > 0 && askedWords[before[0]] {
+		if len(next) > 0 && (is(next[0], "are") || generalOldNext[next[0]]) ||
+			len(before) > 0 && askedWords[before[0]] {
 			return false
 		}
 	}
@@ -7834,6 +7836,11 @@ var (
 	// drive".
 	generalAgeNext = canonSetOf(`supposed meant allowed expected required likely when if usually generally typically
 		normally gonna going able eligible considered legally once until till before after`)
+	// generalOldNext, after "how old are you", make it an age in general:
+	// "how old are you allowed to be to go out alone". Fewer than
+	// generalAgeNext: "how old are you going to be" asks the reader's.
+	generalOldNext = canonSetOf(`supposed meant allowed expected required eligible considered legally usually
+		typically generally normally`)
 	// hinglishAge is the age asked in "umar kya hai"; hinglishAgeLeads may
 	// come before it in its clause and hinglishAgeTails after it, so it is
 	// the reader's.
