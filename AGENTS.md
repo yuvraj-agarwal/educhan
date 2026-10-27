@@ -722,8 +722,11 @@ cost down:
   of the 29,397 bodies built to be slow the counts were last checked on; the next are
   handles glued to an opening bracket and pointed at an app, "handles to brackets",
   about 128, and a pill question run into such a handle, "howmany@pills_(snap ", about
-  117; the steps are the same with Go 1.22, 1.24 and 1.25), and eight times the text at
-  most ten times the steps. Its bodies include what made searching quadratic before:
+  117; the steps are the same with Go 1.22, 1.24 and 1.25), at most `workPerChar` (240)
+  per character, so that a post of four-byte characters is not given four times the
+  steps a character an ASCII one is (the most is Snapchat's ghost over and over, each
+  read for an ask or a handle round it, about 193), and eight times the text at most ten
+  times the steps. Its bodies include what made searching quadratic before:
   spaces between the places a run can end ("addresses far apart", "arrows far apart",
   read once now, since `nextRun` steps over what no run is made of and `runOf` keeps
   every run it measured), weapon emoji, which all stand at one reading position (a run
@@ -739,7 +742,11 @@ cost down:
   charges a check 128 bytes, and the checks that read wider fixed windows (its comment
   lists them) are not charged the rest, so across those bodies a millisecond is about
   22,000 to 125,000 steps, and the README's timing is measured, not derived from the
-  bound. A new rule that trips it is planned or rewritten, not given a bigger bound; add
+  bound. What the count cannot see is held otherwise: `appFrame` keeps the words it reads
+  from one app's name to the next, so a post that names an app every other character
+  ("👻Sc" over and over) does not build them anew each time, which took about twice the
+  time at the same steps (`TestAppFramesReuseTheirWords` holds it to its allocations). A
+  new rule that trips the bound is planned or rewritten, not given a bigger bound; add
   the body that tripped it to the table.
 - `TestFilterSearchesMatchTheirRegexps` and `FuzzFilterSearches` hold every search to
   what Go's regexp finds with the same pattern, groups included, on every view, and

@@ -3269,7 +3269,7 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 
 // TestFilterCostIsBounded runs the filter over bodies built to be slow — as
 // long as a post can be, made of what the rules look for, and in the subject
-// and name as well — and holds what it counts searching them to two bounds.
+// and name as well — and holds what it counts searching them to three bounds.
 // It counts work rather than time (checkContentCost: the places the searches
 // try, the characters they read, the steps their machines take, and each
 // check a match is put to), so the bounds are the same on every machine, and
@@ -3289,16 +3289,20 @@ func TestJoinActsMatchesTheActsOneByOne(t *testing.T) {
 // 1.22, 1.24 and 1.25, since the programs are Go's own compiler's output for
 // the same patterns. A body that costs much more than the rest has to be
 // looked at, and the rule behind it planned or rewritten, before the bound is
-// raised. The second is that eight times the text costs at most ten times as
-// much: linear work costs eight times, a fixed part a little less, and
-// anything quadratic would cost sixty-four.
+// raised. The second is per character, so that a post of four-byte
+// characters is not given four times the steps a character an ASCII one is:
+// the most a character is about 193 steps (Snapchat's ghost over and over,
+// each read for an ask or a handle round it), about 20% under workPerChar.
+// The third is that eight times the text costs at most ten times as much:
+// linear work costs eight times, a fixed part a little less, and anything
+// quadratic would cost sixty-four.
 //
 // What is not counted is single passes: the scanners that make the views,
 // and the number scanner's own pass over the digits (the cues it looks for in
 // the 32 bytes either side of a number are searches, and are counted).
 // TestFilterReadsNoCharacterAsAPhrase caps how long a view can get.
 func TestFilterCostIsBounded(t *testing.T) {
-	const workPerByte = 160
+	const workPerByte, workPerChar = 160, 240
 	rep := func(unit string) func(n int) string {
 		return func(n int) string { return strings.Repeat(unit, n/utf8.RuneCountInString(unit)) }
 	}
@@ -3505,6 +3509,12 @@ func TestFilterCostIsBounded(t *testing.T) {
 		// ask or a handle on either side: the most, a byte, of the bodies
 		// the counts were last checked on.
 		"stacked method questions": rep("how many to od how many to od how many to od i[n]sta "),
+		// Snapchat's ghost alone and before an app's short name, each name
+		// read for an ask or a handle on either side, and each ghost four
+		// bytes: the most a character of these bodies costs.
+		"ghosts":        rep("👻"),
+		"ghost then sc": rep("👻Sc"),
+		"ghost then wa": rep("👻wa"),
 		// The newer asks, each read with the words round it: an app made a
 		// verb after a lead, everyone's numbers with the post round them
 		// read for a group, a group set up on an app, talking privately or
@@ -3531,20 +3541,25 @@ func TestFilterCostIsBounded(t *testing.T) {
 	}
 	// The more either verdict costs, since a post that was shown the support
 	// message runs on to the holds.
-	cost := func(body string) (work, size int) {
+	cost := func(body string) (work, size, chars int) {
 		in := contentInput{Subject: truncateRunes(body, maxSubjectLen), Name: truncateRunes(body, maxNameLen), Body: body}
 		for _, supportSeen := range []bool{false, true} {
 			_, w := checkContentCost(in, supportSeen)
 			work = max(work, w)
 		}
-		return work, len(in.Subject) + len(in.Name) + len(in.Body)
+		return work, len(in.Subject) + len(in.Name) + len(in.Body),
+			utf8.RuneCountInString(in.Subject) + utf8.RuneCountInString(in.Name) + utf8.RuneCountInString(in.Body)
 	}
 	for name, build := range bodies {
-		small, _ := cost(build(maxBodyLen / 8))
-		full, size := cost(build(maxBodyLen))
+		small, _, _ := cost(build(maxBodyLen / 8))
+		full, size, chars := cost(build(maxBodyLen))
 		if full > workPerByte*size {
 			t.Errorf("%s: %d steps for %d bytes, %.0f a byte, more than %d", name, full, size,
 				float64(full)/float64(size), workPerByte)
+		}
+		if full > workPerChar*chars {
+			t.Errorf("%s: %d steps for %d characters, %.0f a character, more than %d", name, full, chars,
+				float64(full)/float64(chars), workPerChar)
 		}
 		if full > 10*small {
 			t.Errorf("%s: %d steps at full length against %d at an eighth; more than linear", name, full, small)
@@ -3553,8 +3568,37 @@ func TestFilterCostIsBounded(t *testing.T) {
 	// Every character of ordinary words is read at least once, so a count
 	// below the length means the count has stopped counting and the bounds
 	// above hold of nothing.
-	if full, size := cost(bodies["words"](maxBodyLen)); full < size {
+	if full, size, _ := cost(bodies["words"](maxBodyLen)); full < size {
 		t.Errorf("%d steps counted for %d bytes of words", full, size)
+	}
+}
+
+// TestAppFramesReuseTheirWords holds appFrame to the words it keeps from one
+// app's name to the next. A post can name an app in every other word, and
+// Snapchat's ghost before a short name ("👻Sc" over and over) is a name every
+// two characters: reading each frame's words into new slices took about 21
+// allocations a name and about twice the time, which TestFilterCostIsBounded
+// cannot see, since what is read, and counted, is the same. Under the race
+// detector sync.Pool drops some of what it is given back, and the searches'
+// machines are made anew, about 6 a name.
+func TestAppFramesReuseTheirWords(t *testing.T) {
+	body := strings.Repeat("👻Sc", maxBodyLen/3)
+	f := scanField("body", body, nil)
+	names := 0
+	appNameRule.loose.each(&f.loose, func(m []int) bool { names++; return true })
+	if names != 2*(maxBodyLen/3) {
+		t.Fatalf("%d app names found in %d ghosts and names, want both", names, maxBodyLen/3)
+	}
+	scanning := testing.AllocsPerRun(3, func() { f = scanField("body", body, nil) })
+	framing := testing.AllocsPerRun(3, func() {
+		f = scanField("body", body, nil)
+		if _, _, _, ok := f.firstAppFrame(); ok {
+			t.Fatal("a frame read in a post of ghosts and names")
+		}
+	}) - scanning
+	if framing > 10*float64(names) {
+		t.Errorf("reading the frames round %d app names allocated %.0f times, %.1f a name, more than 10",
+			names, framing, framing/float64(names))
 	}
 }
 

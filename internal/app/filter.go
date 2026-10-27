@@ -527,6 +527,11 @@ type scannedField struct {
 	// nameShown and subjectShown say the post has a name or a subject, for
 	// a handle given as one of them ("my insta is my name").
 	nameShown, subjectShown bool
+	// frameBefore and frameAfter hold the words appFrame reads round an
+	// app's name, kept from one name to the next so a post that names an
+	// app in every other word does not build them anew each time.
+	frameBefore, frameAfter []aWord
+	frameNext               []string
 }
 
 // asksForAMethod reports a selfHarmMethodRules match.
@@ -1709,11 +1714,16 @@ func readWords(text string, i, n, limit int) ([]aWord, int) {
 // readOn is readWords going on past as many as crossings sentence ends. It
 // also returns where the first sentence ended, or -1.
 func readOn(text string, i, n, limit, crossings int) ([]aWord, int, int) {
+	return readOnInto(make([]aWord, 0, min(n, 16)), text, i, n, limit, crossings)
+}
+
+// readOnInto is readOn, appending the words to out.
+func readOnInto(out []aWord, text string, i, n, limit, crossings int) ([]aWord, int, int) {
 	hi := min(len(text), i+limit)
-	var out []aWord
+	out = out[:0]
 	j, firstEnd := i, -1
 	for j < hi && len(out) < n {
-		r, size := utf8.DecodeRuneInString(text[j:hi])
+		r, size := decodeRuneBefore(text, j, hi)
 		if sentenceEnd(text, j, r) {
 			if firstEnd < 0 {
 				firstEnd = j
@@ -1731,13 +1741,13 @@ func readOn(text string, i, n, limit, crossings int) ([]aWord, int, int) {
 		}
 		k := j + size
 		for k < hi {
-			r, size := utf8.DecodeRuneInString(text[k:hi])
+			r, size := decodeRuneBefore(text, k, hi)
 			if inWord(r) {
 				k += size
 				continue
 			}
 			if r == '.' && k+size < hi {
-				if n, _ := utf8.DecodeRuneInString(text[k+size : hi]); inWord(n) && n != '\'' {
+				if n, _ := decodeRuneBefore(text, k+size, hi); inWord(n) && n != '\'' {
 					k += size
 					continue
 				}
@@ -1755,12 +1765,17 @@ func readOn(text string, i, n, limit, crossings int) ([]aWord, int, int) {
 // readBack reads up to n words before offset i, within limit bytes and its
 // sentence, in order, and returns them and where it stopped.
 func readBack(text string, i, n, limit int) ([]aWord, int) {
+	return readBackInto(make([]aWord, 0, min(n, 16)), text, i, n, limit)
+}
+
+// readBackInto is readBack, appending the words to out.
+func readBackInto(out []aWord, text string, i, n, limit int) ([]aWord, int) {
 	lo := max(0, i-limit)
-	var out []aWord
+	out = out[:0]
 	end := -1
 	j := i
 	for j > lo && len(out) < n {
-		r, size := utf8.DecodeLastRuneInString(text[lo:j])
+		r, size := decodeRuneAfter(text, lo, j)
 		if inWord(r) || r == '.' && end >= 0 && j-size > lo && inWord(lastRune(text[lo:j-size])) {
 			if end < 0 {
 				end = j
@@ -1795,7 +1810,25 @@ func readBack(text string, i, n, limit int) ([]aWord, int) {
 	return out, j
 }
 
-func inWord(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == '\'' }
+func inWord(r rune) bool { return alnum(r) || r == '_' || r == '\'' }
+
+// decodeRuneBefore is utf8.DecodeRuneInString(text[i:hi]), and
+// decodeRuneAfter utf8.DecodeLastRuneInString(text[lo:j]), with a byte of
+// ASCII read as itself first: the word readers decode every character of
+// the frames round an app's name, and most of them are ASCII.
+func decodeRuneBefore(text string, i, hi int) (rune, int) {
+	if c := text[i]; c < utf8.RuneSelf {
+		return rune(c), 1
+	}
+	return utf8.DecodeRuneInString(text[i:hi])
+}
+
+func decodeRuneAfter(text string, lo, j int) (rune, int) {
+	if c := text[j-1]; c < utf8.RuneSelf {
+		return rune(c), 1
+	}
+	return utf8.DecodeLastRuneInString(text[lo:j])
+}
 
 func lastRune(s string) rune {
 	r, _ := utf8.DecodeLastRuneInString(s)
@@ -1870,8 +1903,9 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 	// Seven words before it and twelve after, in its sentence: enough for
 	// the longest frame, and no more, since an app may be named in every
 	// other word ("ig ig ig").
-	before, lo := readBack(text, m[0], 7, 64)
-	following, end, firstEnd := readOn(text, m[1], 12, 96, 0)
+	before, lo := readBackInto(f.frameBefore[:0], text, m[0], 7, 64)
+	following, end, firstEnd := readOnInto(f.frameAfter[:0], text, m[1], 12, 96, 0)
+	f.frameBefore, f.frameAfter = before, following
 	v.work += end - lo
 	hi := end
 	after := following
@@ -1894,7 +1928,11 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 		}
 		return out
 	}
-	next := ws(after)
+	next := f.frameNext[:0]
+	for _, w := range after {
+		next = append(next, w.w)
+	}
+	f.frameNext = next
 	question := strings.HasPrefix(text[hi:], "?")
 	// What comes after the app makes it a topic: "my snap score", "come to
 	// insta live", "tg eamcet counselling". A streak kept with someone is
@@ -1919,7 +1957,7 @@ func (f *scannedField) appFrame(v *view, m []int) (int, int, findingKind, bool) 
 	if len(after) > 0 && strings.ContainsAny(text[m[1]:after[0].from], ",;:") {
 		clause = nil
 	}
-	ends := allIn(ws(clause), askTails)
+	ends := allIn(next[:len(clause)], askTails) // clause is the start of after
 	// An ask quoted from someone else, or answered with a no, is not the
 	// poster's: ">>123 >dm me on insta lol no", "my mum said 'add me on
 	// whatsapp'".
@@ -9450,8 +9488,28 @@ func wordsIn(s string) []string {
 	})
 }
 
-// is reports that w is word, as either view writes it.
-func is(w, word string) bool { return w == word || w == canon(word) }
+// is reports that w is word, as either view writes it: word itself, or
+// canon(word), compared a byte at a time rather than built, since the
+// checks put every word they read to it ("l" is one byte in UTF-8 and
+// never part of another character).
+func is(w, word string) bool {
+	if w == word {
+		return true
+	}
+	if len(w) != len(word) {
+		return false
+	}
+	for i := 0; i < len(w); i++ {
+		c := word[i]
+		if c == 'l' {
+			c = 'i'
+		}
+		if w[i] != c {
+			return false
+		}
+	}
+	return true
+}
 
 func hasWord(ws []string, word string) bool {
 	for _, w := range ws {
@@ -12379,7 +12437,28 @@ func closingMark(text string, i int, open rune) int {
 	return -1
 }
 
-func alnum(r rune) bool { return unicode.IsLetter(r) || unicode.IsDigit(r) }
+// alnum reports a letter or a digit, as unicode.IsLetter and IsDigit do,
+// from a table for the first two planes, where every character a post is
+// likely to be made of is: the word readers ask it of every character they
+// pass, and an emoji's answer from the unicode tables costs a binary search.
+func alnum(r rune) bool {
+	if uint32(r) < alnumTableSize {
+		return alnumTable[r>>6]&(1<<(r&63)) != 0
+	}
+	return unicode.IsLetter(r) || unicode.IsDigit(r)
+}
+
+const alnumTableSize = 0x20000
+
+var alnumTable = func() *[alnumTableSize / 64]uint64 {
+	var t [alnumTableSize / 64]uint64
+	for r := rune(0); r < alnumTableSize; r++ {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			t[r>>6] |= 1 << (r & 63)
+		}
+	}
+	return &t
+}()
 
 // glossed reports a word being explained rather than said: "kys = keep
 // yourself safe?", "kys means", "what does kys mean".
