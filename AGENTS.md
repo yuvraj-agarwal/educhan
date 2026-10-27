@@ -825,13 +825,15 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     ends is itself a leak, once: the credentials issued between the last old boundary
     and the deploy share an expiry with no other credential, and so do those issued
     between the deploy and the first new boundary, which dates each set to those hours
-    for as long as it is kept. So a new `credentialDayStart` goes out soon after the
-    later of the old start and the new, once the log shows nobody has verified since the
-    old start, which leaves the first set empty, while a later deploy shortens the
-    second; a start moved earlier can instead go out at any time between the new start
-    and the old one, quiet or not, since each set then spans at least a day less the
-    move (the README's "What that protects, exactly" says this of every move, the one
-    from midnight to 05:00 among them). Changing `EDUCHAN_VERIFY_CREDENTIAL_TTL` is the
+    for as long as it is kept (the README's "What that protects, exactly" says this of
+    every move, the one from midnight to 05:00 among them). So a new
+    `credentialDayStart` goes out soon after the later of the old start and the new,
+    once the log shows nobody has verified since the old start, which leaves the first
+    set empty, while a later deploy shortens the second; a start moved earlier can
+    instead go out at any time between the new start and the old one, quiet or not, once
+    that night's sweep on the old schedule, and its retry if it fails, has finished, and
+    with the new revision serving all traffic before the old start, since each set then
+    spans at least a day less the move. Changing `EDUCHAN_VERIFY_CREDENTIAL_TTL` is the
     same leak on the day it is deployed: the stored expiry is `credentialDayEnd(issued)`
     plus the lifetime, so that day's credentials before the deploy get one expiry and
     those after it another, which the sweep's one id does not merge, and each set is
