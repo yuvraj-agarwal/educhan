@@ -386,7 +386,9 @@ main[aria-busy="true"] { opacity: 0.55; transition: opacity 0.15s ease 0.15s; }
   font-size: 13px;
 }
 
-.btn.subtle:hover { color: var(--text); border-color: var(--border-strong); }
+.btn.subtle:hover:not(:disabled) { color: var(--text); border-color: var(--border-strong); }
+/* Waiting on an answer, as the Verify page's step buttons do beside its submit button. */
+.btn.subtle:disabled { opacity: 0.6; cursor: progress; }
 
 .btn.danger {
   background: var(--panel-3);
@@ -574,6 +576,10 @@ button.link:hover { text-decoration: underline; }
 
 .sage input { accent-color: var(--accent); width: 16px; height: 16px; }
 
+/* The badge box and its hint sit in a slot that can be drawn again in place;
+   the slot itself takes no room, so they lay out as the form's other actions. */
+.badge-option { display: contents; }
+
 /* Verification page ------------------------------------------------------- */
 
 .verify-note {
@@ -600,6 +606,20 @@ button.link:hover { text-decoration: underline; }
 
 .verify-panel p { margin: 0; line-height: 1.6; }
 .verify-panel .hint { color: var(--muted); font-size: 12px; }
+
+/* Why the code box has gone, at the top of the address form that replaced it:
+   a state to read before typing, so it is marked off but not alarming. */
+.verify-panel .verify-ended {
+  padding: 2px 0 2px 10px;
+  border-left: 3px solid var(--warn);
+  color: var(--text);
+}
+
+/* Why the form was refused, under its fields and above its buttons, where a
+   phone shows it: the notice at the top of the page is a screen above. */
+.verify-panel .verify-refused { color: var(--danger); }
+.verify-panel .verify-refused[hidden] { display: none; }
+.verify-panel .field input[aria-invalid="true"] { border-color: var(--danger); }
 
 /* The 18+ attestation: a sentence the visitor confirms, so it reads at body
    size, and the whole label is the hit area. */
@@ -643,6 +663,10 @@ button.link:hover { text-decoration: underline; }
 
 .verify-forget p { margin: 0; line-height: 1.6; }
 .verify-forget .muted { font-size: 13px; }
+
+/* Forget this browser's confirmation, under the button that did it. */
+.verify-forget .verify-done { color: var(--green); font-weight: 600; }
+.verify-forget .verify-done[hidden] { display: none; }
 
 /* Forgetting the browser is on the Verify page in every state, outside the
    verification panel, since the poster key and the name belong to everyone. */

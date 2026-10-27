@@ -387,7 +387,8 @@ needs a browser check before the test changes.
 - A re-render replaces the posting form, so `captureDraft`/`restoreDraft` carry the
   half-written post — the attached file included, via `DataTransfer` — across it. New
   fields need adding there too. The spoiler box lives in the file preview and is
-  restored only alongside the file it was ticked for.
+  restored only alongside the file it was ticked for, and the badge box only for the
+  badge it was ticked for.
 - A spoilered attachment (`attachment.spoiler`) renders as a `<button>` tile with the
   caption and thumbnail in a `hidden` wrapper behind it; the server thumbnails it as
   usual, and hiding it is entirely the client's job. Keep the thumbnail inside the
@@ -428,7 +429,20 @@ needs a browser check before the test changes.
   is attached to exactly one request in the whole application: the badged post, in
   `submit`. `readBadge()` decodes its claims locally to decide what to show — the
   signature is the server's to check, and it re-derives the label from its own record on
-  every badged post, so a forged local claim buys a 403 and nothing else.
+  every badged post, so a forged local claim buys a 403 and nothing else. A posting
+  form's badge box sits in a slot that names the badge it offers (`data-badge-option`,
+  a number `badgeNumber` gives each credential the page reads, never the credential
+  itself), and a post goes out only under the badge its box named. The badge can change
+  under a form: Verify pressed for another address, and the reader gone on to a board
+  before the answer. That answer redraws the box of any form on screen for the new
+  badge, unticked, and says so if it had been ticked (`offerHeldBadge`); before it, a box
+  ticked for one institution sent the other's credential
+  (`TestPostingFormSendsOnlyTheBadgeItNames`). A post refused because the badge it
+  carried expired or was revoked forgets that credential only while it is still the one
+  stored. One stored since — that answer, or a badge issued in another tab, which is
+  what revoked it — is offered in its place, and the notice says so
+  (`sayBadgeReplaced`): forgetting whatever was stored deleted a badge the server cannot
+  hand out again.
 - The poster key lives in `localStorage` under `educhan:poster-key`: 16 random bytes as
   22 characters of unpadded base64url, made by `posterKey()` on the first post rather
   than the first visit. `submit` sends it in `X-Educhan-Poster-Key` on thread-create and
@@ -449,6 +463,177 @@ needs a browser check before the test changes.
   the credential, the poster key and the remembered name, and leaves the age answer. It
   is what the FAQ's shared-computer advice points to: the key left behind would give the
   next person at the computer the same IDs in the same threads.
+- The Verify page's steps (`verifyViewHTML`, `verifyStep`): the code step comes first and
+  is decided on `verifyStep.step` alone, so a pending code's box shows whether or not a
+  badge is held, since a badge is replaced only once the new one is confirmed
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`). A refusal after which the server holds
+  nothing pending (`NO_CODE_PENDING`, `CODE_EXPIRED`, `CODE_GUESSES_SPENT`: its own words,
+  held to them by `TestClientKnowsWhenNoCodeIsPending`) goes back to the address step,
+  which says why at the top of its form (`verifyStep.ended`, `CODE_ENDED_NOTES`) and
+  brings that into view, since on a phone the notice is a screen above it; a wrong code
+  keeps the box. An expired code reaches a browser as `NO_CODE_PENDING`, not
+  `CODE_EXPIRED`: the pending cookie lasts exactly as long as the code, so the browser
+  has dropped it by then, and that note leads with expiry
+  (`TestAnExpiredCodeIsSaidToHaveExpired`). The server answers the wrong code that spends
+  the last attempt with `CODE_GUESSES_SPENT`, so the box a wrong code leaves up takes the
+  right code until it expires. Every other refusal — a wrong code, the 18+ box unticked,
+  an address the allowlist does not know, a cooldown, no answer — leaves the step as it
+  is and is said in its form, under the fields and above the buttons
+  (`VERIFY_REFUSED_HTML`, `refuseVerification`), which puts the reader back in the field
+  it is about, a wrong code selected. A refusal is kept with its step for the rest of the
+  visit (`verifyRefusal`, put away by `render()` and by sending again), so the step drawn
+  again says it: one that came in while `render()` was still asking before it drew the
+  step had no form to be said in, and was lost. The step drawn again starts with its
+  fields empty, since nothing typed is kept with it, so it says the refusal without "What
+  you wrote is still in the box", which only the form that sent the request, still holding
+  what was typed, says (`sayVerifyRefusal`'s `sentIt`, the refusal's `redrawn`,
+  `TestVerifyStepDrawnAgainIsNotToldWhatWasTypedIsThere`): said there, a request with no
+  answer told the reader their address or code was in the empty field the focus was put
+  in. Forget this browser's confirmation is said under its button
+  (`confirmBrowserForgotten`). `submitVerification` says its refusals in the form, never
+  in the notice (`TestVerifyRefusalsAreSaidInTheForm`, which follows its calls down). Two
+  calls on an issued badge can raise one: `storeCredential`'s, when the browser will not
+  store it, and `offerHeldBadge`'s, on a page with a posting form whose ticked badge box
+  it unticked. An answer belongs to the step it was sent from:
+  `submitVerification` notes `verifyStep` before it sends (`sentFrom`) and drops an
+  answer, storing, setting and drawing nothing, once the page has moved to another step.
+  Forget this browser is the button that can do that while a request is out, and it has to
+  win over a badge on its way, which would otherwise be stored after the browser was
+  forgotten; the form's own other buttons wait on the answer. They wait in the step drawn
+  again for a reader who leaves the page and comes back before the answer, too: the wait
+  is kept in `verifyBusy`, not only on the buttons of the form that sent the request, and
+  `verifyViewHTML` draws that step waiting, so nothing can give up a step whose badge the
+  server is issuing (for the same address, retiring the one held here) or send a second
+  code while the page goes on to show the first one's box. No second request goes out
+  from a step whose first is out, and one from another step waits until
+  `submitVerification` is done with the one before it (`verifyRequest`), then goes only
+  if the page is still on its step: a dropped answer's pending-code cookie still lands,
+  and the browser keeps whichever lands last, so a code box drawn after Forget this
+  browser once refused its own right code while the server checked it against the
+  address asked for before. That wait ends: each Verify request — the address, the code,
+  and the `GET /api/verify` that `renderVerify` asks before an issued badge is drawn —
+  goes with `verifyDeadline()`'s signal and is given up once `VERIFY_TIMEOUT_MS` has
+  passed, which `api()` turns into the unreachable refusal. Send code and Verify say it
+  on their own step and drop it on any other. The GET only asks whether verification is
+  on, and `loadVerification` takes nothing from a request that got no answer, given up,
+  unreachable or refused: what the server said last stands, so a badge just issued is
+  drawn, focused and offered on posting forms all the same. Taken as "off", the GET
+  given up after a Verify drew "not configured" in the badge's place and took the badge
+  off every posting form, and the footer's Verify link away, for the rest of the visit.
+  Only an answer says verification is off (`answered`); until there is one, the page
+  says it couldn't reach educhan rather than that the server is not configured for it.
+  The deadline is longer than `ReadHeaderTimeout` and `WriteTimeout` in
+  `cmd/server/main.go` together, so nothing given up was still to be answered; the test
+  reads both, so a change to them changes it too. The signal reaches `fetch` only through
+  `api()`'s spread of the caller's options, so `api()` is held line for line up to its
+  fetch: built field by field, it dropped the signal with every other check passing.
+  Without the deadline, one request whose answer never came, over a connection gone
+  silent, held every later one, the step Forget this browser drew included, at Sending…
+  until a reload. Telling answers apart by step needs every change of step to assign a
+  new object: nothing edits one in place, and the places that make one are a list the
+  test holds (`TestVerifyAnswersBelongToTheStepTheyWereSentFrom`). An answer that
+  arrives after the reader has left the page (`onVerifyPage`) only sets `verifyStep`:
+  nothing is drawn over the page they went to, and coming back shows the step it left
+  (`TestVerifyAnswersDrawOnlyOnTheVerifyPage`). `renderVerify` is how
+  `render()` draws the page for a reader arriving at it, and how an issued badge is drawn,
+  each after one more request; when the page has been drawn in place for another step
+  meanwhile, it leaves that drawing alone only while it is still on the page. Every step
+  is drawn through `drawVerifyStep`, which notes the step and the drawing, and
+  `verifyStepOnScreen` asks whether that drawing is still there. Skipping regardless, a
+  code box drawn while `render()` was still asking was drawn over by the loading skeleton
+  or by the page just left, its answer landing late, and nothing drew it again;
+  redrawing regardless, the badge's late redraw wiped Forget this browser's
+  confirmation. The skeleton stands in only for the view it dims (`beginLoading`), and
+  the page is titled either way (`TestVerifyStepIsDrawnForAReaderArriving`). What runs
+  once each answer is in is held statement for statement, and so are `onVerifyPage`,
+  `verifyViewHTML` up to its code step, and `loadVerification`, the one place that sets
+  whether verification is on and whether the server has said
+  (`TestVerifyCodeBoxShowsWhileACodeIsPending`,
+  `TestVerifyAnswersDrawOnlyOnTheVerifyPage`, `TestVerifyRefusalsAreSaidInTheForm`): a
+  gate on a held badge in any of them, or in `renderVerify`, hides a pending code's box
+  with every other check passing. So does one in what runs on the box once it is drawn:
+  `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, what `renderVerify`'s callers
+  run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
+  `confirmBrowserForgotten` after Forget this browser), what `renderVerify` and the
+  requests it waits on run once their answers are in, since an answer can draw the box
+  while it is still asking (the rest of `api()`, `loadVerification`'s `readBadge`, and
+  `announce`), and every top-level function those call, however far down
+  (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
+  interpolates). The test finds that set by following the calls rather than from a
+  list, and holds each function in it whole, so a function new to the path fails it
+  until it is held too: holding the answer alone left `showVerifyField` and
+  `revealClearOfHeader` checked for a few words, and a gate in either took the code form
+  out of the page. Following calls down does not reach what runs once each call that
+  drew the box returns, so that is held line for line too, up to where the browser
+  takes over: the page's submit listener to the end of its Verify branch (the one
+  listener a Verify form's submit reaches), the forget buttons' callbacks, and
+  `render()` from its `finally` on, which leaves the Verify page with `focusHash` alone
+  run on it, not the posts and drafts every other page gets; `beginLoading`, whose
+  `finish` that `finally` calls, and `navigate`, which waits on `render()`, are held
+  whole, and every other call of either is a statement nothing waits on. A gate in the
+  submit listener after `submitVerification`, in what `render()` ran once it had drawn
+  the page for a badge holder coming back to it, or in `announce`, took the box away
+  with every function check passing. What runs on the box with no call from any of
+  that is not followed: the page's listeners (a click into the code box runs the click
+  listener and `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes,
+  pointers, hovers and drags have theirs), its timers, and the answers to requests sent
+  from other pages. Down their calls lie `render()` and every page, more than a test can
+  hold whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took
+  the box away with every check passing. So what can tell whether a badge is held — the
+  verification state or a badge, read as a property (`state.verification`, a `.badge`
+  off anything), destructured or bound under its own name (`{ verification: { badge } }
+  = state`), or named in a string; `loadVerification`, which returns the state,
+  `readBadge`, `storedCredential`, `localStorage` and the credential's key; and the
+  markup only a held badge draws (Keep my badge, `#verify-badge`, a posting form's badge
+  box and its number) — is named only in the places
+  `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by block. It counts
+  names in the code alone, not in the copy every page shows (`jsCodeText`), so a gate on
+  a held badge that names any of them fails it wherever it is put, a listener included;
+  counting property reads alone, it let a destructured read in `hideQuotePreview` take
+  the box away. A name made at run time — `state[k]` for a computed `k`, or the page's
+  text read back for its wording — is past what counting names can see, and is for
+  review to catch. `replacing` puts the badge panel away for
+  "Verify another address", and both steps then offer "Keep my badge" back to it
+  (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
+  draws, so one that ran out, or was forgotten in another tab, while the page was on
+  another step does not come back as if live: the address step is drawn instead, saying
+  why at its top, shown and focused in the panel's place (`showHeldBadge`). Why a badge
+  went (`badgeLost`, `badgeLostHTML`) is said at the top of the code step as well as the
+  address step, and put away by `drawVerifyStep`, so it is said once whichever way the
+  step is drawn; put away by `renderVerify` alone, an expiry noticed on the code step
+  went unsaid (`TestAGoneBadgeIsSaidToHaveGone`). Forgetting the badge or the browser
+  starts over at the address step; Forget this credential says so at the top of it
+  (`CREDENTIAL_FORGOTTEN`) and focuses that, since the redraw took the focused button
+  (`TestForgettingTheCredentialSaysSo`). A reload drops a pending code too, since nothing
+  about it is stored: the page shows the badge held here, or the address step when there
+  is none.
+  Whatever a step draws in place of another, or says, is brought into view clear of the
+  sticky header (`revealClearOfHeader`, which measures it) and focused without scrolling
+  (`showVerifyField`, `showHeldBadge`): `focus()` and `scrollIntoView()` take an element
+  under the header for one in view, and on a phone, where the header wraps to three rows,
+  a badge holder who had scrolled down got the address field, the code box and then the
+  new badge all drawn under it (`TestVerifyStepsAreShownClearOfTheHeader`). Being drawn
+  in place, a step takes the button just pressed from under the reader and can put
+  another where it was, so the page's own buttons — Keep my badge, Use a different
+  address, Verify another address and both Forget buttons (`VERIFY_MOVES`), each of
+  which moves the page or forgets — let a press go for `VERIFY_SETTLE_MS` after a step
+  is drawn: `drawVerifyStep` notes when, and `pressedTooSoon` decides by when the reader
+  pressed, for the click and for its mousedown, so the focus stays where the step put
+  it. Before, the second tap of a double tap on Use a different address pressed Keep my
+  badge, drawn in its place on a phone, and a double click on Verify another address
+  pressed Forget this browser, which the shorter address step brought up into its place
+  on a wide screen, and took the badge, the post key and the name. The 18+ attestation,
+  the one box the page draws, lets a press go the same way (`VERIFY_ATTESTATION`, its
+  label, which holds the box): it is ticked by the reader alone, and a double click on
+  Use a different address ticked it on a wide screen, where the address step brought
+  clear of the header moved its label under the pointer. A refusal said in a step's
+  form moves the step too, though nothing is drawn — its sentence opens above the
+  buttons, and the form is brought clear of the header, which scrolls the page — so
+  `refuseVerification` starts the wait again. On a phone, the second tap of a double
+  tap on Verify, a wrong code refused, pressed Keep my badge, scrolled up into Verify's
+  place, and the code box went with the code still pending; on Send code with the box
+  unticked, it ticked the box, scrolled down into the button's place, under the refusal
+  saying why (`TestVerifyButtonsLetGoAPressAimedAtTheStepBefore`).
 
 ### Child safety
 
@@ -1154,7 +1339,8 @@ written on, not just the code. Section numbers are design-recommendations.md's.
   `internal/app/verify_api_test.go`, `internal/app/verify_transport_test.go`,
   `internal/app/migrate_test.go`, `internal/app/markup_api_test.go`,
   `internal/app/logging_test.go`, `internal/app/media_backend_test.go`, and
-  `TestClientKnowsTheServersImageRefusals` in `internal/app/web_invariants_test.go`) run
+  `TestClientKnowsTheServersImageRefusals`, `TestClientKnowsWhenNoCodeIsPending` and
+  `TestAnExpiredCodeIsSaidToHaveExpired` in `internal/app/web_invariants_test.go`) run
   the whole app against an isolated schema in `TEST_DATABASE_URL` (falling back to
   `DATABASE_URL`), so
   they are safe to run against the development database. `testServer` builds its `Config` directly, which leaves every

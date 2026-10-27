@@ -78,9 +78,11 @@ const state = {
   route: { view: "home" },
   // The thread on screen, in the thread view.
   thread: null,
-  // enabled comes from the server; badge is read out of the credential this
-  // browser holds, which the server is never asked about outside of using it.
-  verification: { enabled: false, badge: null },
+  // enabled comes from the server, and answered says whether it has said yet:
+  // until it has, enabled is false only for want of an answer
+  // (loadVerification). badge is read out of the credential this browser
+  // holds, which the server is never asked about outside of using it.
+  verification: { answered: false, enabled: false, badge: null },
   // What this server takes, from GET /api/site: whether it accepts images at
   // all, and the largest it accepts. Until that answers, or if it never does,
   // the picker is offered as it always was and the size limit is unknown (0);
@@ -109,6 +111,12 @@ const el = {
 // when attempting to fetch resource") and says nothing a reader can use.
 const UNREACHABLE = "Couldn't reach educhan. Check your connection and try again.";
 
+function unreachableError() {
+  const err = new Error(UNREACHABLE);
+  err.unreachable = true;
+  return err;
+}
+
 // The server's own words for the two refusals of a post's image that the form
 // recovers from by taking the image off. web_invariants_test.go checks them
 // against what the server answers.
@@ -132,12 +140,19 @@ async function api(path, options = {}) {
   try {
     res = await fetch(path, init);
   } catch {
-    // No answer at all: offline, a dropped connection, a blocked request.
-    const err = new Error(UNREACHABLE);
-    err.unreachable = true;
-    throw err;
+    // No answer at all: offline, a dropped connection, a blocked request, or
+    // one given up when its signal fired (verifyDeadline).
+    throw unreachableError();
   }
-  const payload = res.status === 204 ? null : await res.json().catch(() => null);
+  // A request given up while its answer was still coming in has had no answer
+  // either, however much of it came: its body ends unread.
+  const payload =
+    res.status === 204
+      ? null
+      : await res.json().catch(() => {
+          if (init.signal && init.signal.aborted) throw unreachableError();
+          return null;
+        });
   if (!res.ok) {
     const err = new Error((payload && payload.error) || `${res.status} ${res.statusText}`);
     err.status = res.status;
@@ -152,10 +167,12 @@ async function api(path, options = {}) {
 // What is being sent stays in its form after a refusal, so these say so.
 // action is what was refused — "post", or "code" for a verification code
 // request — so a cooldown tells the reader to do that again, not something
-// they were not doing.
-function errorMessage(err, { hasText = true, action = "post" } = {}) {
+// they were not doing. kept is false for a refusal said over a form that was
+// not the one sent, and so does not hold what was written: a Verify step drawn
+// again while its request was out (sayVerifyRefusal).
+function errorMessage(err, { hasText = true, action = "post", kept = true } = {}) {
   if (err.unreachable) {
-    return `${UNREACHABLE} What you wrote is still in the box.`;
+    return kept ? `${UNREACHABLE} What you wrote is still in the box.` : UNREACHABLE;
   }
   if (err.status === 413) {
     return imageTooLargeMessage();
@@ -1324,18 +1341,11 @@ function formHTML({ kind, slug, thread = null, open = false }) {
     : `<label class="sage"><input type="checkbox" name="sage" /> sage (reply without bumping)</label>`;
   // Off by default and per post: a verified poster is anonymous unless they
   // say otherwise on this particular post, and the credential is sent only
-  // when they do.
+  // when they do. The box sits in a slot that says which badge it offers, or
+  // that it offers none, so that the post goes out under the badge the box
+  // named or not at all (offerHeldBadge).
   const held = state.verification.badge;
-  // A badged post takes its ID from the credential rather than the poster key,
-  // which is worth saying where the choice is made — and so is the one thing
-  // that would tie it to the unbadged posts all the same: a name or tripcode
-  // used on both. Ticking the box empties the Name field (badgeToggled).
-  const badge = held
-    ? `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
-       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread. A name or
-         tripcode you also use without the badge would tie those posts to it, so the badge starts
-         with the name empty.</span>`
-    : "";
+  const badge = `<span class="badge-option" data-badge-option="${held ? held.number : ""}">${badgeOptionHTML(held)}</span>`;
 
   // A site that takes no images gets no image field at all, rather than a
   // picker that every post using it would be refused for.
@@ -1381,6 +1391,79 @@ function formHTML({ kind, slug, thread = null, open = false }) {
         </div>
       </form>
     </details>`;
+}
+
+// badgeOptionHTML is the posting form's badge box, for the badge held, or
+// nothing when there is none. A badged post takes its ID from the credential
+// rather than the poster key, which is worth saying where the choice is made —
+// and so is the one thing that would tie it to the unbadged posts all the
+// same: a name or tripcode used on both. Ticking the box empties the Name
+// field (badgeToggled).
+function badgeOptionHTML(held) {
+  if (!held) return "";
+  return `<label class="sage"><input type="checkbox" name="badge" aria-describedby="f-badge-hint" /> post with ${verifiedBadgeHTML(held.label)}</label>
+       <span class="hint" id="f-badge-hint">A badged post gets its own ID in each thread. A name or
+         tripcode you also use without the badge would tie those posts to it, so the badge starts
+         with the name empty.</span>`;
+}
+
+// badgeOffered is the number (from readBadge) of the badge a posting form's
+// box offers, or "" when the form offers none.
+function badgeOffered(form) {
+  const slot = form.querySelector("[data-badge-option]");
+  return slot ? slot.dataset.badgeOption : "";
+}
+
+// offerHeldBadge brings the badge box of every posting form on screen into
+// line with the badge this browser holds now. A form offers the badge held
+// when it was drawn, and the badge can change under it: Verify pressed for
+// another address, and the reader gone on to a board before the answer came.
+// That form went on saying "post with" the badge before, while a post sent
+// from it carried the new credential, so a box ticked for one institution put
+// the post out under another. Now a box naming a badge no longer held is drawn
+// again, unticked, for the badge held now, or taken out when there is none,
+// and the half-written post is left where it is. A box the reader had ticked
+// is said to have been unticked (sayBadgeUnticked), and a box that had the
+// focus hands it to the box drawn in its place, or to the form's button when
+// there is none, rather than dropping it to the page. The Name field is left
+// as it is too: a remembered name or tripcode put back on a post written to
+// go out badged would tie it to the reader's unbadged posts.
+function offerHeldBadge() {
+  const held = state.verification.badge;
+  const number = held ? held.number : "";
+  let unticked = false;
+  for (const slot of el.main.querySelectorAll("[data-badge-option]")) {
+    if (slot.dataset.badgeOption === number) continue;
+    const box = slot.querySelector('input[name="badge"]');
+    if (box && box.checked) unticked = true;
+    const focused = slot.contains(document.activeElement);
+    slot.dataset.badgeOption = number;
+    slot.innerHTML = badgeOptionHTML(held);
+    const next = slot.querySelector('input[name="badge"]') || slot.closest("form").querySelector('button[type="submit"]');
+    if (focused && next) next.focus({ preventScroll: true });
+  }
+  if (unticked) sayBadgeUnticked();
+}
+
+// sayBadgeUnticked says why a badge box the reader ticked is ticked no longer:
+// the badge it named is not the one this browser holds now.
+function sayBadgeUnticked() {
+  const held = state.verification.badge;
+  showNotice(
+    held
+      ? `Your badge in this browser is now Verified: ${held.label}, not the one you ticked, so the box is unticked. Tick it again to post with this badge.`
+      : "Your badge is no longer available in this browser — verify again to post with it.",
+  );
+}
+
+// sayBadgeReplaced says why a badged post was not sent when the badge it
+// carried is no longer valid and this browser holds another, stored since the
+// post went out. The server's own words send the reader to verify again, for
+// a badge the form already offers them (offerHeldBadge).
+function sayBadgeReplaced(held) {
+  showNotice(
+    `The badge this post carried is no longer valid, so the post was not sent. Your badge in this browser is now Verified: ${held.label}. Tick its box to post with it.`,
+  );
 }
 
 /* File field behaviour ------------------------------------------------------ */
@@ -1779,13 +1862,132 @@ async function renderArchive(route) {
 
 // Which half of the verification page is on screen. A code has been sent when
 // this is "code"; nothing about the address is kept here, only the badge it
-// would earn, so a reload starts over rather than resuming.
+// would earn, so a reload starts over rather than resuming. replacing is for
+// the address step alone: it was asked for over a badge this browser holds
+// ("Verify another address"), where the page would otherwise show that badge.
+// While a code is pending the code box shows whatever is held. ended is for
+// the address step too: why the code box it replaced has gone, when the server
+// dropped the code being typed (CODE_ENDED_NOTES). A change of step puts a new
+// object here and never edits the one in place: submitVerification tells an
+// answer that is still wanted from one the reader has moved on from by
+// whether verifyStep is the object it was sent from.
 let verifyStep = { step: "email", label: "" };
 
-// Why the badge that was here has gone, when it is worth saying: it ran out, or
-// the server refused it. Shown once on the verification page, which is the only
-// page that can do anything about it.
+// The step a Verify request is out from, while it is out, and null otherwise
+// (submitVerification). The wait is kept here as well as on the buttons of the
+// form that sent it, because a reader who leaves the page and comes back before
+// the answer gets the step drawn afresh, and verifyViewHTML draws it waiting
+// from this. Drawn with live buttons, it let the reader give the step up while
+// the server was issuing its badge — for the same address, retiring the badge
+// held here — or send a second code while the page went on to show the first
+// one's box.
+let verifyBusy = null;
+
+// The last Verify request submitVerification took on, as a promise that
+// settles once it is done with that request, whatever the answer was and
+// whether or not it was sent. The next request, from whichever step, waits for
+// it before it is sent. An answer from a step the reader has left is dropped,
+// but not the cookie it carries: the server checks a code against the
+// pending-code cookie the browser holds, and the browser holds whichever one
+// landed last. Sent side by side, a code asked for from the address step that
+// Forget this browser drew could land before one still out from the step it
+// replaced, and the code box then on screen refused its own right code,
+// spending its attempts, while the server checked it against the other address.
+// So the wait has to end, and every request it can wait on is given up once
+// its time is out (verifyDeadline). Without that, one request whose answer
+// never came, over a connection gone silent, held every later one from any
+// step until a reload, the fresh step Forget this browser draws included,
+// while the page said only that it was sending.
+let verifyRequest = Promise.resolve();
+
+// VERIFY_TIMEOUT_MS is how long a Verify request is given before the page gives
+// it up. Send code and Verify then say they couldn't reach educhan
+// (UNREACHABLE); the GET that asks whether verification is on leaves the page
+// with what the server said last (loadVerification), so a badge just issued is
+// still drawn and offered. It is longer than the server takes to answer or give
+// up — ten seconds to read a request's headers and thirty to write its answer,
+// in cmd/server/main.go — so a request given up is one whose answer was not
+// coming. Giving it up cancels it: an answer that comes after is not taken, the
+// pending-code cookie with it, so the request that goes next still sets the
+// cookie the browser keeps.
+const VERIFY_TIMEOUT_MS = 45000;
+
+// verifyDeadline is the signal a Verify request is sent with, which fires once
+// VERIFY_TIMEOUT_MS has passed. It is a controller and a timer rather than
+// AbortSignal.timeout, which Safari has only since 16: the page opens on
+// iPhones whose last update is iOS 15 (the age screen's <dialog> needs 15.4),
+// and there that call would throw before Send code went out.
+function verifyDeadline() {
+  const deadline = new AbortController();
+  setTimeout(() => deadline.abort(), VERIFY_TIMEOUT_MS);
+  return deadline.signal;
+}
+
+// The step the Verify page was last drawn for, the first element of that
+// drawing, and when it was drawn (drawVerifyStep). Anything drawn into the
+// page since — the loading skeleton, or a page the reader left whose answer
+// came in late — takes that element out of it, which is how verifyStepOnScreen
+// tells a step still on screen from one that was drawn and then drawn over.
+// When it was drawn is how the page's click listener tells a press aimed at
+// the drawing from one aimed at what was there before it (VERIFY_SETTLE_MS).
+// A refusal said in the drawing moves it under the reader as a drawing does,
+// and that time is then when the refusal was said (refuseVerification).
+let verifyShown = { step: null, node: null, at: -Infinity };
+
+// VERIFY_SETTLE_MS is how long the Verify page's own buttons, each of which
+// moves the page to another step or forgets what this browser holds
+// (VERIFY_MOVES), take no press once a step has been drawn. A step is drawn in
+// place, so the button just pressed is gone from under the reader's finger,
+// and another can be drawn where it was: the second tap of a double tap, or a
+// second tap from a reader who thought the first did nothing, pressed that
+// one. On a phone, a double tap on Use a different address pressed Keep my
+// badge, drawn where it had been, and undid the reader's choice; on a wide
+// screen, a double click on Verify another address pressed Forget this
+// browser, which the shorter address step had brought up into its place, and
+// took the badge, the post key and the name. A press that soon after a drawing
+// was aimed at what was there before it — nobody reads a new step and aims at
+// one of its buttons in half a second — so it is let go, and a reader who did
+// mean it presses again. A refusal said in a step's form moves its buttons
+// too, and starts the same wait (refuseVerification).
+const VERIFY_SETTLE_MS = 500;
+const VERIFY_MOVES = [
+  '[data-action="forget-verification"]',
+  '[data-action="forget-browser"]',
+  '[data-action="verify-keep"]',
+  '[data-action="verify-again"]',
+  '[data-action="verify-restart"]',
+].join(", ");
+
+// VERIFY_ATTESTATION is the 18+ attestation, the one box the Verify page
+// draws. Its label holds the box and the sentence, so a press anywhere on it
+// ticks the box. The box is ticked by the reader alone and starts unticked on
+// every drawing (build plan 2.14), and a step drawn in place can put it where
+// the button just pressed was, so it lets a press go for VERIFY_SETTLE_MS as
+// the buttons do. Before, a double click on Use a different address ticked it
+// on a wide screen, where the address step, brought clear of the header,
+// moved the label under the pointer; and a double tap on Verify another
+// address could land on it on a phone. So could a double tap on Send code
+// with the box unticked, on a phone, once the refusal saying why scrolled the
+// label down into the button's place.
+const VERIFY_ATTESTATION = "label.attest";
+
+// A refusal of the request sent from a step, as its form says it: what it
+// says, the field it is about, and how (refuseVerification). It is kept with
+// the step so that the step drawn again says it again. The page can be drawn
+// again while an answer is on its way — the reader presses Verify in the
+// header, or leaves and comes back — and then the form that sent the request
+// has gone, and the step may not be drawn yet, when the refusal comes in. Like
+// the notice it belongs to one visit to the page: render() puts it away, and
+// sending the form again does too (clearVerifyRefusal).
+let verifyRefusal = null;
+
+// Why the badge that was here has gone, when it is worth saying: it ran out,
+// the server refused it, or the reader forgot it (CREDENTIAL_FORGOTTEN). Shown
+// once on the verification page, which is the only page that can do anything
+// about it: in the first step drawn there after it went (drawVerifyStep).
 let badgeLost = "";
+
+const CREDENTIAL_FORGOTTEN = "This browser no longer holds a badge.";
 
 // localStorage throws rather than degrading in some privacy modes, so every
 // access is guarded. Losing the credential costs a full re-verification: the
@@ -1835,7 +2037,9 @@ function forgetBrowser() {
 
 // forgetBrowserHTML is the control for forgetBrowser, on the Verify page
 // whatever state verification is in, since the key and the name are there
-// for every poster.
+// for every poster. Its confirmation is said under the button
+// (confirmBrowserForgotten), where the reader is looking: on a phone the
+// notice at the top of the page is a screen or more above it.
 function forgetBrowserHTML() {
   return `
     <div class="verify-forget forget-browser" id="forget-browser">
@@ -1847,7 +2051,65 @@ function forgetBrowserHTML() {
         next post starts a new key, and with it new IDs. Posts you have made stay as they
         are.</p>
       <button class="btn danger" type="button" data-action="forget-browser">Forget this browser</button>
+      <p class="verify-done" id="forget-browser-done" role="status" tabindex="-1" hidden></p>
     </div>`;
+}
+
+const BROWSER_FORGOTTEN = "This browser no longer holds your post key, your name or a badge.";
+
+// revealClearOfHeader scrolls the page just far enough to bring el into view
+// clear of the sticky header. focus() and scrollIntoView() do not know about
+// the header: both take an element under it for one in view and leave it
+// there. The Verify page draws each step at the scroll position the last one
+// left, and on a phone, where the header wraps to three rows, a badge holder
+// who had scrolled down to "Verify another address" got the address field,
+// then the code box and its sentence, then the new badge, all drawn under the
+// header, with only the buttons below them in sight. The page moves only when
+// part of el is hidden, and by as little as it can; an el taller than the room
+// under the header is shown from its top. The header is measured rather than
+// assumed, since its height changes with the width and with the reader's text
+// size. Whatever is then focused is focused with preventScroll, so that
+// focus() does not move the page again.
+function revealClearOfHeader(el) {
+  const gap = 12;
+  const header = document.querySelector(".site-header");
+  const top = Math.max(0, header ? header.getBoundingClientRect().bottom : 0) + gap;
+  const bottom = window.innerHeight - gap;
+  const box = el.getBoundingClientRect();
+  if (box.top < top || box.height > bottom - top) {
+    window.scrollBy(0, box.top - top);
+  } else if (box.bottom > bottom) {
+    window.scrollBy(0, box.bottom - bottom);
+  }
+}
+
+// confirmBrowserForgotten says that Forget this browser did its work, in the
+// block the button is in, once the Verify page has been drawn again without
+// what was forgotten. The redrawn page took the button, and with it the
+// focus, so the confirmation takes both: it is brought into view and focused,
+// for a screen reader to read and a keyboard to go on from. What was drawn
+// above it may be shorter than what was there, and the block moves up with
+// it, so it is brought into view clear of the header.
+function confirmBrowserForgotten() {
+  const done = document.getElementById("forget-browser-done");
+  if (!done) return;
+  done.textContent = BROWSER_FORGOTTEN;
+  done.hidden = false;
+  revealClearOfHeader(done);
+  done.focus({ preventScroll: true });
+}
+
+// Each credential this page reads is numbered the first time it is read, and
+// keeps that number for the visit, however often it is read again. A posting
+// form's badge box carries the number of the badge it offers
+// (data-badge-option), which is how a form tells the badge it named from one
+// issued since (offerHeldBadge) without the credential going into the page.
+// The numbers are this page's own count and say nothing about any badge.
+const badgeNumbers = new Map();
+
+function badgeNumber(token) {
+  if (!badgeNumbers.has(token)) badgeNumbers.set(token, String(badgeNumbers.size + 1));
+  return badgeNumbers.get(token);
 }
 
 // readBadge decodes the claims out of the credential this browser holds. The
@@ -1882,24 +2144,40 @@ function readBadge() {
       badgeLost = "Your badge has expired.";
       return null;
     }
-    return { token, label: claims.label, expires };
+    return { token, label: claims.label, expires, number: badgeNumber(token) };
   } catch {
     forgetCredential();
     return null;
   }
 }
 
+// loadVerification asks the server whether verification is on here, and reads
+// the badge this browser holds when it is. Only an answer changes what the
+// page holds about the server. A request that got none — given up
+// (verifyDeadline), unreachable, or refused — says nothing about whether
+// verification is on, so what the server said last stands, and the badge is
+// read as it is after that answer; a body that could not be read is no answer
+// either. Taken as "off", the GET given up after a Verify drew "not
+// configured" where the badge just stored belonged, and took that badge off
+// every posting form, and the footer's Verify link away, for the rest of the
+// visit. With no answer yet, the page says it couldn't reach educhan rather
+// than that verification is not configured (verifyViewHTML).
 async function loadVerification() {
-  let enabled = false;
+  let answer = null;
   try {
     // The only thing worth asking the server: whether the feature exists here.
-    // What this browser holds is a local question with a local answer.
-    enabled = !!(await api("/api/verify")).enabled;
+    // What this browser holds is a local question with a local answer. An
+    // issued badge is drawn after this request, while the next Verify request
+    // waits, so it is given up in time like the others (verifyDeadline).
+    answer = await api("/api/verify", { signal: verifyDeadline() });
   } catch {
     // Verification is an extra; the board works without knowing about it.
-    enabled = false;
   }
-  state.verification = { enabled, badge: enabled ? readBadge() : null };
+  // What the server said last is read once the request is over, not before
+  // it: another request to ask can have had its answer meanwhile.
+  const answered = !!answer || state.verification.answered;
+  const enabled = answer ? !!answer.enabled : state.verification.enabled;
+  state.verification = { answered, enabled, badge: enabled ? readBadge() : null };
   if (el.verifyFooter) {
     el.verifyFooter.hidden = !enabled;
   }
@@ -1917,6 +2195,99 @@ async function loadVerification() {
 const BADGE_AGE_REFUSAL =
   "The badge is for students aged 18 and over. You can still read and post anonymously without it.";
 const BADGE_AGE_REFUSED = "the badge is for students aged 18 and over; you can still read and post anonymously";
+
+// The server's refusals of a code after which no code is pending any more: it
+// has dropped the verification, so the code box can do nothing and the page
+// goes back to the address step, where a new code is asked for. They are known
+// by the server's own words, which TestClientKnowsWhenNoCodeIsPending checks
+// against what the server answers. A wrong code is not among them: the right
+// one still works, since the server answers the wrong code that spends the
+// last attempt with CODE_GUESSES_SPENT.
+//
+// An expired code reaches a browser as NO_CODE_PENDING, not CODE_EXPIRED: the
+// cookie a code is confirmed against lasts exactly as long as the code, so
+// once the code has expired the browser no longer sends it, and the server
+// cannot tell which verification it was. CODE_EXPIRED is left the moment
+// between the two (TestAnExpiredCodeIsSaidToHaveExpired).
+const NO_CODE_PENDING = "no verification in progress, request a code first";
+const CODE_EXPIRED = "that code has expired, request a new one";
+const CODE_GUESSES_SPENT = "too many wrong codes, request a new one";
+
+// Why the code box has gone, said in the address step that replaces it, next
+// to the field the reader is sent to. The notice at the top of the page is
+// not enough on its own: on a phone the box sits a screen below it, and the
+// box would turn into an empty address form with its reason out of sight.
+// NO_CODE_PENDING's note puts expiry first, since that is what it usually
+// means; otherwise the code was confirmed in another tab, or replaced by a
+// newer one asked for the same address somewhere else.
+const CODE_ENDED_NOTES = {
+  [NO_CODE_PENDING]: "That code has expired or can no longer be used.",
+  [CODE_EXPIRED]: "That code has expired.",
+  [CODE_GUESSES_SPENT]: "Too many wrong codes were tried, so that code no longer works.",
+};
+
+// Where a step's form says why it was refused: a wrong code, the 18+ box left
+// unticked, an address the allowlist does not know, a cooldown, no answer. It
+// sits under the form's fields, above its buttons, so it is next to the field
+// it is about and in view of the button just pressed, and the fields are
+// described by it. The notice at the top of the page was a screen above the
+// form on a phone: a wrong code changed nothing in view but the button's
+// label, and focus fell to the page.
+const VERIFY_REFUSED_HTML = `<p class="verify-refused" id="f-verify-refused" role="alert" hidden></p>`;
+
+// What a step's submit button says while its request is out: in the form that
+// sent it (submitVerification), and in the step drawn again for a reader who
+// came back to the page before the answer (verifyViewHTML).
+const VERIFY_SENDING = "Sending…";
+const VERIFY_CHECKING = "Verifying…";
+
+// refuseVerification says why the form was refused, in the form, and puts the
+// reader back in the field it is about. invalid marks that field as what was
+// refused, rather than the moment (a cooldown, a dropped connection); select
+// selects what was typed there, for a code to be typed again whole. The form
+// is brought into view clear of the header, and with it the field, the
+// refusal under it and the button that was pressed.
+//
+// Saying it moves the step under the reader's finger, though nothing is drawn:
+// the refusal opens above the buttons, and bringing the form clear of the
+// header scrolls the page, down or up. So the step's buttons and its
+// attestation let a press go for VERIFY_SETTLE_MS from here, as they do once a
+// step is drawn (verifyShown). On a phone, the second tap of a double tap on
+// Verify, a wrong code refused, pressed Keep my badge, which the scroll had
+// brought up into Verify's place, and the code box went with the code still
+// pending; and the second tap on Send code with the 18+ box unticked ticked
+// it, its label brought down into Send code's place, under the refusal
+// saying why it had to be ticked.
+function refuseVerification(form, message, target, { invalid = false, select = false } = {}) {
+  const why = form.querySelector(".verify-refused");
+  why.textContent = message;
+  why.hidden = false;
+  revealClearOfHeader(form);
+  verifyShown.at = performance.now();
+  if (!target) return;
+  if (invalid) target.setAttribute("aria-invalid", "true");
+  target.focus({ preventScroll: true });
+  if (select) target.select();
+}
+
+// clearVerifyRefusal takes a refusal back down when the form is sent again,
+// and forgets it, so the step drawn again does not say it.
+function clearVerifyRefusal(form) {
+  verifyRefusal = null;
+  const why = form.querySelector(".verify-refused");
+  why.hidden = true;
+  why.textContent = "";
+  for (const input of form.querySelectorAll('[aria-invalid="true"]')) input.removeAttribute("aria-invalid");
+}
+
+// onVerifyPage says whether the Verify page is still the one on screen. Its
+// requests can outlast it: a reader who presses Send code or Verify and then
+// follows a link is on another page by the time the answer comes, and the
+// answer must not draw the Verify page over that one. A reader who stays on
+// the page but moves it to another step is submitVerification's sentFrom.
+function onVerifyPage() {
+  return state.route.view === "verify";
+}
 
 // The claim the page is making, in the words the README uses. It belongs on
 // screen next to the form, not only in the repository. Who the badge is for
@@ -1943,14 +2314,70 @@ const VERIFY_INTRO = `
     on the posts you tick it for &mdash; never on the ones you don't.
   </p>`;
 
+// badgeLostHTML says why the badge that was here has gone (badgeLost), at the
+// top of the step drawn without it, then what the reader can do there. The
+// code step says it as well as the address step: a badge can run out while a
+// code for another is on its way, and the code step drawn again then lost its
+// Keep my badge button with nothing to say why.
+function badgeLostHTML(then) {
+  return badgeLost ? `<p class="verify-note" id="badge-lost" tabindex="-1">${esc(badgeLost)} ${esc(then)}</p>` : "";
+}
+
 function verifyViewHTML() {
   const v = state.verification;
 
+  // Off here, or not known to be on: the server said it is off, or every time
+  // the page asked it got no answer (loadVerification), and then it says it
+  // couldn't reach educhan, not that the server is not configured for it.
+  // Forget this browser is local, and stays on offer either way.
   if (!v.enabled) {
     return `
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
-      <p class="empty">Verification is not configured on this server.</p>
+      <p class="empty">${v.answered ? "Verification is not configured on this server." : esc(UNREACHABLE)}</p>
+      ${forgetBrowserHTML()}`;
+  }
+
+  // A request from this step is still out, and the step is being drawn again
+  // for a reader who left the page and came back before the answer. Its form
+  // is drawn as the one that sent it is: every button in it waiting, and the
+  // submit button saying what it waits for, so nothing in the form can give
+  // the step up, or send from it again, while the server acts on the request.
+  // Forget this browser is outside the form and stays live.
+  const busy = verifyBusy === verifyStep;
+  const wait = busy ? " disabled" : "";
+
+  // While a badge held here is being replaced, either step can go back to it:
+  // asking for a new badge retires nothing until the new one is confirmed.
+  const keep = v.badge
+    ? `<button class="btn subtle" type="button" data-action="verify-keep"${wait}>Keep my badge</button>`
+    : "";
+
+  // A code is pending: the box to type it in is the page until the code is
+  // confirmed or given up, whether or not this browser already holds a badge.
+  // A badge held here is replaced only once the new one is confirmed, so it is
+  // no reason to hide the box, and this step is decided on verifyStep.step
+  // alone: a badge holder who asked for a code once saw the badge panel in its
+  // place, with nowhere to type the code.
+  if (verifyStep.step === "code") {
+    return `
+      <div class="board-head"><h1>Institutional verification</h1></div>
+      ${VERIFY_INTRO}
+      ${badgeLostHTML("The code on its way earns you a new one.")}
+      <form class="verify-panel fields" data-verify="confirm">
+        <p>A code is on its way. It earns you ${verifiedBadgeHTML(verifyStep.label)} and expires shortly.</p>
+        <div class="field">
+          <label class="label" for="f-code">Code from the email</label>
+          <input type="text" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code"
+                 maxlength="12" placeholder="6 digits" required aria-describedby="f-verify-refused" />
+        </div>
+        ${VERIFY_REFUSED_HTML}
+        <div class="actions">
+          <button class="btn primary" type="submit"${wait}>${busy ? VERIFY_CHECKING : "Verify"}</button>
+          <button class="btn subtle" type="button" data-action="verify-restart"${wait}>Use a different address</button>
+          ${keep}
+        </div>
+      </form>
       ${forgetBrowserHTML()}`;
   }
 
@@ -1959,7 +2386,7 @@ function verifyViewHTML() {
       <div class="board-head"><h1>Institutional verification</h1></div>
       ${VERIFY_INTRO}
       <div class="verify-panel">
-        <p>Your badge in this browser is ${verifiedBadgeHTML(v.badge.label)}, good until
+        <p id="verify-badge" tabindex="-1">Your badge in this browser is ${verifiedBadgeHTML(v.badge.label)}, good until
           ${timeHTML(v.badge.expires.toISOString())}.</p>
         <p class="muted">
           Tick &ldquo;post with&rdquo; on the posting form to use it. It is kept
@@ -1986,57 +2413,129 @@ function verifyViewHTML() {
       ${forgetBrowserHTML()}`;
   }
 
-  if (verifyStep.step === "code") {
-    return `
-      <div class="board-head"><h1>Institutional verification</h1></div>
-      ${VERIFY_INTRO}
-      <form class="verify-panel fields" data-verify="confirm">
-        <p>A code is on its way. It earns you ${verifiedBadgeHTML(verifyStep.label)} and expires shortly.</p>
-        <div class="field">
-          <label class="label" for="f-code">Code from the email</label>
-          <input type="text" id="f-code" name="code" inputmode="numeric" autocomplete="one-time-code"
-                 maxlength="12" placeholder="6 digits" required />
-        </div>
-        <div class="actions">
-          <button class="btn primary" type="submit">Verify</button>
-          <button class="btn subtle" type="button" data-action="verify-restart">Use a different address</button>
-        </div>
-      </form>
-      ${forgetBrowserHTML()}`;
-  }
-
-  const lost = badgeLost
-    ? `<p class="verify-note">${esc(badgeLost)} Verify again to get a new one.</p>`
+  // The code box this step replaced, and why it went, said at the top of the
+  // form, where the box was, and read out with the address field, as is the
+  // form's refusal once there is one.
+  const ended = verifyStep.ended
+    ? `<p class="verify-ended" id="f-email-ended">${esc(verifyStep.ended)} Send a new code to carry on.</p>`
     : "";
+  const endedRef = verifyStep.ended ? "f-email-ended f-verify-refused" : "f-verify-refused";
 
   return `
     <div class="board-head"><h1>Institutional verification</h1></div>
     ${VERIFY_INTRO}
-    ${lost}
+    ${badgeLostHTML("Verify again to get a new one.")}
     <form class="verify-panel fields" data-verify="request">
+      ${ended}
       <div class="field">
         <label class="label" for="f-email">Institutional email</label>
         <input type="email" id="f-email" name="email" maxlength="254" autocomplete="email"
-               placeholder="you@institution.edu" required />
+               placeholder="you@institution.edu" required aria-describedby="${endedRef}" />
         <span class="hint">Academic domains only &mdash; .edu, .ac.in, .ac.uk, .edu.au and others.</span>
       </div>
       <label class="attest" for="f-adult">
-        <input type="checkbox" id="f-adult" name="adult" autocomplete="off" />
+        <input type="checkbox" id="f-adult" name="adult" autocomplete="off" aria-describedby="f-verify-refused" />
         <span>I confirm I am 18 or over</span>
       </label>
+      ${VERIFY_REFUSED_HTML}
       <div class="actions">
-        <button class="btn primary" type="submit">Send code</button>
+        <button class="btn primary" type="submit"${wait}>${busy ? VERIFY_SENDING : "Send code"}</button>
+        ${keep}
       </div>
     </form>
     ${forgetBrowserHTML()}`;
 }
 
-async function renderVerify() {
-  await loadVerification();
+// drawVerifyStep draws the Verify page for the step it is on, in place of
+// whatever the page shows, and notes what it drew and when (verifyShown). Every
+// drawing of a Verify step goes through here, so this is where why a badge went
+// (badgeLost) is said once and then put away: the address step and the code
+// step say it, and a badge panel drawn instead is for a badge held since.
+// Said and put away only in renderVerify, it was lost to the code step, which
+// did not say it, and never said by Keep my badge, which draws in place.
+function drawVerifyStep() {
   el.main.innerHTML = verifyViewHTML();
-  // Explained once, on the page that can do something about it.
+  verifyShown = { step: verifyStep, node: el.main.firstElementChild, at: performance.now() };
   badgeLost = "";
+}
+
+// verifyStepOnScreen says whether the page still shows the drawing made for
+// the step it is on: drawn for that step, and not drawn over since.
+function verifyStepOnScreen() {
+  return verifyShown.step === verifyStep && el.main.contains(verifyShown.node);
+}
+
+// sayVerifyRefusal says the refusal kept with the step (verifyRefusal) in the
+// step's form, when there is one for the step the page is on. sentIt says the
+// form is the one that sent the request, which still holds what was typed in
+// it. Any other is the step drawn again, its fields empty, since nothing typed
+// is kept with the step, so it is told the refusal without "What you wrote is
+// still in the box" (redrawn): said there, under an empty field with the focus
+// in it, that told the reader their address or code was where it was not.
+function sayVerifyRefusal(form, sentIt = false) {
+  const refused = verifyRefusal;
+  if (!refused || refused.step !== verifyStep) return;
+  refuseVerification(form, sentIt ? refused.message : refused.redrawn, field(form, refused.about), refused);
+}
+
+// renderVerify draws the Verify page once it has asked the server whether
+// verification is on here, and says whether it did. render() comes here for a
+// reader arriving at the page, and the page's own buttons and answers come
+// here to draw a step after that request. The reader can leave while it asks —
+// after pressing Verify, say, since an issued badge is drawn through here — and
+// then nothing is drawn over the page they went to.
+//
+// The page can also move to another step while it asks, and be drawn for that
+// step in place, by an answer or a button. That drawing, while it is on
+// screen, is left alone: drawing the step again would take away what was said
+// there and where the reader was put. Forget this browser pressed while an
+// issued badge was being drawn had its confirmation wiped, and the focus with
+// it, by the badge's late redraw. But a drawing that has itself been drawn
+// over is drawn again. A code box drawn while render() was still asking was
+// replaced by the page the reader had just left, whose answer came in late,
+// or by the loading skeleton; left out, it was nowhere, and that page stayed
+// under the Verify address until the reader went somewhere else.
+//
+// The page is titled whether or not it is drawn here: render() titles each
+// page as it draws it, and the drawing left alone is one it did not make.
+async function renderVerify() {
+  const step = verifyStep;
+  await loadVerification();
+  if (!onVerifyPage()) return false;
   announce("Institutional verification");
+  if (verifyStep !== step && verifyStepOnScreen()) return false;
+  drawVerifyStep();
+  const form = el.main.querySelector("form[data-verify]");
+  if (form) sayVerifyRefusal(form);
+  return true;
+}
+
+// showVerifyField brings a step's form, freshly drawn in place of another,
+// into view clear of the header, from what it opens with to its buttons, and
+// puts the reader in its field: the code box once a code is sent, the address
+// field when another address is asked for.
+function showVerifyField(id) {
+  const input = document.getElementById(id);
+  if (!input) return;
+  revealClearOfHeader(input.form);
+  input.focus({ preventScroll: true });
+}
+
+// showHeldBadge brings the badge panel's first line, the badge this browser
+// holds, into view clear of the header and focuses it, once the panel is drawn
+// for a badge just issued, or kept rather than replaced. That line is what
+// changed: the rest of the panel reads the same whichever badge is held, so
+// with the line out of sight a replaced badge looked like nothing had happened.
+// On a phone the panel runs past the foot of the screen, so a control further
+// down would be focused out of sight. The badge can have gone by the time the
+// panel would be drawn — run out while the page was on another step — and the
+// address step drawn in its place opens by saying so (badgeLost): that is
+// what is shown and focused then.
+function showHeldBadge() {
+  const held = document.getElementById("verify-badge") || document.getElementById("badge-lost");
+  if (!held) return;
+  revealClearOfHeader(held);
+  held.focus({ preventScroll: true });
 }
 
 /* Rules and FAQ ------------------------------------------------------------ */
@@ -2673,9 +3172,17 @@ function emptyStateHTML(message, slug = null) {
 
 // beginLoading dims the current view and only falls back to a skeleton if the
 // request is slow enough to notice, which keeps fast navigations from flashing.
+// The skeleton stands in for the view it dims, and for nothing drawn since: a
+// Verify step that an answer drew in place while the page was loading stays
+// as it was drawn, with the field it put the reader in, rather than going
+// under a skeleton to be drawn again without it (renderVerify). What it hands
+// back runs once the page is drawn, a pending code's box included, so it is
+// held whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
 function beginLoading() {
   el.main.setAttribute("aria-busy", "true");
+  const dimmed = el.main.firstChild;
   const timer = setTimeout(() => {
+    if (el.main.firstChild !== dimmed) return;
     el.main.innerHTML = '<div class="skeleton"><div class="skeleton-row"></div><div class="skeleton-row"></div><div class="skeleton-row"></div></div>';
   }, 250);
   return () => {
@@ -2707,6 +3214,9 @@ async function render({ draft = captureDraft() } = {}) {
   state.thread = null;
   renderNav(route);
   clearNotice();
+  // A refusal said in a Verify form goes with the notice: the page arrived at
+  // is a new visit, and a step drawn there starts without it.
+  verifyRefusal = null;
   hideQuotePreview();
   // Whatever was expanded belongs to the view being replaced.
   expandedLink = null;
@@ -2793,6 +3303,17 @@ async function render({ draft = captureDraft() } = {}) {
     finish();
   }
 
+  // The Verify page has no posts to finish and no posting form to give a
+  // draft back to, so once it is drawn the jump to a fragment is all that
+  // runs on it: the FAQ links to /verify#forget-browser. What runs on a
+  // pending code's box once it is drawn is held whole
+  // (TestVerifyCodeBoxShowsWhileACodeIsPending), and the rest of render()
+  // serves every page: a gate on a held badge there could take the box away
+  // from a badge holder coming back to the page with every check passing.
+  if (route.view === "verify") {
+    focusHash();
+    return;
+  }
   if (resolved !== null) {
     // The history entry is replaced rather than added: /post/N is an address,
     // not a page, and Back should not land on it only to bounce forward again.
@@ -2809,7 +3330,8 @@ async function render({ draft = captureDraft() } = {}) {
 }
 
 // focusHash highlights the post referenced by the URL fragment, which is where
-// quote links point.
+// quote links point. It runs on the Verify page too, a pending code's box
+// included, so it is held whole (TestVerifyCodeBoxShowsWhileACodeIsPending).
 function focusHash() {
   if (!window.location.hash) {
     return;
@@ -2826,6 +3348,8 @@ function focusHash() {
   }
 }
 
+// navigate waits on render(), which can draw a pending code's box, so it ends
+// there (TestVerifyCodeBoxShowsWhileACodeIsPending).
 async function navigate(href, { replace = false } = {}) {
   const url = new URL(href, window.location.origin);
   if (replace) {
@@ -2871,7 +3395,7 @@ function captureDraft() {
     name: value("name"),
     body: value("body"),
     sage: sage ? sage.checked : false,
-    badge: badge ? badge.checked : false,
+    badge: badge && badge.checked ? badgeOffered(form) : "",
     file: image && image.files ? image.files[0] : null,
     spoiler: spoiler ? spoiler.checked : false,
   };
@@ -2896,8 +3420,14 @@ function restoreDraft(draft) {
   }
   const sage = field(form, "sage");
   if (sage) sage.checked = draft.sage;
+  // The badge box is ticked again only for the badge it was ticked for. A
+  // badge issued while the page was being drawn is offered unticked in the
+  // new form, and the notice says so (sayBadgeUnticked), as it does when the
+  // form on screen changes badge (offerHeldBadge).
   const badge = field(form, "badge");
-  if (badge) badge.checked = draft.badge;
+  const ticked = draft.badge || "";
+  if (badge) badge.checked = ticked !== "" && ticked === badgeOffered(form);
+  if (ticked !== "" && ticked !== badgeOffered(form)) sayBadgeUnticked();
 
   // A form with no image field, on a site that takes no images, gets no file
   // back; a switched-off field refuses it in setFile and says why.
@@ -3085,6 +3615,24 @@ function isInternalLink(anchor) {
   );
 }
 
+// pressedTooSoon says whether a press is on one of the Verify page's own
+// buttons, or on its attestation, within VERIFY_SETTLE_MS of a step being
+// drawn, or moved by a refusal said in it: aimed at what was there before,
+// and let go. A click let go on the attestation leaves the box as it was,
+// unticked. The event's time is when the reader pressed, which is before the
+// drawing, or the refusal, when the press was waiting behind it.
+function pressedTooSoon(event) {
+  const aimed = event.target.closest(VERIFY_MOVES) || event.target.closest(VERIFY_ATTESTATION);
+  return !!aimed && event.timeStamp - verifyShown.at < VERIFY_SETTLE_MS;
+}
+
+// A press let go leaves the focus where the step just drawn put it. The
+// button it landed on would take it otherwise, and on a wide screen that was
+// Forget this browser, for the reader's next Enter to press.
+document.addEventListener("mousedown", (event) => {
+  if (pressedTooSoon(event)) event.preventDefault();
+});
+
 document.addEventListener("click", (event) => {
   if (event.defaultPrevented || event.button !== 0 || event.metaKey || event.ctrlKey || event.shiftKey) {
     return;
@@ -3132,37 +3680,81 @@ document.addEventListener("click", (event) => {
     return;
   }
 
-  // Forgetting a badge is entirely local: the server was never told which
-  // browser held it, so there is nothing there to tell.
-  if (event.target.closest('[data-action="forget-verification"]')) {
+  // Before any of the Verify page's own buttons is handled, a press on one
+  // of them aimed at the step before is let go (VERIFY_SETTLE_MS).
+  if (pressedTooSoon(event)) {
     event.preventDefault();
-    forgetCredential();
-    verifyStep = { step: "email", label: "" };
-    renderVerify();
     return;
   }
 
-  if (event.target.closest('[data-action="forget-browser"]')) {
+  // Forgetting a badge is entirely local: the server was never told which
+  // browser held it, so there is nothing there to tell. The address step that
+  // takes the badge panel's place opens by saying the badge has gone
+  // (badgeLost), and that is brought into view clear of the header and
+  // focused, with the address form under it. The redraw took the button and
+  // the focus with it, and left a keyboard on the page itself, with nothing
+  // to tell a screen reader that the badge was gone.
+  if (event.target.closest('[data-action="forget-verification"]')) {
     event.preventDefault();
-    forgetBrowser();
+    forgetCredential();
+    badgeLost = CREDENTIAL_FORGOTTEN;
     verifyStep = { step: "email", label: "" };
-    renderVerify().then(() => {
-      showNotice("This browser no longer holds your post key, your name or a badge.");
+    renderVerify().then((drawn) => {
+      const lost = drawn && document.getElementById("badge-lost");
+      if (lost) {
+        revealClearOfHeader(lost);
+        lost.focus({ preventScroll: true });
+      }
     });
     return;
   }
 
+  // Forgetting the browser also moves the page to a new step, so a badge
+  // still on its way from Verify is dropped when it lands (submitVerification)
+  // rather than stored after the browser was forgotten.
+  if (event.target.closest('[data-action="forget-browser"]')) {
+    event.preventDefault();
+    clearNotice();
+    forgetBrowser();
+    verifyStep = { step: "email", label: "" };
+    renderVerify().then((drawn) => {
+      if (drawn) confirmBrowserForgotten();
+    });
+    return;
+  }
+
+  // Keeping the badge gives up replacing it: the page goes back to the badge
+  // held here, and a code already sent is left to expire unused. The badge is
+  // read again first, since it can run out, or be forgotten in another tab,
+  // while the page is on another step. Drawn from what was read before, a
+  // badge that had expired came back as if it were live, "good until" a time
+  // gone by, and went on being offered on posting forms for the server to
+  // refuse. A badge that has gone leaves the address step, which opens by
+  // saying why (badgeLost), and showHeldBadge shows and focuses that instead.
+  if (event.target.closest('[data-action="verify-keep"]')) {
+    event.preventDefault();
+    clearNotice();
+    state.verification.badge = readBadge();
+    if (!state.verification.badge && !badgeLost) badgeLost = CREDENTIAL_FORGOTTEN;
+    verifyStep = { step: "email", label: "" };
+    drawVerifyStep();
+    showHeldBadge();
+    return;
+  }
+
   // Verifying again from here means starting at the address field, with the
-  // badge already held staying valid until the new one replaces it.
+  // badge already held staying valid until the new one replaces it. Whatever
+  // was said was about the step being left, so it goes with it: a refusal in
+  // that step's form goes with the form, and the notice is put away.
   const restart = event.target.closest('[data-action="verify-again"], [data-action="verify-restart"]');
   if (restart) {
     event.preventDefault();
+    clearNotice();
     // replacing shows the address form over a badge that is still held and
     // still usable — it is retired by the new one, not by asking for one.
     verifyStep = { step: "email", label: "", replacing: true };
-    el.main.innerHTML = verifyViewHTML();
-    const input = document.getElementById("f-email");
-    if (input) input.focus();
+    drawVerifyStep();
+    showVerifyField("f-email");
     return;
   }
 
@@ -3356,6 +3948,9 @@ function posterKey() {
 el.main.addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.target;
+  // A Verify form's answer can draw a pending code's box, so nothing runs
+  // here once submitVerification is done with it
+  // (TestVerifyCodeBoxShowsWhileACodeIsPending).
   if (form.dataset.verify) {
     await submitVerification(form);
     return;
@@ -3379,8 +3974,14 @@ el.main.addEventListener("submit", async (event) => {
   // the request layer too, not merely in what it displays.
   const wantsBadge = data.get("badge") === "on";
   const held = wantsBadge ? state.verification.badge : null;
-  if (wantsBadge && !held) {
-    showNotice("Your badge is no longer available in this browser — verify again to post with it.");
+  // And only under the badge the box named. One issued or lost since the form
+  // was drawn sends nothing: the box is drawn again, unticked, for the badge
+  // held now, and the notice says why (offerHeldBadge), for the reader to
+  // choose again.
+  if (wantsBadge && !(held && badgeOffered(form) === held.number)) {
+    offerHeldBadge();
+    const box = field(form, "badge");
+    if (box) box.focus();
     return;
   }
   // A badged post carries the credential and not the poster key. The server
@@ -3432,24 +4033,32 @@ el.main.addEventListener("submit", async (event) => {
   } catch (err) {
     // A credential the server will not honour again is dropped rather than
     // offered for the next post; the response says which case this is. The
-    // option goes with it — taking the checkbox out of this form rather than
-    // re-rendering leaves the half-written post exactly where it is — so the
-    // retry that follows is an ordinary post instead of the same refusal.
+    // option goes with it — taken out of this form (offerHeldBadge) rather
+    // than re-rendering, which leaves the half-written post exactly where it
+    // is — so the retry that follows is an ordinary post instead of the same
+    // refusal. The notice below says why.
+    //
+    // Only the credential refused is dropped, and only while it is the one
+    // stored. Another can have been stored since the post went out: a Verify
+    // answer that landed while it was on its way, or a badge issued in another
+    // tab, which is what revoked this one. Dropping whatever was stored then
+    // deleted that badge, which the server hands out once and cannot show
+    // again. The form is brought into line with the badge held now instead,
+    // and the notice says that one is offered (sayBadgeReplaced).
     const reason = err.payload && err.payload.credential;
-    if (reason === "expired" || reason === "revoked") {
-      forgetCredential();
-      badgeLost =
-        reason === "expired"
-          ? "Your badge has expired."
-          : "That badge was replaced by a newer verification.";
-      const box = field(form, "badge");
-      const option = box && box.closest("label");
-      if (option) {
-        option.remove();
-        form.querySelector("#f-badge-hint")?.remove();
-      } else if (box) {
-        box.checked = false;
+    let replacedBy = null;
+    if (held && (reason === "expired" || reason === "revoked")) {
+      if (storedCredential() === held.token) {
+        forgetCredential();
+        badgeLost =
+          reason === "expired"
+            ? "Your badge has expired."
+            : "That badge was replaced by a newer verification.";
+      } else {
+        state.verification.badge = readBadge();
+        replacedBy = state.verification.badge;
       }
+      offerHeldBadge();
     }
     // The cap was reached after this form was drawn: take the image off and
     // switch the picker off, so the next press posts the text that is left.
@@ -3481,7 +4090,11 @@ el.main.addEventListener("submit", async (event) => {
       }
       redrawThreadCounts();
     }
-    showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    if (replacedBy) {
+      sayBadgeReplaced(replacedBy);
+    } else {
+      showNotice(errorMessage(err, { hasText: body.trim() !== "" }));
+    }
     button.disabled = false;
     button.textContent = label;
   }
@@ -3491,53 +4104,165 @@ el.main.addEventListener("submit", async (event) => {
 // remembered between them but the badge on offer: the code is confirmed against
 // a short-lived cookie the server set, so the address is typed once and never
 // travels again.
+//
+// An answer belongs to the step it was sent from (sentFrom), and is dropped
+// when the reader has moved the page to another step while it was on its way:
+// no badge stored, no step set, nothing drawn or said. Forget this browser is
+// the button that can do that, and has to win: a badge stored after it would
+// stay for whoever uses the computer next, under a confirmation saying there
+// is none. The form's own other buttons — Keep my badge, Use a different
+// address — wait for the answer with the submit button, so a reader does not
+// give up a step whose badge the server may be issuing; a dropped badge is
+// one nobody holds, and verifying the same address again retires the old one.
+// Leaving the page is not a change of step: the answer is kept for when the
+// reader comes back (onVerifyPage). Coming back draws the step afresh, so the
+// wait is kept in verifyBusy as well as on the form's buttons, and the step is
+// drawn again waiting (verifyViewHTML); a second request from a step whose
+// first is out is never sent, since the page could then show the first one's
+// answer while the server acts on the second. A request from another step is
+// sent only once submitVerification is done with the one before it
+// (verifyRequest), so their answers set the pending-code cookie in the order
+// they were asked for and the newest one's is the cookie the browser keeps; if
+// the reader moves the page to yet another step while it waits, it is never
+// sent. That wait ends, because every request is given up once its time is out
+// (verifyDeadline): a Send code or Verify given up is refused as unreachable on
+// its own step and dropped on any other, and the GET renderVerify asks once a
+// badge is issued leaves the page with what it knew, that badge drawn
+// (loadVerification). One whose answer never came once held every later
+// request, from any step, until a reload.
+//
+// What an answer draws is brought into view clear of the sticky header — the
+// code box with the sentence above it, the badge now held
+// (revealClearOfHeader) — and focused without scrolling the page again.
 async function submitVerification(form) {
+  if (verifyBusy === verifyStep) return;
   const button = form.querySelector('button[type="submit"]');
   const label = button.textContent;
   const data = new FormData(form);
   const requesting = form.dataset.verify === "request";
+  const sentFrom = verifyStep;
+  clearVerifyRefusal(form);
 
   // The badge is for students aged 18 and over. Without the box ticked the
-  // page refuses on its own and sends nothing, the address included.
+  // page refuses on its own and sends nothing, the address included. It says
+  // so under the box.
   const adult = requesting ? field(form, "adult") : null;
   if (requesting && !(adult && adult.checked)) {
-    showNotice(BADGE_AGE_REFUSAL);
-    if (adult) adult.focus();
+    refuseVerification(form, BADGE_AGE_REFUSAL, adult, { invalid: true });
     return;
   }
 
-  button.disabled = true;
-  button.textContent = requesting ? "Sending…" : "Verifying…";
+  const buttons = [...form.querySelectorAll("button")];
+  for (const b of buttons) b.disabled = true;
+  button.textContent = requesting ? VERIFY_SENDING : VERIFY_CHECKING;
+  verifyBusy = sentFrom;
   clearNotice();
+  const earlier = verifyRequest;
+  let release;
+  verifyRequest = new Promise((resolve) => {
+    release = resolve;
+  });
   try {
+    // Whatever the request before this one was, its answer, and the cookie
+    // with it, is in before this one goes.
+    await earlier;
+    if (verifyStep !== sentFrom) return;
     if (requesting) {
       const sent = await api("/api/verify/request", {
         method: "POST",
+        signal: verifyDeadline(),
         // adult is true here, because an unticked box stopped above.
         body: JSON.stringify({ email: String(data.get("email") || ""), adult: adult.checked }),
       });
+      if (verifyStep !== sentFrom) return;
       verifyStep = { step: "code", label: sent.label || "" };
-      el.main.innerHTML = verifyViewHTML();
-      const input = document.getElementById("f-code");
-      if (input) input.focus();
+      // A reader who has gone on to another page finds the code box when
+      // they come back; this one is not drawn over the page they are on.
+      if (!onVerifyPage()) return;
+      drawVerifyStep();
+      showVerifyField("f-code");
       return;
     }
     // The one time the credential is ever handed out. It is kept here rather
     // than set as a cookie, so nothing sends it until a post asks for a badge.
     const issued = await api("/api/verify/confirm", {
       method: "POST",
+      signal: verifyDeadline(),
       body: JSON.stringify({ code: String(data.get("code") || "") }),
     });
+    if (verifyStep !== sentFrom) return;
     storeCredential(issued.credential);
+    // Read locally at once, so whatever is drawn next — this page, or the next
+    // posting form for a reader who has gone on — shows the badge now held,
+    // and so does a posting form already on screen for that reader, drawn
+    // offering the badge before (offerHeldBadge). On the Verify page there is
+    // no posting form, and nothing for it to do.
+    state.verification.badge = readBadge();
+    offerHeldBadge();
     verifyStep = { step: "email", label: "" };
-    await renderVerify();
+    if (!onVerifyPage()) return;
+    if (await renderVerify()) showHeldBadge();
   } catch (err) {
-    // The server's refusal of a request without the attestation reads the same
-    // as the page's own.
+    if (verifyStep !== sentFrom) return;
+    // Nothing is pending any more, so the code box goes: back to the address
+    // step, still over a badge held here, which is kept until a new one is
+    // confirmed, and saying in that step why the box went.
+    const ended = !requesting && [NO_CODE_PENDING, CODE_EXPIRED, CODE_GUESSES_SPENT].includes(err.message);
+    if (ended) {
+      verifyStep = { step: "email", label: "", replacing: true, ended: CODE_ENDED_NOTES[err.message] };
+    }
+    // The answer is about the Verify page. A reader who has gone on to
+    // another page is not shown it there; the step it left is what they find
+    // when they come back.
+    if (!onVerifyPage()) return;
+    if (ended) {
+      drawVerifyStep();
+      // The reason, not the notice at the top, is brought into view: on a
+      // phone that is a screen above the form.
+      const why = document.getElementById("f-email-ended");
+      if (why) why.scrollIntoView({ block: "center" });
+      const input = document.getElementById("f-email");
+      if (input) input.focus({ preventScroll: true });
+      return;
+    }
+    // Any other refusal leaves the step as it is, and is said in its form,
+    // under the field it is about (refuseVerification): a wrong code puts the
+    // reader back in the code box with the code selected, to be typed again.
+    // It is kept with the step (verifyRefusal), so the step drawn again says
+    // it too, as it is said there (redrawn): that step's fields are empty, so
+    // only this form, which still holds what was typed, is told a request
+    // with no answer left it in the box (sayVerifyRefusal). The server's
+    // refusal of a request without the attestation reads the same as the
+    // page's own.
     const refusedForAge = err.status === 400 && err.message === BADGE_AGE_REFUSED;
-    showNotice(refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }));
-    button.disabled = false;
-    button.textContent = label;
+    verifyRefusal = {
+      step: sentFrom,
+      message: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code" }),
+      redrawn: refusedForAge ? BADGE_AGE_REFUSAL : errorMessage(err, { action: "code", kept: false }),
+      about: refusedForAge ? "adult" : requesting ? "email" : "code",
+      invalid: err.status === 400,
+      select: !requesting && err.status === 400,
+    };
+    // The form on screen is this one, or, for a reader who went to another
+    // page and came back while the answer was on its way, the same step drawn
+    // again, waiting as this one was, with its fields empty. Its buttons are
+    // live again either way. With neither on screen the step is still to be
+    // drawn for that reader: renderVerify draws it, its buttons live by then,
+    // and says the refusal as the step drawn again. It can do that after this
+    // form has said it, too: Verify in the header, pressed just before the
+    // answer came, leaves this form up while render() asks the server, then
+    // draws the step afresh.
+    const shown = form.isConnected ? form : el.main.querySelector("form[data-verify]");
+    if (!shown) return;
+    for (const b of shown.querySelectorAll("button")) b.disabled = false;
+    shown.querySelector('button[type="submit"]').textContent = label;
+    sayVerifyRefusal(shown, shown === form);
+  } finally {
+    // The answer is in, kept or dropped. A request sent since from another
+    // step — after Forget this browser — is still out, and keeps its wait;
+    // it goes now, if it was waiting for this one.
+    if (verifyBusy === sentFrom) verifyBusy = null;
+    release();
   }
 }
 
