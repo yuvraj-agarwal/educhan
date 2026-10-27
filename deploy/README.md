@@ -720,26 +720,26 @@ echo "Done. The service uses the new key; delete the old one in Stripe."
 )
 ```
 
-`curl -s "${PUBLIC_URL}/api/pass"` should then answer `"enabled":true` with the
-price and no `"tax"`: with `EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server
-tells Stripe to collect no tax (`automatic_tax[enabled]=false`), even if the
-account collects it by default, so every buyer pays USD 20.00 and the Pass page
-says nothing about tax. To have Stripe Tax collect sales tax, VAT or GST, switch
-Stripe Tax on in the account and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env
-vars: Stripe then takes any tax out of the USD 20.00 rather than adding it, and
-asks each buyer for a billing address to work it out; `/api/pass` then answers
-`"tax":"included"` beside the price, and the Pass page says "tax included".
-While it is on, a Price that says neither `inclusive` nor `exclusive`, such as
-one made without `tax_behavior`, is not sold: `/api/pass` leaves the price out,
-checkout answers `503`, and the service's log says what to fix. Such a Price can
-still be given `tax_behavior=inclusive` once, but one made tax-exclusive, which
-the page shows as "plus any tax", can't be changed: make a new Price the way the
-block does, with `tax_behavior=inclusive`, set its id with `gcloud run services
-update educhan --region "$REGION" --update-env-vars
-EDUCHAN_STRIPE_PRICE_ID=price_…`, and only then archive the old one, since an
-archived Price can't be sold. Three more settings have working defaults and need
-no change: `EDUCHAN_PASS_DAYS`, `EDUCHAN_PASS_HOURLY_POSTS` and
-`EDUCHAN_PASS_COOLDOWN` (section 4).
+Once the setup block has printed "Done", `curl -s "${PUBLIC_URL}/api/pass"`
+should answer `"enabled":true` with the price and no `"tax"`: with
+`EDUCHAN_STRIPE_AUTOMATIC_TAX` unset, the server tells Stripe to collect no tax
+(`automatic_tax[enabled]=false`), even if the account collects it by default, so
+every buyer pays USD 20.00 and the Pass page says nothing about tax. To have
+Stripe Tax collect sales tax, VAT or GST, switch Stripe Tax on in the account
+and add `EDUCHAN_STRIPE_AUTOMATIC_TAX=1` to the env vars: Stripe then takes any
+tax out of the USD 20.00 rather than adding it, and asks each buyer for a
+billing address to work it out; `/api/pass` then answers `"tax":"included"`
+beside the price, and the Pass page says "tax included". While it is on, a Price
+that says neither `inclusive` nor `exclusive`, such as one made without
+`tax_behavior`, is not sold: `/api/pass` leaves the price out, checkout answers
+`503`, and the service's log says what to fix. Such a Price can still be given
+`tax_behavior=inclusive` once, but one made tax-exclusive, which the page shows
+as "plus any tax", can't be changed: make a new Price the way the setup block
+does, with `tax_behavior=inclusive`, set its id with `gcloud run services update
+educhan --region "$REGION" --update-env-vars EDUCHAN_STRIPE_PRICE_ID=price_…`,
+and only then archive the old one, since an archived Price can't be sold. Three
+more settings have working defaults and need no change: `EDUCHAN_PASS_DAYS`,
+`EDUCHAN_PASS_HOURLY_POSTS` and `EDUCHAN_PASS_COOLDOWN` (section 4).
 
 `PUBLIC_URL` is where Stripe sends a buyer back and where it sends its
 webhooks, and it has to be the one address readers use: the cookie that lets a
