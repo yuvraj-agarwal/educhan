@@ -35,15 +35,18 @@ accounts, bans, and reports are not.
     third-party browser builds under `web/lib/` (highlight.js, KaTeX).
 - `internal/media` — image validation and thumbnailing (`image.go`), metadata stripping
   (`sanitize.go`, with the EXIF orientation readers and the lossless turns in `orient.go`,
-  the WebP RIFF rewrite in `webp.go`, and the application of a PNG's gamma in `gamma.go`),
-  the header-based cost estimate (`cost.go`) and the two memory budgets it is held to
-  (`budget.go`), and the blob-storage interface with its two implementations: the local
-  filesystem (`local.go`) and Google Cloud Storage (`gcs.go`), selected by
-  `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run against both.
-  `internal/media/mediatest` starts an in-process Cloud Storage emulator and is imported
-  only by tests. `internal/media/jpegenc` is Go's own JPEG encoder, copied with its
-  licence and changed to keep a picture's chroma subsampling (its package comment lists
-  every change).
+  the WebP RIFF rewrite in `webp.go`, the application of a PNG's gamma in `gamma.go`, the
+  GIF player that writes a stored GIF from the pictures it shows in `gifplay.go`, and the
+  chroma upsampling, as browsers' decoders do it, of a lossy WebP stored with its alpha
+  and of a JPEG turned to 4:4:4 in `upsample.go`), the header-based cost estimate
+  (`cost.go`) and the two memory budgets it is held to (`budget.go`), `Save`, which stores
+  both renditions, and `Remove` (`save.go`), and the blob-storage interface (`store.go`)
+  with its two implementations: the local filesystem (`local.go`) and Google Cloud Storage
+  (`gcs.go`), selected by `EDUCHAN_MEDIA_BACKEND`. `conformance_test.go` is one suite run
+  against both. `internal/media/mediatest` starts an in-process Cloud Storage emulator and
+  is imported only by tests. `internal/media/jpegenc` is Go's own JPEG encoder, copied
+  with its licence and changed to keep a picture's chroma subsampling (its package comment
+  lists every change).
 - `internal/mailer` — the `Sender` interface verification codes go out through, with a
   development implementation that prints them to stdout.
 - `Dockerfile`, `cloudbuild.yaml`, `.gcloudignore`, `deploy/` — the container image, the
