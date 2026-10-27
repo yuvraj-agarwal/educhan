@@ -13,8 +13,8 @@ import (
 
 // PassConfig configures the educhan Pass. Sales are off unless Secret is set,
 // the way verification is off without its secret, and a Secret without the
-// Stripe settings beside it is refused at startup rather than at the first
-// checkout.
+// Stripe settings and PublicURL beside it is refused at startup rather than at
+// the first checkout.
 type PassConfig struct {
 	// Secret keys the hashes the Pass tables hold of each Pass code and of the
 	// processor's session and payment ids, and signs the name a checkout's

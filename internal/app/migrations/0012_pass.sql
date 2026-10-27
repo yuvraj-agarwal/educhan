@@ -14,8 +14,13 @@
 --     chargeback can take back the time that payment bought, and so the owner
 --     can reissue a lost code from the payment on the buyer's receipt.
 --   * No created_at. Every timestamp (expires_at in each table, and the day a
---     payment's term ends) is rounded up to a UTC day boundary, so it dates a
---     purchase to the day and not the minute.
+--     payment's term ends) is rounded up to a UTC day boundary, so the columns
+--     date a purchase, a refund or a reissue only to the day. The rows
+--     themselves can be dated more closely: a row's xmin, the id of the
+--     transaction that wrote it, comes from the same counter as the posts',
+--     which carry their time, and the WAL keeps the same order, so whoever
+--     holds the live database files or a physical backup can place a row
+--     between two posts. Stripe keeps the exact time of every payment anyway.
 --
 -- pass_orders is the exception, as verification_pending is for 0004: a row
 -- there lives from checkout until the Pass is collected, and is deleted the

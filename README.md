@@ -549,9 +549,15 @@ the server secret and the Stripe account can see:
 - in `pass_reissues`, while a reissue code is unredeemed: its SHA-256 hash,
   the HMAC of the payment it reissues, and its deadline.
 
-There is no `created_at` anywhere, and every date in these tables is rounded
-up to a UTC midnight, so it dates a purchase, a refund or a reissue to the day
-and not the minute.
+There is no `created_at` anywhere, and every date in these tables is rounded up
+to a UTC midnight, so their columns date a purchase, a refund or a reissue only
+to the day. The rows can be dated more closely all the same: each holds the id
+of the transaction that wrote it (Postgres's `xmin`), drawn from the same
+counter as the posts', which carry their time, and the write-ahead log keeps
+the same order, so whoever holds the live database's files or a physical backup
+(not a `pg_dump`) can place a Pass row between two posts. A `passes` row's
+`xmin` moves with each renewal, refund or reissue, so it dates the latest of
+them. Stripe keeps the exact time of every payment anyway.
 
 They cannot link a Pass to a post. Posts carry nothing about a Pass, using one
 writes nothing (no "last used"), the code is stored only as a keyed hash, the
@@ -709,24 +715,25 @@ deadline and pruned, by the daily sweep, the next checkout or a claim from its
 own browser, since Stripe can still report it paid until then. The purchase
 keeps its own right whatever renewal is under way.
 
-**Setting it up.** In Stripe: a one-time Price for the Pass
-(`EDUCHAN_STRIPE_PRICE_ID`), which with Stripe Tax on says whether tax is in its
-amount (**Tax**, below); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
+**Setting it up.** In Stripe: a one-time Price for the Pass with a fixed amount
+(`EDUCHAN_STRIPE_PRICE_ID`), which with Stripe Tax on says whether tax is in
+its amount (**Tax**, below); an API key (`EDUCHAN_STRIPE_SECRET_KEY`), best a
 restricted key (`rk_…`) allowed to write Checkout Sessions and read Prices and
 nothing more; and a webhook endpoint at
 `EDUCHAN_PUBLIC_URL/api/pass/stripe-webhook`, created with API version
 `2024-06-20` (`stripeAPIVersion` in `pass_stripe.go`) and sending the six
 events listed in the [HTTP API](#http-api) table, whose signing secret is
 `EDUCHAN_STRIPE_WEBHOOK_SECRET`. Turn on Stripe's email receipts and give the
-account a public support email: the receipt is how a buyer finds their
-payment, and whom to write to about a lost code. Buyers are sent only to
+account a public support email: the receipt is how a buyer finds their payment,
+and whom to write to about a lost code. Buyers are sent only to
 `checkout.stripe.com`, so a custom checkout domain set up in Stripe would make
-every checkout fail. Then set `EDUCHAN_PASS_SECRET` beside them, and
-`EDUCHAN_MOD_KEY` if it is not set already: a lost code is reissued behind the
-moderation key, and without it every reissue answers `403`, which the server
-warns about as it starts. Every Pass setting given without the secret refuses
-to start rather than leaving the Pass quietly off, and
-`EDUCHAN_PASS_SALES=paused` keeps it off sale while everything else is tried.
+every checkout fail. Then set `EDUCHAN_PASS_SECRET` and `EDUCHAN_PUBLIC_URL`
+(the site's bare `https://` origin) beside them, and `EDUCHAN_MOD_KEY` if it is
+not set already: a lost code is reissued behind the moderation key, and without
+it every reissue answers `403`, which the server warns about as it starts.
+Every Pass setting given without the secret refuses to start rather than
+leaving the Pass quietly off, and `EDUCHAN_PASS_SALES=paused` keeps it off sale
+while everything else is tried.
 
 **Tax.** With `EDUCHAN_STRIPE_AUTOMATIC_TAX` on, checkout asks Stripe Tax to
 collect sales tax, VAT or GST, and Stripe's page asks the buyer for a billing
