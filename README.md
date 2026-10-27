@@ -195,9 +195,10 @@ can and cannot work out.
   and the sweep rewrites the credentials so that the transaction id PostgreSQL
   keeps on every row is the sweep's rather than the issuance's, which says of
   a credential of the day it ran in only that it came before the sweep. A code
-  still in flight as the sweep ran, a sweep run after 05:00 UTC, and the day a
-  server first counted expiries from 05:00 rather than midnight are the
-  exceptions, which [Transaction ids, and the nightly
+  still in flight as the sweep ran, a sweep run after 05:00 UTC, and the day of
+  a deploy that changes how expiries are counted (the first move from midnight
+  to 05:00, a new `credentialDayStart` or a new `EDUCHAN_VERIFY_CREDENTIAL_TTL`)
+  are the exceptions, which [Transaction ids, and the nightly
   rewrite](#transaction-ids-and-the-nightly-rewrite) spells out. But requesting
   a code and confirming one are writes, and each takes a transaction id from the
   counter posts take theirs from. Posts keep theirs beside their `created_at`,
@@ -488,21 +489,28 @@ What that protects, exactly:
   issued between midnight and the sweep to those three hours, morning to
   afternoon across South and East Asia and Australia, until the next night's
   sweep (`TestCredentialDaysEndAfterTheSweep` reads the schedule and the retry
-  from the deploy guide and `first-deploy.sh`). A sweep that runs after 05:00
-  — by hand, as the deploy guide offers, or a late retry — splits the day it
-  runs in where it runs, so until the next night's sweep, and in the backups
-  taken meanwhile, its id dates the credentials issued between 05:00 and it to
-  those hours. Run it by hand between 03:17 and 05:00 UTC, or when nobody has
-  verified since 05:00. And once, on the day a server first counts expiries this
-  way, the deploy splits the days around it. Credentials issued that day before
-  the deploy keep an expiry rounded up to midnight, and those issued after it
-  until the next 05:00 UTC an expiry counted from that 05:00, the first of the
-  new kind; neither set shares its expiry with any credential outside it, so the
-  first are dated to the hours between midnight and the deploy, and the second
-  to the hours between the deploy and that 05:00, for as long as they are kept.
-  A sweep that runs while either set is being issued splits it as it does any
-  day's: until the next sweep, its id dates those of the set issued before it to
-  the hours between the start of the set and the sweep. Changing
+  from the deploy guide and `first-deploy.sh`). A sweep whose last rewrite comes
+  after 05:00, whether it was started by hand after 05:00, as the deploy guide
+  offers, or not long before, splits the day that rewrite falls in: until the
+  next night's sweep, and in the backups taken meanwhile, its id dates the
+  credentials issued between 05:00 and that rewrite to those hours. So, as the
+  deploy guide's section 2.9 has it, start it by hand only after that night's
+  scheduled run has finished and no later than 04:00 UTC, so that it and its one
+  retry, up to 15 minutes each, are done by 04:30, half an hour before 05:00,
+  the margin `TestCredentialDaysEndAfterTheSweep` asks of the schedule; or else
+  when nobody has verified since the last 05:00 UTC and nobody will until it,
+  and its retry if it fails, has finished, so that no credential is issued
+  between 05:00 and its last rewrite, whichever side of 05:00 that rewrite falls
+  on. And once, on the day a server first counts expiries this way, the deploy
+  splits the days around it. Credentials issued that day before the deploy keep
+  an expiry rounded up to midnight, and those issued after it until the next
+  05:00 UTC an expiry counted from that 05:00, the first of the new kind;
+  neither set shares its expiry with any credential outside it, so the first are
+  dated to the hours between midnight and the deploy, and the second to the
+  hours between the deploy and that 05:00, for as long as they are kept. A sweep
+  that runs while either set is being issued splits it as it does any day's:
+  until the next sweep, its id dates those of the set issued before it to the
+  hours between the start of the set and the sweep. Changing
   `EDUCHAN_VERIFY_CREDENTIAL_TTL` splits the day it is deployed in the same way.
   Credentials issued that day before the deploy keep the old lifetime, counted
   from the day's end, and those issued after it get the new one, so each set has
@@ -513,14 +521,33 @@ What that protects, exactly:
   expiry from the start with the credentials issued that many days earlier, if
   there were any, and the first set shares its with those issued that many days
   later, once there are any; lengthened, or changed by part of a day, neither
-  set ever does, for as long as it is kept. Cloud Run's revision history
-  records when the deploy was. So change it when nobody has verified since
-  05:00 UTC that day: soon after 05:00, once the `verification issued` lines in
-  the server's log show none since then. A credential issued on the old
-  revision while the new one rolls out is still dated to those minutes. Times
-  autovacuum recorded before migration `0015` stay in the statistics views
-  until the statistics are reset, which takes a superuser. That is the tables,
-  not the database: see the next point.
+  set ever does, for as long as it is kept. Cloud Run's revision history records
+  when the deploy was. So change it when nobody has verified since 05:00 UTC
+  that day: soon after 05:00, once the `verification issued` lines in the
+  server's log show none since then. Moving `credentialDayStart` in
+  `internal/app/verify.go` likewise splits the day it is deployed in: the
+  credentials issued from the last old start to the deploy, and those issued
+  from the deploy until the next new start, each get an expiry no other
+  credential shares, and so are dated to those hours for as long as they are
+  kept. So deploy it soon after the later of the old start and the new, once the
+  `verification issued` lines show that nobody has verified since the old start,
+  which leaves the first set empty; a later deploy dates the second to the fewer
+  hours left before the next new start. For either change, a credential issued
+  on the old revision while the new one rolls out still gets the old expiry, and
+  is dated with the first set, to the time between the day's start and the end
+  of the rollout. A start moved earlier can instead go out at any time between
+  that day's new start and its old one, whether or not anyone has verified, once
+  that night's sweep on the old schedule, and its retry if it fails, has
+  finished, and with the deploy over, the new revision serving all traffic,
+  before the old start: the credentials issued between the old start the day
+  before and the deploy are then dated to those hours, and those issued after it
+  to the hours until the new start the next day, each at least a day less the
+  move (23 hours, for a move of an hour). Were that sweep to rewrite after the
+  deploy, it would date the credentials issued between the two to those minutes,
+  and an old revision still serving after the old start gives those it issues
+  then an expiry of their own. Times autovacuum recorded before migration `0015`
+  stay in the statistics views until the statistics are reset, which takes a
+  superuser. That is the tables, not the database: see the next point.
 - **Not the posts' own transaction ids**, which no sweep touches. Every code
   request that reaches the database, and every attempt at a code in flight, is a
   write and takes the next id, so each leaves a gap in the posts' `xmin` between
@@ -603,13 +630,12 @@ What that protects, exactly:
   says. With it on, PostgreSQL records when each transaction committed, and a
   row's `xmin` gives the time it was written to well under a second; so does
   each committed id missing from the posts' sequence, which turns a gap above
-  from the minutes between two posts into the moment of the write. The guide
-  gives as its reason that the setting defeats rounding the expiry to a day so
-  that an issuance cannot be matched to the posts around it; that sentence
-  predates the posts' gaps (second point), which match an issuance to the posts
-  around it with the setting off. The rounding keeps the credential's own row
-  from saying more than its day; keeping the setting off keeps each gap at the
-  minutes between two posts rather than the moment of the write.
+  from the minutes between two posts into the moment of the write. Once the
+  sweep has rewritten a credential, the setting adds nothing to what its row
+  says, since the commit time of the sweep's id is only the time the sweep ran.
+  Until then, in a backup taken before the sweep, and for each gap, keeping the
+  setting off is what keeps the date to the minutes between two posts rather
+  than the moment of the write.
 
 Nothing more than that. In particular, the files `VACUUM FULL` drops and the
 log segments PostgreSQL deletes or reuses go the ordinary way, not wiped: what

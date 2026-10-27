@@ -567,7 +567,18 @@ const credentialDayStart = 5 * time.Hour
 // a sweep at 05:30 always does, which is why the test rejects it. And the day
 // of a sweep at 02:30 ends two and a half hours after it. A sweep run after
 // 05:00 — by hand, or late — still splits the day it runs in at the time it
-// runs, and the README says what that leaves.
+// runs, and the README says what that leaves. A new credentialDayStart splits
+// the day it is deployed in too: the credentials issued from the last old
+// start to the deploy, and those issued from the deploy until the next new
+// start, each get an expiry no other credential shares. So it goes out soon
+// after the later of the old start and the new, once nobody has verified
+// since the old start, which leaves the first set empty. A start moved
+// earlier can instead go out at any time between the new start and the old
+// one, quiet or not, once that night's sweep on the old schedule, and its
+// retry if it fails, has finished, and with the new revision serving all
+// traffic before the old start, since each set then spans at least a day less
+// the move (the README's "What that protects, exactly", and deploy/README.md
+// section 2.9).
 //
 // It is not all an operator can see. The code request and the confirmation
 // each took a transaction id from the counter the posts take theirs from, and

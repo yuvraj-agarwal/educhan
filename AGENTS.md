@@ -1006,20 +1006,27 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     fifteen-minute task). So a change to the schedule, the retries or the timeout that
     leaves that window means moving `credentialDayStart` with it, not only a move past
     05:00: a sweep at 04:40 has its retry running until 05:10, across the day's end,
-    and the day of one at 02:30 ends two and a half hours after it. Moving where the
-    day ends is itself a leak, once: the credentials issued between the last old
-    boundary and the deploy share an expiry with no other credential, and so do those
-    issued between the deploy and the first new boundary, which dates each set to those
-    hours for as long as it is kept (the README's "What that protects, exactly" says
-    this of the move from midnight to 05:00). Changing `EDUCHAN_VERIFY_CREDENTIAL_TTL`
-    is the same leak on the day it is deployed: the stored expiry is
-    `credentialDayEnd(issued)` plus the lifetime, so that day's credentials before the
-    deploy get one expiry and those after it another, which the sweep's one id does not
-    merge, and each set is dated to its side of the deploy until another day's
-    credentials share its expiry: for a lifetime cut by whole days, those issued that
-    many days earlier (the later set, at once) or later (the earlier set); for one
-    lengthened, or changed by part of a day, never. The README says to deploy such a
-    change soon after 05:00 UTC, before anyone has verified that day.
+    and the day of one at 02:30 ends two and a half hours after it. Moving where the day
+    ends is itself a leak, once: the credentials issued between the last old boundary
+    and the deploy share an expiry with no other credential, and so do those issued
+    between the deploy and the first new boundary, which dates each set to those hours
+    for as long as it is kept (the README's "What that protects, exactly" says this of
+    every move, the one from midnight to 05:00 among them). So a new
+    `credentialDayStart` goes out soon after the later of the old start and the new,
+    once the log shows nobody has verified since the old start, which leaves the first
+    set empty, while a later deploy shortens the second; a start moved earlier can
+    instead go out at any time between the new start and the old one, quiet or not, once
+    that night's sweep on the old schedule, and its retry if it fails, has finished, and
+    with the new revision serving all traffic before the old start, since each set then
+    spans at least a day less the move. Changing `EDUCHAN_VERIFY_CREDENTIAL_TTL` is the
+    same leak on the day it is deployed: the stored expiry is `credentialDayEnd(issued)`
+    plus the lifetime, so that day's credentials before the deploy get one expiry and
+    those after it another, which the sweep's one id does not merge, and each set is
+    dated to its side of the deploy until another day's credentials share its expiry:
+    for a lifetime cut by whole days, those issued that many days earlier (the later
+    set, at once) or later (the earlier set); for one lengthened, or changed by part of
+    a day, never. The README says to deploy such a change soon after 05:00 UTC, before
+    anyone has verified that day.
   - **PostgreSQL dates rows the schema does not, so the sweeper rewrites the
     credentials every night.** Every row carries `xmin`, the id of the transaction that
     wrote it, and posts carry `created_at`, so a credential's `xmin` among the posts'
