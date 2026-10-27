@@ -353,8 +353,8 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    (`TestCredentialConfirmedAsTheRewriteStartsIsRewrittenOnce`,
    `TestCredentialConfirmedDuringTheRewriteIsKeptOnce`).
 3. It reads each table once whole and once through each of its indexes, so
-   that every last-scan time the statistics show for them is the sweep's
-   (`TestSweepLeavesNoScanTimeFromBeforeIt`).
+   that every last-scan time the statistics show for them is the sweep's; and
+   again at the end (step 6), for the times they had yet to be given.
 4. Then `VACUUM FULL` writes `verification_credentials` and
    `verification_pending` to new files without their dead rows, and drops the
    old files; with autovacuum off, it is the vacuum both tables get. It does not
@@ -431,8 +431,24 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    database, or an inheriting member of it; `SELECT pg_has_role(datdba, 'USAGE')
    FROM pg_database WHERE datname = current_database()`, run as the sweeper's
    role, says whether it has that, and this has not been tried there yet.
+6. Last, once a minute and five seconds have passed since the rewrite
+   committed, it reads both tables again as in step 3. A connection does not
+   give the statistics its counts as it scans: it hands them over when one of
+   its transactions ends, but no more than once a second, and if it then sits
+   idle, within ten seconds; one that finds the statistics' entry for a table
+   locked keeps that table's counts for up to a minute. The time it gives them
+   is the end of its latest transaction by then, or the moment it hands them
+   over. So the counts of a confirmation that comes on the heels of another
+   request on the same server connection can reach the statistics after
+   step 3, with the time of the next request that connection served, or of
+   the hand-over, up to ten seconds after the confirmation committed (a minute
+   under contention); and the statistics keep the later of two times. Those
+   are the indexes a confirmation reads, and that time would date the last
+   issuance before the sweep to within ten seconds
+   (`TestSweepLeavesNoScanTimeFromBeforeIt`, which sweeps from an `App` of its
+   own, as the Job does). So every sweep takes a minute or more.
 
-The sweep keeps at this for up to a minute. A session that holds a table,
+The sweep keeps at the vacuum for up to a minute. A session that holds a table,
 something its vacuum would wait for, or an old snapshot for longer than that —
 an export, a `psql` left in a transaction — fails the sweep, which exits non-zero
 (`TestSweepFailsWhileAnOlderTransactionCanReadTheOldRows`,

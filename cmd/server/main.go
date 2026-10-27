@@ -87,7 +87,9 @@ func run(args []string, logs io.Writer) error {
 // transaction, so a file the run did not get to is removed by the next one; a
 // cancelled rewrite or vacuum rolls back whole too, and the next run does it
 // again. (A vacuum that had finished when the cancel reached it has committed,
-// and that table is done.) The deferred Close in run waits for the pool's
+// and that table is done.) The wait of about a minute that follows, before the
+// sweep reads the verification tables a last time, ends at once, and the next
+// run reads them again. The deferred Close in run waits for the pool's
 // connections to send their own cancel requests.
 func runSweep(application *app.App) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

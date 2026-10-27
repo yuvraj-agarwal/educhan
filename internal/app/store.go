@@ -67,12 +67,17 @@ type Store struct {
 	// How long RewriteCredentials's connection waits on a cancel request
 	// (cancelGrace), which a test shortens to see PostgreSQL not answer one.
 	cancelGrace time.Duration
+	// How long after the rewrite RewriteCredentials reads the verification
+	// tables a last time (statsHandOver). The test harness sets it to zero, as
+	// only TestSweepLeavesNoScanTimeFromBeforeIt is about it, and every other
+	// sweep would wait it out for nothing.
+	statsHandOver time.Duration
 }
 
 // NewStore wraps an existing pool.
 func NewStore(pool *pgxpool.Pool) *Store {
 	return &Store{pool: pool, vacuumCommand: vacuumCommand, statisticsVacuumCommand: vacuumCommand,
-		vacuumPatience: vacuumPatience, cancelGrace: cancelGrace}
+		vacuumPatience: vacuumPatience, cancelGrace: cancelGrace, statsHandOver: statsHandOver}
 }
 
 // Ping reports whether the database is reachable.
@@ -1187,7 +1192,7 @@ func (s *Store) CredentialLabel(ctx context.Context, credentialIDHash []byte) (s
 }
 
 // verificationLockTimeout bounds every wait RewriteCredentials makes for a
-// lock before the vacuum, which has a bound of its own (vacuumLockTimeout).
+// lock outside the vacuum, which has a bound of its own (vacuumLockTimeout).
 // The one it can wait on in practice is the rewrite's lock on the
 // credentials table, which lets plain reads through and waits for everything
 // else on the table: a transaction that has written to it or locked rows in
@@ -1377,7 +1382,9 @@ const vacuumProbeTable = "vacuum_probe"
 // samples ANALYZE took of the pending table before 0015, which are much the
 // same. The times PostgreSQL's statistics keep of the last scan of each table
 // and index would date the last confirmation before the sweep, so restampScans
-// makes them the sweep's.
+// makes them the sweep's: once after the rewrite, and once more after the
+// vacuum, when every connection has handed the statistics what it read before
+// the rewrite (statsHandOver).
 //
 // A code that expired unconfirmed leaves its pending row live until the next
 // request prunes it (StartVerification), whenever that comes. Its expiry, less
@@ -1459,11 +1466,58 @@ func (s *Store) RewriteCredentials(ctx context.Context) (rewritten int, err erro
 	if err != nil {
 		return 0, err
 	}
+	committed := time.Now()
 	if err := restampScans(ctx, conn); err != nil {
 		return rewritten, err
 	}
-	return rewritten, s.vacuumVerificationTables(ctx, conn, notices, rewrite)
+	if err := s.vacuumVerificationTables(ctx, conn, notices, rewrite); err != nil {
+		return rewritten, err
+	}
+	timer := time.NewTimer(time.Until(committed.Add(s.statsHandOver)))
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return rewritten, fmt.Errorf("wait for the statistics: %w", ctx.Err())
+	case <-timer.C:
+	}
+	return rewritten, restampScans(ctx, conn)
 }
+
+// statsHandOver is how long after the rewrite has committed RewriteCredentials
+// reads the verification tables a second time (restampScans): long enough for
+// every other connection to have handed the statistics the counts of the
+// scans it made before the commit.
+//
+// A connection keeps its counts and hands them over later. When one of its
+// transactions ends it hands over everything it has kept, but no more than
+// once a second, and if it then sits idle it hands the rest over within ten
+// seconds. If it finds the statistics' entry for a table locked, it keeps
+// that table's counts rather than wait, and waits for the lock only once it
+// has sat idle for ten seconds, or when a transaction of its ends a minute or
+// more after it first kept counts back (PGSTAT_MIN_INTERVAL,
+// PGSTAT_IDLE_INTERVAL and PGSTAT_MAX_INTERVAL in PostgreSQL's pgstat.c). The
+// time it hands over as a scan's is the end of its latest transaction by
+// then, or, when that transaction left none, the moment it hands the counts
+// over. So the counts of a confirmation that commits on a server's connection
+// less than a second after that connection last handed its counts over reach
+// the statistics up to ten seconds after the commit, or up to a minute after
+// under contention, with the time of the next request that connection served,
+// or of the hand-over: after the sweep's first read, and the statistics keep
+// the latest time they are given. Those are the indexes a confirmation reads,
+// so that time would date the last issuance before the sweep to within ten
+// seconds. The second read, a minute and five seconds after the commit, puts
+// the sweep's time back over it; the five seconds are for the transaction
+// that ends the minute. Scans made after the commit need no such cover: a
+// confirmation then writes a row with a transaction id of its own, which
+// dates it until the next sweep anyway, and a badged post's read of its
+// credential says when the post was written, as the post itself does
+// (TestSweepLeavesNoScanTimeFromBeforeIt).
+//
+// The vacuum's patience is a minute too, so a sweep that the vacuum holds up
+// waits little or nothing more, and one that it does not takes a minute
+// longer than it would. A cancelled sweep stops waiting at once
+// (TestCancelledSweepStopsWaitingForTheStatistics).
+const statsHandOver = 65 * time.Second
 
 // cancelGrace is how long a statement on RewriteCredentials's connection
 // waits, once the sweep is cancelled, for PostgreSQL to answer the cancel
@@ -1786,10 +1840,21 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 // would keep the time a request last read a table that way: a confirmation
 // checking the credentials' primary key, say, which on a day with a single
 // issuance dates that credential to the second though its row says only the
-// day. The statistics keep the latest time they are given, so a request that
-// read a table before the sweep cannot put its time back afterwards.
+// day. The statistics keep the latest time they are given, so a time they
+// were given before this read is gone after it. One that a connection had
+// yet to hand over can still come after it, later than this read's, which is
+// why RewriteCredentials reads the tables a second time (statsHandOver).
 func restampScans(ctx context.Context, conn *pgx.Conn) error {
 	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		// The second read comes after the vacuum, which leaves the
+		// connection's lock_timeout at vacuumLockTimeout. A read waits only
+		// for a session that holds the whole table, a schema change, say,
+		// and holds nobody up while it waits; so it waits as long as the
+		// sweep's other waits outside the vacuum do.
+		if _, err := tx.Exec(ctx, `SELECT set_config('lock_timeout', $1, true)`,
+			verificationLockTimeout); err != nil {
+			return fmt.Errorf("set the reads' lock timeout: %w", err)
+		}
 		rows, err := tx.Query(ctx, `
 			SELECT c.relname, a.attname
 			FROM pg_index i

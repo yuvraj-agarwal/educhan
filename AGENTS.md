@@ -868,12 +868,24 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     220,000 credentials on a development machine). `restampScans` then reads each
     verification table whole and through each of its indexes, which it finds in the
     catalog, so every last-scan time `pg_stat_user_tables` and `pg_stat_user_indexes`
-    show for them is the sweep's rather than the last confirmation's. Last,
-    `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table, outside the
-    transaction, writes both tables to new files without the dead versions — or the
-    deleted pending rows, with their email hash and an expiry to the microsecond — and
-    drops the old files, which are not wiped (the README's "Transaction ids, and the
-    nightly rewrite" ends on what that leaves).
+    show for them is the sweep's rather than the last confirmation's; and it reads them
+    again after the vacuum, once `statsHandOver` (65 seconds) has passed since the
+    rewrite committed, a wait that a cancel ends at once
+    (`TestCancelledSweepStopsWaitingForTheStatistics`). A connection hands its counts
+    to the statistics when one of its transactions ends, at most once a second, within
+    ten seconds once it sits idle, and up to a minute later if it finds an entry
+    locked, with the end of its latest transaction by then, or the moment of the
+    hand-over, as their time. So the counts of a confirmation just after another
+    request on the same server connection could reach the statistics after the first
+    read, with the time of the next request that connection served, and date the last
+    issuance before the sweep to within ten seconds
+    (`TestSweepLeavesNoScanTimeFromBeforeIt` sweeps from an `App` of its own, as the
+    Job does, and waits the 65 seconds out; the harness sets the wait to zero for every
+    other test). Then `VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)` on each table,
+    outside the transaction, writes both tables to new files without the dead versions
+    — or the deleted pending rows, with their email hash and an expiry to the
+    microsecond — and drops the old files, which are not wiped (the README's
+    "Transaction ids, and the nightly rewrite" ends on what that leaves).
     `SKIP_LOCKED` passes over a table another session holds, with a
     `55P03` warning, rather than queueing every badged post behind the vacuum's wait
     (`TestBadgedPostsDoNotQueueBehindTheSweepsVacuum` watches `pg_locks` for that wait,

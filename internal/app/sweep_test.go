@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"slices"
@@ -2610,18 +2612,32 @@ func TestVacuumDoesNotWaitForTheDatabasesRow(t *testing.T) {
 // credentials' primary key is such a scan: on a day with a single issuance it
 // would date that credential to the second, though its row says only the day.
 // After the sweep, every one of those times on the verification tables is the
-// sweep's.
+// sweep's: those the statistics had before it, and those of a confirmation
+// whose counts the server's connection still kept as the sweep began, which
+// reach the statistics later, with a later time (statsHandOver). Here the
+// server's connection hands them over with the next query it runs, after the
+// statistics have the sweep's first read. The sweep runs as the Job runs it,
+// from an App of its own, which waits as long as the Job does.
 func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
-	h := verifyServer(t, nil)
-	h.verify("scanned@iitb.ac.in")
+	// One connection, so that the server's read just before the
+	// confirmation and the confirmation run on the same one.
+	h := verifyServer(t, func(cfg *Config) { cfg.DBMaxConns = 1 })
 	ctx := context.Background()
+
+	// The statistics are read on a connection of the test's own: the
+	// server's would hand its counts over as each of those reads ended.
+	watch, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	defer watch.Close(ctx)
 
 	type stamp struct {
 		what string
 		at   *time.Time
 	}
 	stamps := func() []stamp {
-		rows, err := h.app.pool.Query(ctx, `
+		rows, err := watch.Query(ctx, `
 			SELECT relname || ' read whole', last_seq_scan FROM pg_stat_user_tables
 			WHERE schemaname = current_schema() AND relname = ANY ($1)
 			UNION ALL
@@ -2648,12 +2664,27 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 		}
 		return all
 	}
+	show := func(all []stamp) string {
+		var lines []string
+		for _, s := range all {
+			lines = append(lines, fmt.Sprintf("%s at %v", s.what, s.at))
+		}
+		return strings.Join(lines, "; ")
+	}
+	// The pending rows deleted, which only a confirmation deletes here: the
+	// sign that the server's connection has handed its counts over.
+	deleted := func() int64 {
+		var n int64
+		if err := watch.QueryRow(ctx, `SELECT n_tup_del FROM pg_stat_user_tables
+			WHERE schemaname = current_schema() AND relname = 'verification_pending'`).Scan(&n); err != nil {
+			t.Fatalf("read the pending rows deleted: %v", err)
+		}
+		return n
+	}
 
 	// Every table and index scanned once before the sweep, as restampScans
 	// scans them, on a connection that then closes, which hands its counts
-	// to the statistics at once: a request's connection goes back to the pool
-	// and hands them over when it is next idle long enough, which can be ten
-	// seconds away.
+	// over at once.
 	conn, err := pgx.ConnectConfig(ctx, h.app.pool.Config().ConnConfig)
 	if err != nil {
 		t.Fatalf("connect: %v", err)
@@ -2672,30 +2703,204 @@ func TestSweepLeavesNoScanTimeFromBeforeIt(t *testing.T) {
 		}
 		return true
 	})
-	var sweepStart time.Time
-	if err := h.app.pool.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&sweepStart); err != nil {
-		t.Fatalf("read the clock: %v", err)
+
+	// The Job runs the server's image with the server's settings, less
+	// verification's secret and mail (deploy/README.md section 2.9), on a
+	// pool of its own.
+	jobCfg := h.app.cfg
+	jobCfg.VerifySecret = ""
+	jobCfg.Sender = nil
+	jobCfg.DBMaxConns = defaultDBMaxConns
+	job, err := New(ctx, jobCfg, slog.New(slog.NewJSONHandler(io.Discard, nil)))
+	if err != nil {
+		t.Fatalf("start the sweeper: %v", err)
+	}
+	closeJob := sync.OnceFunc(job.Close)
+	t.Cleanup(closeJob)
+
+	h.verify("earlier@iitb.ac.in")
+	issued := 1
+	// A connection hands its counts over when a transaction of its ends, but
+	// no more than once a second. So a read on the server's connection a
+	// second after the requests before it hands their counts over, and a
+	// confirmation straight after it keeps its own, as a confirmation does
+	// that comes on the heels of another request. One that is slow to come
+	// does not, and is tried again.
+	var before int64
+	for attempt := 1; ; attempt++ {
+		if status, out := h.requestCode(fmt.Sprintf("late%d@iitb.ac.in", attempt)); status != http.StatusAccepted {
+			t.Fatalf("request a code: status %d (%s)", status, out.Error)
+		}
+		code := h.mail.last(t).Code
+		time.Sleep(1100 * time.Millisecond)
+		if _, err := h.app.pool.Exec(ctx, `SELECT FROM boards`); err != nil {
+			t.Fatalf("read on the server's connection: %v", err)
+		}
+		before = deleted()
+		if status, out := h.confirmCode(code); status != http.StatusOK {
+			t.Fatalf("confirm: status %d (%s)", status, out.Error)
+		}
+		issued++
+		n := deleted()
+		if n == before {
+			break
+		}
+		if attempt == 3 {
+			t.Fatalf("the server's connection handed every confirmation's counts over at once (%d pending "+
+				"rows deleted, %d before the last): each came more than a second after the read before it, "+
+				"and this test needs one to keep them", n, before)
+		}
+		t.Logf("attempt %d: the confirmation's counts were handed over at once", attempt)
 	}
 
-	if _, err := h.app.Sweep(ctx); err != nil {
+	var sweepStart time.Time
+	if err := watch.QueryRow(ctx, `SELECT clock_timestamp()`).Scan(&sweepStart); err != nil {
+		t.Fatalf("read the clock: %v", err)
+	}
+	// Once the statistics have the sweep's first read, which an index that
+	// nothing else here reads shows, the server's connection runs a query of
+	// its own, as it would for the next request. The confirmation's counts
+	// reach the statistics with it, and with its time or a later one: later
+	// than the first read's. The watch connection is the goroutine's until
+	// it is done, which a failing test waits for too.
+	nudgeCtx, stopNudge := context.WithCancel(ctx)
+	nudged := make(chan struct{})
+	var nudgeErr error
+	go func() {
+		defer close(nudged)
+		deadline := time.Now().Add(2 * time.Minute)
+		for {
+			var read bool
+			if err := watch.QueryRow(nudgeCtx, `
+				SELECT coalesce(last_idx_scan >= $1, false) FROM pg_stat_user_indexes
+				WHERE schemaname = current_schema()
+				  AND indexrelname = 'verification_credentials_credential_id_hash_key'`,
+				sweepStart).Scan(&read); err != nil {
+				nudgeErr = fmt.Errorf("read the first read's time: %w", err)
+				return
+			}
+			if read {
+				break
+			}
+			if time.Now().After(deadline) {
+				nudgeErr = errors.New("the statistics never had the sweep's first read")
+				return
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		_, nudgeErr = h.app.pool.Exec(nudgeCtx, `SELECT FROM boards`)
+	}()
+	defer func() {
+		stopNudge()
+		<-nudged
+	}()
+	report, err := job.Sweep(ctx)
+	if err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	// The sweeper's connection closes as the sweep returns, and the
-	// statistics take its counts a moment later.
+	if report.Credentials != issued {
+		t.Fatalf("the sweep rewrote %d credentials, want %d", report.Credentials, issued)
+	}
+	// The sweeper's connections close as it exits, and the statistics take
+	// their counts a moment later.
+	closeJob()
+	<-nudged
+	if nudgeErr != nil {
+		t.Fatalf("the server's next query: %v", nudgeErr)
+	}
+
+	// Every time is the sweep's last read's, the confirmation's counts in.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
-		var stale []string
-		for _, s := range stamps() {
-			if s.at == nil || s.at.Before(sweepStart) {
-				stale = append(stale, fmt.Sprintf("%s at %v", s.what, s.at))
+		all := stamps()
+		arrived := deleted() == before+1
+		last := all[0].at
+		same := last != nil
+		for _, s := range all {
+			if s.at == nil || s.at.Before(sweepStart) || (last != nil && !s.at.Equal(*last)) {
+				same = false
 			}
 		}
-		if len(stale) == 0 {
+		if arrived && same {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("after the sweep, scan times from before it (%s) remain: %s", sweepStart, stale)
+			if !arrived {
+				t.Fatalf("the server's connection never handed the confirmation's counts over")
+			}
+			t.Fatalf("after the sweep (from %s), the scan times are not all its last read's: %s",
+				sweepStart, show(all))
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
+}
+
+// A sweep cancelled while it waits to read the verification tables the second
+// time (statsHandOver) stops waiting at once, as it stops a statement in
+// flight: a Job past its task timeout gets SIGTERM, and soon after SIGKILL.
+// The sweep is caught waiting by its connection sitting idle with both tables
+// in new files; a vacuum that had to try again can look the same for a
+// moment, and a cancel that lands there says so, so the test tries again.
+func TestCancelledSweepStopsWaitingForTheStatistics(t *testing.T) {
+	h := testServer(t, nil)
+	const sweeper = "waiting-sweep"
+	config := h.app.pool.Config()
+	config.ConnConfig.RuntimeParams["application_name"] = sweeper
+	pool, err := pgxpool.NewWithConfig(context.Background(), config)
+	if err != nil {
+		t.Fatalf("sweeper's pool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	store := NewStore(pool)
+	store.statsHandOver = time.Hour
+
+	files := func() string {
+		var f string
+		if err := h.app.pool.QueryRow(context.Background(), `
+			SELECT pg_relation_filenode('verification_credentials') || '/' ||
+			       pg_relation_filenode('verification_pending')`).Scan(&f); err != nil {
+			t.Fatalf("read the tables' files: %v", err)
+		}
+		return f
+	}
+	for attempt := 1; attempt <= 5; attempt++ {
+		before := files()
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan error, 1)
+		go func() {
+			_, err := store.RewriteCredentials(ctx)
+			done <- err
+		}()
+		deadline := time.Now().Add(30 * time.Second)
+		for {
+			var idle bool
+			if err := h.app.pool.QueryRow(context.Background(), `
+				SELECT EXISTS (SELECT FROM pg_stat_activity WHERE application_name = $1
+				    AND state = 'idle' AND state_change < clock_timestamp() - interval '300 milliseconds')`,
+				sweeper).Scan(&idle); err != nil {
+				t.Fatalf("read pg_stat_activity: %v", err)
+			}
+			if idle && files() != before {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("the sweep never came to wait for the statistics")
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		cancel()
+		select {
+		case err := <-done:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("the cancelled sweep returned %v, want context.Canceled", err)
+			}
+			if strings.Contains(err.Error(), "wait for the statistics") {
+				return
+			}
+			t.Logf("attempt %d: the cancel came before the wait: %v", attempt, err)
+		case <-time.After(5 * time.Second):
+			t.Fatal("the cancelled sweep was still waiting for the statistics five seconds later")
+		}
+	}
+	t.Fatal("no attempt caught the sweep waiting for the statistics")
 }

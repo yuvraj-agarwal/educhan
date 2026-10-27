@@ -30,9 +30,10 @@ import (
 // verification tables (Store.RewriteCredentials), so that when it ends every
 // credential issued before the rewrite carries the sweep's transaction id
 // rather than its own, which would date its issuance against the posts
-// written around it, the tables' files hold no other version of any row, and
+// written around it, the tables' files hold no other version of any row,
 // pg_statistic's files hold none of the samples ANALYZE took of the tables
-// before 0015. A code still in flight as it ran keeps its row, with the time
+// before 0015, and every last-scan time the statistics show for the tables is
+// the sweep's. A code still in flight as it ran keeps its row, with the time
 // it was asked for, in the table's file until the next sweep, whether a
 // confirmation or a delete has removed it by then or not; rows written after
 // the rewrite — a confirmation, a code requested, even while the sweep is
