@@ -378,11 +378,21 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 			"storePass, markPassExpired, forgetPass and followPassStorage", n, keyUsers)
 	}
 	// followPassStorage only compares the key of a storage event with it, and
-	// reads the Pass itself through storedPass.
-	if follow := withoutComments(jsFunction(t, script, "followPassStorage")); strings.Count(follow, "PASS_STORAGE_KEY") != 1 ||
+	// reads the Pass itself through storedPass, but for the code another tab
+	// removed, which it reads from the event's old value through passCodeIn,
+	// only for that removal, to compare with a code just handed over.
+	if follow := withoutComments(jsFunction(t, script, "followPassStorage")); strings.Count(follow, "PASS_STORAGE_KEY") != 2 ||
 		!strings.Contains(follow, "if (event.key !== PASS_STORAGE_KEY && event.key !== null) {") ||
-		strings.Contains(follow, "oldValue") || strings.Contains(follow, "newValue") {
+		!strings.Contains(follow, "if (event.key === PASS_STORAGE_KEY && event.newValue === null) {\n"+
+			"    const removed = passCodeIn(event.oldValue);") ||
+		strings.Count(follow, "oldValue") != 1 || strings.Count(follow, "newValue") != 1 ||
+		strings.Count(code, "passCodeIn(") != 2 {
 		t.Error("followPassStorage reads the stored Pass other than through storedPass")
+	}
+	if in := withoutComments(jsFunction(t, script, "passCodeIn")); !strings.Contains(in, "const saved = JSON.parse(raw);") ||
+		!strings.Contains(in, `return typeof saved.code === "string" && PASS_CODE_PATTERN.test(saved.code) ? saved.code : "";`) ||
+		strings.Contains(in, "localStorage") || strings.Contains(in, "storage") {
+		t.Error("passCodeIn reads more than the code in what it is given")
 	}
 	for _, name := range []string{"checkHeldPass", "recheckPass"} {
 		check := withoutComments(jsFunction(t, script, name))
@@ -983,11 +993,12 @@ func TestPassAnswerAboutAPassThatLeftIsDropped(t *testing.T) {
 	// tab takes it off, so a checkout pressed after the Forget still waits for
 	// its answer; one past its wait stays off.
 	browser := withoutComments(jsFunction(t, script, "forgetBrowser"))
-	swept := strings.Index(browser, "  const dropped = forgetPassClaim(\"browser\");\n  try {\n    const marks = [];\n"+
+	called := strings.Index(browser, "  const dropped = forgetPassClaim(\"browser\");\n")
+	swept := strings.Index(browser, "  pagePosterKey = \"\";\n  try {\n    const marks = [];\n"+
 		"    for (let at = 0; at < localStorage.length; at += 1) {\n      const key = localStorage.key(at);\n"+
 		"      if (key && key.startsWith(`${PASS_CHECKOUT_STORAGE_KEY}:`)) {\n        marks.push(key);\n      }\n    }\n"+
 		"    for (const key of marks) {\n      localStorage.removeItem(key);\n    }\n  } catch {\n\n  }\n  return dropped;\n}")
-	if swept < 0 || strings.Count(browser, "forgetPassClaim(") != 1 {
+	if called < 0 || swept < called || strings.Count(browser, "forgetPassClaim(") != 1 {
 		t.Error("Forget this browser no longer takes every checkout's mark off once its forget has called off this tab's checkouts")
 	}
 	if !regexp.MustCompile(`\nheedPassForgetsUnderWay\(\);\s*passCheckoutLeft\(\);\n`).MatchString(code) {
@@ -1367,7 +1378,8 @@ func TestPostMadeWithANoGoodPassSaysSo(t *testing.T) {
 func TestPassPageSaysWhenThisBrowserCannotKeepIt(t *testing.T) {
 	script := appScript(t)
 	if store := withoutComments(jsFunction(t, script, "storePass")); !strings.Contains(store, "const kept = storedPass();") ||
-		!strings.Contains(store, "return Boolean(kept && kept.code === code);") {
+		!strings.Contains(store, "if (!kept || kept.code !== code) {\n    return false;\n  }") ||
+		!strings.HasSuffix(store, "\n  return true;\n}") || strings.Count(store, "return ") != 2 {
 		t.Error("storePass no longer reads back what it stored")
 	}
 	for _, name := range []string{"submitPass", "checkHeldPass"} {
@@ -1462,17 +1474,36 @@ func TestPassPageDetails(t *testing.T) {
 	t.Run("what was said about a Pass gone goes with Forget and Remove", func(t *testing.T) {
 		// The note is the last holder's news; the next person at a shared
 		// computer is not told about a Pass that was never theirs. It is set
-		// empty in its declaration, on leaving the page, and by these two,
+		// empty in its declaration, on leaving the page, by these two,
 		// pressed here or in another tab (stopForPassForget, for a "code:"
-		// mark).
+		// mark), and once a Pass is held again (the next subtest).
 		code := withoutComments(script)
 		remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
 		remove = remove[:strings.Index(remove, "\n  }\n")]
 		stop := withoutComments(jsFunction(t, script, "stopForPassForget"))
 		if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "passLost = \"\";") ||
-			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 5 ||
+			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 7 ||
 			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(stop) {
 			t.Error("Forget this browser or Remove the Pass, here or in another tab, leaves what the page said about a Pass that has gone")
+		}
+	})
+	t.Run("what was said about a Pass gone goes once one is held again", func(t *testing.T) {
+		// Beside a Pass held, the note would say the Pass here has gone, and
+		// offer a Buy form the page does not draw. It goes with every Pass
+		// this tab keeps (storePass: a code typed in, run out or not, a
+		// claim's or a reissue code's, a check's date), and with one another
+		// tab stores, but not with one this browser would not keep, nor while
+		// none is held.
+		store := withoutComments(jsFunction(t, script, "storePass"))
+		if !strings.Contains(store, "const kept = storedPass();\n  if (!kept || kept.code !== code) {\n    return false;\n  }\n"+
+			"  passLost = \"\";\n  return true;\n}") || strings.Count(store, "passLost") != 1 {
+			t.Error("a Pass this tab keeps leaves beside it what the page said about a Pass that has gone, " +
+				"or one it could not keep takes that away")
+		}
+		follow := withoutComments(jsFunction(t, script, "followPassStorage"))
+		if !strings.Contains(follow, "if (now) {\n    passLost = \"\";\n  }") || strings.Count(follow, "passLost") != 1 {
+			t.Error("a Pass another tab stores leaves beside it what this tab's Pass page said about a Pass that has gone, " +
+				"or a removal there takes that away")
 		}
 	})
 	t.Run("a panel drawn already filled is focused", func(t *testing.T) {
@@ -1967,10 +1998,10 @@ func TestPassPageKeepsACodeJustHandedOver(t *testing.T) {
 	if strings.Contains(view, "function passViewHTML(info, ") {
 		t.Error("passViewHTML takes the code just handed over from its caller again, so a redraw loses it")
 	}
-	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 7 {
+	if n := strings.Count(withoutComments(script), "passJustIssued = null;"); n != 6 {
 		t.Errorf("a code just handed over is dropped in %d places; want its declaration, leaving the Pass page or the document "+
 			"once it is drawn, removing the Pass, forgetting the browser, another tab's Remove or Forget, "+
-			"another tab removing the Pass, and educhan finding it no longer valid with no code it replaced beside it", n)
+			"and educhan finding it no longer valid, here or in another tab, with no code it replaced beside it", n)
 	}
 	// It goes once the reader leaves the Pass page, kept or not, once the page
 	// has drawn it: one this browser could not keep is nowhere else, and its
@@ -2076,8 +2107,9 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 		t.Error("the Pass page holds back Buy for a code just handed over that this browser no longer holds")
 	}
 	// Found no longer valid as the Pass held here, by Check it again, the check
-	// after a reissue code or a renewal, Renew or a post's answer, the code
-	// goes, and the code it took the place of stays, if there is one.
+	// after a reissue code or a renewal, Renew or a post's answer, here or in
+	// another tab (TestPassRemovedInAnotherTabLeavesThisOne), the code goes,
+	// and the code it took the place of stays, if there is one.
 	forget := withoutComments(jsFunction(t, script, "forgetInvalidCode"))
 	if forget != "function forgetInvalidCode(code) {\n  if (!passJustIssued || passJustIssued.code !== code) {\n    return;\n  }\n"+
 		"  if (passJustIssued.replaced) {\n    passJustIssued.code = \"\";\n  } else {\n    passJustIssued = null;\n  }\n}" {
@@ -2095,8 +2127,9 @@ func TestPassIssuedPanelSaysWhatThisBrowserHolds(t *testing.T) {
 	if !strings.Contains(withoutComments(submitHandler(t, script)), "if (sent && created.pass === \"invalid\") {\n      forgetPass();\n      forgetInvalidCode(sent.code);") {
 		t.Error("a post answered that its Pass is no longer valid leaves a code just handed over for it to be drawn on the next visit")
 	}
-	if n := len(regexp.MustCompile(`\bforgetInvalidCode\(`).FindAllString(code, -1)); n != 5 {
-		t.Errorf("forgetInvalidCode( appears %d times; want its definition and the four answers that say a Pass held here is no longer valid", n)
+	if n := len(regexp.MustCompile(`\bforgetInvalidCode\(`).FindAllString(code, -1)); n != 6 {
+		t.Errorf("forgetInvalidCode( appears %d times; want its definition, the four answers that say a Pass held here is "+
+			"no longer valid, and another tab's removal of the Pass (followPassStorage)", n)
 	}
 	// With its code gone, the panel shows only the code it took the place of,
 	// with its words, and no Copy the code, which would find no code to copy.
@@ -2663,28 +2696,57 @@ func TestPassCopiedHereIsEmptiedFromTheClipboard(t *testing.T) {
 
 // Remove the Pass or Forget this browser in one tab must not leave a code
 // just handed over on another tab's screen. The storage event tells every
-// other tab of the browser; each drops the code it was showing once the
-// browser holds no Pass, and draws the Pass page again if it is open.
+// other tab of the browser: the forget's mark first, which drops every such
+// code (TestPassForgottenInAnotherTabStopsThisOne), then the Pass's removal,
+// which draws the Pass page again if it is open. Any other removal there is
+// educhan's word that the code is no longer valid, and takes off only that
+// code, as in the tab that heard it.
 func TestPassRemovedInAnotherTabLeavesThisOne(t *testing.T) {
 	script := appScript(t)
-	if !strings.Contains(withoutComments(script), "\nwindow.addEventListener(\"storage\", followPassStorage);\n") {
+	code := withoutComments(script)
+	if !strings.Contains(code, "\nwindow.addEventListener(\"storage\", followPassStorage);\n") {
 		t.Error("a tab no longer follows the Pass another tab removed or replaced")
 	}
-	// A code just handed over goes from this tab's screen once another tab
-	// removes the Pass, kept or not, with any code it took the place of,
-	// whatever removed it, educhan finding it no longer valid there included.
-	// Another code written there leaves it be, kept or not: one this browser
-	// kept is drawn as no longer here (passIssuedHTML), and beside it may be
-	// the code of a Pass it took the place of, still good and nowhere else; one
-	// it could not keep was never the Pass it holds, and may be a spent reissue
-	// code's only copy. Both stay until the reader leaves the page.
+	// Another tab's removal of the Pass is followed as this tab follows its
+	// own finding that the Pass is no longer valid: the code removed, read
+	// from the event's old value, goes from the panel, and a code it took the
+	// place of stays, still good, maybe, and nowhere else; so does a kept code
+	// another had already taken the place of, drawn as no longer here
+	// (passIssuedHTML). A removal with no code to read, or storage cleared (a
+	// key of null), takes nothing off. Another code written there leaves a
+	// code just handed over be, kept or not: one it could not keep was never
+	// the Pass it holds, and may be a spent reissue code's only copy. Each
+	// stays until the reader leaves the page.
 	follow := withoutComments(jsFunction(t, script, "followPassStorage"))
-	if !strings.Contains(follow, "const now = storedPass();\n  if (!now) {\n    passJustIssued = null;\n  }") ||
-		strings.Count(follow, "passJustIssued") != 1 ||
+	if !strings.Contains(follow, "const now = storedPass();\n  if (event.key === PASS_STORAGE_KEY && event.newValue === null) {\n"+
+		"    const removed = passCodeIn(event.oldValue);\n    if (removed) {\n      forgetInvalidCode(removed);\n    }\n  }") ||
+		strings.Contains(follow, "passJustIssued") || strings.Count(follow, "forgetInvalidCode(") != 1 ||
 		!strings.Contains(follow, `if (passPageShown() && el.main.querySelector("[data-pass-page]")) {`+
 			"\n    redrawPass(lastPassInfo, \"#pass-held\", \"form[data-pass] input\");") {
-		t.Error("a code just handed over stays on screen after another tab removed the Pass, " +
-			"or goes, with any code it took the place of, when another tab stores a different code")
+		t.Error("another tab's removal of the Pass takes more off this tab's screen than the code it removed, " +
+			"or leaves that code there, or another tab storing a different code takes a code just handed over off")
+	}
+	// So Remove the Pass and Forget this browser set their mark before they
+	// take the Pass, or anything else, from storage: another tab hears the
+	// mark first, and drops every code just handed over, kept or not, with
+	// any code it took the place of, before the Pass's removal, which alone it
+	// would follow as a code found no longer valid. The clipboard is still
+	// emptied in the click (TestPassCopiedHereIsEmptiedFromTheClipboard).
+	remove := code[strings.Index(code, `if (event.target.closest('[data-action="forget-pass"]')) {`):]
+	remove = remove[:strings.Index(remove, "\n  }\n")]
+	marked := strings.Index(remove, "const dropped = forgetPassClaim(\"remove\");")
+	if marked < 0 || strings.Count(remove, "forgetPass()") != 1 || strings.Index(remove, "forgetPass()") < marked ||
+		strings.Contains(remove[:marked], "removeItem(") || strings.Contains(remove[:marked], "storageSet(") {
+		t.Error("Remove the Pass takes the Pass from storage before its mark is there, so another tab hears the removal first")
+	}
+	browser := withoutComments(jsFunction(t, script, "forgetBrowser"))
+	marked = strings.Index(browser, "const dropped = forgetPassClaim(\"browser\");")
+	before := browser[:max(marked, 0)]
+	if marked < 0 || strings.Contains(before, "forgetCredential()") || strings.Contains(before, "forgetPass()") ||
+		strings.Contains(before, "removeItem(") || strings.Contains(before, "storageSet(") ||
+		strings.Index(browser, "forgetCredential();") < marked || strings.Index(browser, "forgetPass();") < marked {
+		t.Error("Forget this browser takes the Pass, or anything else, from storage before its mark is there, " +
+			"so another tab hears the removal first")
 	}
 	// A code this tab copied stops counting as its to empty from the
 	// clipboard once the browser no longer holds that code, whether or not

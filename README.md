@@ -1077,17 +1077,21 @@ not-found view.
   a Pass held here or a code shown that the browser could not keep, so it is offered
   beside such a code. A browser that will not store a code is told so, and that it
   won't be shown again once the reader leaves the page. A code educhan finds no longer
-  valid as the Pass held here, answering Check it again, the check after a reissue
-  code or a renewal, Renew or a post in the same tab, is worth nothing to write down
-  and goes from its panel at once; only the code of another Pass it took the place
-  of stays there, until the reader leaves the page, and is said to be in this browser
-  again once it is typed back in. A code that arrives while the reader is on another
-  page, or that they leave before it is drawn, is shown when they come back to the
-  Pass page, beside any code it took the place of. A code typed in after it ran out,
-  within its month of grace, is kept as run out, with its date, to renew. A Pass that has
-  run out here can be checked again, in case it was renewed elsewhere. A renewal the page
-  collects is checked against the Pass it holds (`/api/pass/activate`) before it says that
-  Pass is renewed; one it cannot match to the Pass it holds is reported as a renewal of a
+  valid as the Pass held here, answering Check it again, the check after a reissue code
+  or a renewal, Renew or a post, in any tab of the browser, is worth nothing to write
+  down and goes from its panel at once, in every tab that shows it; only the code of
+  another Pass it took the place of stays there, until the reader leaves the page, and is
+  said to be in this browser again once it is typed back in, and a code just handed
+  over that another code had already taken the place of stays too, as no longer in
+  this browser. What the page says about the Pass it removed stays until the reader
+  leaves the page or the browser holds a Pass again, typed in, collected or stored in
+  another tab. A code that arrives while the reader is on another page, or that they
+  leave before it is drawn, is shown when they come back to the Pass page, beside any
+  code it took the place of. A code typed in after it ran out, within its month of
+  grace, is kept as run out, with its date, to renew. A Pass that has run out here can
+  be checked again, in case it was renewed elsewhere. A renewal the page collects is
+  checked against the Pass it holds (`/api/pass/activate`) before it says that Pass
+  is renewed; one it cannot match to the Pass it holds is reported as a renewal of a
   Pass, by a payment from this browser or by the reissue code that brought it, with that
   Pass's new date. An answer about a Pass, to a check or a post, that arrives after the
   Pass left the browser (removed or replaced, here or in another tab), or after Remove the
@@ -1146,23 +1150,24 @@ not-found view.
   page cannot be sure of, such as a copy from an email box in some browsers, does not
   count, so the clipboard is emptied after it too. A code copied any other way, by hand
   included, stays until something else is copied. Removing the Pass, or forgetting the
-  browser, in another tab takes a code just handed over off this tab's screen, kept or
-  not, as long as the browser stores that tab's mark: one that stores nothing at all tells
-  no other tab, and a code there stays until the reader leaves the Pass page. The Pass
-  removed there any other way, found no longer valid say, takes such a code off too,
-  with any code it took the place of, though that code may still work. Another code
-  stored in another tab leaves a code just handed over on screen, kept or not, beside any
-  code it took the place of, until the reader leaves the page, and a kept one is then said
-  to be no longer in this browser. A post whose Pass was no good goes out like any other,
-  and its answer says so: the page forgets an unknown Pass, keeps one that ran out to
-  renew, and says the post was sent. A notice a press on the Pass page raises, a refusal
-  say, is brought into view when it is out of view, as it is on a phone, where the forms
-  sit far below the notice; focus stays where the press put it, or, when another tab's
-  forget drew the page again while the press waited, goes to the same button drawn again,
-  else to what was drawn in its place. A drawing something else sets off, another tab's
-  forget say, or the page asked for again after it could not be read, keeps focus on the
-  control that had it when it draws that control again, without scrolling the page, and
-  otherwise moves it to what was drawn in its place.
+  browser, in another tab takes every code just handed over off this tab's screen, kept
+  or not, with any code it took the place of, as long as the browser stores that tab's
+  mark, which goes into storage before the Pass leaves it: one that stores nothing at all
+  tells no other tab, and a code there stays until the reader leaves the Pass page, while
+  one that lets the Pass go but will not store the mark, its storage being full say, has
+  this tab take the removal for a code found no longer valid there, which takes only that
+  code off. Another code stored in another tab leaves a code just handed over on screen,
+  kept or not, beside any code it took the place of, until the reader leaves the page,
+  and a kept one is then said to be no longer in this browser. A post whose Pass was no
+  good goes out like any other, and its answer says so: the page forgets an unknown Pass,
+  keeps one that ran out to renew, and says the post was sent. A notice a press on the
+  Pass page raises, a refusal say, is brought into view when it is out of view, as it is
+  on a phone, where the forms sit far below the notice; focus stays where the press put
+  it, or, when another tab's forget drew the page again while the press waited, goes to
+  the same button drawn again, else to what was drawn in its place. A drawing something
+  else sets off, another tab's forget say, or the page asked for again after it could
+  not be read, keeps focus on the control that had it when it draws that control again,
+  without scrolling the page, and otherwise moves it to what was drawn in its place.
 - **Phones**: a single fluid column with the catalog at two tiles across, thumbnails that
   never overflow the viewport, and 16px form text so iOS does not zoom on focus.
 - **Accessibility**: a skip link, one visible focus ring on every control, headings and
