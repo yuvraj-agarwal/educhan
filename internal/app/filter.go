@@ -4947,7 +4947,7 @@ func (f *scannedField) threatCheck(v *view, m []int) bool {
 	// A part played in a play, said in the plain present: "In our school
 	// play I'm Brutus, so I stab Caesar in act 3", "I'm Burr in our class
 	// play, so I shoot Hamilton every night".
-	if playedPart(text, m[0], ws, wordsIn(sentence)) {
+	if f.playedPart(v, m, ws, wordsIn(sentence)) {
 		return false
 	}
 	// "chem practical tomorrow, i'm gonna blow up the lab lol", as
@@ -7056,29 +7056,157 @@ var (
 )
 
 // playedPart reports an act said in the plain present, "I stab" or "we
-// shoot" with nothing between the subject and the verb (ws, the match, at
-// offset at of text, opens on one or the other), in a sentence, or after 160
-// bytes, that name a play or a part in one (namesAPlay), and in a sentence
-// that names no harm outright (explicitHarm): "In
-// the school play I'm Brutus and I stab Caesar", not "I'm going to stab him
-// after the school play" or "I shoot Rahul at school tomorrow".
-func playedPart(text string, at int, ws, sentence []string) bool {
+// shoot" with nothing between the subject and the verb (ws, the match m of
+// v.text, opens on one or the other), that the post sets in a play, in a
+// sentence that names no harm outright (explicitHarm). A play is named in
+// the sentence or the one before it (namesAPlay), and so is the part the
+// poster plays (partNamed), or else the act's own clause sets it on the
+// stage (stagedIn: "in act 3", "in the final scene"); and nothing in that
+// clause sets it off the stage (offStage). So "In the school play I'm Brutus
+// and I stab Caesar" is a part played, and "I'm in the school play. I shoot
+// Rahul tomorrow at the bus stop", "so much drama in 10B. tomorrow I shoot
+// Rahul" and "forget the school play, I shoot Rahul tomorrow for real" are
+// not.
+func (f *scannedField) playedPart(v *view, m []int, ws, sentence []string) bool {
+	text := v.text
 	plain := len(ws) > 1 && (is(ws[0], "i") || is(ws[0], "we")) && plainActs[ws[1]]
 	if !plain && len(ws) > 0 && plainActs[ws[0]] {
-		if prev := wordsBefore(text, at, 1); len(prev) == 1 && (is(prev[0], "i") || is(prev[0], "we")) {
+		if prev := wordsBefore(text, m[0], 1); len(prev) == 1 && (is(prev[0], "i") || is(prev[0], "we")) {
 			plain = true
 		}
 	}
-	return plain && (namesAPlay(sentence) || namesAPlay(wordsIn(text[max(0, at-160):at]))) && !explicitHarm(sentence)
+	if !plain || explicitHarm(sentence) {
+		return false
+	}
+	// The sentence the act is in, up to 160 bytes of it before the act,
+	// and the one before that, as far back again.
+	lo := max(0, m[0]-160)
+	start := lo + strings.LastIndexAny(text[lo:m[0]], ".!?\n") + 1
+	from := start
+	if start > 0 {
+		lo := max(0, start-1-160)
+		from = lo + strings.LastIndexAny(text[lo:start-1], ".!?\n") + 1
+	}
+	end := m[1] + len(sentenceAfter(text, m[1]))
+	if !namesAPlay(wordsIn(text[from:end])) {
+		return false
+	}
+	clause := wordsIn(clauseBefore(text, m[0]) + text[m[0]:m[1]] + clauseAfter(text, m[1]))
+	staged := stagedIn(clause)
+	return (staged || f.partNamed(v, from, end)) && !offStage(clause, staged)
 }
 
-// namesAPlay reports a play, a musical or a part in one in ws: one of
-// playNouns, or "play" after a word that makes it a noun ("the school play",
-// "our play"), so "then we play football" is none.
+// namesAPlay reports a play or a musical named in ws: one of playNouns;
+// "play" or "production" after a word that makes it a noun ("the school
+// play", "our play"), so "then we play football" is none; or "drama" in
+// its sense of the stage, after a word of dramaLeads or before one of
+// dramaTails ("our school drama", "drama club"), so "so much drama", "stop
+// the drama" and "a drama queen" are none.
 func namesAPlay(ws []string) bool {
 	for i, w := range ws {
-		if playNouns[w] || is(w, "play") && i > 0 && playLeads[ws[i-1]] {
+		switch {
+		case playNouns[w]:
 			return true
+		case (is(w, "play") || is(w, "plays") || is(w, "production")) && i > 0 && playLeads[ws[i-1]]:
+			return true
+		case (is(w, "drama") || is(w, "dramas")) && (i > 0 && dramaLeads[ws[i-1]] ||
+			i+1 < len(ws) && dramaTails[ws[i+1]]):
+			return true
+		}
+	}
+	return false
+}
+
+// partNamed reports a part the poster plays named in v.text[from:to]: "I'm
+// Brutus", "I am the Ghost", "playing Burr", "I play Othello", "cast as
+// Tybalt", "my role is Brutus", the part written with a capital in the
+// source and not a day, a subject or the like (notANameTarget). A word in
+// small letters is no part: "I'm done", "I'm in the play".
+func (f *scannedField) partNamed(v *view, from, to int) bool {
+	sp := wordSpans(v.text[from:to])
+	ws := make([]string, len(sp))
+	for i, s := range sp {
+		ws[i] = v.text[from+s[0] : from+s[1]]
+	}
+	named := func(i int) bool {
+		if i < len(ws) && is(ws[i], "the") {
+			i++
+		}
+		if i >= len(ws) || notANameTarget[ws[i]] || is(ws[i], "i") {
+			return false
+		}
+		for _, r := range ws[i] {
+			if !unicode.IsLetter(r) {
+				return false
+			}
+		}
+		a, _ := v.span(from+sp[i][0], from+sp[i][1])
+		r, _ := utf8.DecodeRuneInString(f.src[a:])
+		return unicode.IsUpper(r)
+	}
+	for i, w := range ws {
+		switch {
+		case is(w, "i'm") || is(w, "im"):
+		case (is(w, "am") || is(w, "play") || is(w, "was")) && i > 0 && is(ws[i-1], "i"):
+		case is(w, "playing") || is(w, "as") && i > 0 && partLeads[ws[i-1]]:
+		case partWords[w] && i > 0 && is(ws[i-1], "my") && i+1 < len(ws) && is(ws[i+1], "is"):
+			i++
+		default:
+			continue
+		}
+		if named(i + 1) {
+			return true
+		}
+	}
+	return false
+}
+
+// stagedIn reports words of a clause that set what is done in it on the
+// stage: an act or a scene ("in act 3", "in the final scene"), the stage,
+// the show or a performance, and a run of nights or shows ("every night",
+// "every show").
+func stagedIn(ws []string) bool {
+	for i, w := range ws {
+		next := ""
+		if i+1 < len(ws) {
+			next = ws[i+1]
+		}
+		switch {
+		case stagedWords[w]:
+			return true
+		case is(w, "act") && (actNumbers[next] || len(next) > 0 && next[0] >= '1' && next[0] <= '9'):
+			return true
+		case (is(w, "every") || is(w, "each")) && (is(next, "night") || is(next, "show") || is(next, "performance")):
+			return true
+		case (is(w, "show") || is(w, "shows")) && i > 0 && (determiners[ws[i-1]] || is(ws[i-1], "of")):
+			return true
+		}
+	}
+	return false
+}
+
+// offStage reports words of an act's clause that set it off the stage:
+// "for real" or "irl"; "after" or "later"; a place after a preposition that
+// is no stage and no play ("at school", "in the canteen", "at her house",
+// not "in the school play" or "in the auditorium"); or, unless the clause
+// sets the act on the stage (staged), a time of day ("tomorrow", "tonight",
+// "now"), though one straight after a play is the play's own ("the school
+// play tomorrow").
+func offStage(ws []string, staged bool) bool {
+	for i, w := range ws {
+		switch {
+		case is(w, "irl") || is(w, "after") || is(w, "afterwards") || is(w, "later"):
+			return true
+		case is(w, "real") && i > 0 && (is(ws[i-1], "for") || is(ws[i-1], "in")):
+			return true
+		case offStageTimes[w] && !staged && !(i > 0 && (playNouns[ws[i-1]] || is(ws[i-1], "play"))):
+			return true
+		case stagePrepositions[w] && i+1 < len(ws):
+			np := readNoun(ws[i+1:])
+			if np.place() && !stagePlaces[np.head] && !(i+1+np.n < len(ws) && (playNouns[ws[i+1+np.n]] ||
+				is(ws[i+1+np.n], "play") || is(ws[i+1+np.n], "drama"))) {
+				return true
+			}
 		}
 	}
 	return false
@@ -7088,9 +7216,28 @@ var (
 	// plainActs are the acts a part in a play has the actor say in the
 	// plain present: "I shoot Hamilton every night".
 	plainActs = canonSetOf(`shoot stab kill murder poison strangle hang behead slap punch hit attack`)
-	playNouns = canonSetOf(`musical musicals drama dramas skit skits role roles character characters scene scenes
-		rehearsal rehearsals theatre theater pantomime panto nativity script production`)
-	playLeads = canonSetOf(`the a our this that school class annual house drama college my their`)
+	// playNouns name a play or a musical in any sentence; playLeads make
+	// "play" one ("the school play"); dramaLeads and dramaTails make
+	// "drama" the stage's ("our school drama", "drama club").
+	playNouns  = canonSetOf(`musical musicals skit skits rehearsal rehearsals theatre theater pantomime panto nativity`)
+	playLeads  = canonSetOf(`the a our this that school class annual house drama college my their`)
+	dramaLeads = canonSetOf(`school class annual house college inter-house our`)
+	dramaTails = canonSetOf(`club clubs society class teacher practice rehearsal rehearsals production performance
+		competition fest`)
+	// partLeads come before "as" and a part ("cast as Tybalt"), and
+	// partWords after "my" ("my role is Brutus").
+	partLeads = canonSetOf(`cast casted me i'm im am was starring play playing`)
+	partWords = canonSetOf(`role part character`)
+	// stagedWords set an act on the stage; actNumbers number an act.
+	stagedWords = canonSetOf(`scene scenes stage onstage finale curtain curtains interval matinee encore performance
+		performances`)
+	actNumbers = canonSetOf(`one two three four five i ii iii iv v`)
+	// offStageTimes are times of day an act is set at off the stage, and
+	// stagePrepositions open a place it is set in; stagePlaces are where a
+	// play is put on.
+	offStageTimes     = canonSetOf(`tomorrow tmrw tmr tonight today now kal aaj morning evening afternoon lunch recess`)
+	stagePrepositions = canonSetOf(`at in to near outside behind inside into by`)
+	stagePlaces       = canonSetOf(`auditorium hall halls assembly`)
 )
 
 // labMishap reports a lab, named in the words named, blown up, set on fire
