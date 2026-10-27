@@ -681,9 +681,10 @@ endpoint and signing secret would leave any event Stripe is still retrying to
 the old endpoint unverifiable, so a payment among them would never become a
 Pass, and a refund or dispute would take nothing back. Change only what needs
 changing instead: a new Price as below, or a new restricted key, made as above.
-The key goes in with this block, which makes the setup block's two calls with it
-before storing it, then moves the service onto it; delete the old key in Stripe
-only once it prints "Done":
+The key goes in with this block, which checks it is in the old key's mode (test
+or live) and makes the setup block's two calls with it before storing it, then
+moves the service onto it; delete the old key in Stripe only once it prints
+"Done":
 
 ```bash
 export REGION="${REGION:-asia-south1}"
@@ -704,8 +705,13 @@ case ${TAX,,} in 1|true|yes|on) TAX=true ;; *) TAX=false ;; esac
   { echo 'The service has no Pass Price or address set, so the Pass is not on.'; exit 1; }
 read -rsp 'New Stripe restricted key: ' STRIPE_KEY; echo
 [[ $STRIPE_KEY == [rs]k_* ]] || { echo 'That is not a Stripe key (sk_… or rk_…).'; exit 1; }
+# The webhook endpoint hears only of payments in the mode the setup block ran
+# in, which is the old key's.
+OLD_KEY=$(gcloud secrets versions access latest --secret=educhan-stripe-secret-key)
+[[ ${STRIPE_KEY:3:5} == "${OLD_KEY:3:5}" ]] ||
+  { echo "That key is from the other mode (test or live) than the old one: make it in the old one's, where the webhook endpoint is."; exit 1; }
 curl -fsS "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" >/dev/null ||
-  { echo "The new key can't read the Price: paste it whole, from the same mode (test or live) as the old one, with Prices: Read."; exit 1; }
+  { echo "The new key can't read ${PRICE_ID}: paste it whole, with Prices: Read. If you did, the service's Price needs fixing first (below)."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
   -d submit_type=pay -d "automatic_tax[enabled]=${TAX}" \
@@ -747,8 +753,11 @@ Stripe Tax on, says neither `inclusive` nor `exclusive`; or Stripe refused the
 key or the Price ID, such as a test-mode Price ID with a live key. Until it is
 fixed, `/api/pass` leaves the price out, and with Stripe Tax on, checkout
 answers `503`. A new Price, made and set as above, mends a fault in the Price or
-its ID, and the key block above puts in a new key. This reads the latest such
-line:
+its ID, and the key block above puts in a new key. Both stay in the mode (test
+or live) the setup block ran in, since its webhook endpoint hears only of that
+mode's payments: a Price ID from the other mode needs a new Price, and the key
+block refuses a key from another mode than the old one's. This reads the latest
+such line:
 
 ```bash
 gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="educhan" AND jsonPayload.msg="the Pass price in Stripe needs fixing"' \
