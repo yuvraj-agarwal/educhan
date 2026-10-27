@@ -541,14 +541,15 @@ comes back another way (below).
 
 **In the Stripe dashboard first.** Under *Settings → Public details*, set a
 support email: it is printed on every receipt, and a buyer who lost their code
-writes there to have it reissued. Then make a restricted key (*Developers → API
-keys → Create restricted key*) with **Checkout Sessions: Write** and **Prices:
-Read** and nothing else. Those are the only two calls the server makes. A full
-secret key also works but can do far more than the server needs; the server
-refuses to start with anything but an `sk_…` or `rk_…` key. Turn on Stripe's
-email receipts for successful payments, and set up no custom domain for
-Checkout: the server sends buyers only to `https://checkout.stripe.com` and
-refuses any other address Stripe hands back.
+writes there to have it reissued. Then, in the same Stripe account (and
+sandbox) and mode (test or live) as the secret key the block below asks for,
+make a restricted key (*Developers → API keys → Create restricted key*) with
+**Checkout Sessions: Write** and **Prices: Read** and nothing else. Those are
+the only two calls the server makes. A full secret key also works but can do far
+more than the server needs; the server refuses to start with anything but an
+`sk_…` or `rk_…` key. Turn on Stripe's email receipts for successful payments,
+and set up no custom domain for Checkout: the server sends buyers only to
+`https://checkout.stripe.com` and refuses any other address Stripe hands back.
 
 In Cloud Shell. Past its first lines the block runs in a subshell that stops at
 the first step that fails, so a run either finishes or says where it stopped,
@@ -602,12 +603,12 @@ PRICE_ID=$(curl -fsS https://api.stripe.com/v1/prices -u "${STRIPE_ADMIN}:" \
   | field id)
 # The server reads the Price and starts checkouts with the restricted key, so
 # do both with it now, as the server does, and close the checkout at once: a
-# key pasted short, made in the other mode, or missing either permission stops
-# the run here, before anything is stored. The closed checkout needs no
-# cleanup, and its expiry, if an earlier run's endpoint hears of it, matches no
-# order and changes nothing.
+# key pasted short, made in another account, sandbox or mode, or missing either
+# permission stops the run here, before anything is stored. The closed checkout
+# needs no cleanup, and its expiry, if an earlier run's endpoint hears of it,
+# matches no order and changes nothing.
 curl -fsS "https://api.stripe.com/v1/prices/${PRICE_ID}" -u "${STRIPE_KEY}:" >/dev/null ||
-  { echo "The restricted key can't read the new Price: paste it whole, from the same mode (test or live) as the secret key, with Prices: Read."; exit 1; }
+  { echo "The restricted key can't read the new Price: paste it whole, made with Prices: Read in the same Stripe account (and sandbox) and mode (test or live) as the secret key."; exit 1; }
 SESSION_JSON=$(curl -sS --fail-with-body https://api.stripe.com/v1/checkout/sessions -u "${STRIPE_KEY}:" \
   -d mode=payment -d "line_items[0][price]=${PRICE_ID}" -d "line_items[0][quantity]=1" \
   -d submit_type=pay -d "automatic_tax[enabled]=false" \
