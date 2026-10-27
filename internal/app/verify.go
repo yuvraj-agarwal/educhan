@@ -568,11 +568,14 @@ const credentialDayStart = 5 * time.Hour
 // of a sweep at 02:30 ends two and a half hours after it. A sweep run after
 // 05:00 — by hand, or late — still splits the day it runs in at the time it
 // runs, and the README says what that leaves. A new credentialDayStart splits
-// the day it is deployed in too, as a change to the credential lifetime does:
-// that day's credentials issued before the deploy and after it get different
-// expiries. So it goes out once that day has passed both the old start and the
-// new, while nobody has verified since the old one (deploy/README.md section
-// 2.9).
+// the day it is deployed in too: that day's credentials issued before the
+// deploy and after it get different expiries, and those issued from the deploy
+// until the next new start share theirs with no others. So it goes out soon
+// after the later of the old start and the new, once nobody has verified since
+// the old start; a start moved earlier can instead go out at any time between
+// the new start and the old one, since each set then spans at least a day less
+// the move (the README's "What that protects, exactly", and deploy/README.md
+// section 2.9).
 //
 // It is not all an operator can see. The code request and the confirmation
 // each took a transaction id from the counter the posts take theirs from, and
