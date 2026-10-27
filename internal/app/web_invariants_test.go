@@ -360,9 +360,12 @@ func TestOnlyThePostingRequestCarriesThePass(t *testing.T) {
 	for _, name := range readers {
 		allowed += strings.Count(withoutComments(jsFunction(t, script, name)), "storedPass(")
 	}
+	// The pageshow listener: whether a Pass was stored while the page was in
+	// the back-forward cache.
+	allowed += strings.Count(withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});")), "storedPass(")
 	if n := strings.Count(code, "storedPass(") - strings.Count(code, "function storedPass("); n != allowed {
-		t.Errorf("app.js reads the stored Pass (storedPass()) %d times, %d of them in the submit handler and %s; "+
-			"want none elsewhere", n, allowed, strings.Join(readers, ", "))
+		t.Errorf("app.js reads the stored Pass (storedPass()) %d times, %d of them in the submit handler, the pageshow listener "+
+			"and %s; want none elsewhere", n, allowed, strings.Join(readers, ", "))
 	}
 	for literal, name := range map[string]string{`"educhan:pass"`: "PASS_STORAGE_KEY", `"X-Educhan-Pass"`: "PASS_HEADER"} {
 		if n := strings.Count(code, literal); n != 1 || !strings.Contains(code, "const "+name+" = "+literal+";") {
@@ -1482,7 +1485,7 @@ func TestPassPageDetails(t *testing.T) {
 		remove = remove[:strings.Index(remove, "\n  }\n")]
 		stop := withoutComments(jsFunction(t, script, "stopForPassForget"))
 		if !strings.Contains(withoutComments(jsFunction(t, script, "forgetBrowser")), "passLost = \"\";") ||
-			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 7 ||
+			!strings.Contains(remove, "passLost = \"\";") || strings.Count(code, "passLost = \"\";") != 8 ||
 			!regexp.MustCompile(`if \(code\) \{[^}]*passLost = "";`).MatchString(stop) {
 			t.Error("Forget this browser or Remove the Pass, here or in another tab, leaves what the page said about a Pass that has gone")
 		}
@@ -1492,8 +1495,9 @@ func TestPassPageDetails(t *testing.T) {
 		// offer a Buy form the page does not draw. It goes with every Pass
 		// this tab keeps (storePass: a code typed in, run out or not, a
 		// claim's or a reissue code's, a check's date), and with one another
-		// tab stores, but not with one this browser would not keep, nor while
-		// none is held.
+		// tab stores, heard as it is stored or found when the back-forward
+		// cache brings the page back, but not with one this browser would not
+		// keep, nor while none is held.
 		store := withoutComments(jsFunction(t, script, "storePass"))
 		if !strings.Contains(store, "const kept = storedPass();\n  if (!kept || kept.code !== code) {\n    return false;\n  }\n"+
 			"  passLost = \"\";\n  return true;\n}") || strings.Count(store, "passLost") != 1 {
@@ -1504,6 +1508,16 @@ func TestPassPageDetails(t *testing.T) {
 		if !strings.Contains(follow, "if (now) {\n    passLost = \"\";\n  }") || strings.Count(follow, "passLost") != 1 {
 			t.Error("a Pass another tab stores leaves beside it what this tab's Pass page said about a Pass that has gone, " +
 				"or a removal there takes that away")
+		}
+		// A page the back-forward cache kept hears a storage event sent
+		// meanwhile only once it is shown, if at all, so it looks for itself
+		// before it draws the Pass page again.
+		show := withoutComments(jsBlock(t, script, `window.addEventListener("pageshow", (event) => {`, "});"))
+		if !strings.Contains(show, "if (event.persisted && state.route.view === \"pass\") {\n"+
+			"    if (storedPass()) {\n      passLost = \"\";\n    }\n    render();\n  }") || strings.Count(show, "passLost") != 1 ||
+			strings.Count(show, "storedPass(") != 1 {
+			t.Error("a Pass page brought back from the back-forward cache draws, beside a Pass another tab stored meanwhile, " +
+				"what it said about a Pass that has gone")
 		}
 	})
 	t.Run("a panel drawn already filled is focused", func(t *testing.T) {

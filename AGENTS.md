@@ -603,16 +603,17 @@ needs a browser check before the test changes.
   of is not the code removed, and stays. `passLost`, what the page says of a Pass it
   removed, stays until the reader leaves the page or the browser holds a Pass again,
   one `storePass` keeps (typed in, a claim's or a reissue code's) or another tab stores
-  (`followPassStorage`), so it never sits beside a Pass held, offering a Buy form the
-  page does not draw. A renewal's date is never stored from the claim's answer, since
-  the Pass it renewed may not be the one held here now: `confirmRenewal` checks the held
-  code with `/api/pass/activate` (`recheckPass`, asked once more after a `429`'s wait),
-  stores what that says unless the Pass held changed meanwhile, and says the Pass is
-  renewed only when the date it checks is the renewal's and later than the one it had;
-  a renewal a reissue code brought is said to come from the code, not from a payment in
-  this browser. A renewal hands over no code, so its claim or reissue code asked again
-  is refused: refused after a retry with a kept nonce, the page checks the held code
-  the same way (`passAfterLostAnswer`) and says only that the Pass is now good until a
+  (`followPassStorage`, or the `pageshow` listener on a page back from the back-forward
+  cache), so it never sits beside a Pass held, offering a Buy form the page does not
+  draw. A renewal's date is never stored from the claim's answer, since the Pass it
+  renewed may not be the one held here now: `confirmRenewal` checks the held code with
+  `/api/pass/activate` (`recheckPass`, asked once more after a `429`'s wait), stores
+  what that says unless the Pass held changed meanwhile, and says the Pass is renewed
+  only when the date it checks is the renewal's and later than the one it had; a renewal
+  a reissue code brought is said to come from the code, not from a payment in this
+  browser. A renewal hands over no code, so its claim or reissue code asked again is
+  refused: refused after a retry with a kept nonce, the page checks the held code the
+  same way (`passAfterLostAnswer`) and says only that the Pass is now good until a
   later date, never where the time came from. A reissue code is typed or pasted into
   the code box, which takes a Pass code too (`isReissueCode` tells them apart by the
   server's word and length), and never rides in an address. Pressing the button is the

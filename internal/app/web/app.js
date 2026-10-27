@@ -2259,7 +2259,8 @@ const PASS_GONE_REASONS = "It may have run out more than a month ago, or been re
 
 // Why the Pass that was here has gone, said on the Pass page until the reader
 // leaves it, or until this browser holds a Pass again, kept here (storePass)
-// or stored by another tab (followPassStorage): beside one, it would say the
+// or stored by another tab (followPassStorage, or the pageshow listener for a
+// page the back-forward cache kept meanwhile): beside one, it would say the
 // Pass here has gone, and offer a Buy form the page no longer draws.
 let passLost = "";
 
@@ -5904,12 +5905,16 @@ window.addEventListener("popstate", () => {
 // left for Stripe with its button disabled and its state from before the
 // checkout, so it is drawn again, by render, which asks the age screen first: a
 // page left on the screen, or on its refusal, comes back to the same, and
-// nothing is fetched behind it.
+// nothing is fetched behind it. What it said of a Pass that went goes first if
+// the browser holds one now, stored by another tab meanwhile (passLost).
 window.addEventListener("pageshow", (event) => {
   if (event.persisted) {
     heedPassForgetsUnderWay();
   }
   if (event.persisted && state.route.view === "pass") {
+    if (storedPass()) {
+      passLost = "";
+    }
     render();
   }
 });
