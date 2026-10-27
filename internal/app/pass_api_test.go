@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/cookiejar"
 	"net/http/httptest"
@@ -2980,24 +2981,31 @@ func TestPassForgetDropsTheClaim(t *testing.T) {
 // claim cookie the answer set, if it set one.
 func (p *passHarness) forgetOrder(name string) (int, *http.Cookie) {
 	p.t.Helper()
+	status, set, _ := p.forgetOrderAnswered(name)
+	return status, set
+}
+
+// forgetOrderAnswered is forgetOrder with the whole answer, every key in it.
+func (p *passHarness) forgetOrderAnswered(name string) (int, *http.Cookie, map[string]any) {
+	p.t.Helper()
 	res, err := p.http.Do(p.request("/api/pass/claim", map[string]any{"forget": true, "order": name}, nil))
 	if err != nil {
 		p.t.Fatal(err)
 	}
 	defer res.Body.Close()
-	var out passResponse
+	var out map[string]any
 	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
 		p.t.Fatal(err)
 	}
-	if res.StatusCode == http.StatusOK && out.Status != "forgotten" {
-		p.t.Fatalf("forget by order: %+v", out)
+	if res.StatusCode == http.StatusOK && out["status"] != "forgotten" {
+		p.t.Fatalf("forget by order: %v", out)
 	}
 	for _, c := range res.Cookies() {
 		if c.Name == passClaimCookie {
-			return res.StatusCode, c
+			return res.StatusCode, c, out
 		}
 	}
-	return res.StatusCode, nil
+	return res.StatusCode, nil, out
 }
 
 // TestPassForgetByOrderDropsThatClaimAlone holds the forget the page sends for
@@ -3007,7 +3015,8 @@ func (p *passHarness) forgetOrder(name string) (int, *http.Cookie) {
 // cookie and once its checkout is paid after all, and the buyer gets that
 // through a reissue. A checkout started after the forget is somebody's
 // purchase, and its cookie can be in the browser by the time the forget of the
-// earlier one arrives, so that forget reads no cookie and clears none. Only
+// earlier one arrives, so that forget reads no cookie and clears none, and
+// its answer, {"status":"forgotten"}, says nothing of what else waits. Only
 // the server makes a name: one made from what pass_orders holds drops nothing.
 func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	p := passServer(t, func(cfg *Config) { cfg.ModKey = "mod-key" })
@@ -3022,8 +3031,12 @@ func TestPassForgetByOrderDropsThatClaimAlone(t *testing.T) {
 	if p.sendingClaimCookies(name).reportsClaim() {
 		t.Fatal("the order's name, sent as a claim cookie, has something to collect")
 	}
-	if status, set := p.forgetOrder(name); status != http.StatusOK || set != nil {
-		t.Fatalf("forget by order: status %d, setting %v; want 200 and no cookie set or cleared", status, set)
+	// The answer is the status and nothing more: no cookie was read, so it
+	// says nothing of what else waits ("claim").
+	if status, set, out := p.forgetOrderAnswered(name); status != http.StatusOK || set != nil ||
+		!maps.Equal(out, map[string]any{"status": "forgotten"}) {
+		t.Fatalf(`forget by order: status %d, setting %v, answer %v; want 200, no cookie set or cleared, and {"status":"forgotten"} alone`,
+			status, set, out)
 	}
 	if left, ok := p.claimCookie(); !ok || left != token {
 		t.Fatal("forgetting by order took the cookie out of the browser")
