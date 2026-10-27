@@ -547,23 +547,38 @@ needs a browser check before the test changes.
   with every other check passing. So does one in what runs on the box once it is drawn:
   `drawVerifyStep`, `showVerifyField`, `sayVerifyRefusal`, what `renderVerify`'s callers
   run on what it drew (`focusHash` in `render()`, `showHeldBadge` after Verify,
-  `confirmBrowserForgotten` after Forget this browser), and every top-level function
-  those call, however far down (`revealClearOfHeader`, `refuseVerification` and the
-  helpers the code step's template interpolates). The test finds that set by following
-  the calls rather than from a list, and holds each function in it whole, so a function
-  new to the path fails it until it is held too: holding the answer alone left
-  `showVerifyField` and `revealClearOfHeader` checked for a few words, and a gate in
-  either took the code form out of the page. Following calls down does not reach what
-  runs once each call that drew the box returns, up to the browser, so that is held
-  line for line too: the page's submit listener to the end of its Verify branch (the
-  one listener a Verify form's submit reaches), the forget buttons' callbacks, and
+  `confirmBrowserForgotten` after Forget this browser), what `renderVerify` and the
+  requests it waits on run once their answers are in, since an answer can draw the box
+  while it is still asking (the rest of `api()`, `loadVerification`'s `readBadge`, and
+  `announce`), and every top-level function those call, however far down
+  (`revealClearOfHeader`, `refuseVerification` and the helpers the code step's template
+  interpolates). The test finds that set by following the calls rather than from a
+  list, and holds each function in it whole, so a function new to the path fails it
+  until it is held too: holding the answer alone left `showVerifyField` and
+  `revealClearOfHeader` checked for a few words, and a gate in either took the code form
+  out of the page. Following calls down does not reach what runs once each call that
+  drew the box returns, so that is held line for line too, up to where the browser
+  takes over: the page's submit listener to the end of its Verify branch (the one
+  listener a Verify form's submit reaches), the forget buttons' callbacks, and
   `render()` from its `finally` on, which leaves the Verify page with `focusHash` alone
   run on it, not the posts and drafts every other page gets; `beginLoading`, whose
   `finish` that `finally` calls, and `navigate`, which waits on `render()`, are held
   whole, and every other call of either is a statement nothing waits on. A gate in the
-  submit listener after `submitVerification`, or in what `render()` ran once it had
-  drawn the page for a badge holder coming back to it, took the box away with every
-  function check passing. `replacing` puts the badge panel away for
+  submit listener after `submitVerification`, in what `render()` ran once it had drawn
+  the page for a badge holder coming back to it, or in `announce`, took the box away
+  with every function check passing. What runs on the box with no call from any of
+  that is not followed: the page's listeners (a click into the code box runs the click
+  listener and `isInternalLink`, a scroll runs `hideQuotePreview`, and keys, changes,
+  pointers, hovers and drags have theirs), its timers, and the answers to requests sent
+  from other pages. Down their calls lie `render()` and every page, more than a test can
+  hold whole, and a gate on a held badge in `hideQuotePreview` or `isInternalLink` took
+  the box away with every check passing. So what can tell whether a badge is held —
+  `state.verification` or a `.badge` read off anything, `readBadge`, `storedCredential`,
+  `localStorage` and the credential's key, and the markup only a held badge draws (Keep
+  my badge, `#verify-badge`, a posting form's badge box and its number) — is named only
+  in the places `TestOnlyKnownPlacesTellWhetherABadgeIsHeld` lists, top-level block by
+  block, so a gate on a held badge cannot be put anywhere, a listener included, without
+  failing it. `replacing` puts the badge panel away for
   "Verify another address", and both steps then offer "Keep my badge" back to it
   (`TestReplacingABadgeCanGoBackToIt`). Keep my badge reads the badge again before it
   draws, so one that ran out, or was forgotten in another tab, while the page was on

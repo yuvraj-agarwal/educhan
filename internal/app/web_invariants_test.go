@@ -764,9 +764,20 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 	// with sayVerifyRefusal (one for a wrong code, say); what its callers run
 	// on what it drew is followed too: focusHash in render(), showHeldBadge
 	// after Verify, and confirmBrowserForgotten after Forget this browser.
+	// And the box can be drawn while renderVerify is still asking: the answer
+	// to Send code, landing while render() asks for a badge holder who then
+	// pressed Verify in the header. What renderVerify waits on then runs on
+	// the box once its answer is in: the rest of api() after its fetch, of
+	// loadVerification, which reads the badge again (readBadge), and of
+	// renderVerify, which titles the page (announce). A gate on a held badge
+	// in announce took the box away with every check here passing.
 	// Every top-level function those reach is found by following the calls
 	// down, not listed by hand, and each is held whole, here or by the test
 	// named, so a function new to that path fails here until it is held too.
+	// What runs on the box with no call from any of these — the page's
+	// listeners and timers, and the answers to other requests — is not
+	// followed; TestOnlyKnownPlacesTellWhetherABadgeIsHeld holds every place
+	// that can tell whether a badge is held instead.
 	graph := jsCallGraph(t, script)
 	if end := strings.Index(view[start:], "`;\n"); end < 0 {
 		t.Error("the code step's return does not end where this test can find it")
@@ -789,9 +800,36 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 		"focusHash":               "this test",
 		"confirmBrowserForgotten": "this test",
 		"forgetBrowserHTML":       "this test, as fixed markup",
+		"unreachableError":        "TestVerifyAnswersBelongToTheStepTheyWereSentFrom",
+		"readBadge":               "this test",
+		"storedCredential":        "this test",
+		"forgetCredential":        "this test",
+		"badgeNumber":             "TestPostingFormSendsOnlyTheBadgeItNames",
+		"onVerifyPage":            "TestVerifyAnswersDrawOnlyOnTheVerifyPage",
+		"announce":                "this test",
+		"verifyStepOnScreen":      "TestVerifyStepIsDrawnForAReaderArriving",
 	}
-	reached := jsReached(t, graph, "drawVerifyStep", "showVerifyField", "sayVerifyRefusal",
-		"focusHash", "showHeldBadge", "confirmBrowserForgotten")
+	roots := []string{"drawVerifyStep", "showVerifyField", "sayVerifyRefusal", "focusHash", "showHeldBadge",
+		"confirmBrowserForgotten"}
+	for _, f := range []struct{ name, resumes string }{
+		{"api", "res = await fetch(path, init);"},
+		{"loadVerification", `answer = await api("/api/verify", { signal: verifyDeadline() });`},
+		{"renderVerify", "await loadVerification();"},
+	} {
+		src := withoutComments(jsFunction(t, script, f.name))
+		at := strings.Index(src, f.resumes)
+		if at < 0 || strings.Contains(src[:at], "await ") {
+			t.Errorf("%s does not first wait at %q, where this test follows what it runs once the answer is in",
+				f.name, f.resumes)
+			continue
+		}
+		for callee := range jsCallees(src[at+len(f.resumes):]) {
+			if graph[callee] != nil {
+				roots = append(roots, callee)
+			}
+		}
+	}
+	reached := jsReached(t, graph, roots...)
 	for _, name := range reached {
 		if heldBy[name] == "" {
 			t.Errorf("%s runs on a pending code's box once it is drawn, and nothing holds it whole: a gate on a held "+
@@ -887,6 +925,63 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 			"done.hidden = false;",
 			"revealClearOfHeader(done);",
 			"done.focus({ preventScroll: true });",
+			"}",
+		}},
+		{"announce", []string{
+			"function announce(title) {",
+			"document.title = title === \"educhan\" ? title : `${title} — educhan`;",
+			"el.status.textContent = title;",
+			"}",
+		}},
+		{"readBadge", []string{
+			"function readBadge() {",
+			"const token = storedCredential();",
+			"if (!token) {",
+			"return null;",
+			"}",
+			`const parts = token.split(".");`,
+			`if (parts.length !== 3 || parts[0] !== "v1") {`,
+			"forgetCredential();",
+			"return null;",
+			"}",
+			"try {",
+			`const base64 = parts[1].replace(/-/g, "+").replace(/_/g, "/");`,
+			`const padded = base64 + "=".repeat((4 - (base64.length % 4)) % 4);`,
+			"const bytes = Uint8Array.from(atob(padded), (c) => c.charCodeAt(0));",
+			"const claims = JSON.parse(new TextDecoder().decode(bytes));",
+			"if (!claims.label || !claims.exp) {",
+			"forgetCredential();",
+			"return null;",
+			"}",
+			"const expires = new Date(claims.exp * 1000);",
+			"if (expires <= new Date()) {",
+			"forgetCredential();",
+			`badgeLost = "Your badge has expired.";`,
+			"return null;",
+			"}",
+			"return { token, label: claims.label, expires, number: badgeNumber(token) };",
+			"} catch {",
+			"forgetCredential();",
+			"return null;",
+			"}",
+			"}",
+		}},
+		{"storedCredential", []string{
+			"function storedCredential() {",
+			"try {",
+			`return localStorage.getItem(CREDENTIAL_STORAGE_KEY) || "";`,
+			"} catch {",
+			`return "";`,
+			"}",
+			"}",
+		}},
+		{"forgetCredential", []string{
+			"function forgetCredential() {",
+			"try {",
+			"localStorage.removeItem(CREDENTIAL_STORAGE_KEY);",
+			"} catch {",
+			"}",
+			"state.verification.badge = null;",
 			"}",
 		}},
 	} {
@@ -1066,6 +1161,116 @@ func TestVerifyCodeBoxShowsWhileACodeIsPending(t *testing.T) {
 				"drew, a pending code's box among them", line, waited[line])
 		}
 	}
+}
+
+// A pending code's box shows whether or not a badge is held, so nothing may
+// decide on a held badge whether it stays.
+// TestVerifyCodeBoxShowsWhileACodeIsPending follows the calls from what draws
+// the box, from what its callers run on it, and from what renderVerify waits
+// on, and holds each function it reaches whole. Much else runs on the box with
+// no call from any of those: the page's listeners — on a click into the code
+// box (the click listener, isInternalLink), on a scroll (hideQuotePreview),
+// on a key, a change, a pointer, a hover or a drag — its timers, and the
+// answers to requests sent from other pages. Followed down, those reach
+// render() and every page, which no test can hold whole, and a gate on a held
+// badge in announce, hideQuotePreview or isInternalLink took the box out of
+// the page with every other check passing. So what can tell whether a badge
+// is held is named only where this test lists, top-level block by block, each
+// as often as it lists: state.verification, or a .badge read off anything;
+// readBadge and storedCredential; localStorage, and the key the credential is
+// kept under; and the markup a held badge alone draws — Keep my badge, the
+// badge panel's #verify-badge, a posting form's badge box and the number its
+// slot carries. A gate on a held badge, wherever it is put, has to name one of
+// them, and fails here. It is a floor, like the rest of this file: change a
+// count only with the reason the new place cannot take a step off the page.
+func TestOnlyKnownPlacesTellWhetherABadgeIsHeld(t *testing.T) {
+	tells := regexp.MustCompile(`\.verification\b|\.badge\b|\breadBadge\(|\bstoredCredential\(|\blocalStorage\b|` +
+		`\bCREDENTIAL_STORAGE_KEY\b|educhan:credential|verify-keep|verify-badge|data-badge-option|\bbadgeOffered\(|` +
+		`\bbadgeNumbers?\b|["']badge["']`)
+	got := map[string]int{}
+	for _, s := range jsTopLevel(withoutComments(appScript(t))) {
+		if n := len(tells.FindAllString(s.text, -1)); n > 0 {
+			got[s.first] += n
+		}
+	}
+	want := map[string]int{
+		// Where the credential is kept, read, stored and forgotten, and the
+		// badge read off it and numbered.
+		`const CREDENTIAL_STORAGE_KEY = "educhan:credential";`: 2,
+		"function storedCredential() {":                        3,
+		"function storeCredential(token) {":                    2,
+		"function forgetCredential() {":                        4,
+		"function readBadge() {":                               3,
+		"const badgeNumbers = new Map();":                      1,
+		"function badgeNumber(token) {":                        5,
+		// What else the browser keeps: the age answer, the post key, and
+		// forgetting the browser.
+		"function storageGet(key) {":        1,
+		"function storageSet(key, value) {": 1,
+		"function posterKey() {":            2,
+		"function forgetBrowser() {":        1,
+		// The badge the server put on a post, which says nothing of the one
+		// held here.
+		"function postHTML(post, context) {": 2,
+		// A posting form, which the Verify page never has: its badge box and
+		// what it offers, a draft carried across a re-render, the badge box
+		// ticked, and the post sent.
+		"function formHTML({ kind, slug, thread = null, open = false }) {": 3,
+		"function badgeOptionHTML(held) {":                                 1,
+		"function badgeOffered(form) {":                                    2,
+		"function offerHeldBadge() {":                                      5,
+		"function sayBadgeUnticked() {":                                    2,
+		"function captureDraft() {":                                        2,
+		"function restoreDraft(draft) {":                                   4,
+		`el.main.addEventListener("change", (event) => {`:                  1,
+		`el.main.addEventListener("submit", async (event) => {`:            11,
+		// The Verify page, held where a pending code's box is concerned by
+		// TestVerifyCodeBoxShowsWhileACodeIsPending and the tests it names:
+		// whether verification is on and the badge held, the page's steps,
+		// the answer to Verify, the badge shown once kept or issued, Keep my
+		// badge in the page's click listener, and the buttons a press aimed
+		// at the step before is let go on.
+		"async function loadVerification() {":             5,
+		"function verifyViewHTML() {":                     7,
+		"async function submitVerification(form) {":       3,
+		"function showHeldBadge() {":                      1,
+		`document.addEventListener("click", (event) => {`: 6,
+		"const VERIFY_MOVES = [":                          1,
+	}
+	var blocks []string
+	for first := range got {
+		blocks = append(blocks, first)
+	}
+	for first := range want {
+		if got[first] == 0 {
+			blocks = append(blocks, first)
+		}
+	}
+	slices.Sort(blocks)
+	for _, first := range blocks {
+		if got[first] != want[first] {
+			t.Errorf("the block opening %q names what tells whether a badge is held %d times; this test knows %d. "+
+				"A gate on a held badge there can take a pending code's box off the page with every other check "+
+				"passing", first, got[first], want[first])
+		}
+	}
+}
+
+// jsTopLevel splits code into its top-level statements by the first column:
+// each runs from a line that starts there to the next such line, and a line
+// there that only closes a statement (with }, ) or ]) belongs to the one it
+// closes. It returns each statement's first line and its text, in order.
+func jsTopLevel(code string) []struct{ first, text string } {
+	var statements []struct{ first, text string }
+	for _, line := range strings.Split(code, "\n") {
+		if line != "" && !strings.ContainsAny(line[:1], " \t})]") {
+			statements = append(statements, struct{ first, text string }{line, ""})
+		}
+		if n := len(statements); n > 0 {
+			statements[n-1].text += line + "\n"
+		}
+	}
+	return statements
 }
 
 // verifyStepSet finds each place app.js moves the Verify page to a step, and
