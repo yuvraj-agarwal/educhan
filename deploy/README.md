@@ -418,10 +418,10 @@ gcloud run deploy educhan \
 
 In a project under an organisation, whose policy may refuse `allUsers` as an
 invoker (every organisation made since May 2024 does), make the service public
-the way the script does: `--no-invoker-iam-check` in place of
-`--allow-unauthenticated`, or, with `service.yaml`, the annotation
-`run.googleapis.com/invoker-iam-disabled: "true"` under the Service's
-`metadata.annotations` in place of the `add-iam-policy-binding`.
+with `--no-invoker-iam-check` in place of `--allow-unauthenticated`, or, with
+`service.yaml`, the annotation `run.googleapis.com/invoker-iam-disabled: "true"`
+under the Service's `metadata.annotations` in place of the
+`add-iam-policy-binding`.
 
 Once the service exists, every later release is just the new image:
 
