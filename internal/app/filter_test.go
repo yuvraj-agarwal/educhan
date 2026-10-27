@@ -3578,6 +3578,37 @@ func TestFilterCostIsBounded(t *testing.T) {
 	}
 }
 
+// TestFilterNumbersAreReadForAnAnswerLast holds posts of numbers that are not
+// contact details to about what the numbers cost to read without asking
+// whether each is a maths answer. mathsAnswer reads 64 bytes either side of a
+// number for the words an answer is given in, and was asked of every number
+// that stood alone, before the number was found to be of any kind: posts of
+// helpline numbers, ranges and scores cost from 23 to 32 steps a byte, nearly
+// twice as many as before it was added, and from 1.6 to 1.8 times the time,
+// which TestFilterCostIsBounded's bound of 160 a byte cannot see. Asked last,
+// of a number of a kind a contact detail is, it costs these posts nothing:
+// they cost from 13 to 19 steps a byte.
+func TestFilterNumbersAreReadForAnAnswerLast(t *testing.T) {
+	const mostPerByte = 22
+	for name, unit := range map[string]string{
+		"helpline": "Trevor Project 1-866-488-7386. ",
+		"ranges":   "96.123-97.456 percentile\n",
+		"scores":   "mock scores 65-70-78-84-91\n",
+	} {
+		in := contentInput{Body: strings.Repeat(unit, maxBodyLen/len(unit))}
+		for _, supportSeen := range []bool{false, true} {
+			verdict, work := checkContentCost(in, supportSeen)
+			if verdict.Outcome != contentPublish {
+				t.Fatalf("%s: a post of them was not published: %+v", name, verdict)
+			}
+			if work > mostPerByte*len(in.Body) {
+				t.Errorf("%s: %d steps for %d bytes, %.1f a byte, more than %d", name, work, len(in.Body),
+					float64(work)/float64(len(in.Body)), mostPerByte)
+			}
+		}
+	}
+}
+
 // TestAppFramesReuseTheirWords holds appFrame to the words it keeps from one
 // app's name to the next. A post can name an app in every other word, and
 // Snapchat's ghost before a short name ("👻Sc" over and over) is a name every

@@ -14240,10 +14240,27 @@ func classifyNumber(v *view, run digitRun) (findingKind, bool) {
 	if local && slashAreaCoded(v, shaped) {
 		return kindPhone, true
 	}
-	if !standsAlone(v, run) || formattedNumber(run) || dataSet(v, run) || roundRange(run) || decimalRange(v, run) ||
+	alone, cued := standsAlone(v, run)
+	if !alone || formattedNumber(run) || dataSet(v, run) || roundRange(run) || decimalRange(v, run) ||
 		ipv4(v, run) {
 		return 0, false
 	}
+	kind, ok := numberKind(v, run, shaped, local, short)
+	// A number given as a maths answer is none, unless a request to call or
+	// text comes straight before it. It is asked last, of a number that is
+	// one, because it reads the text both sides of the number: asked of every
+	// number a post of numbers holds, it took most of the post's time.
+	if !ok || !cued && mathsAnswer(v, run) {
+		return 0, false
+	}
+	return kind, true
+}
+
+// numberKind is classifyNumber's reading of a run that stands alone: a local
+// (seven-digit) number with an area code given, a short (eight-digit)
+// mobile, a number of a known shape, or one said to be written backwards
+// whose digits the right way round are a phone number.
+func numberKind(v *view, run, shaped digitRun, local, short bool) (findingKind, bool) {
 	if local {
 		return kindPhone, areaCoded(v, shaped)
 	}
@@ -14829,35 +14846,36 @@ func formattedNumber(run digitRun) bool {
 
 // standsAlone reports that a run is a number in its own right and not one side
 // of a sum, a decimal, a quantity, a function's argument or a labelled
-// reference.
-func standsAlone(v *view, run digitRun) bool {
+// reference, and whether a request to call or text comes straight before it
+// (cued), which classifyNumber needs again.
+func standsAlone(v *view, run digitRun) (alone, cued bool) {
 	t := v.text
 	after := t[run.to:]
 	if r, _ := utf8.DecodeRuneInString(after); unicode.IsDigit(r) || unicode.IsLetter(r) && !run.apartAfter {
-		return false
+		return false, false
 	}
 	if operandAfter(after) {
-		return false
+		return false, false
 	}
 	// "0.9876543210" is a decimal, not a number with a trunk prefix.
 	if len(run.groups) > 1 && run.groups[0] == 1 && run.digits[0] == '0' && run.seps[0] == "." {
-		return false
+		return false, false
 	}
 	if len(after) > 1 && (after[0] == '.' || after[0] == ',') && isASCIIDigit(after[1]) {
-		return false
+		return false, false
 	}
 	before := t[:run.from]
 	// A request to call or text, straight before the number, says what it is
 	// whatever else is near it: "call me = 9876543210", "wa/9876543210", "text
 	// me 9876543210 if you can do the integers question".
-	cued := contactCue.matchIn(v, windowBefore(t, run.from, 32))
+	cued = contactCue.matchIn(v, windowBefore(t, run.from, 32))
 	if !cued && operandBefore(v, before, after) {
-		return false
+		return false, false
 	}
 	// A sign glued to an operand is arithmetic: "2+9876543210", "x-9876543210".
 	if !run.plus && len(before) >= 2 && (before[len(before)-1] == '+' || before[len(before)-1] == '-') {
 		if r, _ := utf8.DecodeLastRuneInString(before[:len(before)-1]); unicode.IsLetter(r) || unicode.IsDigit(r) || r == ')' {
-			return false
+			return false, false
 		}
 	}
 	// A spaced sign with an operand before it: "1 + 9876543210", "x - 9876543210";
@@ -14867,7 +14885,7 @@ func standsAlone(v *view, run digitRun) bool {
 			r, n := utf8.DecodeLastRuneInString(o)
 			p, _ := utf8.DecodeLastRuneInString(o[:len(o)-n])
 			if unicode.IsDigit(r) || r == ')' || unicode.IsLetter(r) && !unicode.IsLetter(p) {
-				return false
+				return false, false
 			}
 		}
 	}
@@ -14875,27 +14893,27 @@ func standsAlone(v *view, run digitRun) bool {
 		last, prev := before[len(before)-1], before[len(before)-2]
 		// A decimal point or thousands separator glued to a digit before it.
 		if (last == '.' || last == ',') && isASCIIDigit(prev) {
-			return false
+			return false, false
 		}
 		// A bracket glued to a name: a function's argument or an index,
 		// "print(7777777777)", "a[9876543210]".
 		if r, _ := utf8.DecodeLastRuneInString(before[:len(before)-1]); (last == '(' || last == '[') &&
 			(unicode.IsLetter(r) || unicode.IsDigit(r) || r == '_' || r == ')' || r == ']') {
-			return false
+			return false, false
 		}
 	}
 	// An amount: "$9876543210", "₹ 9876543210".
 	if r, _ := utf8.DecodeLastRuneInString(strings.TrimRight(before, " ")); strings.ContainsRune("$₹€£¥", r) {
-		return false
+		return false, false
 	}
 	if labelled(t, run.from) || quantityWords[firstWordAfter(t, run.to)] {
-		return false
+		return false, false
 	}
 	near := windowBefore(t, run.from, 32)
 	if !cued && (mathsResult.matchIn(v, near) || mathsContext.matchIn(v, near+" "+windowAfter(t, run.to, 32))) {
-		return false
+		return false, false
 	}
-	return cued || !mathsAnswer(v, run)
+	return true, cued
 }
 
 // mathsAnswer reports a number given as the answer to a maths question in
@@ -14904,21 +14922,21 @@ func standsAlone(v *view, run digitRun) bool {
 // largest 10-digit number with distinct digits is 9876543210"), a result
 // that "came out as" or was got "for part (b)", the answer key's, a final
 // answer or the answer to a part or a question, one "according to the
-// solutions", a number
-// after a power or factorial in the sentence before ("How many digits does
-// 2^33 have? It's 8589934592"); and digits that count up or down by one
-// (0123456789, 9876543210) beside talk of digits, examples or a program's
-// input and output. A phone number is given with none of these.
+// solutions", a number after a power or factorial in the sentence before
+// ("How many digits does 2^33 have? It's 8589934592"); and digits that count
+// up or down by one (0123456789, 9876543210) beside talk of digits, examples
+// or a program's input and output. A phone number is given with none of
+// these, so they are looked for first, and a call or an owner only once one
+// is found.
 func mathsAnswer(v *view, run digitRun) bool {
 	t := v.text
-	wide := windowBefore(t, run.from, 64) + " " + windowAfter(t, run.to, 64)
-	if callCue.matchIn(v, wide) || ownNumber.matchIn(v, wide) {
+	before := windowBefore(t, run.from, 64)
+	wide := before + " " + windowAfter(t, run.to, 64)
+	if !mathsResultWords.matchIn(v, wide) && !powerBefore.matchIn(v, before) &&
+		!(counting(string(run.digits)) && countingTalk.matchIn(v, wide)) {
 		return false
 	}
-	if mathsResultWords.matchIn(v, wide) || powerBefore.matchIn(v, windowBefore(t, run.from, 64)) {
-		return true
-	}
-	return counting(string(run.digits)) && countingTalk.matchIn(v, wide)
+	return !callCue.matchIn(v, wide) && !ownNumber.matchIn(v, wide)
 }
 
 var (
