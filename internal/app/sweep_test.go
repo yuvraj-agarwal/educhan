@@ -2417,32 +2417,7 @@ func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
 	runs := h.watchVacuumRuns("verification_credentials")
 	probes := h.watchFiles(vacuumProbeTable)
 	swept := h.sweepLater()
-	waitLonger(t, "the sweep's VACUUM FULL is copying the credentials table", func() bool {
-		var copying bool
-		if err := h.app.pool.QueryRow(ctx, `
-			SELECT EXISTS (SELECT FROM pg_stat_progress_cluster
-			               WHERE relid = 'verification_credentials'::regclass
-			                 AND phase IN ('initializing', 'seq scanning heap'))`).Scan(&copying); err != nil {
-			t.Fatalf("read pg_stat_progress_cluster: %v", err)
-		}
-		return copying
-	})
-	granter := h.holdOpen(`GRANT SELECT ON verification_credentials TO PUBLIC`)
-	var grantPID int32
-	if err := granter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&grantPID); err != nil {
-		t.Fatalf("read the GRANT's backend: %v", err)
-	}
-
-	waiting := func() bool {
-		var n int
-		if err := h.app.pool.QueryRow(ctx,
-			`SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY (pg_blocking_pids(pid))`,
-			grantPID).Scan(&n); err != nil {
-			t.Fatalf("read pg_stat_activity: %v", err)
-		}
-		return n > 0
-	}
-	waitLonger(t, "the run waits for the GRANT once it has copied the table", waiting)
+	granter, waiting := h.grantDuringVacuum()
 	start := time.Now()
 	for waiting() {
 		if took := time.Since(start); took > 2*time.Second {
@@ -2484,6 +2459,80 @@ func TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld(t *testing.T) {
 	if seen := runs.runs(); len(seen) != 2 {
 		t.Errorf("the sweep ran VACUUM FULL on the credentials table %d times (%v), want twice: the run the "+
 			"GRANT began during, and one after it ended", len(seen), seen)
+	}
+	if after := h.relationFiles("verification_credentials")[0]; after == before {
+		t.Errorf("the credentials table is still in file %d after a sweep that finished", after)
+	}
+	h.assertNothingButLiveRows("verification_credentials")
+}
+
+// grantDuringVacuum waits until the sweep's VACUUM FULL is copying the
+// credentials table, after the sweep has looked for what the run would wait
+// for, and begins a GRANT on the table then. It returns the GRANT's
+// transaction, still open, once the run has copied the table and waits for
+// it, and waiting, which says whether the run still does.
+func (h *harness) grantDuringVacuum() (granter pgx.Tx, waiting func() bool) {
+	h.t.Helper()
+	ctx := context.Background()
+	waitLonger(h.t, "the sweep's VACUUM FULL is copying the credentials table", func() bool {
+		var copying bool
+		if err := h.app.pool.QueryRow(ctx, `
+			SELECT EXISTS (SELECT FROM pg_stat_progress_cluster
+			               WHERE relid = 'verification_credentials'::regclass
+			                 AND phase IN ('initializing', 'seq scanning heap'))`).Scan(&copying); err != nil {
+			h.t.Fatalf("read pg_stat_progress_cluster: %v", err)
+		}
+		return copying
+	})
+	granter = h.holdOpen(`GRANT SELECT ON verification_credentials TO PUBLIC`)
+	var grantPID int32
+	if err := granter.QueryRow(ctx, `SELECT pg_backend_pid()`).Scan(&grantPID); err != nil {
+		h.t.Fatalf("read the GRANT's backend: %v", err)
+	}
+	waiting = func() bool {
+		var n int
+		if err := h.app.pool.QueryRow(ctx,
+			`SELECT count(*) FROM pg_stat_activity WHERE $1::int = ANY (pg_blocking_pids(pid))`,
+			grantPID).Scan(&n); err != nil {
+			h.t.Fatalf("read pg_stat_activity: %v", err)
+		}
+		return n > 0
+	}
+	waitLonger(h.t, "the run waits for the GRANT once it has copied the table", waiting)
+	return granter, waiting
+}
+
+// A GRANT that begins during a run, as above, and commits while the run waits
+// for it — as an autocommit GRANT, or a GRANT ... ON ALL TABLES IN SCHEMA,
+// does within milliseconds — ends the run sooner than vacuumLockTimeout:
+// VACUUM FULL cannot update the table's row in pg_class once the GRANT has
+// changed it, and fails with PostgreSQL's "tuple concurrently updated"
+// (XX000), the table still in its old file. That run has given the table up
+// as surely as one that waited out the timeout, and the sweep tries again the
+// same way rather than fail; by then the GRANT has ended, so the next run
+// takes the table.
+func TestVacuumTriesAgainWhenTheGrantItWaitsForCommits(t *testing.T) {
+	const issued = 200_000
+	h := testServer(t, nil)
+	ctx := context.Background()
+	h.issueMany(issued)
+	before := h.relationFiles("verification_credentials")[0]
+
+	runs := h.watchVacuumRuns("verification_credentials")
+	swept := h.sweepLater()
+	granter, _ := h.grantDuringVacuum()
+	if err := granter.Commit(ctx); err != nil {
+		t.Fatalf("commit the GRANT: %v", err)
+	}
+
+	sweep := await(t, "the sweep", swept)
+	if sweep.err != nil {
+		t.Fatalf("a sweep whose VACUUM FULL waited for a GRANT that then committed: %v", sweep.err)
+	}
+	runs.close()
+	if seen := runs.runs(); len(seen) != 2 || seen[0].written != issued {
+		t.Errorf("the sweep ran VACUUM FULL on the credentials table %d times (%v), want twice: the run the "+
+			"GRANT began during, which copied all %d rows, and one after it committed", len(seen), seen, issued)
 	}
 	if after := h.relationFiles("verification_credentials")[0]; after == before {
 		t.Errorf("the credentials table is still in file %d after a sweep that finished", after)

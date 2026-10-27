@@ -912,6 +912,12 @@ written on, not just the code. Section numbers are design-recommendations.md's.
     again like a skipped one, by which time the look sees the holder
     (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`: one run, then none until
     the `GRANT` ends; a test's role cannot hold a TOAST table, so no test holds one).
+    A `GRANT` that commits while the run waits for it, as an autocommit one does within
+    milliseconds, ends the run sooner, with `XX000` and "tuple concurrently updated"
+    (it cannot update the row the `GRANT` changed), and `vacuumFull` counts that as
+    given up too, by code and message, since every internal error shares the code
+    (`TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`); any other error fails the
+    sweep at once.
     That bound covers the whole statement, and a `VACUUM` ends, after its run has
     committed, by updating the database's row in `pg_database`, which waits for any
     transaction that has updated that row (an `ALTER DATABASE`, a `GRANT` on the

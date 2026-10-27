@@ -1255,8 +1255,15 @@ const verificationLockTimeout = "5s"
 // copy and then given the table up, and tried again it would do the same, try
 // after try. What vacuumFull cannot see coming — a GRANT that begins during the
 // run — VACUUM FULL waits for this long at most, and then gives the table up
-// (vacuumBlocked); the sweep tries again a moment later, and by then the look
-// before the run sees it. An uncontended lock is granted at once, so the bound
+// (vacuumBlocked). A GRANT that commits sooner ends the wait sooner, and the run
+// with it, the table still in its old file: VACUUM FULL cannot update a row
+// the GRANT has changed under it (concurrentlyUpdated), and that run has given
+// the table up too. Either way the sweep tries again a moment later, and by
+// then the look before the run sees the GRANT, or that it has ended
+// (TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld,
+// TestVacuumTriesAgainWhenTheGrantItWaitsForCommits). An autocommit GRANT,
+// the usual kind, commits within milliseconds, and so ends a run the second
+// way. An uncontended lock is granted at once, so the bound
 // need be no longer than a request should wait; and it is below PostgreSQL's
 // deadlock_timeout, so the sweep gives way to an autovacuum rather than having
 // it cancelled. The bound covers the whole statement, so it would also end a
@@ -1334,6 +1341,18 @@ const vacuumCommand = "VACUUM (FULL, SKIP_LOCKED, SKIP_DATABASE_STATS)"
 // SKIP_LOCKED makes it pass over a table another session holds, and of the
 // error it fails with when lock_timeout ends a wait for any other lock.
 const sqlstateLockNotAvailable = "55P03"
+
+// sqlstateInternalError and concurrentlyUpdated are the code and message of
+// the error VACUUM FULL fails with when it has waited to update its table's
+// row in pg_class, or an index's, for a transaction that had updated the row
+// — a GRANT on the table, say — and that transaction commits within
+// vacuumLockTimeout: it cannot update a row another transaction has changed
+// since its snapshot. PostgreSQL raises it with elog, so the message is never
+// translated; the code is the one every internal error has, so it takes both.
+const (
+	sqlstateInternalError = "XX000"
+	concurrentlyUpdated   = "tuple concurrently updated"
+)
 
 // verificationTables are the tables RewriteCredentials rewrites and vacuums.
 var verificationTables = [...]string{"verification_credentials", "verification_pending"}
@@ -1604,8 +1623,9 @@ func closeSweepConnection(ctx context.Context, conn *pgx.Conn, grace time.Durati
 // one, and while there is one leaves the table alone and this tries again
 // later; and this sets the connection's lock_timeout to vacuumLockTimeout, so
 // that a run that meets one begun since the look gives the table up after
-// that long, with the table still in its old file, and is tried again the
-// same way. The step a VACUUM ends with across the whole database, which waits
+// that long, or sooner if the holder commits a change to the row it waits for,
+// with the table still in its old file, and is tried again the same way. The
+// step a VACUUM ends with across the whole database, which waits
 // for any transaction that has updated the database's row in pg_database,
 // comes after the run has committed and holds no table; the runs leave it out
 // (vacuumCommand).
@@ -1741,7 +1761,8 @@ const (
 	vacuumWouldWait
 	// VACUUM FULL took the table, but another session held something it
 	// needs with it, a lock on its TOAST table or an index or its row in
-	// pg_class, for longer than vacuumLockTimeout, and it gave the table up in
+	// pg_class, for longer than vacuumLockTimeout, or committed a change to
+	// that row while the run waited for it, and the run gave the table up in
 	// its old file. (A run that lock_timeout ends after it has moved the table
 	// to a new file is not this: it counts as done, or too soon, as any run
 	// does.)
@@ -1761,8 +1782,9 @@ func lockedOut(outcome vacuumOutcome, table string) string {
 			"for once it had the table: a lock on its TOAST table or an index, or its row in pg_class or "+
 			"an index's, updated by a transaction still open (a GRANT on the table, say)", table)
 	case vacuumBlocked:
-		return fmt.Sprintf("VACUUM FULL took %s, then gave it up after waiting %s for another session: "+
-			"for a lock on its TOAST table or an index, or for its row in pg_class or an index's", table,
+		return fmt.Sprintf("VACUUM FULL took %s, then gave it up waiting for another session: for a lock "+
+			"on its TOAST table or an index, or for its row in pg_class or an index's, which that session "+
+			"held for longer than %s or changed meanwhile (a GRANT on the table, say)", table,
 			vacuumLockTimeout)
 	}
 	return fmt.Sprintf("VACUUM FULL could not take %s, which another session held", table)
@@ -1789,14 +1811,18 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 	}
 	notices.take()
 	_, err = conn.Exec(ctx, command+" "+pgx.Identifier(strings.Split(table, ".")).Sanitize())
-	// lock_timeout ended a wait for a lock other than the table's, which
-	// SKIP_LOCKED would have passed over. A wait in the run rolled the run
-	// back, and left the table in its old file; a wait after the run had
-	// committed — in the step SKIP_DATABASE_STATS leaves out (vacuumCommand),
-	// say — left it in its new one, and the run counts as the run it was.
+	// Another session ended a wait for something other than the table, which
+	// SKIP_LOCKED would have passed over: lock_timeout ended it, or the
+	// transaction the run waited for to update a row in pg_class committed
+	// first, having changed the row (concurrentlyUpdated). A wait in the run
+	// rolled the run back, and left the table in its old file; a wait after
+	// the run had committed — in the step SKIP_DATABASE_STATS leaves out
+	// (vacuumCommand), say — left it in its new one, and the run counts as the
+	// run it was.
 	var pgErr *pgconn.PgError
-	timedOut := errors.As(err, &pgErr) && pgErr.Code == sqlstateLockNotAvailable
-	if err != nil && !timedOut {
+	cutShort := errors.As(err, &pgErr) && (pgErr.Code == sqlstateLockNotAvailable ||
+		pgErr.Code == sqlstateInternalError && pgErr.Message == concurrentlyUpdated)
+	if err != nil && !cutShort {
 		return 0, fmt.Errorf("vacuum %s: %w", table, err)
 	}
 	warnings := notices.take()
@@ -1808,7 +1834,7 @@ func (s *Store) vacuumFull(ctx context.Context, conn *pgx.Conn, notices *noticeL
 		switch {
 		case slices.Contains(warnings, sqlstateLockNotAvailable):
 			return vacuumHeld, nil
-		case timedOut:
+		case cutShort:
 			return vacuumBlocked, nil
 		case table == statisticsCatalog:
 			return 0, fmt.Errorf("VACUUM FULL left %s in its old file: only a superuser or a role with "+

@@ -374,8 +374,12 @@ ends every run on the verification tables (`RewriteCredentials` in `store.go`):
    (`TestSweepRunsNoVacuumWhileItWouldWait`). One that begins during a run,
    after the look, the run waits for a tenth of a second at most and then gives
    the table up, having held requests up for as much of the copy as it had
-   done; the next try's look sees it
-   (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). A `VACUUM` also
+   done. A `GRANT` that commits within that tenth of a second, as one run
+   without `BEGIN` does, ends the run as it commits, with PostgreSQL's "tuple
+   concurrently updated", and that run has given the table up the same way.
+   Either way the next try's look sees the holder, or that it has ended
+   (`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+   `TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`). A `VACUUM` also
    ends, once its run has committed, by updating the database's row in
    `pg_database`, which holds no table but waits for any transaction that has
    changed that row — an `ALTER DATABASE`, or a `GRANT` on the database — and
@@ -1445,8 +1449,11 @@ sweep looks in `pg_locks` for another session holding any of these, and while
 one does it leaves the table alone and tries again later
 (`TestSweepRunsNoVacuumWhileItWouldWait`). One that begins during a run, after
 the look, the run waits for a tenth of a second at most before it gives the
-table up, and the next try's look sees it
-(`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`). A transaction left
+table up, or less, when a `GRANT` it waits for commits meanwhile, which ends
+the run with PostgreSQL's "tuple concurrently updated" error; either way the
+next try's look sees the holder, or that it has ended
+(`TestVacuumLetsGoOfATableWhileAnotherLockItNeedsIsHeld`,
+`TestVacuumTriesAgainWhenTheGrantItWaitsForCommits`). A transaction left
 open on the database's own row — an `ALTER DATABASE`, or a `GRANT` on the
 database — does not hold it up: the step at the end of a `VACUUM` that waits
 for one comes after the table is written out, and the sweep's runs leave it to
